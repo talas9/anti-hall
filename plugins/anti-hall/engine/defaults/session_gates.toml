@@ -55,11 +55,23 @@ value = { section = "jev", key = "enabled", type = "boolean", env = "ANTIHALL_JE
 doc = "The setting jev.semanticJudge (off by default)."
 value = { section = "jev", key = "semanticJudge", type = "boolean", env = "ANTIHALL_SEMANTIC_JUDGE", option = "jev_semantic_judge", default = false }
 
+[session_gates.default_event]
+doc = "The hook event name an advisory carries when the payload names none (a non-empty string hook_event_name wins)."
+value = "SessionStart"
+
+[session_gates.test_markers]
+doc = "Environment variables that mark a test run; with one set, the Node hook refuses to use the real (password database) home directory (companion/lib/test-home-guard.js)."
+value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST", "ANTIHALL_TEST_ISOLATION"]
+
+[session_gates.allow_real_home_env]
+doc = "Environment variable that lets a test run use the real home directory anyway."
+value = "ANTIHALL_ALLOW_REAL_HOME_TEST"
+
 # ---- jev-weekly-scorecard ----------------------------------------------------------------------------------
 
 [jev_weekly.summary]
 doc = "One-line description of the jev-weekly-scorecard check in the generated reference."
-value = "Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); otherwise defers to the Node hook, which builds the report (port of the gates of jev-weekly-scorecard.js)."
+value = "Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); when the check is due and the Jev decision log holds no rows it stamps the weekly latch itself; otherwise defers to the Node hook, which builds the report (port of jev-weekly-scorecard.js)."
 
 [jev_weekly.notice_setting]
 doc = "The setting jev.weeklyNotice (on by default; a legacy jev.json value is honoured)."
@@ -68,6 +80,18 @@ value = { section = "jev", key = "weeklyNotice", type = "boolean", env = "", opt
 [jev_weekly.latch_file]
 doc = "The weekly latch, relative to the anti-hall directory: the time of the last check."
 value = "state/jev-weekly-notice.json"
+
+[jev_weekly.latch_key]
+doc = "The key of the weekly latch that holds the time of the last check."
+value = "lastCheckedTs"
+
+[jev_weekly.latch_tmp_infix]
+doc = "What the Node hook puts between the latch path and its process id to name the temporary file of an atomic write."
+value = ".tmp."
+
+[jev_weekly.decision_log]
+doc = "The Jev decision log the weekly report reads, relative to the anti-hall directory; its rotated generations are this name plus a dot and a number."
+value = "logs/jev-assist.ndjson"
 
 [jev_weekly.period_ms]
 doc = "How often the scorecard check may run."
@@ -80,7 +104,7 @@ max = 31536000000
 
 [jev_review.summary]
 doc = "One-line description of the jev-review-reminder check in the generated reference."
-value = "Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn); otherwise defers to the Node hook (port of the gates of jev-review-reminder.js)."
+value = "Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn, a non-interactive run); shows the recommend-Jev notice and stamps its latch itself when that is the only notice due; otherwise defers to the Node hook (port of jev-review-reminder.js)."
 
 [jev_review.recommend_setting]
 doc = "The setting jev.recommendNotice (on by default): the one-in-30-days notice recommending Jev while it is off."
@@ -89,6 +113,30 @@ value = { section = "jev", key = "recommendNotice", type = "boolean", env = "ANT
 [jev_review.recommend_latch_file]
 doc = "The recommend notice latch, relative to the anti-hall directory: the time it was last shown."
 value = "state/jev-recommend-notice.json"
+
+[jev_review.latch_key]
+doc = "The key of the recommend notice latch that holds the time it was last shown."
+value = "lastShownTs"
+
+[jev_review.latch_tmp_suffix]
+doc = "What the Node notice appends after the latch path, a dot and its process id to name the temporary file of an atomic write."
+value = ".tmp"
+
+[jev_review.headless_setting]
+doc = "The setting jev.recommendNoticeHeadless (off by default): show the recommend notice in a non-interactive run too."
+value = { section = "jev", key = "recommendNoticeHeadless", type = "boolean", env = "ANTIHALL_JEV_NOTICE_HEADLESS", option = "", default = false }
+
+[jev_review.protocol_level_setting]
+doc = "The setting context.protocolLevel; while jev.recommendNoticeHeadless is not set anywhere, the full level turns the headless notice on."
+value = { section = "context", key = "protocolLevel", type = "enum", values = ["compact", "full"], env = "ANTIHALL_PROTOCOL_LEVEL", option = "", default = "compact" }
+
+[jev_review.protocol_full]
+doc = "The protocol level that turns the headless recommend notice on by default."
+value = "full"
+
+[jev_review.recommend_notice]
+doc = "The recommend-Jev notice the session receives (hooks/lib/jev-recommend.js: the directive line, then shortNotice()), byte for byte."
+value = "Tell the user now, verbatim, bold kept:\n**Recommended: enable Jev, the optional classifier, for more accurate guards.**\nWithout it the guards rely on pattern matching alone; with it they also get a model's second opinion (by default it can only add blocks the patterns miss, never remove one).\nOptional and off by default: needs your own API key, sends the text a guard judges to the provider you choose, uses credits. Details: README \"Enable Jev\" and PRIVACY.md.\nEnable: say \"activate jev\". Turn this reminder off: set `jev.recommendNotice` to false."
 
 [jev_review.remind_every_ms]
 doc = "How long after it was shown the recommend notice stays quiet."

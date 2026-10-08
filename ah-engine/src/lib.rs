@@ -10,13 +10,17 @@ pub mod client;
 pub mod config;
 pub mod daemon;
 pub mod db;
+pub mod deadline;
 pub mod defaults;
+pub mod devswarm_rt;
 #[cfg(feature = "diag")]
 pub mod diag;
 pub mod discard;
 pub mod dispatch;
 pub mod docs;
 pub mod doctor;
+pub mod dsact;
+pub mod dswire;
 pub mod error;
 pub mod frame;
 pub mod gate;
@@ -37,6 +41,7 @@ pub mod meshw;
 pub mod metrics;
 pub mod migrate;
 pub mod paths;
+pub mod proc;
 pub mod reqenv;
 pub mod rules;
 pub mod schedule;
@@ -49,6 +54,7 @@ pub mod store;
 pub mod telemetry;
 pub mod tier;
 pub mod transcript;
+pub mod watch;
 
 /// Version this build reports and compares for handoff. The `version` env override (plugin
 /// version in production, arbitrary in tests).

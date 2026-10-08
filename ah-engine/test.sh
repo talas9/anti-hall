@@ -13,8 +13,15 @@ before="$(daemons)"
 # every warning an error. --release shares its build products with the test run below.
 cargo clippy --release --all-targets -- -D warnings || exit 1
 if cargo nextest --version >/dev/null 2>&1; then
-  cargo nextest run --release "$@"
+  # CI (GitHub Actions sets CI=true) runs the `ci` profile of .config/nextest.toml; anywhere else the default one
+  profile=default
+  [ "${CI:-}" = true ] && profile=ci
+  # The wall-clock budget tests (a p95 in microseconds) measure the machine when the suite's own Node sweeps load every
+  # core, so they run after the suite, one at a time, and nothing of the suite runs beside them.
+  timed='binary(telemetry_overhead) | binary(script_latency)'
+  cargo nextest run --release --profile "$profile" -E "not ($timed)" "$@"
   rc=$?
+  cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass -E "$timed" "$@" || rc=1
   if [ "$rc" -eq 0 ]; then
     cargo test --release --doc
     rc=$?

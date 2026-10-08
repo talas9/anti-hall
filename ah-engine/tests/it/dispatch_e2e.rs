@@ -75,6 +75,7 @@ impl Env {
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
+            .env("ANTIHALL_JEV_RECOMMEND_NOTICE", "false") // the session gate answers the notice itself; these tests probe the Node fallback
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             // DevSwarm active makes the native verify-first-orch check defer to its mapped Node command, so the
             // SessionStart tests below keep driving Node hooks only (the check itself is covered by spawn_ctx_parity.rs)
@@ -194,7 +195,8 @@ fn bash(cmd: &str, cwd: &Path) -> String {
 }
 
 /// A Bash payload on which the built-in `merge-gate` and `api-guard` checks both defer to their Node hooks, which these
-/// tests replace with shell stand-ins: an auto-merge command that names a code file, with the gate switched on in the
+/// tests replace with shell stand-ins: an auto-merge command that names a code file and also writes one with a verifiable
+/// reference (api-guard answers a Bash command natively unless its text could carry one), with the gate switched on in the
 /// test home and a RELATIVE transcript path (Node resolves it against its own working directory, so the engine's merge-gate
 /// always leaves it to the Node hook; the gate's other deferrals went native with the Jev port).
 fn node_only_bash(e: &Env) -> String {
@@ -202,7 +204,7 @@ fn node_only_bash(e: &Env) -> String {
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"mergeGate":true}}"#).unwrap();
     let tp = "hedged.jsonl";
-    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py"}, "transcript_path": tp})
+    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py"}, "transcript_path": tp})
         .to_string()
 }
 
@@ -389,8 +391,21 @@ fn the_agent_controls_are_answered_by_the_dispatcher() {
     let stop_args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
     let stop_payload = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop"}).to_string();
     let (code, out, err) = e.run(&stop_args, true, &stop_payload, true);
-    e.stop();
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "silent-agent-nudge is answered by the check, not run as Node");
+    // Stop with a background agent silent for 90 minutes: the check nudges itself (the dispatcher hands it the plugin root)
+    let ts =
+        ah_engine::checks::agent_scan::iso_utc((std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() - 5_400_000) as f64);
+    let launch = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "tu_1", "type": "tool_result", "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a1b2c3d4e5f601 (x)\noutput_file: /nonexistent/out.txt\n"}]}]}, "timestamp": ts});
+    let transcript = e.dir.join("silent.jsonl");
+    std::fs::write(&transcript, format!("{launch}\n")).unwrap();
+    let silent = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "transcript_path": transcript}).to_string();
+    let (code, out, err) = e.run(&stop_args, true, &silent, true);
+    e.stop();
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert!(
+        out.starts_with("{\"decision\":\"block\",\"reason\":\"") && out.contains("silent-agent-nudge: 1 of your own") && !err.contains("NODE-RAN"),
+        "{out:?} {err:?}"
+    );
 }
 
 #[test]
@@ -407,19 +422,21 @@ fn an_event_no_entry_matches_says_nothing_and_starts_no_daemon() {
 fn a_guard_event_that_cannot_run_its_node_hooks_fails_closed() {
     let e = Env::new("closed");
     // no plugin root: the table's Node commands name ${CLAUDE_PLUGIN_ROOT}, so they cannot run
-    let (code, out, err) = e.run(&["hook", "--event", "PreToolUse"], true, &bash("ls", &e.dir), false);
+    let (code, out, err) = e.run(&["hook", "--event", "PreToolUse"], true, &node_only_bash(&e), false);
     assert_eq!((code, out.as_str()), (2, ""), "{err}");
     assert!(err.contains("could not run the guards for PreToolUse") && err.contains("no runnable Node command"), "{err}");
     // a broken fallback map, plugin root set
     let bad = e.dir.join("bad-map.json");
     std::fs::write(&bad, "not json").unwrap();
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", bad.to_str().unwrap()];
+    // review finding 16: an unreadable map and a usage error are install faults, not verdicts: the Node hooks decide (75)
+    let defer = ah_engine::defaults::num("dispatch.defer_exit") as i32;
     let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
-    assert_eq!((code, out.as_str()), (2, ""), "{err}");
-    assert!(err.contains("cannot read the fallback map"), "{err}");
+    assert_eq!((code, out.as_str()), (defer, ""), "{err}");
+    assert!(err.contains("cannot read the fallback map") && err.contains("the Node hooks decide"), "{err}");
     // a usage error on a guard event does not exit 64 (a non-blocking error the host reads as an allow)
     let (code, _, err) = e.run(&["hook", "--event", "PreToolUse", "--host", "nope"], true, &bash("ls", &e.dir), true);
-    assert_eq!(code, 2, "{err}");
+    assert_eq!(code, defer, "{err}");
     let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
     assert_eq!(log.matches("dispatch_defer").count(), 3, "{log}");
 }
@@ -435,7 +452,7 @@ fn a_guard_event_with_a_missing_node_script_fails_closed_before_spawning_node() 
     let (code, out, err) = e.run_with(
         &["hook", "--event", "PreToolUse"],
         true,
-        &bash("ls", &e.dir),
+        &node_only_bash(&e),
         false,
         &[("CLAUDE_PLUGIN_ROOT", empty_root.to_str().unwrap()), ("PATH", bin.to_str().unwrap())],
     );
@@ -570,10 +587,12 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
         )
     };
     let (a, b, c) = (big("a", ""), big("b", ""), big("c", r#","permissionDecision":"ask","permissionDecisionReason":"sure?""#));
-    // coordinator-work-guard defers a main-session Bash call to Node (merge-side-pick answers it natively), so its map entry runs
+    // coordinator-work-guard defers a main-session Bash call that is not provably non-work to Node (an interactive entry point
+    // makes the session the main thread; merge-side-pick answers natively), so its map entry runs
     let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str()), ("api-guard", c.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run(&args, true, &node_only_bash(&e), true);
+    let main_thread = [("CLAUDE_CODE_ENTRYPOINT", "cli")];
+    let (code, out, err) = e.run_with(&args, true, &node_only_bash(&e), true, &main_thread);
     assert_eq!((code, err.as_str()), (0, ""));
     let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON object");
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask", "the decision survives the join");
@@ -583,7 +602,7 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     // two of them fit joined: delivered as one, nothing logged
     let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    assert_eq!(e.run(&args, true, &node_only_bash(&e), true).0, 0);
+    assert_eq!(e.run_with(&args, true, &node_only_bash(&e), true, &main_thread).0, 0);
 }
 
 /// An event that cannot block still hands an over-cap join back to the wrapper with `dispatch.defer_exit`.
@@ -678,12 +697,24 @@ fn over_cap_stop_active_runs_node_and_unrunnable_failures_are_capped() {
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
     assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
 
-    let broken = event_map(&e, "Stop", "a\0b", "true");
+    // a hook the OS will not start is an infrastructure fault (review finding 2): every Stop hands over to the Node hooks
+    // (dispatch.defer_exit), never a block, so there is no loop for the cap to bound
+    let broken = event_map(&e, "Stop", "a\0b", "a\0b");
     let args = ["hook", "--event", "Stop", "--fallback-map", broken.to_str().unwrap()];
     let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
     let codes: Vec<i32> = (0..cap + 2).map(|_| e.run(&args, true, &payload, true).0).collect();
-    let expect: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
-    assert_eq!(codes, expect, "a Stop whose Node hooks cannot run must fail open only after the cap");
+    assert_eq!(codes, vec![ah_engine::defaults::num("dispatch.defer_exit") as i32; cap + 2], "a Stop whose Node hooks cannot start defers");
+
+    // review P1-1: once another Node hook has run, exit 75 would make the wrapper run it a second time; the Stop fails closed
+    // (bounded by the stop-loop cap) and every hook that could start ran exactly once per call
+    let ran = e.dir.join("ran-once");
+    let mixed = event_map(&e, "Stop", "a\0b", &format!("echo x >> '{}'", ran.display()));
+    let args = ["hook", "--event", "Stop", "--fallback-map", mixed.to_str().unwrap()];
+    let (code, out, err) = e.run(&args, true, &payload, true);
+    assert_ne!(code, ah_engine::defaults::num("dispatch.defer_exit") as i32, "a partial run must not be handed back for a rerun: {out} {err}");
+    assert_eq!(code, 2, "fails closed: {err}");
+    let entries = ah_engine::dispatch::table::entries("claude", "Stop").len();
+    assert_eq!(std::fs::read_to_string(&ran).unwrap().lines().count(), entries - 1, "each startable hook ran once");
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
 }
 
@@ -807,7 +838,8 @@ fn small_payloads_do_not_need_a_usable_spool_dir() {
     let payload = bash("npm test", &e.dir);
     let (code, out, err) =
         e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
-    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    assert_eq!((code, out.as_str()), (0, ""));
+    assert!(only_event_lines(&err), "{err:?}");
     assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
 
     let mark = e.dir.join("session-ran");
@@ -816,8 +848,15 @@ fn small_payloads_do_not_need_a_usable_spool_dir() {
     let payload = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
     let (code, out, err) =
         e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
-    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    assert_eq!((code, out.as_str()), (0, ""));
+    assert!(only_event_lines(&err), "{err:?}");
     assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
+}
+
+/// Stderr holds nothing but event-log lines (`ts<TAB>kind<TAB>code<TAB>detail`): with the state dir unusable, the log
+/// falls back to stderr (review finding 9) instead of losing the line.
+fn only_event_lines(err: &str) -> bool {
+    err.lines().all(|l| l.split('\t').count() == 4 && l.split('\t').next().is_some_and(|ts| ts.parse::<u64>().is_ok()))
 }
 
 #[test]
@@ -844,9 +883,12 @@ fn assert_over_cap_spool_failure_modes(e: &Env, state: &Path, ctx: &str) {
     let map = e.map(&[("command-guard", r#"touch "$AH_TEST_MARK""#)]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let payload = pretool_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    // review finding 3: a payload that cannot be spooled is an infrastructure fault: the wrapper, which holds the payload,
+    // runs the Node hooks (dispatch.defer_exit) for guard and non-guard events alike, never a block and never a skip
+    let defer = ah_engine::defaults::num("dispatch.defer_exit") as i32;
     let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
-    assert_eq!((code, out.as_str()), (2, ""), "{ctx}: {err:?}");
-    assert!(err.contains("could not run the guards") && err.contains("payload"), "{ctx}: {err:?}");
+    assert_eq!((code, out.as_str()), (defer, ""), "{ctx}: {err:?}");
+    assert!(err.contains("the Node hooks decide") && err.contains("payload"), "{ctx}: {err:?}");
     assert!(!mark.exists(), "{ctx}: Node must not run without the full payload");
 
     let mark = e.dir.join("session-ran");
@@ -854,8 +896,8 @@ fn assert_over_cap_spool_failure_modes(e: &Env, state: &Path, ctx: &str) {
     let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
     let payload = session_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
     let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
-    assert_eq!((code, out.as_str()), (0, ""), "{ctx}: {err:?}");
-    assert!(err.contains("skipped SessionStart Node hooks") && err.contains("dispatch_spool_unavailable"), "{ctx}: {err:?}");
+    assert_eq!((code, out.as_str()), (defer, ""), "{ctx}: {err:?}");
+    assert!(err.contains("the Node hooks decide") && err.contains("dispatch_spool_unavailable"), "{ctx}: {err:?}");
     assert!(!mark.exists(), "{ctx}: Node must not run without the full payload");
 }
 
@@ -868,8 +910,8 @@ fn over_cap_guard_payload_fails_closed_when_anonymous_spool_write_fails() {
     let payload = pretool_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
     let (code, out, err) = e.run_with_file_size_limit(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())], 1024 * 1024);
 
-    assert_eq!((code, out.as_str()), (2, ""), "{err:?}");
-    assert!(err.contains("could not run the guards") && err.contains("could not be spooled"), "{err:?}");
+    assert_eq!((code, out.as_str()), (ah_engine::defaults::num("dispatch.defer_exit") as i32, ""), "{err:?}");
+    assert!(err.contains("the Node hooks decide") && err.contains("spooled"), "{err:?}");
     assert!(!mark.exists(), "Node must not run after the anonymous payload spool write fails");
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
 }
@@ -883,8 +925,8 @@ fn over_cap_non_guard_payload_reports_when_anonymous_spool_write_fails() {
     let payload = session_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
     let (code, out, err) = e.run_with_file_size_limit(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())], 1024 * 1024);
 
-    assert_eq!((code, out.as_str()), (0, ""), "{err:?}");
-    assert!(err.contains("skipped SessionStart Node hooks") && err.contains("could not be spooled"), "{err:?}");
+    assert_eq!((code, out.as_str()), (ah_engine::defaults::num("dispatch.defer_exit") as i32, ""), "{err:?}");
+    assert!(err.contains("the Node hooks decide") && err.contains("spooled"), "{err:?}");
     let log = std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).unwrap();
     assert!(log.contains("dispatch_spool_unavailable"), "{log}");
     assert!(!mark.exists(), "Node must not run after the anonymous payload spool write fails");
@@ -1280,7 +1322,8 @@ fn one_agent_call_records_exactly_one_spawn_per_log() {
 // ---- token cuts: the injection gate, through the real daemon -------------------------------------------------------------
 
 fn ups_payload(session: &str) -> String {
-    serde_json::json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "UserPromptSubmit", "prompt": "hi"}).to_string()
+    // no working directory: a DevSwarm Primary's tier gate cannot be settled without it, so the native checks hand the prompt to Node
+    serde_json::json!({"session_id": session, "hook_event_name": "UserPromptSubmit", "prompt": "hi"}).to_string()
 }
 
 fn short_reminder() -> &'static str {
@@ -1455,10 +1498,10 @@ fn deferred_stop_blocks_keep_every_reason_and_message() {
     let joiner = ah_engine::defaults::text("dispatch.reason_joiner");
     assert_eq!(v["decision"], "block");
     assert_eq!(v["reason"], format!("TASK-REASON{joiner}SPEC-REASON"), "{out:?}");
-    assert_eq!(v["systemMessage"], "task msg");
-    // exit 2: stderr carries every reason too, then codex-nudge's plain note (the host shows neither to the model next to
-    // the JSON block's reason, and stdout must stay one object)
-    assert_eq!(err, format!("TASK-REASON{joiner}SPEC-REASON\nadvisory plain text\n"));
+    // codex-nudge's plain note rides in the system message (user-facing); stdout stays one object
+    assert_eq!(v["systemMessage"], "task msg\nadvisory plain text");
+    // exit 2: stderr is the reason the model reads, so it carries every reason and no note
+    assert_eq!(err, format!("TASK-REASON{joiner}SPEC-REASON\n"));
     assert_no_stop_counters(&e);
 }
 

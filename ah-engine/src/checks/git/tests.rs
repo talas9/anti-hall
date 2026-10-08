@@ -293,3 +293,40 @@ mod jev_self_credit {
         assert!(m.contains("a gh pr/issue/release body or title appears to credit an AI assistant"), "{m}");
     }
 }
+
+#[test]
+fn a_jev_consult_the_clients_deadline_cannot_hold_defers_the_whole_verdict() {
+    // review finding 4: git.jev_total_budget_ms (4 s) outlasted the 2 s client deadline, so the regex verdict was taken
+    // without Jev and the reply was lost anyway; now the verdict goes to Node, which consults Jev with its full budget
+    let h = home();
+    let mut ctx = Ctx::new(Settings { home: h.to_string_lossy().to_string(), env: HashMap::new() }, "/tmp", "/plugin");
+    crate::deadline::begin(std::time::Instant::now());
+    crate::deadline::client_deadline(0);
+    assert!(!ctx.jev_consult("co-authored by an assistant"));
+    crate::deadline::end();
+    assert!(ctx.overflow, "the verdict is deferred, not taken without Jev");
+}
+
+/// A command that has exited keeps its output while a helper of it still holds the pipe past `proc.read_grace_ms`: Node's
+/// spawnSync collects until the pipe closes within its timeout, so an engine that gave up at the grace read an empty
+/// output and dropped the git-audit advisory Node printed (the full gate's git_audit parity mismatches).
+#[test]
+fn a_finished_commands_output_survives_a_pipe_that_closes_after_the_read_grace() {
+    let read = crate::defaults::millis("proc.read_grace_ms");
+    let script = format!("printf out; sleep {} &", (read * 2).as_secs_f64());
+    let t = std::time::Instant::now();
+    let got = super::util::run_capture("/bin/sh", &["-c".to_string(), script], None, &HashMap::new(), &HashMap::new(), read * 20);
+    assert_eq!(got.as_deref(), Some("out"), "after {:?}", t.elapsed());
+}
+
+#[test]
+fn the_file_write_tip_reads_white_space_like_javascript() {
+    let tip = "Write the file with the Write or Edit tool";
+    let fp = format!("git {P} {F} origin main");
+    // U+FEFF is white space to JavaScript's \s (a heredoc operator and a redirect are seen), U+0085 is not
+    assert!(blocked(&format!("cat > n.md <<\u{feff}EOF\nx\nEOF\n{fp}")).contains(tip));
+    assert!(blocked(&format!("cat\u{feff}>\u{feff}f.md <<EOF\nx\nEOF\n{fp}")).contains(tip));
+    assert!(!blocked(&format!("cat\u{85}> f.md <<'EOF'\nx\nEOF\n{fp}")).contains(tip));
+    assert!(!blocked(&format!("cat <<\u{85}EOF > a.md\nx\nEOF\n{fp}")).contains(tip));
+    assert!(blocked(&format!("echo\u{a0}hi >\u{2029}f.md; {fp}")).contains(tip));
+}

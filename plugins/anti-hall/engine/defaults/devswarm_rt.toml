@@ -1,0 +1,207 @@
+# ah-engine shipped DevSwarm realtime defaults (lane B1: workspace state and reconcile). Format: see the header of engine.toml.
+# DevSwarm realtime is inert unless DevSwarm is detected (the app database exists or a workspace descriptor exists).
+
+[devswarm_rt.mode]
+doc = "off | observe | on. `on` (default, owner 2026-10-08: the engine is live, Node is a non-acting witness) keeps the workspace state and serves it to consumers; `observe` keeps and logs the state but consumers must not act on it; `off` is inert, like DevSwarm being absent."
+value = "on"
+
+[devswarm_rt.stale_ms]
+doc = "A state field last observed longer ago than this is reported as stale."
+value = 180000
+unit = "ms"
+min = 1000
+
+[devswarm_rt.reconcile_ms]
+doc = "How often the whole state is re-read from its sources and diffed (the safety net under the event layer); every change it finds that events missed counts in `rt_reconcile_repairs`."
+value = 60000
+unit = "ms"
+min = 1000
+
+[devswarm_rt.stall_ms]
+doc = "An active workspace whose last heartbeat is older than this is `stuck`."
+value = 900000
+unit = "ms"
+min = 1000
+
+[devswarm_rt.restart_grace_ms]
+doc = "Changes found by the start-up diff (flagged while_down) are not notified before this long after start, and only if the condition still holds then."
+value = 120000
+unit = "ms"
+
+[devswarm_rt.edge_cap]
+doc = "Most change records (rt_edges) kept in hot.db and in memory; the oldest are dropped first."
+value = 2000
+min = 10
+
+[devswarm_rt.paused_signal]
+doc = "How a paused workspace is recognised. `none` (default): no signal is proven, so a workspace whose active terminals are all resumable is reported as `paused?` with its evidence and never as paused. `panel_resumable`: set this only after an owner-confirmed crash fixture proves it; the same evidence then reports `paused`."
+value = "none"
+
+[devswarm_rt.panel_resumable]
+doc = "The `builder_terminals.panelStatus` value that is the paused candidate."
+value = "resumable"
+
+[devswarm_rt.pr_open]
+doc = "The `pull_requests.state` value of an open PR (compared case-insensitively)."
+value = "open"
+
+[devswarm_rt.pr_merged]
+doc = "The `pull_requests.state` value of a merged PR (compared case-insensitively)."
+value = "merged"
+
+[devswarm_rt.pr_closed]
+doc = "The `pull_requests.state` value of a closed, unmerged PR (compared case-insensitively)."
+value = "closed"
+
+[devswarm_rt.ci_failing]
+doc = "`pull_requests.checkStatus` values meaning CI failed (compared case-insensitively). Only `Failed` and `None` were seen in the live app database; the rest are candidates."
+value = ["Failed", "Failure", "Error"]
+
+[devswarm_rt.ci_running]
+doc = "`pull_requests.checkStatus` values meaning CI is still running (compared case-insensitively)."
+value = ["Pending", "Running", "InProgress", "Queued"]
+
+[devswarm_rt.ci_passing]
+doc = "`pull_requests.checkStatus` values meaning CI passed (compared case-insensitively)."
+value = ["Passed", "Success", "Succeeded"]
+
+[devswarm_rt.col_branch]
+doc = "The `builders` branch column."
+value = "branchName"
+
+[devswarm_rt.col_repo]
+doc = "The `builders` repository id column."
+value = "repositoryId"
+
+[devswarm_rt.col_label]
+doc = "The `builders` label column."
+value = "label"
+
+[devswarm_rt.col_pr]
+doc = "The `builders` linked-PR column (holds a `pull_requests.id`)."
+value = "pullRequestId"
+
+[devswarm_rt.col_term_builder]
+doc = "The `builder_terminals` column that names its builder."
+value = "builderId"
+
+[devswarm_rt.col_term_panel]
+doc = "The `builder_terminals` panel status column."
+value = "panelStatus"
+
+[devswarm_rt.col_term_active]
+doc = "The `builder_terminals` open flag column."
+value = "isActive"
+
+[devswarm_rt.col_pr_id]
+doc = "The `pull_requests` id column."
+value = "id"
+
+[devswarm_rt.col_pr_number]
+doc = "The `pull_requests` PR number column."
+value = "number"
+
+[devswarm_rt.col_pr_state]
+doc = "The `pull_requests` state column."
+value = "state"
+
+[devswarm_rt.col_pr_checks]
+doc = "The `pull_requests` CI status column."
+value = "checkStatus"
+
+[devswarm_rt.col_pr_synced]
+doc = "The `pull_requests` last-sync time column (ISO text); the app's own CI data is only as fresh as this."
+value = "lastSyncedAt"
+
+[devswarm_rt.liveness_ok]
+doc = "The status Node's liveness file carries for a healthy workspace; any other status counts as stuck in the shadow comparison."
+value = "alive"
+
+[devswarm_rt.witness_home]
+doc = "The Node witness's scratch HOME, relative to the real home. Its `.anti-hall/devswarm` tree is what the shadow comparison reads (never the live Node files)."
+value = ".anti-hall/ah-node-shadow/scratch-home"
+
+[devswarm_rt.witness_app_state]
+doc = "The witness's app-state cache file name, under its devswarm directory."
+value = "app-state.json"
+
+[devswarm_rt.shadow_file]
+doc = "The NDJSON file (in the engine state directory) the engine-versus-witness comparison appends to."
+value = "rt-shadow.ndjson"
+
+[devswarm_rt.shadow_max_bytes]
+doc = "The shadow log is not appended to once it is this large."
+value = 8388608
+unit = "bytes"
+
+[devswarm_rt.heartbeat_key_ts]
+doc = "The heartbeat file field holding its last-beat time (epoch ms)."
+value = "ts"
+
+[devswarm_rt.plan_key_steps]
+doc = "The plan file field holding its step list."
+value = "steps"
+
+[devswarm_rt.plan_key_status]
+doc = "The plan step field holding its status."
+value = "status"
+
+[devswarm_rt.plan_key_worktree]
+doc = "The plan file field holding the worktree it belongs to (plans are matched to workspaces by worktree)."
+value = "worktreePath"
+
+[devswarm_rt.plan_status_doing]
+doc = "The plan step status of the step being worked on."
+value = "doing"
+
+[metric.rt_reconcile_repairs]
+doc = "Changes a full reconcile found that the event path had not already applied: the health measure of the realtime event layer (close to 0 is healthy)."
+value = { kind = "counter", unit = "edges", labels = [] }
+
+[metric.rt_edges]
+doc = "Workspace state changes emitted."
+value = { kind = "counter", unit = "edges", labels = [] }
+
+[metric.rt_shadow_mismatches]
+doc = "Differences between the engine's workspace state and the Node witness's."
+value = { kind = "counter", unit = "mismatches", labels = [] }
+
+[devswarm_rt.namespace]
+doc = "The state-store namespace the DevSwarm workspace state is kept under in hot.db (rt_entity / rt_edges)."
+value = "devswarm"
+
+[devswarm_rt.plan_key_n]
+doc = "The plan step field holding its number."
+value = "n"
+
+[devswarm_rt.shadow_key_active]
+doc = "The witness app-state field listing the active workspaces."
+value = "active"
+
+[devswarm_rt.shadow_key_counts]
+doc = "The witness app-state field holding the active and archived counts."
+value = "counts"
+
+[devswarm_rt.shadow_key_archived]
+doc = "The count field (inside the counts object) holding the archived total."
+value = "archived"
+
+[devswarm_rt.shadow_key_id]
+doc = "The id field of an entry in the witness app-state active list."
+value = "id"
+
+[devswarm_rt.shadow_key_status]
+doc = "The status field of a witness liveness file."
+value = "status"
+
+[devswarm_rt.shadow_key_pending]
+doc = "The unread-pending field of a witness liveness file."
+value = "pending"
+
+[devswarm_rt.panel_resumable_signal]
+doc = "The `paused_signal` value that declares the resumable-panel evidence proven."
+value = "panel_resumable"
+
+[devswarm_rt.paused_evidence]
+doc = "The evidence text shown with `paused?`. Placeholders: {n}, {panel}."
+value = "{n} open terminal(s), every panel status is {panel}"

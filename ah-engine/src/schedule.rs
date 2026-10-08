@@ -25,10 +25,8 @@ use crate::discard::Logged;
 use crate::sql;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::Read;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -591,36 +589,17 @@ impl Scheduler {
     }
 }
 
-/// Run `argv` in its own process group; past `timeout` the whole group is killed.
+/// Run `argv` in its own process group; past `timeout` the whole group is killed. Both pipes are drained while it runs
+/// (review finding 12: reading them only after exit deadlocked a job that wrote more than a pipe buffer).
 fn subprocess(argv: &[String], timeout: Duration) -> Outcome {
     let Some((prog, args)) = argv.split_first() else { return Outcome::Failed(String::new()) };
-    let mut child = match Command::new(prog).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn() {
-        Ok(c) => c,
-        Err(e) => return Outcome::Failed(e.to_string()),
-    };
-    let t = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                let pipe = if status.success() {
-                    child.stdout.take().map(|o| Box::new(o) as Box<dyn Read>)
-                } else {
-                    child.stderr.take().map(|e| Box::new(e) as Box<dyn Read>)
-                };
-                if let Some(mut p) = pipe {
-                    crate::discard::harmless(p.read_to_string(&mut out)); // keep: reaping or draining a child or thread that already ended
-                }
-                return if status.success() { Outcome::Ok(out.trim().to_string()) } else { Outcome::Failed(out.trim().to_string()) };
-            }
-            Ok(None) if t.elapsed() < timeout => std::thread::sleep(Duration::from_millis(defaults::num("client.fallback_poll_ms"))),
-            _ => {
-                // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a pid that already exited just fails with ESRCH.
-                unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-                crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
-                return Outcome::Timeout;
-            }
-        }
+    let mut cmd = Command::new(prog);
+    cmd.args(args);
+    match crate::proc::run(cmd, prog, timeout, Duration::from_millis(defaults::num("client.fallback_poll_ms"))) {
+        Ok(o) if o.status.success() => Outcome::Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Ok(o) => Outcome::Failed(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Err(crate::proc::Error::Timeout) => Outcome::Timeout,
+        Err(e) => Outcome::Failed(e.into_io().to_string()),
     }
 }
 
@@ -638,6 +617,17 @@ pub fn history(db: &rusqlite::Connection, job: &str, limit: usize) -> rusqlite::
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_job_that_writes_more_than_a_pipe_buffer_finishes() {
+        // review finding 12: stdout and stderr were read only after exit, so a job writing over 64 KiB never exited
+        let argv: Vec<String> =
+            ["/bin/sh", "-c", "head -c 300000 /dev/zero | tr '\\0' a; head -c 200000 /dev/zero >&2"].iter().map(|s| s.to_string()).collect();
+        match super::subprocess(&argv, std::time::Duration::from_secs(10)) {
+            super::Outcome::Ok(out) => assert_eq!(out.len(), 300_000),
+            other => panic!("{other:?}"),
+        }
+    }
+
     use super::*;
 
     fn spec(every: u64, catch_up_once: bool) -> JobSpec {

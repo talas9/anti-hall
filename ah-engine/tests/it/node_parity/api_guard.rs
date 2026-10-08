@@ -172,6 +172,12 @@ pub fn scenarios() -> Vec<Scenario> {
         }),
         ("spawnTimeout", mk(None, &[("ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS", "1")], None, None)),
     ];
+    // the shell-write shapes that turn on the command text, with and without the third-party switch
+    for (name, c) in [("def", mk0()), ("tp", mk(g("apiGuardThirdparty", json!(true)), &[], None, None))] {
+        for cmd in &SH[78..] {
+            add(pls("Bash", json!({"command": cmd})), &c, format!("bash-text-{name}-{}", ws_to_underscore(&clip(cmd, 24))));
+        }
+    }
     for (k, c) in &ctxs {
         for (i, p) in probe.iter().enumerate() {
             add(p.clone(), c, format!("ctx-{k}-{i}"));

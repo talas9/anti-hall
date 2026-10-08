@@ -898,6 +898,33 @@ function hasSelfCredit(text) {
   return result;
 }
 
+// Which COMMAND of the chain carries the whole-command self-credit text? The commit rule and the gh
+// rule both scan the WHOLE raw command (a message can reach git by a pipe, a variable, a file), so a
+// clean `git commit -m ok && gh pr create --body '<robot footer>'` trips the commit rule and used to say
+// the COMMIT carries the trailer. Returns "<verb> <words>" (e.g. `gh pr create`) when every segment that
+// carries the credit is a git/gh command other than `ownVerb`, else null (the credit is in the rule's own
+// command, in a heredoc/stdin body no segment shows, or in a wrapper we do not name): the plain message
+// stands. The label is built only from lowercase subcommand words, never from raw command text.
+function creditElsewhereLabel(ownVerb) {
+  try {
+    let label = null;
+    for (const seg of splitSegments(currentRawCommand)) {
+      if (!hasSelfCredit(seg)) continue;
+      const ev = effectiveVerb(tokenize(seg));
+      if (!ev || (ev.verb !== 'git' && ev.verb !== 'gh')) return null;
+      if (ev.verb === ownVerb) return null;
+      if (label !== null) continue;
+      const words = ev.verb === 'git'
+        ? [gitSubcommand(ev.args).sub]
+        : ev.args.map((t) => t.text).filter((w) => !w.startsWith('-')).slice(0, 2);
+      label = [ev.verb].concat(words.filter((w) => typeof w === 'string' && /^[a-z][a-z-]*$/.test(w))).join(' ');
+    }
+    return label;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Self-credit signature tokens used to flag a `-c trailer.<name>.key=<value>`
 // remap. `git -c trailer.ai.key=Co-Authored-By commit --trailer "ai: Claude
 // <...>"` makes a custom `ai:` token EMIT a `Co-Authored-By` trailer, so the
@@ -998,6 +1025,14 @@ function ghSelfCreditMessage(args) {
     const normalized = v.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
     for (const text of [v, normalized]) {
       if (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text) || SELF_CREDIT_GH_BODY.test(text)) {
+        const elsewhere = v === currentRawCommand ? creditElsewhereLabel('gh') : null;
+        if (elsewhere) {
+          return gm({
+            what: 'a gh pr/issue/release command is chained with `' + elsewhere + '`, which carries AI/assistant self-credit; blocked.',
+            why: 'The self-credit text is in the `' + elsewhere + '` part of this command, not in the gh body or title. Commits, PRs and issues carry no AI attribution.',
+            instead: 'remove the self-credit line from the `' + elsewhere + '` text and re-run.',
+          });
+        }
         return gm({
       what: 'a gh pr/issue/release body or title carries AI/assistant self-credit ("Generated with" footer, Co-Authored-By, a claude.com/claude-code link) is blocked.',
       why: 'PRs and issues carry no AI attribution.',
@@ -1642,7 +1677,50 @@ function extractHeredocBodies(cmd) {
 const HEREDOC_SAFE_VERBS = new Set([
   'cat', 'tee', 'git', 'gh', 'echo', 'printf', 'cd', 'pushd', 'popd', 'mkdir',
   'wc', 'head', 'tail', 'ls', 'pwd', 'true', ':', 'date', 'stat', 'test', '[',
+  // Read-only text filters (stdin/file operands only: no write, exec or script flag), so a log
+  // excerpt `... | cut -c1-200` beside a note heredoc does not veto the body.
+  'cut', 'tr', 'nl', 'tac', 'rev', 'fold', 'sed',
 ]);
+// `sed` is a neighbour ONLY as a print-range reader: `sed -n <N>[,<M>]p <files>` (the script is fixed,
+// so no `e`/`w`/`s///e`, and the operands are plain words, never a flag such as `-e`/`-i`/`-f`). Any
+// other sed (it can run each line of a file as a command) keeps every body scanned.
+const HD_SED_RANGE_RE = /^sed[ \t]+-n[ \t]+[0-9]+(?:,[0-9]+)?p(?:[ \t]+(?!-)[A-Za-z0-9_.\/~$+@%:,=-]+)*[ \t]*$/;
+function hdSedOk(args) {
+  if (args.length < 2 || args[0].text !== '-n' || !/^[0-9]+(?:,[0-9]+)?p$/.test(args[1].text)) return false;
+  for (let k = 2; k < args.length; k++) {
+    if (!/^(?!-)[A-Za-z0-9_.\/~$+@%:,=-]+$/.test(args[k].text) || args[k].text.indexOf('__AH') >= 0) return false;
+  }
+  return true;
+}
+// Shell variables a standalone `NAME=literal` line must not set beside a data heredoc: ones the shell or
+// the allowed tools read implicitly (search path, field splitting, home, pager/editor/browser, git/gh
+// config, loader hooks). Everything else only has an effect where a `$NAME` is written.
+const HD_VAR_DENY = new Set(['PATH', 'IFS', 'HOME', 'SHELL', 'ENV', 'CDPATH', 'GLOBIGNORE', 'SHELLOPTS', 'BASHOPTS',
+  'PS1', 'PS2', 'PS4', 'PROMPT_COMMAND', 'PAGER', 'MANPAGER', 'EDITOR', 'VISUAL', 'BROWSER', 'TMPDIR', 'LANG']);
+const HD_VAR_DENY_PREFIX = ['LD_', 'DYLD_', 'GIT_', 'GH_', 'BASH_', 'SSH_', 'LESS', 'LC_', 'PYTHON', 'NODE_', 'NPM_', 'RUBY', 'PERL'];
+const HD_ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_.\/~+@%:,=-]+)$/;
+function hdVarAllowed(name) {
+  const up = name.toUpperCase();
+  return !HD_VAR_DENY.has(up) && !HD_VAR_DENY_PREFIX.some((x) => up.startsWith(x));
+}
+// A standalone line of literal assignments (`S=/tmp/x; D=out`): record each into `vars`; false when any
+// token is not a plain safe `NAME=literal`.
+function hdRecordAssignments(tokens, vars) {
+  const found = [];
+  for (const t of tokens) {
+    const m = t.quotedOnly ? null : HD_ASSIGN_RE.exec(t.text);
+    if (!m || !hdVarAllowed(m[1]) || m[2].indexOf('__AH') >= 0) return false;
+    found.push(m);
+  }
+  for (const m of found) vars.set(m[1], m[2]);
+  return found.length > 0;
+}
+// A leading `$NAME` of a write target, expanded from a recorded literal assignment; anything else is
+// returned unchanged (and then fails hdTargetOk's literal-path check).
+function hdExpandVar(t, vars) {
+  const m = /^\$([A-Za-z_][A-Za-z0-9_]*)(?=\/|$)/.exec(t);
+  return m && vars.has(m[1]) ? vars.get(m[1]) + t.slice(m[0].length) : t;
+}
 const HEREDOC_GIT_MSG_SUBS = new Set(['commit', 'tag', 'notes', 'merge']);
 // A git or gh command beside a data heredoc may use ONLY the flags listed
 // here for its subcommand; any other flag (an abbreviation like
@@ -1795,6 +1873,11 @@ function hdDeniedFirstWord(skel) {
   for (const piece of backstopPieces(skel)) {
     const w = piece.replace(/^[\s{}!"'(]+/, '').split(/[\s"']/, 1)[0];
     if (!w) continue;
+    // A piece that is nothing but one safe `NAME=literal` is an assignment, not a command
+    // (hdRecordAssignments vets the name); the exact print-range sed shape reads a file.
+    const text = typeof piece === 'string' ? piece : piece.text;
+    if (HD_ASSIGN_RE.test(text.trim()) && hdVarAllowed(text.trim().split('=')[0])) continue;
+    if (HD_SED_RANGE_RE.test(text.trim())) continue;
     if (/[\/$~`]/.test(w)) return true;
     const lw = w.toLowerCase();
     if (HEREDOC_DENY_FIRST.has(lw) || /^(?:python|pypy)[0-9.]*$/.test(lw)) return true;
@@ -2116,6 +2199,7 @@ function maskDataHeredocs(cmd, baseCwd) {
     if (!hdLevels(skel, lv, 0, null)) return cmd;
     const dirs = [(typeof baseCwd === 'string' && baseCwd) ? baseCwd : process.cwd()];
     if (hdBadPath(dirs[0])) return cmd;
+    const vars = new Map(); // top-level `NAME=literal` lines, for `$NAME/...` write targets
     const outerOf = new Map(); // substitution id -> the command whose argv receives it
     const consumers = []; // { ev, targets, levelId }
     const seenDocs = new Set();
@@ -2123,10 +2207,16 @@ function maskDataHeredocs(cmd, baseCwd) {
       for (const seg of splitSegments(lvl.text)) {
         const tokens = tokenize(seg);
         if (!tokens.length) continue;
-        if (!tokens[0].quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].text)) return cmd;
+        if (!tokens[0].quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].text)) {
+          // Only a standalone top-level line of literal assignments is understood; an assignment in
+          // front of a command (`X=1 cat > f`) or inside a substitution keeps every body scanned.
+          if (lvl.id !== null || !hdRecordAssignments(tokens, vars)) return cmd;
+          continue;
+        }
         const ev = effectiveVerb(tokens);
         // The verb is the bare first word: no wrapper, path or quoting.
         if (!ev || !HEREDOC_SAFE_VERBS.has(ev.verb) || tokens[0].quotedOnly || tokens[0].text !== ev.verb) return cmd;
+        if (ev.verb === 'sed' && !hdSedOk(ev.args)) return cmd;
         if (ev.verb === 'gh' && !hdGhWords(ev.args)) return cmd;
         if (ev.verb === 'git' && !hdGitOk(ev.args)) return cmd;
         if (ev.verb === 'cd' || ev.verb === 'pushd') {
@@ -2141,6 +2231,7 @@ function maskDataHeredocs(cmd, baseCwd) {
         }
         const targets = hdWriteTargets(tokens, ev);
         if (targets === null) return cmd;
+        if (lvl.id === null) for (const w of targets) w.t = hdExpandVar(w.t, vars);
         for (const w of targets) if (!hdTargetOk(w.t, dirs)) return cmd;
         for (const id of hdMarkers(tokens, /__AHSUB(\d+)__/)) outerOf.set(id, ev);
         const docIds = hdMarkers(tokens, /__AHDOC(\d+)__/);
@@ -3379,6 +3470,14 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
   // --- Rule 1 (whole command): any commit-creating git verb whose command
   // text carries a self-credit trailer line, however it reaches git ---
   if (COMMIT_CREATING.has(sub) && hasSelfCredit(currentRawCommand)) {
+    const elsewhere = creditElsewhereLabel('git');
+    if (elsewhere) {
+      return gm({
+        what: 'a command that creates a commit (git ' + sub + ') is chained with `' + elsewhere + '`, which carries AI/assistant self-credit; blocked.',
+        why: 'The self-credit text is in the `' + elsewhere + '` part of this command, not in the commit message. Commits, PRs and issues carry no AI attribution.',
+        instead: 'remove the self-credit line from the `' + elsewhere + '` text and re-run.',
+      });
+    }
     return gm({
       what: 'a command that creates a commit (git ' + sub + ') and carries an AI/assistant self-credit trailer line is blocked.',
       why: 'Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).',

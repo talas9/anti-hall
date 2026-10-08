@@ -94,6 +94,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
+        self.stop(); // also on a panic: the daemon a test started never outlives it (its dir goes only afterwards)
         ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
@@ -150,14 +151,18 @@ fn verify_first_through_the_dispatcher_picks_the_line_the_digest_of_the_raw_byte
 }
 
 #[test]
-fn verify_first_defers_to_the_node_hook_when_the_session_could_be_a_devswarm_primary() {
+fn verify_first_answers_a_devswarm_primary_itself_and_defers_only_without_a_working_directory() {
     let e = Env::new("vf-primary");
     let map = e.map("UserPromptSubmit", "verify-first");
     let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
     let p = ups("sp", "x", None);
     let (code, out, _) = e.run(&args, true, &p, &[("DEVSWARM_REPO_ID", "r1")]);
     assert_eq!(code, 0);
-    assert_eq!(ctx(&out), "NODE-RAN", "a possible Primary is the Node hook's");
+    assert!(out.contains("DEVSWARM PRIMARY") && !out.contains("NODE-RAN"), "a Primary is answered by the engine: {out}");
+    let nocwd = serde_json::json!({"session_id": "sq", "hook_event_name": "UserPromptSubmit", "prompt": "x"}).to_string();
+    let (code, out, _) = e.run(&args, true, &nocwd, &[("DEVSWARM_REPO_ID", "r1")]);
+    assert_eq!(code, 0);
+    assert_eq!(ctx(&out), "NODE-RAN", "without a working directory the tier gate is the Node hook's");
     let (_, out, _) = e.run(&args, true, &p, &[("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feature")]);
     assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "a child workspace is answered by the engine: {out}");
     assert!(e.home().join(".anti-hall/emit-dedupe/dedupe-sp.json").exists());

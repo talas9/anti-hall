@@ -148,6 +148,30 @@ value = "bind {path}: {err}"
 doc = "Log detail when a built-in check's thread cannot start, so every command is deferred to Node. Placeholder: {err}."
 value = "a check thread could not start ({err}); the data-segment limit daemon.mem_mb may be smaller than git.stack_mb times the workers"
 
+[msg.log_accept_error]
+doc = "Event-log detail (rate-limited) when the daemon's accept failed for a reason other than nothing pending. Placeholders: {code} (os<n>), {err}."
+value = "accept failed ({code}: {err}); backing off before the next poll"
+
+[msg.log_accept_recovered]
+doc = "Event-log detail when the daemon accepts a connection again after accept failures (logged then, because a full descriptor table can keep the failure's own log line from being written). Placeholders: {n}, {code} (os<n> of the last failure)."
+value = "accept works again after {n} failed accepts (last {code})"
+
+[msg.log_proc_spawn]
+doc = "Event-log detail (rate-limited, code proc_spawn_failed) when a helper process could not be started. Placeholders: {what} (the program), {code} (os<n>), {err}."
+value = "could not start {what} ({code}: {err})"
+
+[msg.log_proc_timeout]
+doc = "Event-log detail (rate-limited, code proc_timeout) when a helper process ran past its timeout and its process group was killed. Placeholders: {what}, {ms}."
+value = "{what} ran past {ms} ms; its process group was killed"
+
+[msg.log_proc_unread]
+doc = "Event-log detail (rate-limited, code proc_unread) when a helper exited but its output did not reach end of file within proc.read_grace_ms (a process it left behind held a pipe); its group was killed. Placeholder: {what}."
+value = "{what} exited but its output was not complete; its process group was killed"
+
+[msg.log_lock_no_daemon]
+doc = "Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty)."
+value = "lock {path} held (pid {pid}) but no daemon answers; this start gives up and the call falls back to Node"
+
 [msg.exit_reason_handoff]
 doc = "Drain reason for a handoff to a newer build or a stop request."
 value = "handoff or stop"
@@ -236,6 +260,18 @@ value = "{what}: {err}"
 doc = "Exchange failure when the reply frame was damaged. Placeholder: {err}."
 value = "bad reply frame: {err}"
 
+[msg.client_what_stat]
+doc = "The step named in msg.client_io when the socket path cannot be examined (a permission or path error, not a missing socket)."
+value = "stat"
+
+[msg.client_no_fallback_guard]
+doc = "Printed on stderr (exit dispatch.defer_exit) when the legacy `hook` command gets a guard event, the engine cannot answer and no Node fallback was given: the caller must run the Node hook, never take silence as an allow."
+value = "anti-hall: the engine could not answer this guard event and no Node fallback was given; run the Node hook"
+
+[msg.log_daemon_spawn_failed]
+doc = "Event-log detail (kind spawn_fail, code os<n>) when the client could not start the daemon (fork or exec failed: EAGAIN, ENOMEM, a missing executable). Placeholder: {err}."
+value = "could not start the daemon: {err}"
+
 [msg.client_fallback_unavailable]
 doc = "Printed on stderr when stdin cannot safely be sent to the engine and the Node fallback cannot answer. Guard events exit 2; non-guard events exit 0 with this note."
 value = "hook fallback unavailable for undecodable or oversized stdin\n"
@@ -245,12 +281,8 @@ doc = "Reason in dispatch.msg_fail_closed when a guard event's stdin payload is 
 value = "the hook payload is not valid UTF-8"
 
 [msg.dispatch_stdin_spool]
-doc = "Reason in dispatch.msg_fail_closed when an over-cap stdin payload cannot be spooled for Node hooks. Placeholder: {err}."
-value = "the hook payload is over the in-memory cap and could not be spooled for Node hooks: {err}"
-
-[msg.dispatch_stdin_spool_note]
-doc = "Printed on stderr when a non-guard event has an over-cap stdin payload but the anonymous spool file could not be created. Placeholders: {event}, {err}."
-value = "anti-hall: skipped {event} Node hooks because the over-cap hook payload could not be spooled safely: {err}"
+doc = "Reason (event log and stderr, with dispatch.defer_exit) when the hook's stdin payload cannot be read, or an over-cap payload cannot be spooled for the Node hooks. Placeholder: {err}."
+value = "the hook payload could not be read, or spooled when over the in-memory cap: {err}"
 
 # ---- typed errors (Display text) ----------------------------------------------------------------------
 
@@ -351,8 +383,8 @@ doc = "Printed by `proj` when the spool could not be written. Placeholder: {err}
 value = "the engine is unavailable and the spool could not be written: {err}"
 
 [msg.spool_rewrite_failed]
-doc = "Log detail when the spool could not be rewritten after a drain. Placeholders: {err} the OS error, {n} unapplied records that may be lost."
-value = "{err}; {n} unapplied record(s) may be lost"
+doc = "Log detail when the spool could not be replaced after a drain. The old spool stays whole (the records already applied are applied again, harmlessly, by their write ids). Placeholders: {err} the OS error, {n} unapplied records still in it."
+value = "{err}; the spool is kept as it was ({n} unapplied record(s) still in it)"
 
 [msg.spool_damaged]
 doc = "Quarantine reason for spool bytes that are not a valid record."

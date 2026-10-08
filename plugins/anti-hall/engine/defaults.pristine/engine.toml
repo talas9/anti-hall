@@ -282,9 +282,32 @@ doc = "Poll interval while waiting for the singleton lock."
 value = 10
 unit = "ms"
 
+[daemon.close_max_ms]
+doc = "Longest a drain's exit timer waits for the database close (the commit of everything queued) once it has started, so a timer that fires during the close cannot lose queued commits. A close wedged longer than this is cut off."
+value = 30000
+unit = "ms"
+
 [daemon.drain_grace_ms]
 doc = "After a drain starts, a worker or loop that has not finished in this long is cut off."
 value = 1000
+unit = "ms"
+
+[daemon.drain_max_ms]
+doc = "Longest a clean drain (handoff, stop, idle exit, SIGTERM) may take before the daemon exits anyway, so a worker stuck while draining can never keep the process (and the singleton lock) alive with its socket already gone. Above daemon.stuck_ms, so the stuck-worker check normally ends such a drain first."
+value = 10000
+min = 100
+unit = "ms"
+
+[daemon.accept_error_backoff_ms]
+doc = "Sleep after an accept that failed for a reason other than nothing pending (a full descriptor table, EMFILE): the pending connection would make poll fire again at once, so without it the accept loop spins at full CPU. Kept well under daemon.stall_ms."
+value = 50
+min = 1
+unit = "ms"
+
+[daemon.reply_slack_ms]
+doc = "Time kept back from a request's client deadline (client.deadline_ms, or what a dispatch request says) to write the reply: the inner budgets that could outlast the client's wait (a git call, a Jev consult) are clamped to the deadline minus this, so a slow dependency costs a fallback, not a lost answer."
+value = 150
+min = 0
 unit = "ms"
 
 [daemon.accept_poll_ms]
@@ -318,10 +341,16 @@ value = 100
 unit = "ms"
 
 [daemon.idle_exit_s]
-doc = "Seconds without any request after which the daemon exits; 0 keeps it resident (default, D7: the scheduler and mailbox must keep running with no session open)."
+doc = "Seconds without any request after which the daemon exits (the next hook call starts a fresh one, and the scheduler catches up its missed jobs); 0 keeps it resident. 0 by default: the daemon is always resident so the scheduler and mailbox keep running after every session closes (D7). A daemon whose state dir, lock file or executable is gone still exits on its own (daemon.orphan_check_ms)."
 value = 0
 env = "AH_ENGINE_IDLE_EXIT_S"
 unit = "s"
+
+[daemon.orphan_check_ms]
+doc = "How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable."
+value = 2000
+min = 100
+unit = "ms"
 
 [daemon.idle_check_ms]
 doc = "How often the watchdog compares the last request time with idle_exit_s."
@@ -410,6 +439,12 @@ unit = "bytes"
 doc = "Largest hook payload the client reads from stdin."
 value = 8388608
 unit = "bytes"
+
+[client.slow_probe_ms]
+doc = "After an exchange times out, how long the client waits for a ping: a daemon that answers is slow but healthy (logged as client_slow, not counted toward the breaker); one that does not counts as a failure."
+value = 200
+min = 1
+unit = "ms"
 
 [client.ctl_timeout_ms]
 doc = "Deadline for a control exchange (ping, status, reload, stop, project ops)."
@@ -517,6 +552,28 @@ value = [
 doc = "Command used to read a process's command line when checking whether a pid is a live engine: the program, then its arguments with `{pid}` substituted."
 value = ["ps", "-p", "{pid}", "-o", "command="]
 
+[health.proc_cmdline]
+doc = "Where Linux keeps a process's command line (NUL-separated); read instead of running the pid probe. `{pid}` is substituted."
+value = "/proc/{pid}/cmdline"
+
+[health.probe_timeout_ms]
+doc = "Longest a pid or memory probe command (health.pid_probe, health.rss_probe) may run; it runs on the hook path, so a wedged one is cut off and reads as no answer."
+value = 1000
+min = 1
+unit = "ms"
+
+[health.probe_poll_ms]
+doc = "How often a running probe command is checked for completion."
+value = 2
+min = 1
+unit = "ms"
+
+[proc.read_grace_ms]
+doc = "After a helper process (git, ps, vm_stat, a scheduled job) exits, the least time its output may take to reach end of file (it may also use what is left of the command's own timeout, as Node's spawnSync does); a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer."
+value = 500
+min = 1
+unit = "ms"
+
 [health.rss_probe]
 doc = "Command used to read this process's resident set where /proc is unavailable (macOS): the program, then its arguments with `{pid}` substituted."
 value = ["ps", "-o", "rss=", "-p", "{pid}"]
@@ -580,8 +637,8 @@ value = { request = "P <cwd>\n[W <write-id>\n]<put|take|len|set|setex|get> [args
 # ---- the environment a request carries (D76) -------------------------------------------------------------
 
 [request_env.allow]
-doc = "The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work)."
-value = ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "DEVSWARM_REPO_ID", "DEVSWARM_SOURCE_BRANCH", "DISABLE_ANTIHALL_DEVSWARM", "NODE_TEST_CONTEXT", "ANTIHALL_*", "ANTI_HALL_*", "HOME", "USERPROFILE", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_OPTION_*", "PATH", "AH_ENGINE_PLUGIN_ROOT", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_*", "GIT_CONFIG_VALUE_*", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_NOSYSTEM", "GIT_EXEC_PATH", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NO_REPLACE_OBJECTS", "XDG_CONFIG_HOME", "TZ", "TMPDIR", "TMP", "TEMP", "DEVSWARM_BUILDER_ID", "DEVSWARM_AI_AGENT"]
+doc = "The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work). DISABLE_OMC and OMC_SKIP_HOOKS are the oh-my-claudecode kill switches task-guard reads before it steps aside for an OMC loop."
+value = ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "DEVSWARM_REPO_ID", "DEVSWARM_SOURCE_BRANCH", "DISABLE_ANTIHALL_DEVSWARM", "NODE_TEST_CONTEXT", "ANTIHALL_*", "ANTI_HALL_*", "HOME", "USERPROFILE", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_OPTION_*", "PATH", "AH_ENGINE_PLUGIN_ROOT", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_*", "GIT_CONFIG_VALUE_*", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_NOSYSTEM", "GIT_EXEC_PATH", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NO_REPLACE_OBJECTS", "XDG_CONFIG_HOME", "TZ", "TMPDIR", "TMP", "TEMP", "DEVSWARM_BUILDER_ID", "DEVSWARM_AI_AGENT", "DISABLE_OMC", "OMC_SKIP_HOOKS"]
 
 [request_env.line_prefix]
 doc = "Prefix of the request line that carries the forwarded environment as one JSON object."

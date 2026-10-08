@@ -118,6 +118,48 @@ fn plugin() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").canonicalize().unwrap().join("plugins/anti-hall")
 }
 
+/// The harness's bound on one run of either side (see [`run`]).
+const RUN_CAP: Duration = Duration::from_secs(40);
+
+/// The plugin root the engine side runs with: the plugin itself (every entry linked), except that the sweep's process-listing
+/// and probe timeouts are raised to just under [`RUN_CAP`]. Node's probes have no timeout at all, and the fakes are shell
+/// scripts that a loaded machine can take seconds to start; with the shipped timeouts the engine, correctly failing closed,
+/// gave up on a slow fake (`launchd-unverifiable`, or no sweep at all) where Node waited, so the comparison measured the
+/// machine instead of the selection. What a timed-out probe does is covered on a fake system by `checks::mcp_reaper::tests`.
+fn engine_plugin() -> &'static Path {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let (src, root) = (plugin(), scratch("plugin"));
+        let link = |from: &Path, to: &Path| std::os::unix::fs::symlink(from, to).unwrap();
+        for e in std::fs::read_dir(&src).unwrap().flatten() {
+            if e.file_name() != "engine" {
+                link(&e.path(), &root.join(e.file_name()));
+            }
+        }
+        let engine = root.join("engine");
+        std::fs::create_dir_all(engine.join("defaults")).unwrap();
+        for e in std::fs::read_dir(src.join("engine")).unwrap().flatten() {
+            if e.file_name() != "defaults" {
+                link(&e.path(), &engine.join(e.file_name()));
+            }
+        }
+        let cap = (RUN_CAP - Duration::from_secs(10)).as_millis();
+        for e in std::fs::read_dir(src.join("engine/defaults")).unwrap().flatten() {
+            let mut text = std::fs::read_to_string(e.path()).unwrap();
+            if e.file_name() == "mcp_reaper.toml" {
+                for key in ["mcp_reaper.ps_timeout_ms", "mcp_reaper.probe_timeout_ms"] {
+                    let at = text.find(&format!("[{key}]\n")).unwrap_or_else(|| panic!("{key} is not in mcp_reaper.toml"));
+                    let v = at + text[at..].find("\nvalue = ").unwrap() + 1;
+                    let end = v + text[v..].find('\n').unwrap();
+                    text = format!("{}value = {cap}{}", &text[..v], &text[end..]);
+                }
+            }
+            std::fs::write(engine.join("defaults").join(e.file_name()), text).unwrap();
+        }
+        root
+    })
+}
+
 fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
 }
@@ -231,12 +273,12 @@ fn run(mut cmd: Command, input: &[u8]) -> Out {
         ah_engine::discard::harmless(se.read_to_end(&mut b)); // keep: a closed pipe ends the read
         b
     });
-    let deadline = Instant::now() + Duration::from_secs(40);
+    let deadline = Instant::now() + RUN_CAP;
     let status = loop {
         if let Some(s) = child.try_wait().unwrap() {
             break s;
         }
-        assert!(Instant::now() < deadline, "child exceeded 40 seconds: {cmd:?}");
+        assert!(Instant::now() < deadline, "child exceeded {RUN_CAP:?}: {cmd:?}");
         std::thread::sleep(Duration::from_millis(3));
     };
     ah_engine::discard::harmless(w.join()); // keep: the writer only feeds stdin
@@ -262,7 +304,7 @@ fn run_engine(home: &Path, fakes: &Path, case: &Case, input: &[u8]) -> Out {
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     c.arg("check").arg("session-end-mcp-reaper").current_dir(std::env::temp_dir());
     base_env(&mut c, home, fakes, case);
-    c.env("AH_ENGINE_DIR", home.join("engine-state")).env("AH_ENGINE_PLUGIN_ROOT", plugin());
+    c.env("AH_ENGINE_DIR", home.join("engine-state")).env("AH_ENGINE_PLUGIN_ROOT", engine_plugin());
     run(c, input)
 }
 

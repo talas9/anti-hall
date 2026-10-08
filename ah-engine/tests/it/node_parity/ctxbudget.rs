@@ -2,24 +2,27 @@
 //! `limit-conserve-inject.js` (UserPromptSubmit), `auto-handover.js` (UserPromptSubmit), `auto-handover-pause-nag.js` (Stop),
 //! `compact-advice-guard.js` (Stop).
 //!
-//! These hooks have no `evaluate()` entry point, so each scenario runs the hook as a child process (stdin payload, an isolated copy
-//! of a fixture home, `ANTIHALL_TEST_ISOLATION=1`) and the engine as `ah-engine check <name>` on another copy of the same fixture.
-//! The engine may either answer or defer (print `AHFALLBACK`). Compared, byte for byte:
-//!   answered   exit code, stdout, stderr must equal Node's, AND the Node hook must have left the home tree exactly as the fixture
-//!              had it (it wrote nothing), AND the engine must have left its copy untouched. A scenario Node answers with output or
-//!              a state write must therefore be deferred: an answer there is a MISMATCH.
-//!   deferred   reported as "needed" when Node printed something other than the empty context or wrote a file, else as "unneeded"
+//! These hooks have no `evaluate()` entry point, so each scenario runs the hook as a child process (stdin payload, a fixture home,
+//! `ANTIHALL_TEST_ISOLATION=1`, `ANTIHALL_INGEST_DRY_RUN=1`) and then the engine as `ah-engine check <name>` on a fresh copy of
+//! the same fixture at the very same path (state files hold hashes of paths, so the two homes must not differ in path). Fixture
+//! files get one fixed modification time, so a state file that records a file's mtime records the same number on both sides. A
+//! scenario is one input or a sequence (`steps`), run in order on the same home, so dedupe, nag steps, re-arms and latches carry
+//! from one turn to the next. Where the engine defers (prints `AHFALLBACK`), it must have written nothing, and the Node hook then
+//! runs on the engine's home, as the dispatcher does. After every step, compared byte for byte: exit code, stdout, stderr, and the
+//! whole home tree (each file's content; a number in a JSON or NDJSON file, or an ISO instant anywhere, within ten minutes of now reads as `<NOW>`, since the two runs
+//! happen moments apart).
+//!   answered   counted as "same" when all of that equals Node's, else MISMATCH.
+//!   deferred   counted as "needed" when Node printed something other than the empty context or wrote a file, else "unneeded"
 //!              (a missed offload, not a parity failure).
 //! The corpus (`ctxbudget_corpus/ctxbudget.json`) is data: hand-written scenarios (settings and skip variants, malformed payloads and
-//! state files, boundary numbers, unicode, huge input) and the seeded fuzz of the old generator, with times as tokens
-//! (`{{NOW-60000}}`, `{{ISO+3600000}}`, `{"$now": 3600000}`) expanded once per run. The windows cut from a developer's real
-//! transcripts the old runner could add are local data and not part of it.
+//! state files, boundary numbers, unicode, huge input, fire, nag, re-arm and dedupe sequences) and the seeded fuzz of the old
+//! generator, with times as tokens (`{{NOW-60000}}`, `{{ISO+3600000}}`, `{{MTIME}}`, `{{TODAY}}`, `{"$now": 3600000}`) expanded once per run.
 
 use super::jsjson::{J, map_strings, parse};
 use super::support::*;
 use regex::Regex;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 const CORPUS: &str = include_str!("ctxbudget_corpus/ctxbudget.json");
@@ -36,6 +39,7 @@ struct Sc {
     hook: String,
     id: String,
     input: String,
+    steps: Vec<String>,
     settings: Option<String>,
     skip: Option<String>,
     claude: Option<String>,
@@ -47,10 +51,36 @@ fn is_undef(j: &J) -> bool {
     matches!(j, J::Obj(o) if o.len() == 1 && o[0].0 == "$undef")
 }
 
+/// The nanoseconds part of the fixed modification time every fixture file gets (a fraction of a millisecond, so a state file
+/// that records `mtimeMs` records a number with decimals).
+const MTIME_NS: u32 = 123_456_789;
+
+/// The whole seconds of the fixed modification time: two hours before the run.
+fn mtime_secs(now0: i64) -> u64 {
+    (now0 / 1000 - 7200) as u64
+}
+
+/// `fs.statSync(f).mtimeMs` of a fixture file, as Node computes it (seconds * 1000 + nanoseconds / 1e6).
+fn mtime_ms(now0: i64) -> f64 {
+    mtime_secs(now0) as f64 * 1000.0 + f64::from(MTIME_NS) / 1e6
+}
+
+fn set_mtime_ns(path: &Path, secs: u64) {
+    let t = std::time::UNIX_EPOCH + std::time::Duration::new(secs, MTIME_NS);
+    if let Ok(f) = std::fs::OpenOptions::new().write(true).open(path) {
+        f.set_times(std::fs::FileTimes::new().set_accessed(t).set_modified(t)).ok();
+    }
+}
+
 fn pre_expand(s: &str, now0: i64) -> String {
     if !s.contains("{{") {
         return s.to_string();
     }
+    let today = s.contains("{{TODAY}}").then(|| local_day(0.0));
+    let s = &today.map_or_else(|| s.to_string(), |d| s.replace("{{TODAY}}", &d));
+    let s = &Regex::new(r"\{\{MTIME([-+]\d+)?\}\}")
+        .unwrap()
+        .replace_all(s, |c: &regex::Captures| format!("{}", mtime_ms(now0) + c.get(1).map_or(0.0, |m| m.as_str().parse::<f64>().unwrap_or(0.0))));
     let a = Regex::new(r"\{\{NOW([-+]\d+)?\}\}")
         .unwrap()
         .replace_all(s, |c: &regex::Captures| (now0 + c.get(1).map_or(0, |m| m.as_str().parse::<i64>().unwrap_or(0))).to_string());
@@ -163,6 +193,10 @@ fn load(now0: i64) -> Vec<Sc> {
                     Some(J::Str(s)) => s,
                     _ => String::new(),
                 },
+                steps: match get("steps") {
+                    Some(J::Arr(a)) => a.into_iter().filter_map(|v| if let J::Str(s) = v { Some(s) } else { None }).collect(),
+                    _ => Vec::new(),
+                },
                 settings: text(field("settings").as_ref()),
                 skip: text(field("skip").as_ref()),
                 claude: field("claude").map(|v| resolve_now(v, now0).text()),
@@ -173,7 +207,7 @@ fn load(now0: i64) -> Vec<Sc> {
         .collect()
 }
 
-fn mk_home(dir: &Path, sc: &Sc) {
+fn mk_home(dir: &Path, sc: &Sc, mtime: u64) {
     std::fs::create_dir_all(dir.join(".anti-hall")).expect("state dir");
     if let Some(s) = &sc.settings {
         write_file(&dir.join(".anti-hall/settings.json"), s.as_bytes());
@@ -187,13 +221,25 @@ fn mk_home(dir: &Path, sc: &Sc) {
     for (rel, body) in &sc.files {
         write_file(&dir.join(rel), body.as_bytes());
     }
+    for rel in [".anti-hall/settings.json", ".anti-hall/skip.json", ".claude/settings.json"].into_iter().chain(sc.files.iter().map(|f| f.0.as_str())) {
+        set_mtime_ns(&dir.join(rel), mtime);
+    }
     std::fs::create_dir_all(dir.join("proj")).expect("proj dir");
 }
 
-/// path to the file's SHA-1 (directories: `D`)
+/// path to the file's content (directories: `D`); in a JSON file every number within ten minutes of now reads as `<NOW>`.
 fn snap(dir: &Path) -> BTreeMap<String, String> {
+    let now = now_ms() as f64;
+    fn norm(j: J, now: f64) -> J {
+        match j {
+            J::Num(n) if (n - now).abs() < 600_000.0 => J::Str("<NOW>".into()),
+            J::Obj(o) => J::Obj(o.into_iter().map(|(k, v)| (k, norm(v, now))).collect()),
+            J::Arr(a) => J::Arr(a.into_iter().map(|v| norm(v, now)).collect()),
+            other => other,
+        }
+    }
     let mut out = BTreeMap::new();
-    fn walk(d: &Path, rel: &str, out: &mut BTreeMap<String, String>) {
+    fn walk(d: &Path, rel: &str, now: f64, out: &mut BTreeMap<String, String>, norm: &dyn Fn(J, f64) -> J) {
         let Ok(rd) = std::fs::read_dir(d) else { return };
         let mut names: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         names.sort();
@@ -206,13 +252,23 @@ fn snap(dir: &Path) -> BTreeMap<String, String> {
             let Ok(md) = std::fs::symlink_metadata(&f) else { continue };
             if md.is_dir() {
                 out.insert(format!("{r}/"), "D".into());
-                walk(&f, &r, out);
+                walk(&f, &r, now, out, norm);
             } else {
-                out.insert(r, sha1_hex_bytes(&std::fs::read(&f).unwrap_or_default()));
+                let text = String::from_utf8_lossy(&std::fs::read(&f).unwrap_or_default()).to_string();
+                let v = match parse(&text) {
+                    Some(j) if n.ends_with(".json") => super::jsjson::stringify(&norm(j, now)),
+                    _ if n.ends_with(".ndjson") => {
+                        text.lines().map(|l| parse(l).map_or_else(|| l.to_string(), |j| super::jsjson::stringify(&norm(j, now)))).collect::<Vec<_>>().join("\n")
+                    }
+                    _ => text,
+                };
+                // an ISO instant within ten minutes of now (a log row's time) reads as `<NOW>` too
+                let v = super::lab::norm_text(&v, "\u{0}");
+                out.insert(r, v);
             }
         }
     }
-    walk(dir, "", &mut out);
+    walk(dir, "", now, &mut out, &norm);
     out
 }
 
@@ -227,6 +283,7 @@ fn diff(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> Vec<Strin
 pub(crate) struct Stats {
     pub n: usize,
     pub same: usize,
+    pub loud: usize,
     pub needed: usize,
     pub unneeded: usize,
     pub mismatch: usize,
@@ -255,72 +312,100 @@ pub(crate) fn run_lane(hooks_dir: &Path, mutate: Option<usize>) -> (BTreeMap<Str
     let base_path = std::env::var("PATH").unwrap_or_default();
     let only = std::env::var("AH_PARITY_ONLY").ok();
     let todo: Vec<&Sc> = scenarios.iter().filter(|s| only.as_ref().is_none_or(|o| s.hook == *o)).collect();
+    let mtime = mtime_secs(now0);
     pool(&todo, 6, |sc, _| {
         let id = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let base = tmp.join(format!("s{id}"));
-        let (hn, he, h0): (PathBuf, PathBuf, PathBuf) = (base.join("node"), base.join("eng"), base.join("ref"));
-        for d in [&hn, &he, &h0] {
-            mk_home(d, sc);
+        let home = base.join("h");
+        let h = home.to_string_lossy().to_string();
+        let env = env_merge(
+            &env_of(&[("PATH", &base_path), ("HOME", &h), ("USERPROFILE", &h), ("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_INGEST_DRY_RUN", "1")]),
+            &sc.env,
+        );
+        let inputs: Vec<String> = std::iter::once(&sc.input).chain(&sc.steps).map(|i| i.replace("$HOME", &h)).collect();
+        let hook_file = hooks_dir.join(HOOKS.iter().find(|(x, _)| *x == sc.hook).map(|(_, f)| *f).expect("a known hook")).to_string_lossy().to_string();
+        let run_node = |input: &str| node(&strs(&[&hook_file]), input.as_bytes(), &env, "/tmp");
+        // Node's pass: each step's answer and the home tree after it
+        mk_home(&home, sc, mtime);
+        let mut before = snap(&home);
+        let mut node_steps = Vec::new();
+        for input in &inputs {
+            let mut nd = run_node(input);
+            if mutate.is_some() {
+                nd.out.push_str("~mutant");
+            }
+            let after = snap(&home);
+            let quiet = if sc.hook == "limit-conserve-inject" || sc.hook == "auto-handover" { nd.out == EMPTY || nd.out.is_empty() } else { nd.out.is_empty() };
+            let silent = quiet && nd.code_is(0) && nd.err.is_empty() && after == before;
+            before = after.clone();
+            node_steps.push((nd, after, silent));
         }
-        let reference = snap(&h0);
-        let mk_env = |home: &Path| {
-            let h = home.to_string_lossy().to_string();
-            env_merge(&env_of(&[("PATH", &base_path), ("HOME", &h), ("USERPROFILE", &h), ("ANTIHALL_TEST_ISOLATION", "1")]), &sc.env)
-        };
-        let input = |home: &Path| sc.input.replace("$HOME", &home.to_string_lossy());
-        let hook_file = HOOKS.iter().find(|(h, _)| *h == sc.hook).map(|(_, f)| *f).expect("a known hook");
-        let mut nd = node(&strs(&[&hooks_dir.join(hook_file).to_string_lossy()]), input(&hn).as_bytes(), &mk_env(&hn), "/tmp");
-        if mutate.is_some() {
-            nd.out.push_str("~mutant");
+        wipe(&home);
+        // the engine's pass on a fresh copy at the same path; a deferral runs the Node hook there, as the dispatcher does
+        mk_home(&home, sc, mtime);
+        let mut rows = Vec::new();
+        for (k, input) in inputs.iter().enumerate() {
+            let pre = snap(&home);
+            let en = run(ENGINE, &strs(&["check", &sc.hook]), input.as_bytes(), &env, "/tmp");
+            let deferred = en.out.trim() == "AHFALLBACK";
+            let mut wrote_deferring = Vec::new();
+            let got = if deferred {
+                wrote_deferring = diff(&pre, &snap(&home));
+                run_node(input)
+            } else {
+                en
+            };
+            let tree = snap(&home);
+            let (nd, ntree, silent) = &node_steps[k];
+            let same = got.code == nd.code && got.out == nd.out && got.err == nd.err && &tree == ntree;
+            rows.push((k, deferred, *silent, same, wrote_deferring, got, diff(ntree, &tree)));
         }
-        let en = run(ENGINE, &strs(&["check", &sc.hook]), input(&he).as_bytes(), &mk_env(&he), "/tmp");
-        let node_wrote = diff(&reference, &snap(&hn));
-        let eng_wrote = diff(&reference, &snap(&he));
-        let quiet = if sc.hook == "limit-conserve-inject" || sc.hook == "auto-handover" { nd.out == EMPTY || nd.out.is_empty() } else { nd.out.is_empty() };
-        let node_silent = quiet && nd.code_is(0) && node_wrote.is_empty() && nd.err.is_empty();
-        let deferred = en.out.trim() == "AHFALLBACK";
+        wipe(&base);
         let mut all = stats.lock().unwrap_or_else(|e| e.into_inner());
         let st = all.entry(sc.hook.clone()).or_default();
-        st.n += 1;
-        if deferred {
-            if node_silent {
-                st.unneeded += 1;
-                let g = sc.id.split('/').nth(1).unwrap_or("").split('-').next().unwrap_or("").to_string();
-                *st.groups.entry(g).or_insert(0) += 1;
-            } else {
-                st.needed += 1;
+        for (k, deferred, silent, same, wrote, got, tdiff) in rows {
+            st.n += 1;
+            let nd = &node_steps[k].0;
+            if deferred {
+                if silent {
+                    st.unneeded += 1;
+                    let g = sc.id.split('/').nth(1).unwrap_or("").split('-').next().unwrap_or("").to_string();
+                    *st.groups.entry(g).or_insert(0) += 1;
+                } else {
+                    st.needed += 1;
+                }
+            } else if same {
+                st.same += 1;
+                if !silent {
+                    st.loud += 1;
+                }
             }
-            if !eng_wrote.is_empty() {
+            if deferred && !silent && std::env::var_os("AH_PARITY_VERBOSE").is_some() {
+                eprintln!("deferred-needed {} step {k}", sc.id);
+            }
+            if !wrote.is_empty() || !same {
                 st.mismatch += 1;
-                mism.lock().unwrap_or_else(|e| e.into_inner()).push(format!("{}: engine wrote while deferring: {eng_wrote:?}", sc.id));
+                mism.lock().unwrap_or_else(|e| e.into_inner()).push(format!(
+                    "{} step {k}: deferred={deferred} wroteWhileDeferring={wrote:?} node=({}, {:?}, {:?}) got=({}, {:?}, {:?}) treeDiff={tdiff:?} input={:?}",
+                    sc.id,
+                    nd.code,
+                    clip(&nd.out, 300),
+                    clip(&nd.err, 300),
+                    got.code,
+                    clip(&got.out, 300),
+                    clip(&got.err, 300),
+                    clip(&inputs[k], 300)
+                ));
             }
-            return;
         }
-        let same_out = en.code == nd.code && en.out == nd.out && en.err == nd.err;
-        if same_out && node_wrote.is_empty() && eng_wrote.is_empty() {
-            st.same += 1;
-            return;
-        }
-        st.mismatch += 1;
-        mism.lock().unwrap_or_else(|e| e.into_inner()).push(format!(
-            "{}: node=({}, {:?}, {:?}) eng=({}, {:?}, {:?}) nodeWrote={node_wrote:?} engWrote={eng_wrote:?} input={:?}",
-            sc.id,
-            nd.code,
-            clip(&nd.out, 200),
-            clip(&nd.err, 200),
-            en.code,
-            clip(&en.out, 200),
-            clip(&en.err, 200),
-            clip(&sc.input, 300)
-        ));
     });
     let stats = stats.into_inner().unwrap_or_else(|e| e.into_inner());
     let mism = mism.into_inner().unwrap_or_else(|e| e.into_inner());
     let mut summary = String::new();
     for (h, s) in &stats {
         summary.push_str(&format!(
-            "{h}: scenarios={} same={} deferred-needed={} deferred-unneeded={} MISMATCH={}\n",
-            s.n, s.same, s.needed, s.unneeded, s.mismatch
+            "{h}: steps={} same={} (of them printing or writing: {}) deferred-needed={} deferred-unneeded={} MISMATCH={}\n",
+            s.n, s.same, s.loud, s.needed, s.unneeded, s.mismatch
         ));
         if !s.groups.is_empty() {
             summary.push_str(&format!("  unneeded deferrals by group: {}\n", serde_json::to_string(&s.groups).unwrap_or_default()));
@@ -343,8 +428,8 @@ pub(crate) fn require(hooks_dir: &Path) {
         std::fs::write(Path::new(&dir).join("ctxbudget.summary.txt"), &summary).ok();
     }
     assert!(stats.values().all(|s| s.mismatch == 0), "parity mismatches:\n{summary}");
-    for (hook, _) in HOOKS {
-        let n = stats.get(hook).map_or(0, |s| s.n);
+    for (hook, _) in HOOKS.iter().filter(|(h, _)| std::env::var("AH_PARITY_ONLY").is_ok_and(|o| o == *h) || std::env::var_os("AH_PARITY_ONLY").is_none()) {
+        let n = stats.get(*hook).map_or(0, |s| s.n);
         assert!(n >= 30, "{hook}: only {n} scenarios\n{summary}");
     }
 }

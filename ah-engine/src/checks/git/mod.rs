@@ -27,7 +27,6 @@ mod tests;
 pub mod tokenize;
 pub mod util;
 
-use crate::checks::lit_re;
 use crate::checks::{Check, Verdict};
 use crate::rules::Subject;
 use regex::Regex;
@@ -175,6 +174,13 @@ impl Ctx {
         if self.jev_spent_ms + budget + crate::defaults::num("git.jev_backstop_ms") > crate::defaults::num("git.jev_total_budget_ms") {
             return false;
         }
+        // inside a daemon request whose client stops waiting before this consult could finish: the reply would be lost
+        // after the regex verdict was taken without Jev, so the whole verdict goes to Node, whose hook consults Jev with its
+        // full budget (review finding 4; never weaker than Node)
+        if crate::deadline::remaining().is_some_and(|left| (left.as_millis() as u64) < budget + crate::defaults::num("git.jev_backstop_ms")) {
+            self.overflow = true;
+            return false;
+        }
         let Some(state) = crate::checks::replykit::io::prefix_utf16(text, crate::defaults::num("git.jev_state_chars") as usize) else {
             self.overflow = true;
             return false;
@@ -199,16 +205,18 @@ impl Ctx {
     }
 }
 
-/// Mirrors `git-guard.js` `looksLikeFileWriteShape`.
+/// Mirrors `git-guard.js` `looksLikeFileWriteShape`. The patterns are the JavaScript sources of the shipped defaults, translated
+/// so `\s` and `\b` keep JavaScript's meaning (U+FEFF is white space there, U+0085 is not).
 fn looks_like_file_write_shape(cmd: &str) -> bool {
     static HD: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static RED: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static TEE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static ECHO: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
-    let hd = HD.get_or_init(|| lit_re(r#"<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?"#));
-    let red = RED.get_or_init(|| lit_re(r#"(?:^|[\s;&|(])>{1,2}\s*[^\s&;|<>()0-9][^\s&;|<>()]*"#));
-    let tee = TEE.get_or_init(|| lit_re(r#"(?-u:\b)tee(?-u:\b)\s+(?:-a\s+)?[^\s&;|<>()-][^\s&;|<>()]*"#));
-    let echo = ECHO.get_or_init(|| lit_re(r"(?-u:\b)(?:echo|printf)(?-u:\b)"));
+    let js = |key: &'static str| crate::checks::guardkit::jsre::compile(crate::defaults::text(key), false);
+    let hd = HD.get_or_init(|| js("git.re_file_write_heredoc"));
+    let red = RED.get_or_init(|| js("git.re_file_write_redirect"));
+    let tee = TEE.get_or_init(|| js("git.re_file_write_tee"));
+    let echo = ECHO.get_or_init(|| js("git.re_file_write_echo"));
     let redirects = red.is_match(cmd);
     if hd.is_match(cmd) {
         return redirects || tee.is_match(cmd);

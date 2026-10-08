@@ -41,6 +41,10 @@ pub struct Meta {
     /// stdin (verify-first picks its rotating line from it).
     #[serde(default)]
     pub payload_sha1: Option<String>,
+    /// How long the client waits for the reply, in milliseconds (`client.deadline_ms` on its side): the daemon clamps the
+    /// budgets that could outlast it ([`crate::deadline`]). Absent from an older client: the daemon's own default applies.
+    #[serde(default)]
+    pub deadline_ms: Option<u64>,
 }
 
 /// One built-in check's answer for one entry.
@@ -150,6 +154,7 @@ mod tests {
             plan: vec![],
             cfg: String::new(),
             payload_sha1: None,
+            deadline_ms: None,
         }
     }
 
@@ -231,9 +236,12 @@ mod tests {
     /// The other side of the fix: where a check cannot prove Node is silent it still defers (D74).
     #[test]
     fn a_check_that_cannot_prove_silence_still_defers() {
-        // coordinator-work-guard: a main-session Bash call needs Node's own state, the check says Defer.
-        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}});
-        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        // coordinator-work-guard: a main-session Bash call whose command is not provably non-work needs the Node classifier,
+        // the check says Defer (a provably read-only command such as `ls` is answered natively since the pre-pass port).
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "make deploy"}});
+        let mut cm = meta();
+        cm.env = crate::reqenv::RequestEnv::from_pairs([("CLAUDE_CODE_ENTRYPOINT", "cli"), ("HOME", "/h")]);
+        let got = evaluate(&cm, &p, &|_, _, _| {});
         assert_eq!(got.iter().find(|(id, _)| id == "coordinator-work-guard").unwrap().1, Answer::Defer);
         // ship-it-guard with its opt-in gate on: Bash targets need the command-guard parser, so it defers.
         let mut m = meta();
@@ -297,6 +305,7 @@ mod tests {
                 plan: Vec::new(),
                 cfg: String::new(),
                 payload_sha1: None,
+                deadline_ms: None,
             };
             // the other batches' checks of the same event answer here too (their own tests pin their bytes): only the verify-first
             // family and fable-availability are looked at
@@ -329,6 +338,7 @@ mod tests {
             plan: Vec::new(),
             cfg: String::new(),
             payload_sha1: None,
+            deadline_ms: None,
         };
         assert_eq!(evaluate(&meta, &p, &|_, _, _| {}).into_iter().map(|(_, a)| a).collect::<Vec<_>>(), vec![Answer::Defer]);
     }

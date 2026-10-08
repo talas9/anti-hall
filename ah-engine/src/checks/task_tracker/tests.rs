@@ -153,10 +153,17 @@ fn what_the_engine_cannot_reproduce_is_left_to_node_before_anything_is_written()
     assert!(!h.join(".anti-hall").exists(), "a deferral leaves no trace, not even the Jev row");
     // the demand line switched off: the engine answers
     assert!(matches!(decide(&p, &env(&h, &[("ANTIHALL_DISPATCH_DEMAND", "0")])), Verdict::Advisory(_)));
-    // a session that could be a Primary
+    // a Primary appends its dispatch-tier block; a repo that forbids workspaces, a child and a missing working directory differ
     let h = home("primary");
-    assert_eq!(decide(&prompt("s1"), &env(&h, &[("DEVSWARM_REPO_ID", "r")])), Verdict::Defer);
-    assert!(!h.join(".anti-hall").exists());
+    let primary = env(&h, &[("DEVSWARM_REPO_ID", "r")]);
+    let t = text_of(&decide(&prompt("s1"), &primary));
+    assert!(t.contains("Primary dispatch tier: classify each task"), "{t}");
+    assert!(!text_of(&decide(&prompt("s2"), &env(&h, &[]))).contains("Primary dispatch tier"));
+    assert!(!text_of(&decide(&prompt("s3"), &env(&h, &[("DEVSWARM_REPO_ID", "r"), ("DEVSWARM_SOURCE_BRANCH", "b")]))).contains("Primary dispatch tier"));
+    assert!(!text_of(&decide(&prompt("s4"), &env(&h, &[("DEVSWARM_REPO_ID", "r"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "*")]))).contains("Primary dispatch tier"));
+    let mut nocwd = prompt("s5");
+    nocwd.as_object_mut().unwrap().remove("cwd");
+    assert_eq!(decide(&nocwd, &primary), Verdict::Defer, "Node would use its own working directory");
     // a recommendation whose outcome is still to be labelled
     let h = home("tier");
     std::fs::create_dir_all(h.join(".anti-hall")).unwrap();

@@ -1,20 +1,20 @@
 //! Built-in `check = "silent-agent-nudge"`: the Stop hook that nudges once when a background agent has gone quiet.
 //!
-//! This port answers every Stop that does not nudge, which is almost all of them, and keeps the nudge state file exactly as
-//! the Node hook does. A Stop that WOULD nudge (a silent agent not yet nudged for this snapshot, and not covered by the
-//! once-per-agent cap) is deferred to the Node hook before anything is written: the nudge text carries the stop-ack hint,
-//! and whether to block at all depends on the plugin version the running hook belongs to (`stop-version-gate`), which only
-//! the Node hook can answer for itself.
-//!
-//! What it does, as the Node hook does: read the transcript tail, find the agents launched and not finished (with
+//! The whole hook is ported, the nudge included: read the transcript tail, find the agents launched and not finished (with
 //! `agent_scan`), judge each by the newest of its output file, its sidechain transcript and its resume, add the heartbeat
-//! files of this session's own subagents, then compare with the state file. When every silent agent was already nudged, the
-//! state is rewritten pruned to the agents still live (the bytes the Node hook writes) and nothing is said.
+//! files of this session's own subagents, then compare with the state file. A silent agent not yet nudged for this snapshot
+//! and not covered by the once-per-agent cap is nudged: the state is written (the bytes the Node hook writes) and the Stop is
+//! blocked with the hook's text, unless the host already registered a newer plugin version than the one running
+//! (`stop-version-gate`: nothing said, nothing written) or this exact set of agents was acked for the session (`stop-ack`:
+//! state written, nothing said). When every silent agent was already nudged, the state is rewritten pruned to the agents
+//! still live and nothing is said.
 //!
 //! Differences from the Node hook (deliberate): the slow-run diagnostics line the Node hook writes to the central log for a
-//! transcript over 8 MB is not written (the engine records its own latency); a transcript the scan cannot read exactly as
-//! JavaScript would, a state file whose bytes this cannot reproduce (a list member, a number-like key, a non-text record),
-//! and a request without `HOME` defer to Node.
+//! transcript over 8 MB is not written (the engine records its own latency). These defer to Node: a transcript the scan
+//! cannot read exactly as JavaScript would, a state, registry, manifest or ack file whose bytes this cannot reproduce (a list
+//! member, a number-like key, a lone surrogate), a request without `HOME`, a nudge whose name `oneLine` would cut through a
+//! surrogate pair (JavaScript prints the lone half), and a nudge when the request does not name the plugin root (the
+//! stale-build check compares against the running plugin's own manifest).
 //!
 //! Mirrors `hooks/silent-agent-nudge.js`.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
@@ -23,8 +23,12 @@
 
 use crate::checks::agent_scan::{self, Opts, Unsupported, mtime_ms};
 use crate::checks::git::util::Settings;
-use crate::checks::guardkit::settings::{get_bool, get_number, is_skipped};
-use crate::checks::{Check, Verdict};
+use crate::checks::guardkit::msg::{self, Kind, Parts};
+use crate::checks::guardkit::settings::{get_bool, get_number, is_skipped, plugin_root};
+use crate::checks::guardkit::text::{collapse_ws, js_trim, js_trim_end, slice_utf16};
+use crate::checks::jsport::num::to_js_string;
+use crate::checks::jsport::text::cmp16;
+use crate::checks::{Check, Exact, Verdict};
 use crate::defaults;
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
@@ -32,6 +36,7 @@ use serde::de::{Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 use std::collections::HashSet;
 
+pub(crate) mod stopgate;
 #[cfg(test)]
 mod tests;
 
@@ -46,6 +51,10 @@ pub struct Candidate {
     pub resumed_at_ms: f64,
     /// What the nudge is deduplicated on: the output file mtime or `missing`, plus the resume; a heartbeat's time.
     pub snapshot: String,
+    /// The text the nudge names it by before `oneLine`: the launch description, the heartbeat step, or the id.
+    pub label_src: String,
+    /// Milliseconds since its latest sign of life.
+    pub age: f64,
 }
 
 /// A JSON object's members in file order: a JavaScript object keeps insertion order, which the rewritten file shows.
@@ -311,7 +320,15 @@ fn transcript_candidates(transcript: &str, now: f64, threshold: f64) -> Result<V
         if now - reference < threshold {
             continue;
         }
-        out.push(Candidate { key: format!("{}{id}", defaults::text("silent_nudge.key_transcript")), id: id.clone(), resumed_at_ms: resumed, snapshot });
+        let label_src = if rec.description.is_empty() { id.clone() } else { rec.description.clone() };
+        out.push(Candidate {
+            key: format!("{}{id}", defaults::text("silent_nudge.key_transcript")),
+            id: id.clone(),
+            resumed_at_ms: resumed,
+            snapshot,
+            label_src,
+            age: now - reference,
+        });
     }
     Ok(out)
 }
@@ -353,11 +370,14 @@ fn heartbeat_candidates(home: &str, now: f64, threshold: f64, session: &str) -> 
         if ts != ts.trunc() || ts.abs() >= defaults::num("agent_scan.safe_int") as f64 {
             return Err(Unsupported);
         }
+        let step = data.get("step").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or(id);
         out.push(Candidate {
             key: format!("{}{id}", defaults::text("silent_nudge.key_heartbeat")),
             id: id.to_string(),
             resumed_at_ms: 0.0,
             snapshot: num_text(ts),
+            label_src: step.to_string(),
+            age: now - ts,
         });
     }
     Ok(out)
@@ -366,7 +386,7 @@ fn heartbeat_candidates(home: &str, now: f64, threshold: f64, session: &str) -> 
 /// The check's decision on one payload.
 ///
 /// Mirrors `hooks/silent-agent-nudge.js` `main`.
-pub fn decide(p: &Value, env: &RequestEnv) -> Verdict {
+pub fn decide(p: &Value, opts: &Value, env: &RequestEnv) -> Verdict {
     if env.get(defaults::text("silent_nudge.judge_child_env")) == Some(defaults::text("silent_nudge.judge_child_value")) {
         return Verdict::Allow;
     }
@@ -436,25 +456,134 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Verdict {
         format!("{session}{}{}{resume}", defaults::text("silent_nudge.ever_sep"), c.id)
     };
     let capped = |c: &&Candidate| !session.is_empty() && next_ever.iter().any(|(k, _)| *k == ever_key(c));
-    let to_nudge = stale.iter().filter(|c| session.is_empty() || !capped(c)).count();
-    if to_nudge > 0 {
-        // This Stop would block: the Node hook words it and decides whether the running build may.
+    let to_nudge: Vec<&Candidate> = stale.iter().copied().filter(|c| session.is_empty() || !capped(c)).collect();
+    if to_nudge.is_empty() {
+        for c in &stale {
+            next_nudged.set(&c.key, Value::String(c.snapshot.clone()));
+        }
+        let Ok(text) = render_state(&next_nudged, &next_ever) else { return Verdict::Defer };
+        write_state(&state_path, text);
+        return Verdict::Allow;
+    }
+
+    // STALE-BUILD DOWNGRADE: a newer version is already registered than the running plugin; say nothing and keep the state
+    // as it was, so the once-per-agent cap is not spent on a nudge that was never shown.
+    let root = plugin_root(opts, env);
+    if root.is_empty() {
+        // Node judges this against its own install directory, which the request does not name.
         return Verdict::Defer;
     }
+    match stopgate::is_stale(env, &home, &root) {
+        Ok(true) => return Verdict::Allow,
+        Ok(false) => {}
+        Err(Unsupported) => return Verdict::Defer,
+    }
+
     for c in &stale {
         next_nudged.set(&c.key, Value::String(c.snapshot.clone()));
     }
+    // One line per agent id, even when the transcript and a heartbeat both report it.
+    let mut seen: HashSet<&str> = HashSet::new();
+    let shown: Vec<&Candidate> = to_nudge.into_iter().filter(|c| seen.insert(c.id.as_str())).collect();
+    if !session.is_empty() {
+        for c in &shown {
+            let k = ever_key(c);
+            match next_ever.iter_mut().find(|(n, _)| *n == k) {
+                Some(slot) => slot.1 = now,
+                None => next_ever.push((k, now)),
+            }
+        }
+    }
     let Ok(text) = render_state(&next_nudged, &next_ever) else { return Verdict::Defer };
+
+    let max = defaults::num("silent_nudge.label_max") as usize;
+    let mut labels = Vec::new();
+    for c in &shown {
+        match one_line(&c.label_src, max) {
+            Ok(l) => labels.push(l),
+            Err(Unsupported) => return Verdict::Defer,
+        }
+    }
+    let guard = defaults::text("silent_nudge.guard_name");
+    let mut ids: Vec<&str> = shown.iter().map(|c| c.id.as_str()).collect();
+    ids.sort_by(|a, b| cmp16(a, b));
+    let signature = stopgate::signature_for(&ids.join(defaults::text("silent_nudge.ack_subject_sep")));
+    let acked = if session.is_empty() {
+        false
+    } else {
+        match stopgate::is_acked(env, &home, session, guard, &signature) {
+            Ok(a) => a,
+            Err(Unsupported) => return Verdict::Defer,
+        }
+    };
+    write_state(&state_path, text);
+    if acked {
+        return Verdict::Allow;
+    }
+
+    let named = defaults::num("silent_nudge.max_named") as usize;
+    let items: Vec<String> = shown
+        .iter()
+        .zip(&labels)
+        .take(named)
+        .map(|(c, l)| msg::render("silent_nudge.msg_item", &[("label", l), ("mins", &to_js_string((c.age / 60_000.0).floor()))]))
+        .collect();
+    let more = if shown.len() > named { msg::render("silent_nudge.msg_more", &[("n", &(shown.len() - named).to_string())]) } else { String::new() };
+    let what = msg::render(
+        "silent_nudge.msg_what",
+        &[
+            ("count", &shown.len().to_string()),
+            ("min", &to_js_string(minutes)),
+            ("shown", &items.join(defaults::text("silent_nudge.msg_item_sep"))),
+            ("more", &more),
+        ],
+    );
+    let them = defaults::text(if shown.len() == 1 { "silent_nudge.pronoun_one" } else { "silent_nudge.pronoun_many" });
+    let instead = msg::render("silent_nudge.msg_instead", &[("them", them)]);
+    // ackHint stamps its own clock reading, taken after the state was written
+    let hint = if session.is_empty() { String::new() } else { stopgate::ack_hint(guard, &signature, &home, session, agent_scan::now_ms()) };
+    let extra = [hint.as_str()];
+    let reason = msg::message(
+        Kind::Block,
+        guard,
+        &Parts {
+            what: &what,
+            why: defaults::text("silent_nudge.msg_why"),
+            instead: &instead,
+            allowed: defaults::text("silent_nudge.msg_allowed"),
+            extra: &extra,
+            ..Parts::default()
+        },
+    );
+    let out = format!("{{\"decision\":\"block\",\"reason\":{}}}\n", serde_json::to_string(&reason).unwrap_or_default());
+    Verdict::Exact(Exact { code: 0, out, err: String::new() })
+}
+
+/// `fs.writeFileSync(stateFile, ...)` after `mkdirSync(dirname, { recursive: true })`; a failure is logged, never fatal.
+fn write_state(state_path: &str, text: String) {
     crate::discard::logged(
         "silent_nudge_state_write",
         (|| -> std::io::Result<()> {
-            if let Some(d) = std::path::Path::new(&state_path).parent() {
+            if let Some(d) = std::path::Path::new(state_path).parent() {
                 std::fs::create_dir_all(d)?;
             }
-            std::fs::write(&state_path, text)
+            crate::atomic::write_after_reply(state_path, text, crate::atomic::Style::default())
         })(),
     );
-    Verdict::Allow
+}
+
+/// `oneLine(s, max)`: control characters and white space runs become one space, and a text past `max` UTF-16 units is cut.
+/// A cut through a surrogate pair leaves a lone half in JavaScript, which this cannot reproduce.
+fn one_line(s: &str, max: usize) -> Result<String, Unsupported> {
+    static R: crate::defaults::Cache<regex::Regex> = crate::defaults::Cache::new();
+    let re = R.get_or_init(|| crate::checks::lit_re(defaults::text("silent_nudge.control_re")));
+    let spaced = re.replace_all(s, " ");
+    let o = js_trim(&collapse_ws(&spaced)).to_string();
+    if agent_scan::utf16_len(&o) > max {
+        let cut = slice_utf16(&o, max).ok_or(Unsupported)?;
+        return Ok(format!("{}{}", js_trim_end(&cut), defaults::text("silent_nudge.ellipsis")));
+    }
+    Ok(o)
 }
 
 /// The registered `silent-agent-nudge` check.
@@ -473,7 +602,7 @@ impl Check for SilentAgentNudge {
         Some(Verdict::Defer)
     }
 
-    fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        Some(decide(payload, env))
+    fn run_env(&self, _s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+        Some(decide(payload, opts, env))
     }
 }

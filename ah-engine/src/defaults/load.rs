@@ -18,7 +18,7 @@ use serde_json::Value as Json;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Write as _;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -853,13 +853,10 @@ pub fn write_cache(data: &Data, path: &Path) -> std::io::Result<()> {
     out.push('\n');
     let dir = path.parent().unwrap_or(Path::new("."));
     crate::discard::harmless(crate::limits::ensure_private_dir(dir)); // keep: a failure surfaces at the create that follows
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
-    f.write_all(out.as_bytes())?;
-    drop(f);
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
-    })
+    // private (0600), unique temporary name per call, synced before the rename (review finding 22); written while the
+    // defaults may be half-loaded, so the temporary name does not read a setting
+    let style = crate::atomic::Style { mode: Some(0o600), bootstrap: true, ..crate::atomic::Style::default() };
+    crate::atomic::write_styled(path, out, style)
 }
 
 /// The fingerprint of the files a snapshot of `root` is built from (the edited and the pristine defaults: path, size,
@@ -1002,7 +999,8 @@ pub fn log_start_failure(e: &DefaultsError) {
     }
     if let Some(failure) = text("files.failure") {
         let v = serde_json::json!({"ts": now as u64, "class": "permanent", "kind": "start_fail", "code": code, "hint": "", "reason": detail});
-        crate::discard::harmless(std::fs::write(state.join(failure), v.to_string())); // keep: the event line above is the record that counts
+        let style = crate::atomic::Style { bootstrap: true, ..crate::atomic::Style::default() };
+        crate::discard::harmless(crate::atomic::write_styled(state.join(failure), v.to_string(), style)); // keep: the event line above is the record that counts
     }
 }
 
@@ -1014,7 +1012,8 @@ pub fn report_unavailable(e: &DefaultsError) {
     if let Some(p) = bootstrap::state_dir().map(|d| d.join(bootstrap::ERROR_FILE)) {
         crate::discard::harmless(crate::limits::ensure_private_dir(p.parent().unwrap_or(Path::new(".")))); // keep: the write that follows fails too and the stderr line stands
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        crate::discard::harmless(std::fs::write(p, format!("{now} {line}\n"))); // keep: the same line already went to stderr
+        let style = crate::atomic::Style { bootstrap: true, ..crate::atomic::Style::default() };
+        crate::discard::harmless(crate::atomic::write_styled(p, format!("{now} {line}\n"), style)); // keep: the same line already went to stderr
     }
 }
 

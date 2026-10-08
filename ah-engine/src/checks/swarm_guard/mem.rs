@@ -11,8 +11,7 @@
 
 use crate::checks::guardkit::jsre;
 use crate::defaults;
-use std::io::Read;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Where the memory figures come from; a test supplies its own.
 pub trait MemSource {
@@ -27,33 +26,9 @@ pub struct HostMem;
 
 /// Run `path` and return its standard output, or `None` when it fails, times out or prints non-UTF-8-lossy nothing.
 fn run_capture(path: &str, timeout: Duration) -> Option<String> {
-    let mut child = std::process::Command::new(path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut out = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut b = Vec::new();
-        crate::discard::harmless(out.read_to_end(&mut b)); // keep: reaping or draining a child or thread that already ended
-        b
-    });
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let bytes = reader.join().ok()?;
-                return status.success().then(|| String::from_utf8_lossy(&bytes).to_string());
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(defaults::millis("swarm_guard.vm_stat_poll_ms")),
-            _ => {
-                crate::discard::harmless(child.kill()); // keep: reaping or draining a child or thread that already ended
-                crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
-                return None;
-            }
-        }
-    }
+    // bounded end to end, its group killed on timeout, spawn errors logged (review findings 7 and 8)
+    let o = crate::proc::run(std::process::Command::new(path), path, timeout, defaults::millis("swarm_guard.vm_stat_poll_ms")).ok()?;
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).to_string())
 }
 
 /// `availableBytes()` on macOS from the output of the memory tool.

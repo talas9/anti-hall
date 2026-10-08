@@ -22,7 +22,7 @@ use crate::store::{KeyCache, Store};
 use crate::telemetry::{self, Telemetry};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -115,6 +115,14 @@ pub struct Shared {
     pub rlimit: String,
     /// True once the daemon stopped taking new clients.
     pub draining: AtomicBool,
+    /// The exit timer of a clean drain (`daemon.drain_max_ms`) is armed.
+    drain_timer: AtomicBool,
+    /// The drain reached the database close (everything queued is being committed): the exit timers wait for it.
+    db_closing: AtomicBool,
+    /// The database close finished.
+    db_closed: AtomicBool,
+    /// The exit timer of a forced drain (`daemon.drain_grace_ms`) is armed.
+    forced_timer: AtomicBool,
     /// ms since `started` at the last accept-loop iteration
     loop_beat: AtomicU64,
     /// per worker: 0 = idle, else (ms since `started`) + 1 when it picked up the current request
@@ -168,6 +176,10 @@ impl Shared {
             started: Instant::now(),
             rlimit: "off".into(),
             draining: AtomicBool::new(false),
+            drain_timer: AtomicBool::new(false),
+            db_closing: AtomicBool::new(false),
+            db_closed: AtomicBool::new(false),
+            forced_timer: AtomicBool::new(false),
             loop_beat: AtomicU64::new(0),
             busy_since: (0..workers).map(|_| AtomicU64::new(0)).collect(),
             stall_ms: AtomicU64::new(0),
@@ -374,6 +386,8 @@ impl Shared {
             "budget_trips": self.stats.budget_trips.load(SeqCst),
             "panics": self.stats.panics.load(SeqCst),
             "reply_write_errors": REPLY_WRITE_ERRORS.load(SeqCst),
+            "accept_errors": ACCEPT_ERRORS.load(SeqCst),
+            "slow_replies": SLOW_REPLIES.load(SeqCst),
             "rejected_peers": self.stats.rejected.load(SeqCst),
             "starts": self.starts,
             "restarts": self.starts.saturating_sub(1),
@@ -432,6 +446,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         Some("metrics") => (Reply::Ok(sh.metrics_json(args).to_string()), After::Continue),
         Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
         Some("schedule") => (Reply::Ok(schedule_ctl(sh, args).to_string()), After::Continue),
+        Some("devswarm") => (Reply::Ok(crate::dswire::cli::ctl(args)), After::Continue),
         Some("gate") => (Reply::Ok(crate::gate::global().report().to_string()), After::Continue),
         Some("telemetry") => (Reply::Ok(sh.telemetry_json(args).to_string()), After::Continue),
         Some("ping") => (Reply::Ok(format!("pong {} {}", sh.own, std::process::id())), After::Continue),
@@ -610,6 +625,9 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     if let Some(root) = meta.root.as_deref() {
         sh.config.offer_root(root);
     }
+    if let Some(ms) = meta.deadline_ms {
+        crate::deadline::client_deadline(ms);
+    }
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
     crate::load::note_request(&meta.event, p.get("session_id").and_then(|v| v.as_str()));
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
@@ -777,7 +795,8 @@ fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static st
     }
 }
 
-fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) {
+/// Write the reply; false when it could not be written (the client is gone or stopped reading).
+fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) -> bool {
     if let Err(e) = s.set_write_timeout(Some(cfg.write_deadline)) {
         health::log_event("reply", "set_timeout", &e.to_string());
     }
@@ -786,8 +805,13 @@ fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) {
     if let Err(e) = s.write_all(&r.frame()) {
         REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
         health::log_event("reply", "write_failed", &e.to_string());
+        return false;
     }
+    true
 }
+
+/// Replies finished after their client's deadline had passed (slow but healthy; counted apart from failures).
+pub static SLOW_REPLIES: AtomicU64 = AtomicU64::new(0);
 
 /// Replies the daemon could not write to their client (the client then falls back to Node).
 pub static REPLY_WRITE_ERRORS: AtomicU64 = AtomicU64::new(0);
@@ -798,15 +822,19 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     crate::load::take_scan();
     crate::load::take_request();
     let cfg = sh.cfg();
+    // the client stops waiting `client.deadline_ms` after it sent the request, which is about when it was accepted
+    crate::deadline::begin(started.checked_sub(wait).unwrap_or(started));
     let req = match read_request(&mut s, &cfg) {
         Ok(r) => r,
         Err(why) => {
             sh.stats.errors.fetch_add(1, SeqCst);
             sh.telemetry.with_metrics(|m| m.inc("errors", &[]));
             write_reply(&mut s, &Reply::Err(why.into()), &cfg);
+            crate::deadline::end();
             return After::Continue;
         }
     };
+    telemetry::stage_begin();
     let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
         Ok(r) => r,
         Err(_) => {
@@ -817,7 +845,21 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             (Reply::Err(defaults::text("msg.reply_internal").into()), After::Continue)
         }
     };
-    write_reply(&mut s, &reply, &cfg);
+    let late = crate::deadline::remaining() == Some(Duration::ZERO);
+    let delivered = write_reply(&mut s, &reply, &cfg);
+    if delivered {
+        sh.telemetry.stage_commit();
+    } else {
+        // the client never read it: what the request recorded is not a decision anyone saw (review finding 4)
+        telemetry::stage_discard();
+    }
+    crate::deadline::settle_staged(delivered);
+    if late {
+        // answered after the client's deadline: slow but healthy, which is not a failure of the engine
+        SLOW_REPLIES.fetch_add(1, SeqCst);
+        sh.telemetry.with_metrics(|m| m.inc("slow_replies", &[]));
+    }
+    crate::deadline::end();
     let (event, session) = crate::load::take_request();
     sh.load.record(&crate::load::Sample {
         at_ms: health::now_ms(),
@@ -857,22 +899,42 @@ fn worker(sh: Arc<Shared>, idx: usize) {
     }
 }
 
-/// Stop taking new clients (unlink the socket) and arm the forced-exit timer. Idempotent.
+/// Stop taking new clients (unlink the socket) and arm an exit timer, so no drain can last forever (a worker stuck
+/// during a drain would otherwise keep the process alive holding the singleton lock, with its socket already gone, and
+/// every new daemon would give up on the lock). A forced drain (stall, stuck worker, memory cap) is cut off after
+/// `daemon.drain_grace_ms`; any other drain (handoff, stop, idle, SIGTERM) after `daemon.drain_max_ms`. A forced drain
+/// that follows a clean one arms the shorter timer too.
 fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
-    if sh.draining.swap(true, SeqCst) {
+    let first = !sh.draining.swap(true, SeqCst);
+    if first {
+        crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
+    }
+    let armed = if forced_exit { &sh.forced_timer } else { &sh.drain_timer };
+    if armed.swap(true, SeqCst) {
         return;
     }
-    crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
-    if forced_exit {
-        let why = why.to_string();
-        let grace = defaults::millis("daemon.drain_grace_ms");
-        std::thread::spawn(move || {
-            std::thread::sleep(grace);
-            health::clear_marker();
-            health::log_event("exit", "forced", &why);
-            std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
-        });
+    let why = why.to_string();
+    let grace = defaults::millis(if forced_exit { "daemon.drain_grace_ms" } else { "daemon.drain_max_ms" });
+    let code = if forced_exit { "forced" } else { "drain_timeout" };
+    let sh = sh.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(grace);
+        // a close that started in time is not cut: its commits are the one thing a drain must not lose (bounded, so a wedged close still ends)
+        await_close(&sh.db_closing, &sh.db_closed, defaults::millis("daemon.close_max_ms"), defaults::millis("daemon.drain_poll_ms"));
+        crate::proc::kill_all();
+        health::clear_marker();
+        health::log_event("exit", code, &why);
+        std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
+    });
+}
+
+/// The exit timer fired: when the database close is under way, wait for it to finish (at most `max`). True when it finished.
+fn await_close(closing: &AtomicBool, closed: &AtomicBool, max: Duration, poll: Duration) -> bool {
+    let start = Instant::now();
+    while closing.load(SeqCst) && !closed.load(SeqCst) && start.elapsed() < max {
+        std::thread::sleep(poll);
     }
+    closed.load(SeqCst)
 }
 
 fn watchdog(sh: Arc<Shared>) {
@@ -880,9 +942,14 @@ fn watchdog(sh: Arc<Shared>) {
     let mut last_idle_check = Instant::now();
     loop {
         std::thread::sleep(sh.cfg().watchdog_tick);
-        if sh.draining.load(SeqCst) {
+        // the stall and stuck checks keep running while draining: a drain waits for its workers, so one stuck there would
+        // otherwise hold the process (and the singleton lock) until the drain timer. Once a forced exit is scheduled there
+        // is nothing left to decide, and a check that kept firing would log the same failure every tick (each one counts
+        // toward the client's crash-loop rule).
+        if sh.forced_timer.load(SeqCst) {
             continue;
         }
+        let draining = sh.draining.load(SeqCst);
         let cfg = sh.cfg();
         let now = sh.ms();
         if now.saturating_sub(sh.loop_beat.load(SeqCst)) > cfg.stall.as_millis() as u64 {
@@ -899,6 +966,9 @@ fn watchdog(sh: Arc<Shared>) {
                 begin_drain(&sh, defaults::text("msg.exit_reason_stuck"), true);
                 break;
             }
+        }
+        if draining {
+            continue;
         }
         // Idle exit is off unless configured (D7): the engine stays resident so the scheduler and mailbox keep running.
         if let Some(idle) = cfg.idle_exit
@@ -936,10 +1006,59 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Option<std::fs::File>, 
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             return Ok(Some(f));
         }
-        if start.elapsed() > defaults::millis("daemon.lock_wait_ms") || crate::client::ping(sock).is_some() {
+        if crate::client::ping(sock).is_some() {
+            return Ok(None);
+        }
+        if start.elapsed() > defaults::millis("daemon.lock_wait_ms") {
+            // the lock is held but nothing answers on the socket: a daemon that is draining, wedged, or gone without
+            // releasing it; this start gives up (the client falls back to Node), and the line says why
+            let holder = std::fs::read_to_string(lock_path).unwrap_or_default();
+            health::log_event(
+                "lock_wait",
+                "no_daemon",
+                &defaults::render("msg.log_lock_no_daemon", &[("path", &lock_path.display()), ("pid", &holder.trim())]),
+            );
             return Ok(None);
         }
         std::thread::sleep(defaults::millis("daemon.lock_poll_ms"));
+    }
+}
+
+/// What a running daemon stands on: its state directory, the lock file it holds (by inode) and its executable.
+struct Footing {
+    dir: std::path::PathBuf,
+    lock: std::path::PathBuf,
+    lock_ino: u64,
+    exe: Option<std::path::PathBuf>,
+}
+
+impl Footing {
+    /// Why the daemon has lost its footing, if it has: the state directory or the executable is gone, or the lock file is
+    /// gone or replaced (a new daemon could then start beside this one).
+    fn lost(&self) -> Option<&'static str> {
+        if !self.dir.is_dir() {
+            return Some("state_dir_gone");
+        }
+        if std::fs::metadata(&self.lock).map(|m| m.ino()).ok() != Some(self.lock_ino) {
+            return Some("lock_gone");
+        }
+        if self.exe.as_ref().is_some_and(|e| !e.exists()) {
+            return Some("binary_gone");
+        }
+        None
+    }
+}
+
+/// Every `daemon.orphan_check_ms`, check the daemon's [`Footing`]; once lost, log why and drain (a clean exit). The idle exit
+/// (`daemon.idle_exit_s`) covers a daemon nobody talks to; this covers one whose files were removed under it.
+fn footing_watch(sh: Arc<Shared>, footing: Footing) {
+    while !sh.draining.load(SeqCst) {
+        std::thread::sleep(defaults::millis("daemon.orphan_check_ms"));
+        if let Some(why) = footing.lost() {
+            health::log_event("exit", "orphaned", why);
+            begin_drain(&sh, why, false);
+            return;
+        }
     }
 }
 
@@ -1052,7 +1171,16 @@ pub fn serve() {
         let s = sh.clone();
         std::thread::spawn(move || watchdog(s));
     }
+    {
+        // the daemon's footing, as it is now: a test (or an uninstall) that removes the state dir or the binary under a
+        // running daemon must not leave it running for hours with nothing that can reach or stop it
+        let footing =
+            Footing { dir: paths::dir(), lock: lock_path.clone(), lock_ino: lock.metadata().map(|m| m.ino()).unwrap_or(0), exe: std::env::current_exe().ok() };
+        let s = sh.clone();
+        std::thread::spawn(move || footing_watch(s, footing));
+    }
     start_scheduler(&sh);
+    start_devswarm(&sh);
     {
         let s = sh.clone();
         std::thread::spawn(move || telemetry_flusher(s));
@@ -1061,12 +1189,29 @@ pub fn serve() {
     if let Some(db) = &sh.db {
         sh.telemetry.flush(); // telemetry recorded since the last flush (D78)
         sh.telemetry.snapshot_metrics(); // the counters as they are at exit
+        sh.db_closing.store(true, SeqCst);
         db.close(); // everything queued commits before the process exits
+        sh.db_closed.store(true, SeqCst);
     }
+    crate::proc::kill_all(); // a scheduled job still running must not outlive its daemon
     health::clear_marker();
     health::log_event("exit", "clean", "drained");
     // The socket was unlinked when the drain began (a successor may already own that path); the lock
     // file is never removed (that would let two daemons hold different inodes) and is released on exit.
+}
+
+/// Start the DevSwarm wiring (lane dswire): nothing at all unless DevSwarm is detected and `devswarm_rt.mode` is not `off`.
+fn start_devswarm(sh: &Arc<Shared>) {
+    let Some(home) = defaults::env_var("home").map(std::path::PathBuf::from) else { return };
+    let weak = Arc::downgrade(sh);
+    let sink: crate::dswire::Sink = Arc::new(move |f| {
+        if let Some(sh) = weak.upgrade() {
+            sh.telemetry.with_metrics(|m| f(m));
+        }
+    });
+    let s = sh.clone();
+    let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || s.draining.load(SeqCst));
+    crate::dswire::Wire::start(&home, &paths::dir(), sh.db.clone(), sink, stop); // None is the inert case: nothing was started
 }
 
 /// Start the scheduler's ticker (D33). Its engine-side jobs (maintain, backup, the metrics snapshot, the spool drain)
@@ -1085,6 +1230,7 @@ fn start_scheduler(sh: &Arc<Shared>) {
                 Ok(serde_json::json!({"applied": r.applied, "quarantined": r.quarantined, "left": r.left}).to_string())
             }
             "telemetry_rollup" => sh.telemetry.rollup(sh.cfg().effective.num("telemetry.retention_days")).map(|v| v.to_string()),
+            "devswarm_reconcile" => Ok(crate::dswire::scheduled()),
             "noop" => Ok(String::new()),
             other => Err(defaults::render("msg.schedule_unknown_action", &[("job", &"-"), ("action", &other)])),
         }
@@ -1146,17 +1292,36 @@ fn telemetry_flusher(sh: Arc<Shared>) {
 fn next_start_count() -> u64 {
     let p = paths::dir().join("starts");
     let n = std::fs::read_to_string(&p).ok().and_then(|t| t.trim().parse::<u64>().ok()).unwrap_or(0) + 1;
-    if let Err(e) = std::fs::write(&p, n.to_string()) {
+    if let Err(e) = crate::atomic::write(&p, n.to_string()) {
         // the restart count would stall, and `restarts` in `status` with it
         health::log_event("start", "count_write_failed", &e.to_string());
     }
     n
 }
 
+/// An `accept` that failed for a reason other than "nothing pending" (review finding 5): counted in `accept_errors` (by
+/// errno), logged at most once per `discard.log_interval_ms`, then the loop sleeps `daemon.accept_error_backoff_ms` before
+/// polling again, so a full descriptor table cannot turn the accept loop into a busy spin.
+fn accept_error(sh: &Shared, e: &std::io::Error) -> String {
+    let code = io_code(e);
+    ACCEPT_ERRORS.fetch_add(1, SeqCst);
+    sh.telemetry.with_metrics(|m| m.inc("accept_errors", &[("code", code.as_str())]));
+    crate::discard::note("daemon_accept_error", &defaults::render("msg.log_accept_error", &[("code", &code), ("err", e)]));
+    std::thread::sleep(defaults::millis("daemon.accept_error_backoff_ms"));
+    code
+}
+
+/// Accept calls that failed with something other than "nothing pending" (EMFILE and the like), since start.
+pub static ACCEPT_ERRORS: AtomicU64 = AtomicU64::new(0);
+
 fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
     let me = limits::uid();
     let fd = listener.as_raw_fd();
     let mut last_check = Instant::now();
+    // accept failures since the last accepted connection: (OS error code, count)
+    let mut failing: Option<(String, u64)> = None;
+    // a connection was accepted after the last accept error (the recovery line is then due)
+    let mut accepted_since_error = false;
     loop {
         sh.loop_beat.store(sh.ms(), SeqCst);
         let st = sh.stall_ms.swap(0, SeqCst);
@@ -1172,8 +1337,21 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         // SAFETY: `pfd` is a live, writable `pollfd` and the count passed is 1.
         unsafe { libc::poll(&mut pfd, 1, timeout) };
         let mut got_any = false;
-        // WouldBlock (or a transient error) ends the inner loop: back to poll
-        while let Ok((s, _)) = listener.accept() {
+        loop {
+            let s = match listener.accept() {
+                Ok((s, _)) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break, // nothing pending: back to poll
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => continue,
+                Err(e) => {
+                    // EMFILE, ENFILE, ENOBUFS, ENOMEM: the connection stays pending, so poll fires again at once and the loop
+                    // would spin at full CPU until a descriptor frees up. Count it, say why (rate-limited), and back off.
+                    let n = failing.as_ref().map_or(0, |f| f.1);
+                    failing = Some((accept_error(sh, &e), n + 1));
+                    accepted_since_error = false;
+                    break;
+                }
+            };
+            accepted_since_error = true;
             got_any = true;
             if !limits::peer_allowed(&s, me) {
                 sh.stats.rejected.fetch_add(1, SeqCst);
@@ -1197,6 +1375,14 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 drop(q);
                 sh.cv.notify_one();
             }
+        }
+        // accepts work again: say so once the line can be written (the descriptor table may still be full right after one
+        // accept, and the failure's own line may never have reached the log); kept and retried each round until written
+        if accepted_since_error
+            && let Some((code, n)) = failing.take()
+            && !health::try_log_event("accept", "recovered", &defaults::render("msg.log_accept_recovered", &[("n", &n), ("code", &code)]))
+        {
+            failing = Some((code, n));
         }
         if draining && !got_any && lk(&sh.queue).is_empty() && sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) {
             return; // queue drained, nothing in flight
@@ -1226,6 +1412,31 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_exit_timer_waits_for_a_close_in_progress_and_gives_up_on_a_wedged_one() {
+        // P2-6: the drain timer used to process::exit mid db.close, losing queued commits
+        let (closing, closed) = (AtomicBool::new(true), AtomicBool::new(false));
+        let t = Instant::now();
+        let done = std::thread::scope(|sc| {
+            sc.spawn(|| {
+                std::thread::sleep(Duration::from_millis(150));
+                closed.store(true, SeqCst);
+            });
+            await_close(&closing, &closed, Duration::from_secs(20), Duration::from_millis(5))
+        });
+        assert!(done && t.elapsed() >= Duration::from_millis(150), "waited for the close: {:?}", t.elapsed());
+        // no close under way: the timer fires at once
+        let (idle, never) = (AtomicBool::new(false), AtomicBool::new(false));
+        let t = Instant::now();
+        assert!(!await_close(&idle, &never, Duration::from_secs(20), Duration::from_millis(5)));
+        assert!(t.elapsed() < Duration::from_secs(1));
+        // a close that never finishes is cut at the bound
+        let (stuck_closing, stuck) = (AtomicBool::new(true), AtomicBool::new(false));
+        let t = Instant::now();
+        assert!(!await_close(&stuck_closing, &stuck, Duration::from_millis(200), Duration::from_millis(5)));
+        assert!(t.elapsed() >= Duration::from_millis(200));
+    }
     fn shared() -> Shared {
         let rs = RuleSet::parse(r#"{"version":1,"rules":[{"pattern":"BAD","action":"deny","message":"no"}]}"#).unwrap();
         Shared::new(Config::from_env(), "0.1.0", rs, "/nonexistent/rules.json".into())
@@ -1270,6 +1481,7 @@ mod tests {
                     plan: vec![],
                     cfg: String::new(),
                     payload_sha1: None,
+                    deadline_ms: None,
                 };
                 let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
                 let rows: Vec<serde_json::Value> = serde_json::from_str(ok(&handle_request(d.as_bytes(), &sh).0)).unwrap();

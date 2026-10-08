@@ -238,7 +238,7 @@ fn cases() -> Vec<Case> {
             cwd: "child",
             argv: hb(&["--summary", "with a descriptor"]),
             extra: vec![],
-            setup: Box::new(|h, fx| with_descriptor(h, fx)),
+            setup: Box::new(with_descriptor),
             native: true,
             expect: vec!["\"sent\":true"],
             code: 0,

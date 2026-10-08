@@ -90,6 +90,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
+        self.stop(); // also on a panic: the daemon a test started never outlives it (its dir goes only afterwards)
         ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }

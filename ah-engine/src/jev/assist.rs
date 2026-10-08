@@ -1414,8 +1414,7 @@ mod tests {
     use crate::jev::cascade::{TEST_MODEL, inflight};
     use crate::judge::cli::CliOutcome;
 
-    /// Serializes the tests that install a model double.
-    static MODEL_LOCK: Mutex<()> = Mutex::new(());
+    use crate::jev::cascade::MODEL_LOCK;
 
     fn home(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ah-cascade-{tag}-{}", std::process::id()));

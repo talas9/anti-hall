@@ -6,8 +6,9 @@
 //!
 //! 1. **A block wins.** One blocking entry (exit 2, or JSON that blocks per `dispatch.blocking_decisions`) is the answer,
 //!    byte for byte. Several blocking entries are one block that carries every one of their reasons, in table order, as the
-//!    host shows the model each of them ([`blocked`]); the JSON advisories of the entries that did not block are not shown,
-//!    their plain stdout is kept where the host would not show it to the model either.
+//!    host shows the model each of them ([`blocked`]); the JSON advisories of the entries that did not block ride along (their
+//!    messages and contexts join the block's) only when the block exits 0: on exit 2 the host ignores stdout JSON and reads
+//!    stderr alone, so there the advisories (and notes) are carried in the JSON for parity but the host does not read them.
 //! 2. **One answer passes through.** When exactly one entry printed anything or exited non-zero, its output, stderr
 //!    and exit code are the answer, byte for byte.
 //! 3. **Several answers merge.** Each stdout must be a JSON object. Their fields are merged in order of first
@@ -300,9 +301,9 @@ fn set(obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) {
 /// stderr even on exit 2), else the stderr of the exit 2.
 ///
 /// - When a block is JSON, the first such object is the answer, its reason field set to the joined reasons and its
-///   `systemMessage` to the joined messages of every block; the exit code is 2 when any block exited 2. On exit 2 stderr is
-///   the joined reasons too (the host reads stderr when the JSON's block is a `permissionDecision`), else the blocks' own
-///   stderr. The plain stdout of an exit-2 block cannot share stdout with the JSON; the host does not show it to the model.
+///   `systemMessage` to the joined messages of every block; the exit code is 2 when any block exited 2. On exit 2 the host
+///   ignores stdout JSON and reads stderr alone, which is the joined reasons; so the advisories and notes that ride in the JSON
+///   take effect only when the block exits 0 (then stderr is the blocks' own stderr). The plain stdout of an exit-2 block cannot share stdout with the JSON; the host does not show it to the model.
 /// - Otherwise the answer is exit 2 with the joined reasons on stderr, and the plain stdout of the blocks, in order, on
 ///   stdout (the host does not read it on exit 2, as for one hook).
 ///
@@ -310,8 +311,8 @@ fn set(obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) {
 /// give the model such text on an event whose plain stdout is not context (Stop, PreToolUse, ...), so it is kept where it says
 /// nothing to the model either: after the blocks' plain stdout on an exit 2 without JSON, else on stderr after the rest, as
 /// [`sequential`] moves plain text next to JSON. It is only added when there is some: a lone block stays byte for byte.
-fn blocked(blockers: &[&HookResult], notes: &str) -> Combined {
-    if let ([one], "") = (blockers, notes) {
+fn blocked(blockers: &[&HookResult], advisories: &[&HookResult], notes: &str) -> Combined {
+    if let ([one], [], "") = (blockers, advisories, notes) {
         return verbatim(one);
     }
     let reasons: Vec<String> = blockers.iter().map(|r| block_reason(r)).filter(|s| !s.is_empty()).collect();
@@ -328,18 +329,61 @@ fn blocked(blockers: &[&HookResult], notes: &str) -> Combined {
     } else if let Some((_, Ordered::Obj(hso))) = top.iter_mut().find(|(k, _)| k == HSO_KEY) {
         set(hso, HSO_REASON, Ordered::Str(joined));
     }
-    let messages: Vec<String> =
-        blockers.iter().filter_map(|r| parse_object(&r.out)?.get(TOP_MSG)?.as_str().map(str::to_string)).filter(|m| !m.is_empty()).collect();
+    // The host reads each hook's own answer, so an advisory of a hook that did not block is shown next to the block: its
+    // message joins the block's messages, its context joins the block's context (or is added when the block has none).
+    let say = |r: &&HookResult, key: &str| parse_object(&r.out).and_then(|o| o.get(key).and_then(|v| v.as_str().map(str::to_string)));
+    let mut messages: Vec<String> = blockers.iter().filter_map(|r| say(r, TOP_MSG)).filter(|m| !m.is_empty()).collect();
+    messages.extend(advisories.iter().filter_map(|r| say(r, TOP_MSG)).filter(|m| !m.is_empty()));
+    // On exit 2 the host reads stderr as the reason the model sees, so a note must never go there; the JSON stays one object,
+    // so the notes ride in the system message (shown to the user, not the model).
+    if exit2 && !notes.trim().is_empty() {
+        messages.push(notes.trim_end_matches('\n').to_string());
+    }
     if !messages.is_empty() {
         set(&mut top, TOP_MSG, Ordered::Str(messages.join(defaults::text("dispatch.message_joiner"))));
     }
+    let hso_of = |r: &&HookResult| match parse_object(&r.out).and_then(|o| o.get(HSO_KEY).cloned()) {
+        Some(Ordered::Obj(h)) => Some(h),
+        _ => None,
+    };
+    let ctx_of = |h: &Vec<(String, Ordered)>| h.iter().find(|(k, _)| k == HSO_CTX).and_then(|(_, v)| v.as_str().map(str::to_string)).unwrap_or_default();
+    let extra: Vec<(String, String)> = advisories
+        .iter()
+        .filter_map(|r| {
+            let h = hso_of(r)?;
+            let ev = h.iter().find(|(k, _)| k == HSO_EVENT).and_then(|(_, v)| v.as_str().map(str::to_string)).unwrap_or_default();
+            Some((ev, ctx_of(&h)))
+        })
+        .filter(|(_, c)| !c.is_empty())
+        .collect();
+    if !extra.is_empty() {
+        let join = defaults::text("dispatch.context_joiner");
+        let adv = extra.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>().join(join);
+        match top.iter_mut().find(|(k, _)| k == HSO_KEY) {
+            Some((_, Ordered::Obj(h))) => {
+                let have = ctx_of(h);
+                set(h, HSO_CTX, Ordered::Str(if have.is_empty() { adv } else { format!("{have}{join}{adv}") }));
+            }
+            _ => {
+                set(&mut top, HSO_KEY, Ordered::Obj(vec![(HSO_EVENT.to_string(), Ordered::Str(extra[0].0.clone())), (HSO_CTX.to_string(), Ordered::Str(adv))]))
+            }
+        }
+    }
     let mut err = if exit2 { reasons_err } else { blockers.iter().map(|r| r.err.as_str()).collect() };
-    err.push_str(notes);
+    if !exit2 {
+        err.push_str(notes);
+    }
     Combined::Answer(Outcome { out: format!("{}\n", Ordered::Obj(top).to_json()), code: if exit2 { 2 } else { 0 }, err })
 }
 
 /// Combine the results of one event's entries, given in table order.
 pub fn combine(results: &[HookResult]) -> Combined {
+    combine_for(results, false)
+}
+
+/// [`combine`], with `keep_advisories` for an event whose hooks each give their own answer to the host and whose block must not
+/// hide the others' advisories (Stop and SubagentStop, `dispatch.stop_events`).
+pub fn combine_for(results: &[HookResult], keep_advisories: bool) -> Combined {
     let blockers: Vec<&HookResult> = results.iter().filter(|r| blocks(r)).collect();
     if !blockers.is_empty() {
         let notes: String = results
@@ -347,7 +391,9 @@ pub fn combine(results: &[HookResult]) -> Combined {
             .filter(|r| r.code == Some(0) && !blocks(r) && !r.out.trim().is_empty() && parse_object(&r.out).is_none())
             .map(|r| if r.out.ends_with('\n') { r.out.clone() } else { format!("{}\n", r.out) })
             .collect();
-        return blocked(&blockers, &notes);
+        let advisories: Vec<&HookResult> =
+            results.iter().filter(|r| keep_advisories && r.code == Some(0) && !blocks(r) && parse_object(&r.out).is_some()).collect();
+        return blocked(&blockers, &advisories, &notes);
     }
     let active: Vec<&HookResult> = results.iter().filter(|r| r.active()).collect();
     let answer = match active.len() {
@@ -521,6 +567,24 @@ mod tests {
         assert_eq!(o, Outcome { code: 2, out: note.into(), err: "B\n".into() });
         // no note: a lone block is byte for byte
         assert_eq!(ans(combine(&[r("a", 0, "", "x\n"), r("b", 2, "o", "B\n")])), Outcome { code: 2, out: "o".into(), err: "B\n".into() });
+    }
+
+    #[test]
+    fn a_stop_advisory_rides_along_with_a_block_and_a_note_never_reaches_the_reason() {
+        let block = "{\"decision\":\"block\",\"reason\":\"B\"}\n";
+        let adv = "{\"systemMessage\":\"adv\"}\n";
+        // exit 0 JSON block: the advisory's message is kept next to the block
+        let o = ans(combine_for(&[r("a", 0, adv, ""), r("b", 0, block, "")], true));
+        assert_eq!(o, Outcome { code: 0, out: "{\"decision\":\"block\",\"reason\":\"B\",\"systemMessage\":\"adv\"}\n".into(), err: String::new() });
+        // exit 2 JSON block (the host reads stderr as the reason): a plain note must not land on stderr, it joins the message
+        let note = "[x] note\n";
+        let o = ans(combine(&[r("a", 0, note, ""), r("b", 2, block, "B\n")]));
+        assert_eq!(o.err, "B\n", "stderr is the reason and nothing else");
+        assert!(o.out.contains("\"systemMessage\":\"[x] note\""), "{}", o.out);
+        // an advisory context joins the block's own context
+        let ctx = "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"c1\"}}\n";
+        let o = ans(combine_for(&[r("a", 0, ctx, ""), r("b", 0, block, "")], true));
+        assert!(o.out.contains("\"additionalContext\":\"c1\""), "{}", o.out);
     }
 
     #[test]

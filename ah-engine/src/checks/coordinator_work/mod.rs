@@ -104,6 +104,7 @@ impl Check for CoordinatorWorkGuard {
             let root = opts.get("plugin_root").and_then(Value::as_str).or_else(|| env.get(defaults::env_name("plugin_root"))).unwrap_or_default();
             return Some(post::decide_post(payload, &Settings::from_env(env), env, root).unwrap_or(Verdict::Allow));
         }
-        Some(decide(payload).unwrap_or(Verdict::Allow))
+        let root = opts.get("plugin_root").and_then(Value::as_str).or_else(|| env.get(defaults::env_name("plugin_root"))).unwrap_or_default();
+        Some(post::decide_pre(payload, &Settings::from_env(env), env, root).unwrap_or(Verdict::Allow))
     }
 }

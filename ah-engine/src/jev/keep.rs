@@ -113,7 +113,7 @@ pub fn maybe_warn_budget(home: &Path, watch: bool, usd_per_day: Option<f64>, cos
     if let Some(d) = path.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write that follows fails too when the directory is missing
     }
-    crate::discard::logged("jev_keep_write", std::fs::write(&path, body));
+    crate::discard::logged("jev_keep_write", crate::atomic::write(&path, body)); // a reader never sees a half-written budget
     warning
 }
 

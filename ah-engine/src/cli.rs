@@ -58,6 +58,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("config", cmd_config),
         ("schedule", cmd_schedule),
         ("jev", crate::jev::cli::run_cmd),
+        ("jev_sweep", cmd_jev_sweep),
         ("migrate", crate::migrate::cli::run_migrate),
         ("doctor", crate::doctor::run_doctor),
         ("jev-setup", crate::setup::cmd_jev_setup),
@@ -65,6 +66,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("harvest", crate::setup::cmd_harvest),
         ("briefing", crate::setup::cmd_briefing),
         ("mesh", crate::mesh::run_cmd),
+        ("devswarm", crate::dswire::cli::run),
     ]
 }
 
@@ -559,6 +561,14 @@ fn config_text(v: &Value) -> String {
         out.push(defaults::render("msg.cfg_show_setting", &[("key", k), ("value", &s["value"]), ("source", &s["source"].as_str().unwrap_or(""))]));
     }
     out.join("\n")
+}
+
+/// The `jev_sweep` scheduled job (`ah-engine jev_sweep --json`): one evidence sweep of the supervisor's Jev questions.
+fn cmd_jev_sweep(_p: &Parsed) -> i32 {
+    match defaults::env_var("home") {
+        Some(h) => crate::jev::sweep::run(std::path::Path::new(&h)),
+        None => 64,
+    }
 }
 
 #[cfg(test)]

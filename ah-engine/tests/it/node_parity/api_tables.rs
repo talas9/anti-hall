@@ -132,7 +132,7 @@ pub const OTHER: [&str; 8] = [
     "a.py\n",
 ];
 
-pub const SH: [&str; 78] = [
+pub const SH: [&str; 94] = [
     "cat > a.py <<'EOF'\nimport os\nos.fakefn()\nEOF",
     "cat > a.py <<EOF\nimport os\nos.fakefn()\nEOF",
     "cat >> a.py <<'EOF'\nimport os\nos.fakefn()\nEOF",
@@ -211,6 +211,22 @@ pub const SH: [&str; 78] = [
     "echo x > \u{e9}.py",
     "echo x > a.py",
     "x=.py; echo \"import os; os.fake\" > a$x",
+    "echo \"imp\"\"ort os; os.fake\" > a.py",
+    "echo 'Arr''ay.fakeStatic(1);' > a.js",
+    "echo 'i\\mport os; os.fake' > a.py",
+    "printf '%s\\n%s\\n' 'import os' 'os.fake' > a.py",
+    "printf '%2$s\\n%1$s\\n' 'os.fake' 'import os' > a.py",
+    "cat > a.py <<'EOF'\nfrom os import fakefn\nEOF",
+    "cat > a.ts <<'EOF'\nconst c = require('crypto');\nc.nope();\nEOF",
+    "echo \"x = 1\" > a.py",
+    "echo \"x = 1\" > a.js 2>&1",
+    "grep -n foo a.py > out.txt",
+    "ls a.py 2>/dev/null",
+    "sed -n 1,5p a.py | head",
+    "cat a.py | grep import > out.txt",
+    "echo 'const o = 1;' | tee a.ts",
+    "cat > a.py <<'EOF'\nimport collections\nx = collections.OrderedDict()\nEOF",
+    "echo \"import numpy\" > a.py; numpy.fake",
 ];
 
 pub const PATCHES: [&str; 19] = [

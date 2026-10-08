@@ -66,7 +66,11 @@ doc = "Size control (D26): move consumed messages, expired key values and old im
 value = { args = "", read_only = false, status = "implemented" }
 [cmd.jev]
 doc = "The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line."
-value = { args = "<ask|status|scrub>", read_only = false, status = "implemented" }
+value = { args = "<ask|status|scrub|evidence>", read_only = false, status = "implemented" }
+
+[cmd.jev_sweep]
+doc = "The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions (plan, transcript, git, CI, mesh) and runs them through the evidence gate, writing its telemetry; takes no arguments and reads the home directory from the environment."
+value = { args = "", read_only = false, status = "implemented" }
 
 [cmd.migrate]
 doc = "The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state, gate-intent and auto-archive state forward-migrations, the settings.json migration from the legacy jev.json and the stored plugin options, the Jev triage cache repair, the lock scratch sweep and the retention sweeps, with Node's report; `--dry-run` previews and writes nothing. Steps that need the DevSwarm stores are left to the Node doctor while DevSwarm state is present."
@@ -107,6 +111,10 @@ value = { args = "[--to <dir>]", read_only = false, status = "implemented" }
 [cmd.restore]
 doc = "Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then swap the databases."
 value = { args = "<snapshot-dir>", read_only = false, status = "implemented" }
+
+[cmd.devswarm]
+doc = "The DevSwarm realtime state and owner actions (lane dswire). `status` and `line` print the live workspace state and its statusline segment; `advisory --session <id>` prints the changes that session has not seen; `archive --id <ws> --request <id>`, `plan-prune --older-than <days>` and `prune --confirm-ids <a,b> --plan <nonce>` run the hivecontrol actions at the owner's request, with Node's preconditions, ledger and confirmations. Roles (devswarm_wire.role_matrix): reads are open; the acting verbs are for the main session only. `create` and `merge` are left to scripts/devswarm.js (exit 75). Inert (exit 64) where DevSwarm is absent."
+value = { args = "<status|line|advisory --session <id>|archive --id <ws> --request <id>|plan-prune --older-than <days>|prune --confirm-ids <ids> --plan <nonce>>", read_only = false, status = "implemented" }
 
 [cmd.mesh]
 doc = "DevSwarm mesh store (D45). With `--db`: the read-only S0 reader (stage S0): `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node; the store is opened read-only and never created, and a journal-backed store is refused. Without `--db` (stage 2): the words after `mesh` are a `scripts/devswarm.js` argv, run per the `mesh.engine_writes` switch: off (default) hands it to Node; shadow lets Node act and replays it on a scratch copy of the store, logging the comparison (mesh_write.shadow_log); on answers `send`, `mesh read`, `mesh history` and `roster --ack` in the engine (same output, exit code, store rows and locks as Node) and hands everything it cannot reproduce exactly, and every other verb, to Node."

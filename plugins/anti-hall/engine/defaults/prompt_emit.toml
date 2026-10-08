@@ -450,3 +450,35 @@ value = "targets"
 [idle_sweep.re_codex_id]
 doc = "A Codex agent id (JavaScript regex, ignore case)."
 value = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+[verify_first.primary_nudge]
+doc = "The sentence appended to the rotating line in a DevSwarm Primary session that may dispatch workspaces (byte-identical to the Node hook's DEVSWARM_PRIMARY_NUDGE)."
+value = "DEVSWARM PRIMARY: the workspace is your TOP fan-out tier. A workspace-scale MATTER (a feature/fix/deploy - multi-step, own branch, own review) gets its OWN child workspace: `node scripts/devswarm.js spawn <branch> -p \"<brief>\"` - not a subagent. Subagents/Explore/Workflow are for lookups, single commands, scoped investigations and review passes."
+
+[verify_first.primary_joiner]
+doc = "Text between the rotating line and the Primary sentence."
+value = " "
+
+[verify_first.dedupe_normalized_primary]
+doc = "What the block is normalized to before hashing when the Primary sentence is appended."
+value = "VERIFY-FIRST+PRIMARY"
+
+[verify_first.no_ws_pattern]
+doc = "JavaScript regex source (flags: i) matched against a repo's CLAUDE.md / AGENTS.md: a match means the repo forbids workspaces for real work, so the Primary dispatch-tier text is withheld."
+value = "no\\s+workspaces?\\s+for\\s+real\\s+work"
+
+[verify_first.no_ws_docs]
+doc = "The repo documents searched for the no-workspaces rule, at each directory level, in this order."
+value = ["CLAUDE.md", "AGENTS.md"]
+
+[verify_first.no_ws_levels]
+doc = "How many directory levels the search climbs from the working directory (it stops earlier at the repository root)."
+value = 8
+
+[verify_first.sw_no_ws_repos]
+doc = "Where the list of repos that forbid workspaces is read from (jev.dispatchTierNoWorkspaceRepos, comma separated: absolute path prefixes, directory names, or * for all)."
+value = { section = "jev", key = "dispatchTierNoWorkspaceRepos", env = "ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", default = "" }
+
+[verify_first.sw_no_ws_detect]
+doc = "Where the switch of the CLAUDE.md / AGENTS.md no-workspaces detection is read from (jev.dispatchTierDetectNoWorkspaces, default on)."
+value = { section = "jev", key = "dispatchTierDetectNoWorkspaces", env = "ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES", default = true }

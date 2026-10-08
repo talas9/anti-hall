@@ -384,7 +384,22 @@ fn cases() -> Vec<Case> {
     // what the engine hands to Node
     v.push(case("actionable-pending-defers", vec![with(task(1, "Free and pending", "pending", json!({})))]).defer());
     v.push(case("actionable-pending-demand-off", vec![with(task(1, "Free and pending", "pending", json!({})))]).env("ANTIHALL_DISPATCH_DEMAND", "0"));
-    v.push(case("devswarm-primary-defers", vec![step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").defer());
+    let rule = "# Rules\n\nNo workspaces for real work.\n";
+    v.push(case("devswarm-primary", vec![step(p("s1")), step(p("s1")), step(p("s1"))]).env("DEVSWARM_REPO_ID", "r"));
+    v.push(case("devswarm-primary-no-session", vec![step(json!({"prompt":"x","cwd":"/tmp/proj"}))]).env("DEVSWARM_REPO_ID", "r"));
+    v.push(case("devswarm-primary-no-cwd", vec![step(json!({"session_id":"s9","prompt":"x"}))]).env("DEVSWARM_REPO_ID", "r").defer());
+    v.push(case("devswarm-primary-repeat-0", vec![step(p("s1")), step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").env("ANTIHALL_INJECTION_REPEAT_EVERY", "0"));
+    v.push(case("devswarm-primary-repeat-2", vec![step(p("s1")), step(p("s1")), step(p("s1")), step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").env("ANTIHALL_INJECTION_REPEAT_EVERY", "2"));
+    v.push(case("devswarm-primary-doc", vec![step(p("s1")), step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").file("proj/CLAUDE.md", rule));
+    v.push(case("devswarm-primary-agents-doc", vec![step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").file("proj/AGENTS.md", rule));
+    v.push(case("devswarm-primary-doc-parent", vec![step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").file("CLAUDE.md", rule));
+    v.push(case("devswarm-primary-detect-off", vec![step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").env("ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES", "0").file("proj/CLAUDE.md", rule));
+    v.push(case("devswarm-primary-list", vec![step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").env("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "proj"));
+    v.push(case("devswarm-primary-tier-text-off", vec![step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").env("ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT", "0"));
+    v.push(case("devswarm-primary-mode-on", vec![step(p("s1"))]).env("ANTIHALL_DEVSWARM_SUPERVISOR", "on"));
+    v.push(case("devswarm-primary-after-compact", vec![step(p("s1")), step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").file("t.jsonl", ""));
+    v.push(case("devswarm-primary-relative-cwd", vec![step(json!({"session_id":"s1","prompt":"x","cwd":"proj"}))]).env("DEVSWARM_REPO_ID", "r").defer());
+    v.push(case("devswarm-primary-cwd-number", vec![step(json!({"session_id":"s1","prompt":"x","cwd":5}))]).env("DEVSWARM_REPO_ID", "r"));
     v.push(case("devswarm-child-answers", vec![step(p("s1"))]).env("DEVSWARM_REPO_ID", "r").env("DEVSWARM_SOURCE_BRANCH", "b"));
     v.push(
         case("dispatch-tier-outcome-pending-defers", vec![with(task(1, "x", "completed", json!({})))])

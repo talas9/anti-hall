@@ -6,7 +6,8 @@
 //!  3. anything else (no daemon, BUSY, ERR, timeout, truncated/corrupt frame, breaker open, crash-loop
 //!     stop) runs the Node hook given by `--fallback` / `AH_ENGINE_FALLBACK`, whose stdout and exit
 //!     code are passed through;
-//!  4. only when there is no usable fallback does the client print nothing and exit 0.
+//!  4. only when there is no usable fallback does the client print nothing and exit 0, except on a guard event with no
+//!     fallback given at all, which exits `dispatch.defer_exit` (an engine that cannot answer never reads as an allow there).
 //!
 //! The fallback command is chosen by the caller (argument or env), never by anything in the payload.
 use crate::config::ClientConfig;
@@ -28,13 +29,19 @@ pub enum Exch {
     Reply(Kind, String),
     /// Nothing is listening (no socket, or connection refused).
     Absent,
-    /// A daemon may be there but the exchange failed: timeout, unsafe socket, bad or truncated frame.
+    /// A daemon may be there but the exchange failed: unsafe socket, bad or truncated frame, an I/O error.
     Failed(String),
+    /// No reply within the deadline. A daemon that still answers a ping is slow but healthy, which the client counts apart
+    /// from failures (review finding 4); one that does not is a failure.
+    Slow(String),
 }
 
 fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration) -> Exch {
     match std::fs::symlink_metadata(sock) {
-        Err(_) => return Exch::Absent,
+        // only a missing socket means "no daemon"; any other error (EACCES, ENOTDIR, ELOOP, EIO) is a failed exchange the
+        // breaker counts and the log names, never a reason to start a second daemon (review finding 18)
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Exch::Absent,
+        Err(e) => return Exch::Failed(defaults::render("msg.client_io", &[("what", &defaults::text("msg.client_what_stat")), ("err", &e)])),
         Ok(m) if !m.file_type().is_socket() || m.uid() != crate::limits::uid() => return Exch::Failed(defaults::text("msg.client_bad_socket").into()),
         Ok(_) => {}
     }
@@ -53,7 +60,8 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration) -> Exch {
     }
     let mut buf = Vec::new();
     if let Err(e) = (&mut s).take(defaults::num("client.max_reply")).read_to_end(&mut buf) {
-        return Exch::Failed(defaults::render("msg.client_io", &[("what", &"read"), ("err", &e)]));
+        let why = defaults::render("msg.client_io", &[("what", &"read"), ("err", &e)]);
+        return if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) { Exch::Slow(why) } else { Exch::Failed(why) };
     }
     match frame::decode(&buf) {
         Ok((k, body)) => Exch::Reply(k, body),
@@ -69,7 +77,7 @@ pub fn exchange(sock: &Path, payload: &[u8], deadline: Duration) -> Exch {
     std::thread::spawn(move || {
         crate::discard::harmless(tx.send(exchange_inner(&sock, &payload, deadline))); // keep: the receiver is gone; nobody is waiting for the result
     });
-    rx.recv_timeout(deadline + defaults::millis("client.deadline_slack_ms")).unwrap_or_else(|_| Exch::Failed(defaults::text("msg.client_timeout").into()))
+    rx.recv_timeout(deadline + defaults::millis("client.deadline_slack_ms")).unwrap_or_else(|_| Exch::Slow(defaults::text("msg.client_timeout").into()))
 }
 
 fn ctl_body(sock: &Path, req: &str) -> Option<String> {
@@ -82,6 +90,11 @@ fn ctl_body(sock: &Path, req: &str) -> Option<String> {
 /// `Some("pong <version> <pid>")` when a daemon answers on `sock`.
 pub fn ping(sock: &Path) -> Option<String> {
     ctl_body(sock, "CTL ping\n").filter(|r| r.starts_with("pong "))
+}
+
+/// True when a daemon answers a ping on `sock` within `deadline`.
+fn ping_within(sock: &Path, deadline: Duration) -> bool {
+    matches!(exchange(sock, b"CTL ping\n", deadline), Exch::Reply(Kind::Ok, b) if b.starts_with("pong "))
 }
 
 /// Send a control verb (`reload`, `stop`, `ping`, `status`).
@@ -114,12 +127,23 @@ pub fn ctl_json(verb: &str) -> Option<serde_json::Value> {
     ctl(verb).and_then(|s| serde_json::from_str(&s).ok())
 }
 
-/// Start a detached daemon (unless the `nospawn` env var is set); `None` when it could not be started.
+/// Start a detached daemon (unless the `nospawn` env var is set); `None` when it could not be started, logged with the OS
+/// error (review finding 18: a fork that failed with EAGAIN or ENOMEM was not on record).
 pub fn spawn_daemon() -> Option<std::process::Child> {
     if defaults::env_var("nospawn").is_some() {
         return None;
     }
-    let mut cmd = Command::new(std::env::current_exe().ok()?);
+    let spawn_failed = |e: std::io::Error| {
+        log_fallback("spawn_fail", &format!("os{}", e.raw_os_error().unwrap_or(0)), &defaults::render("msg.log_daemon_spawn_failed", &[("err", &e)]));
+    };
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            spawn_failed(e);
+            return None;
+        }
+    };
+    let mut cmd = Command::new(exe);
     // The allocator's purge tuning is read by jemalloc at its first allocation, so it has to be in the environment the daemon starts with.
     let conf = defaults::text("daemon.malloc_conf");
     if !conf.is_empty() {
@@ -129,7 +153,13 @@ pub fn spawn_daemon() -> Option<std::process::Child> {
             }
         }
     }
-    cmd.arg(defaults::text("health.serve_arg")).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().ok()
+    match cmd.arg(defaults::text("health.serve_arg")).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn() {
+        Ok(child) => Some(child),
+        Err(e) => {
+            spawn_failed(e);
+            None
+        }
+    }
 }
 
 /// What `hook` prints and exits with.
@@ -164,6 +194,15 @@ pub(crate) fn attempt(payload: &[u8], cfg: &ClientConfig, have_fallback: bool) -
         Exch::Reply(_, _) => None, // BUSY or ERR: the daemon shed or could not evaluate it
         Exch::Failed(why) => {
             health::breaker_failure(cfg, &why);
+            None
+        }
+        Exch::Slow(why) => {
+            // a quick ping tells a slow request on a healthy daemon (not a reason to bypass the engine) from a hung one
+            if ping_within(&sock, defaults::millis("client.slow_probe_ms")) {
+                health::log_event("client_slow", "engine", &why);
+            } else {
+                health::breaker_failure(cfg, &why);
+            }
             None
         }
         Exch::Absent => {
@@ -433,6 +472,9 @@ fn run_bytes(raw: Vec<u8>, force_fallback: bool, fallback: Option<&Path>, rest: 
         return Outcome { out: String::new(), code: 0, err: String::new() };
     }
     let cfg = ClientConfig::from_env();
+    // a guard event with no Node fallback to hand over to: an engine that cannot answer must not read as an allow (review
+    // finding 21), and an infrastructure fault is no verdict, so the wrapper is asked to run the Node hooks
+    let guard_without_fallback = fallback.is_none() && event_from_lossy(&raw).is_some_and(|e| guarded(&e));
     let text = std::str::from_utf8(&raw).ok();
     if !force_fallback
         && let Some(raw) = text
@@ -446,7 +488,11 @@ fn run_bytes(raw: Vec<u8>, force_fallback: bool, fallback: Option<&Path>, rest: 
         None => FallbackInput::Bytes(raw),
     };
     let unavailable = || {
-        if fail_closed_unavailable {
+        if guard_without_fallback {
+            let why = defaults::text("msg.client_no_fallback_guard");
+            log_fallback("fallback_fail", "none", why);
+            Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{why}\n") }
+        } else if fail_closed_unavailable {
             Outcome { out: String::new(), code: 2, err: defaults::text("msg.client_fallback_unavailable").into() }
         } else if force_fallback {
             Outcome { out: String::new(), code: 0, err: defaults::text("msg.client_fallback_unavailable").into() }
@@ -539,6 +585,20 @@ fn panic_code(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use crate::checks::Exact;
+
+    #[test]
+    fn only_a_missing_socket_means_no_daemon() {
+        // review finding 18: any stat error read as "no daemon" (and started a second one); only ENOENT does now
+        let dir = std::env::temp_dir().join(format!("ah-client-stat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("not-a-dir");
+        std::fs::write(&file, "x").unwrap();
+        assert!(matches!(exchange_inner(&dir.join("absent.sock"), b"CTL ping\n", Duration::from_millis(200)), Exch::Absent));
+        // a path through a regular file: ENOTDIR, a broken install, not an absent daemon
+        let r = exchange_inner(&file.join("e.sock"), b"CTL ping\n", Duration::from_millis(200));
+        assert!(matches!(r, Exch::Failed(_)), "{r:?}");
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
+    }
 
     #[test]
     fn a_panic_with_a_node_fallback_given_defers_to_it() {

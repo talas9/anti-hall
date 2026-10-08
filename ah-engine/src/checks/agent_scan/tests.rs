@@ -130,6 +130,7 @@ fn names_agent_matches_a_full_id_or_a_unique_prefix() {
         teammate: false,
         last_seen_ms: f64::NAN,
         pending_message: false,
+        spawn_input: None,
     };
     launched.set("a1b2c3d4e5f60718", rec());
     launched.set("a1b2c3d4ffffffff", rec());

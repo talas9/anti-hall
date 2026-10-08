@@ -505,9 +505,9 @@
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd apply_patch 'ls -la'","payload":{"tool_input":{"command":"ls -la"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell apply_patch 'ls -la'","payload":{"tool_input":{"command":"ls -la"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 apply_patch 'ls -la'","payload":{"tool_input":{"command":"ls -la"},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash 'python a.py'","payload":{"tool_input":{"command":"python a.py"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash 'python a.py'","payload":{"tool_input":{"command":"python a.py"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash 'python a.py'","payload":{"tool_input":{"command":"python a.py"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash 'python a.py'","payload":{"tool_input":{"command":"python a.py"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash 'python a.py'","payload":{"tool_input":{"command":"python a.py"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch 'python a.py'","payload":{"tool_input":{"command":"python a.py"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch 'python a.py'","payload":{"tool_input":{"command":"python a.py"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch 'python a.py'","payload":{"tool_input":{"command":"python a.py"},"tool_name":"apply_patch"}}
@@ -517,33 +517,33 @@
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch 'cat > x.py <<EOF\\nimport os\\nEOF'","payload":{"tool_input":{"command":"cat > x.py <<EOF\nimport os\nEOF"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch 'cat > x.py <<EOF\\nimport os\\nEOF'","payload":{"tool_input":{"command":"cat > x.py <<EOF\nimport os\nEOF"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch 'cat > x.py <<EOF\\nimport os\\nEOF'","payload":{"tool_input":{"command":"cat > x.py <<EOF\nimport os\nEOF"},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash 'echo hi > foo.JS'","payload":{"tool_input":{"command":"echo hi > foo.JS"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash 'echo hi > foo.JS'","payload":{"tool_input":{"command":"echo hi > foo.JS"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash 'echo hi > foo.JS'","payload":{"tool_input":{"command":"echo hi > foo.JS"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash 'echo hi > foo.JS'","payload":{"tool_input":{"command":"echo hi > foo.JS"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash 'echo hi > foo.JS'","payload":{"tool_input":{"command":"echo hi > foo.JS"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch 'echo hi > foo.JS'","payload":{"tool_input":{"command":"echo hi > foo.JS"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch 'echo hi > foo.JS'","payload":{"tool_input":{"command":"echo hi > foo.JS"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch 'echo hi > foo.JS'","payload":{"tool_input":{"command":"echo hi > foo.JS"},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash 'sed -i s/a/b/ f.tsx'","payload":{"tool_input":{"command":"sed -i s/a/b/ f.tsx"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash 'sed -i s/a/b/ f.tsx'","payload":{"tool_input":{"command":"sed -i s/a/b/ f.tsx"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash 'sed -i s/a/b/ f.tsx'","payload":{"tool_input":{"command":"sed -i s/a/b/ f.tsx"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash 'sed -i s/a/b/ f.tsx'","payload":{"tool_input":{"command":"sed -i s/a/b/ f.tsx"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash 'sed -i s/a/b/ f.tsx'","payload":{"tool_input":{"command":"sed -i s/a/b/ f.tsx"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch 'sed -i s/a/b/ f.tsx'","payload":{"tool_input":{"command":"sed -i s/a/b/ f.tsx"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch 'sed -i s/a/b/ f.tsx'","payload":{"tool_input":{"command":"sed -i s/a/b/ f.tsx"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch 'sed -i s/a/b/ f.tsx'","payload":{"tool_input":{"command":"sed -i s/a/b/ f.tsx"},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash \"git commit -m 'fix a.js'\"","payload":{"tool_input":{"command":"git commit -m 'fix a.js'"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash \"git commit -m 'fix a.js'\"","payload":{"tool_input":{"command":"git commit -m 'fix a.js'"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash \"git commit -m 'fix a.js'\"","payload":{"tool_input":{"command":"git commit -m 'fix a.js'"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash \"git commit -m 'fix a.js'\"","payload":{"tool_input":{"command":"git commit -m 'fix a.js'"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash \"git commit -m 'fix a.js'\"","payload":{"tool_input":{"command":"git commit -m 'fix a.js'"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch \"git commit -m 'fix a.js'\"","payload":{"tool_input":{"command":"git commit -m 'fix a.js'"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch \"git commit -m 'fix a.js'\"","payload":{"tool_input":{"command":"git commit -m 'fix a.js'"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch \"git commit -m 'fix a.js'\"","payload":{"tool_input":{"command":"git commit -m 'fix a.js'"},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash 'echo .py'","payload":{"tool_input":{"command":"echo .py"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash 'echo .py'","payload":{"tool_input":{"command":"echo .py"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash 'echo .py'","payload":{"tool_input":{"command":"echo .py"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash 'echo .py'","payload":{"tool_input":{"command":"echo .py"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash 'echo .py'","payload":{"tool_input":{"command":"echo .py"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch 'echo .py'","payload":{"tool_input":{"command":"echo .py"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch 'echo .py'","payload":{"tool_input":{"command":"echo .py"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch 'echo .py'","payload":{"tool_input":{"command":"echo .py"},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash '.mjs'","payload":{"tool_input":{"command":".mjs"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash '.mjs'","payload":{"tool_input":{"command":".mjs"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash '.mjs'","payload":{"tool_input":{"command":".mjs"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash '.mjs'","payload":{"tool_input":{"command":".mjs"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash '.mjs'","payload":{"tool_input":{"command":".mjs"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch '.mjs'","payload":{"tool_input":{"command":".mjs"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch '.mjs'","payload":{"tool_input":{"command":".mjs"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch '.mjs'","payload":{"tool_input":{"command":".mjs"},"tool_name":"apply_patch"}}
@@ -577,27 +577,27 @@
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd apply_patch ''","payload":{"tool_input":{"command":""},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell apply_patch ''","payload":{"tool_input":{"command":""},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 apply_patch ''","payload":{"tool_input":{"command":""},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash 'tee x.pyi'","payload":{"tool_input":{"command":"tee x.pyi"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash 'tee x.pyi'","payload":{"tool_input":{"command":"tee x.pyi"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash 'tee x.pyi'","payload":{"tool_input":{"command":"tee x.pyi"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash 'tee x.pyi'","payload":{"tool_input":{"command":"tee x.pyi"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash 'tee x.pyi'","payload":{"tool_input":{"command":"tee x.pyi"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch 'tee x.pyi'","payload":{"tool_input":{"command":"tee x.pyi"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch 'tee x.pyi'","payload":{"tool_input":{"command":"tee x.pyi"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch 'tee x.pyi'","payload":{"tool_input":{"command":"tee x.pyi"},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash 'x.jsx'","payload":{"tool_input":{"command":"x.jsx"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash 'x.jsx'","payload":{"tool_input":{"command":"x.jsx"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash 'x.jsx'","payload":{"tool_input":{"command":"x.jsx"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash 'x.jsx'","payload":{"tool_input":{"command":"x.jsx"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash 'x.jsx'","payload":{"tool_input":{"command":"x.jsx"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch 'x.jsx'","payload":{"tool_input":{"command":"x.jsx"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch 'x.jsx'","payload":{"tool_input":{"command":"x.jsx"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch 'x.jsx'","payload":{"tool_input":{"command":"x.jsx"},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash 'node a.cjs'","payload":{"tool_input":{"command":"node a.cjs"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash 'node a.cjs'","payload":{"tool_input":{"command":"node a.cjs"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash 'node a.cjs'","payload":{"tool_input":{"command":"node a.cjs"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash 'node a.cjs'","payload":{"tool_input":{"command":"node a.cjs"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash 'node a.cjs'","payload":{"tool_input":{"command":"node a.cjs"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch 'node a.cjs'","payload":{"tool_input":{"command":"node a.cjs"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch 'node a.cjs'","payload":{"tool_input":{"command":"node a.cjs"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch 'node a.cjs'","payload":{"tool_input":{"command":"node a.cjs"},"tool_name":"apply_patch"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd Bash 'a.ts'","payload":{"tool_input":{"command":"a.ts"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd Bash 'a.ts'","payload":{"tool_input":{"command":"a.ts"},"tool_name":"Bash"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell Bash 'a.ts'","payload":{"tool_input":{"command":"a.ts"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 Bash 'a.ts'","payload":{"tool_input":{"command":"a.ts"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"cmd-noshell1 Bash 'a.ts'","payload":{"tool_input":{"command":"a.ts"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd apply_patch 'a.ts'","payload":{"tool_input":{"command":"a.ts"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell apply_patch 'a.ts'","payload":{"tool_input":{"command":"a.ts"},"tool_name":"apply_patch"}}
 {"env":{"ANTIHALL_SHELL_WRITE_CHECKS":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"cmd-noshell1 apply_patch 'a.ts'","payload":{"tool_input":{"command":"a.ts"},"tool_name":"apply_patch"}}
@@ -644,14 +644,14 @@
 {"env":{},"event":"PreToolUse","expect":{"v":"allow"},"n":"w a.js lodash nohome","payload":{"tool_input":{"content":"const l = require('lodash');\n","file_path":"a.js"},"tool_name":"Write"}}
 {"env":{"HOME":"{HOME}"},"event":"Stop","expect":{"v":"allow"},"n":"w a.js lodash event-stop","payload":{"tool_input":{"content":"const l = require('lodash');\n","file_path":"a.js"},"tool_name":"Write"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"files":{".anti-hall/settings.json":"{\"guards\": {\"apiGuard\": false}}"},"n":"bash py off-file","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"files":{".anti-hall/settings.json":"{\"guards\": {\"apiGuard\": true}}"},"n":"bash py on-file","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"files":{".anti-hall/settings.json":"{\"guards\": {\"apiGuardThirdparty\": true}}"},"n":"bash py third-file","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"files":{".anti-hall/settings.json":"{\"guards\": {\"apiGuard\": true}}"},"n":"bash py on-file","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"files":{".anti-hall/settings.json":"{\"guards\": {\"apiGuardThirdparty\": true}}"},"n":"bash py third-file","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"files":{".anti-hall/settings.json":"{\"guards\": {\"shellWriteChecks\": false}}"},"n":"bash py shell-file-off","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_API_GUARD_THIRDPARTY":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"bash py third-env","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
-{"env":{"ANTIHALL_API_GUARD_THIRDPARTY":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"n":"bash py third-env0","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_API_GUARD_THIRDPARTY":"1","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"bash py third-env","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
+{"env":{"ANTIHALL_API_GUARD_THIRDPARTY":"0","HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"n":"bash py third-env0","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"files":{".anti-hall/skip.json":"{\"api-guard\": 99999999999999}"},"n":"bash py skip","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"files":{".anti-hall/skip.json":"{\"api-guard\": 1}"},"n":"bash py skip-expired","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"files":{".anti-hall/skip.json":"{\"api-guard\": 1}"},"n":"bash py skip-expired","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
 {"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"files":{".anti-hall/skip.json":"{\"all\": 99999999999999}"},"n":"bash py skip-all","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
-{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"defer"},"files":{".anti-hall/settings.json":"{nope"},"n":"bash py badjson","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
-{"env":{},"event":"PreToolUse","expect":{"v":"defer"},"n":"bash py nohome","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
-{"env":{"HOME":"{HOME}"},"event":"Stop","expect":{"v":"defer"},"n":"bash py event-stop","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"PreToolUse","expect":{"v":"allow"},"files":{".anti-hall/settings.json":"{nope"},"n":"bash py badjson","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
+{"env":{},"event":"PreToolUse","expect":{"v":"allow"},"n":"bash py nohome","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}
+{"env":{"HOME":"{HOME}"},"event":"Stop","expect":{"v":"allow"},"n":"bash py event-stop","payload":{"tool_input":{"command":"echo > a.py"},"tool_name":"Bash"}}

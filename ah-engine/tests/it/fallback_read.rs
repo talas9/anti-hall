@@ -156,13 +156,18 @@ fn over_cap_stdin_runs_the_fallback_with_the_original_bytes() {
     assert_eq!(e.seen(), input);
 }
 
+fn defer() -> i32 {
+    ah_engine::defaults::num("dispatch.defer_exit") as i32
+}
+
 #[test]
 fn forced_fallback_without_a_usable_fallback_fails_closed() {
     let input = b"{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm test \xff\"}}";
+    // no fallback given at all: handed over (dispatch.defer_exit), never an allow and not a block (review finding 21)
     let e = Env::new("nofb", "cat >/dev/null\n");
     let (out, err, code) = e.call_bytes_with(input, 30_000, None, None);
-    assert_eq!((out.as_str(), code), ("", 2));
-    assert!(err.contains("fallback unavailable"), "{err:?}");
+    assert_eq!((out.as_str(), code), ("", defer()));
+    assert!(err.contains("no Node fallback was given"), "{err:?}");
 
     let e = Env::new("badnode", "cat >/dev/null\n");
     let (out, err, code) = e.call_bytes_with(input, 30_000, Some(e.dir.join("fb.sh")), Some("/nonexistent/ah-node"));
@@ -199,8 +204,8 @@ fn over_cap_prefix_event_classification_keeps_configured_key_precedence() {
     input.resize(max + 4096, b'x');
     let e = Env::new("nofb-overcap-precedence", "cat >/dev/null\n");
     let (out, err, code) = e.call_bytes_with(&input, 30_000, None, None);
-    assert_eq!((out.as_str(), code), ("", 2));
-    assert!(err.contains("fallback unavailable"), "{err:?}");
+    assert_eq!((out.as_str(), code), ("", defer()), "classified a guard event (PreToolUse wins)");
+    assert!(err.contains("no Node fallback was given"), "{err:?}");
 }
 
 #[test]
@@ -215,14 +220,16 @@ fn exact_stdin_cap_is_not_over_cap_but_one_more_byte_is() {
     assert_eq!(exact.len(), max);
 
     let e = Env::new("exact-cap", "cat >/dev/null\n");
-    // With no daemon and no fallback, valid JSON at exactly the stdin cap keeps the historical fail-open outcome.
-    assert_eq!(e.call_bytes_with(&exact, 30_000, None, None), (String::new(), String::new(), 0));
+    // With no daemon and no fallback, a guard event is handed over either way (review finding 21); the cap only decides
+    // whether the engine was asked first
+    let (out, _, code) = e.call_bytes_with(&exact, 30_000, None, None);
+    assert_eq!((out.as_str(), code), ("", defer()));
 
     let mut over = exact;
     over.push(b'\n');
     let (out, err, code) = e.call_bytes_with(&over, 30_000, None, None);
-    assert_eq!((out.as_str(), code), ("", 2));
-    assert!(err.contains("fallback unavailable"), "{err:?}");
+    assert_eq!((out.as_str(), code), ("", defer()));
+    assert!(err.contains("no Node fallback was given"), "{err:?}");
 }
 
 #[test]

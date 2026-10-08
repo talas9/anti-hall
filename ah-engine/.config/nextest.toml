@@ -10,8 +10,15 @@ inherits = "default"
 slow-timeout = { period = "60s", terminate-after = 5 }
 retries = 0
 
-# Known slow tests: the Node parity sweeps (api_guard alone runs ~244 s) and the memory soak exceed 180 s when the machine
-# is loaded. Only these get a longer budget (10 min); every other test keeps the 180 s default above.
+# The heavy sweeps: each drives a pool of 4-8 workers that spawn Node and the engine for thousands of scenarios. Run side by
+# side with every other sweep they oversubscribe the cores (load 18-25 on 16 cores) and their wall time is the machine's, not
+# theirs: api_guard took 476 s alone on golive2 and 501 s on live2 side by side, and 600+ s in the full gate. They share one
+# test group so at most three run at once (nextest starts a test's timer when it starts, so a queued sweep loses nothing),
+# and get 15 min each; every other test keeps the 180 s default above.
+[test-groups]
+heavy-sweeps = { max-threads = 3 }
+
 [[profile.default.overrides]]
-filter = 'test(api_guard_matches_node) | test(codex_nudge_matches_node) | test(handover_resume_matches_node) | test(session_checks_match_node) | test(precompact_snapshot_matches_node) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz) | test(no_defaults_text_is_embedded) | test(the_sweep_selects_and_logs_exactly_what_node_does) | test(the_tracker_says_and_writes_exactly_what_node_does) | test(coordinator_post) | test(git_audit) | test(/^memory_soak::/)'
-slow-timeout = { period = "120s", terminate-after = 5 }
+filter = 'test(api_guard_matches_node) | test(codex_nudge_matches_node) | test(handover_resume_matches_node) | test(session_checks_match_node) | test(precompact_snapshot_matches_node) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz) | test(no_defaults_text_is_embedded) | test(the_sweep_selects_and_logs_exactly_what_node_does) | test(the_tracker_says_and_writes_exactly_what_node_does) | test(coordinator_post_matches_node) | test(git_audit_matches_node) | test(failure_nudge_matches_node) | test(edit_guard_matches_node) | test(codex_quota_detect_matches_node) | test(the_scan_matches_node_on_random_transcripts) | test(/^memory_soak::/)'
+test-group = 'heavy-sweeps'
+slow-timeout = { period = "180s", terminate-after = 5 }

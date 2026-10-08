@@ -219,7 +219,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `repo-self-drift` check (KB hook and skill counts against disk, model-KB audit age): the scan, its cache and the once-per-finding advisories identical to Node | implemented | D29-D31, D74, D75 |
 | Built-in `defect-nudge` check (once-a-day count of unfinished defect reports or of rulings on this project's reports; counts and ages only): identical to Node; a payload without a working directory or a date the time zone can change defers | implemented | D29-D31, D74, D75 |
 | Built-in `progress-prune` check (archive stale per-session progress files into the history ledger before removing them; weekly gitignore reminder using the client's git): identical to Node; an unusual `.git` file or a slow git defers | implemented | D29-D31, D59, D74, D75 |
-| Built-in `swarm-guard` check (Agent and Task spawns): memory-pressure and spawn-rate blocks with exact parity, the spawn log, trip log and lock file shared with the Node hook; a spawn that might get the shared-tree advisory defers before it is recorded | implemented, advisory deferred | D29-D31, D75 |
+| Built-in `swarm-guard` check (Agent and Task spawns): memory-pressure and spawn-rate blocks with exact parity, the spawn log, trip log and lock file shared with the Node hook; a spawn that might get the shared-tree advisory defers before it is recorded | implemented, shared-tree advisory decided natively | D29-D31, D75 |
 | Built-in `devswarm-comms-guard` check (SendMessage to a DevSwarm workspace peer) with exact parity; a relative session directory defers | implemented | D29-D31, D75 |
 | Built-in `jev-weekly-scorecard`, `jev-review-reminder` and `repair-on-reload` checks: silent when provably nothing would be printed or written, otherwise the Node hook runs (report, review log, migrations and the detached repair stay in Node, D60); no state file is written by the engine | implemented in part | D29-D31, D60, D75 |
 | Built-in `devswarm-child-gate`, `devswarm-parent-reply-tracker` and `devswarm-child-drain` checks: answer what the Node hook decides before it reads anything but the environment, the settings files and the payload (switch off, skip recorded, not a DevSwarm child, a Bash call that is not a `devswarm send`); a child workspace, and a plausible send, defer to Node, which owns the mailbox store reads, the stop budgets, the hivecontrol probe and the reply-state writes (needs the mailbox in the engine, D45) | implemented in part | D29-D31, D45, D74 |
@@ -256,6 +256,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Update checks as a scheduled job | planned (D44) | D44 |
 | One dispatcher call per hook event: `ah-engine hook --event`, built-in checks in the engine, the other hooks as Node, combined in table order; the plugin's `hooks.json` is one thin trigger per event, generated from the table (`ah-engine gen-hooks`) | implemented on the `engine-proto` branch (the installed plugin changes when it merges) | D58, D75, D87 |
 | Per-event and per-entry hook configuration (`[events.<Event>]`, `[entries.<id>]`: mode, max_rules, budget_ms, order) and the `when` predicate | implemented | D87 |
+| Realtime watch facility (`src/watch/`, generic: directories and file names in, coalesced batches or one rescan signal out): OS file events (FSEvents, inotify) by default, stat polling for 9p, drvfs, NFS, SMB, FUSE and any directory the OS refuses; bounded queue; no consumer wired yet | implemented | R1 (DECISIONS.md, "Realtime watch backend") |
 | Porting the other guards | planned (D57) | D57 |
 | Prebuilt binaries for every Unix target, release automation (prepare, publish, sha256 and attestation), the plugin-side bootstrap with a pinned lock | implemented (see Install, go-live and rollback) | D56, D64, D67, D68 |
 
@@ -353,10 +354,11 @@ arguments, is in the generated reference.
 | `ah-engine reset` | no | Clear the breaker, crash-loop stop and failure record. |
 | `ah-engine maintain` | no | Size control: move inactive rows to `archive.db`, prune derived bookkeeping, checkpoint and VACUUM; prints a report. |
 | `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. A write the engine cannot take is spooled. |
-| `ah-engine jev <ask\|status\|scrub>` | no | The optional Jev lane: `ask` reads JSON requests (one per stdin line) and prints each decision, `status` prints the resolved settings and every integration's mode (never a key), `scrub` redacts secrets from JSON strings. |
+| `ah-engine jev <ask\|status\|scrub\|evidence>` | no | The optional Jev lane: `evidence` reads one evidence pack per stdin line and prints what the evidence gate did with it (see "The evidence gate" under the Jev lane); `ask` reads JSON requests (one per stdin line) and prints each decision, `status` prints the resolved settings and every integration's mode (never a key), `scrub` redacts secrets from JSON strings. |
 | `ah-engine doctor [--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet]` | no | The health check and repair, in the Node doctor's layout and finding texts. Read-only unless `--repair`; `--dry-run` previews; `--migrations-only` with either prints only the migration report as one JSON line. Each built-in guard is run in-process on a crafted payload (a payload the engine defers is run through its Node hook, as the dispatcher would; with no Node it is reported as a deferral, never a pass). |
 | `ah-engine migrate [--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | The persisted-state migrations and sweeps of the Node doctor's repair pass, with Node's report: legacy progress/history copy, reply-state, gate-intent and auto-archive forward migrations, the `settings.json` migration, the Jev triage cache repair, the lock scratch sweep and the retention sweeps. Idempotent, fail-open, no repo file is moved or deleted. |
 | `ah-engine jev-setup <status\|enable\|disable\|set-key\|bind-generic-key\|mode>` | no | The port of `scripts/jev-setup.js` (D81): `status` prints the resolved settings, key presence yes or no, every integration's mode, the calls of the last 24 hours and the Vercel credit balance; `enable`, `disable`, `bind-generic-key` and `mode <integration> on\|shadow\|off` write `settings.json` and `jev.json` the way the script does (read-modify-write, key order kept, a corrupt file moved aside); `set-key` reads the key from stdin only and writes the key file with mode 0600. `test` and the review verbs stay in the Node script. |
+| `ah-engine jev_sweep` | no | The scheduled `jev_sweep` job (`jev::sweep`): one evidence sweep of the supervisor's Jev questions; it gathers the WaitKind, Loop and StepMap facts (plan, transcript, git, CI, mesh), runs them through the evidence gate (`jev_evidence.toml`) and records the telemetry; Node no longer asks those three questions. Takes no arguments; the home directory comes from the environment. |
 | `ah-engine capability-scan [--root <plugin dir>]` | yes | The port of `scripts/capability-scan.js` (D81): which opt-in capabilities of a plugin tree are shipped and active on this machine, and how to enable the ones that are not; prints the JSON report, then one line per capability. |
 | `ah-engine harvest [--dir <path>] [--stale-days <n>]` | yes | The port of `scripts/harvest-debt.js` (D81): the `anti-hall: <ceiling>, <when>` debt markers of a code tree, flagged when they have no payback trigger or sit in files git says are old. |
 | `ah-engine briefing [--root <plugin dir>]` | yes | The port of `scripts/briefing.js` (D81): a derived inventory of a plugin tree, the registered hooks by event with the purpose from each hook's header comment, the skills, the DevSwarm substrate and the docs map. |
@@ -368,13 +370,14 @@ arguments, is in the generated reference.
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
 | `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 | `ah-engine mesh <roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | Read a repo's DevSwarm store in place, read-only (D45 stage S0): the registered workspaces, the per-workspace counts, a workspace's messages (capped, with a resume position), and the full canonical dump the parity harness compares with Node's reader. Refuses a journal-backed store; never creates or writes one. |
+| `ah-engine devswarm <status\|line\|advisory\|archive\|plan-prune\|prune>` | no | The DevSwarm realtime state and owner actions (lane dswire): `status` / `line` print the live workspace state and its statusline segment, `advisory --session <id>` the changes that session has not seen, `archive --id <ws> --request <id>`, `plan-prune --older-than <days>` and `prune --confirm-ids <ids> --plan <nonce>` run the hivecontrol actions at the owner's request with Node's preconditions, ledger and confirmations. Role matrix (`devswarm_wire.role_matrix`): reads are open to every role, the acting verbs are for the main session only (a subagent, a Codex session or a workspace child gets exit 64 before anything is read). `create` and `merge` stay with `scripts/devswarm.js` (exit 75, nothing done). |
 | `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary`, the plain `heartbeat`, `inbox tick <id>` (line and JSON form), the single-partition `inbox read-primary` and plain `roster` for a project with no rows itself (store write, lock and summary refresh) where it reproduces Node exactly and hands the rest to Node before writing anything; a failure after its own write exits 70 without rerunning Node (exit-code contract and per-verb telemetry: see Mesh verbs below). Off again: `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. |
 
 ## Metrics and the impact ledger
 
 **Metrics** are counters, gauges and latency histograms kept in memory and bounded. Latency percentiles are reported as
 the upper bound of the histogram bucket that holds that rank, so they are upper estimates. The registered names are:
-`requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `hook_calls`, `hook_latency_us`, `dispatch_checks`,
+`requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `accept_errors` (accepts that failed with EMFILE and the like, by OS error code), `slow_replies` (replies finished after their client's deadline: slow but healthy), `hook_calls`, `hook_latency_us`, `dispatch_checks`,
 `check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth`, `uptime_s`, and for the
 memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evictions`, `tier_expired`, `bus_published`
 and `bus_dropped`, for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is sharing syncs), and for
@@ -531,6 +534,35 @@ and a liveness gate on each sibling's ack), `inbox read-primary` when Jev triage
 (idle, archived and limit skips), and every plain `roster` of a project that has a row. In `shadow` mode a verb that can be replayed on a store copy logs
 `match`/`mismatch`/`concurrent`/`defer`; `inbox ack-primary`, `heartbeat`, `inbox tick`, `inbox read-primary` and `roster` cannot (they consume or write
 files outside the store, or spawn), so Node runs them and the line says `skipped`.
+
+## DevSwarm realtime state (lane B1)
+
+The engine keeps the live state of every DevSwarm workspace in one atomically swapped snapshot (`devswarm_rt`): lifecycle (`active`, `closed`, `archived`, `hidden`, `unknown`), paused, activity (`working`, `stuck`, `waiting_ci`, `done`, `unknown`), unread mail, plan step, last heartbeat and the linked PR. Every field carries its source, the time it was observed and a source signature; an unreadable source gives `unknown`, never a guess, and nothing is ever written back to a source. It is inert (no thread, no read, no write) when DevSwarm is not detected (no app database file and no workspace descriptor) or `devswarm_rt.mode` is `off`.
+
+- **Paused.** No signal is proven yet. A workspace whose open terminals are all `resumable` is reported as `paused?` with that evidence and is never claimed paused until `devswarm_rt.paused_signal` is set to `panel_resumable` after an owner-confirmed crash fixture.
+- **Reconcile.** The whole state is re-read at start (differences from the persisted state are flagged `while_down` with a notify hold of `restart_grace_ms`) and every `reconcile_ms`. A change a periodic or overflow reconcile finds is one events missed and counts in `rt_reconcile_repairs`; `rt_edges` counts every change emitted and `rt_shadow_mismatches` every difference from the Node witness.
+- **Persistence.** hot.db tables `rt_entity` (latest record per workspace) and `rt_edges` (capped change log).
+- **GitHub facts.** PR and CI facts come through the `GithubState` trait when the GitHub realtime feature supplies them; otherwise from the app database's `pull_requests.checkStatus`, whose freshness is its `lastSyncedAt`.
+- **Shadow.** The comparison reads the Node witness's scratch-home tree (liveness verdicts, app-state cache), never the live Node files, and appends differences to `rt-shadow.ndjson`.
+
+## DevSwarm wiring and the Node cutover (lane dswire)
+
+The daemon starts the DevSwarm layer only where DevSwarm exists (the app database or a workspace descriptor) and `devswarm_rt.mode` is not `off`; otherwise no thread, watcher or file is created. One thread (`ah-dswire`) owns the file watcher over the app database directory and its `-wal`, the DevSwarm state directories, each active workspace's mesh store directory, transcript directory and git directory. A change is only a hint: the state is always re-derived from the sources. A watcher overflow is a full reconcile, and the scheduler job `devswarm_reconcile` (`devswarm_rt.reconcile_ms`) is the safety net; what it finds that events missed counts in `rt_reconcile_repairs`.
+
+- **Actions from state.** After a reconcile that found a change of a kind in `devswarm_wire.act_edge_kinds` (or on every periodic and start-up reconcile) the engine runs the three automatic actions under Node's own settings (`devswarm.autoArchive.{mode,idleMin,maxPerSweep,ignorePings}`, `devswarm.nudgeMaxAttempts`, `devswarm.nudgeCooldownSec`): auto-archive of finished workspaces (executor `engine`), and poke / escalate of stale ones (only where their executor is set to `engine`; the default is `node`, see the cutover below). Sweeps are at least `act_min_gap_ms` apart; a change inside the gap is run when the gap has passed. Facts are re-read from the sources right before each action; the one deliberate narrowing is that the idle gate uses Node's pre-0.109 rule (newest heartbeat or transcript time), so the engine can archive later than Node but never earlier. A poke waits one `nudgeCooldownSec` before the next decision about that workspace. Owner actions go through `ah-engine devswarm` under the role matrix.
+- **Consumers.** The `devswarm-rt-advisory` hook check (UserPromptSubmit, main thread only, engine-only; its Node fallback is a no-op; its decision is the plugin script `engine/logic/devswarm-rt-advisory.js`, the engine only reads the state and the session marker) tells each session once about the changes since the generation it last saw (`advisory_max_edges`, `advisory_max_chars`; a session's first look starts from now). `ah-engine devswarm line` prints the statusline segment. A change of kind `plan_step`, `activity`, `pr` or `checks`, or a commit or transcript write in a workspace, queues a per-child `jev::sweep::sweep_only` (the slow `jev_sweep` job stays as the safety net).
+- **Telemetry.** `dswire_actions` (by kind and outcome), `dswire_standdown` (sweeps skipped because the executor is not the engine), `dswire_advisory`, `dswire_jev_dirty`, plus `rt_edges` and `rt_reconcile_repairs`.
+
+### DevSwarm cutover: what the kit's go-live must flip
+
+`devswarm_rt."act.<action>.executor"` is `engine`, `node` or `off` for `auto_archive`, `poke` and `escalate` (default `engine` for `auto_archive`, `node` for `poke` and `escalate`; an unknown word reads as `node`, so a typo makes the engine stand down, never act twice). The engine never edits any settings file. When the engine owns an action, the same deploy step must stop the Node supervisor from also acting:
+
+| Action | Node-side switch (set in the environment of the Node supervisor job, e.g. the launchd plist or systemd unit, which beats `settings.json` in Node) | Notes |
+|---|---|---|
+| auto-archive | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE=off` (the setting is `devswarm.autoArchive.mode`) | The engine reads the same key from the user's settings tiers as policy and does not see the supervisor job's environment, so the owner's `on` / `dry-run` choice keeps governing the engine. Even if both run, Node's durable `auto-archived.json` (gate h) makes either side refuse to repeat an archive at one HEAD. |
+| poke, escalate | none per action (default executor: `node`) | Node has no per-action switch. `ANTIHALL_DEVSWARM_SUPERVISOR=off` would stop the whole supervisor, including its retention, housekeeping and deferred-sweep passes, which the engine has not ported. Poke and escalate therefore move to the engine only once those duties are ported too; the kit then turns the supervisor off as a whole and sets both executors to `engine`. Until then there is no shared record that stops two actors from both poking, so they stay with Node. |
+
+The Node witness runs non-acting (scratch HOME, recording stub, `devswarm_rt.witness_home`); `rt-shadow.ndjson` and `dsact.shadow` record agreement.
 
 ## Telemetry (D78, D77)
 
@@ -769,6 +801,36 @@ judgement calls do.
 - **The log.** One row per decision in `~/.anti-hall/logs/jev-assist.ndjson`, in the row shape `jev report` reads: hashes,
   verdicts, confidences, latencies, costs and the reason a call produced nothing; never prompt text, never a key. It rotates
   at 2 MB. The daily rollups and the spend budget watch the Node client also writes are planned (D38).
+- **The evidence gate (owner rule J1).** A model is asked, Jev or Haiku through the cascade, only when the concrete evidence a
+  confident answer needs is in the call. For the supervisor integrations `devswarmWaitKind`, `devswarmLoop` and `devswarmStepMap`
+  (`src/jev/evidence.rs`, configured per integration in `jev_evidence.toml`; `ah-engine jev evidence` is the entry point a
+  supervisor calls with a pack of facts and sections), a decision goes: mode (an `off` integration writes nothing), then
+  deterministic **rules** (a done, archived or held child is never asked about; running CI, an unanswered question to the parent,
+  a report newer than anything received or a usage-limit pause mean *waiting*; a commit or progress in the last 60 minutes means
+  *not looping*; one step in progress with no sequencing word, or a summary that quotes a step's text, *is* the step), then
+  **sufficiency** (`required` minimums per integration: wait-kind needs 5 tool calls, 1 assistant text and mesh coverage; loop
+  needs 10 tool calls; step-map needs 2 steps, a 15-character summary and an earlier summary that reported a step), then, for
+  loop, a **candidate** check (the same command and error three times with no commit, or a revert: the model only confirms it).
+  Only then is the labelled pack (`FACTS`, then line-numbered sections such as `[tool_calls.3]`, capped per section and in
+  total) asked: wait-kind and loop go to Haiku directly (alias from `jev.judgeModel`, `daily_cap` per integration per UTC day, the
+  answer must cite a line that exists or it is discarded), step-map goes through the shared Jev layer and its cascade (`cascade.escalate_below`
+  0.8 for it; the cascade stays off until its own switch is turned on). Modes are untouched: nothing here enables an integration, and a
+  `shadow` integration's answers are logged but never actionable. Hook-blocking paths never wait on Haiku.
+- **The evidence sweep (`jev_sweep`).** The engine gathers the facts the gate needs; Node no longer asks these three questions.
+  `src/jev/sweep.rs` runs as the scheduled job `jev_sweep` (every `schedule.jev_sweep_ms`, 15 minutes; a subprocess, so a timeout
+  kills any model call it started) or by hand as `ah-engine jev sweep`. For each child with a plan file
+  (`~/.anti-hall/devswarm/plans`) and each of the three integrations whose mode is not `off` it reads the plan, the end of the
+  child's own transcript (tool calls, texts, errors, usage-limit text), `git log` of its worktree, the CI runs of its branch (the
+  GitHub CLI) and the mesh store (what the child sent and was sent), builds the facts and sections, and hands them to the gate,
+  which writes the decision row. A question whose subject has not changed is not asked again within `sweep.limits.reask_ms`. The
+  sweep does not edit a plan or a signal: acting on an answer is still each integration's mode (the `~N` inferred step and the
+  Node warning annotation for these three are not applied). Settings read from the environment only: held partitions and the
+  stall window. Everything tunable is in `jev_sweep.toml`.
+- **Evidence telemetry.** One row per gate decision in `~/.anti-hall/logs/jev-evidence.ndjson` (emptied past 1 MB): `phase`
+  (`rule`, `skipped` or `asked`), `source` (`rule`, `jev`, `haiku`, `none`), `reason` (`insufficient`, `rule-skip`,
+  `no-candidate`, `daily-cap`, `bad-evidence-ref`, `low-confidence`, `shadow`, `no-answer`), the `rule`, the `label`, `confidence`,
+  `evidenceRef`, `present` (the facts that had a value) and `missing` (the required items below their minimum, as `fact:min`), the
+  `child` key the caller gave, and `ms`. Direct Haiku calls also leave the usual `judge-calls.ndjson` row. Never prompt text.
 - **Parity.** `parity/run-jev.js` checks request bodies, headers, decisions, log rows, settings and the scrub against the Node
   client (`ah-engine/parity/run-jev.js`). The deliberate differences (relax-block, a `true` advisory baseline, no row for an
   off call) are asserted separately.
@@ -825,6 +887,7 @@ Files:
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `mcp_reaper.toml` | the session-end MCP sweep: its patterns, init names, age floor, cap, grace period, commands and audit log texts |
 | `task_tracker.toml` | the task-tracker directive and reminder texts, window and growth thresholds, the open-tasks line, the Jev label question and the demand-metrics file |
+| `realtime.toml` | the realtime watch facility: backend, poll interval, debounce and ceiling, queue and directory caps, the filesystem types that are polled, SQLite side-file suffixes, the mount-table path, and the latency and CPU targets |
 | `judge.toml` | the judge calls the engine makes itself: the local Claude CLI client, the speculation-judge prompts and evidence limits, the mesh-triage worker's prompts and budgets, and the Jev-first cascade (thresholds, prompts, telemetry words) |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
 | `inject_gate.toml` | the injection gate: its settings (`context.injectGate*`), what it recognises in the hooks' output, its state bounds and wire words |
@@ -837,6 +900,9 @@ Files:
 | `devswarm_gates.toml` | switches, role and mode variables and the command pre-filter words of the DevSwarm child gate, reply tracker and drain checks |
 | `mesh.toml` | the mesh store reader (D45 S0): store and marker file names, the SQLite busy timeout and page cache, the preview length, the read byte cap and the `--last` bounds; and `mesh.engine_writes` (off, shadow, on), the switch of the stage 2 mesh writers |
 | `mesh_write.toml` | the mesh store writers (D45 stage 2, `ah-engine mesh <devswarm.js argv>`): Node's store names and statements' column list, the busy retry, the per-workspace lock budget and steal limits, the identity file and variable names, argv flag names, output texts, and the shadow log, scratch and snapshot settings |
+| `devswarm_rt.toml` | DevSwarm realtime state (lane B1): the mode (`on` by default; the Node supervisor is a non-acting witness), stale / stall / reconcile / restart-grace times, the edge-log cap, the paused signal (`none` until an owner-confirmed crash fixture proves it), the app-database column names and the PR and CI status words, and the witness and shadow-log settings |
+| `devswarm_act.toml` | the DevSwarm action layer (`src/dsact`, script `engine/logic/act/devswarm-act.js`): which kinds may start automatically (Node's auto-archive, poke, escalate) and which only on the owner's request (archive, create, merge, an approved delete), the allowed hivecontrol verbs with their minimum versions and argv templates, the bounded-call timeouts, the autoArchive / nudge settings (same keys, tiers and defaults as Node), the ledger, plan and log file names, the delete plan's expiry and caller rule, and the error texts |
+| `devswarm_wire.toml` | the DevSwarm wiring (`src/dswire`): the per-action cutover switches `devswarm_rt.act.<action>.executor`, the thread's wait and sweep gap, which changes trigger sweeps, the git time limit, the watched directories, the advisory / statusline / Jev-dirty settings and texts, the owner verbs and their role matrix, and the fact-reader file names |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |
@@ -845,6 +911,8 @@ Files:
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
 | `gitcache.toml` | the git cache: git invocations, timeouts, TTLs, signed file names, the bypass environment, messages |
+| `jev_sweep.toml` | the evidence sweep: the `jev_sweep` job and interval, where plans/transcripts/mesh stores are read, windows and limits, the transcript, git and CI commands and patterns, the evidence line words |
+| `jev_evidence.toml` | the evidence gate for the supervisor integrations: per-integration backend, daily cap, pack caps, required evidence, rules and question, the pack headings, the Haiku system prompt, the evidence log and its words |
 | `jev.toml` | the Jev lane: vendor endpoints and models, budgets, breaker and fallback timing, the integration table with its default modes, cache and log limits, key-file rules, messages |
 | `setup.toml` | the operator helper commands (`jev-setup`, `capability-scan`, `harvest`, `briefing`): the shared limits, the marker grammar and table widths, the briefing's scan limits, the settings lock timing, and the message texts, which are the Node scripts' own |
 | `dispatch.toml` | the dispatcher's settings and the hand-maintained per-event table of hook entries (the table of record: the plugin's `hooks.json` files are generated from it) |

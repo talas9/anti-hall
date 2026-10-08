@@ -12,6 +12,10 @@ fn st(env: &[(&str, &str)]) -> Settings {
     Settings { home: d.to_string_lossy().to_string(), env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<HashMap<_, _>>() }
 }
 
+fn renv(s: &Settings) -> RequestEnv {
+    RequestEnv::from_pairs(s.env.iter().map(|(k, v)| (k.clone(), v.clone())).chain([("HOME".to_string(), s.home.clone())]))
+}
+
 #[test]
 fn the_digest_picks_the_line_by_its_first_four_bytes_modulo_the_count() {
     let n = defaults::list("verify_first.nudges").len();
@@ -41,16 +45,16 @@ fn only_a_session_that_could_be_a_devswarm_primary_is_left_to_node() {
 fn the_reminder_is_the_prefix_and_the_picked_line_and_repeats_only_every_n_turns() {
     let s = st(&[]);
     let p = json!({"session_id": "u", "prompt": "x"});
-    let first = decide(&p, "00000000aaaa", &s).unwrap().expect("first reminder");
+    let first = decide(&p, "00000000aaaa", &s, &renv(&s)).unwrap().expect("first reminder");
     assert_eq!(first, format!("VERIFY-FIRST: {}", defaults::list("verify_first.nudges")[0]));
-    assert_eq!(decide(&p, "00000000aaaa", &s), Ok(None), "the same block within the window is suppressed");
-    assert_eq!(decide(&json!({"prompt": "x"}), "00000000aaaa", &s).unwrap().as_deref(), Some(first.as_str()), "no session: always emitted");
+    assert_eq!(decide(&p, "00000000aaaa", &s, &renv(&s)), Ok(None), "the same block within the window is suppressed");
+    assert_eq!(decide(&json!({"prompt": "x"}), "00000000aaaa", &s, &renv(&s)).unwrap().as_deref(), Some(first.as_str()), "no session: always emitted");
 }
 
 #[test]
 fn the_switch_off_is_silent_and_writes_nothing() {
     let s = st(&[("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_TURN", "false")]);
-    assert_eq!(decide(&json!({"session_id": "u"}), "00000000", &s), Ok(None));
+    assert_eq!(decide(&json!({"session_id": "u"}), "00000000", &s, &renv(&s)), Ok(None));
     assert!(!std::path::Path::new(&s.home).join(".anti-hall").exists());
 }
 
@@ -67,4 +71,18 @@ fn the_check_answers_through_the_trait_and_defers_without_a_digest() {
     );
     let judge = RequestEnv::from_pairs([("HOME", "/nonexistent"), ("ANTIHALL_JUDGE_CHILD", "1")]);
     assert_eq!(VerifyFirst.run_env(&s, &p, &json!({"payload_sha1": "0"}), &judge), Some(Verdict::Allow));
+}
+
+#[test]
+fn a_primary_gets_the_tier_sentence_unless_the_repo_forbids_workspaces() {
+    let p = json!({"session_id": "pp", "prompt": "x", "cwd": "/tmp/anti-hall-no-such-dir"});
+    let s = st(&[("DEVSWARM_REPO_ID", "r")]);
+    let t = decide(&p, "00000000aaaa", &s, &renv(&s)).unwrap().unwrap();
+    assert!(t.ends_with(defaults::text("verify_first.primary_nudge")), "{t}");
+    let s = st(&[("DEVSWARM_REPO_ID", "r"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "anti-hall-no-such-dir")]);
+    let t = decide(&p, "00000000aaaa", &s, &renv(&s)).unwrap().unwrap();
+    assert!(!t.contains("DEVSWARM PRIMARY"), "{t}");
+    let s = st(&[("DEVSWARM_REPO_ID", "r")]);
+    assert_eq!(decide(&json!({"session_id": "q"}), "00000000aaaa", &s, &renv(&s)), Err(Defer), "no working directory: Node uses its own");
+    assert!(!std::path::Path::new(&s.home).join(".anti-hall").exists(), "a deferral writes nothing");
 }

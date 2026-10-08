@@ -6,10 +6,8 @@
 
 use crate::defaults;
 use crate::reqenv::RequestEnv;
-use std::io::Read;
-use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 /// Run git in `cwd`; `Some(stdout)` only when it exits 0 within `timeout`. The environment is the request's (D76), never
 /// the daemon's: the git variables the daemon itself inherited are removed, then the request's are set.
@@ -21,7 +19,7 @@ pub fn git(cwd: &str, args: &[&str], timeout: Duration, env: &RequestEnv) -> Opt
 /// location variables so its answer derives from the directory alone).
 pub fn git_scrubbed(cwd: &str, args: &[&str], timeout: Duration, env: &RequestEnv, scrub: &[&str]) -> Option<String> {
     let mut cmd = Command::new(defaults::text("codex_handover.git_binary"));
-    cmd.args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0);
+    cmd.args(args).current_dir(cwd);
     for name in defaults::list("gitcache.bypass_env") {
         cmd.env_remove(name);
     }
@@ -30,32 +28,11 @@ pub fn git_scrubbed(cwd: &str, args: &[&str], timeout: Duration, env: &RequestEn
             cmd.env(k, v);
         }
     }
-    let mut child = cmd.spawn().ok()?;
-    let pid = child.id() as i32;
-    let mut out = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut b = Vec::new();
-        crate::discard::harmless(out.read_to_end(&mut b)); // keep: reaping or draining a child or thread that already ended
-        b
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed() < timeout => std::thread::sleep(defaults::millis("codex_handover.git_poll_ms")),
-            Ok(None) | Err(_) => {
-                // SAFETY: the pid is our own child's process group.
-                unsafe { libc::kill(-pid, libc::SIGKILL) };
-                crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
-                crate::discard::harmless(reader.join()); // keep: reaping or draining a child or thread that already ended
-                return None;
-            }
-        }
-    };
-    let bytes = reader.join().unwrap_or_default();
+    // bounded end to end (review finding 7): a leftover process holding stdout cannot hang the hook
+    let o = crate::proc::run(cmd, defaults::text("codex_handover.git_binary"), timeout, defaults::millis("codex_handover.git_poll_ms")).ok()?;
     // execFileSync fails (ENOBUFS) when stdout exceeds its buffer limit.
-    if bytes.len() as u64 > defaults::num("codex_handover.git_max_buffer") {
+    if o.stdout.len() as u64 > defaults::num("codex_handover.git_max_buffer") {
         return None;
     }
-    status.success().then(|| String::from_utf8_lossy(&bytes).into_owned())
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }

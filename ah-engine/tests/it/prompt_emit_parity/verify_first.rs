@@ -536,31 +536,31 @@ pub fn scenarios() -> Vec<Scn> {
         let sc = scn(format!("vf-ds-{name}"), "verify-first", vec![step(pl("ds", TP, "x")), step(pl("ds", TP, "x"))]).env(kv).seed(files);
         if defers { sc.defers() } else { sc }
     };
-    v.push(ds("repo-primary", &[("DEVSWARM_REPO_ID", "r1")], vec![], true));
+    v.push(ds("repo-primary", &[("DEVSWARM_REPO_ID", "r1")], vec![], false));
     v.push(ds("repo-child", &[("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feat")], vec![], false));
     v.push(ds("repo-blank", &[("DEVSWARM_REPO_ID", "   ")], vec![], false));
     v.push(ds("repo-empty", &[("DEVSWARM_REPO_ID", "")], vec![], false));
-    v.push(ds("child-branch-blank", &[("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "  ")], vec![], true));
+    v.push(ds("child-branch-blank", &[("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "  ")], vec![], false));
     v.push(ds("no-env", &[], vec![], false));
-    v.push(ds("mode-on-no-repo", &[("ANTIHALL_DEVSWARM_SUPERVISOR", "on")], vec![], true));
+    v.push(ds("mode-on-no-repo", &[("ANTIHALL_DEVSWARM_SUPERVISOR", "on")], vec![], false));
     v.push(ds("mode-on-child", &[("ANTIHALL_DEVSWARM_SUPERVISOR", "on"), ("DEVSWARM_SOURCE_BRANCH", "b")], vec![], false));
     v.push(ds("mode-off-repo", &[("ANTIHALL_DEVSWARM_SUPERVISOR", "off"), ("DEVSWARM_REPO_ID", "r1")], vec![], false));
     v.push(ds("mode-off-spaced-upper", &[("ANTIHALL_DEVSWARM_SUPERVISOR", "  OFF "), ("DEVSWARM_REPO_ID", "r1")], vec![], false));
     v.push(ds("mode-auto-no-repo", &[("ANTIHALL_DEVSWARM_SUPERVISOR", "auto")], vec![], false));
-    v.push(ds("mode-junk-repo", &[("ANTIHALL_DEVSWARM_SUPERVISOR", "banana"), ("DEVSWARM_REPO_ID", "r1")], vec![], true));
+    v.push(ds("mode-junk-repo", &[("ANTIHALL_DEVSWARM_SUPERVISOR", "banana"), ("DEVSWARM_REPO_ID", "r1")], vec![], false));
     v.push(ds("disable-1", &[("DISABLE_ANTIHALL_DEVSWARM", "1"), ("DEVSWARM_REPO_ID", "r1")], vec![], false));
     v.push(ds("disable-1-mode-on", &[("DISABLE_ANTIHALL_DEVSWARM", "1"), ("ANTIHALL_DEVSWARM_SUPERVISOR", "on")], vec![], false));
-    v.push(ds("disable-0", &[("DISABLE_ANTIHALL_DEVSWARM", "0"), ("DEVSWARM_REPO_ID", "r1")], vec![], true));
+    v.push(ds("disable-0", &[("DISABLE_ANTIHALL_DEVSWARM", "0"), ("DEVSWARM_REPO_ID", "r1")], vec![], false));
     v.push(ds("tier-text-off", &[("ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT", "0"), ("DEVSWARM_REPO_ID", "r1")], vec![], false));
-    v.push(ds("tier-text-on", &[("ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT", "yes"), ("DEVSWARM_REPO_ID", "r1")], vec![], true));
-    v.push(ds("tier-text-junk", &[("ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT", "zz"), ("DEVSWARM_REPO_ID", "r1")], vec![], true));
+    v.push(ds("tier-text-on", &[("ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT", "yes"), ("DEVSWARM_REPO_ID", "r1")], vec![], false));
+    v.push(ds("tier-text-junk", &[("ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT", "zz"), ("DEVSWARM_REPO_ID", "r1")], vec![], false));
     v.push(ds("file-mode-off", &[("DEVSWARM_REPO_ID", "r1")], vec![w(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":\"off\"}}")], false));
-    v.push(ds("file-mode-on", &[], vec![w(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":\"ON\"}}")], true));
-    v.push(ds("file-mode-bad", &[("DEVSWARM_REPO_ID", "r1")], vec![w(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":5}}")], true));
+    v.push(ds("file-mode-on", &[], vec![w(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":\"ON\"}}")], false));
+    v.push(ds("file-mode-bad", &[("DEVSWARM_REPO_ID", "r1")], vec![w(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":5}}")], false));
     v.push(ds("file-tier-off", &[("DEVSWARM_REPO_ID", "r1")], vec![w(".anti-hall/settings.json", "{\"devswarm\":{\"dispatchTierText\":false}}")], false));
     v.push(ds("opt-mode-off", &[("DEVSWARM_REPO_ID", "r1"), ("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "off")], vec![], false));
-    v.push(ds("opt-mode-auto", &[("DEVSWARM_REPO_ID", "r1"), ("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "auto")], vec![], true));
-    v.push(ds("opt-mode-on", &[("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "on")], vec![], true));
+    v.push(ds("opt-mode-auto", &[("DEVSWARM_REPO_ID", "r1"), ("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "auto")], vec![], false));
+    v.push(ds("opt-mode-on", &[("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "on")], vec![], false));
     v.push(ds(
         "stored-mode-off",
         &[("DEVSWARM_REPO_ID", "r1")],
@@ -571,9 +571,49 @@ pub fn scenarios() -> Vec<Scn> {
         "env-beats-file",
         &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_DEVSWARM_SUPERVISOR", "auto")],
         vec![w(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":\"off\"}}")],
-        true,
+        false,
     ));
-    // the verify-first switch off wins before any DevSwarm question
+        // the repo's own documents and the configured list decide whether the tier sentence is withheld
+    let dsx = |name: &str, kv: &[(&str, &str)], files: Vec<W>, cwd: &str, defers: bool| {
+        let raw = payload(json!({"session_id": "dx", "transcript_path": TP, "prompt": "x", "cwd": cwd, "hook_event_name": "UserPromptSubmit"}));
+        let sc = scn(format!("vf-dsx-{name}"), "verify-first", vec![step(raw.clone()), step(raw)]).env(kv).seed(files);
+        if defers { sc.defers() } else { sc }
+    };
+    let rule = "# Rules\n\nNo workspaces for real work in this repo.\n";
+    let p1 = &[("DEVSWARM_REPO_ID", "r1")];
+    v.push(dsx("doc-claude", p1, vec![w("proj/CLAUDE.md", rule)], "$HOME/proj", false));
+    v.push(dsx("doc-agents", p1, vec![w("proj/AGENTS.md", rule)], "$HOME/proj", false));
+    v.push(dsx("doc-spaced-upper", p1, vec![w("proj/CLAUDE.md", "NO\t WORKSPACE\n  FOR  Real work")], "$HOME/proj", false));
+    v.push(dsx("doc-no-match", p1, vec![w("proj/CLAUDE.md", "workspaces are great for real work")], "$HOME/proj", false));
+    v.push(dsx("doc-unrelated", p1, vec![w("proj/CLAUDE.md", "nothing here")], "$HOME/proj", false));
+    v.push(dsx("doc-parent-no-git", p1, vec![w("CLAUDE.md", rule)], "$HOME/proj/sub", false));
+    v.push(dsx("doc-kelvin", p1, vec![w("proj/CLAUDE.md", "no workspaces for real wor\u{212a}")], "$HOME/proj", false));
+    v.push(dsx("doc-dir-named-claude", p1, vec![w("proj/CLAUDE.md/x", "y")], "$HOME/proj", false));
+    v.push(dsx("doc-in-git-root", p1, vec![w("proj/.git/HEAD", "ref: refs/heads/main\n"), w("proj/CLAUDE.md", rule)], "$HOME/proj/sub", false));
+    v.push(dsx("doc-above-git-root", p1, vec![w("proj/.git/HEAD", "ref: refs/heads/main\n"), w("CLAUDE.md", rule)], "$HOME/proj/sub", false));
+    v.push(dsx("detect-off", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES", "0")], vec![w("proj/CLAUDE.md", rule)], "$HOME/proj", false));
+    v.push(dsx("detect-off-file", p1, vec![w("proj/CLAUDE.md", rule), w(".anti-hall/settings.json", "{\"jev\":{\"dispatchTierDetectNoWorkspaces\":false}}")], "$HOME/proj", false));
+    v.push(dsx("list-star", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "*")], vec![], "$HOME/proj", false));
+    v.push(dsx("list-name", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", " a , proj ,b")], vec![], "$HOME/proj/sub", false));
+    v.push(dsx("list-name-miss", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "other")], vec![], "$HOME/proj", false));
+    v.push(dsx("list-abs-prefix", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "$HOME/proj")], vec![], "$HOME/proj/sub", false));
+    v.push(dsx("list-abs-sibling", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "$HOME/pro")], vec![], "$HOME/proj", false));
+    v.push(dsx("list-file", p1, vec![w(".anti-hall/settings.json", "{\"jev\":{\"dispatchTierNoWorkspaceRepos\":\"proj\"}}")], "$HOME/proj", false));
+    v.push(dsx("list-file-array", p1, vec![w(".anti-hall/settings.json", "{\"jev\":{\"dispatchTierNoWorkspaceRepos\":[\"proj\"]}}")], "$HOME/proj", false));
+    v.push(dsx("cwd-trailing-dots", p1, vec![w("proj/CLAUDE.md", rule)], "$HOME/proj/../proj/./", false));
+    v.push(dsx("cwd-relative", p1, vec![], "proj", true));
+    v.push(dsx("cwd-empty", p1, vec![], "", true));
+    for (n, cwd) in [("number", json!(5)), ("array", json!([1])), ("object", json!({"a": 1})), ("true", json!(true))] {
+        let raw = payload(json!({"session_id": "dn", "transcript_path": TP, "prompt": "x", "cwd": cwd}));
+        v.push(scn(format!("vf-dsx-cwd-{n}"), "verify-first", vec![step(raw)]).env(p1));
+    }
+    // the rotation and the dedupe: a Primary block and a plain block are distinct, a burst collapses
+    v.push(
+        scn("vf-dsx-primary-then-child", "verify-first", vec![step(pl("pc", TP, "x")), step(pl("pc", TP, "y"))])
+            .env(p1)
+            .seed(vec![base_transcript(now)]),
+    );
+// the verify-first switch off wins before any DevSwarm question
     v.push(
         scn("vf-ds-turn-off-first", "verify-first", vec![step(pl("ds", TP, "x"))])
             .env(&[("DEVSWARM_REPO_ID", "r1")])

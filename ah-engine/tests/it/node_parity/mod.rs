@@ -24,6 +24,7 @@ mod fx;
 mod fx_dispatch_tier;
 mod fx_lifecycle;
 mod fx_task_guard;
+mod fx_task_guard_fire;
 mod fx_tasklines;
 mod fx_tasklist_guard;
 mod git_audit;
@@ -31,6 +32,7 @@ mod guard;
 mod lab;
 mod merge_gate;
 mod session;
+mod silent_nudge;
 mod support;
 mod verify_first;
 
@@ -155,11 +157,35 @@ fn task_guard_matches_node() {
 }
 
 #[test]
+fn task_guard_fire_paths_match_node() {
+    let _s = serial();
+    let Some(hooks) = hooks_dir() else { return };
+    let (scenarios, _shared, must) = fx_task_guard_fire::corpus();
+    fx::require(&fx_task_guard_fire::opts(must), &hooks, scenarios, 90);
+}
+
+#[test]
 fn tasklist_guard_matches_node() {
     let _s = serial();
     let Some(hooks) = hooks_dir() else { return };
     let (scenarios, _shared) = fx_tasklist_guard::corpus();
     fx::require(&fx_tasklist_guard::opts(), &hooks, scenarios, 400);
+}
+
+#[test]
+fn silent_agent_nudge_matches_node() {
+    let _s = serial();
+    let Some(hooks) = hooks_dir() else { return };
+    silent_nudge::require(&hooks);
+}
+
+#[test]
+fn the_silent_agent_nudge_comparison_notices_a_changed_node_answer() {
+    let _s = serial();
+    let Some(hooks) = hooks_dir() else { return };
+    let subset: Vec<silent_nudge::Sc> = silent_nudge::scenarios().into_iter().take(10).collect();
+    let rep = silent_nudge::run_lane(&hooks, &subset, true);
+    assert!(!rep.mismatches.is_empty(), "silent-agent-nudge: altered Node answers were not noticed");
 }
 
 #[test]
@@ -288,6 +314,13 @@ fn the_task_guard_comparison_notices_a_changed_node_answer() {
     let _s = serial();
     let (scenarios, _shared, must) = fx_task_guard::corpus();
     fx_notices(fx_task_guard::opts(must), scenarios, 40);
+}
+
+#[test]
+fn the_task_guard_fire_comparison_notices_a_changed_node_answer() {
+    let _s = serial();
+    let (scenarios, _shared, must) = fx_task_guard_fire::corpus();
+    fx_notices(fx_task_guard_fire::opts(must), scenarios, 20);
 }
 
 #[test]

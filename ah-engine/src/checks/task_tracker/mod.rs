@@ -38,7 +38,7 @@ use crate::checks::taskkit::js_string;
 use crate::checks::taskkit::jsval::{R, Unsure, truthy};
 use crate::checks::taskstate::unknown::{prune_stale, safe_key, unknown_note_plan};
 use crate::checks::verify_first_orch::is_codex;
-use crate::checks::verify_first_prompt::primary_possible;
+use crate::checks::verify_first_prompt::tier_text_on;
 use crate::checks::{Check, Verdict};
 use crate::defaults;
 use crate::jev::settings::Env;
@@ -145,6 +145,11 @@ fn jev_request(p: &Value, prompt: &str, session: &str) -> R<AskRequest> {
     Ok(req)
 }
 
+/// The dedupe options of the Primary block.
+fn primary_block_opts<'a>(sid: &'a str, content: &'a str, transcript: Option<&'a str>, keepalive: f64, normalize: &'a dyn Fn(&str) -> String) -> Opts<'a> {
+    Opts { session_id: sid, key: defaults::text("task_tracker.primary_key"), content, transcript_path: transcript, keepalive, normalize }
+}
+
 /// The decision for one payload and the request's environment.
 pub fn decide(p: &Value, env: &RequestEnv) -> Verdict {
     decide_inner(p, env).unwrap_or(Verdict::Defer)
@@ -164,9 +169,8 @@ fn decide_inner(p: &Value, env: &RequestEnv) -> R<Verdict> {
         return Ok(Verdict::Allow);
     }
     let Home::Ok(home) = state_home(&st.env) else { return Err(Unsure) };
-    if primary_possible(&st) {
-        return Err(Unsure); // the DevSwarm Primary block depends on the repository's own documents
-    }
+    // the DevSwarm Primary block: whether it applies depends on the repository's own documents (`None`: not reproducible)
+    let primary_on = tier_text_on(&st, env, p).ok_or(Unsure)?;
     let now = emit_dedupe::now_ms();
     let codex = is_codex(p);
     let transcript = emit_dedupe::transcript_of(p).map_err(|_| Unsure)?;
@@ -214,6 +218,15 @@ fn decide_inner(p: &Value, env: &RequestEnv) -> R<Verdict> {
     let normalize = |t: &str| t.replace(&full, &short);
     let key = defaults::text("task_tracker.dedupe_key");
     let identity = |t: &str| t.to_string();
+    let primary_text = msg::message(
+        Kind::Tip,
+        defaults::text("task_tracker.guard_name"),
+        &Parts { what: defaults::text("task_tracker.primary_what"), instead: defaults::text("task_tracker.primary_instead"), ..Parts::default() },
+    );
+
+    if primary_on && let Some(sid) = &dedupe_session {
+        emit_dedupe::dry_run(&st, &primary_block_opts(sid, &primary_text, transcript, keepalive, &identity)).map_err(|_| Unsure)?;
+    }
     if let Some(sid) = &dedupe_session {
         let o = Opts { session_id: sid, key, content: &text, transcript_path: transcript, keepalive: 0.0, normalize: &normalize };
         if text.starts_with(&full) {
@@ -248,6 +261,16 @@ fn decide_inner(p: &Value, env: &RequestEnv) -> R<Verdict> {
     }
     let unknown_note = unknown.map_or(String::new(), |u| u.apply());
     let (text, open) = compose(&unknown_note);
+    // Held out of `text`, so a burst-collapsed copy and a delivered one hash alike
+    let primary_block = if primary_on {
+        let show = match &dedupe_session {
+            Some(sid) => emit_dedupe::should_emit(&st, &primary_block_opts(sid, &primary_text, transcript, keepalive, &identity)).unwrap_or(true),
+            None => true,
+        };
+        if show { primary_text.clone() } else { String::new() }
+    } else {
+        String::new()
+    };
     let mut emit = true;
     let mut out = text.clone();
     if let Some(sid) = &dedupe_session {
@@ -279,7 +302,8 @@ fn decide_inner(p: &Value, env: &RequestEnv) -> R<Verdict> {
             open
         };
     }
-    Ok(if emit && !out.is_empty() { Verdict::Advisory(msg::advisory_json(defaults::text("task_tracker.event"), &out)) } else { Verdict::Allow })
+    let final_text = [if emit { out.as_str() } else { "" }, primary_block.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(defaults::text("task_tracker.segment_joiner"));
+    Ok(if !final_text.is_empty() { Verdict::Advisory(msg::advisory_json(defaults::text("task_tracker.event"), &final_text)) } else { Verdict::Allow })
 }
 
 /// The registered `task-tracker` check.

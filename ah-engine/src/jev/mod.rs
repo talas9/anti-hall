@@ -19,6 +19,7 @@
 //! | `cache`, `log` | `jev-assist.js` cache and `appendLog` | content-hash cache and the `jev-assist.ndjson` rows |
 //! | `keep` | `jev-assist.js` `maybeWarnBudget`, `maybeWriteAuditSnippet`, `writeDailyRollups` | the budget watch, the audit snippets and the daily rollups |
 //! | `shared` | `jev-assist.js` `turnRefFromTranscript` | the process-wide lanes the checks ask through |
+//! | `evidence` | (new) | the evidence gate: rules, sufficiency and a labelled pack before any Jev or Haiku call (jev_evidence.toml) |
 //! | `cascade` | (new) | re-judges a Jev answer under the escalation threshold with the Claude CLI |
 //! | `assist` | `jev-assist.js` `ask`, `finalize` | modes, trust rules, budget, async queue, metrics |
 //!
@@ -35,6 +36,7 @@ pub mod cli;
 pub mod client;
 pub mod credentials;
 pub mod error;
+pub mod evidence;
 pub mod keep;
 pub mod log;
 pub mod loopback;
@@ -42,6 +44,7 @@ pub mod question;
 pub mod scrub;
 pub mod settings;
 pub mod shared;
+pub mod sweep;
 pub mod transport;
 
 #[cfg(test)]

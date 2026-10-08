@@ -21,6 +21,8 @@ files = [
     "spawn_context.toml",
     "jev.toml",
     "judge.toml",
+    "jev_evidence.toml",
+    "jev_sweep.toml",
     "dispatch.toml",
     "hooks.toml",
     "verify_first.toml",
@@ -46,6 +48,10 @@ files = [
     "limits.toml",
     "script.toml",
     "mcp_reaper.toml",
+    "devswarm_rt.toml",
     "task_tracker.toml",
+    "devswarm_act.toml",
+    "devswarm_wire.toml",
+    "realtime.toml",
 ]
 extra_dir = "hooks.d"

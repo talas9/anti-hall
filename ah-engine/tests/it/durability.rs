@@ -213,3 +213,55 @@ fn kill_9_mid_burst_never_loses_an_acknowledged_write_or_half_applies_one() {
     assert!(acked_total > LOOPS, "the bursts really wrote: {acked_total} acknowledged");
     eprintln!("durability: {LOOPS} kill -9 loops, {acked_total} acknowledged writes all present, {present_total} puts present, in {:?}", started.elapsed());
 }
+
+/// Review findings 10, 11 and 22: whole-file state is written through `crate::atomic` (a temporary file, synced, renamed),
+/// never truncated in place, so a reader or a crash never sees a cut file. The plain writes left in the source are the
+/// documented exceptions (DECISIONS, "Atomic-write exceptions"); a new one fails here until it is converted or listed.
+#[test]
+fn whole_file_state_is_written_atomically_outside_the_listed_exceptions() {
+    const EXCEPTIONS: &[(&str, &str)] = &[
+        ("src/backup.rs", "manifest written into a backup directory that is not published yet"),
+        ("src/checks/speculation_guard/mod.rs", "an append-only judge log cut at its cap, as Node does"),
+        ("src/checks/task_tracker/metrics.rs", "tmp file then rename, exactly as Node's writeMetrics does (a failure is lost silently)"),
+        ("src/checks/sibling_sweep/mod.rs", "an append-only log cut at its cap, as Node does"),
+        ("src/checks/guardkit/nodelock.rs", "a lock file (locks stay as they are)"),
+        ("src/checks/guardkit/filelock.rs", "a lock file (locks stay as they are)"),
+        ("src/checks/phase_tracker/mod.rs", "the phase log is written in place so a symlinked log is written through, as Node does"),
+        ("src/dispatch/mod.rs", "the empty done marker the wrapper tests for existence"),
+        ("src/doctor/selftest.rs", "fixtures in the self-test's scratch home"),
+        ("src/defaults/load.rs", "the one-time backup copy of an edited defaults file (a new file)"),
+        ("src/bin/", "developer generators, not the engine"),
+    ];
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") && p.file_name().is_some_and(|n| n != "tests.rs") {
+                out.push(p);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src"), &mut files);
+    // files compiled only into the unit tests (`#[cfg(test)] mod x;` in their parent)
+    let test_only = ["src/checks/guardkit/jsdiff_sites.rs", "src/checks/jsport/testkit.rs", "src/script/golden.rs"];
+    let mut found = Vec::new();
+    for f in files {
+        let rel = f.strip_prefix(root).unwrap().to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&f).unwrap();
+        // the code before the file's unit-test module (`#[cfg(test)]` then a `mod`), and none of a test-only file
+        let lines: Vec<&str> = text.lines().collect();
+        let end = (0..lines.len())
+            .find(|&i| lines[i].trim() == "#[cfg(test)]" && lines[i + 1..].iter().take(3).any(|l| l.trim_start().starts_with("mod ")))
+            .unwrap_or(lines.len());
+        let code = if test_only.contains(&rel.as_str()) { String::new() } else { lines[..end].join("\n") };
+        for (n, line) in code.lines().enumerate() {
+            if line.contains("std::fs::write(") && !line.trim_start().starts_with("//") && !EXCEPTIONS.iter().any(|(p, _)| rel.starts_with(p)) {
+                found.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "plain whole-file writes outside crate::atomic:\n{}", found.join("\n"));
+}

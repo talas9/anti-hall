@@ -368,7 +368,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         "claim_ledger_write",
         (|| -> std::io::Result<()> {
             std::fs::create_dir_all(&dir)?;
-            std::fs::write(&last_file, &hash)?;
+            crate::atomic::write(&last_file, &hash)?;
             if !flags.is_empty() {
                 let line = record_line(&session, &hash, tools, utf16_len(&reply), utf16_len(&evidence), tail.truncated, &flags);
                 let mut f =

@@ -63,6 +63,11 @@ impl Budget {
         Budget { start: Instant::now(), limit: (ms > 0).then(|| Duration::from_millis(ms)) }
     }
 
+    /// Time since the budget started.
+    pub fn elapsed(&self) -> Duration {
+        self.start.elapsed()
+    }
+
     /// Whether the budget has passed.
     pub fn exceeded(&self) -> bool {
         self.limit.is_some_and(|l| self.start.elapsed() >= l)

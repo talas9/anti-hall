@@ -20,8 +20,9 @@ Every command accepts `--json`. Read-only commands never change state.
 | `harvest` | `[--dir <path>] [--stale-days <n>]` | yes | implemented | Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of scripts/harvest-debt.js), and flag the ones with no payback trigger or in files untouched for the stale window. |
 | `hook` | `[--fallback <hook.js>] \| --event <Event> [--tool <Tool>] [--host claude\|codex] [--fallback-map <file>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would. |
 | `impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77). |
-| `jev` | `<ask\|status\|scrub>` | no | implemented | The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line. |
+| `jev` | `<ask\|status\|scrub\|evidence>` | no | implemented | The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line. |
 | `jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|mode> [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` | no | implemented | Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, and `mode <integration> on\|shadow\|off`; `test` and the review verbs stay in the Node script. |
+| `jev_sweep` | `` | no | implemented | The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions (plan, transcript, git, CI, mesh) and runs them through the evidence gate, writing its telemetry; takes no arguments and reads the home directory from the environment. |
 | `maintain` | `` | no | implemented | Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report. |
 | `mesh` | `<roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>] \| <devswarm.js argv>` | no | implemented | DevSwarm mesh store (D45). With `--db`: the read-only S0 reader (stage S0): `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node; the store is opened read-only and never created, and a journal-backed store is refused. Without `--db` (stage 2): the words after `mesh` are a `scripts/devswarm.js` argv, run per the `mesh.engine_writes` switch: off (default) hands it to Node; shadow lets Node act and replays it on a scratch copy of the store, logging the comparison (mesh_write.shadow_log); on answers `send`, `mesh read`, `mesh history` and `roster --ack` in the engine (same output, exit code, store rows and locks as Node) and hands everything it cannot reproduce exactly, and every other verb, to Node. |
 | `metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` | yes | implemented | Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one resolution (minute, hour), optionally for the last --since seconds. |
@@ -81,10 +82,10 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `verify-first` | UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node (port of verify-first.js). |
 | `idle-agent-sweep` | UserPromptSubmit: lists agents that finished but were never stopped or closed, and the call that ends each (port of idle-agent-sweep.js). |
 | `emit-dedupe-reset` | SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted (port of emit-dedupe-reset.js). |
-| `limit-conserve-inject` | UserPromptSubmit: answers the quiet case (conservation off, no usage cache, or no bucket over the threshold) with an empty context; an active conservation, which needs account-switch state and emit-dedupe writes, defers to the Node hook (port of limit-conserve-inject.js). |
-| `auto-handover` | UserPromptSubmit: answers the cases that write no state and inject nothing (a subagent, a skipped or disabled feature, context below the threshold with the latch not set); a threshold crossing, a nag, the new-work gate and a latch reset defer to the Node hook (port of auto-handover.js). |
-| `auto-handover-pause-nag` | Stop: answers the cases that block nothing and write no state (a subagent, a continued stop, a skipped or disabled feature, context below the threshold with the latch not set, a nag inside its step and quiet window); a fire, a re-arm and a nag defer to the Node hook (port of auto-handover-pause-nag.js). |
-| `compact-advice-guard` | Stop: allows every turn whose final text cannot hold a compact recommendation (no wording a recommendation needs); a possible recommendation defers to the Node hook, which owns the phrase analysis, the context rules and the block (port of compact-advice-guard.js). |
+| `limit-conserve-inject` | UserPromptSubmit: injects the limit-conservation directive while conservation is on or a usage bucket is at the threshold (account-switch guard and emit-dedupe as in Node), else an empty context; defers only what JavaScript could read differently (port of limit-conserve-inject.js). |
+| `auto-handover` | UserPromptSubmit: the threshold fire, the soft advisory, the milestone nag, the latch re-arm and the post-handover gate with its backstop, latch and inferred-window writes as in Node; defers the gate on a prompt with text (Node logs a Jev decision row there) and what JavaScript could read differently (port of auto-handover.js). |
+| `auto-handover-pause-nag` | Stop: the Stop-side fire with the decisive good-point line, the pause nag (step, quiet window, open tasks, recent spawns, handover freshness) and the re-arm, latch writes as in Node; defers only what JavaScript could read differently (port of auto-handover-pause-nag.js). |
+| `compact-advice-guard` | Stop: blocks, once per declaration, a final reply that recommends compacting at low context or just after a compact (phrase analysis, latch exception and record as in Node); defers a text with a line terminator other than LF and what JavaScript could read differently (port of compact-advice-guard.js). |
 | `version-alert` | SessionStart advisory: a newer anti-hall release is available or already mirrored locally (port of version-alert.js); a stale remote cache defers to Node, which starts the refresh. |
 | `devswarm-version` | SessionStart advisory: the DevSwarm CLI drifted by major or minor from the verified version (port of devswarm-version.js); a stale cache defers to Node, which starts the probe. |
 | `claude-cli-version` | SessionStart advisory: the Claude Code CLI drifted by major or minor from the audited version (port of claude-cli-version.js); a stale cache defers to Node, which starts the probe. |
@@ -96,15 +97,15 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js). |
 | `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js). |
 | `ask-guard` | Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js). |
-| `silent-agent-nudge` | Stop: keeps the nudge state of silent background agents and answers every Stop that would not nudge; a Stop that would nudge defers to the Node hook, which words and records it (port of silent-agent-nudge.js). |
+| `silent-agent-nudge` | Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge (port of silent-agent-nudge.js). |
 | `stale-agent-stop-note` | Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js). |
 | `merge-gate` | Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js). |
-| `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
+| `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
-| `swarm-guard` | Blocks an agent spawn past the spawn-rate cap or under critical memory pressure; defers when a shared-tree advisory may be due (port of swarm-guard.js). |
-| `jev-weekly-scorecard` | Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); otherwise defers to the Node hook, which builds the report (port of the gates of jev-weekly-scorecard.js). |
-| `jev-review-reminder` | Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn); otherwise defers to the Node hook (port of the gates of jev-review-reminder.js). |
+| `swarm-guard` | Blocks an agent spawn past the spawn-rate cap or under critical memory pressure, and adds the shared-tree advisory to an allowed write-capable spawn that shares a working tree with a running write-capable agent (port of swarm-guard.js and lib/shared-tree-note.js). |
+| `jev-weekly-scorecard` | Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); when the check is due and the Jev decision log holds no rows it stamps the weekly latch itself; otherwise defers to the Node hook, which builds the report (port of jev-weekly-scorecard.js). |
+| `jev-review-reminder` | Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn, a non-interactive run); shows the recommend-Jev notice and stamps its latch itself when that is the only notice due; otherwise defers to the Node hook (port of jev-review-reminder.js). |
 | `repair-on-reload` | Stays silent when no repair can start (switch off, subagent turn, skipped, nothing pending at the running version, cooldown); otherwise defers to the Node hook, which takes the lock and starts the detached repair (port of the gates of repair-on-reload.js). |
 | `codex-availability` | SessionStart: probes PATH for a real codex executable, records it, folds a Codex job-log usage-limit error into the quota record and tells the session (port of codex-availability.js). |
 | `codex-quota-detect` | Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:codex-rescue Agent result, once, in the shared availability file (port of codex-quota-detect.js). |
@@ -113,8 +114,8 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `handover-resume` | SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js). |
 | `task-lifecycle-log` | Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js). |
 | `dispatch-tier` | Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off (port of dispatch-tier.js). |
-| `task-guard` | Stop gate: answers the Stops where the task list has nothing open (the loop state cleared, the advisories printed) and hands every Stop with an open task to the Node hook (port of task-guard.js). |
-| `tasklist-guard` | Stop gate: answers the Stops that do not block (a trivial session, tracked work with a fresh progress file, plan mode, the resume-verification nudge) with the Node hook's file effects, and hands every Stop that would block to the Node hook (port of tasklist-guard.js). |
+| `task-guard` | Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has no running agent, else the generic block), with the loop state, the per-prompt budget and the OMC and live-agent steps aside of the Node hook; hands a Stop whose answer needs the DevSwarm app database to Node (port of task-guard.js). |
+| `tasklist-guard` | Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale progress file, with the Node hook's loop state, dedupe, cap, handover advisories, stop-policy budget and acknowledgement; answers the quiet Stops, plan mode and the resume-verification nudge with the same file effects (port of tasklist-guard.js). |
 | `devswarm-parent-inbox` | DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) in the engine; an active Primary defers to the Node hook, which owns the roster, mailbox and dedupe state (port of the gate of devswarm-parent-inbox.js). |
 | `devswarm-child-turn` | DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) in the engine; an active child defers to the Node hook, which writes the heartbeat and descriptor and renders the mailbox (port of the gate of devswarm-child-turn.js). |
 | `devswarm-child-role` | SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace (port of devswarm-child-role.js); a Primary session, a stale stable launcher or anything else it cannot prove byte-identical defers to Node. |
@@ -156,20 +157,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `client.fallback_poll_ms` | `2` |  | ms | Poll interval while the Node fallback runs. |
 | `client.max_reply` | `2097152` |  | bytes | Largest reply the client reads. |
 | `client.max_stdin` | `8388608` |  | bytes | Largest hook payload the client reads from stdin. |
+| `client.slow_probe_ms` | `200` |  | ms | After an exchange times out, how long the client waits for a ping: a daemon that answers is slow but healthy (logged as client_slow, not counted toward the breaker); one that does not counts as a failure. |
 
 ### engine.toml / daemon
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `daemon.accept_error_backoff_ms` | `50` |  | ms | Sleep after an accept that failed for a reason other than nothing pending (a full descriptor table, EMFILE): the pending connection would make poll fire again at once, so without it the accept loop spins at full CPU. Kept well under daemon.stall_ms. |
 | `daemon.accept_poll_ms` | `200` |  | ms | Accept-loop poll interval while serving. |
 | `daemon.bucket_cap` | `4096` |  |  | Most distinct keys one token-bucket map tracks; idle full buckets are dropped first and unknown keys are refused under a key flood. |
 | `daemon.busy_write_ms` | `100` |  | ms | Write timeout for the BUSY reply sent from the accept loop. |
+| `daemon.close_max_ms` | `30000` |  | ms | Longest a drain's exit timer waits for the database close (the commit of everything queued) once it has started, so a timer that fires during the close cannot lose queued commits. A close wedged longer than this is cut off. |
 | `daemon.drain_grace_ms` | `1000` |  | ms | After a drain starts, a worker or loop that has not finished in this long is cut off. |
+| `daemon.drain_max_ms` | `10000` |  | ms | Longest a clean drain (handoff, stop, idle exit, SIGTERM) may take before the daemon exits anyway, so a worker stuck while draining can never keep the process (and the singleton lock) alive with its socket already gone. Above daemon.stuck_ms, so the stuck-worker check normally ends such a drain first. |
 | `daemon.drain_poll_ms` | `20` |  | ms | Accept-loop poll interval while draining. |
 | `daemon.eval_budget_us` | `200000` | `AH_ENGINE_EVAL_BUDGET_US` | us | Per-request thread CPU budget for rule evaluation; 0 turns the budget off. |
 | `daemon.forced_exit_code` | `75` |  |  | Exit status of a forced drain exit (sysexits EX_TEMPFAIL, 75); the next client call starts a fresh daemon. |
 | `daemon.idle_check_ms` | `1000` |  | ms | How often the watchdog compares the last request time with idle_exit_s. |
-| `daemon.idle_exit_s` | `0` | `AH_ENGINE_IDLE_EXIT_S` | s | Seconds without any request after which the daemon exits; 0 keeps it resident (default, D7: the scheduler and mailbox must keep running with no session open). |
+| `daemon.idle_exit_s` | `0` | `AH_ENGINE_IDLE_EXIT_S` | s | Seconds without any request after which the daemon exits (the next hook call starts a fresh one, and the scheduler catches up its missed jobs); 0 keeps it resident. 0 by default: the daemon is always resident so the scheduler and mailbox keep running after every session closes (D7). A daemon whose state dir, lock file or executable is gone still exits on its own (daemon.orphan_check_ms). |
 | `daemon.lock_poll_ms` | `10` |  | ms | Poll interval while waiting for the singleton lock. |
 | `daemon.lock_wait_ms` | `1500` |  | ms | How long a starting daemon waits for an outgoing (version-handoff) daemon to release the singleton lock. |
 | `daemon.malloc_conf` | `narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0` |  |  | Allocator purge tuning handed to the daemon at start (jemalloc `malloc_conf` syntax): one arena for the four worker threads (less fragmentation) and decay 0 (freed pages go back to the OS at once; the system allocators keep them, which left RSS at 2.5x the live heap). Measured on 1000 mixed calls, this Mac: system allocator 45-48 MB RSS, jemalloc with only decay 0 37 MB, with narenas:1 as well 32 MB (live heap 16 MB), adding tcache:false 27 MB but p50 call latency 10 ms against 6.5-7 ms, so tcache stays on. empty = the allocator's own defaults. A variable the caller already set is not overridden. |
@@ -177,11 +182,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.max_request` | `1048576` | `AH_ENGINE_MAX_REQUEST` | bytes | Largest request the daemon reads; the client sends nothing larger (it falls back instead). |
 | `daemon.mem_mb` | `512` | `AH_ENGINE_MEM_MB` | MB | Data-segment limit applied with setrlimit; 0 = none. It is a ceiling against runaway allocation, not a budget (the RSS cap is the budget), and Linux enforces it on thread stacks, so it must exceed daemon.workers times git.stack_mb plus headroom or a check thread cannot start. macOS accepts the call but does not enforce it. |
 | `daemon.nice` | `5` | `AH_ENGINE_NICE` |  | `nice` increment applied to the daemon process. |
+| `daemon.orphan_check_ms` | `2000` |  | ms | How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable. |
 | `daemon.project_burst` | `400` | `AH_ENGINE_PROJECT_BURST` |  | Token-bucket burst per project. |
 | `daemon.project_rps` | `100` | `AH_ENGINE_PROJECT_RPS` |  | Sustained requests per second allowed per project; 0 = unlimited. |
 | `daemon.queue` | `16` | `AH_ENGINE_QUEUE` |  | Connections that may wait for a worker; beyond this the daemon answers BUSY and the client falls back. |
 | `daemon.read_ms` | `1000` | `AH_ENGINE_READ_MS` | ms | Total time a client has to deliver its request. |
 | `daemon.read_poll_ms` | `100` |  | ms | Socket read timeout slice while collecting a request (the total is read_ms). |
+| `daemon.reply_slack_ms` | `150` |  | ms | Time kept back from a request's client deadline (client.deadline_ms, or what a dispatch request says) to write the reply: the inner budgets that could outlast the client's wait (a git call, a Jev consult) are clamped to the deadline minus this, so a slow dependency costs a fallback, not a lost answer. |
 | `daemon.rss_cap_kb` | `65536` | `AH_ENGINE_RSS_CAP_KB` | KB | Resident-set cap; above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. Set from measurement, not guessed: steady state of the 61-check engine on a mixed real-payload replay (5000 calls, a 142 MB transcript read by the Stop checks) is 33-36 MB RSS with jemalloc (aarch64-apple-darwin, linux-gnu) and 45-52 MB with the system allocator (x86_64-apple-darwin, musl, which the allocator crate does not support); live heap is 16-18 MB in both. The cap sits above the larger figure, so only growth trips it. The previous 48 MB cap sat inside the system-allocator steady state, so the daemon restarted every ~10 s and the crash-loop breaker switched it off. |
 | `daemon.rss_check_ms` | `10000` | `AH_ENGINE_RSS_CHECK_MS` | ms | How often the watchdog samples resident memory. |
 | `daemon.rules_check_ms` | `200` |  | ms | How often the daemon checks the rules file (and SIGHUP) for a change. |
@@ -269,6 +276,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.log_cap` | `65536` |  | bytes | Event log size above which it is trimmed to its last log_keep_lines lines. |
 | `health.log_keep_lines` | `200` |  |  | Lines kept when the event log is trimmed. |
 | `health.pid_probe` | `ps, -p, {pid}, -o, command=` |  |  | Command used to read a process's command line when checking whether a pid is a live engine: the program, then its arguments with `{pid}` substituted. |
+| `health.probe_poll_ms` | `2` |  | ms | How often a running probe command is checked for completion. |
+| `health.probe_timeout_ms` | `1000` |  | ms | Longest a pid or memory probe command (health.pid_probe, health.rss_probe) may run; it runs on the hook path, so a wedged one is cut off and reads as no answer. |
+| `health.proc_cmdline` | `/proc/{pid}/cmdline` |  |  | Where Linux keeps a process's command line (NUL-separated); read instead of running the pid probe. `{pid}` is substituted. |
 | `health.rss_probe` | `ps, -o, rss=, -p, {pid}` |  |  | Command used to read this process's resident set where /proc is unavailable (macOS): the program, then its arguments with `{pid}` substituted. |
 | `health.scrub_patterns` | `7 items` |  |  | Patterns removed from anything that goes into a diagnostic: each item is [regex, replacement]. Order matters. |
 | `health.serve_arg` | `serve` |  |  | Subcommand a daemon is started with; also how a live engine is recognised in the process list. |
@@ -307,11 +317,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `paths.socket_max_len` | `100` |  | bytes | Longest socket path used as is; unix socket paths are capped at 104 bytes on macOS (108 on Linux), so this leaves headroom. |
 | `paths.state_dir` | `ah-engine` |  |  | Engine state directory name inside base_dir (D53). |
 
+### engine.toml / proc
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `proc.read_grace_ms` | `500` |  | ms | After a helper process (git, ps, vm_stat, a scheduled job) exits, the least time its output may take to reach end of file (it may also use what is left of the command's own timeout, as Node's spawnSync does); a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer. |
+
 ### engine.toml / request_env
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `request_env.allow` | `40 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work). |
+| `request_env.allow` | `42 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work). DISABLE_OMC and OMC_SKIP_HOOKS are the oh-my-claudecode kill switches task-guard reads before it steps aside for an OMC loop. |
 | `request_env.incomplete_key` | `ah_env_incomplete` |  |  | Reserved name, never a forwardable variable, that carries the request's incomplete flag inside the forwarded environment object (the client's variables were dropped or it had no HOME), so the daemon's checks defer to the Node guards. |
 | `request_env.line_prefix` | `E ` |  |  | Prefix of the request line that carries the forwarded environment as one JSON object. |
 | `request_env.max_bytes` | `65536` |  | bytes | Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them and the request is marked incomplete, so every check defers to the Node guard (a missing or empty HOME marks it incomplete too). |
@@ -349,7 +365,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.chain_joiner` | `` -> `` |  |  | Separator between the aliases of a chain in a note. |
 | `git.check_summary` | `Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self...` |  |  | One-line description of the check for the generated reference. |
 | `git.child_poll_ms` | `1` |  | ms | Poll interval while a git child process runs. |
-| `git.child_read_ms` | `500` |  | ms | Time allowed to collect the output of a child process after it exits. |
 | `git.commit_cluster_value_flags` | `mFCct` |  |  | Short commit flags that take a value inside a cluster (-m, -F, -C, -c, -t). |
 | `git.commit_creating` | `9 items` |  |  | Subcommands that create a commit, where self-credit and handover checks apply. |
 | `git.commit_hash_len` | `40` |  |  | Length of a full commit hash, used to shorten it in messages. |
@@ -435,6 +450,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.plugin_option_prefix` | `CLAUDE_PLUGIN_OPTION_` |  |  | Prefix of the environment variables the host sets from plugin options. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
 | `git.push_long_opts` | `27 items` |  |  | Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w. |
+| `git.re_file_write_echo` | `\b(?:echo\|printf)\b` |  |  | JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc. |
+| `git.re_file_write_heredoc` | `<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?` |  |  | JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip. |
+| `git.re_file_write_redirect` | `(?:^\|[\s;&\|(])>{1,2}\s*[^\s&;\|<>()0-9][^\s&;\|<>()]*` |  |  | JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape. |
+| `git.re_file_write_tee` | `\btee\b\s+(?:-a\s+)?[^\s&;\|<>()-][^\s&;\|<>()]*` |  |  | JavaScript regex source: a tee into a file, which counts as a redirect for the file-write shape. |
 | `git.redirect_words` | `11 items` |  |  | Shell redirection operators, which are not command words. |
 | `git.setting_alias_resolve` | `4 entries` |  |  | Switch for git alias and shell definition resolution. |
 | `git.setting_git_guard` | `4 entries` |  |  | Master switch of the check: settings.json section and key, environment variable and plugin-option name. |
@@ -607,6 +626,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spool.backoff_ms` | `20` | `AH_ENGINE_SPOOL_BACKOFF_MS` | ms | First retry delay; each retry doubles it, up to backoff_max_ms, with random jitter of up to half the delay. |
 | `spool.backoff_shift_max` | `16` |  |  | The largest doubling exponent of a spool retry delay (backoff_ms times 2^n, at most this power), before backoff_max_ms; it keeps the shift from overflowing. |
 | `spool.drain_ms` | `1000` | `AH_ENGINE_SPOOL_DRAIN_MS` | ms | Interval of the scheduled spool drain job (it also drains on start and before each project write). |
+| `spool.lock_poll_ms` | `5` |  | ms | How often a waiter retries the spool's lock. |
+| `spool.lock_wait_ms` | `500` |  | ms | Longest a client append or a daemon drain waits for the spool's lock file (<spool>.lock); past it the caller gives up and says why instead of hanging behind a stuck holder. |
 | `spool.max_bytes` | `16777216` | `AH_ENGINE_SPOOL_MAX_BYTES` | bytes | Largest spool; a write that would grow it past this is refused instead of spooled, so the client learns it was not kept. |
 | `spool.retries` | `4` | `AH_ENGINE_SPOOL_RETRIES` |  | Retries of a project write before it is spooled (the first attempt is not counted). |
 | `spool.verbs` | `put, set, setex` |  |  | Project verbs a client may spool when the engine is down or busy: writes whose answer it does not need. |
@@ -746,14 +767,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `schedule.actions` | `maintain, backup, metrics_snapshot, spool_drain, telemetry_rollup, noop` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.actions` | `7 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
 | `schedule.history_default` | `50` |  |  | Runs `schedule history` lists unless asked for more. |
 | `schedule.maintain_ms` | `86400000` | `AH_ENGINE_MAINTAIN_MS` | ms | Interval of the maintain job (D26); 0 turns it off. |
 | `schedule.run_wait_ms` | `5000` |  | ms | How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms. |
-| `schedule.subprocess_actions` | `maintain, backup` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
+| `schedule.subprocess_actions` | `maintain, backup, jev_sweep` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
 | `schedule.telemetry_rollup_ms` | `86400000` | `AH_ENGINE_TELEMETRY_ROLLUP_MS` | ms | Interval of the telemetry rollup job (D78); 0 turns it off. |
 | `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
 | `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
@@ -769,11 +790,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `api_guard.js_globals` | `17 items` |  |  | JavaScript global builtins whose members the Node guard verifies by default. |
 | `api_guard.js_require_word` | `require` |  |  | The text a JavaScript module reference needs before the guard can resolve an attribute against it. |
 | `api_guard.node_builtins` | `23 items` |  |  | Node built-in modules whose attributes the Node guard verifies by default. |
+| `api_guard.noise_pattern` | `[^A-Za-z0-9_.]` |  |  | Regex source (global) of the characters dropped from a Bash command before the verifiable-reference test: every character that is not an ASCII letter, digit, underscore or dot. The code a shell write puts in a file is built from the command text by quote removal and escape decoding, so its words are contiguous runs of what remains. |
 | `api_guard.python_extensions` | `py, pyi` |  |  | File extensions (lower-case) the guard checks as Python. |
 | `api_guard.python_import_word` | `import` |  |  | The word a Python module reference needs before the guard can resolve an attribute against it. |
 | `api_guard.python_stdlib` | `46 items` |  |  | Python standard-library modules whose attributes the Node guard verifies by default. |
 | `api_guard.setting` | `6 entries` |  |  | Where the guard's own on/off switch is read from (guards.apiGuard, default on). |
 | `api_guard.shell_setting` | `6 entries` |  |  | Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on). |
+| `api_guard.shell_write_pattern` | `[>]\|\btee\b\|\bsed\b\|\bperl\b\|\bcp\b\|\bmv\b\|\bopen\b\|createWriteStream\|File(?:...` |  |  | Regex source (case-sensitive) of the Node pre-filter that says a Bash command could write a file (a redirect, tee, an in-place editor, cp or mv, an inline-code write); a command it does not match yields no code chunk, so the guard allows it. |
 | `api_guard.summary` | `Fabricated-API guard: answers every call the Node api-guard would allow witho...` |  |  | One-line description of the api-guard check in the generated reference. |
 | `api_guard.thirdparty_setting` | `6 entries` |  |  | Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off). |
 | `api_guard.tool_edit` | `Edit` |  |  | Tool whose code is `tool_input.new_string`. |
@@ -1391,7 +1414,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `cascade.enabled_setting` | `6 entries` |  |  | Global kill switch of the cascade. false turns it off for every integration whatever their own switch says. Setting jev.cascade, env ANTIHALL_JEV_CASCADE. |
 | `cascade.env_prefix` | `ANTIHALL_JEV_CASCADE_` |  |  | Prefix of the per-integration cascade environment switch; the snake-cased upper-case id is appended (ANTIHALL_JEV_CASCADE_MODEL_ROUTING). A boolean word wins over every other source. |
 | `cascade.err_busy` | `busy` |  |  | Telemetry error word: too many escalations were running, so this one was skipped. |
-| `cascade.escalate_below` | `0 entries` |  |  | Per-integration confidence under which Jev's answer is escalated to the model, keyed by the Jev integration id, as a decimal in [0,1] in text. An integration not listed escalates below its own act threshold (jev.confidenceThreshold). |
+| `cascade.escalate_below` | `1 entries` |  |  | Per-integration confidence under which Jev's answer is escalated to the model, keyed by the Jev integration id, as a decimal in [0,1] in text. An integration not listed escalates below its own act threshold (jev.confidenceThreshold). |
 | `cascade.inflight_cap` | `4` |  |  | Escalations that may run in the background at once; an escalation past it is skipped (its Jev answer stands) and recorded as busy. |
 | `cascade.input_evidence` | `\nEVIDENCE:\n` |  |  | Heading of the evidence in the model's input. |
 | `cascade.input_jev` | `\nFIRST CLASSIFIER ANSWERED: {answer} (confidence {confidence})\n` |  |  | The line that shows the first classifier's answer and confidence ({answer}, {confidence}); written only when cascade.show_setting is true. |
@@ -1517,6 +1540,63 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `triage.urgency_true` | `The message is a live blocker or an unanswered question gating the sender's p...` |  |  | URGENCY_QUESTION criteria.true. |
 | `triage.urgent` | `urgent` |  |  | The urgency label of an urgent message. |
 
+### jev_evidence.toml / evidence
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `evidence.answer_key` | `answer` |  |  | The field of a Haiku reply that holds its answer. |
+| `evidence.cfg` | `3 entries` |  |  | The evidence gate of each supervisor integration, keyed by its Jev integration id (fields described in the header). devswarmWaitKind: stuck or waiting (design card 4.5): asked only with enough transcript and mesh evidence and only when no rule settles it; a done, archived or held child is never asked about, and running CI, an unanswered question to the parent, a report newer than anything received or a usage-limit pause each mean waiting. devswarmLoop (card 4.10): a rule decides; recent progress means not looping, and the model only confirms a candidate (the same command and error repeated, or a change reverted). devswarmStepMap (card 4.6): asked only for a plan with at least two steps, a summary of enough text and an earlier summary that reported a step; one step in progress with no sequencing word, or a summary that quotes a step's text, decides without a model. |
+| `evidence.confidence_key` | `confidence` |  |  | The field of a Haiku reply that holds its confidence. |
+| `evidence.date_chars` | `10` |  |  | Characters of an ISO timestamp that make its UTC date, which the per-day Haiku cap counts by. |
+| `evidence.dur_placeholder` | `{dur}` |  |  | The placeholder in a question that the caller's `dur` text (how long there was no progress) replaces. |
+| `evidence.earlier_line` | `step {step}: {text}` |  |  | How one earlier summary is written in the evidence pack: {step} the step it reported ({unreported} when none), {text} its text. |
+| `evidence.fact_line` | `{name} = {value}` |  |  | How one fact is written in the facts block: {name} and {value}. |
+| `evidence.heading_evidence` | `\nEVIDENCE:\n` |  |  | Heading written before the evidence pack in the model's input. |
+| `evidence.heading_facts` | `FACTS:\n` |  |  | Heading of the facts block of the evidence pack. |
+| `evidence.heading_options` | `\nALLOWED ANSWERS:\n` |  |  | Heading written before the allowed answers in the model's input; each option follows as `label: meaning`. |
+| `evidence.heading_question` | `QUESTION:\n` |  |  | Heading written before the question in the model's input. |
+| `evidence.heading_section` | `\n{section}:\n` |  |  | Heading of one pack section ({section}). |
+| `evidence.kind_steps` | `steps` |  |  | The `kind` value of an integration whose question is a pick-one over the numbered steps of a plan. |
+| `evidence.line_id` | `[{section}.{i}]` |  |  | How a pack line is labelled so an answer can cite it: {section} the section name, {i} the line number starting at 1. |
+| `evidence.log` | `logs/jev-evidence.ndjson` |  |  | One row per evidence-gate decision (asked, skipped for insufficient evidence, decided by a rule, over the daily cap), relative to the anti-hall home directory. Each row names the facts that were present and the required ones that were missing. Empty turns the rows off. |
+| `evidence.log_max_bytes` | `1048576` |  |  | The evidence log is emptied before a row that would take it past this size. |
+| `evidence.plan_line` | `{n} [{status}] {text}` |  |  | How one plan step is written in the evidence pack: {n} the step number, {status} its status, {text} its text. |
+| `evidence.ref_key` | `evidence_ref` |  |  | The field of a Haiku reply that names the evidence line it rests on. |
+| `evidence.stepmap_doing_status` | `doing` |  |  | The status word of a plan step that is in progress. |
+| `evidence.stepmap_sequence_words` | `7 items` |  |  | Words that make a summary span more than one step, so the single in-progress step is not assumed (design card 4.6). |
+| `evidence.system_prompt` | `You judge one decision for a supervisor of coding agents. You are given a QUE...` |  |  | System prompt of a direct Haiku evidence call. The answer must name the pack line it rests on; an answer whose line does not exist is discarded. |
+| `evidence.timeout_ms` | `25000` |  | ms | How long a direct Haiku evidence call may take. These calls run supervisor-side and never inside a hook that blocks. |
+| `evidence.token_min_len` | `3` |  |  | Shortest word (in characters) that counts when a summary is compared with a step's text for overlap. |
+| `evidence.unreported` | `none` |  |  | What an earlier summary that reported no step shows in place of the step number. |
+| `evidence.usage` | `usage: ah-engine jev evidence < pack.json  (one JSON object per line: id, fac...` |  |  | The usage line of `ah-engine jev evidence` when its input is missing or malformed. |
+| `evidence.words` | `21 entries` |  |  | The words the evidence gate uses in its result and log rows: phases (rule, skipped, asked), sources (jev, haiku, rule, none), the skip reasons and the answer shapes. |
+
+### jev_sweep.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.jev_sweep` | `11 entries` |  |  | Gather the evidence of each live child workspace and put the supervisor's Jev questions (is a quiet child stuck or waiting, is it looping, which plan step does a summary describe) through the evidence gate. Runs as a subprocess so a timeout kills it and every model call it started; 0 turns it off. The modes of the three integrations decide whether any child is looked at. |
+
+### jev_sweep.toml / schedule
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `schedule.jev_sweep_ms` | `900000` | `AH_ENGINE_JEV_SWEEP_MS` | ms | Interval of the jev_sweep job; 0 turns it off. |
+
+### jev_sweep.toml / sweep
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `sweep.ci` | `5 entries` |  |  | The CI runs of the child's branch ({branch}), asked of the GitHub CLI; off when enabled is false or the command is missing, and then the ci_running fact is simply absent. running_statuses: run statuses that mean still running. Output is JSON with these fields. |
+| `sweep.duration` | `3 entries` |  |  | Duration units: minutes in an hour and hours in a day, and the largest value shown in the smaller unit before the next is used (the same rule as the plan's own duration text). |
+| `sweep.env` | `2 entries` |  |  | Environment variables that override a sweep setting the plugin's settings file also holds (the sweep reads the environment only): held_partitions is a comma-separated list of workspace ids the owner holds (never asked about); step_stall_min is the minutes without step progress after which a child is quiet (it replaces limits.step_stall_ms when it is a number of at least 1). |
+| `sweep.git` | `4 entries` |  |  | Read-only git commands run in the child's worktree ({wt}); {branch} is the branch name the second one printed. log prints one commit per line as <epoch seconds><log_sep><subject>. timeout_ms bounds each. |
+| `sweep.integrations` | `devswarmWaitKind, devswarmLoop, devswarmStepMap` |  |  | The integrations the sweep gathers evidence for, in the order they are decided. |
+| `sweep.limits` | `19 entries` |  |  | Bounds of one sweep. step_stall_ms: a child with no step progress this long is quiet (WaitKind) and one on the same step for loop_factor times it is a loop candidate. lookback_min: how far back repeated commands, errors and owner prompts are counted. tool_tail, text_tail: tool calls and assistant texts put in the pack. tail_bytes: the end of the transcript that is read. arg_cap, text_cap, err_cap, msg_cap: characters kept of a tool argument, an assistant text, an error and a mesh message. max_children: children examined per sweep. reask_ms: a question whose subject has not changed is not asked again before this. max_steps_map: a plan with more steps is not asked about. step_match_ms: a summary sent with a step belongs to the step whose own timestamp is within this of it. commit_lookback: commits read from git. mesh_sent: the newest messages the child sent that are read. |
+| `sweep.paths` | `10 entries` |  |  | Where the sweep reads, relative to the anti-hall home directory unless noted: plans (one JSON per child), workspaces (descriptors), archived (archive records), store (per-repo mesh stores), state (the sweep's own re-ask memory); transcripts is relative to the user home, and the transcript of a child is <transcripts>/<its worktree path with / \ : . replaced by the dash>/<session id><transcript_ext>. |
+| `sweep.transcript` | `7 entries` |  |  | How a transcript line is read. arg_keys: the tool input fields tried in order for the one-line argument of a tool call. edit_tools: tools that edit a file (their file_path field is counted). revert_patterns: a command containing one counts as a revert. background_tools: tools that start a background job. usage_limit_patterns: a recent assistant text or tool error containing one (case-insensitive) means the child is paused on a usage limit. skip_prompt_prefixes: user lines that start this way are not owner prompts. task_note_prefix: a user line that starts this way is a background-task notification. |
+| `sweep.words` | `16 entries` |  |  | The words the sweep writes into evidence lines and its result. line_tool: {ago} {name} {arg}. line_text: {ago} {text}. line_msg: {ago} {dir} {ask} {text}. line_ci: {name} {status} {ago}. line_repeat: {cmd} {n}. line_error: {text}. line_commit: {ago} {subject}. line_summary: {ago} {text}. dir_out and dir_in: the direction words of a mesh line; ask: written when the message asked for a reply. dur_m, dur_h, dur_d: the duration suffixes (minutes, hours, days); plan_state_done, plan_state_doing: the status words a plan step uses. result keys are fixed. |
+
 ### dispatch.toml / dispatch
 
 | Key | Default | Env override | Unit | What it is |
@@ -1571,8 +1651,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.msg_fail_closed` | `anti-hall: the engine could not run the guards for {event} ({why}). The call ...` |  |  | Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}. |
 | `dispatch.msg_fail_closed_stop` | `anti-hall: the engine could not run the guards for {event} ({why}). The agent...` |  |  | Printed on stderr (exit 2) when a Stop or SubagentStop cannot run its guards and the block is still within dispatch.stop_block_cap. Placeholders: {event}, {why}. |
 | `dispatch.msg_hook_died` | `the hook was killed by a signal or could not be waited for` |  |  | Event-log detail when a Node hook was killed by a signal or could not be waited for. |
-| `dispatch.msg_hook_spawn` | `the hook's command could not be started` |  |  | Event-log detail when a Node hook's command could not be started. |
+| `dispatch.msg_hook_spawn` | `the hook's command could not be started: {errno} {err}` |  |  | Event-log detail when a Node hook's command could not be started (the event code is the hook id). Placeholders: {errno} (os<n>, the OS error number), {err} (its text). |
 | `dispatch.msg_hook_timeout` | `the hook ran past its timeout and was killed; the host discards a timed-out hook` |  |  | Event-log detail when a Node hook was still running at its timeout and was killed with its group (the host discards such a hook, so the call goes on). |
+| `dispatch.msg_infra_defer` | `anti-hall: the engine could not dispatch {event} ({why}); the Node hooks decide` |  |  | Printed on stderr with dispatch.defer_exit when an infrastructure fault (a hook the OS would not start, an unreadable payload or fallback map, a usage error, the event's budget spent) keeps the dispatcher from deciding: the wrapper then runs the Node hooks. Placeholders: {event}, {why}. |
 | `dispatch.msg_no_fallback` | `entry {id} deferred with no runnable Node command` |  |  | Reason logged when a deferred hook entry has no runnable Node command. |
 | `dispatch.msg_no_row` | `the dispatch table has no well-formed row for {host} {event}: the Node hooks ...` |  |  | Deferral reason when the dispatch table has no well-formed row for an event the fallback list does not mark as a thin trigger. Placeholders: {host}, {event}. |
 | `dispatch.msg_panic` | `the dispatcher hit an internal error: the Node hooks decide` |  |  | Deferral reason (event log and stderr) when the dispatcher panicked on a guard event: the Node hooks answer instead of a block. |
@@ -1587,12 +1668,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.msg_unknown_kind` | `unknown kind {kind}: gen-hooks prints hooks, registry, list or map` |  |  | Error printed by `gen-hooks` when `--kind` names a file it does not generate. Placeholder: {kind}. |
 | `dispatch.msg_why_died` | `hook {id} was killed before it could answer` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook was killed by a signal. Placeholder: {id}. |
 | `dispatch.msg_why_incomplete` | `hook {id} finished with incomplete output` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook finished but a process it left behind kept its output open, so the output is incomplete. Placeholder: {id}. |
-| `dispatch.msg_why_spawn` | `hook {id} could not be started` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook could not be started. Placeholder: {id}. |
+| `dispatch.msg_why_spawn` | `hook {id} could not be started` |  |  | Reason in dispatch.msg_infra_defer when a guard event's Node hook could not be started (EAGAIN, EMFILE, ENOMEM: the Node hooks then decide). Placeholder: {id}. |
 | `dispatch.payload_hash_checks` | `verify-first` |  |  | Built-in checks whose Node hook derives something from the exact stdin bytes (verify-first rotates its reminder by the SHA-1 of the whole payload): the dispatcher hands these the SHA-1 of the raw payload, computed only when one of them is selected. |
 | `dispatch.plain_context_events` | `UserPromptSubmit, UserPromptExpansion, SessionStart, PostModelSwitch` |  |  | Events on which plain-text stdout (exit 0) is context for the model (docs/KB-claude-code-hooks.md: UserPromptSubmit, UserPromptExpansion, SessionStart, PostModelSwitch). When the dispatcher must deliver such text next to a hook's JSON it folds it into the merged additionalContext instead of moving it to stderr, where the model would not see it. |
 | `dispatch.poll_ms` | `2` |  | ms | How often the dispatcher checks whether its Node hooks have finished. |
 | `dispatch.read_ms` | `2000` |  | ms | How long the dispatcher waits for a finished Node hook's output pipes to drain. |
 | `dispatch.reason_joiner` | `\n\n` |  |  | Text placed between the block reasons of several hooks that block the same event, when they are joined into the one block the dispatcher answers (the host shows the model every hook's block reason; Claude Code gives each Stop/SubagentStop block its own message). |
+| `dispatch.rerun_reserve_ms` | `5000` |  | ms | The least host time that must be left (the event's longest hooks.json timeout minus the time the dispatcher has used) for a spent budget to defer to the wrapper's Node rerun (dispatch.defer_exit). With less left the rerun would be killed by the host, which treats a timed-out hook as an allow, so a guard event fails closed instead. |
 | `dispatch.root_vars` | `2 entries` |  |  | Per host, the environment variables that hold the plugin root, first set one wins; the host exports them to hook commands, a command naming an unset one cannot run, and a built-in check gets the root as its plugin_root. |
 | `dispatch.shell` | `/bin/sh, -c` |  |  | The shell a Node hook command runs under, with its command flag (hooks.json commands are shell-form strings). |
 | `dispatch.spool_stale_s` | `1800` |  | s | Age at which a named raw-payload stdin spool file from an older build or unlink failure is considered stale and removed. Keep this larger than the longest hook timeout. |
@@ -1616,14 +1698,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `hooks.entry_fields` | `enabled, mode, when` |  |  | The fields an `[entries.<id>]` section may hold. |
 | `hooks.entry_mode` | `on` |  |  | Default of `mode` in `[entries.<id>]`: on, shadow (runs and is logged, never changes the outcome) or off (skipped). On a guard-event entry shadow and off are allowed only when the entry has a built-in check, whose Node hook then stays the real decider. |
 | `hooks.entry_when` | `0 entries` |  |  | Default of `when` in `[entries.<id>]`: no predicate (the entry applies whenever its matcher does). A table row may carry its own `when`, and `[entries.<id>] when` overrides it (not on a guard entry). |
-| `hooks.event_budget_ms` | `0` |  | ms | Default of `budget_ms` in `[events.<Event>]`: the wall budget of one occurrence of the event (0 = none). Once it has passed the engine starts no further entry, lets the ones already running finish within their own timeouts, and on a guard event fails closed as the fail-closed matrix defines. |
+| `hooks.event_budget_ms` | `0` |  | ms | Default of `budget_ms` in `[events.<Event>]`: the wall budget of one occurrence of the event (0 = none). Once it has passed the engine starts no further entry, lets the ones already running finish within their own timeouts, and on a guard event (unless a hook that ran blocked) hands the event to the wrapper's Node hooks with dispatch.defer_exit while no Node hook has started and no built-in check has answered (a spent budget is a slow machine, not a verdict); once one has, the wrapper's rerun would repeat it, so the event fails closed instead. |
 | `hooks.event_enabled` | `true` |  |  | Default of `enabled` in `[events.<Event>]`: whether the event is used at all (false is the same as mode = off). |
 | `hooks.event_fields` | `enabled, mode, max_rules, budget_ms, order` |  |  | The fields an `[events.<Event>]` section may hold. |
 | `hooks.event_max_rules` | `0` |  | entries | Default of `max_rules` in `[events.<Event>]`: the most entries evaluated per occurrence of the event (0 = all). The entries after the first max_rules, in order, are skipped and counted as skipped (max_rules). Not allowed above 0 on a guard event. |
 | `hooks.event_mode` | `on` |  |  | Default of `mode` in `[events.<Event>]`: on (the event's entries decide), shadow (they run and are logged but never change the outcome) or off (the event is skipped and answered with the neutral no-op). |
 | `hooks.event_order` | `` |  |  | Default of `order` in `[events.<Event>]`: entry ids that run and combine before the others, in this order (empty = the table's order). An id the event's table does not have is a config error. |
 | `hooks.modes` | `on, shadow, off` |  |  | The values `mode` may take, in `[events.<Event>]` and `[entries.<id>]`. |
-| `hooks.msg_budget` | `the event's budget passed before {id} could run` |  |  | Why a guard event fails closed when its budget_ms has passed before a built-in check's Node hook could start. Placeholder: {id}. |
+| `hooks.msg_budget` | `the event's budget passed before {id} could run` |  |  | Why a guard event is handed to the Node hooks (dispatch.defer_exit) when its budget_ms has passed before an entry could start. Placeholder: {id}. |
 | `hooks.msg_cfg_bad_mode` | `mode {value} is not one of {allowed}` |  |  | Config error detail: `mode` is not one of hooks.modes. Placeholders: {value}, {allowed}. |
 | `hooks.msg_cfg_bad_type` | `{field} must be {expected}` |  |  | Config error detail: a field has the wrong type. Placeholders: {field}, {expected}. |
 | `hooks.msg_cfg_guard_entry` | `{id} decides on guard event {event} only through its Node hook, so {what} wou...` |  |  | Config error detail: an entry of a guard event has no built-in check, so its Node hook is its only decider and must keep running. Placeholders: {id}, {event}, {what}. |
@@ -1809,15 +1891,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `verify_first.dedupe_key` | `verify-first` |  |  | The emit-dedupe key of the reminder. |
 | `verify_first.dedupe_normalized` | `VERIFY-FIRST` |  |  | What every rotating line is normalized to before hashing, so a different line is still the same block. |
+| `verify_first.dedupe_normalized_primary` | `VERIFY-FIRST+PRIMARY` |  |  | What the block is normalized to before hashing when the Primary sentence is appended. |
 | `verify_first.env_devswarm_disable` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | Setting this variable to 1 turns the DevSwarm integration off. |
 | `verify_first.env_devswarm_repo` | `DEVSWARM_REPO_ID` |  |  | The variable DevSwarm sets for a session it runs; a non-blank value makes the session a DevSwarm session in auto mode. |
 | `verify_first.env_devswarm_source_branch` | `DEVSWARM_SOURCE_BRANCH` |  |  | The variable DevSwarm sets for a child workspace; a non-blank value means this session is a child, never a Primary. |
 | `verify_first.event` | `UserPromptSubmit` |  |  | The hook event name in the check's output. |
+| `verify_first.no_ws_docs` | `CLAUDE.md, AGENTS.md` |  |  | The repo documents searched for the no-workspaces rule, at each directory level, in this order. |
+| `verify_first.no_ws_levels` | `8` |  |  | How many directory levels the search climbs from the working directory (it stops earlier at the repository root). |
+| `verify_first.no_ws_pattern` | `no\s+workspaces?\s+for\s+real\s+work` |  |  | JavaScript regex source (flags: i) matched against a repo's CLAUDE.md / AGENTS.md: a match means the repo forbids workspaces for real work, so the Primary dispatch-tier text is withheld. |
 | `verify_first.nudges` | `20 items` |  |  | The rotating reminder lines, in the order the Node hook lists them (the index is the payload digest modulo their number). |
 | `verify_first.num_repeat_every` | `6 entries` |  |  | Where the repeat interval is read from (guards.injectionRepeatEvery, delivered turns, default 10); 0 repeats the reminder every turn. |
 | `verify_first.prefix` | `VERIFY-FIRST: ` |  |  | Text in front of the rotating line. |
+| `verify_first.primary_joiner` | ` ` |  |  | Text between the rotating line and the Primary sentence. |
+| `verify_first.primary_nudge` | `DEVSWARM PRIMARY: the workspace is your TOP fan-out tier. A workspace-scale M...` |  |  | The sentence appended to the rotating line in a DevSwarm Primary session that may dispatch workspaces (byte-identical to the Node hook's DEVSWARM_PRIMARY_NUDGE). |
 | `verify_first.summary` | `UserPromptSubmit: the short rotating verify-first reminder, deduplicated per ...` |  |  | One-line description of the verify-first check in the generated reference. |
 | `verify_first.sw_dispatch_tier_text` | `4 entries` |  |  | Where the switch of the DevSwarm Primary dispatch-tier text is read from (devswarm.dispatchTierText, default on). |
+| `verify_first.sw_no_ws_detect` | `4 entries` |  |  | Where the switch of the CLAUDE.md / AGENTS.md no-workspaces detection is read from (jev.dispatchTierDetectNoWorkspaces, default on). |
+| `verify_first.sw_no_ws_repos` | `4 entries` |  |  | Where the list of repos that forbid workspaces is read from (jev.dispatchTierNoWorkspaceRepos, comma separated: absolute path prefixes, directory names, or * for all). |
 | `verify_first.sw_supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode is read from (devswarm.supervisorMode: auto, on or off, default auto): the first condition of the Primary gate. |
 | `verify_first.sw_turn` | `4 entries` |  |  | Where the on/off switch is read from (context.verifyFirstTurn, default on). |
 
@@ -1825,45 +1915,197 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `ctxbudget.account_state` | `.anti-hall/limit-conserve-account.json` |  |  | The account-switch state file of limit conservation, relative to the home directory (hooks/limit-conserve.js ACCOUNT_STATE_FILE). |
 | `ctxbudget.advice_good_word` | `good` |  |  | The word that opens the good-point-to recommendation wording. |
 | `ctxbudget.advice_needs_good` | `compact, clear, /new` |  |  | Words that, together with the word good, can form a good-point-to recommendation (good point to compact, /clear or /new). |
 | `ctxbudget.advice_needs_safe` | `compact, /clear, reset, /new` |  |  | Words that, together with the word safe, can form a compact recommendation (safe to compact, safe to /clear, safe for a reset or /new); a final text with none of the pairs holds no recommendation. |
 | `ctxbudget.advice_prefilter` | `compact, clear, reset, /new` |  |  | Substrings whose absence from the whole transcript tail (and from every unicode escape) proves that no assistant text of it can hold a compact recommendation. |
 | `ctxbudget.advice_safe_word` | `safe` |  |  | The word that opens the safe-to and safe-for recommendation wordings. |
 | `ctxbudget.advice_slash_compact` | `/compact` |  |  | The slash command whose mention alone can be a recommendation (run /compact, a standalone /compact line). |
+| `ctxbudget.ah_backstop_instead` | `refresh the handover now ({skill}: write the next HANDOVER-<n>.md) so it cove...` |  |  | The backstop's instructions; {skill} the handover skill, {reset} the reset commands. |
+| `ctxbudget.ah_backstop_what` | `post-handover budget exceeded: context is ~{pct}%, more than {b} points past ...` |  |  | The backstop's first line; {pct} context percent, {b} budget, {hp} handover percent. |
+| `ctxbudget.ah_bloat` | `As context grows the model gets less efficient and more prone to hallucinatio...` |  |  | The sentence on why a large context hurts (BLOAT_SENTENCE). |
+| `ctxbudget.ah_budget` | `~{b}% of the context window{tok}` |  |  | The budget label of the gate; {b} is the budget percent, {tok} the token clause. |
+| `ctxbudget.ah_budget_tokens` | ` (~{k}K tokens)` |  |  | The token clause of the budget label; {k} is the budget in thousands of tokens. |
+| `ctxbudget.ah_ceiling` | ` ({k}K)` |  |  | The ceiling clause of the token fire line; {k} is the ceiling in thousands. |
+| `ctxbudget.ah_clear_claude` | `/clear` |  |  | The command that starts a fresh session on Claude. |
+| `ctxbudget.ah_clear_codex` | `/new` |  |  | The command that starts a fresh session on Codex. |
+| `ctxbudget.ah_codex_dir` | `.codex` |  |  | The directory name whose presence in a transcript path marks a Codex session. |
+| `ctxbudget.ah_compact_claude` | `/compact focus: continuation state is in {path}; keep pending tasks, the user...` |  |  | The compact command on Claude; {path} is the expected handover path. |
+| `ctxbudget.ah_compact_codex` | `/compact` |  |  | The compact command on Codex. |
+| `ctxbudget.ah_compact_no_path` | `<the HANDOVER*.md path you wrote>` |  |  | The compact command's path when no handover path is known. |
+| `ctxbudget.ah_default_status` | `pending` |  |  | The status a task without one has. |
+| `ctxbudget.ah_fire_main_file` | `; by the skill's own date/sequence rules its main file is {path}` |  |  | The clause naming the expected main handover file ({path}). |
+| `ctxbudget.ah_fire_step1` | `(1) write an anti-hall session handover YOURSELF, following the contract of {...` |  |  | The start of the fire directive's instructions; {skill} names the handover skill. |
+| `ctxbudget.ah_fire_step2` | `; (2) tell the user it was done and list every path you saved under .anti-hal...` |  |  | Step 2 of the fire directive. |
+| `ctxbudget.ah_fire_step3_claude` | `(3) urge them to compact (or /clear) soon and give them this exact command to...` |  |  | Step 3 of the fire directive on Claude; {cmd} is the compact command to paste. |
+| `ctxbudget.ah_fire_step3_codex` | `(3) urge them to run /compact (or /new for a fresh chat) soon (Codex re-point...` |  |  | Step 3 of the fire directive on Codex. |
+| `ctxbudget.ah_fire_tail` | `whether they would like to reach a good stopping point first. {bloat} This fi...` |  |  | The end of the fire directive's instructions; {bloat} is the bloat sentence. |
+| `ctxbudget.ah_fire_why` | `It preserves the session's work against auto-compact. Do it without asking th...` |  |  | The Why line of the fire directive. |
+| `ctxbudget.ah_freshness_grace_ms` | `1000` |  | ms | How much later than the handover file the last counted work may be and the handover still count as fresh (handover-freshness.js MTIME_GRACE_MS). |
+| `ctxbudget.ah_gate_allowed` | `a quick question, finishing the in-flight task the handover names, or spawnin...` |  |  | The gate's Allowed line. |
+| `ctxbudget.ah_gate_ask_claude` | `ask the user with AskUserQuestion (two options)` |  |  | How the gate asks on Claude. |
+| `ctxbudget.ah_gate_ask_codex` | `ask the user to choose between two options` |  |  | How the gate asks on Codex. |
+| `ctxbudget.ah_gate_instead` | `if it is bigger than the budget, do not start it; {ask}: (a) add it to the ta...` |  |  | The gate's instructions; {ask} how to ask, {reset} the reset commands. |
+| `ctxbudget.ah_gate_override` | `if the user has explicitly insisted on proceeding, proceed` |  |  | The gate's override line. |
+| `ctxbudget.ah_gate_what` | `post-handover new-work gate (context ~{pct}%, handover saved at ~{hp}%; budge...` |  |  | The gate's first line; {pct} context percent, {hp} handover percent, {budget} the budget label. |
+| `ctxbudget.ah_gate_why` | `Before starting this request, judge YOURSELF whether it needs more than that ...` |  |  | The gate's Why line. |
+| `ctxbudget.ah_guard` | `auto-handover` |  |  | The guard name every auto-handover message carries. |
+| `ctxbudget.ah_handover_dir_rel` | `.anti-hall/handovers` |  |  | The handovers directory relative to the repository, as the fire directive shows it. |
+| `ctxbudget.ah_handover_name` | `HANDOVER.md` |  |  | The name of a session's first handover file. |
+| `ctxbudget.ah_handover_name_n` | `HANDOVER-{n}.md` |  |  | The name of a session's n-th handover file ({n} from 2). |
+| `ctxbudget.ah_hash_tag_len` | `16` |  |  | Hex digits of the transcript path's SHA-1 that tag a session without a usable id (auto-handover-state.js sessionTag). |
+| `ctxbudget.ah_heading_mark` | `##` |  |  | The Markdown mark that opens a handover section heading (followed by white space). |
+| `ctxbudget.ah_heading_next` | `Next action` |  |  | The handover section whose done-word marks the task complete. |
+| `ctxbudget.ah_heading_open` | `Open items` |  |  | The handover section whose emptiness marks the task complete. |
+| `ctxbudget.ah_housekeeping` | `inbox tick, peer check, BROADCAST bug sweep` |  |  | The built-in markers (case-insensitive substrings) of a scheduled housekeeping prompt that never gets the new-work gate (auto-handover-gate.js HOUSEKEEPING_MARKERS). |
+| `ctxbudget.ah_label_estimated` | ` (ESTIMATED, assuming a standard 200k window; for a 1M-context session set AN...` |  |  | The estimate clause for any other estimated window. |
+| `ctxbudget.ah_label_inferred` | ` (inferred 1M window: observed usage already exceeded the standard 200k, so t...` |  |  | The estimate clause when the window was inferred to be one million tokens. |
+| `ctxbudget.ah_line_complete` | `🟢 **GOOD POINT TO {clear} NOW**: handover saved at {path}. Task looks complet...` |  |  | The good-point line when the task looks complete; {clear} the fresh-session command, {path} the handover path. |
+| `ctxbudget.ah_line_continue` | `🟢 **GOOD POINT TO /compact NOW**: handover saved at {path}. /compact keeps wo...` |  |  | The good-point line otherwise; {clear} the fresh-session command, {path} the handover path. |
+| `ctxbudget.ah_marker_seps` | `,, :` |  |  | The characters that separate the extra housekeeping markers of the setting (csvToMarkers splits on each). |
+| `ctxbudget.ah_mtime_slack_ms` | `2000` |  | ms | How much older than the fire a handover file may be and still count as this arm's handover (auto-handover-gate.js MTIME_SLACK_MS). |
+| `ctxbudget.ah_nag_instead` | `{bloat} Mention {reset} to the user again when convenient.` |  |  | The milestone nag's instructions; {bloat} the bloat sentence, {reset} the reset commands. |
+| `ctxbudget.ah_nag_what` | `context is now ~{pct}% (handover already saved earlier this session).` |  |  | The milestone nag's first line; {pct} is the rounded percent. |
+| `ctxbudget.ah_next_done_words` | `none, done, complete, nothing` |  |  | The whole-section texts (an optional trailing dot allowed, any case) that say Next action is done. |
+| `ctxbudget.ah_open_empty_words` | `none, n/a, -, —, (none)` |  |  | The whole-section texts (an optional trailing dot allowed, any case) that say Open items is empty. |
+| `ctxbudget.ah_open_statuses` | `pending, in_progress` |  |  | The task statuses that count as open work and hold back the pause nag. |
+| `ctxbudget.ah_parts_sep` | `\n\n` |  |  | What joins the parts of one auto-handover context (backstop, gate, nag). |
+| `ctxbudget.ah_pause_instead` | `{bloat} Mention {reset} to the user now.` |  |  | The pause nag's instructions; {bloat} the bloat sentence, {reset} the reset commands. |
+| `ctxbudget.ah_pause_what` | `good stopping point: context is still ~{pct}% and a handover is already saved.` |  |  | The pause nag's first line; {pct} is the rounded percent. |
+| `ctxbudget.ah_proto_key` | `__proto__` |  |  | The object key Object.assign does not copy as data; a latch holding it defers to Node. |
+| `ctxbudget.ah_reset_claude` | `/compact or /clear` |  |  | How the Claude texts name the reset commands. |
+| `ctxbudget.ah_reset_codex` | `/compact or /new` |  |  | How the Codex texts name the reset commands. |
+| `ctxbudget.ah_rollout_prefix` | `rollout-` |  |  | The file name prefix of a Codex rollout transcript. |
+| `ctxbudget.ah_rollout_suffix` | `.jsonl` |  |  | The file name suffix of a Codex rollout transcript. |
+| `ctxbudget.ah_skill_claude` | `the /anti-hall:handover skill` |  |  | How the Claude texts name the handover skill. |
+| `ctxbudget.ah_skill_codex` | `the anti-hall-handover skill (pick it with /skills if it is not already loaded)` |  |  | How the Codex texts name the handover skill. |
+| `ctxbudget.ah_soft_instead` | `consider checking with the user about writing a handover and compacting/clear...` |  |  | The soft advisory's instructions; {bloat} the bloat sentence. |
+| `ctxbudget.ah_soft_what` | `context looks high (~{pct}%, ESTIMATED).` |  |  | The soft advisory's first line; {pct} is the rounded percent. |
+| `ctxbudget.ah_soft_why` | `This session's exact context window could not be determined, so treat this as...` |  |  | The soft advisory's Why line. |
+| `ctxbudget.ah_spawn_activity_ms` | `120000` |  | ms | How recent a logged subagent spawn must be to hold back the pause nag (statusline phase-bar ACTIVITY_MS). |
+| `ctxbudget.ah_spawn_log` | `.anti-hall/agent-spawns.log` |  |  | The subagent spawn log, relative to the home directory (one `<ms> <session tag>` line per spawn). |
+| `ctxbudget.ah_suffix_fresh` | `\n\nEnd your reply to the user with exactly this line, verbatim: {line}` |  |  | The decisive suffix for a fresh handover; {line} is the good-point line. |
+| `ctxbudget.ah_suffix_no_path` | `<the HANDOVER*.md path you saved>` |  |  | The handover path the decisive line shows when none is known. |
+| `ctxbudget.ah_suffix_stale` | `\n\n⚠️ The saved handover is stale (work continued after it was written): ref...` |  |  | The decisive suffix when the handover went stale; {line} is the good-point line. |
+| `ctxbudget.ah_suffix_unknown` | `\n\nEnd your reply to the user with exactly this line, verbatim: 📝 Handover s...` |  |  | The decisive suffix when the handover's freshness is unknown; {path} is the handover path. |
+| `ctxbudget.ah_task_id_keys` | `taskId, id, task_id` |  |  | The input fields a task update names its task by, in order. |
+| `ctxbudget.ah_task_tools` | `TodoWrite, TaskCreate, TaskUpdate` |  |  | The tool names whose calls the open-task scan reads: the list writer, the task creator, the task updater (in that order). |
+| `ctxbudget.ah_unknown_session` | `unknown-session` |  |  | The session directory name a handover path uses when the session id sanitizes to nothing. |
+| `ctxbudget.ah_via_pct` | `pct` |  |  | The firedVia word of a percent crossing. |
+| `ctxbudget.ah_via_stop_prefix` | `stop-` |  |  | The prefix the Stop-side fire records in the latch's firedVia. |
+| `ctxbudget.ah_via_tokens` | `tokens` |  |  | The firedVia word of a token-ceiling crossing. |
+| `ctxbudget.ah_what_pct` | `context is at ~{pct}%{label}: write a handover now.` |  |  | The fire directive's first line for a percent crossing; {pct} is the rounded percent, {label} the estimate clause. |
+| `ctxbudget.ah_what_tokens` | `context is ~{usedK}K tokens, past your autoHandover.maxTokens ceiling{ceiling...` |  |  | The fire directive's first line for a token-ceiling crossing; {usedK} is the tokens in thousands, {ceiling} the ceiling clause. |
+| `ctxbudget.ca_advice` | `ctxbudget.ca_advice_safe_to, ctxbudget.ca_advice_good_point, ctxbudget.ca_adv...` |  |  | The recommendation patterns of compact-advice.js ADVICE_RES, in order (keys of this file); see the pattern entries for their token syntax. |
+| `ctxbudget.ca_advice_command` | `\b(?:run\|type\|use\|do\|then\|now\|recommend(?:ed)?\|suggest(?:ed)?){S}*:?{S}*`*/co...` |  |  | Rust regex source (as ca_advice_safe_to): /compact offered as an instruction (run, then, now ...). |
+| `ctxbudget.ca_advice_good_point` | `\bgood{S}+(?:point\|time\|moment){S}+(?:to\|for){S}+(?:/?compact\|/?clear\|/new)\b` |  |  | Rust regex source (as ca_advice_safe_to): the good point/time/moment to compact wording. |
+| `ctxbudget.ca_advice_line` | `(?m)^[ \t]*(?:[-*+]\|[0-9]+[.)])?[ \t]*`*/compact\b(?:[ \t]+(?:now\|focus:{S}*{...` |  |  | Rust regex source (as ca_advice_safe_to, multiline; {NS} JavaScript non-white space): a standalone /compact invocation line. |
+| `ctxbudget.ca_advice_safe_for` | `\bsafe{S}+for{S}+(?:a{S}+)?(?:context{S}+)?(?:reset\|compaction\|/?compact\|/new)\b` |  |  | Rust regex source (as ca_advice_safe_to): the Codex safe-for-a-reset wording. |
+| `ctxbudget.ca_advice_safe_to` | `\bsafe{S}+to{S}+(?:/compact\|compact\|/clear)\b` |  |  | Rust regex source, matched against the text with ASCII letters lowered ({S} JavaScript white space, \b ASCII): the bare safe-to-compact wording. |
+| `ctxbudget.ca_all_caps` | `^SAFE{S}+TO{S}+(?:/?COMPACT\|/CLEAR)$` |  |  | Rust regex source (case kept) of the capitalized SAFE TO COMPACT form, which counts wherever it sits except in a table cell. |
+| `ctxbudget.ca_backtick` | ``[^`\n]{0,400}`` |  |  | Rust regex source of an inline-code span, blanked unless it is an instruction naming a slash command. |
+| `ctxbudget.ca_backtick_lookback` | `40` |  |  | UTF-16 units before an inline-code span the instruction tests look at. |
+| `ctxbudget.ca_bare_safe_index` | `0` |  |  | Position in ca_advice of the bare safe-to wording (it counts only at a sentence or line start unless written in capitals). |
+| `ctxbudget.ca_blockquote` | `(?m)^[ \t]*>[^\n]*$` |  |  | Rust regex source (multiline) of a blockquote line, blanked before the phrase analysis. |
+| `ctxbudget.ca_codex_tool_types` | `function_call, tool_call, shell_call` |  |  | Words whose presence in a Codex response item's type makes it a tool call. |
+| `ctxbudget.ca_command_index` | `3` |  |  | Position in ca_advice of the instruction wording (it counts only at a sentence or line start). |
+| `ctxbudget.ca_conditional_before` | `\b(?:if\|when\|once\|after\|until)\b[^:\n]{0,60}:{S}*$` |  |  | Rust regex source (lowered text) tested on the units before a match: a conditional lead-in ending in a colon (CONDITIONAL_BEFORE_RE). |
+| `ctxbudget.ca_ctx_low` | `low` |  |  | The context clause of the instructions when the percent is unknown. |
+| `ctxbudget.ca_ctx_pct` | `{pct}%` |  |  | The context clause of the instructions when the percent is known ({pct} rounded). |
+| `ctxbudget.ca_dquote` | `”[^”\n]{0,400}”\|“[^”\n]{0,400}”\|"[^"\n]{0,400}"` |  |  | Rust regex source of a double-quoted span (curly or straight), blanked before the phrase analysis. |
+| `ctxbudget.ca_fenced` | ````(?s:.)*?```` |  |  | Rust regex source of a fenced code block, blanked before the phrase analysis. |
+| `ctxbudget.ca_green_hi` | `55357` |  |  | The high UTF-16 unit of the green circle emoji, which the non-unicode pattern classes of compact-advice.js name one unit at a time. |
+| `ctxbudget.ca_green_lo` | `57314` |  |  | The low UTF-16 unit of the green circle emoji. |
+| `ctxbudget.ca_guard` | `compact-advice-guard` |  |  | The guard name of the compact-advice block. |
+| `ctxbudget.ca_instead` | `retract it in one line, e.g. "RETRACT SAFE TO COMPACT: context is {ctx}; no n...` |  |  | The block's instructions; {ctx} is the context clause. |
+| `ctxbudget.ca_instr_line` | `(?:^\|\n)[ \t]*(?:[-*+]\|[0-9]+[.)])?[ \t]*$` |  |  | Rust regex source tested on the units before an inline-code span: it opens its own (optionally bulleted) line. |
+| `ctxbudget.ca_instr_verb` | `\b(?:run\|type\|use\|do\|then\|now\|recommend(?:ed)?\|suggest(?:ed)?){S}*:?{S}*$` |  |  | Rust regex source (lowered text) tested on the units before an inline-code span: it follows an instruction verb. |
+| `ctxbudget.ca_lead_deco` | `*_`"'“”✅⏳❌⚠️-•>` |  |  | Decoration (besides white space and the green circle) walked over back to a sentence or line start; one character per UTF-16 unit. |
+| `ctxbudget.ca_lead_words` | `23 items` |  |  | Short interjections that may open a sentence before a comma and a declaration (LEAD_INTERJECTION_RE, any ASCII case). |
+| `ctxbudget.ca_line_retract` | `(?m)^[ \t]*[*_`>\-•]*[ \t]*retract(?:ed\|ing)?\b` |  |  | Rust regex source (lowered text, multiline) of a line that begins with a retraction (LINE_RETRACT_RE). |
+| `ctxbudget.ca_marker_line` | `^[ \t]*(?:#{1,6}[ \t]+)?(?:[-*+•][ \t]+)?[*_`✅🟢⏳ \t]*(?:HANDOVER[ \t]+COMPLET...` |  |  | Rust regex source (case kept, real characters) of a line that holds only the declaration marker (MARKER_LINE_RE). |
+| `ctxbudget.ca_meta_before` | `\bwill{S}+(?:only{S}+)?(?:say\|write\|declare){S}*$\|\bwhen{S}+i{S}+(?:say\|write...` |  |  | Rust regex source (lowered text) tested on the units before a match: a sentence about when the marker is written (META_BEFORE_RE). |
+| `ctxbudget.ca_negation_after` | `^[^.!?\n]{0,30}[,;]{S}*(?:but{S}+\|and{S}+)?first\b\|^{S}*(?:after\|once\|when\|if)\b` |  |  | Rust regex source (lowered text) tested on the units after a match: a declaration gated on something first (NEGATION_AFTER_RE). |
+| `ctxbudget.ca_negation_before` | `(?:\bnot{S}+yet\b\|\bnot\b\|n['’]t\b\|\bnever\b\|\bno{S}+need\b\|\bno{S}+reason\b\|...` |  |  | Rust regex source (lowered text) tested on the units before a match: a negation or a not-yet condition (NEGATION_BEFORE_RE). |
+| `ctxbudget.ca_quote_close_before` | `.,;:!?)]}` |  |  | Characters (besides white space and the end) before which a single quote closes a quoted span. |
+| `ctxbudget.ca_quote_max` | `400` |  |  | The most UTF-16 units between two single quotes that count as a quoted span. |
+| `ctxbudget.ca_quote_open_after` | `([{` |  |  | Characters (besides white space) after which a single quote opens a quoted span. |
+| `ctxbudget.ca_recent_n` | `a compact happened {n} turns ago` |  |  | The reason when a compact happened {n} turns ago. |
+| `ctxbudget.ca_recent_now` | `a compact happened earlier in this turn` |  |  | The reason when a compact happened in this very turn. |
+| `ctxbudget.ca_recent_one` | `a compact happened {n} turn ago` |  |  | The reason when a compact happened one turn ago ({n}). |
+| `ctxbudget.ca_retract` | `\bretract(?:ed\|ing)?\b[{ws}:,\-—–*_`"'“”]*(?:the{S}+)?(?:[*_`✅{G1}{G2}]{S}*)*...` |  |  | Rust regex source (lowered text; {ws} the white space set in a class, {G1}/{G2} the stand-ins of the green circle's two UTF-16 units) of a retraction (RETRACT_RE). |
+| `ctxbudget.ca_sentence_end` | `.!?:` |  |  | Characters that end a sentence before a declaration. |
+| `ctxbudget.ca_slash_cmd` | `/(?:compact\|clear\|new)\b` |  |  | Rust regex source (lowered text) of a slash command a quoted or inline-code span may name and still count. |
+| `ctxbudget.ca_state_dir` | `compact-advice` |  |  | The directory under the state root that holds the once-per-declaration records of the compact-advice guard. |
+| `ctxbudget.ca_state_json` | `{"hash":{hash},"at":{at}}` |  |  | The once-per-declaration record; {hash} is the JSON-quoted SHA-1 of the final text, {at} the time in ms. |
+| `ctxbudget.ca_tokens_vias` | `tokens, stop-tokens` |  |  | The firedVia words of a token-ceiling fire, whose SAFE declaration is allowed even at a low percent. |
+| `ctxbudget.ca_what` | `your reply recommends compacting ("{phrase}") but {why}.` |  |  | The block's first line; {phrase} is the recommendation, {why} the reasons. |
+| `ctxbudget.ca_why` | `"No background agents running" is necessary, not sufficient; only the auto-ha...` |  |  | The block's Why line. |
+| `ctxbudget.ca_why_join` | `, and ` |  |  | What joins the reasons. |
+| `ctxbudget.ca_why_pct` | `context is {pct}% (auto-handover threshold {threshold}%)` |  |  | The reason when the context is known; {pct} rounded, {threshold} the auto-handover threshold. |
+| `ctxbudget.ca_why_unknown` | `context % is unknown` |  |  | The reason when the context is unknown. |
+| `ctxbudget.ca_window_after` | `40` |  |  | UTF-16 units after a match the negation pattern looks at. |
+| `ctxbudget.ca_window_before` | `60` |  |  | UTF-16 units before a match the negation patterns look at. |
+| `ctxbudget.claude_json` | `.claude.json` |  |  | The host file whose top-level userID names the logged-in account, relative to the home directory (read only that field). |
 | `ctxbudget.context_window_env` | `ANTIHALL_CONTEXT_WINDOW_TOKENS` |  |  | Environment variable that overrides the context window size, in tokens (always wins over the other window sources). |
 | `ctxbudget.deep_json_depth` | `100` |  |  | Nesting depth beyond which a transcript or state line the engine cannot parse is deferred to Node (the Node parser has no such limit). |
 | `ctxbudget.default_window` | `200000` |  | tokens | The context window assumed when no source states one, in tokens (the reading is then flagged as unknown). |
 | `ctxbudget.env_pct_off` | `ANTIHALL_AUTO_HANDOVER_PCT` |  |  | Environment variable that, when it parses to 0, disables auto-handover outright (the one rule the settings schema cannot express). |
 | `ctxbudget.home_env` | `HOME` |  |  | Environment variable that holds the home directory (Node's os.homedir() reads it first on POSIX). |
+| `ctxbudget.inferred_json` | `{"inferred":true,"ts":{ts}}` |  |  | The inferred-window latch body; {ts} is the time it was written, in ms. |
 | `ctxbudget.inferred_suffix` | `.inferred-1m.json` |  |  | File name suffix of the inferred one-million-token window latch next to a session's context reading. |
 | `ctxbudget.inferred_window` | `1000000` |  | tokens | The window assumed once the observed usage has exceeded the default window, in tokens. |
+| `ctxbudget.json_null` | `null` |  |  | The JSON literal null. |
 | `ctxbudget.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable the judge child sets to 1 so that every hook is a no-op (hooks/lib/judge-child-exit.js). |
 | `ctxbudget.judge_child_on` | `1` |  |  | The value of the judge child variable that turns the hooks into no-ops. |
 | `ctxbudget.latch_dir` | `auto-handover` |  |  | The directory under the state root that holds the per-session auto-handover latch files. |
+| `ctxbudget.lc_account_json` | `{"userID":{user},"usageCacheMtime":{mtime}}` |  |  | The account-switch state file body as Node writes it; {user} is the JSON-quoted account id, {mtime} the cache mtime in ms (or null). |
+| `ctxbudget.lc_bucket_pct` | `fiveHourPercent, weeklyPercent, sonnetWeeklyPercent` |  |  | The usage-cache fields holding each bucket percent, in the order the trips are listed. |
+| `ctxbudget.lc_bucket_resets` | `fiveHourResetsAt, weeklyResetsAt, sonnetWeeklyResetsAt` |  |  | The usage-cache fields holding each bucket reset time, parallel to lc_bucket_pct. |
+| `ctxbudget.lc_bucket_trip` | `5h, weekly, sonnetWeekly` |  |  | The name each tripped bucket has in the directive reason, parallel to lc_bucket_pct. |
+| `ctxbudget.lc_dedupe_key` | `limit-conserve` |  |  | The emit-dedupe key of the limit-conservation directive. |
+| `ctxbudget.lc_downshift` | `Main-model downshift: if the main agent is on the flagship model (Claude Opus...` |  |  | The main-model downshift text at the end of the directive (limit-conserve-inject.js DOWNSHIFT_DIRECTIVE). |
+| `ctxbudget.lc_guard` | `limit-conserve` |  |  | The guard name the limit-conservation directive carries (hooks/lib/block-message.js guard). |
+| `ctxbudget.lc_instead` | `route execution to Codex (codex:codex-rescue, separate limit) and cheap Claud...` |  |  | The start of the Do instead line of the directive (the reset clause and the downshift text follow). |
+| `ctxbudget.lc_keepalive_turns` | `10` |  | turns | The emit-dedupe keepalive of the directive: an unchanged, delivered directive is re-sent after this many turns. |
+| `ctxbudget.lc_reason_manual` | `manual-on` |  |  | The directive reason when the mode setting forces conservation on. |
+| `ctxbudget.lc_resets_at` | ` Defer non-urgent heavy work until reset at {at}.` |  |  | The reset clause when a tripped bucket states its reset time ({at}, as the cache wrote it). |
+| `ctxbudget.lc_resets_next` | ` Defer non-urgent heavy work until the next reset.` |  |  | The reset clause when no tripped bucket states a reset time. |
+| `ctxbudget.lc_what` | `limit conservation is active ({reason}).` |  |  | The first line of the directive; {reason} is the tripped buckets joined with + (or the manual reason). |
+| `ctxbudget.lc_why` | `Usage is near a plan limit.` |  |  | The Why line of the directive. |
 | `ctxbudget.pct_dir` | `context-pct` |  |  | The directory under the state root that holds the statusline context readings (context-pct) and the inferred-window latches. |
 | `ctxbudget.pct_fresh_ms` | `600000` |  | ms | How old a statusline context reading may be and still be used before the transcript is consulted instead. |
 | `ctxbudget.session_tag_max` | `64` |  |  | Characters of a session id kept in a state file tag (hooks/lib/auto-handover-state.js sessionTag). |
+| `ctxbudget.set_ah_decisive` | `8 entries` |  |  | The autoHandover.decisivePrompt setting: the decisive good-point line at a Stop once the handover exists. |
 | `ctxbudget.set_ah_enabled` | `8 entries` |  |  | The autoHandover.enabled setting: write an automatic handover before the context runs out. |
+| `ctxbudget.set_ah_gate` | `8 entries` |  |  | The autoHandover.gateNewWork setting: the post-handover new-work gate. |
+| `ctxbudget.set_ah_gate_budget` | `10 entries` |  |  | The autoHandover.gateBudgetPct setting: the context points a request may use after the handover, and the backstop step. |
+| `ctxbudget.set_ah_markers` | `8 entries` |  |  | The autoHandover.gateHousekeepingMarkers setting: extra comma-separated housekeeping prompt markers (a text). |
 | `ctxbudget.set_ah_max_tokens` | `9 entries` |  |  | The autoHandover.maxTokens setting: an absolute token ceiling that also triggers the handover (0 means none). |
 | `ctxbudget.set_ah_nag` | `8 entries` |  |  | The autoHandover.nag setting: remind when a handover is due. |
 | `ctxbudget.set_ah_nag_quiet` | `9 entries` |  |  | The autoHandover.nagQuietMin setting: the minutes between two nags at a quiet pause. |
 | `ctxbudget.set_ah_nag_step` | `10 entries` |  |  | The autoHandover.nagStepPct setting: the context points between two nags. |
 | `ctxbudget.set_ah_pct` | `10 entries` |  |  | The autoHandover.pct setting: the context percent that triggers the handover. |
+| `ctxbudget.set_ca_margin` | `10 entries` |  |  | The guards.compactAdviceMarginPct setting: context points below autoHandover.pct at which a /compact recommendation counts as low-context. |
+| `ctxbudget.set_ca_recent` | `10 entries` |  |  | The guards.compactAdviceRecentTurns setting: a compact boundary within this many turns makes a /compact recommendation a block (0: off). |
 | `ctxbudget.set_compact_advice_guard` | `8 entries` |  |  | The guards.compactAdviceGuard setting: block a /compact recommendation made at low context or just after a compact. |
+| `ctxbudget.set_limit_account_check` | `8 entries` |  |  | The limitConserve.accountCheck setting: hold a high usage reading stale after an account switch until the cache is refreshed. |
 | `ctxbudget.set_limit_mode` | `9 entries` |  |  | The limitConserve.mode setting: force conservation on or off, or auto-detect from the usage cache. |
 | `ctxbudget.set_limit_threshold` | `10 entries` |  |  | The limitConserve.threshold setting: the usage percent at which conservation starts. |
 | `ctxbudget.skip_auto_handover` | `auto-handover` |  |  | The skip-file name of the auto-handover and auto-handover-pause-nag guards. |
 | `ctxbudget.skip_compact_advice` | `compact-advice-guard` |  |  | The skip-file name of the compact-advice-guard. |
 | `ctxbudget.skip_limit_conserve` | `limit-conserve` |  |  | The skip-file name of the limit-conserve-inject guard. |
 | `ctxbudget.state_root` | `.anti-hall` |  |  | The directory under the home directory that holds the guards' state files. |
-| `ctxbudget.summary_auto_handover` | `UserPromptSubmit: answers the cases that write no state and inject nothing (a...` |  |  | One-line description of the auto-handover check in the generated reference. |
-| `ctxbudget.summary_compact_advice` | `Stop: allows every turn whose final text cannot hold a compact recommendation...` |  |  | One-line description of the compact-advice-guard check in the generated reference. |
-| `ctxbudget.summary_limit_conserve` | `UserPromptSubmit: answers the quiet case (conservation off, no usage cache, o...` |  |  | One-line description of the limit-conserve-inject check in the generated reference. |
-| `ctxbudget.summary_pause_nag` | `Stop: answers the cases that block nothing and write no state (a subagent, a ...` |  |  | One-line description of the auto-handover-pause-nag check in the generated reference. |
+| `ctxbudget.stop_block_line` | `{"decision":"block","reason":{reason}}\n` |  |  | The stdout line of a Stop hook that blocks with {reason} (already JSON-quoted), newline included. |
+| `ctxbudget.summary_auto_handover` | `UserPromptSubmit: the threshold fire, the soft advisory, the milestone nag, t...` |  |  | One-line description of the auto-handover check in the generated reference. |
+| `ctxbudget.summary_compact_advice` | `Stop: blocks, once per declaration, a final reply that recommends compacting ...` |  |  | One-line description of the compact-advice-guard check in the generated reference. |
+| `ctxbudget.summary_limit_conserve` | `UserPromptSubmit: injects the limit-conservation directive while conservation...` |  |  | One-line description of the limit-conserve-inject check in the generated reference. |
+| `ctxbudget.summary_pause_nag` | `Stop: the Stop-side fire with the decisive good-point line, the pause nag (st...` |  |  | One-line description of the auto-handover-pause-nag check in the generated reference. |
 | `ctxbudget.tail_bytes` | `1572864` |  | bytes | How many bytes of the end of a transcript the guards read (hooks/lib/transcript-tail.js MAX_TAIL_BYTES). |
 | `ctxbudget.token_count_marker` | `token_count` |  |  | Substring that a Codex rollout line must hold to be parsed as a token_count reading. |
 | `ctxbudget.ups_empty` | `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext"...` |  |  | The exact stdout line of a UserPromptSubmit hook that injects nothing (an empty additionalContext), newline included. |
+| `ctxbudget.ups_line` | `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext"...` |  |  | The stdout line of a UserPromptSubmit hook that injects {text} (already JSON-quoted), newline included. |
 | `ctxbudget.usage_cache` | `.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |  |  | The OMC usage cache file, relative to the home directory. |
 | `ctxbudget.usage_marker` | `"usage"` |  |  | Substring that a Claude transcript line must hold to be parsed as an assistant usage reading. |
 | `ctxbudget.usage_max_stale_ms` | `21600000` |  | ms | Snapshot age beyond which a bucket without a usable reset time counts as 0 percent (hooks/limit-conserve.js MAX_STALE_MS). |
@@ -2298,7 +2540,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `silent_nudge.ack_dir` | `.anti-hall/stop-ack` |  |  | Directory of the per-session stop-ack files, relative to the home directory. |
+| `silent_nudge.ack_file_ext` | `.json` |  |  | Extension of a stop-ack file. |
+| `silent_nudge.ack_file_prefix` | `stop-ack-` |  |  | Prefix of a stop-ack file name, before the sanitized session id. |
+| `silent_nudge.ack_hint` | `Override (only if the user explicitly confirmed this exact condition is fine)...` |  |  | The override sentence appended to the nudge (stop-ack.js ackHint); {key} is hook:signature, {now} the time, {path} the ack file. |
+| `silent_nudge.ack_no_session` | `nosession` |  |  | Session part of a stop-ack file name when there is no session id. |
+| `silent_nudge.ack_sep` | `:` |  |  | Separator between the hook name and the signature in a stop-ack key. |
+| `silent_nudge.ack_session_max` | `128` |  |  | Longest sanitized session id in a stop-ack file name, in characters. |
+| `silent_nudge.ack_setting` | `6 entries` |  |  | Where the stop-ack switch is read from (guards.stopAck, default on; hooks/lib/stop-ack.js). |
+| `silent_nudge.ack_subject_sep` | `,` |  |  | Separator between the sorted agent ids the stop-ack signature is computed over. |
 | `silent_nudge.agents_dir` | `.anti-hall/agents` |  |  | Directory of subagent heartbeat files, relative to the home directory. |
+| `silent_nudge.control_re` | `[\x00-\x1f\x7f-\u{9f}]` |  |  | Rust regex source of the control characters turned into spaces in a name the nudge shows. |
+| `silent_nudge.ellipsis` | `…` |  |  | Text appended to a name that was cut. |
 | `silent_nudge.ever_key` | `everNudged` |  |  | Field of the state file that holds the once-per-agent records. |
 | `silent_nudge.ever_nudged_ttl_ms` | `2592000000` |  | ms | How long a once-per-agent nudge record is kept (30 days). |
 | `silent_nudge.ever_sep` | `::` |  |  | Separator between session id and agent id in a once-per-agent key. |
@@ -2312,16 +2565,29 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.judge_child_value` | `1` |  |  | Value of the judge-child variable that disables the hook. |
 | `silent_nudge.key_heartbeat` | `h:` |  |  | Prefix of a heartbeat-sourced nudge key. |
 | `silent_nudge.key_transcript` | `t:` |  |  | Prefix of a transcript-sourced nudge key. |
+| `silent_nudge.label_max` | `60` |  |  | Longest agent description, id or heartbeat step, in UTF-16 units, the nudge names (oneLine's max). |
+| `silent_nudge.max_named` | `3` |  |  | How many silent agents the nudge names before it says how many more there are (MAX_NAMED). |
 | `silent_nudge.min_default` | `20` |  |  | Minutes of silence used when the setting is not a number of at least 1 (DEFAULT_MIN of the hook). |
 | `silent_nudge.min_setting` | `7 entries` |  |  | Where the silence threshold in minutes is read from (guards.silentAgentNudgeMin, default 20, at least 1). |
 | `silent_nudge.missing` | `missing` |  |  | Snapshot of an agent whose output file is missing. |
+| `silent_nudge.msg_allowed` | `set ANTIHALL_SILENT_AGENT_NUDGE=off to silence this nudge` |  |  | Allowed-here line of the nudge. |
+| `silent_nudge.msg_instead` | `check on {them} (TaskOutput), or re-dispatch with tighter scope if dead (Task...` |  |  | Do-instead line of the nudge; {them} is the pronoun for one agent or several. |
+| `silent_nudge.msg_item` | `{label} — silent {mins}m` |  |  | One named silent agent in the nudge. |
+| `silent_nudge.msg_item_sep` | `; ` |  |  | Text between two named silent agents. |
+| `silent_nudge.msg_more` | `, +{n} more` |  |  | Tail of the list when more agents are silent than are named. |
+| `silent_nudge.msg_what` | `{count} of your own background subagent(s) have gone silent past the {min}m t...` |  |  | Headline of the nudge. |
+| `silent_nudge.msg_why` | `Advisory only; nothing was auto-killed.` |  |  | Why line of the nudge. |
 | `silent_nudge.nudged_key` | `nudged` |  |  | Field of the state file that holds the per-snapshot records. |
+| `silent_nudge.pronoun_many` | `them` |  |  | The pronoun for several silent agents. |
+| `silent_nudge.pronoun_one` | `it` |  |  | The pronoun for one silent agent. |
 | `silent_nudge.resume_mark` | `@r` |  |  | Marker between an agent id or snapshot and the resume time. |
 | `silent_nudge.scan_bytes` | `67108864` |  | bytes | Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES). |
 | `silent_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.silentAgentNudge, default on). |
 | `silent_nudge.sidechain_file_prefix` | `agent-` |  |  | Prefix of an agent's own sidechain transcript file name. |
+| `silent_nudge.signature_len` | `16` |  |  | Hex characters of the SHA-1 a stop-ack signature keeps. |
 | `silent_nudge.state_file` | `.anti-hall/silent-agent-nudge-state.json` |  |  | Nudge state file, relative to the home directory. |
-| `silent_nudge.summary` | `Stop: keeps the nudge state of silent background agents and answers every Sto...` |  |  | One-line description of the silent-agent-nudge check in the generated reference. |
+| `silent_nudge.summary` | `Stop: nudges once per silent background agent (the block text, the nudge stat...` |  |  | One-line description of the silent-agent-nudge check in the generated reference. |
+| `silent_nudge.version_gate_setting` | `6 entries` |  |  | Where the stale-build downgrade switch is read from (guards.stopHookVersionDowngrade, default on; hooks/lib/stop-version-gate.js). |
 
 ### agent_controls.toml / stale_note
 
@@ -2398,10 +2664,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.msg_rate_instead` | `pause new agents and let running ones finish, then launch the next wave; resp...` |  |  | What to do instead of spawning past the cap. |
 | `swarm_guard.msg_rate_what` | `agent spawn-rate ceiling reached ({count} spawns in the last 60s, cap is {cap}).` |  |  | What the rate block says; {count} is the spawns in the window and {cap} the cap. |
 | `swarm_guard.msg_rate_why` | `A runaway swarm can make the OS unusable.` |  |  | Why the rate block applies. |
+| `swarm_guard.msg_shared_instead` | `pass isolation:"worktree", serialize them, or give each its own scratch clone.` |  |  | What to do instead, when the repo does not forbid worktrees. |
+| `swarm_guard.msg_shared_instead_no_worktrees` | `serialize them or give each its own scratch clone.` |  |  | What to do instead, when the repo forbids worktrees. |
+| `swarm_guard.msg_shared_what` | `another write-capable agent is still running in this working tree, and this s...` |  |  | What the shared-tree advisory says. |
+| `swarm_guard.msg_shared_why` | `Two such agents can stage and commit each other's uncommitted changes.` |  |  | Why the shared-tree advisory applies. |
 | `swarm_guard.proc_pidns` | `/proc/self/ns/pid` |  |  | The Linux link that names this process's pid namespace. |
 | `swarm_guard.proc_uptime` | `/proc/uptime` |  |  | The Linux file that holds the uptime in seconds. |
+| `swarm_guard.re_in_place` | `\bin\s+place\b\|\bin\s+(?:the\s+)?(?:session\s+)?repo\b\|\brepo\s+files\b\|\b(?:...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading. |
+| `swarm_guard.re_no_worktrees` | `\bno\s+(?:git\s+)?worktrees?\b` |  |  | JavaScript regex source (case-insensitive) matched against the CLAUDE.md / AGENTS.md files of the repo: a rule that forbids worktrees, which drops the isolation hint from the advisory. |
+| `swarm_guard.re_scratch_negated` | `\b(?:not\|no\|without\|instead\s+of)\s+(?:in\s+\|a\s+\|the\s+\|any\s+)?scratch\b` |  |  | JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading. |
 | `swarm_guard.read_only_types` | `13 items` |  |  | Agent types that cannot edit files (their definitions exclude the editing tools), lower-case. |
+| `swarm_guard.repo_docs` | `CLAUDE.md, AGENTS.md` |  |  | The files read at each directory level when looking for the no-worktrees rule. |
+| `swarm_guard.repo_docs_levels` | `8` |  |  | How many directory levels up from the spawn's working directory the rule search climbs at most. |
+| `swarm_guard.scratch_alternatives` | `\bwork(?:ing)?\s+(?:in\\|inside)\s+(?:a\\|an\\|the\\|your)?\s*scratch\s+(?:clone\...` |  |  | JavaScript regex sources, joined with \| and matched case-insensitively against the spawn's prompt and description: the statements that establish a scratch working location outside the session's git tree. |
+| `swarm_guard.scratch_path` | `[\x60'"]?(?:\/private\/tmp\/\|\/tmp\/\|\/var\/folders\/\|[^\s\x60'"]*scratchpad\b)` |  |  | JavaScript regex source for a scratch location in a spawn prompt (a /tmp, /private/tmp, /var/folders or scratchpad path); {path} in the scratch alternatives is replaced by it. |
 | `swarm_guard.setting` | `6 entries` |  |  | The switch safety.swarmGuard (on by default); off makes the guard a no-op. |
+| `swarm_guard.shared_tree_label` | `shared-tree` |  |  | Guard name in the shared-tree advisory. |
 | `swarm_guard.shared_tree_setting` | `6 entries` |  |  | The switch guards.sharedTreeAgentNote (on by default): the advisory for a write-capable spawn that shares a working tree with a running write-capable agent. |
 | `swarm_guard.spawn_cap` | `20` |  |  | How many agent spawns are allowed inside the window before the next one is blocked. |
 | `swarm_guard.state_dir` | `.anti-hall` |  |  | The directory of the spawn log, lock and trip log, relative to the home directory. |
@@ -2425,7 +2703,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `jev_review.headless_setting` | `6 entries` |  |  | The setting jev.recommendNoticeHeadless (off by default): show the recommend notice in a non-interactive run too. |
+| `jev_review.latch_key` | `lastShownTs` |  |  | The key of the recommend notice latch that holds the time it was last shown. |
+| `jev_review.latch_tmp_suffix` | `.tmp` |  |  | What the Node notice appends after the latch path, a dot and its process id to name the temporary file of an atomic write. |
+| `jev_review.protocol_full` | `full` |  |  | The protocol level that turns the headless recommend notice on by default. |
+| `jev_review.protocol_level_setting` | `7 entries` |  |  | The setting context.protocolLevel; while jev.recommendNoticeHeadless is not set anywhere, the full level turns the headless notice on. |
 | `jev_review.recommend_latch_file` | `state/jev-recommend-notice.json` |  |  | The recommend notice latch, relative to the anti-hall directory: the time it was last shown. |
+| `jev_review.recommend_notice` | `Tell the user now, verbatim, bold kept:\n**Recommended: enable Jev, the optio...` |  |  | The recommend-Jev notice the session receives (hooks/lib/jev-recommend.js: the directive line, then shortNotice()), byte for byte. |
 | `jev_review.recommend_setting` | `6 entries` |  |  | The setting jev.recommendNotice (on by default): the one-in-30-days notice recommending Jev while it is off. |
 | `jev_review.remind_every_ms` | `2592000000` |  | ms | How long after it was shown the recommend notice stays quiet. |
 | `jev_review.summary` | `Stays silent when no session-start Jev notice can be due (Jev and the semanti...` |  |  | One-line description of the jev-review-reminder check in the generated reference. |
@@ -2434,7 +2718,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `jev_weekly.decision_log` | `logs/jev-assist.ndjson` |  |  | The Jev decision log the weekly report reads, relative to the anti-hall directory; its rotated generations are this name plus a dot and a number. |
 | `jev_weekly.latch_file` | `state/jev-weekly-notice.json` |  |  | The weekly latch, relative to the anti-hall directory: the time of the last check. |
+| `jev_weekly.latch_key` | `lastCheckedTs` |  |  | The key of the weekly latch that holds the time of the last check. |
+| `jev_weekly.latch_tmp_infix` | `.tmp.` |  |  | What the Node hook puts between the latch path and its process id to name the temporary file of an atomic write. |
 | `jev_weekly.notice_setting` | `8 entries` |  |  | The setting jev.weeklyNotice (on by default; a legacy jev.json value is honoured). |
 | `jev_weekly.period_ms` | `604800000` |  | ms | How often the scorecard check may run. |
 | `jev_weekly.summary` | `Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, not...` |  |  | One-line description of the jev-weekly-scorecard check in the generated reference. |
@@ -2456,10 +2743,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `session_gates.agent_key_markers` | `agent_id, agent_type` |  |  | Payload keys whose presence (with a value other than null) marks a subagent turn. |
+| `session_gates.allow_real_home_env` | `ANTIHALL_ALLOW_REAL_HOME_TEST` |  |  | Environment variable that lets a test run use the real home directory anyway. |
 | `session_gates.anti_hall_dir` | `.anti-hall` |  |  | The anti-hall directory under the home directory. |
 | `session_gates.child_branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable DevSwarm sets in a child workspace (a non-blank value marks the session as a child). |
 | `session_gates.codex_fields` | `turn_id, model` |  |  | Payload fields that are both non-empty strings on every Codex turn. |
 | `session_gates.codex_tool` | `apply_patch` |  |  | The tool name only Codex has; its presence marks a Codex payload. |
+| `session_gates.default_event` | `SessionStart` |  |  | The hook event name an advisory carries when the payload names none (a non-empty string hook_event_name wins). |
 | `session_gates.entrypoint_env` | `CLAUDE_CODE_ENTRYPOINT` |  |  | Environment variable that names how the host was started. |
 | `session_gates.headless_prefix` | `sdk-` |  |  | Entry point names starting with this are non-interactive (SDK) runs. |
 | `session_gates.jev_config_file` | `jev.json` |  |  | The legacy Jev configuration file, relative to the anti-hall directory. |
@@ -2468,6 +2757,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session_gates.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable the judge child process runs with; every one of these hooks does nothing in it. |
 | `session_gates.judge_child_value` | `1` |  |  | The value of that variable that marks the judge child. |
 | `session_gates.sidechain_flags` | `isSidechain, is_sidechain` |  |  | Payload keys that mark a sidechain (subagent) turn when exactly true. |
+| `session_gates.test_markers` | `NODE_TEST_CONTEXT, ANTIHALL_TEST, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; with one set, the Node hook refuses to use the real (password database) home directory (companion/lib/test-home-guard.js). |
 
 ### codex_handover.toml / codex_handover
 
@@ -2712,16 +3002,110 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `task_guard.agent_max_age_default_min` | `30` |  |  | The agent age limit used when the setting does not resolve to a number, in minutes. |
+| `task_guard.agent_max_age_setting` | `6 entries` |  |  | Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never). |
+| `task_guard.agents_dir` | `agents` |  |  | The directory of agent heartbeat files inside the anti-hall directory (the legacy liveness signal). |
+| `task_guard.agents_ext` | `.json` |  |  | The file ending of an agent heartbeat file. |
+| `task_guard.agents_fresh_ms` | `1200000` |  | ms | How long an agent heartbeat counts as a running agent. |
+| `task_guard.agents_line` | `[task-guard] open tasks remain but live agents are active — deferring Stop bl...` |  |  | The advisory printed instead of the generic block while agents are live. |
+| `task_guard.agents_ts_key` | `ts` |  |  | The heartbeat file's time field (milliseconds); without it the file time is used. |
+| `task_guard.app_db_darwin_dir` | `Library, Application Support` |  |  | The application data directory under the home directory on macOS, as path segments. |
+| `task_guard.app_db_env` | `ANTIHALL_DEVSWARM_APP_DB` |  |  | The environment variable that names the DevSwarm app database (or `off`). |
+| `task_guard.app_db_file` | `DevSwarm, devswarm.db` |  |  | The DevSwarm app database under the application data directory, as path segments. |
+| `task_guard.app_db_linux_config` | `.config` |  |  | The configuration directory under the home directory on Linux. |
+| `task_guard.app_db_off` | `off` |  |  | The override value (lowercase) that turns the DevSwarm app database off. |
+| `task_guard.app_db_xdg_env` | `XDG_CONFIG_HOME` |  |  | The environment variable that moves the configuration directory on Linux. |
+| `task_guard.block_json` | `{"decision":"block","reason":{reason}}\n` |  |  | The stdout line of a block; `{reason}` is the reason as a JSON string. |
+| `task_guard.budget_at_field` | `lastAt` |  |  | The bucket field holding the time of the last block. |
+| `task_guard.budget_bucket` | `prompt` |  |  | The last part of the budget bucket key (`<session>\|task-guard\|<this>`). |
+| `task_guard.budget_count_field` | `count` |  |  | The bucket field holding the blocks made for that prompt. |
+| `task_guard.budget_key_field` | `promptKey` |  |  | The bucket field holding the prompt the count belongs to. |
+| `task_guard.budget_setting` | `6 entries` |  |  | Most Stop blocks per user prompt (guards.stopNagBudgetPerPrompt; 0 = no budget). |
+| `task_guard.cap_ceiling` | `16` |  |  | The highest CPU-based parallel cap. |
+| `task_guard.cap_fallback_cores` | `4` |  |  | The CPU count assumed when none is reported. |
+| `task_guard.cap_floor` | `1` |  |  | The lowest CPU-based parallel cap. |
+| `task_guard.cap_formula` | `~min(16, cores-2)` |  |  | The parallel cap as the idle-neglect block names it when no number was computed (the legacy rule). |
+| `task_guard.cap_reserve` | `2` |  |  | CPUs kept free when the parallel cap is derived from the CPU count. |
+| `task_guard.codex_patch_tool` | `apply_patch` |  |  | The Codex tool name that marks a Codex payload on its own. |
+| `task_guard.coordinator_owner_re` | `^(main\|orchestrator\|coordinator)$` |  |  | JavaScript regex source (case-insensitive) of an owner that is the orchestrator itself; such a task still counts as unowned. |
+| `task_guard.dispatch_demand_setting` | `5 entries` |  |  | Whether running agents are counted per task from this session's transcript (guards.dispatchDemand, default on); off restores the legacy rule (any fresh agent heartbeat silences the idle-neglect block). |
+| `task_guard.dispatch_list_max` | `12` |  |  | Most tasks the idle-neglect block names. |
+| `task_guard.generic_allowed` | `a genuinely blocked task: mark it via {upd} with blockedBy:[<open task id>] o...` |  |  | The allowed-here line of the generic block; `{upd}` is the task update tool. |
+| `task_guard.generic_instead` | `pick up pending tasks and dispatch subagents to finish them in parallel (up t...` |  |  | The do-instead line of the generic block; `{upd}` is the task update tool. |
+| `task_guard.generic_what` | `stop blocked: open tasks remain: {list}{more}.` |  |  | The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail. |
+| `task_guard.generic_why` | `Tasks should not sit neglected when the session stops.` |  |  | The why line of the generic block. |
 | `task_guard.guard_name` | `task-guard` |  |  | The guard id of task-guard (the skip key and the message prefix). |
+| `task_guard.hash_sep` | ` ` |  |  | The separator between the task ids hashed into the loop state (a NUL character). |
+| `task_guard.idle_allowed` | `a task blocked on the OWNER (hardware, a human decision): mark it metadata.bl...` |  |  | The allowed-here line of the idle-neglect block. |
+| `task_guard.idle_devswarm` | ` Delegated to a DevSwarm workspace: set the task owner ({upd} owner) to the w...` |  |  | The sentence the idle-neglect block adds while a DevSwarm workspace is live; `{upd}` is the task update tool. |
+| `task_guard.idle_hash_tags` | `idle, no-agents` |  |  | The words that start the hashed text of an idle-neglect block, so its loop state never equals a generic block's. |
+| `task_guard.idle_instead` | `dispatch them now in parallel (one background agent each, cap {cap}), or stop...` |  |  | The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing). |
+| `task_guard.idle_what` | `stop blocked: {n} non-blocked, unassigned task(s) have no in-flight agent: {l...` |  |  | The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail. |
+| `task_guard.idle_why` | `Dispatchable work is sitting idle.` |  |  | The why line of the idle-neglect block. |
+| `task_guard.in_progress_re` | `in[-_]?progress` |  |  | JavaScript regex source (case-insensitive) of an in-progress status (tested unanchored, as Node does). |
+| `task_guard.js_object_text` | `[object Object]` |  |  | JavaScript's `String()` of a plain object. |
 | `task_guard.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable that marks a judge child process; every task hook is a no-op there. |
+| `task_guard.label_max` | `40` |  |  | Longest task subject in the idle-neglect block's list, in UTF-16 units. |
+| `task_guard.label_priority_prefix_re` | `^\s*P\d\s*[:\-—]\s*` |  |  | JavaScript regex source (case-insensitive) of a priority prefix (`P1: `, `P0 - `) removed from a subject in the idle-neglect list. |
+| `task_guard.label_sep` | `, ` |  |  | The separator between the tasks of the idle-neglect list. |
+| `task_guard.list_max` | `5` |  |  | Most tasks the generic block names. |
+| `task_guard.list_sep` | `; ` |  |  | The separator between the tasks of the generic block's list. |
+| `task_guard.max_blocks` | `5` |  |  | Most Stop blocks task-guard makes in one session (both kinds counted); after that every Stop is let through. |
+| `task_guard.max_parallel_setting` | `6 entries` |  |  | A fixed cap on running background agents (guards.maxParallelDispatch); 0 uses the CPU-based cap. |
+| `task_guard.metrics_counters` | `demandsShown, demandsFollowed, demandsIgnored, idleNeglectBlocks` |  |  | The counters of the metrics file, each reset to 0 when it is not a finite number of at least 0, in this order. |
+| `task_guard.metrics_file` | `dispatch-demand-metrics.json` |  |  | The dispatch-demand metrics file inside the anti-hall directory (the idle-neglect block counts itself there). |
+| `task_guard.metrics_idle_key` | `idleNeglectBlocks` |  |  | The counter an idle-neglect block increments. |
+| `task_guard.metrics_pending_key` | `pending` |  |  | The metrics file's per-session pending-demand object (kept as is, made an empty object when it is not one). |
+| `task_guard.min_priority_setting` | `7 entries` |  |  | The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags. |
+| `task_guard.more` | ` (and {n} more)` |  |  | The tail of a block's list when tasks were left out; `{n}` is how many. |
+| `task_guard.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (the unit conversion of the agent age limit). |
 | `task_guard.note_line` | `[task-guard] {note}\n` |  |  | The line that carries the unknown-state note; `{note}` is the note. |
+| `task_guard.omc_active_key` | `active` |  |  | The state field that must be exactly true. |
+| `task_guard.omc_claude_dir` | `.claude` |  |  | The Claude Code settings directory (under the home directory and the project). |
+| `task_guard.omc_disable_env` | `DISABLE_OMC` |  |  | The environment variable that turns OMC off. |
+| `task_guard.omc_disable_value` | `1` |  |  | The value of the OMC kill switch that turns it off. |
+| `task_guard.omc_fresh_ms` | `7200000` |  | ms | How old an OMC loop's newest time may be for the loop to count as active. |
+| `task_guard.omc_line` | `[task-guard] OMC autonomous loop active — deferring Stop block to avoid deadl...` |  |  | The advisory printed instead of a block while an OMC autonomous loop is active. |
+| `task_guard.omc_plugin_id` | `oh-my-claudecode@omc` |  |  | The OMC plugin's id in the enabled-plugins list. |
+| `task_guard.omc_plugins_key` | `enabledPlugins` |  |  | The settings field that lists enabled plugins. |
+| `task_guard.omc_project_settings` | `settings.json, settings.local.json` |  |  | The project's Claude Code settings files, in the order read. |
+| `task_guard.omc_session_key` | `session_id` |  |  | The state field that ties a loop to one session. |
+| `task_guard.omc_settings_file` | `settings.json` |  |  | The user's Claude Code settings file inside the settings directory. |
+| `task_guard.omc_settings_max_bytes` | `262144` |  |  | Largest settings file read for the OMC plugin switch; a larger one counts as not enabling it. |
+| `task_guard.omc_skip_env` | `OMC_SKIP_HOOKS` |  |  | The environment variable that lists OMC hooks to skip (comma separated). |
+| `task_guard.omc_skip_token` | `persistent-mode` |  |  | The skip-list entry that turns OMC's persistent mode off. |
+| `task_guard.omc_state_dir` | `.omc, state` |  |  | OMC's state directory (under the project, else under the home directory), as path segments. |
+| `task_guard.omc_state_files` | `8 items` |  |  | The OMC loop state files, in the order checked. |
+| `task_guard.omc_state_max_bytes` | `65536` |  |  | Largest OMC state file read; a larger one counts as malformed. |
+| `task_guard.omc_ts_keys` | `last_checked_at, updated_at, started_at` |  |  | The state fields that may carry a fresh time, in the order tried. |
+| `task_guard.pending_status` | `pending` |  |  | The status (lowercase) of a task that can be dispatched now. |
+| `task_guard.priority_default_rank` | `1` |  |  | The rank of a task with no priority or an unrecognised one (fail-open: it counts as P1). |
+| `task_guard.priority_low` | `low, deferred` |  |  | Priority words (lowercase) that rank below the default. |
+| `task_guard.priority_low_rank` | `2` |  |  | The rank of a low or deferred task. |
+| `task_guard.priority_rank_re` | `^p([0-9]+)$` |  |  | JavaScript regex source of a priority label with a rank (`p0`, `p1`, ...), matched on the trimmed lowercase label. |
+| `task_guard.prompt_id_key` | `prompt_id` |  |  | The Stop payload field that names the prompt. |
+| `task_guard.proven_only_setting` | `5 entries` |  |  | Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on). |
 | `task_guard.prune_advisory` | `[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory...` |  |  | The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit. |
 | `task_guard.prune_setting` | `6 entries` |  |  | How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter). |
 | `task_guard.session_hash_len` | `16` |  |  | How many hex characters of the transcript path hash name a session that has no id. |
 | `task_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.taskGuard, default on). |
+| `task_guard.state_blocks_key` | `blocks` |  |  | The loop state file's field for the number of blocks made this session. |
+| `task_guard.state_hash_key` | `hash` |  |  | The loop state file's field for the hash of the last blocked set. |
 | `task_guard.state_prefix` | `last-stop-taskset-` |  |  | Prefix of the per-session file that holds the last blocked task set (`last-stop-taskset-<session>`). |
-| `task_guard.summary` | `Stop gate: answers the Stops where the task list has nothing open (the loop s...` |  |  | One-line description of the task-guard check in the generated reference. |
+| `task_guard.status_max` | `24` |  |  | Longest task status in the generic block's list, in UTF-16 units. |
+| `task_guard.status_open` | `open` |  |  | What the generic block shows for a task without a status. |
+| `task_guard.stop_policy_dir` | `devswarm, stop-policy` |  |  | The budget files' directory inside the anti-hall directory, as path segments. |
+| `task_guard.stop_policy_ext` | `.json` |  |  | The ending of a session's budget file. |
+| `task_guard.subject_max` | `60` |  |  | Longest task subject in the generic block's list, in UTF-16 units. |
+| `task_guard.subject_unknown` | `(subject unknown)` |  |  | What the generic block shows for a task whose subject was never seen. |
+| `task_guard.summary` | `Stop gate: blocks a Stop while tasks are open (the idle-neglect block when di...` |  |  | One-line description of the task-guard check in the generated reference. |
+| `task_guard.task_ref_re` | `#(\d+)\b` |  |  | JavaScript regex source of a task number named in an agent's description (`#12`); such an agent covers that task. |
+| `task_guard.tool_result_type` | `tool_result` |  |  | The content block type of a tool result (not a real user prompt). |
 | `task_guard.unknown_tag` | `guard` |  |  | The tag of the unknown-state note's state file for task-guard. |
+| `task_guard.update_claude` | `TaskUpdate` |  |  | How the block messages name the task update tool on Claude Code. |
+| `task_guard.update_codex` | `update your task list` |  |  | How the block messages name the task update on Codex, which has no task tools. |
+| `task_guard.user_type` | `user` |  |  | The transcript entry type of a user turn. |
+| `task_guard.workspace_prefix_re` | `^(workspace\|ws\|devswarm)\s*[:#]\s*` |  |  | JavaScript regex source (case-insensitive) of the prefix removed from an owner before it is looked up as a DevSwarm workspace. |
 
 ### task_guards.toml / task_lifecycle_log
 
@@ -2757,25 +3141,114 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `tasklist_guard.ack_dir` | `stop-ack` |  |  | Directory of the acknowledgement files under the anti-hall state directory; also the file prefix (`<dir>/<dir>-<session>.json`). |
+| `tasklist_guard.ack_hint` | `Override (only if the user explicitly confirmed this exact condition is fine)...` |  |  | The acknowledgement hint appended to a block; {key}, {now} and {path} are filled in. |
+| `tasklist_guard.ack_session_max` | `128` |  |  | Longest session part of an acknowledgement file name. |
+| `tasklist_guard.ack_setting` | `6 entries` |  |  | guards.stopAck: honor a per-signature acknowledgement of this block for the rest of the session. |
+| `tasklist_guard.ack_sig_len` | `16` |  |  | How many hex digits of the SHA-1 of the dedupe hash make the acknowledgement signature. |
+| `tasklist_guard.advisory_body` | `{"advised":true}` |  |  | Contents of the no-handover advisory marker. |
+| `tasklist_guard.advisory_prefix` | `tasklist-guard-handover-advisory-` |  |  | Prefix of the once-per-session marker of the no-handover advisory (`<prefix><session>.json`). |
+| `tasklist_guard.advisory_text` | `\n💡 anti-hall · handover: no handover exists yet after significant work.\nDo ...` |  |  | The no-handover advisory appended to a block. |
+| `tasklist_guard.append_claude` | `append with the Edit tool or a one-line `>>`, never the Write tool` |  |  | How to append to the history file (Claude wording). |
+| `tasklist_guard.append_codex` | `append with a one-line `>>`, never overwrite it` |  |  | How to append to the history file (Codex wording). |
+| `tasklist_guard.budget_setting` | `6 entries` |  |  | guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off). |
+| `tasklist_guard.codex_fields` | `turn_id, model` |  |  | Payload fields that, all non-empty strings, mark a Codex payload (isCodexPayload). |
+| `tasklist_guard.codex_tool` | `apply_patch` |  |  | A tool name only Codex payloads carry (isCodexPayload). |
+| `tasklist_guard.evidence_deferred_prefix` | `deferred_tools` |  |  | Prefix of the attachment type that lists deferred tools. |
+| `tasklist_guard.evidence_names` | `TaskCreate, TaskUpdate, TodoWrite, task_reminder` |  |  | Tool names, attachment types and prefixes that can make a transcript line evidence of task tools (the cheap pre-filter). |
+| `tasklist_guard.evidence_reminder` | `task_reminder` |  |  | Attachment type that proves task tools exist. |
+| `tasklist_guard.evidence_tool` | `TaskCreate` |  |  | The deferred tool name that proves task tools exist. |
+| `tasklist_guard.form_full` | `full` |  |  | The full nag form (and the protocol level that selects it). |
+| `tasklist_guard.form_reduced` | `reduced` |  |  | The reduced nag form. |
+| `tasklist_guard.form_skip` | `skip` |  |  | The nag form that says nothing. |
 | `tasklist_guard.fresh_grace_ms` | `1000` |  |  | How far the newest counted work may run ahead of a progress file's time and still count as covered by it. |
 | `tasklist_guard.fresh_setting` | `6 entries` |  |  | How long (ms) a progress file counts as fresh when no work time is known (guards.progressFreshMs). |
 | `tasklist_guard.guard_name` | `tasklist-guard` |  |  | The guard id of tasklist-guard (the skip key and the message prefix). |
+| `tasklist_guard.handover_file_re` | `^HANDOVER(?:-\d+)?\.md$` |  |  | JavaScript regex source of a handover file name. |
+| `tasklist_guard.handover_grace_ms` | `1000` |  |  | How far the newest counted work may run past the newest handover's time before the handover counts as stale. |
+| `tasklist_guard.handover_state_file` | `state.md` |  |  | The state file a session handover leaves (the prior-snapshot pointer looks for it). |
+| `tasklist_guard.handovers_dir` | `.anti-hall, handovers` |  |  | The handovers directory under the project root, as path segments. |
+| `tasklist_guard.head_bytes` | `65536` |  |  | How much of the start of the transcript is read for the session start time (firstTranscriptIso). |
+| `tasklist_guard.header` | `<!-- session: {session} \| started: {started} -->` |  |  | The header a new progress file gets; {session} is the raw session id (or the unknown-session id), {started} the session start. |
 | `tasklist_guard.history_dir` | `.anti-hall, history` |  |  | The history directory under the project root, as path segments. |
+| `tasklist_guard.instead_capture` | `Capture the work as priority-sorted tasks via TaskCreate/TaskUpdate (TaskList...` |  |  | What to do instead: capture the work as tasks (Claude wording). |
+| `tasklist_guard.instead_capture_codex` | `Capture the work as priority-sorted tasks in your task list (check it first t...` |  |  | What to do instead: capture the work as tasks (Codex wording). |
+| `tasklist_guard.instead_files` | `{progress} (done/in-progress/next); a new file gets this header on top: {head...` |  |  | The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in. |
+| `tasklist_guard.instead_reduced` | `list the open tasks and status in your reply, priority first. Progress: {prog...` |  |  | What to do instead, reduced nag; {progress} and {history} are the files. |
+| `tasklist_guard.instead_reset` | `recreate the open tasks with TaskCreate (see the progress file / handover), t...` |  |  | Lead of what to do instead after a task store reset (Claude wording). |
+| `tasklist_guard.instead_reset_codex` | `recreate the open tasks in your task list (see the progress file / handover),...` |  |  | Lead of what to do instead after a task store reset (Codex wording). |
+| `tasklist_guard.instead_stalled` | `dispatch a background agent for EACH now (do not serialize to one), or set id...` |  |  | What to do about tasks stalled in progress. |
+| `tasklist_guard.jev_false` | `a small bounded chore — task tracking would be overhead, not help` |  |  | What a false answer means. |
+| `tasklist_guard.jev_id` | `tasklistTrivial` |  |  | The Jev integration consulted before the nag (relax-block: a confident trivial verdict in on mode skips it). |
+| `tasklist_guard.jev_instructions` | `This session is about to be nudged to track its work as tasks / refresh its p...` |  |  | The question put to Jev (a noul question). |
+| `tasklist_guard.jev_state` | `workCount={work} threshold={threshold} sawTaskActivity={saw} hasStaleInProgre...` |  |  | The session summary Jev judges; the fields are the work count, threshold, the three sub-causes and the open task count. |
+| `tasklist_guard.jev_true` | `genuinely non-trivial — multi-part, benefits from task tracking` |  |  | What a true answer means. |
+| `tasklist_guard.json_max_depth` | `1000` |  |  | Nesting limit of the JSON state files read on the block path (deeper text defers to Node). |
 | `tasklist_guard.low_priorities` | `p2, low, deferred` |  |  | Priorities (lowercase) below the actionable floor for the stalled-in-progress count. |
+| `tasklist_guard.marketplace_dir` | `.claude/plugins/marketplaces/anti-hall` |  |  | The marketplace clone under the home directory (update.js resolvePaths). |
+| `tasklist_guard.marketplace_env` | `ANTIHALL_MARKETPLACE_DIR` |  |  | Test-only override of the marketplace clone (an absolute path to an existing directory). |
+| `tasklist_guard.max_blocks` | `3` |  |  | How many blocks one session gets at most (MAX_BLOCKS); a session at the cap stops quietly. |
+| `tasklist_guard.no_task_tools_setting` | `8 entries` |  |  | The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip). |
+| `tasklist_guard.omc_fresh_ms` | `7200000` |  |  | How recent a loop state's timestamp must be for the loop to count as active. |
+| `tasklist_guard.omc_kill_env` | `DISABLE_OMC` |  |  | Environment variable that disables oh-my-claudecode (value 1). |
+| `tasklist_guard.omc_max_bytes` | `65536` |  |  | Largest loop state file read; a bigger one counts as malformed. |
+| `tasklist_guard.omc_plugin` | `oh-my-claudecode@omc` |  |  | The enabledPlugins key of oh-my-claudecode. |
+| `tasklist_guard.omc_settings_files` | `.claude/settings.json, .claude/settings.local.json` |  |  | The Claude settings files that can enable oh-my-claudecode: the home one, then the project's two. |
+| `tasklist_guard.omc_settings_max_bytes` | `262144` |  |  | Largest Claude settings file read when checking that oh-my-claudecode is enabled. |
+| `tasklist_guard.omc_skip_env` | `OMC_SKIP_HOOKS` |  |  | Environment variable listing skipped oh-my-claudecode hooks (comma separated). |
+| `tasklist_guard.omc_skip_token` | `persistent-mode` |  |  | The skipped hook that turns the loop detection off. |
+| `tasklist_guard.omc_state_dir` | `.omc, state` |  |  | The oh-my-claudecode state directory under the working directory, else the home directory, as path segments. |
+| `tasklist_guard.omc_state_files` | `8 items` |  |  | The oh-my-claudecode loop state files (omc-detect.js). |
+| `tasklist_guard.omc_text` | `[tasklist-guard] OMC autonomous loop active — deferring Stop block to avoid d...` |  |  | Printed instead of the block while an oh-my-claudecode autonomous loop is active. |
+| `tasklist_guard.omc_ts_keys` | `last_checked_at, updated_at, started_at` |  |  | Timestamp fields of a loop state, in order. |
+| `tasklist_guard.open_hash_len` | `16` |  |  | How many hex digits of the SHA-1 of the open task ids go into the dedupe signal. |
+| `tasklist_guard.open_ids_sep` | ` ` |  |  | Separator of the sorted open task ids that are hashed into the dedupe signal. |
 | `tasklist_guard.plan_mode_text` | `[tasklist-guard] PLAN MODE — Stop not blocked (progress-file writes are not p...` |  |  | The advisory printed instead of a decision while the session is in plan mode. |
 | `tasklist_guard.plan_mode_value` | `plan` |  |  | The permission_mode value (compared in lowercase) that marks plan mode. |
+| `tasklist_guard.plugin_json` | `.claude-plugin/plugin.json` |  |  | The plugin manifest under the plugin root (the running version). |
+| `tasklist_guard.policy_dir` | `devswarm, stop-policy` |  |  | The stop-policy state directory under the anti-hall state directory, as path segments. |
+| `tasklist_guard.policy_prompt_kind` | `prompt` |  |  | Stop-policy bucket kind of the per-prompt budget. |
+| `tasklist_guard.policy_reduced_cap` | `1` |  |  | How many reduced nags one session gets. |
+| `tasklist_guard.policy_reduced_kind` | `no-task-tools` |  |  | Stop-policy bucket kind of the reduced nag (blocks at most once per session). |
+| `tasklist_guard.policy_tail_bytes` | `1572864` |  |  | How much of the end of the transcript is read for the prompt key (transcript-tail.js MAX_TAIL_BYTES). |
+| `tasklist_guard.policy_user_marker` | `"user"` |  |  | Text a transcript line must hold to be read as a possible user prompt. |
+| `tasklist_guard.prior_snapshot` | ` A prior session's snapshot exists at {path}: recreate your task list from it...` |  |  | Appended to the no-tasks reason when another session of today left a handover state file; {path} is its path. |
 | `tasklist_guard.progress_dir` | `.anti-hall, progress` |  |  | The progress directory under the project root, as path segments. |
+| `tasklist_guard.protocol_setting` | `8 entries` |  |  | context.protocolLevel: full makes the nag form default to full when guards.tasklistNoTaskTools is not set. |
 | `tasklist_guard.reason_max` | `2000` |  |  | Longest block reason, in UTF-16 units; longer text is cut and ends with an ellipsis. |
+| `tasklist_guard.registry_file` | `installed_plugins.json` |  |  | The host's plugin registry, beside the marketplaces directory. |
+| `tasklist_guard.registry_key` | `anti-hall@anti-hall` |  |  | The registry entry of this plugin. |
+| `tasklist_guard.registry_max_bytes` | `4194304` |  |  | Largest registry file read (readJsonBounded). |
+| `tasklist_guard.registry_scopes` | `user, project` |  |  | Registry entry scopes, in order of preference. |
 | `tasklist_guard.resume_marker_prefix` | `handover-resume-state-` |  |  | Prefix of the per-session marker the handover resume writes (`<prefix><session>.json` under the anti-hall state directory). |
 | `tasklist_guard.resume_nudged_prefix` | `resume-verify-nudged-` |  |  | Prefix of the per-session file that records the one resume-verification nudge. |
 | `tasklist_guard.resume_text` | `A session handover was resumed this session ({file}) but no `resume-verified:...` |  |  | The resume-verification nudge; `{file}` is the handover file. |
 | `tasklist_guard.resume_verified_marker` | `resume-verified:` |  |  | The text a resumed handover must contain once its resume has been verified. |
+| `tasklist_guard.session_hash_len` | `16` |  |  | How many hex digits of the transcript path's SHA-1 stand in for a missing session id. |
 | `tasklist_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.tasklistGuard, default on). |
-| `tasklist_guard.summary` | `Stop gate: answers the Stops that do not block (a trivial session, tracked wo...` |  |  | One-line description of the tasklist-guard check in the generated reference. |
+| `tasklist_guard.signal_sep` | `\|` |  |  | Separator of the parts of the dedupe signal. |
+| `tasklist_guard.stale_body` | `{"warned":true}` |  |  | Contents of the stale-handover advisory marker. |
+| `tasklist_guard.stale_prefix` | `tasklist-guard-handover-stale-` |  |  | Prefix of the once-per-session marker of the stale-handover advisory (`<prefix><session>.json`). |
+| `tasklist_guard.stale_text` | `\n⚠️ anti-hall · handover: the saved handover is stale (work happened after i...` |  |  | The stale-handover advisory appended to a block. |
+| `tasklist_guard.state_ext` | `.json` |  |  | File extension of the per-session state and marker files. |
+| `tasklist_guard.state_prefix` | `tasklist-guard-state` |  |  | Family name of the per-session loop state file (`<prefix>-<session>.json` under the anti-hall state directory); also the prune family. |
+| `tasklist_guard.summary` | `Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a...` |  |  | One-line description of the tasklist-guard check in the generated reference. |
 | `tasklist_guard.task_tool_names` | `TaskCreate, TaskUpdate, TodoWrite` |  |  | The tool names that count as task activity. |
 | `tasklist_guard.threshold_setting` | `6 entries` |  |  | How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold). |
+| `tasklist_guard.version_setting` | `6 entries` |  |  | guards.stopHookVersionDowngrade: skip the block while the host registered a newer anti-hall than the running one. |
+| `tasklist_guard.what_no_tasks` | `stop blocked: {n} file-changing actions this session but NO tasks tracked.` |  |  | Block headline when work was done and no task was tracked; {n} is the work count. |
+| `tasklist_guard.what_progress` | `stop blocked: {n} file-changing actions but {path} is missing or stale.` |  |  | Block headline when the progress file is missing or stale; {n} is the work count, {path} the progress file. |
+| `tasklist_guard.what_reduced` | `stop blocked: {n} file-changing actions, no tasks tracked.` |  |  | Block headline of the reduced nag (a session without task tools); {n} is the work count. |
+| `tasklist_guard.what_reset` | `the task store was reset (session restore).` |  |  | Block headline when the task store was reset (a session restore). |
+| `tasklist_guard.what_stalled` | `stop blocked: {n} tasks are in_progress but NO background agent is live.` |  |  | Block headline when tasks are in progress with no live agent; {n} is the count. |
+| `tasklist_guard.why_no_tasks` | `Work this size needs a task list and a progress file.` |  |  | Block reason when no task was tracked. |
+| `tasklist_guard.why_progress` | `The progress file must track what was done.` |  |  | Block reason when the progress file is missing or stale. |
+| `tasklist_guard.why_reduced` | `Untracked work gets lost.` |  |  | Block reason of the reduced nag. |
+| `tasklist_guard.why_reset` | `The old task ids are gone, not un-tracked.` |  |  | Block reason when the task store was reset. |
+| `tasklist_guard.why_stalled` | `They are stalled, not worked in parallel.` |  |  | Block reason when tasks are stalled in progress. |
 | `tasklist_guard.wide_window_bytes` | `16777216` |  |  | How much of the transcript the fallback search for any task activity reads when the scan window held none (16 MiB). |
 | `tasklist_guard.window_bytes` | `524288` |  |  | How much of the end of the transcript the work and task scan reads (512 KiB). |
+| `tasklist_guard.work_bucket_max` | `8` |  |  | Highest work bucket in the dedupe signal (the work count divided by the threshold, floored, capped here). |
 
 ### task_guards.toml / taskstate
 
@@ -2795,6 +3268,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `taskstate.re_created` | `^Task\s+#(\d+)\s+created\s+successfully` |  |  | JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number. |
 | `taskstate.re_list_empty` | `^\s*No\s+tasks\s+found\b` |  |  | JavaScript regex source (case-insensitive) of the TaskList result that says the task store is empty. |
 | `taskstate.re_not_found` | `^\s*Task\s*(?:#\S+)?\s*not\s+found\b` |  |  | JavaScript regex source (case-insensitive) of the TaskGet or TaskUpdate result that says one task id does not exist. |
+| `taskstate.since_status_re` | `^(pending\|in[-_]?progress)$` |  |  | JavaScript regex source (case-insensitive) of the TaskUpdate statuses that restart a task's clock (`sinceMs`, read by the idle-neglect proof). |
 | `taskstate.tail_bytes` | `1572864` |  |  | How much of the end of a transcript the task reconstruction reads (the Node `MAX_TAIL_BYTES`, 1.5 MiB). |
 | `taskstate.terminal_status_re` | `^(completed\|done\|cancelled\|canceled\|deleted)$` |  |  | JavaScript regex source (case-insensitive) of the statuses that close a task for the backfill (`TERMINAL`). |
 | `taskstate.tools_collect_keys` | `content, message, messages, tool_uses, parts` |  |  | The object keys the tool-use collector descends into, in order (the Node `collectToolUses`). |
@@ -3998,7 +4472,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.ps_line_re` | `^\s*(\d+)\s+(\d+)\s+(.*)$` |  |  | JavaScript regex source (case-sensitive) of one process listing line: pid, parent pid, command line. |
 | `mcp_reaper.ps_max_bytes` | `33554432` |  | bytes | The largest process listing accepted; a bigger one is treated as a failed listing and the sweep does nothing. |
 | `mcp_reaper.ps_timeout_ms` | `3000` |  | ms | How long the process listing may take before the sweep gives up and does nothing. |
-| `mcp_reaper.read_ms` | `1000` |  | ms | How long to wait for a finished command's output after it exits. |
+| `mcp_reaper.read_ms` | `1000` |  | ms | The least time to wait for a finished command's output after it exits; it may also use what is left of the command's timeout. Output that never arrives fails the command (never an empty listing). |
 | `mcp_reaper.reason_fields` | `reason, end_reason` |  |  | The payload fields that carry the reason, in order: the measured wire field first, the documented one as a fallback. |
 | `mcp_reaper.reason_launchd` | `launchd-managed` |  |  | The audit log reason for a candidate the macOS service manager owns. |
 | `mcp_reaper.reason_launchd_unverifiable` | `launchd-unverifiable` |  |  | The audit log reason for every candidate when the service-manager listing failed. |
@@ -4057,6 +4531,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.open_zero` | `open tasks: 0{blocked}.` |  |  | The open-tasks line when no countable task is open; `{blocked}` is the blocked-tasks tail. |
 | `task_tracker.owner_word` | `owner` |  |  | Who a blocked task waits on when it names nobody. |
 | `task_tracker.pending_status` | `pending` |  |  | The status (lowercase) of a task nobody has started. |
+| `task_tracker.primary_instead` | `a workspace-scale MATTER (feature/fix/deploy: multi-step, own branch, own rev...` |  |  | The 'instead' line of the DevSwarm Primary dispatch-tier block. |
+| `task_tracker.primary_key` | `task-tracker-primary` |  |  | The emit-dedupe key of the Primary block, rationed apart from the reminder. |
+| `task_tracker.primary_what` | `Primary dispatch tier: classify each task before you dispatch it.` |  |  | The 'what' line of the DevSwarm Primary dispatch-tier block. |
 | `task_tracker.prune_prefix` | `task-tracker` |  |  | The prefix the sweep of stale per-session state files is stamped under. |
 | `task_tracker.segment_joiner` | `\n\n` |  |  | What joins the short reminder and the open-tasks line in the output (a separate segment, so the dedupe store sees it consumed). |
 | `task_tracker.session_hash_len` | `16` |  |  | How many hexadecimal digits of the working directory's hash name a session that has no id. |
@@ -4077,6 +4554,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.what_short` | `capture every request as a priority-sorted task; keep statuses current; deleg...` |  |  | The short per-turn reminder. |
 | `task_tracker.why_joiner` | `/` |  |  | What joins the distinct reasons tasks are blocked. |
 | `task_tracker.window_ms` | `21600000` |  | ms | How long the full directive stays fresh before it is injected again. |
+
+### realtime.toml / realtime
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `realtime.backend` | `auto` |  |  | How a watched directory is observed: auto (OS file events: FSEvents on macOS, inotify on Linux; a directory on a filesystem listed in fs_poll_types, or one the OS refuses to watch, is polled instead) or poll (always compare file signatures every poll_ms). An unknown word is read as auto. |
+| `realtime.cpu_budget_permille` | `5` |  |  | The CPU the idle watcher may use, in thousandths of one core (5 means 0.5 percent); the benchmark test and the rollout gate compare against it. |
+| `realtime.debounce_ms` | `100` | `AH_ENGINE_RT_DEBOUNCE_MS` | ms | A changed file is reported once it has been quiet this long, so a burst of writes becomes one report. |
+| `realtime.fs_poll_types` | `14 items` |  |  | Filesystem types whose watched directories are always polled because OS change events do not arrive there (WSL2 /mnt drives report 9p or drvfs; network and FUSE filesystems report no events). A trailing or leading * matches any text. |
+| `realtime.latency_target_ms` | `1000` |  | ms | The detection latency (change to report) the watcher must stay within at the 95th percentile, for OS events and for polled directories alike; the benchmark test and the rollout gate compare against it. |
+| `realtime.max_delay_ms` | `1000` | `AH_ENGINE_RT_MAX_DELAY_MS` | ms | A file that keeps changing is still reported at least this often (the ceiling on debounce_ms), so a busy source is never starved. |
+| `realtime.max_entries` | `2048` |  |  | The most matching files one watched directory is tracked for. A directory with more reports a rescan signal when it changes, so a huge directory cannot grow the watcher's memory. |
+| `realtime.mounts_file` | `/proc/self/mounts` |  |  | The file that lists mounted filesystems with their types on Linux (including WSL2); the longest mount point that holds a watched directory names its filesystem type. macOS asks the system (statfs) instead. |
+| `realtime.poll_ms` | `750` | `AH_ENGINE_RT_POLL_MS` | ms | How often a polled directory is listed and its watched files stat'ed, in milliseconds. Only directories that cannot use OS events are polled (9p, drvfs, NFS, SMB, FUSE, a directory that does not exist yet, backend = poll), so this is the detection latency of those: at most this plus debounce_ms. Polling costs CPU in proportion to the files watched divided by this interval. |
+| `realtime.queue_cap` | `512` |  |  | The most distinct changed files held before they are reported. Past it the held changes are dropped and ONE rescan signal is sent instead (the consumer reconciles everything), so the queue and its output stay bounded however large the storm. |
+| `realtime.sqlite_suffixes` | `-wal, -shm, -journal` |  |  | Suffixes of the files SQLite keeps beside a database (write-ahead log, shared memory, rollback journal). Watching a database name also watches the name plus each suffix, because a commit lands in the -wal file and a checkpoint can truncate it. |
 
 ## Messages
 
@@ -4099,10 +4592,11 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.client_connect` | Exchange failure when connecting failed. Placeholder: {err}. |
 | `msg.client_fallback_unavailable` | Printed on stderr when stdin cannot safely be sent to the engine and the Node fallback cannot answer. Guard events exit 2; non-guard events exit 0 with this note. |
 | `msg.client_io` | Exchange failure for another I/O step. Placeholders: {what}, {err}. |
+| `msg.client_no_fallback_guard` | Printed on stderr (exit dispatch.defer_exit) when the legacy `hook` command gets a guard event, the engine cannot answer and no Node fallback was given: the caller must run the Node hook, never take silence as an allow. |
 | `msg.client_timeout` | Exchange failure when the hard deadline passed. |
+| `msg.client_what_stat` | The step named in msg.client_io when the socket path cannot be examined (a permission or path error, not a missing socket). |
 | `msg.diagnostics` | Secret-scrubbed diagnostic block attached to a permanent-failure advisory. Placeholders: {version}, {os}, {arch}, {code}, {log}. |
-| `msg.dispatch_stdin_spool` | Reason in dispatch.msg_fail_closed when an over-cap stdin payload cannot be spooled for Node hooks. Placeholder: {err}. |
-| `msg.dispatch_stdin_spool_note` | Printed on stderr when a non-guard event has an over-cap stdin payload but the anonymous spool file could not be created. Placeholders: {event}, {err}. |
+| `msg.dispatch_stdin_spool` | Reason (event log and stderr, with dispatch.defer_exit) when the hook's stdin payload cannot be read, or an over-cap payload cannot be spooled for the Node hooks. Placeholder: {err}. |
 | `msg.dispatch_stdin_utf8` | Reason in dispatch.msg_fail_closed when a guard event's stdin payload is not valid UTF-8. |
 | `msg.docs_checks_note` | Paragraph under the checks heading of the generated reference. |
 | `msg.docs_intro` | Opening paragraph of the generated reference. |
@@ -4149,19 +4643,26 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.hint_socket_path` | Self-fix hint when the socket path is too long. Placeholder: {env_dir}. |
 | `msg.hint_state_dir` | Self-fix hint when the state directory is not writable or not private. Placeholders: {state_dir}, {env_dir}. |
 | `msg.impact_no_routing` | Status shown in place of a model-routing saving figure while no routing events are recorded. |
+| `msg.log_accept_error` | Event-log detail (rate-limited) when the daemon's accept failed for a reason other than nothing pending. Placeholders: {code} (os<n>), {err}. |
+| `msg.log_accept_recovered` | Event-log detail when the daemon accepts a connection again after accept failures (logged then, because a full descriptor table can keep the failure's own log line from being written). Placeholders: {n}, {code} (os<n> of the last failure). |
 | `msg.log_bind_fail` | Start-failure detail when binding the socket fails. Placeholders: {path}, {err}. |
 | `msg.log_budget` | Log detail when a rule evaluation exceeded its CPU budget. |
 | `msg.log_check_spawn` | Log detail when a built-in check's thread cannot start, so every command is deferred to Node. Placeholder: {err}. |
 | `msg.log_crash` | Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}. |
 | `msg.log_daemon_killed` | Log detail when the daemon was killed by a signal while starting. |
+| `msg.log_daemon_spawn_failed` | Event-log detail (kind spawn_fail, code os<n>) when the client could not start the daemon (fork or exec failed: EAGAIN, ENOMEM, a missing executable). Placeholder: {err}. |
 | `msg.log_fallback_read_error` | Log detail when reading the Node fallback's stdout or stderr failed part-way. |
 | `msg.log_fallback_read_timeout` | Log detail when the Node fallback finished but its stdout or stderr was still open at the deadline. |
 | `msg.log_fallback_signal` | Log detail when the Node fallback was killed by a signal (out of memory, a crash). |
 | `msg.log_fallback_timeout` | Log detail when the Node fallback did not finish in time. |
 | `msg.log_lock_fail` | Start-failure detail when the lock file cannot be opened. Placeholders: {path}, {err}. |
+| `msg.log_lock_no_daemon` | Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty). |
 | `msg.log_not_socket` | Start-failure detail when something other than a socket sits at the socket path. Placeholder: {path}. |
 | `msg.log_operator_reset` | Log detail for `reset`. |
 | `msg.log_panic` | Log and failure detail when a request handler panicked. |
+| `msg.log_proc_spawn` | Event-log detail (rate-limited, code proc_spawn_failed) when a helper process could not be started. Placeholders: {what} (the program), {code} (os<n>), {err}. |
+| `msg.log_proc_timeout` | Event-log detail (rate-limited, code proc_timeout) when a helper process ran past its timeout and its process group was killed. Placeholders: {what}, {ms}. |
+| `msg.log_proc_unread` | Event-log detail (rate-limited, code proc_unread) when a helper exited but its output did not reach end of file within proc.read_grace_ms (a process it left behind held a pipe); its group was killed. Placeholder: {what}. |
 | `msg.log_pruned` | Event-log detail when maintenance forgets old applied write ids. Placeholder: {n}. |
 | `msg.log_restored` | Event-log detail of a restore. Placeholders: {from}, {kept}. |
 | `msg.log_rss` | Log detail when the daemon is over its memory cap. Placeholders: {rss}, {cap}. |
@@ -4196,7 +4697,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.spool_damaged` | Quarantine reason for spool bytes that are not a valid record. |
 | `msg.spool_full` | Printed by `proj` when the spool is full, so the write was not kept. |
 | `msg.spool_io` | Printed by `proj` when the spool could not be written. Placeholder: {err}. |
-| `msg.spool_rewrite_failed` | Log detail when the spool could not be rewritten after a drain. Placeholders: {err} the OS error, {n} unapplied records that may be lost. |
+| `msg.spool_rewrite_failed` | Log detail when the spool could not be replaced after a drain. The old spool stays whole (the records already applied are applied again, harmlessly, by their write ids). Placeholders: {err} the OS error, {n} unapplied records still in it. |
 | `msg.spool_spooled` | Printed by `proj` when the engine could not take a write and it was spooled. Placeholder: {id}. |
 | `msg.state_open` | Status text for a breaker that is open. Placeholder: {secs}. |
 | `msg.state_stopped` | Status text for a crash-loop stop that is active. Placeholder: {secs}. |
@@ -4272,6 +4773,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 
 | Name | Kind | Unit | Labels | What it counts |
 |---|---|---|---|---|
+| `accept_errors` | counter | errors | code | Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms. |
 | `budget_trips` | counter | evaluations |  | Evaluations cut off by the per-request CPU budget. |
 | `bus_dropped` | gauge | notifications |  | Pub/sub notifications a full subscriber queue could not take since the daemon started (the data stays in SQLite). |
 | `bus_published` | gauge | notifications |  | Pub/sub notifications delivered to subscriber queues since the daemon started. |
@@ -4309,6 +4811,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rule_hits` | counter | matches | action | Regex rule matches, by action (deny, warn, context). |
 | `schedule_missed` | counter | runs | job | Runs that caught up a missed window or skipped it, by job (D33). |
 | `schedule_runs` | counter | runs | job, status | Scheduled runs that finished, by job and status (ok, failed, timeout, planned, skipped) (D33). |
+| `slow_replies` | counter | replies |  | Replies finished after their client's deadline had passed: slow but healthy (the client fell back to Node), counted apart from errors. |
 | `spool_applied` | counter | writes |  | Spooled writes the daemon applied (D24). |
 | `spool_quarantined` | counter | records |  | Spool records moved to quarantine: damaged, or refused for good by the store (D24). |
 | `tel_dropped` | counter | samples | reason | Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed). |

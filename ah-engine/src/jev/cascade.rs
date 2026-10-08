@@ -94,10 +94,13 @@ pub fn parse_reply(q: &Question, text: &str) -> Option<Verdict> {
 /// A test double for the model: what it is given decides what it answers. Unit tests only.
 #[cfg(test)]
 pub(crate) type TestModel = Box<dyn Fn(&cli::CliCall<'_>) -> cli::CliOutcome + Send + Sync>;
+/// Serializes the tests that install a model double (it is process-wide).
+#[cfg(test)]
+pub(crate) static MODEL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 pub(crate) static TEST_MODEL: std::sync::Mutex<Option<TestModel>> = std::sync::Mutex::new(None);
 
-fn call_model(call: &cli::CliCall<'_>) -> cli::CliOutcome {
+pub(crate) fn call_model(call: &cli::CliCall<'_>) -> cli::CliOutcome {
     #[cfg(test)]
     if let Some(f) = TEST_MODEL.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         return f(call);

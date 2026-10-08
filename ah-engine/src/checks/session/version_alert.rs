@@ -155,7 +155,7 @@ fn changelog_headline(home: &str, dir: &str) -> Result<Option<String>, ()> {
 }
 
 /// `isSemver(v)` of `update.js`: `N.N.N` with an optional `-` or `+` suffix, after trimming and dropping one `v`.
-fn is_semver(v: &str) -> bool {
+pub(crate) fn is_semver(v: &str) -> bool {
     let t = js_trim(v);
     let t = t.strip_prefix(['v', 'V']).unwrap_or(t);
     let (core, suffix) = match t.find(['-', '+']) {
@@ -192,7 +192,7 @@ fn version_from_registry(data: &J) -> Option<String> {
 
 /// The version the host's plugin registry (`installed_plugins.json`) names, found the way `update.js` finds it.
 /// `Err(())` when the registry text may parse differently here and in JavaScript.
-fn harness_version(env: &RequestEnv, home: &str) -> Result<Option<String>, ()> {
+pub(crate) fn harness_version(env: &RequestEnv, home: &str) -> Result<Option<String>, ()> {
     let mut marketplace = join(home, defaults::text("session.marketplace_dir"));
     if let Some(o) = env.get(defaults::text("session.marketplace_env")).filter(|o| !o.is_empty())
         && is_absolute(o)

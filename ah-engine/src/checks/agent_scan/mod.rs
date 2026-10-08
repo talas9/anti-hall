@@ -62,6 +62,8 @@ pub struct Rec {
     pub last_seen_ms: f64,
     /// A teammate that was sent a message and has not reported since.
     pub pending_message: bool,
+    /// The input of the Agent/Task call that launched it (Node `rec.spawnInput`); `None` when that call is outside the window.
+    pub spawn_input: Option<Value>,
 }
 
 /// A teammate message that has not been answered.
@@ -139,12 +141,18 @@ pub struct Row {
     pub id: String,
     /// Its description (empty when unknown).
     pub description: String,
+    /// The whole record (launch, resume and sign-of-life times, output file).
+    pub rec: Rec,
 }
 
 impl Scan {
     /// `rowsOf(scan)`: launched and not terminal.
     pub fn rows(&self) -> Vec<Row> {
-        self.launched.iter().filter(|(id, _)| !self.terminal.contains(*id)).map(|(id, r)| Row { id: id.clone(), description: r.description.clone() }).collect()
+        self.launched
+            .iter()
+            .filter(|(id, _)| !self.terminal.contains(*id))
+            .map(|(id, r)| Row { id: id.clone(), description: r.description.clone(), rec: r.clone() })
+            .collect()
     }
 }
 
@@ -568,7 +576,7 @@ impl Walk {
     }
 
     fn register_tool_use(&mut self, id: &str, name: Option<&str>, input: Option<&Value>) -> Res<()> {
-        let keep = name.is_some_and(|n| in_list("agent_scan.delivery_tools", n));
+        let keep = name.is_some_and(|n| in_list("agent_scan.delivery_tools", n) || in_list("agent_scan.launch_tools", n));
         if let Some(prev) = self.tool_uses.get(id)
             && prev.name.as_deref() != name
             && self.dropped_ids.contains(id)
@@ -630,6 +638,7 @@ impl Walk {
                             teammate: false,
                             last_seen_ms: f64::NAN,
                             pending_message: false,
+                            spawn_input: None,
                         },
                     );
                 }
@@ -783,6 +792,7 @@ impl Walk {
                                 teammate: false,
                                 last_seen_ms: f64::NAN,
                                 pending_message: false,
+                                spawn_input: None,
                             },
                         );
                     }
@@ -1007,6 +1017,11 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
         if let (Some(d), Some(r)) = (d, w.launched.get_mut(id)) {
             r.description = d;
         }
+        // `rec.spawnInput`: the input of the launching call when it is in the window (an object or array, as `typeof` says)
+        let spawn = w.launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.tool_uses.get(t)).and_then(|c| c.input.clone());
+        if let (Some(i), Some(r)) = (spawn.filter(|i| i.is_object() || i.is_array()), w.launched.get_mut(id)) {
+            r.spawn_input = Some(i);
+        }
     }
 
     // Background-agent ids known from the walk: a teammate name equal to one is a collision.
@@ -1092,6 +1107,7 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
                     teammate: false,
                     last_seen_ms: f64::NAN,
                     pending_message: false,
+                    spawn_input: None,
                 },
             );
             targets.push(rid.clone());
@@ -1196,6 +1212,7 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
                 teammate: true,
                 last_seen_ms: last_seen,
                 pending_message: true,
+                spawn_input: None,
             },
         );
         w.terminal.remove(&name);

@@ -10,9 +10,8 @@ use super::tables::{Switch, tables};
 use super::tokenize::js_trim;
 use crate::defaults;
 use std::collections::HashMap;
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 /// lib/block-message.js `blockMessage({guard:'git-guard', ...})`.
 pub struct Msg<'a> {
@@ -205,38 +204,16 @@ pub fn run_capture(
     timeout: Duration,
 ) -> Option<String> {
     let mut cmd = Command::new(prog);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).env_clear();
+    cmd.args(args).env_clear();
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
     for (k, v) in base.iter().chain(env) {
         cmd.env(k, v);
     }
-    let mut child = cmd.spawn().ok()?;
-    let mut out = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut b = Vec::new();
-        crate::discard::harmless(out.read_to_end(&mut b)); // keep: reaping or draining a child or thread that already ended
-        crate::discard::harmless(tx.send(b)); // keep: the receiver is gone; nobody is waiting for the result
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed() < timeout => std::thread::sleep(tables().child_poll),
-            _ => {
-                crate::discard::harmless(child.kill()); // keep: reaping or draining a child or thread that already ended
-                crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
-                return None;
-            }
-        }
-    };
-    let bytes = rx.recv_timeout(tables().child_read).unwrap_or_default();
-    if !status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&bytes).to_string())
+    // bounded, its own process group killed on timeout, output drained while it runs (review findings 7 and 8)
+    let o = crate::proc::run(cmd, prog, timeout, tables().child_poll).ok()?;
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).to_string())
 }
 
 // ---------------------------------------------------------------------------------------------------

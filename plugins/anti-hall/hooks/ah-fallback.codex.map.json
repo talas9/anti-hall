@@ -56,6 +56,7 @@
     "auto-handover": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover.js\"",
     "devswarm-child-turn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"",
     "devswarm-parent-inbox": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"",
+    "devswarm-rt-advisory": "sh \"${PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"",
     "idle-agent-sweep": "node \"${PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"",
     "limit-conserve-inject": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"",
     "repair-on-reload": "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"",

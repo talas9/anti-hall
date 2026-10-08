@@ -18,7 +18,7 @@ use crate::defaults;
 use crate::frame::{Kind, crc32};
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -87,14 +87,39 @@ pub fn new_write_id() -> String {
     format!("{nanos:x}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst))
 }
 
-/// Open (creating, mode 0600) and exclusively lock a spool-side file.
-fn open_locked(p: &Path) -> std::io::Result<File> {
-    let f = OpenOptions::new().read(true).append(true).create(true).mode(0o600).open(p)?;
-    // SAFETY: `f` is an open file owned by this scope, so its descriptor is valid; `flock` takes only the descriptor and a flag.
-    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
+/// Take the exclusive lock of a spool-side file `p`: a separate lock file beside it (`<p>.lock`), because a drain replaces the
+/// spool itself by a rename (review finding 14). Never blocks for longer than `spool.lock_wait_ms` (finding 13): a holder
+/// that is stuck makes this caller give up (`WouldBlock`), not hang. The lock is held while the returned file is open.
+fn lock(p: &Path) -> std::io::Result<File> {
+    let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(crate::paths::lock_for(p))?;
+    flock_bounded(&f)?;
     Ok(f)
+}
+
+/// Take an exclusive flock on `f`, bounded by `spool.lock_wait_ms` (a stuck holder makes this give up with `WouldBlock`).
+fn flock_bounded(f: &File) -> std::io::Result<()> {
+    let until = std::time::Instant::now() + defaults::millis("spool.lock_wait_ms");
+    loop {
+        // SAFETY: `f` is an open file owned by this scope, so its descriptor is valid; `flock` takes only the descriptor and a flag.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::WouldBlock || std::time::Instant::now() >= until {
+            return Err(e);
+        }
+        std::thread::sleep(defaults::millis("spool.lock_poll_ms"));
+    }
+}
+
+/// Lock `p` ([`lock`]) and open it for appending (creating it, mode 0600). The spool file itself is flocked too: binaries from
+/// before the lock moved to `<p>.lock` serialize on the spool file alone, so during an upgrade (one release) an old appender and
+/// a new drain must still exclude each other. The flock lives as long as the returned append handle.
+fn open_locked(p: &Path) -> std::io::Result<(File, File)> {
+    let l = lock(p)?;
+    let f = OpenOptions::new().read(true).append(true).create(true).mode(0o600).open(p)?;
+    flock_bounded(&f)?;
+    Ok((l, f))
 }
 
 /// Why a record could not be spooled.
@@ -112,7 +137,7 @@ pub fn append(p: &Path, rec: &Record) -> Result<(), SpoolError> {
     if let Some(d) = p.parent() {
         crate::limits::ensure_private_dir(d).map_err(|e| SpoolError::Io(e.to_string()))?;
     }
-    let mut f = open_locked(p).map_err(io)?;
+    let (_lock, mut f) = open_locked(p).map_err(io)?;
     let bytes = rec.encode();
     let len = f.metadata().map_err(io)?.len();
     if len + bytes.len() as u64 > defaults::num("spool.max_bytes") {
@@ -166,7 +191,7 @@ fn parse(b: &[u8]) -> Result<(Record, usize), usize> {
 }
 
 fn quarantine(spool: &Path, bytes: &[u8], why: &str) {
-    let written = open_locked(&quarantine_path(spool)).and_then(|mut q| {
+    let written = open_locked(&quarantine_path(spool)).and_then(|(_lock, mut q)| {
         q.write_all(format!("# {} {why}\n", crate::health::now_ms()).as_bytes())?;
         q.write_all(bytes)?;
         if !bytes.ends_with(b"\n") {
@@ -188,9 +213,25 @@ pub fn drain(p: &Path, apply: &mut dyn FnMut(&Record) -> Applied) -> Drained {
     if std::fs::metadata(p).map(|m| m.len() == 0).unwrap_or(true) {
         return out;
     }
-    let Ok(mut f) = open_locked(p) else { return out };
+    // a drain that cannot take the lock or read the spool keeps every record for the next one, and says why (finding 13)
+    let _lock = match lock(p) {
+        Ok(l) => l,
+        Err(e) => {
+            crate::health::log_event("spool", "drain_lock_failed", &e.to_string());
+            return out;
+        }
+    };
     let mut b = Vec::new();
-    if f.seek(SeekFrom::Start(0)).and_then(|_| f.read_to_end(&mut b)).is_err() {
+    // the legacy lock (see `open_locked`): held on the spool file's current inode while it is read and replaced
+    let mut legacy = match File::open(p).and_then(|f| flock_bounded(&f).map(|()| f)) {
+        Ok(f) => f,
+        Err(e) => {
+            crate::health::log_event("spool", "drain_lock_failed", &e.to_string());
+            return out;
+        }
+    };
+    if let Err(e) = legacy.read_to_end(&mut b) {
+        crate::health::log_event("spool", "drain_read_failed", &e.to_string());
         return out;
     }
     let mut at = 0;
@@ -227,13 +268,17 @@ pub fn drain(p: &Path, apply: &mut dyn FnMut(&Record) -> Applied) -> Drained {
         };
         r = &r[n..];
     }
-    // Rewrite with only the unapplied tail (the file is still locked, so no client appends in between). The file is opened for
-    // appending, so the cut has to come first; a failure after it loses the unapplied records, which is logged with their count
-    // rather than passing in silence.
-    let rewritten = f.set_len(0).and_then(|_| f.write_all(rest)).and_then(|_| f.sync_all());
+    // Replace the spool with only the unapplied tail: written to a temporary file and renamed over the spool, under the lock
+    // (no client appends in between). A crash leaves the old spool or the new one, never a cut one (review finding 14); the
+    // records the old one still holds carry write ids, so applying them again changes nothing.
+    if at == 0 {
+        return out; // nothing applied or quarantined: the spool is unchanged
+    }
+    let rewritten = crate::atomic::write_styled(p, rest, crate::atomic::Style { mode: Some(0o600), ..crate::atomic::Style::default() });
     if let Err(e) = rewritten {
         crate::health::log_event("spool", "rewrite_failed", &defaults::render("msg.spool_rewrite_failed", &[("err", &e), ("n", &out.left)]));
     }
+    drop(legacy); // keep the old-inode flock until the replacement is in place
     out
 }
 
@@ -356,6 +401,65 @@ mod tests {
         assert_eq!(r.quarantined, 1);
         let q = std::fs::read_to_string(quarantine_path(&p)).unwrap();
         assert!(q.contains("mailbox full") && q.contains("\"m0\""));
+    }
+
+    #[test]
+    fn an_older_binarys_flock_on_the_spool_file_excludes_append_and_drain() {
+        // P2-7: the lock moved to <spool>.lock; an older binary still flocks the spool file itself, and neither side saw the other
+        let d = TempDir::new("legacy");
+        let p = d.0.join("spool.log");
+        append(&p, &rec(0, "s")).unwrap();
+        let old = File::open(&p).unwrap();
+        flock_bounded(&old).unwrap(); // what an older binary holds while it appends
+        let t = std::time::Instant::now();
+        assert!(matches!(append(&p, &rec(1, "s")), Err(SpoolError::Io(_))), "the append waits out, then gives up");
+        assert_eq!(drain(&p, &mut |_| Applied::Done), Drained::default(), "the drain keeps everything");
+        assert!(t.elapsed() < defaults::millis("spool.lock_wait_ms") * 4, "{:?}", t.elapsed());
+        drop(old);
+        assert_eq!(drain(&p, &mut |_| Applied::Done).applied, 1);
+    }
+
+    #[test]
+    fn a_stuck_lock_holder_makes_append_and_drain_give_up_in_time_not_hang() {
+        // review finding 13: flock(LOCK_EX) without a deadline hung behind a stuck holder, and a drain's I/O errors were silent
+        let d = TempDir::new("stuck");
+        let p = d.0.join("spool.log");
+        append(&p, &rec(0, "s")).unwrap();
+        let held = lock(&p).unwrap();
+        let t = std::time::Instant::now();
+        assert!(matches!(append(&p, &rec(1, "s")), Err(SpoolError::Io(_))), "the append gives up");
+        let r = drain(&p, &mut |_| Applied::Done);
+        assert_eq!(r, Drained::default(), "the drain gives up and keeps everything");
+        assert!(t.elapsed() < defaults::millis("spool.lock_wait_ms") * 4, "{:?}", t.elapsed());
+        drop(held);
+        assert_eq!(drain(&p, &mut |_| Applied::Done).applied, 1, "the record was kept for the next drain");
+    }
+
+    #[test]
+    fn the_drained_tail_replaces_the_spool_by_a_rename_never_a_cut() {
+        // review finding 14: set_len(0) then a rewrite lost every unapplied record if the process died in between; the tail
+        // is now a new file renamed over the spool (a different inode), so the old one is whole until the rename
+        use std::os::unix::fs::MetadataExt;
+        let d = TempDir::new("rename");
+        let p = d.0.join("spool.log");
+        for i in 0..3 {
+            append(&p, &rec(i, "s")).unwrap();
+        }
+        let before = std::fs::metadata(&p).unwrap().ino();
+        let mut n = 0;
+        drain(&p, &mut |_| {
+            n += 1;
+            if n == 1 { Applied::Done } else { Applied::Later }
+        });
+        assert_ne!(std::fs::metadata(&p).unwrap().ino(), before, "replaced by a rename, not truncated in place");
+        let mut rest = vec![];
+        drain(&p, &mut |r| {
+            rest.push(r.args.clone());
+            Applied::Done
+        });
+        assert_eq!(rest, vec!["m1", "m2"]);
+        let names: Vec<String> = std::fs::read_dir(&d.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().all(|n| !n.contains(defaults::text("atomic.tmp_suffix"))), "no temporary file left: {names:?}");
     }
 
     #[test]

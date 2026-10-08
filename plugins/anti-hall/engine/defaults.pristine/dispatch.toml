@@ -38,6 +38,11 @@ value = { claude = ["CLAUDE_PLUGIN_ROOT"], codex = ["PLUGIN_ROOT", "CLAUDE_PLUGI
 doc = "The shell a Node hook command runs under, with its command flag (hooks.json commands are shell-form strings)."
 value = ["/bin/sh", "-c"]
 
+[dispatch.rerun_reserve_ms]
+doc = "The least host time that must be left (the event's longest hooks.json timeout minus the time the dispatcher has used) for a spent budget to defer to the wrapper's Node rerun (dispatch.defer_exit). With less left the rerun would be killed by the host, which treats a timed-out hook as an allow, so a guard event fails closed instead."
+value = 5000
+unit = "ms"
+
 [dispatch.default_timeout_s]
 doc = "The timeout of a Node hook whose hooks.json entry has none (0 in the table): the host's own default for a command hook (600 s on Claude per docs/KB-claude-code-hooks.md; Codex's default is not verified here, so the same bound is used). Never zero: a zero timeout would kill the hook at its first poll."
 value = 600
@@ -181,6 +186,10 @@ value = 75
 min = 1
 max = 255
 
+[dispatch.msg_infra_defer]
+doc = "Printed on stderr with dispatch.defer_exit when an infrastructure fault (a hook the OS would not start, an unreadable payload or fallback map, a usage error, the event's budget spent) keeps the dispatcher from deciding: the wrapper then runs the Node hooks. Placeholders: {event}, {why}."
+value = "anti-hall: the engine could not dispatch {event} ({why}); the Node hooks decide"
+
 [dispatch.msg_fail_closed]
 doc = "Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}."
 value = "anti-hall: the engine could not run the guards for {event} ({why}). The call is blocked rather than allowed unguarded; repair the install (`doctor --repair`) or retry."
@@ -238,11 +247,11 @@ doc = "Event-log detail when a Node hook was killed by a signal or could not be 
 value = "the hook was killed by a signal or could not be waited for"
 
 [dispatch.msg_hook_spawn]
-doc = "Event-log detail when a Node hook's command could not be started."
-value = "the hook's command could not be started"
+doc = "Event-log detail when a Node hook's command could not be started (the event code is the hook id). Placeholders: {errno} (os<n>, the OS error number), {err} (its text)."
+value = "the hook's command could not be started: {errno} {err}"
 
 [dispatch.msg_why_spawn]
-doc = "Reason in dispatch.msg_fail_closed when a guard event's Node hook could not be started. Placeholder: {id}."
+doc = "Reason in dispatch.msg_infra_defer when a guard event's Node hook could not be started (EAGAIN, EMFILE, ENOMEM: the Node hooks then decide). Placeholder: {id}."
 value = "hook {id} could not be started"
 
 [dispatch.msg_why_died]
@@ -352,6 +361,7 @@ value = [
   { id = "idle-agent-sweep", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "limit-conserve-inject" },
   { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "devswarm-parent-inbox" },
+  { id = "devswarm-rt-advisory", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"", timeout = 10, check = "devswarm-rt-advisory" },
   { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "devswarm-child-turn" },
   { id = "repair-on-reload", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
   { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },
@@ -506,6 +516,7 @@ value = [
   { id = "idle-agent-sweep", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "limit-conserve-inject" },
   { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "devswarm-parent-inbox" },
+  { id = "devswarm-rt-advisory", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"", timeout = 10, check = "devswarm-rt-advisory" },
   { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "devswarm-child-turn" },
   { id = "repair-on-reload", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
   { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },

@@ -75,6 +75,9 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/script/mod.rs", "static POOL", "a thread-local slot for the worker's interpreter, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static CALL", "a thread-local slot for the request state of one script call, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static RES", "a thread-local regex cache, initialised empty (its size bound is script.regex_cache_max): state, not a tunable"),
+    ("src/deadline.rs", "static REQ", "a thread-local slot initialised empty (the request being served): state, not a tunable"),
+    ("src/deadline.rs", "static STAGED", "a thread-local list initialised empty (the state writes a request staged): state, not a tunable"),
+    ("src/telemetry/mod.rs", "static STAGE", "a thread-local slot initialised empty (what a request staged): state, not a tunable"),
     ("src/checks/mod.rs", "static ALL", "the check registry: the list of compiled-in checks is code, not configuration"),
     ("src/cli.rs", "for name in [\"kind\"", "the impact command's filter flag names: part of the command line itself"),
     ("src/cli.rs", "for name in [\"check\"", "the metrics command's flag names: part of the command line itself"),
@@ -148,6 +151,12 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/cli.rs", "schedule list", "control-verb grammar of the daemon socket (like CTL ping): a protocol word, not a message"),
     // ---- JavaScript parity: formats and error names that mirror V8, compared with Node ------------------------------
     ("src/checks/agent_scan/mod.rs", ".take(3)", "the three-letter zone abbreviation of a JavaScript Date string (a format)"),
+    (
+        "src/checks/ctxbudget/phrase.rs",
+        "const STAND_IN: u32",
+        "a Unicode plane (private use B) holding the stand-ins of UTF-16 surrogate units: an encoding fact, not a tunable",
+    ),
+    ("src/checks/ctxbudget/phrase.rs", "const SURROGATE: u32", "the first UTF-16 high-surrogate code unit: an encoding fact, not a tunable"),
     ("src/checks/ctxbudget/limit.rs", ".take(3)", "milliseconds are three digits of an ISO timestamp (a format)"),
     ("src/transcript/record.rs", ".take(3)", "milliseconds are three digits of an ISO timestamp (a format)"),
     ("src/transcript/record.rs", "b.len() < 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
