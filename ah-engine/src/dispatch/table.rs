@@ -34,7 +34,7 @@ pub struct Entry {
 }
 
 /// The table key of one host's event.
-fn key(host: &str, event: &str) -> String {
+pub(crate) fn key(host: &str, event: &str) -> String {
     format!("dispatch.hooks_{host}_{event}")
 }
 
@@ -43,25 +43,99 @@ pub fn hosts() -> Vec<&'static str> {
     defaults::raw("dispatch.root_vars").as_table().map(|t| t.iter().map(|(k, _)| *k).collect()).unwrap_or_default()
 }
 
-/// Every entry of `host`'s `event`, in table order; empty when the host does not register the event.
-pub fn entries(host: &str, event: &str) -> Vec<Entry> {
-    let k = key(host, event);
-    if !defaults::has(&k) {
-        return Vec::new();
+/// What the table holds for one host's event.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Row {
+    /// No `dispatch.hooks_<host>_<event>` key.
+    Missing,
+    /// The key holds something other than a list of entry tables, each with a string `id` and `command`.
+    Malformed,
+    /// The entries, in table order.
+    Entries(Vec<Entry>),
+}
+
+/// The entry tables of a row's value, when it is a list of tables that each name a string `id` and `command`.
+pub(crate) fn rows_of(v: &'static V) -> Option<&'static [V]> {
+    let a = v.as_array()?;
+    a.iter().all(|e| e.as_table().is_some() && e.get("id").and_then(V::as_str).is_some() && e.get("command").and_then(V::as_str).is_some()).then_some(a)
+}
+
+fn entry_of(e: &V) -> Entry {
+    Entry {
+        id: e.str_field("id").to_string(),
+        matcher: e.str_field("matcher").to_string(),
+        command: e.str_field("command").to_string(),
+        timeout_s: e.get("timeout").and_then(V::as_integer).unwrap_or(0).max(0) as u64,
+        check: Some(e.str_field("check")).filter(|c| !c.is_empty()).map(str::to_string),
+        when: e.get("when").and_then(|w| crate::hookcfg::when::When::from_v(w).ok()),
     }
-    defaults::raw(&k)
-        .as_array()
-        .unwrap_or(&[])
-        .iter()
-        .map(|e| Entry {
-            id: e.str_field("id").to_string(),
-            matcher: e.str_field("matcher").to_string(),
-            command: e.str_field("command").to_string(),
-            timeout_s: e.get("timeout").and_then(V::as_integer).unwrap_or(0).max(0) as u64,
-            check: Some(e.str_field("check")).filter(|c| !c.is_empty()).map(str::to_string),
-            when: e.get("when").and_then(|w| crate::hookcfg::when::When::from_v(w).ok()),
-        })
-        .collect()
+}
+
+/// The row of `host`'s `event`.
+pub fn row(host: &str, event: &str) -> Row {
+    let Some(e) = defaults::get(&key(host, event)) else { return Row::Missing };
+    match rows_of(&e.value) {
+        Some(a) => Row::Entries(a.iter().map(entry_of).collect()),
+        None => Row::Malformed,
+    }
+}
+
+/// Every entry of `host`'s `event`, in table order; empty when the host does not register the event (or its row is
+/// malformed: [`row`] tells the two apart, and the dispatcher defers on both unless the fallback list agrees, see [`trigger_only`]).
+pub fn entries(host: &str, event: &str) -> Vec<Entry> {
+    match row(host, event) {
+        Row::Entries(v) => v,
+        Row::Missing | Row::Malformed => Vec::new(),
+    }
+}
+
+/// What the wrapper's fallback list says about one event.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Listed {
+    /// The event row carries the list's empty word: a thin trigger with no hook of its own.
+    pub empty: bool,
+    /// The hook rows under the event row.
+    pub hooks: usize,
+}
+
+/// The events of a fallback list (`dispatch.fallback_lists`), read the way the wrapper reads it: blank and comment lines
+/// skipped, an event row starts with the event mark, a hook row is any later line with a tab.
+pub fn list_events(text: &str, event_mark: &str, comment_mark: &str, empty_word: &str) -> HashMap<String, Listed> {
+    let mut out: HashMap<String, Listed> = HashMap::new();
+    let mut cur: Option<String> = None;
+    for line in text.lines() {
+        if line.is_empty() || (!comment_mark.is_empty() && line.starts_with(comment_mark)) {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix(event_mark).filter(|_| !event_mark.is_empty()) {
+            let ev = header.split('\t').next().unwrap_or("").to_string();
+            let l = out.entry(ev.clone()).or_default();
+            l.empty |= header.ends_with(&format!("\t{empty_word}"));
+            cur = Some(ev);
+            continue;
+        }
+        if let Some(ev) = &cur
+            && line.contains('\t')
+        {
+            out.entry(ev.clone()).or_default().hooks += 1;
+        }
+    }
+    out
+}
+
+/// True when the plugin's fallback list for `host` marks `event` as a thin trigger with no hook, so the wrapper would
+/// answer it with the neutral no-op too. False when the list is missing, unreadable, names hooks for the event or does
+/// not list it: then only the Node hooks can say what the event needs.
+pub fn trigger_only(host: &str, event: &str) -> bool {
+    let Some(rel) = defaults::raw("dispatch.fallback_lists").get(host).and_then(V::as_str) else { return false };
+    let Some(text) = defaults::root().and_then(|r| std::fs::read_to_string(r.join(rel)).ok()) else { return false };
+    let l = list_events(
+        &text,
+        defaults::text("dispatch.list_event_mark"),
+        defaults::text("dispatch.list_comment_mark"),
+        defaults::text("dispatch.list_empty_word"),
+    );
+    l.get(event).is_some_and(|l| l.empty && l.hooks == 0)
 }
 
 /// Every event the table lists for `host`, in file order.

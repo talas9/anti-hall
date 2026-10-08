@@ -304,6 +304,22 @@ value = "# Generated from the dispatch table by `ah-engine gen-hooks`. Event row
 doc = "The word that marks an event row of the fallback list whose event has no table entry (a thin trigger only): the wrapper answers it with the neutral no-op."
 value = "empty"
 
+[dispatch.list_event_mark]
+doc = "The mark that starts an event row of the generated fallback list (the wrapper reads the same mark)."
+value = "@"
+
+[dispatch.list_comment_mark]
+doc = "The mark that starts a comment line of the generated fallback list."
+value = "#"
+
+[dispatch.fallback_lists]
+doc = "Per host, the wrapper's fallback list relative to the plugin root (the same files as dispatch.generated_files): a defaults load is rejected when a list runs hooks for an event the table has no row for, and the dispatcher answers an event without a row with the neutral no-op only when this list marks it as a thin trigger."
+value = { claude = "hooks/ah-fallback.list", codex = "hooks/ah-fallback.codex.list" }
+
+[dispatch.msg_no_row]
+doc = "Deferral reason when the dispatch table has no well-formed row for an event the fallback list does not mark as a thin trigger. Placeholders: {host}, {event}."
+value = "the dispatch table has no well-formed row for {host} {event}: the Node hooks decide"
+
 # ---- THE TABLE (hand-maintained, D87) ----
 # One key per host and event: dispatch.hooks_<host>_<Event>. Each value lists the hook entries in the order the dispatcher
 # combines their results in (the order the old per-hook hooks.json registered them):

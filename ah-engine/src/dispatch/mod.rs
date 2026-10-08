@@ -427,7 +427,25 @@ fn retain_both(entries: &mut Vec<table::Entry>, shadow: &mut Vec<bool>, mut keep
     shadow.retain(|_| *it.next().unwrap_or(&true));
 }
 
+/// The answer for an event without a usable table row: `None` when the row has entries; the neutral no-op when the
+/// fallback list marks the event as a thin trigger (exactly what the wrapper would answer); otherwise `dispatch.defer_exit`,
+/// so the Node hooks run. Never an allow the wrapper would not give.
+fn unlisted(host: &str, event: &str) -> Option<Outcome> {
+    match table::row(host, event) {
+        table::Row::Entries(e) if !e.is_empty() => None,
+        table::Row::Entries(_) | table::Row::Missing if table::trigger_only(host, event) => Some(Outcome { out: String::new(), code: 0, err: String::new() }),
+        _ => {
+            let why = defaults::render("dispatch.msg_no_row", &[("host", &host), ("event", &event)]);
+            log_defer(event, &why);
+            Some(Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{why}\n") })
+        }
+    }
+}
+
 fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele: &mut plan::Tele) -> Outcome {
+    if let Some(o) = unlisted(&args.host, &args.event) {
+        return o;
+    }
     let guard = guarded(&args.event);
     let parsed = complete.then(|| serde_json::from_str::<Value>(raw).ok()).flatten();
     let p = parsed.clone().unwrap_or(Value::Null);
@@ -691,10 +709,15 @@ pub fn hook_main(args: &[String]) -> i32 {
         };
         // D87: an event the table has no entry for (a thin trigger only) has nothing to run and nothing to guard, whatever its
         // payload looks like, even invalid UTF-8 or over the cap: answer the neutral no-op after letting the host finish writing
-        if table::entries(&a.host, &a.event).is_empty() {
+        // A missing or malformed row is a neutral no-op only when the wrapper's own list agrees; otherwise the Node hooks decide
+        // (a lost row must never turn into an allow where the wrapper would run hooks).
+        if let Some(o) = unlisted(&a.host, &a.event) {
             crate::discard::harmless(std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())); // keep: a closed pipe leaves nobody to tell
-            mark_done();
-            return 0;
+            crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
+            if o.code == 0 {
+                mark_done();
+            }
+            return o.code;
         }
         let max = defaults::num("client.max_stdin");
         let payload = match PayloadInput::read_stdin(max) {

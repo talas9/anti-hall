@@ -13,6 +13,7 @@
 //! call actually asks for. The cache is derived data, never configuration: delete it and the next load rebuilds it.
 use super::{Entry, V};
 use crate::bootstrap;
+use crate::dispatch::table;
 use serde_json::Value as Json;
 use std::collections::HashMap;
 use std::fmt;
@@ -25,7 +26,7 @@ use std::time::SystemTime;
 /// Why the defaults could not be loaded. `code` is stable and short; the other fields say where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DefaultsError {
-    /// Reason code (`no_root`, `io`, `parse`, `index`, `entry`, `doc`, `value`, `field`, `unsupported`, `duplicate`, `missing_key`, `hooks`).
+    /// Reason code (`no_root`, `io`, `parse`, `index`, `entry`, `doc`, `value`, `field`, `unsupported`, `duplicate`, `missing_key`, `hooks`, `dispatch`).
     pub code: &'static str,
     /// The file the problem is in (relative to the defaults directory), if any.
     pub file: String,
@@ -196,7 +197,41 @@ pub fn load(root: &Path, prev: Option<&Data>) -> Result<Data, DefaultsError> {
         }
     }
     crate::hookcfg::check_shipped(&entries).map_err(|e| DefaultsError::new("hooks", "", "", e))?;
+    check_rows(root, &entries).map_err(|e| DefaultsError::new("dispatch", "", "", e))?;
     Ok(Data { root: root.to_path_buf(), entries: Box::leak(entries.into_boxed_slice()), index, canon })
+}
+
+// ---- the dispatch table against the wrapper's fallback lists ----------------------------------------------------------
+
+/// Load-time check of the table against the plugin at `root` (the settings in `entries`, before they become active):
+/// every `dispatch.hooks_*` row is well formed, and every event a fallback list names hooks for has a non-empty row.
+/// A table that lost a row would otherwise answer the event with the neutral no-op, skipping the Node hooks the wrapper
+/// would run (a silent allow). A list that is not there is not checked (the wrapper has nothing to run either).
+fn check_rows(root: &Path, entries: &[&'static Entry]) -> Result<(), String> {
+    let get = |k: &str| -> Option<&'static V> { entries.iter().copied().find(|e| e.key == k).map(|e| &e.value) };
+    let txt = |k: &str| get(k).and_then(V::as_str).ok_or_else(|| format!("{k} is missing or not a string"));
+    let prefix = table::key("", "");
+    let prefix = prefix.trim_end_matches('_');
+    for e in entries.iter().filter(|e| e.key.starts_with(prefix)) {
+        if table::rows_of(&e.value).is_none() {
+            return Err(format!("{} must be a list of entry tables, each with a string id and command", e.key));
+        }
+    }
+    let lists = get("dispatch.fallback_lists").and_then(V::as_table).ok_or("dispatch.fallback_lists is missing or not a table")?;
+    let (mark, comment, empty) = (txt("dispatch.list_event_mark")?, txt("dispatch.list_comment_mark")?, txt("dispatch.list_empty_word")?);
+    for (host, rel) in lists {
+        let rel = rel.as_str().ok_or_else(|| format!("dispatch.fallback_lists.{host} is not a string"))?;
+        let Ok(text) = std::fs::read_to_string(root.join(rel)) else { continue };
+        let mut events: Vec<(String, table::Listed)> = table::list_events(&text, mark, comment, empty).into_iter().filter(|(_, l)| l.hooks > 0).collect();
+        events.sort_by(|a, b| a.0.cmp(&b.0));
+        for (ev, l) in events {
+            let k = table::key(host, &ev);
+            if !get(&k).and_then(|v| table::rows_of(v)).is_some_and(|a| !a.is_empty()) {
+                return Err(format!("{rel} runs {} hook(s) for {host} {ev}, but {k} has no entries", l.hooks));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---- change detection --------------------------------------------------------------------------------------------
@@ -364,5 +399,64 @@ pub fn report_unavailable(e: &DefaultsError) {
         crate::discard::harmless(crate::limits::ensure_private_dir(p.parent().unwrap_or(Path::new(".")))); // keep: the write that follows fails too and the stderr line stands
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         crate::discard::harmless(std::fs::write(p, format!("{now} {line}\n"))); // keep: the same line already went to stderr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A copy of the repository plugin's `engine/` and `hooks/` fallback lists under a fresh temporary root.
+    pub(crate) fn plugin_copy(tag: &str) -> PathBuf {
+        fn cp(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for e in std::fs::read_dir(from).unwrap().flatten() {
+                let (p, q) = (e.path(), to.join(e.file_name()));
+                if p.is_dir() {
+                    cp(&p, &q);
+                } else {
+                    std::fs::copy(&p, &q).unwrap();
+                }
+            }
+        }
+        let root = std::env::temp_dir().join(format!("ah-defaults-load-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        cp(&src.join("engine"), &root.join("engine"));
+        std::fs::create_dir_all(root.join("hooks")).unwrap();
+        for l in ["ah-fallback.list", "ah-fallback.codex.list"] {
+            std::fs::copy(src.join("hooks").join(l), root.join("hooks").join(l)).unwrap();
+        }
+        root
+    }
+
+    /// Replace the TOML table `[name]` (up to the next table header) in `file` of the copy with `with`.
+    pub(crate) fn replace_table(root: &Path, file: &str, name: &str, with: &str) {
+        let p = root.join(bootstrap::DEFAULTS_DIR).join(file);
+        let text = std::fs::read_to_string(&p).unwrap();
+        let head = format!("[{name}]\n");
+        let at = text.find(&head).unwrap_or_else(|| panic!("{name} not in {file}"));
+        let end = text[at + head.len()..].find("\n[").map_or(text.len(), |n| at + head.len() + n + 1);
+        std::fs::write(&p, format!("{}{with}{}", &text[..at], &text[end..])).unwrap();
+    }
+
+    #[test]
+    fn a_table_row_the_fallback_list_runs_hooks_for_cannot_go_missing() {
+        let root = plugin_copy("norow");
+        assert!(load(&root, None).is_ok(), "the shipped plugin loads");
+        replace_table(&root, "dispatch.toml", "dispatch.hooks_claude_Stop", "");
+        let e = load(&root, None).err().expect("a lost row the list runs hooks for is rejected");
+        assert_eq!(e.code, "dispatch", "{e}");
+        assert!(e.detail.contains("dispatch.hooks_claude_Stop"), "{e}");
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn a_wrong_type_table_row_is_rejected() {
+        let root = plugin_copy("badrow");
+        replace_table(&root, "dispatch.toml", "dispatch.hooks_claude_Stop", "[dispatch.hooks_claude_Stop]\ndoc = \"Broken.\"\nvalue = \"oops\"\n");
+        let e = load(&root, None).err().expect("a row that is not a list of entries is rejected");
+        assert_eq!(e.code, "dispatch", "{e}");
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
     }
 }
