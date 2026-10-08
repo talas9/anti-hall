@@ -45,7 +45,6 @@ pub mod stale_agent_stop_note;
 pub mod task_lifecycle_log;
 pub mod task_tracker;
 pub mod taskkit;
-pub mod tasklist_guard;
 pub mod taskstate;
 pub mod verify_first_orch;
 pub mod verify_first_prompt;
@@ -237,7 +236,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &task_lifecycle_log::TaskLifecycleLog,
         &scripted::DISPATCH_TIER,
         &scripted::TASK_GUARD,
-        &tasklist_guard::TasklistGuard,
+        &scripted::TASKLIST_GUARD,
         &devswarm_prompt::DevswarmParentInbox,
         &devswarm_prompt::DevswarmChildTurn,
         &devswarm_role::DevswarmChildRole,

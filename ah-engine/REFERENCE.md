@@ -3077,10 +3077,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.jev_instructions` | `This session is about to be nudged to track its work as tasks / refresh its p...` |  |  | The question put to Jev (a noul question). |
 | `tasklist_guard.jev_state` | `workCount={work} threshold={threshold} sawTaskActivity={saw} hasStaleInProgre...` |  |  | The session summary Jev judges; the fields are the work count, threshold, the three sub-causes and the open task count. |
 | `tasklist_guard.jev_true` | `genuinely non-trivial — multi-part, benefits from task tracking` |  |  | What a true answer means. |
-| `tasklist_guard.json_max_depth` | `1000` |  |  | Nesting limit of the JSON state files read on the block path (deeper text defers to Node). |
 | `tasklist_guard.low_priorities` | `p2, low, deferred` |  |  | Priorities (lowercase) below the actionable floor for the stalled-in-progress count. |
-| `tasklist_guard.marketplace_dir` | `.claude/plugins/marketplaces/anti-hall` |  |  | The marketplace clone under the home directory (update.js resolvePaths). |
-| `tasklist_guard.marketplace_env` | `ANTIHALL_MARKETPLACE_DIR` |  |  | Test-only override of the marketplace clone (an absolute path to an existing directory). |
 | `tasklist_guard.max_blocks` | `3` |  |  | How many blocks one session gets at most (MAX_BLOCKS); a session at the cap stops quietly. |
 | `tasklist_guard.no_task_tools_setting` | `8 entries` |  |  | The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip). |
 | `tasklist_guard.omc_fresh_ms` | `7200000` |  |  | How recent a loop state's timestamp must be for the loop to count as active. |
@@ -3099,7 +3096,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.open_ids_sep` | ` ` |  |  | Separator of the sorted open task ids that are hashed into the dedupe signal. |
 | `tasklist_guard.plan_mode_text` | `[tasklist-guard] PLAN MODE — Stop not blocked (progress-file writes are not p...` |  |  | The advisory printed instead of a decision while the session is in plan mode. |
 | `tasklist_guard.plan_mode_value` | `plan` |  |  | The permission_mode value (compared in lowercase) that marks plan mode. |
-| `tasklist_guard.plugin_json` | `.claude-plugin/plugin.json` |  |  | The plugin manifest under the plugin root (the running version). |
 | `tasklist_guard.policy_dir` | `devswarm, stop-policy` |  |  | The stop-policy state directory under the anti-hall state directory, as path segments. |
 | `tasklist_guard.policy_prompt_kind` | `prompt` |  |  | Stop-policy bucket kind of the per-prompt budget. |
 | `tasklist_guard.policy_reduced_cap` | `1` |  |  | How many reduced nags one session gets. |
@@ -3110,10 +3106,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.progress_dir` | `.anti-hall, progress` |  |  | The progress directory under the project root, as path segments. |
 | `tasklist_guard.protocol_setting` | `8 entries` |  |  | context.protocolLevel: full makes the nag form default to full when guards.tasklistNoTaskTools is not set. |
 | `tasklist_guard.reason_max` | `2000` |  |  | Longest block reason, in UTF-16 units; longer text is cut and ends with an ellipsis. |
-| `tasklist_guard.registry_file` | `installed_plugins.json` |  |  | The host's plugin registry, beside the marketplaces directory. |
-| `tasklist_guard.registry_key` | `anti-hall@anti-hall` |  |  | The registry entry of this plugin. |
-| `tasklist_guard.registry_max_bytes` | `4194304` |  |  | Largest registry file read (readJsonBounded). |
-| `tasklist_guard.registry_scopes` | `user, project` |  |  | Registry entry scopes, in order of preference. |
 | `tasklist_guard.resume_marker_prefix` | `handover-resume-state-` |  |  | Prefix of the per-session marker the handover resume writes (`<prefix><session>.json` under the anti-hall state directory). |
 | `tasklist_guard.resume_nudged_prefix` | `resume-verify-nudged-` |  |  | Prefix of the per-session file that records the one resume-verification nudge. |
 | `tasklist_guard.resume_text` | `A session handover was resumed this session ({file}) but no `resume-verified:...` |  |  | The resume-verification nudge; `{file}` is the handover file. |

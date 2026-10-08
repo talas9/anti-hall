@@ -850,11 +850,6 @@ min = 1
 doc = "The header a new progress file gets; {session} is the raw session id (or the unknown-session id), {started} the session start."
 value = "<!-- session: {session} | started: {started} -->"
 
-[tasklist_guard.json_max_depth]
-doc = "Nesting limit of the JSON state files read on the block path (deeper text defers to Node)."
-value = 1000
-min = 1
-
 [tasklist_guard.what_reset]
 doc = "Block headline when the task store was reset (a session restore)."
 value = "the task store was reset (session restore)."
@@ -1039,35 +1034,6 @@ value = "TaskCreate"
 [tasklist_guard.version_setting]
 doc = "guards.stopHookVersionDowngrade: skip the block while the host registered a newer anti-hall than the running one."
 value = { section = "guards", key = "stopHookVersionDowngrade", env = "ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE", aliases = [], option = "", default = true }
-
-[tasklist_guard.marketplace_dir]
-doc = "The marketplace clone under the home directory (update.js resolvePaths)."
-value = ".claude/plugins/marketplaces/anti-hall"
-
-[tasklist_guard.marketplace_env]
-doc = "Test-only override of the marketplace clone (an absolute path to an existing directory)."
-value = "ANTIHALL_MARKETPLACE_DIR"
-
-[tasklist_guard.registry_file]
-doc = "The host's plugin registry, beside the marketplaces directory."
-value = "installed_plugins.json"
-
-[tasklist_guard.registry_key]
-doc = "The registry entry of this plugin."
-value = "anti-hall@anti-hall"
-
-[tasklist_guard.registry_scopes]
-doc = "Registry entry scopes, in order of preference."
-value = ["user", "project"]
-
-[tasklist_guard.registry_max_bytes]
-doc = "Largest registry file read (readJsonBounded)."
-value = 4194304
-min = 1
-
-[tasklist_guard.plugin_json]
-doc = "The plugin manifest under the plugin root (the running version)."
-value = ".claude-plugin/plugin.json"
 
 [tasklist_guard.ack_setting]
 doc = "guards.stopAck: honor a per-signature acknowledgement of this block for the rest of the session."
