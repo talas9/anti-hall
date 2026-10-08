@@ -1614,8 +1614,8 @@ doc = "The settings files, relative to the home directory, in which a trace of t
 value = [".anti-hall/settings.json", ".claude/settings.json"]
 
 [mesh_write.verify_tick_node_snippet]
-doc = "The Node program of the tick verifier: runs the real devswarm.js `run()` with the engine's clock and prints the line `inbox tick --quiet` would print. Arguments: the CLI path, the clock, then the verb's argv."
-value = "const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Number(process.argv[2]),instanceNonce:process.env.AH_ENGINE_VERIFY_NONCE||undefined});process.stdout.write(c.inboxTickQuietLine(r.result)+'\\n');"
+doc = "The Node program of the tick verifier: runs the real devswarm.js `run()` with the engine's clock and prints what `main()` prints for the tick (the line under `--quiet` without `--json`, else the JSON). Arguments: the CLI path, the clock, then the verb's argv."
+value = "const c=require(process.argv[1]);const a=process.argv.slice(3);const r=c.run(a,{now:Number(process.argv[2]),instanceNonce:process.env.AH_ENGINE_VERIFY_NONCE||undefined});const q=a.includes('--quiet')&&!a.includes('--json');process.stdout.write((q?c.inboxTickQuietLine(r.result):JSON.stringify(r.result))+'\\n');"
 
 [mesh_write.verify_tick_copy_dirs]
 doc = "Directories of the DevSwarm root copied into the scratch home before the engine writes for a tick (what Node reads or writes for it)."
@@ -1746,3 +1746,11 @@ value = ["workspaces", "heartbeats", "liveness", "cursors", "archived", "cache",
 [mesh_write.verify_names_read_primary]
 doc = "The names under which a read-primary verification mismatch reports whether the receipt file is equal."
 value = ["sameReceipt"]
+
+[mesh_write.known_warning]
+doc = "The stderr line `emitKnownWarning` prints for an inbox result that reports `known: false`: `{label}` is `inbox <subverb> <JSON-quoted id>`, `{reasons}` the reason list."
+value = "⚠️ anti-hall · devswarm: {label} reported known:false ({reasons}) — totals may be incomplete or stale"
+
+[mesh_write.known_unknown]
+doc = "The reason `emitKnownWarning` names when the result carries no more specific one."
+value = "unknown"
