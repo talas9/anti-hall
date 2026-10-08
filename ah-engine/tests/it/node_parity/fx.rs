@@ -261,10 +261,23 @@ pub(crate) fn run_fx(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
     let dids: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let mask = |s: &str| o.mask_out.map_or_else(|| s.to_string(), |f| f(s));
     let base_path = std::env::var("PATH").unwrap_or_default();
+    // The hooks' temp root is a directory of its own, never an ancestor of the worlds (which live under /tmp for a short socket
+    // path): with TMPDIR unset it is /tmp, a relative path in a world would then be "under the temp root" and the engine
+    // defers it to Node on purpose. A developer's shell always has TMPDIR set, a CI runner does not.
+    let hook_tmp = tmp.join("hook-tmp");
+    std::fs::create_dir_all(&hook_tmp).expect("hook tmp");
+    let hook_tmp = hook_tmp.to_string_lossy().to_string();
     let base_env = |home: &str, extra: &Env| {
         env_merge(
             &env_merge(
-                &env_of(&[("PATH", &base_path), ("HOME", home), ("USERPROFILE", home), ("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_INGEST_DRY_RUN", "1")]),
+                &env_of(&[
+                    ("PATH", &base_path),
+                    ("HOME", home),
+                    ("USERPROFILE", home),
+                    ("ANTIHALL_TEST_ISOLATION", "1"),
+                    ("ANTIHALL_INGEST_DRY_RUN", "1"),
+                    ("TMPDIR", &hook_tmp),
+                ]),
                 &o.extra_env,
             ),
             extra,

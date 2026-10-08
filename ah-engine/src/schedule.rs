@@ -697,7 +697,7 @@ mod tests {
     fn shipped_jobs_parse_and_overrides_apply() {
         let d = crate::db::TempDir::new("sched-src");
         let p = d.0.join("schedules.json");
-        std::fs::write(&p, r#"{"jobs": {"maintain": {"every_ms": 5000}, "probe": {"kind": "engine", "action": "noop", "every_ms": 100, "persist": true}, "evil": {"kind": "engine", "action": "rm -rf /", "every_ms": 1}, "backup": {"every_ms": 0}}}"#).unwrap();
+        std::fs::write(&p, r#"{"jobs": {"maintain": {"every_ms": 5000}, "probe": {"kind": "engine", "action": "noop", "every_ms": 100, "timeout_ms": 2000, "persist": true}, "evil": {"kind": "engine", "action": "rm -rf /", "every_ms": 1}, "backup": {"every_ms": 0}}}"#).unwrap();
         let jobs = FileSource { override_path: p, test_hooks: false }.jobs();
         let get = |n: &str| jobs.iter().find(|j| j.name == n).cloned();
         assert_eq!(get("maintain").unwrap().every_ms, 5000, "an override changes a shipped job");
@@ -736,7 +736,7 @@ mod tests {
     fn a_skipped_window_does_not_make_a_short_job_sleep_through_the_next() {
         let d = crate::db::TempDir::new("sched-skip");
         let p = d.0.join("schedules.json");
-        std::fs::write(&p, r#"{"jobs": {"spool_drain": {"every_ms": 0}, "metrics_snapshot": {"every_ms": 0}, "probe": {"kind": "engine", "action": "noop", "every_ms": 200, "catch_up": "skip", "persist": false}}}"#).unwrap();
+        std::fs::write(&p, r#"{"jobs": {"spool_drain": {"every_ms": 0}, "metrics_snapshot": {"every_ms": 0}, "probe": {"kind": "engine", "action": "noop", "every_ms": 200, "timeout_ms": 2000, "catch_up": "skip", "persist": false}}}"#).unwrap();
         let src = FileSource { override_path: p, test_hooks: false };
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let r = runs.clone();

@@ -162,7 +162,7 @@ fn a_hung_job_is_killed_at_its_timeout_and_the_next_run_still_happens() {
 
 #[test]
 fn the_schedule_command_lists_runs_and_shows_history() {
-    let mut e = Env::new("cli", r#"{"jobs": {"probe": {"kind": "engine", "action": "noop", "every_ms": 3600000, "persist": true}}}"#);
+    let mut e = Env::new("cli", r#"{"jobs": {"probe": {"kind": "engine", "action": "noop", "every_ms": 3600000, "timeout_ms": 2000, "persist": true}}}"#);
     e.start();
     let l = e.json(&["schedule", "list", "--json"]);
     let names: Vec<&str> = l["jobs"].as_array().unwrap().iter().map(|j| j["name"].as_str().unwrap()).collect();

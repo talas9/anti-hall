@@ -177,7 +177,7 @@ fn a_long_mixed_run_stays_under_the_default_cap_and_flat_with_zero_restarts() {
     }
     let at_warm = at_warm.expect("a warm-up sample");
     let last = samples.last().expect("a final sample");
-    let cap = last["rss_cap_kb"].as_u64().unwrap();
+    let cap = last["rss_cap_kb"].as_u64().unwrap_or_else(|| panic!("the final status has no rss_cap_kb (daemon gone?): {last}"));
     assert!(cap > 0, "the run must use the shipped default cap, not a lifted one");
     assert_eq!(last["restarts"].as_u64(), Some(0), "the daemon restarted during the run: {}", last["health"]);
     assert_eq!(last["health"]["restarts"]["total"].as_u64(), Some(0), "self-restarts in the event log: {}", last["health"]);
