@@ -318,3 +318,15 @@ fn a_finished_commands_output_survives_a_pipe_that_closes_after_the_read_grace()
     let got = super::util::run_capture("/bin/sh", &["-c".to_string(), script], None, &HashMap::new(), &HashMap::new(), read * 20);
     assert_eq!(got.as_deref(), Some("out"), "after {:?}", t.elapsed());
 }
+
+#[test]
+fn the_file_write_tip_reads_white_space_like_javascript() {
+    let tip = "Write the file with the Write or Edit tool";
+    let fp = format!("git {P} {F} origin main");
+    // U+FEFF is white space to JavaScript's \s (a heredoc operator and a redirect are seen), U+0085 is not
+    assert!(blocked(&format!("cat > n.md <<\u{feff}EOF\nx\nEOF\n{fp}")).contains(tip));
+    assert!(blocked(&format!("cat\u{feff}>\u{feff}f.md <<EOF\nx\nEOF\n{fp}")).contains(tip));
+    assert!(!blocked(&format!("cat\u{85}> f.md <<'EOF'\nx\nEOF\n{fp}")).contains(tip));
+    assert!(!blocked(&format!("cat <<\u{85}EOF > a.md\nx\nEOF\n{fp}")).contains(tip));
+    assert!(blocked(&format!("echo\u{a0}hi >\u{2029}f.md; {fp}")).contains(tip));
+}

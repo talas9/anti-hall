@@ -5,12 +5,12 @@
 //! the Node hook shares). An allowed spawn is recorded, a blocked one is not (a blocked retry must never extend the
 //! window) but is noted in the trip log, which the decision never reads.
 //!
-//! What it does not decide: the optional shared-tree advisory that Node adds to an allowed spawn (a write-capable
-//! agent started while another write-capable agent runs in the same working tree) needs the running-agent scan of the
-//! session transcript, which is not ported. When the advisory could be due, the check defers BEFORE it records the
-//! spawn, so the Node hook counts it exactly once and decides the advisory; when it cannot be due (the advisory
-//! switched off, a read-only agent type, an isolated spawn, no transcript) the check records the spawn itself. A block
-//! never defers: the advisory only ever rides an allowed spawn.
+//! The optional shared-tree advisory that Node adds to an allowed spawn (a write-capable agent started while another
+//! write-capable agent runs in the same working tree) is decided here too, from the running-agent scan of the session
+//! transcript (`checks::agent_scan`) and the repo's CLAUDE.md / AGENTS.md no-worktrees rule. When a part of that cannot
+//! be reproduced exactly (a transcript line JavaScript reads differently, a relative path, an unusual `.git` layout), the
+//! check defers BEFORE it records the spawn, so the Node hook counts it exactly once and decides. A block never defers:
+//! the advisory only ever rides an allowed spawn.
 //!
 //! Same as Node: any trouble taking the lock, reading the memory figures or writing the log allows the spawn.
 //!
@@ -22,11 +22,13 @@
 
 pub mod mem;
 
+use crate::checks::agent_scan;
 use crate::checks::git::util::Settings;
+use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::guardkit::nodelock::{self, Params};
 use crate::checks::guardkit::paths;
-use crate::checks::guardkit::settings::{enabled, is_skipped, plugin_root};
+use crate::checks::guardkit::settings::{Undecidable, enabled, is_skipped, plugin_root};
 use crate::checks::guardkit::text::{js_string_of, js_trim};
 use crate::checks::{Check, Exact, Verdict};
 use crate::defaults;
@@ -105,17 +107,103 @@ fn isolated(inp: &Value) -> bool {
     defaults::list("swarm_guard.isolation_values").contains(&v.as_str())
 }
 
-/// True when the shared-tree advisory is certainly empty for this payload: decided without the transcript scan.
-/// False means it could be due (the scan decides), so the caller defers.
-fn note_certainly_silent(p: &Value, st: &Settings, root: &str) -> Result<bool, crate::checks::guardkit::settings::Undecidable> {
+/// `String(v || '')` for a spawn input field.
+fn text_field(inp: &Value, name: &str) -> String {
+    inp.get(name).filter(|v| truthy(v)).map(|v| js_to_string(v, true)).unwrap_or_default()
+}
+
+/// `inScratch(spawnInput)`: the prompt establishes a scratch working location outside the session's git tree, with no
+/// negation and no in-place statement.
+fn in_scratch(inp: &Value) -> bool {
+    static SCRATCH: defaults::Cache<regex::Regex> = defaults::Cache::new();
+    static NEGATED: defaults::Cache<regex::Regex> = defaults::Cache::new();
+    static IN_PLACE: defaults::Cache<regex::Regex> = defaults::Cache::new();
+    let scratch = SCRATCH.get_or_init(|| {
+        let path = defaults::text("swarm_guard.scratch_path");
+        let alts: Vec<String> = defaults::list("swarm_guard.scratch_alternatives").iter().map(|a| a.replace("{path}", path)).collect();
+        jsre::compile(&alts.join("|"), true)
+    });
+    let negated = NEGATED.get_or_init(|| jsre::compile(defaults::text("swarm_guard.re_scratch_negated"), true));
+    let in_place = IN_PLACE.get_or_init(|| jsre::compile(defaults::text("swarm_guard.re_in_place"), true));
+    let t = format!("{}\n{}", text_field(inp, "prompt"), text_field(inp, "description"));
+    scratch.is_match(&t) && !negated.is_match(&t) && !in_place.is_match(&t)
+}
+
+/// True when this spawn input shares the session's working tree: write-capable, not isolated, not in a scratch location.
+fn shares_tree(inp: &Value) -> bool {
+    write_capable(inp) && !isolated(inp) && !in_scratch(inp)
+}
+
+/// `repoDocsMatch(dir0, home, re)`: true when a CLAUDE.md / AGENTS.md between `dir0` and the repo root matches `re`.
+fn repo_docs_match(dir0: &str, re: &regex::Regex, env: &RequestEnv) -> Result<bool, Undecidable> {
+    let ctx = crate::checks::jsport::ident::resolve_context(dir0, true, env);
+    if ctx.unsure {
+        return Err(Undecidable);
+    }
+    // a directory that is not already in normal form is walked by `path.join` / `path.dirname` in ways this port does not repeat
+    if dir0.split('/').skip(1).any(|seg| seg.is_empty() || seg == "." || seg == "..") && dir0 != "/" {
+        return Err(Undecidable);
+    }
+    let root = ctx.worktree_root;
+    let mut dir = dir0.to_string();
+    for _ in 0..defaults::num("swarm_guard.repo_docs_levels") as usize {
+        for f in defaults::list("swarm_guard.repo_docs") {
+            if let Ok(bytes) = std::fs::read(paths::join(&dir, f))
+                && re.is_match(&String::from_utf8_lossy(&bytes))
+            {
+                return Ok(true);
+            }
+        }
+        if root.as_deref() == Some(dir.as_str()) {
+            break;
+        }
+        let up = crate::checks::git::util::posix_dirname(&dir);
+        if up == dir {
+            break;
+        }
+        dir = up;
+    }
+    Ok(false)
+}
+
+/// `sharedTreeNote(payload)`: the advisory text for an allowed spawn, `None` when it is silent, `Err` when the answer needs
+/// something this port cannot reproduce exactly (the caller defers). Every "unknown" of Node is silent here too.
+fn shared_tree_note(p: &Value, st: &Settings, root: &str, env: &RequestEnv, now: u64) -> Result<Option<String>, Undecidable> {
     if !enabled(st, defaults::raw("swarm_guard.shared_tree_setting"), root)? {
-        return Ok(true);
+        return Ok(None);
     }
-    let Some(inp) = p.get("tool_input").filter(|v| v.is_object() || v.is_array()) else { return Ok(true) };
-    if !write_capable(inp) || isolated(inp) {
-        return Ok(true);
+    let Some(inp) = p.get("tool_input").filter(|v| v.is_object() || v.is_array()) else { return Ok(None) };
+    if !shares_tree(inp) {
+        return Ok(None);
     }
-    Ok(!p.get("transcript_path").and_then(Value::as_str).is_some_and(|s| !s.is_empty()))
+    let Some(tp) = p.get("transcript_path").and_then(Value::as_str).filter(|s| !s.is_empty()) else { return Ok(None) };
+    let opts = agent_scan::Opts { now_ms: now as f64, ignore_unanswered_stops: false };
+    let Some(scan) = agent_scan::scan_transcript(tp, defaults::num("agent_scan.tail_bytes"), &opts).map_err(|_| Undecidable)? else {
+        return Ok(None);
+    };
+    // Another agent counts only when its own spawn input is known, write-capable and not isolated.
+    if !scan.rows().iter().any(|r| r.rec.spawn_input.as_ref().is_some_and(shares_tree)) {
+        return Ok(None);
+    }
+    // `String(payload.cwd || process.cwd())`: the daemon cannot know the hook process's directory
+    let cwd = match p.get("cwd").filter(|v| truthy(v)) {
+        Some(v) => js_to_string(v, true),
+        None => return Err(Undecidable),
+    };
+    static NO_WT: defaults::Cache<regex::Regex> = defaults::Cache::new();
+    let re = NO_WT.get_or_init(|| jsre::compile(defaults::text("swarm_guard.re_no_worktrees"), true));
+    let no_wt = repo_docs_match(&cwd, re, env)?;
+    let instead = defaults::text(if no_wt { "swarm_guard.msg_shared_instead_no_worktrees" } else { "swarm_guard.msg_shared_instead" });
+    Ok(Some(msg::message(
+        Kind::Warn,
+        defaults::text("swarm_guard.shared_tree_label"),
+        &Parts {
+            what: defaults::text("swarm_guard.msg_shared_what"),
+            why: defaults::text("swarm_guard.msg_shared_why"),
+            instead,
+            ..Parts::default()
+        },
+    )))
 }
 
 /// `describeSpawn(payload)`: `tool` or `tool:agent type`, for the trip log only.
@@ -192,7 +280,7 @@ fn log_trip(dir: &str, count: usize, label: &str, now: u64) {
 /// The check's decision on one payload. `None`: nothing to say (the spawn is allowed).
 ///
 /// Mirrors `hooks/swarm-guard.js` `main`.
-pub fn decide(p: &Value, st: &Settings, root: &str, memory: &dyn MemSource, now: u64) -> Option<Verdict> {
+pub fn decide(p: &Value, st: &Settings, root: &str, env: &RequestEnv, memory: &dyn MemSource, now: u64) -> Option<Verdict> {
     if st.env.get(defaults::env_name("home")).is_none_or(|h| !paths::is_absolute(h)) {
         return Some(Verdict::Defer);
     }
@@ -217,8 +305,10 @@ pub fn decide(p: &Value, st: &Settings, root: &str, memory: &dyn MemSource, now:
         return Some(block(&defaults::render("swarm_guard.msg_mem", &[("avail", &mb(avail)), ("total", &mb(total))])));
     }
 
-    let note_silent = match note_certainly_silent(p, st, root) {
-        Ok(b) => b,
+    // Decided before the spawn is recorded: a deferral then leaves the count to the Node hook. A scan wasted on a blocked
+    // spawn is the price of not holding the lock through a transcript read.
+    let note = match shared_tree_note(p, st, root, env, now) {
+        Ok(n) => n,
         Err(_) => return Some(Verdict::Defer),
     };
 
@@ -244,7 +334,7 @@ pub fn decide(p: &Value, st: &Settings, root: &str, memory: &dyn MemSource, now:
             },
         );
         Some((block(&reason), recent.len()))
-    } else if !note_silent || recent.iter().any(|t| *t > defaults::num("swarm_guard.exact_int_limit") as f64) {
+    } else if recent.iter().any(|t| *t > defaults::num("swarm_guard.exact_int_limit") as f64) {
         lock.release();
         return Some(Verdict::Defer);
     } else {
@@ -255,7 +345,10 @@ pub fn decide(p: &Value, st: &Settings, root: &str, memory: &dyn MemSource, now:
         None
     };
     lock.release();
-    let (v, count) = verdict?;
+    let Some((v, count)) = verdict else {
+        // an allowed spawn: the advisory (never a block) rides it
+        return note.map(|n| Verdict::Advisory(msg::advisory_json("PreToolUse", &n)));
+    };
     log_trip(&dir, count, &label, now);
     Some(v)
 }
@@ -280,6 +373,6 @@ impl Check for SwarmGuard {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         // a check that decided "nothing to say" answers `Allow`, never `None`: in the dispatcher `None` hands the call to the Node hook, which
         // would record the same spawn a second time
-        decide(payload, &Settings::from_env(env), &plugin_root(opts, env), &HostMem, now).or(Some(Verdict::Allow))
+        decide(payload, &Settings::from_env(env), &plugin_root(opts, env), env, &HostMem, now).or(Some(Verdict::Allow))
     }
 }

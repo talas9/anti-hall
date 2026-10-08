@@ -150,7 +150,7 @@ fn run_node(hook: &str, home: &Path, case: &Case) -> (i32, Vec<u8>, Vec<u8>) {
     let mut c = Command::new("node");
     c.arg(repo().join("plugins/anti-hall/hooks").join(hook));
     base_env(&mut c, home, case);
-    run(c, &case.input)
+    run(c, &case.input.replace("{HOME}", &home.to_string_lossy()))
 }
 
 fn run_engine(check: &str, home: &Path, case: &Case) -> (i32, Vec<u8>, Vec<u8>) {
@@ -158,7 +158,7 @@ fn run_engine(check: &str, home: &Path, case: &Case) -> (i32, Vec<u8>, Vec<u8>) 
     c.arg("check").arg(check);
     base_env(&mut c, home, case);
     c.env("AH_ENGINE_DIR", home.join("engine-state")).env("AH_ENGINE_PLUGIN_ROOT", repo().join("plugins/anti-hall"));
-    run(c, &case.input)
+    run(c, &case.input.replace("{HOME}", &home.to_string_lossy()))
 }
 
 fn walk(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) {
@@ -428,7 +428,7 @@ fn comms_cases() -> Vec<Case> {
 #[test]
 fn devswarm_comms_guard_matches_node() {
     let rows = comms_cases();
-    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("devswarm-comms-guard.js", "devswarm-comms-guard", rows);
     assert!(same >= 30 && deferred >= 1);
 }
@@ -445,6 +445,137 @@ fn spawn_payload(tool: &str, input: Value, transcript: Option<&str>) -> Value {
 
 fn log_of(ages_ms: &[u64]) -> String {
     ages_ms.iter().map(|a| format!("{{NOW-{a}}}\n")).collect()
+}
+
+/// A transcript whose tail launched one background agent from `input` (still running unless `finished`).
+fn launch_transcript(input: Value, finished: bool) -> String {
+    launches_transcript(&[("toolu_1", "a1b2c3d4e5f60718", input)], finished)
+}
+
+fn launches_transcript(agents: &[(&str, &str, Value)], finished: bool) -> String {
+    let mut out = String::new();
+    for (tu, id, input) in agents {
+        let call = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":tu,"name":"Agent","input":input}]}});
+        let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":tu,
+            "content":format!("Async agent launched successfully.\nagentId: {id} (internal ID - do not mention to user)\noutput_file: /tmp/ah-none/{id}.output")}]}});
+        out.push_str(&format!("{call}\n{result}\n"));
+        if finished {
+            let note = json!({"type":"user","message":{"role":"user","content":format!("<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n</task-notification>")}});
+            out.push_str(&format!("{note}\n"));
+        }
+    }
+    out
+}
+
+/// The shared-tree advisory: spawns beside a running writer, the silent shapes, the repo rule that drops the isolation hint,
+/// and the shapes the engine hands to Node.
+fn shared_tree_cases() -> Vec<Case> {
+    let ex = Expect::Same;
+    let general = || json!({"subagent_type":"general-purpose","prompt":"do it"});
+    let t = ".anti-hall/t.jsonl";
+    let tp = "{HOME}/.anti-hall/t.jsonl";
+    let at = |tool: &str, input: Value| {
+        let mut p = spawn_payload(tool, input, Some(tp));
+        p["cwd"] = json!("{HOME}");
+        p
+    };
+    let busy = || launch_transcript(general(), false);
+    let mut out = vec![
+        Case::json("adv-writer-beside-writer", at("Agent", general()), ex).file(t, &busy()),
+        Case::json("adv-task-tool", at("Task", general()), ex).file(t, &busy()),
+        Case::json("adv-no-type-spawn", at("Agent", json!({"prompt":"x"})), ex).file(t, &busy()),
+        Case::json("adv-other-agent-has-no-type", at("Agent", general()), ex).file(t, &launch_transcript(json!({"prompt":"x"}), false)),
+        Case::json("adv-claude-md-forbids-worktrees", at("Agent", general()), ex).file(t, &busy()).file("CLAUDE.md", "Rules\n- No worktrees in this repo.\n"),
+        Case::json("adv-agents-md-forbids-git-worktree", at("Agent", general()), ex).file(t, &busy()).file("AGENTS.md", "never: NO GIT WORKTREE use\n"),
+        Case::json("adv-claude-md-unrelated", at("Agent", general()), ex).file(t, &busy()).file("CLAUDE.md", "Use worktrees for features.\n"),
+        Case::json("adv-claude-md-is-a-directory", at("Agent", general()), ex).file(t, &busy()).file("CLAUDE.md/keep", "x"),
+        Case::json("adv-rule-in-a-parent-directory", {
+            let mut p = at("Agent", general());
+            p["cwd"] = json!("{HOME}/sub/deeper");
+            p
+        }, ex)
+        .file(t, &busy())
+        .file("sub/deeper/keep", "x")
+        .file("CLAUDE.md", "no worktrees\n"),
+        Case::json("adv-rule-stops-at-the-repo-root", {
+            let mut p = at("Agent", general());
+            p["cwd"] = json!("{HOME}/repo/sub");
+            p
+        }, ex)
+        .file(t, &busy())
+        .file("repo/.git/HEAD", "ref: refs/heads/main\n")
+        .file("repo/sub/keep", "x")
+        .file("CLAUDE.md", "no worktrees\n"),
+        Case::json("adv-rule-inside-the-repo", {
+            let mut p = at("Agent", general());
+            p["cwd"] = json!("{HOME}/repo/sub");
+            p
+        }, ex)
+        .file(t, &busy())
+        .file("repo/.git/HEAD", "ref: refs/heads/main\n")
+        .file("repo/sub/keep", "x")
+        .file("repo/AGENTS.md", "no worktrees\n"),
+        Case::json("adv-cwd-is-missing-on-disk", {
+            let mut p = at("Agent", general());
+            p["cwd"] = json!("{HOME}/not/there");
+            p
+        }, ex)
+        .file(t, &busy())
+        .file("CLAUDE.md", "no worktrees\n"),
+        Case::json("adv-scratch-statement-with-in-repo-is-not-scratch", at("Agent", json!({"prompt":"work in a scratch clone under /tmp/x, in the repo"})), ex).file(t, &busy()),
+        Case::json("adv-negated-scratch-is-not-scratch", at("Agent", json!({"prompt":"not in scratch /tmp/x"})), ex).file(t, &busy()),
+        Case::json("adv-bare-scratch-mention-is-not-scratch", at("Agent", json!({"prompt":"use a scratch directory for notes"})), ex).file(t, &busy()),
+        Case::json("adv-scratch-in-description-only", at("Agent", json!({"description":"work in a scratch clone","prompt":"x"})), ex).file(t, &busy()),
+        Case::json("adv-prompt-is-a-number", at("Agent", json!({"prompt":5})), ex).file(t, &busy()),
+        Case::json("adv-two-agents-one-isolated", at("Agent", general()), ex).file(
+            t,
+            &launches_transcript(&[("toolu_1", "a1b2c3d4e5f60718", json!({"isolation":"worktree"})), ("toolu_2", "b1b2c3d4e5f60718", general())], false),
+        ),
+        Case::json("quiet-spawn-is-read-only", at("Agent", json!({"subagent_type":"Explore"})), ex).file(t, &busy()),
+        Case::json("quiet-spawn-is-isolated", at("Agent", json!({"isolation":"worktree"})), ex).file(t, &busy()),
+        Case::json("quiet-spawn-in-scratch", at("Agent", json!({"prompt":"work in a scratch clone under /tmp/x"})), ex).file(t, &busy()),
+        Case::json("quiet-spawn-cd-to-private-tmp", at("Agent", json!({"prompt":"cd /private/tmp/ws and edit"})), ex).file(t, &busy()),
+        Case::json("quiet-spawn-scratchpad-path", at("Agent", json!({"prompt":"cwd: /Users/x/scratchpad/y"})), ex).file(t, &busy()),
+        Case::json("quiet-other-agent-read-only", at("Agent", general()), ex).file(t, &launch_transcript(json!({"subagent_type":"Explore"}), false)),
+        Case::json("quiet-other-agent-isolated", at("Agent", general()), ex).file(t, &launch_transcript(json!({"isolation":"remote"}), false)),
+        Case::json("quiet-other-agent-in-scratch", at("Agent", general()), ex).file(t, &launch_transcript(json!({"prompt":"work in a scratch clone under /tmp/x"}), false)),
+        Case::json("quiet-other-agent-finished", at("Agent", general()), ex).file(t, &launch_transcript(general(), true)),
+        Case::json("quiet-no-agent-in-transcript", at("Agent", general()), ex).file(t, "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n"),
+        Case::json("quiet-empty-transcript", at("Agent", general()), ex).file(t, ""),
+        Case::json("quiet-transcript-garbage", at("Agent", general()), ex).file(t, "{nope\n\u{1}\n"),
+        Case::json("quiet-transcript-missing", at("Agent", general()), ex),
+        Case::json("quiet-switch-off-with-a-writer", at("Agent", general()), ex).file(t, &busy()).file(".anti-hall/settings.json", r#"{"guards":{"sharedTreeAgentNote":false}}"#),
+        Case::json("quiet-env-off-with-a-writer", at("Agent", general()), ex).file(t, &busy()).env("ANTIHALL_SHARED_TREE_AGENT_NOTE", "0"),
+        Case::json("quiet-guard-skipped", at("Agent", general()), ex).file(t, &busy()).file(".anti-hall/skip.json", r#"{"swarm-guard":99999999999999}"#),
+        Case::json("quiet-tool-input-array", at("Agent", json!(["x"])), ex).file(t, &busy()),
+        Case::json("at-cap-the-block-wins-over-the-advisory", at("Agent", general()), ex)
+            .file(t, &busy())
+            .file(".anti-hall/swarm-spawns.log", &log_of(&(0..20).map(|i| 1000 + i * 100).collect::<Vec<u64>>())),
+        // the engine hands these to Node, which then records the spawn once
+        Case::json("defer-no-cwd-for-node-to-use-its-own", {
+            let mut p = at("Agent", general());
+            p.as_object_mut().unwrap().remove("cwd");
+            p
+        }, Expect::Defer)
+        .file(t, &busy()),
+        Case::json("defer-relative-transcript-path", {
+            let mut p = at("Agent", general());
+            p["transcript_path"] = json!(".anti-hall/t.jsonl");
+            p
+        }, Expect::Defer)
+        .file(t, &busy()),
+        Case::json("defer-cwd-not-in-normal-form", {
+            let mut p = at("Agent", general());
+            p["cwd"] = json!("{HOME}/sub/../sub2");
+            p
+        }, Expect::Defer)
+        .file(t, &busy()),
+        Case::json("adv-transcript-line-with-a-lone-surrogate-escape", at("Agent", general()), ex)
+            .file(t, &format!("{}{{\"type\":\"user\",\"message\":{{\"content\":\"\\ud800\"}}}}\n", busy())),
+    ];
+    // the Task tool runs the same rows
+    out.push(Case::json("adv-task-beside-task-launch", at("Task", general()), ex).file(t, &busy()));
+    out
 }
 
 fn swarm_cases() -> Vec<Case> {
@@ -512,21 +643,21 @@ fn swarm_cases() -> Vec<Case> {
             .file(".anti-hall/swarm-spawns.lock.reclaim", &fresh_lock(100)),
         Case::json("lock-without-ts-record", spawn_payload("Agent", explore(), None), ex).file(lock, r#"{"pid":1,"token":"x"}"#),
         // the advisory (needs the transcript scan, so the engine defers whenever it could be due)
-        Case::json("general-with-transcript-defers", spawn_payload("Agent", general(), Some("/t.jsonl")), Expect::Defer),
-        Case::json("task-general-with-transcript-defers", spawn_payload("Task", general(), Some("/t.jsonl")), Expect::Defer),
-        Case::json("no-type-with-transcript-defers", spawn_payload("Agent", json!({"prompt":"x"}), Some("/t.jsonl")), Expect::Defer),
-        Case::json("input-array-with-transcript-defers", spawn_payload("Agent", json!(["x"]), Some("/t.jsonl")), Expect::Defer),
-        Case::json("tools-with-edit-defers", spawn_payload("Agent", json!({"tools":["Read","Edit"]}), Some("/t.jsonl")), Expect::Defer),
-        Case::json("nested-tools-defers", spawn_payload("Agent", json!({"tools":[["Edit"]]}), Some("/t.jsonl")), Expect::Defer),
+        Case::json("general-with-transcript-missing-transcript-silent", spawn_payload("Agent", general(), Some("/t.jsonl")), ex),
+        Case::json("task-general-with-transcript-missing-transcript-silent", spawn_payload("Task", general(), Some("/t.jsonl")), ex),
+        Case::json("no-type-with-transcript-missing-transcript-silent", spawn_payload("Agent", json!({"prompt":"x"}), Some("/t.jsonl")), ex),
+        Case::json("input-array-with-transcript-missing-transcript-silent", spawn_payload("Agent", json!(["x"]), Some("/t.jsonl")), ex),
+        Case::json("tools-with-edit-missing-transcript-silent", spawn_payload("Agent", json!({"tools":["Read","Edit"]}), Some("/t.jsonl")), ex),
+        Case::json("nested-tools-missing-transcript-silent", spawn_payload("Agent", json!({"tools":[["Edit"]]}), Some("/t.jsonl")), ex),
         Case::json("general-with-transcript-at-cap-still-blocks", spawn_payload("Agent", general(), Some("/t.jsonl")), ex).file(log, &log_of(&recent(20))),
         Case::json("isolated-worktree-silent", spawn_payload("Agent", json!({"subagent_type":"general-purpose","isolation":"Worktree"}), Some("/t.jsonl")), ex),
         Case::json("isolated-remote-silent", spawn_payload("Agent", json!({"isolation":" remote "}), Some("/t.jsonl")), ex),
-        Case::json("isolation-other-defers", spawn_payload("Agent", json!({"isolation":"none"}), Some("/t.jsonl")), Expect::Defer),
+        Case::json("isolation-other-missing-transcript-silent", spawn_payload("Agent", json!({"isolation":"none"}), Some("/t.jsonl")), ex),
         Case::json("read-only-allowlist-silent", spawn_payload("Agent", json!({"tools":"Read, Grep"}), Some("/t.jsonl")), ex),
         Case::json("empty-allowlist-silent", spawn_payload("Agent", json!({"tools":[]}), Some("/t.jsonl")), ex),
         Case::json("camel-allowlist-silent", spawn_payload("Agent", json!({"allowedTools":["Read"]}), Some("/t.jsonl")), ex),
         Case::json("deny-all-writes-silent", spawn_payload("Agent", json!({"disallowedTools":["Edit","Write","MultiEdit"]}), Some("/t.jsonl")), ex),
-        Case::json("deny-some-writes-defers", spawn_payload("Agent", json!({"disallowedTools":["Edit","Write"]}), Some("/t.jsonl")), Expect::Defer),
+        Case::json("deny-some-writes-missing-transcript-silent", spawn_payload("Agent", json!({"disallowedTools":["Edit","Write"]}), Some("/t.jsonl")), ex),
         Case::json("omc-read-only-type-silent", spawn_payload("Agent", json!({"subagent_type":"oh-my-claudecode:Verifier"}), Some("/t.jsonl")), ex),
         Case::json("shared-tree-switch-off-silent", spawn_payload("Agent", general(), Some("/t.jsonl")), ex)
             .file(".anti-hall/settings.json", r#"{"guards":{"sharedTreeAgentNote":false}}"#),
@@ -558,6 +689,7 @@ fn swarm_cases() -> Vec<Case> {
         Case::new("payload-garbage", "{nope", Expect::Defer),
     ];
     // a pre-existing trip log keeps its lines and gets one appended
+    out.extend(shared_tree_cases());
     out.push(
         Case::json("trip-log-appends", spawn_payload("Agent", explore(), None), ex)
             .file(log, &log_of(&recent(20)))
@@ -569,10 +701,10 @@ fn swarm_cases() -> Vec<Case> {
 #[test]
 fn swarm_guard_matches_node() {
     let rows = swarm_cases();
-    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
     // the same rows drive both tools: `swarm-guard.js` is registered for Agent and for Task
     let (same, deferred) = check_rows("swarm-guard.js", "swarm-guard", rows);
-    assert!(same >= 30 && deferred >= 5);
+    assert!(same >= 70 && deferred >= 3);
 }
 
 // ---- jev-weekly-scorecard ------------------------------------------------------------------------------------
@@ -663,7 +795,7 @@ fn weekly_cases() -> Vec<Case> {
 #[test]
 fn jev_weekly_scorecard_matches_node() {
     let rows = weekly_cases();
-    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("jev-weekly-scorecard.js", "jev-weekly-scorecard", rows);
     assert!(same >= 40 && deferred >= 5);
 }
@@ -792,7 +924,7 @@ fn review_cases() -> Vec<Case> {
 #[test]
 fn jev_review_reminder_matches_node() {
     let rows = review_cases();
-    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("jev-review-reminder.js", "jev-review-reminder", rows);
     assert!(same >= 55 && deferred >= 7);
 }
@@ -933,7 +1065,7 @@ fn repair_cases() -> Vec<Case> {
 #[test]
 fn repair_on_reload_matches_node() {
     let rows = repair_cases();
-    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("repair-on-reload.js", "repair-on-reload", rows);
     assert!(same >= 15 && deferred >= 12);
 }
