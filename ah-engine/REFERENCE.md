@@ -4213,6 +4213,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.why_joiner` | `/` |  |  | What joins the distinct reasons tasks are blocked. |
 | `task_tracker.window_ms` | `21600000` |  | ms | How long the full directive stays fresh before it is injected again. |
 
+### realtime.toml / realtime
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `realtime.backend` | `auto` |  |  | How a watched directory is observed: auto (OS file events: FSEvents on macOS, inotify on Linux; a directory on a filesystem listed in fs_poll_types, or one the OS refuses to watch, is polled instead) or poll (always compare file signatures every poll_ms). An unknown word is read as auto. |
+| `realtime.cpu_budget_permille` | `5` |  |  | The CPU the idle watcher may use, in thousandths of one core (5 means 0.5 percent); the benchmark test and the rollout gate compare against it. |
+| `realtime.debounce_ms` | `100` | `AH_ENGINE_RT_DEBOUNCE_MS` | ms | A changed file is reported once it has been quiet this long, so a burst of writes becomes one report. |
+| `realtime.fs_poll_types` | `14 items` |  |  | Filesystem types whose watched directories are always polled because OS change events do not arrive there (WSL2 /mnt drives report 9p or drvfs; network and FUSE filesystems report no events). A trailing or leading * matches any text. |
+| `realtime.latency_target_ms` | `1000` |  | ms | The detection latency (change to report) the watcher must stay within at the 95th percentile, for OS events and for polled directories alike; the benchmark test and the rollout gate compare against it. |
+| `realtime.max_delay_ms` | `1000` | `AH_ENGINE_RT_MAX_DELAY_MS` | ms | A file that keeps changing is still reported at least this often (the ceiling on debounce_ms), so a busy source is never starved. |
+| `realtime.max_entries` | `2048` |  |  | The most matching files one watched directory is tracked for. A directory with more reports a rescan signal when it changes, so a huge directory cannot grow the watcher's memory. |
+| `realtime.mounts_file` | `/proc/self/mounts` |  |  | The file that lists mounted filesystems with their types on Linux (including WSL2); the longest mount point that holds a watched directory names its filesystem type. macOS asks the system (statfs) instead. |
+| `realtime.poll_ms` | `750` | `AH_ENGINE_RT_POLL_MS` | ms | How often a polled directory is listed and its watched files stat'ed, in milliseconds. Only directories that cannot use OS events are polled (9p, drvfs, NFS, SMB, FUSE, a directory that does not exist yet, backend = poll), so this is the detection latency of those: at most this plus debounce_ms. Polling costs CPU in proportion to the files watched divided by this interval. |
+| `realtime.queue_cap` | `512` |  |  | The most distinct changed files held before they are reported. Past it the held changes are dropped and ONE rescan signal is sent instead (the consumer reconciles everything), so the queue and its output stay bounded however large the storm. |
+| `realtime.sqlite_suffixes` | `-wal, -shm, -journal` |  |  | Suffixes of the files SQLite keeps beside a database (write-ahead log, shared memory, rollback journal). Watching a database name also watches the name plus each suffix, because a commit lands in the -wal file and a checkpoint can truncate it. |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:

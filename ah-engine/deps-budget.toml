@@ -11,9 +11,14 @@
 # measured 55 on 118852f). 2026-10-08 (D88 spike, lane-script): rquickjs 0.14.0 with default features off adds 5 measured
 # crates (rquickjs, rquickjs-core, rquickjs-sys, allocator-api2, equivalent; hashbrown and foldhash were already in the
 # tree): 55 -> 60. Build-only dependencies (cc for the QuickJS-NG C sources) are not in the normal graph.
-base_crates = 60
+# 2026-10-09 (realtime lane R1, owner amendment 3): notify =8.2.0 with default features off and only macos_fsevent. Measured by
+# `cargo tree --edges normal`: macOS host 60 -> 65 (+notify, notify-types, fsevent-sys, walkdir, same-file); Linux x86_64 and
+# arm64 hosts 60 -> 67 (+notify, notify-types, inotify, inotify-sys, mio, walkdir, same-file). base_crates is the midpoint (66)
+# and the one-crate headroom covers the Linux hosts, so the same file passes the size and the staleness test on both.
+# Reason: DECISIONS.md "Realtime watch backend".
+base_crates = 66
 # Crates approved but not yet in the tree; the headroom covers their own entries only.
-approved = []
-approved_headroom = 0
+approved = ["mio"]
+approved_headroom = 1
 # The limit the test enforces: base_crates + approved_headroom.
-max_crates = 60
+max_crates = 67
