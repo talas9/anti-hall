@@ -493,6 +493,6 @@ mod tests {
         assert_eq!(base36(0), "0");
         assert_eq!(base36(35), "z");
         assert_eq!(base36(36), "10");
-        assert_eq!(base36(1_795_000_000_000), "lv7oklmo");
+        assert_eq!(base36(1_795_000_000_000), "mwm0nk74");
     }
 }

@@ -1,19 +1,21 @@
-//! `devswarm.js inbox tick <id> --quiet`, ported from `scripts/devswarm-lib/inbox-cmd.js` `cmdInboxTick` (with the `count`
+//! `devswarm.js inbox tick <id> [--quiet] [--json]`, ported from `scripts/devswarm-lib/inbox-cmd.js` `cmdInboxTick` (with the `count`
 //! it runs) and `inboxTickQuietLine`.
 //!
 //! A tick counts the unread mail of a workspace (its NDJSON inbox plus its store partition, see [`crate::meshw::union`]),
-//! then writes three small records and prints one line:
+//! then writes three small records and prints one line (`--quiet`) or the JSON of the `count` it ran:
 //!
 //! * the wake-tick marker `wake-tick/<id>.json` (`ts`, `unreadTotal`, `meshGapWithheld`, `known`, the carried-over `seq`);
 //! * the heartbeat refresh: `ts`, `state_ts` and `version` of the existing `heartbeats/<id>.json` (a minimal record when
 //!   there is none);
 //! * the cron-found-mail line, when the tick found unread mail and a wake-watch lock exists.
 //!
-//! The engine answers the common steady state and nothing else: the `--quiet` form, a workspace with a descriptor, a
-//! single store partition (no mesh group), reader-cursor floor rows in place, a LIVE wake-watch lock (so `watcherArmed` is
-//! `true` and none of the idle, archived or limit skips, nor the re-arm cue, is involved), no delivery-log alert, no
-//! roster setting. Everything else (a `--child` tick that first imports the native queue, the JSON form, a tick whose
-//! count is not known, a mesh group, a watcher that is not armed, a Primary whose anchor session Node would refresh) is a
+//! The engine answers the common steady state and nothing else: the line form or the JSON form, a workspace with a
+//! descriptor, a single store partition (no mesh group), reader-cursor floor rows in place, a LIVE wake-watch lock (so
+//! `watcherArmed` is `true` and none of the idle, archived or limit skips, nor the re-arm cue, is involved), no delivery-log
+//! alert, no roster setting. A count that is not known (the inbox or its cursor file does not read) is answered in the line
+//! form, with Node's `known:false` warning on stderr. Everything else (a `--child` tick that first imports the native queue,
+//! the JSON form of an unknown count, a mesh group, a watcher that is not armed, a Primary whose anchor session Node
+//! would refresh) is a
 //! [`Defer`]: decided before the first write, so Node then runs the verb and nothing is written twice. After the first
 //! write nothing defers; every write is best effort, as in Node (`try { ... } catch (_) {}`).
 // Discard triage (E3): every `.ok()` / `harmless` / `unwrap_or*` in this file is a deliberate keep, for these reasons:
@@ -256,7 +258,16 @@ fn count_mail(inv: &Inv, id: &str, desc: &OVal, line_form: bool) -> R<Counted> {
     let u = union::union_unread(&input)?;
     let total = if known { Some(union::merged_total(&input)?) } else { None };
     let nd_cursor = if nd_base.is_finite() && nd_base > 0.0 { nd_base.floor() } else { 0.0 };
-    Ok(Counted { repo_key: o.repo_key, known, unread: u.unread, nd_unread: u.nd_unread_lines.len(), store_unread: u.store_only_unread.len(), nd_cursor, store_cursor: store_base, total })
+    Ok(Counted {
+        repo_key: o.repo_key,
+        known,
+        unread: u.unread,
+        nd_unread: u.nd_unread_lines.len(),
+        store_unread: u.store_only_unread.len(),
+        nd_cursor,
+        store_cursor: store_base,
+        total,
+    })
 }
 
 /// `pidIsAlive(pid)` without a start-time check: `Some(false)` only when the process is gone.
@@ -489,7 +500,21 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         // `emitKnownWarning`: the count is not known and the caller is told on stderr
         eprintln!(
             "{}",
-            defaults::render("mesh_write.known_warning", &[("label", &format!("{} {} {}", defaults::text("mesh_write.verb_inbox"), defaults::text("mesh_write.verb_tick"), OVal::Str(id.to_string()).stringify())), ("reasons", &defaults::text("mesh_write.known_unknown"))])
+            defaults::render(
+                "mesh_write.known_warning",
+                &[
+                    (
+                        "label",
+                        &format!(
+                            "{} {} {}",
+                            defaults::text("mesh_write.verb_inbox"),
+                            defaults::text("mesh_write.verb_tick"),
+                            OVal::Str(id.to_string()).stringify()
+                        )
+                    ),
+                    ("reasons", &defaults::text("mesh_write.known_unknown"))
+                ]
+            )
         );
     }
     if !form.line {
