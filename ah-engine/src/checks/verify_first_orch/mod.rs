@@ -1,5 +1,7 @@
 //! Built-in `check = "verify-first-orch"`: a port of the Node verify-first-orch hook (SessionStart), for the Claude hook
-//! entry (`--host=claude`; the dispatch table maps only that entry to this check, the Codex entry stays Node).
+//! entry (`--host=claude`), and `check = "verify-first-orch-codex"` for the Codex entry, which runs the same hook without that
+//! flag: `isClaudeConfident` is then always false (the flag is the first thing it tests), so the Codex check never reads the
+//! host's config directory and has the same coverage otherwise (a DevSwarm session defers to Node).
 //!
 //! The hook emits the orchestration discipline text: the full text, or the compact text plus a marker that makes the first
 //! spawn deliver the rest (an opt-in mode), and keeps that marker in step with what it sent. Everything is decided here
@@ -123,14 +125,15 @@ fn plugin_root(opts: &Value, st: &Settings) -> Option<String> {
 /// The check's decision on one payload. `None`: nothing to say.
 ///
 /// Mirrors `hooks/verify-first-orch.js` `main`.
-pub fn decide(p: &Value, st: &Settings, opts: &Value) -> Option<Verdict> {
+pub fn decide(p: &Value, st: &Settings, opts: &Value, claude_host: bool) -> Option<Verdict> {
     if judge_child(&st.env) {
         return None;
     }
     if os_homedir(&st.env).is_none() {
         return Some(Verdict::Defer);
     }
-    let Ok(confident) = confident(p, st) else { return Some(Verdict::Defer) };
+    // Only the Claude hook entry carries the `--host=claude` flag; without it `isClaudeConfident` answers false at once.
+    let Ok(confident) = (if claude_host { confident(p, st) } else { Ok(false) }) else { return Some(Verdict::Defer) };
     let state = state_home(&st.env);
     let none = defaults::list("orch_state.decisions")[1];
     let pending = defaults::list("orch_state.decisions")[0];
@@ -213,6 +216,27 @@ impl Check for VerifyFirstOrch {
     }
 
     fn run_env(&self, _s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        decide(payload, &Settings::from_env(env), opts)
+        decide(payload, &Settings::from_env(env), opts, true)
+    }
+}
+
+/// The registered `verify-first-orch-codex` check: the Codex hook entry, which has no `--host=claude` flag.
+pub struct VerifyFirstOrchCodex;
+
+impl Check for VerifyFirstOrchCodex {
+    fn name(&self) -> &'static str {
+        "verify-first-orch-codex"
+    }
+
+    fn summary(&self) -> &'static str {
+        defaults::text("verify_first_orch.summary_codex")
+    }
+
+    fn run(&self, _s: &Subject<'_>, _opts: &Value) -> Option<Verdict> {
+        Some(Verdict::Defer)
+    }
+
+    fn run_env(&self, _s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+        decide(payload, &Settings::from_env(env), opts, false)
     }
 }

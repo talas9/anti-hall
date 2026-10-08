@@ -34,6 +34,8 @@ const INBOX: Hook = Hook { script: "inbox-read-guard.js", check: "inbox-read-gua
 const PHASE: Hook = Hook { script: "phase-tracker.js", check: "phase-tracker", argv: &[] };
 const SPAWN: Hook = Hook { script: "orch-on-spawn.js", check: "orch-on-spawn", argv: &[] };
 const ORCH: Hook = Hook { script: "verify-first-orch.js", check: "verify-first-orch", argv: &["--host=claude"] };
+/// The Codex hook entry: the same script without the `--host=claude` flag.
+const ORCH_CODEX: Hook = Hook { script: "verify-first-orch.js", check: "verify-first-orch-codex", argv: &[] };
 
 #[derive(Clone)]
 enum Seed {
@@ -991,6 +993,26 @@ fn verify_first_orch_matches_node() {
     assert!(t.stdout_nonempty >= 70, "the corpus must exercise the emitted texts: {}", t.stdout_nonempty);
     assert!(t.state_changed >= 30, "the corpus must exercise the marker: {}", t.state_changed);
     assert!(t.deferred >= 6, "deferred {}", t.deferred);
+}
+
+/// The Codex entry runs the same corpus. Without the flag no session is Claude-confident, so the cases that defer on the
+/// host's config directory now answer; a DevSwarm session and an unreadable payload still defer.
+#[test]
+fn verify_first_orch_codex_matches_node() {
+    let always_defers = ["devswarm-repo-id-defers", "devswarm-supervisor-on-defers", "devswarm-codex-defers", "raw-garbage-defers", "raw-empty-defers"];
+    let cases: Vec<Case> = orch_cases()
+        .into_iter()
+        .map(|mut c| {
+            c.defer = always_defers.contains(&c.name.as_str());
+            c
+        })
+        .collect();
+    assert!(cases.len() >= 90, "the corpus must stay broad");
+    let t = drive("orch-codex", ORCH_CODEX, cases);
+    assert_eq!(t.blocks, 0);
+    assert!(t.stdout_nonempty >= 70, "the corpus must exercise the emitted texts: {}", t.stdout_nonempty);
+    assert!(t.state_changed >= 5, "the corpus must exercise the marker: {}", t.state_changed);
+    assert_eq!(t.deferred, always_defers.len(), "deferred {}", t.deferred);
 }
 
 // ------------------------------------------------------------------------------------------------------------------

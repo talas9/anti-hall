@@ -31,7 +31,7 @@ use serde_json::Value;
 mod tests;
 
 /// True when the session might get the DevSwarm Primary sentence, which only Node can decide.
-fn primary_possible(st: &Settings) -> bool {
+pub(crate) fn primary_possible(st: &Settings) -> bool {
     let env_text = |name: &str| st.env.get(defaults::text(name)).map(String::as_str);
     if env_text("verify_first.env_devswarm_disable") == Some("1") {
         return false;
