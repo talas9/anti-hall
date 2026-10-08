@@ -195,3 +195,14 @@ min = 1
 [script.msg_unknown_op]
 doc = "Error a script sees when it asks a file operation the host does not have. Placeholder: {op}."
 value = "unknown file operation {op}"
+
+[script.tail_buf_bytes]
+doc = "Size of the buffer `ah.transcript.tailLines` reads a file through."
+value = 65536
+min = 4096
+max = 1048576
+unit = "bytes"
+
+[script.p95_budget_by_check]
+doc = "Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us."
+value = { git = 30000, sibling-sweep = 5000, fable-availability = 2000 }

@@ -40,12 +40,6 @@ value = 4096
 min = 64
 max = 1048576
 
-[git.path_arg_max_segments]
-doc = "Most path segments in a directory argument the git check tracks through a `cd`; a deeper one is left to Node."
-value = 64
-min = 2
-max = 4096
-
 [git.handover_adds_max]
 doc = "Most `git add` commands the git check remembers in one command line when it looks for a staged handover file."
 value = 50

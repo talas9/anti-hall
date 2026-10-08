@@ -1080,7 +1080,7 @@ mod tests {
     fn a_key_read_through_a_helper_cannot_go_missing() {
         // review P1 #3: `defaults::env_var("done_file")` reads `env.done_file`; the first key scanner did not see it, so a
         // plugin without it loaded and the dispatcher panicked on first use
-        for (file, name) in [("engine.toml", "env.done_file"), ("sibling_sweep.toml", "sibling_sweep.text_max_bytes")] {
+        for (file, name) in [("engine.toml", "env.done_file"), ("engine.toml", "files.log")] {
             let root = plugin_copy("helperkey");
             replace_table(&root, file, name, "");
             let e = load_from(&root, None, None).err().unwrap_or_else(|| panic!("a plugin without {name} must be rejected"));

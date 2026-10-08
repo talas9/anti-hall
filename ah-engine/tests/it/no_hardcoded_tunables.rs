@@ -61,7 +61,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     ("src/docs.rs", "\"| `{}` |", "row layout of the generated Markdown reference"),
     ("src/docs.rs", "\\n## ", "section headings and intro lines of the generated Markdown reference: the generator's own format"),
-    ("src/checks/git/tokenize.rs", "pub const CMDSUBST", "internal sentinel the tokenizer inserts for a command substitution; never shown to a user"),
     ("src/memstat.rs", "static INNER", "the allocator the counters wrap: a compile-time choice by target, code not configuration"),
     ("src/main.rs", "static ALLOC", "the global allocator item: a language construct, not a value"),
     (
@@ -78,6 +77,10 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     ("src/checks/scripted.rs", "const fn new(", "the constructor signature of the registry identity above"),
     ("src/script/mod.rs", "static POOL", "a thread-local slot for the worker's interpreter, initialised empty: state, not a tunable"),
+    ("src/script/host.rs", "static CLOCK", "a thread-local clock override slot initialised empty (tests inject time): state, not a tunable"),
+    ("src/script/host.rs", "static HELD", "a thread-local list of the locks the script call holds, initialised empty: state, not a tunable"),
+    ("src/script/host.rs", "static EXECS", "a thread-local counter of the processes the script call started, initialised to zero (its bound is script.exec_max_calls): state, not a tunable"),
+    ("src/script/host_b3.rs", "static HEREDOC", "a thread-local slot for the heredoc scan of the command being walked, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static CALL", "a thread-local slot for the request state of one script call, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static RES", "a thread-local regex cache, initialised empty (its size bound is script.regex_cache_max): state, not a tunable"),
     ("src/deadline.rs", "static REQ", "a thread-local slot initialised empty (the request being served): state, not a tunable"),
@@ -201,9 +204,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/jev/question.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     ("src/checks/guardkit/turn_gate.rs", "t.jsonl", "a file name in a unit-test fixture"),
     // ---- git output and flag layouts ------------------------------------------------------------------------------
-    ("src/checks/git/segments.rs", ".take(2)", "the XY status columns of `git status --porcelain` (a format)"),
-    ("src/checks/git/segments.rs", ".skip(3)", "the path starts after the XY columns and a space of `git status --porcelain` (a format)"),
-    ("src/checks/git/runner.rs", "chars().count() > 10", "a `--replace=` flag carries a value when it is longer than the flag name (a flag's own shape)"),
     // ---- layouts of generated output and the wire --------------------------------------------------------------------
     ("src/docs.rs", "chars().count() > 80", "the width a value is cut to in the generated Markdown reference (the generator's format)"),
     ("src/frame.rs", ".take(64)", "the longest reply-frame header scanned: a bound of the wire format"),

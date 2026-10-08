@@ -511,7 +511,7 @@ pub fn tail_lines(path: &str, window: f64, line_max: f64) -> Option<String> {
     let size = f.metadata().ok()?.len();
     let start = size.saturating_sub(window);
     f.seek(SeekFrom::Start(start)).ok()?;
-    let mut r = std::io::BufReader::with_capacity(65_536, f.take(size - start));
+    let mut r = std::io::BufReader::with_capacity(defaults::num("script.tail_buf_bytes") as usize, f.take(size - start));
     let mut offset = start;
     let mut lines: Vec<serde_json::Value> = Vec::new();
     let mut buf: Vec<u8> = Vec::new();
