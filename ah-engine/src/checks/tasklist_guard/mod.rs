@@ -1,18 +1,19 @@
-//! Built-in `check = "tasklist-guard"`: the non-blocking half of the Node tasklist-guard Stop hook.
+//! Built-in `check = "tasklist-guard"`: port of the Node tasklist-guard Stop hook.
 //!
 //! tasklist-guard blocks a Stop when real work was done and was not tracked as tasks, a task is stalled in progress, or the
-//! per-session progress file is missing or stale. This check reproduces every Stop on which Node does not block, including the
-//! file effects Node has there (the progress directory made, the progress and history indexes kept, the one resume-verification
-//! nudge and its marker), and answers the plan-mode advisory and the resume nudge with the exact bytes Node prints. A Stop that
-//! would block (work done, and no task activity, a stale task or a stale progress file) goes to the Node hook, which owns the
-//! block texts, the loop state, the Jev consult, the acknowledgement and the stop budget (D74). Anything the port cannot read
-//! exactly is deferred too.
+//! per-session progress file is missing or stale. This check answers every Stop as Node does: the quiet ones with the file
+//! effects Node has there (the progress directory made, the progress and history indexes kept, the one resume-verification
+//! nudge and its marker), the plan-mode advisory, and the block itself with its loop state, dedupe and cap, handover
+//! advisories, stop-policy budget, acknowledgement and Jev consult (`fire`). Anything the port cannot read exactly (a file
+//! or date only JavaScript reads the same way, a cut through a surrogate pair, a relative working directory) is decided
+//! before the first effect and deferred to the Node hook.
 //!
 //! Mirrors `hooks/tasklist-guard.js` `main` up to the decision to block.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 
+mod fire;
 mod scan;
 
 use crate::checks::git::util::Settings;
@@ -144,15 +145,15 @@ fn check_resume_verification(home: &str, sid: &str, work: u64, threshold: f64) -
     Ok(Some(defaults::render("tasklist_guard.resume_text", &[("file", &file)])))
 }
 
-/// The decision for one payload.
-pub fn decide(p: &Value, st: &Settings) -> Verdict {
-    match decide_inner(p, st) {
+/// The decision for one payload; `plugin_root` is the engine's plugin (empty when unknown).
+pub fn decide(p: &Value, st: &Settings, plugin_root: &str) -> Verdict {
+    match decide_inner(p, st, plugin_root) {
         Ok(v) => v,
         Err(Unsure) => Verdict::Defer,
     }
 }
 
-fn decide_inner(p: &Value, st: &Settings) -> R<Verdict> {
+fn decide_inner(p: &Value, st: &Settings, plugin_root: &str) -> R<Verdict> {
     if st.env.get(defaults::text("task_guard.judge_child_env")).map(String::as_str) == Some("1") {
         return Ok(Verdict::Allow);
     }
@@ -239,13 +240,32 @@ fn decide_inner(p: &Value, st: &Settings) -> R<Verdict> {
     if (work as f64) < threshold {
         return Ok(Verdict::Allow);
     }
-    // Two or more tasks in progress on a Claude session: whether they are stalled depends on the running agents, which Node
-    // scans and the engine does not, so Node decides unless the Stop is already settled above.
-    let should_block = needs_agents || !scan.saw_task_activity || !progress_fresh;
-    if !should_block {
+    // Two or more tasks in progress on a Claude session are stalled only when no agent is running, which the block path
+    // finds out from the transcript.
+    if !needs_agents && scan.saw_task_activity && progress_fresh {
         return Ok(Verdict::Allow);
     }
-    Ok(Verdict::Defer)
+    let progress_rel = progress_rel.join("/");
+    let history_rel = history_rel.join("/");
+    fire::fire(&fire::Fire {
+        p,
+        st,
+        plugin_root,
+        transcript,
+        raw_sid: &raw_sid,
+        sid: &sid,
+        date: &date,
+        root: root.as_deref(),
+        progress_rel,
+        history_rel,
+        progress_abs: progress_abs.as_deref(),
+        history_abs: history_abs.as_deref(),
+        scan: &scan,
+        needs_agents,
+        progress_fresh,
+        threshold,
+        codex,
+    })
 }
 
 /// The registered `tasklist-guard` check.
@@ -264,7 +284,7 @@ impl Check for TasklistGuard {
         Some(Verdict::Defer)
     }
 
-    fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        Some(decide(payload, &Settings::from_env(env)))
+    fn run_env(&self, _s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+        Some(decide(payload, &Settings::from_env(env), &crate::checks::guardkit::settings::plugin_root(opts, env)))
     }
 }

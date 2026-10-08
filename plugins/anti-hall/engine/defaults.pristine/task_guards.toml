@@ -742,7 +742,7 @@ value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 
 [tasklist_guard.summary]
 doc = "One-line description of the tasklist-guard check in the generated reference."
-value = "Stop gate: answers the Stops that do not block (a trivial session, tracked work with a fresh progress file, plan mode, the resume-verification nudge) with the Node hook's file effects, and hands every Stop that would block to the Node hook (port of tasklist-guard.js)."
+value = "Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale progress file, with the Node hook's loop state, dedupe, cap, handover advisories, stop-policy budget and acknowledgement; answers the quiet Stops, plan mode and the resume-verification nudge with the same file effects (port of tasklist-guard.js)."
 
 [tasklist_guard.guard_name]
 doc = "The guard id of tasklist-guard (the skip key and the message prefix)."
@@ -815,6 +815,379 @@ value = "A session handover was resumed this session ({file}) but no `resume-ver
 doc = "Longest block reason, in UTF-16 units; longer text is cut and ends with an ellipsis."
 value = 2000
 min = 1
+
+# ---- tasklist-guard: the block path (the Stop that nudges) ---------------------------------------------------------------
+
+[tasklist_guard.max_blocks]
+doc = "How many blocks one session gets at most (MAX_BLOCKS); a session at the cap stops quietly."
+value = 3
+min = 1
+
+[tasklist_guard.work_bucket_max]
+doc = "Highest work bucket in the dedupe signal (the work count divided by the threshold, floored, capped here)."
+value = 8
+min = 1
+
+[tasklist_guard.state_prefix]
+doc = "Family name of the per-session loop state file (`<prefix>-<session>.json` under the anti-hall state directory); also the prune family."
+value = "tasklist-guard-state"
+
+[tasklist_guard.state_ext]
+doc = "File extension of the per-session state and marker files."
+value = ".json"
+
+[tasklist_guard.session_hash_len]
+doc = "How many hex digits of the transcript path's SHA-1 stand in for a missing session id."
+value = 16
+min = 1
+
+[tasklist_guard.open_hash_len]
+doc = "How many hex digits of the SHA-1 of the open task ids go into the dedupe signal."
+value = 16
+min = 1
+
+[tasklist_guard.signal_sep]
+doc = "Separator of the parts of the dedupe signal."
+value = "|"
+
+[tasklist_guard.open_ids_sep]
+doc = "Separator of the sorted open task ids that are hashed into the dedupe signal."
+value = "\u0000"
+
+[tasklist_guard.head_bytes]
+doc = "How much of the start of the transcript is read for the session start time (firstTranscriptIso)."
+value = 65536
+min = 1
+
+[tasklist_guard.header]
+doc = "The header a new progress file gets; {session} is the raw session id (or the unknown-session id), {started} the session start."
+value = "<!-- session: {session} | started: {started} -->"
+
+[tasklist_guard.json_max_depth]
+doc = "Nesting limit of the JSON state files read on the block path (deeper text defers to Node)."
+value = 1000
+min = 1
+
+[tasklist_guard.what_reset]
+doc = "Block headline when the task store was reset (a session restore)."
+value = "the task store was reset (session restore)."
+
+[tasklist_guard.why_reset]
+doc = "Block reason when the task store was reset."
+value = "The old task ids are gone, not un-tracked."
+
+[tasklist_guard.what_no_tasks]
+doc = "Block headline when work was done and no task was tracked; {n} is the work count."
+value = "stop blocked: {n} file-changing actions this session but NO tasks tracked."
+
+[tasklist_guard.why_no_tasks]
+doc = "Block reason when no task was tracked."
+value = "Work this size needs a task list and a progress file."
+
+[tasklist_guard.prior_snapshot]
+doc = "Appended to the no-tasks reason when another session of today left a handover state file; {path} is its path."
+value = " A prior session's snapshot exists at {path}: recreate your task list from it first."
+
+[tasklist_guard.what_stalled]
+doc = "Block headline when tasks are in progress with no live agent; {n} is the count."
+value = "stop blocked: {n} tasks are in_progress but NO background agent is live."
+
+[tasklist_guard.why_stalled]
+doc = "Block reason when tasks are stalled in progress."
+value = "They are stalled, not worked in parallel."
+
+[tasklist_guard.what_progress]
+doc = "Block headline when the progress file is missing or stale; {n} is the work count, {path} the progress file."
+value = "stop blocked: {n} file-changing actions but {path} is missing or stale."
+
+[tasklist_guard.why_progress]
+doc = "Block reason when the progress file is missing or stale."
+value = "The progress file must track what was done."
+
+[tasklist_guard.what_reduced]
+doc = "Block headline of the reduced nag (a session without task tools); {n} is the work count."
+value = "stop blocked: {n} file-changing actions, no tasks tracked."
+
+[tasklist_guard.why_reduced]
+doc = "Block reason of the reduced nag."
+value = "Untracked work gets lost."
+
+[tasklist_guard.instead_reduced]
+doc = "What to do instead, reduced nag; {progress} and {history} are the files."
+value = "list the open tasks and status in your reply, priority first. Progress: {progress} History: {history}"
+
+[tasklist_guard.instead_reset]
+doc = "Lead of what to do instead after a task store reset (Claude wording)."
+value = "recreate the open tasks with TaskCreate (see the progress file / handover), then continue. "
+
+[tasklist_guard.instead_reset_codex]
+doc = "Lead of what to do instead after a task store reset (Codex wording)."
+value = "recreate the open tasks in your task list (see the progress file / handover), then continue. "
+
+[tasklist_guard.instead_stalled]
+doc = "What to do about tasks stalled in progress."
+value = "dispatch a background agent for EACH now (do not serialize to one), or set idle ones back to pending; start the highest-priority task's agent first but keep the rest running. "
+
+[tasklist_guard.instead_capture]
+doc = "What to do instead: capture the work as tasks (Claude wording)."
+value = "Capture the work as priority-sorted tasks via TaskCreate/TaskUpdate (TaskList first to dedup; link with addBlockedBy/addBlocks), set statuses, and update "
+
+[tasklist_guard.instead_capture_codex]
+doc = "What to do instead: capture the work as tasks (Codex wording)."
+value = "Capture the work as priority-sorted tasks in your task list (check it first to dedup; link related ones), set statuses, and update "
+
+[tasklist_guard.instead_files]
+doc = "The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in."
+value = "{progress} (done/in-progress/next); a new file gets this header on top: {header}. Gitignore it. Append each COMPLETED task to {history} (append-only ledger, one entry per task: Cause / Fix / Verified; gitignore it too; it usually exists already, so {append}). The progress file can be written freely. No Bash heredoc (git-guard scans its body as shell)."
+
+[tasklist_guard.append_claude]
+doc = "How to append to the history file (Claude wording)."
+value = "append with the Edit tool or a one-line `>>`, never the Write tool"
+
+[tasklist_guard.append_codex]
+doc = "How to append to the history file (Codex wording)."
+value = "append with a one-line `>>`, never overwrite it"
+
+[tasklist_guard.omc_text]
+doc = "Printed instead of the block while an oh-my-claudecode autonomous loop is active."
+value = "[tasklist-guard] OMC autonomous loop active — deferring Stop block to avoid deadlock.\n"
+
+[tasklist_guard.handovers_dir]
+doc = "The handovers directory under the project root, as path segments."
+value = [".anti-hall", "handovers"]
+
+[tasklist_guard.handover_state_file]
+doc = "The state file a session handover leaves (the prior-snapshot pointer looks for it)."
+value = "state.md"
+
+[tasklist_guard.handover_file_re]
+doc = "JavaScript regex source of a handover file name."
+value = '^HANDOVER(?:-\d+)?\.md$'
+
+[tasklist_guard.handover_grace_ms]
+doc = "How far the newest counted work may run past the newest handover's time before the handover counts as stale."
+value = 1000
+min = 0
+
+[tasklist_guard.advisory_prefix]
+doc = "Prefix of the once-per-session marker of the no-handover advisory (`<prefix><session>.json`)."
+value = "tasklist-guard-handover-advisory-"
+
+[tasklist_guard.advisory_body]
+doc = "Contents of the no-handover advisory marker."
+value = '{"advised":true}'
+
+[tasklist_guard.advisory_text]
+doc = "The no-handover advisory appended to a block."
+value = "\n💡 anti-hall · handover: no handover exists yet after significant work.\nDo instead: consider /anti-hall:handover before ending."
+
+[tasklist_guard.stale_prefix]
+doc = "Prefix of the once-per-session marker of the stale-handover advisory (`<prefix><session>.json`)."
+value = "tasklist-guard-handover-stale-"
+
+[tasklist_guard.stale_body]
+doc = "Contents of the stale-handover advisory marker."
+value = '{"warned":true}'
+
+[tasklist_guard.stale_text]
+doc = "The stale-handover advisory appended to a block."
+value = "\n⚠️ anti-hall · handover: the saved handover is stale (work happened after it was written).\nDo instead: refresh it before the user compacts."
+
+[tasklist_guard.jev_id]
+doc = "The Jev integration consulted before the nag (relax-block: a confident trivial verdict in on mode skips it)."
+value = "tasklistTrivial"
+
+[tasklist_guard.jev_instructions]
+doc = "The question put to Jev (a noul question)."
+value = "This session is about to be nudged to track its work as tasks / refresh its progress file. Judge the session summary below: does this look like a genuinely non-trivial, multi-part effort that benefits from task tracking, as opposed to a small, bounded, single-purpose chore?"
+
+[tasklist_guard.jev_true]
+doc = "What a true answer means."
+value = "genuinely non-trivial — multi-part, benefits from task tracking"
+
+[tasklist_guard.jev_false]
+doc = "What a false answer means."
+value = "a small bounded chore — task tracking would be overhead, not help"
+
+[tasklist_guard.jev_state]
+doc = "The session summary Jev judges; the fields are the work count, threshold, the three sub-causes and the open task count."
+value = "workCount={work} threshold={threshold} sawTaskActivity={saw} hasStaleInProgress={stale} progressFresh={fresh} openTaskCount={open}"
+
+[tasklist_guard.no_task_tools_setting]
+doc = "The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
+value = { section = "guards", key = "tasklistNoTaskTools", type = "enum", env = "ANTIHALL_TASKLIST_NO_TASK_TOOLS", aliases = [], option = "", default = "reduced", values = ["reduced", "full", "skip"] }
+
+[tasklist_guard.protocol_setting]
+doc = "context.protocolLevel: full makes the nag form default to full when guards.tasklistNoTaskTools is not set."
+value = { section = "context", key = "protocolLevel", type = "enum", env = "ANTIHALL_PROTOCOL_LEVEL", aliases = [], option = "", default = "compact", values = ["compact", "full"] }
+
+[tasklist_guard.form_full]
+doc = "The full nag form (and the protocol level that selects it)."
+value = "full"
+
+[tasklist_guard.form_skip]
+doc = "The nag form that says nothing."
+value = "skip"
+
+[tasklist_guard.form_reduced]
+doc = "The reduced nag form."
+value = "reduced"
+
+[tasklist_guard.evidence_names]
+doc = "Tool names, attachment types and prefixes that can make a transcript line evidence of task tools (the cheap pre-filter)."
+value = ["TaskCreate", "TaskUpdate", "TodoWrite", "task_reminder"]
+
+[tasklist_guard.evidence_reminder]
+doc = "Attachment type that proves task tools exist."
+value = "task_reminder"
+
+[tasklist_guard.evidence_deferred_prefix]
+doc = "Prefix of the attachment type that lists deferred tools."
+value = "deferred_tools"
+
+[tasklist_guard.evidence_tool]
+doc = "The deferred tool name that proves task tools exist."
+value = "TaskCreate"
+
+[tasklist_guard.version_setting]
+doc = "guards.stopHookVersionDowngrade: skip the block while the host registered a newer anti-hall than the running one."
+value = { section = "guards", key = "stopHookVersionDowngrade", env = "ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE", aliases = [], option = "", default = true }
+
+[tasklist_guard.marketplace_dir]
+doc = "The marketplace clone under the home directory (update.js resolvePaths)."
+value = ".claude/plugins/marketplaces/anti-hall"
+
+[tasklist_guard.marketplace_env]
+doc = "Test-only override of the marketplace clone (an absolute path to an existing directory)."
+value = "ANTIHALL_MARKETPLACE_DIR"
+
+[tasklist_guard.registry_file]
+doc = "The host's plugin registry, beside the marketplaces directory."
+value = "installed_plugins.json"
+
+[tasklist_guard.registry_key]
+doc = "The registry entry of this plugin."
+value = "anti-hall@anti-hall"
+
+[tasklist_guard.registry_scopes]
+doc = "Registry entry scopes, in order of preference."
+value = ["user", "project"]
+
+[tasklist_guard.registry_max_bytes]
+doc = "Largest registry file read (readJsonBounded)."
+value = 4194304
+min = 1
+
+[tasklist_guard.plugin_json]
+doc = "The plugin manifest under the plugin root (the running version)."
+value = ".claude-plugin/plugin.json"
+
+[tasklist_guard.ack_setting]
+doc = "guards.stopAck: honor a per-signature acknowledgement of this block for the rest of the session."
+value = { section = "guards", key = "stopAck", env = "ANTIHALL_STOP_ACK", aliases = [], option = "", default = true }
+
+[tasklist_guard.ack_dir]
+doc = "Directory of the acknowledgement files under the anti-hall state directory; also the file prefix (`<dir>/<dir>-<session>.json`)."
+value = "stop-ack"
+
+[tasklist_guard.ack_session_max]
+doc = "Longest session part of an acknowledgement file name."
+value = 128
+min = 1
+
+[tasklist_guard.ack_sig_len]
+doc = "How many hex digits of the SHA-1 of the dedupe hash make the acknowledgement signature."
+value = 16
+min = 1
+
+[tasklist_guard.ack_hint]
+doc = "The acknowledgement hint appended to a block; {key}, {now} and {path} are filled in."
+value = "Override (only if the user explicitly confirmed this exact condition is fine): write {\"{key}\": {now}} into {path} (merge with existing keys); it then stays advisory for the rest of the session."
+
+[tasklist_guard.budget_setting]
+doc = "guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off)."
+value = { section = "guards", key = "stopNagBudgetPerPrompt", env = "ANTIHALL_STOP_NAG_BUDGET", aliases = [], min = 0, default = 0 }
+
+[tasklist_guard.policy_dir]
+doc = "The stop-policy state directory under the anti-hall state directory, as path segments."
+value = ["devswarm", "stop-policy"]
+
+[tasklist_guard.policy_tail_bytes]
+doc = "How much of the end of the transcript is read for the prompt key (transcript-tail.js MAX_TAIL_BYTES)."
+value = 1572864
+min = 1
+
+[tasklist_guard.policy_prompt_kind]
+doc = "Stop-policy bucket kind of the per-prompt budget."
+value = "prompt"
+
+[tasklist_guard.policy_reduced_kind]
+doc = "Stop-policy bucket kind of the reduced nag (blocks at most once per session)."
+value = "no-task-tools"
+
+[tasklist_guard.policy_reduced_cap]
+doc = "How many reduced nags one session gets."
+value = 1
+min = 1
+
+[tasklist_guard.policy_user_marker]
+doc = "Text a transcript line must hold to be read as a possible user prompt."
+value = '"user"'
+
+[tasklist_guard.omc_state_files]
+doc = "The oh-my-claudecode loop state files (omc-detect.js)."
+value = ["ralph-state.json", "ultrawork-state.json", "autopilot-state.json", "ultraqa-state.json", "team-state.json", "ultrapilot-state.json", "pipeline-state.json", "omc-teams-state.json"]
+
+[tasklist_guard.omc_state_dir]
+doc = "The oh-my-claudecode state directory under the working directory, else the home directory, as path segments."
+value = [".omc", "state"]
+
+[tasklist_guard.omc_fresh_ms]
+doc = "How recent a loop state's timestamp must be for the loop to count as active."
+value = 7200000
+min = 1
+
+[tasklist_guard.omc_max_bytes]
+doc = "Largest loop state file read; a bigger one counts as malformed."
+value = 65536
+min = 1
+
+[tasklist_guard.omc_settings_max_bytes]
+doc = "Largest Claude settings file read when checking that oh-my-claudecode is enabled."
+value = 262144
+min = 1
+
+[tasklist_guard.omc_settings_files]
+doc = "The Claude settings files that can enable oh-my-claudecode: the home one, then the project's two."
+value = [".claude/settings.json", ".claude/settings.local.json"]
+
+[tasklist_guard.omc_plugin]
+doc = "The enabledPlugins key of oh-my-claudecode."
+value = "oh-my-claudecode@omc"
+
+[tasklist_guard.omc_kill_env]
+doc = "Environment variable that disables oh-my-claudecode (value 1)."
+value = "DISABLE_OMC"
+
+[tasklist_guard.omc_skip_env]
+doc = "Environment variable listing skipped oh-my-claudecode hooks (comma separated)."
+value = "OMC_SKIP_HOOKS"
+
+[tasklist_guard.omc_skip_token]
+doc = "The skipped hook that turns the loop detection off."
+value = "persistent-mode"
+
+[tasklist_guard.omc_ts_keys]
+doc = "Timestamp fields of a loop state, in order."
+value = ["last_checked_at", "updated_at", "started_at"]
+
+[tasklist_guard.codex_tool]
+doc = "A tool name only Codex payloads carry (isCodexPayload)."
+value = "apply_patch"
+
+[tasklist_guard.codex_fields]
+doc = "Payload fields that, all non-empty strings, mark a Codex payload (isCodexPayload)."
+value = ["turn_id", "model"]
 
 
 [taskkit.codex_rollout]
