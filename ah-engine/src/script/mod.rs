@@ -28,11 +28,12 @@
 
 pub mod host;
 pub mod host_b3;
+pub mod host_d;
 mod host_io;
 pub mod sysmem;
 
 use crate::checks::git::util::Settings;
-use crate::checks::{Exact, Verdict};
+use crate::checks::{Exact, RouteMeta, Verdict};
 use crate::defaults;
 use crate::reqenv::RequestEnv;
 use rquickjs::{CatchResultExt, Context, Function, Runtime, Value as JsValue};
@@ -169,6 +170,32 @@ fn verdict_of(v: &Value) -> Result<Option<Verdict>, String> {
             let err = x.get("err").and_then(Value::as_str).unwrap_or_default().to_string();
             Some(Verdict::Exact(Exact { code, out, err }))
         }
+        Value::Object(o) if o.get("routed").is_some_and(Value::is_object) => {
+            // a verdict plus the route telemetry a routing check records (`{routed: {verdict, meta: [...]}}`)
+            let r = &o["routed"];
+            let inner = verdict_of(r.get("verdict").unwrap_or(&Value::Null))?.ok_or_else(|| defaults::render("script.msg_bad_verdict", &[("value", r)]))?;
+            let metas = r.get("meta").and_then(Value::as_array).ok_or_else(|| defaults::render("script.msg_bad_verdict", &[("value", r)]))?;
+            let mut out = Vec::new();
+            for m in metas {
+                let t = |k: &str| m.get(k).and_then(Value::as_str).map(str::to_string);
+                let b = |k: &str| m.get(k).and_then(Value::as_bool);
+                let meta = (|| {
+                    Some(RouteMeta {
+                        requested_model: t("requested_model")?,
+                        parent_model: t("parent_model")?,
+                        task_class: t("task_class")?,
+                        recommended_tier: t("recommended_tier")?,
+                        selected_model: t("selected_model")?,
+                        outcome: t("outcome")?,
+                        spawn_key: t("spawn_key")?,
+                        delegate: b("delegate")?,
+                        blocked: b("blocked")?,
+                    })
+                })();
+                out.push(meta.ok_or_else(|| defaults::render("script.msg_bad_verdict", &[("value", m)]))?);
+            }
+            Some(Verdict::Routed(Box::new(inner), out))
+        }
         other => return Err(defaults::render("script.msg_bad_verdict", &[("value", other)])),
     })
 }
@@ -292,3 +319,6 @@ mod tests;
 #[cfg(test)]
 #[path = "host_tests/tests.rs"]
 mod tests_host;
+#[cfg(test)]
+#[path = "host_tests_d/tests.rs"]
+mod tests_host_d;
