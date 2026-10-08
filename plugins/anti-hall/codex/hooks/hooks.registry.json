@@ -123,7 +123,7 @@
           },
           {
             "type": "command",
-            "command": "sh \"${PLUGIN_ROOT}/hooks/engine-roles\"",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/engine-role-guard\"",
             "timeout": 10
           }
         ]
@@ -219,7 +219,7 @@
           },
           {
             "type": "command",
-            "command": "sh \"${PLUGIN_ROOT}/hooks/engine-roles\"",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/engine-role-note\"",
             "timeout": 10
           }
         ]

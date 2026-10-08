@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bash_pre_tool_use_entries_are_the_nine_node_hooks_in_order() {
+    fn the_bash_pre_tool_use_entries_are_the_nine_node_hooks_and_the_engine_only_role_guard_in_order() {
         let p = json!({"tool_name": "Bash"});
         let ids: Vec<String> = select("claude", "PreToolUse", &p, None).into_iter().map(|e| e.id).collect();
         assert_eq!(
@@ -397,7 +397,8 @@ mod tests {
                 "merge-gate",
                 "scan-throttle",
                 "api-guard",
-                "ship-it-guard"
+                "ship-it-guard",
+                "engine-role-guard"
             ]
         );
         assert_eq!(select("claude", "PreToolUse", &json!({"tool_name": "Glob"}), None), Vec::new(), "no entry matches Glob");

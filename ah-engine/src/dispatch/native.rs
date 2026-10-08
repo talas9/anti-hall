@@ -174,7 +174,8 @@ mod tests {
                 "merge-gate",
                 "scan-throttle",
                 "api-guard",
-                "ship-it-guard"
+                "ship-it-guard",
+                "engine-role-guard"
             ],
             "the Bash entries a built-in check answers, in hooks.json order"
         );
@@ -340,7 +341,7 @@ mod tests {
             payload_sha1: None,
             deadline_ms: None,
         };
-        assert_eq!(evaluate(&meta, &p, &|_, _, _| {}).into_iter().map(|(_, a)| a).collect::<Vec<_>>(), vec![Answer::Defer]);
+        assert_eq!(evaluate(&meta, &p, &|_, _, _| {}).into_iter().filter(|(id, _)| id == "verify-first-subagent").map(|(_, a)| a).collect::<Vec<_>>(), vec![Answer::Defer]);
     }
 
     #[test]
