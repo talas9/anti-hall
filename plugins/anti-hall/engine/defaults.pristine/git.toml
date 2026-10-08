@@ -515,6 +515,22 @@ value = "Override (only if the user explicitly asked): "
 doc = "Added to a block when the command writes a file with shell text: the file was scanned as shell."
 value = "\nTip: this file's content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `devswarm.js send --message-file <path>`)."
 
+[git.re_file_write_heredoc]
+doc = "JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip."
+value = '''<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?'''
+
+[git.re_file_write_redirect]
+doc = "JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape."
+value = '''(?:^|[\s;&|(])>{1,2}\s*[^\s&;|<>()0-9][^\s&;|<>()]*'''
+
+[git.re_file_write_tee]
+doc = "JavaScript regex source: a tee into a file, which counts as a redirect for the file-write shape."
+value = '''\btee\b\s+(?:-a\s+)?[^\s&;|<>()-][^\s&;|<>()]*'''
+
+[git.re_file_write_echo]
+doc = "JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc."
+value = '''\b(?:echo|printf)\b'''
+
 [git.handover_skipped_advisory]
 doc = "Advisory when the handover check ran out of budget. Placeholder: {n}."
 value = "anti-hall git-guard: the handover-commit check was skipped for {n} commit(s) in this command (too many distinct commits/repos to check). Make sure none of them includes a session handover (.anti-hall/handovers/**, HANDOVER*.md, CONTINUE-HERE.md)."

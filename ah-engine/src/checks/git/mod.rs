@@ -27,7 +27,6 @@ mod tests;
 pub mod tokenize;
 pub mod util;
 
-use crate::checks::lit_re;
 use crate::checks::{Check, Verdict};
 use crate::rules::Subject;
 use regex::Regex;
@@ -206,16 +205,18 @@ impl Ctx {
     }
 }
 
-/// Mirrors `git-guard.js` `looksLikeFileWriteShape`.
+/// Mirrors `git-guard.js` `looksLikeFileWriteShape`. The patterns are the JavaScript sources of the shipped defaults, translated
+/// so `\s` and `\b` keep JavaScript's meaning (U+FEFF is white space there, U+0085 is not).
 fn looks_like_file_write_shape(cmd: &str) -> bool {
     static HD: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static RED: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static TEE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static ECHO: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
-    let hd = HD.get_or_init(|| lit_re(r#"<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?"#));
-    let red = RED.get_or_init(|| lit_re(r#"(?:^|[\s;&|(])>{1,2}\s*[^\s&;|<>()0-9][^\s&;|<>()]*"#));
-    let tee = TEE.get_or_init(|| lit_re(r#"(?-u:\b)tee(?-u:\b)\s+(?:-a\s+)?[^\s&;|<>()-][^\s&;|<>()]*"#));
-    let echo = ECHO.get_or_init(|| lit_re(r"(?-u:\b)(?:echo|printf)(?-u:\b)"));
+    let js = |key: &'static str| crate::checks::guardkit::jsre::compile(crate::defaults::text(key), false);
+    let hd = HD.get_or_init(|| js("git.re_file_write_heredoc"));
+    let red = RED.get_or_init(|| js("git.re_file_write_redirect"));
+    let tee = TEE.get_or_init(|| js("git.re_file_write_tee"));
+    let echo = ECHO.get_or_init(|| js("git.re_file_write_echo"));
     let redirects = red.is_match(cmd);
     if hd.is_match(cmd) {
         return redirects || tee.is_match(cmd);
