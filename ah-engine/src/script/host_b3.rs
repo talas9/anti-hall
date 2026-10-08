@@ -184,6 +184,7 @@ pub fn local_time(ms: f64) -> String {
     let secs = (ms / 1000.0).floor() as libc::time_t;
     // SAFETY: `tm` is a plain-old-data struct that `localtime_r` fills; both pointers are valid for the call.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `secs` and `tm` are valid for the call; `localtime_r` writes only into `tm` and is thread-safe.
     let ok = unsafe { !libc::localtime_r(&secs, &mut tm).is_null() };
     if !ok {
         return "null".into();

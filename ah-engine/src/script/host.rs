@@ -494,7 +494,7 @@ pub fn cfg_live(key: &str) -> rquickjs::Result<String> {
             }
         }
     };
-    Ok(eff.get(key).map_or_else(|| entry(key).map(|e| e.value.to_json().to_string()), |r| Ok(r.value.to_string()))?)
+    eff.get(key).map_or_else(|| entry(key).map(|e| e.value.to_json().to_string()), |r| Ok(r.value.to_string()))
 }
 
 /// `tailLines(path, windowBytes, lineMax)`: the last `windowBytes` (clamped to `script.tail_max_bytes`) of a file as lines, the
@@ -594,7 +594,7 @@ pub fn exec(prog: &str, args: &[String], cwd: Option<&str>, env_pairs: &[String]
     for (k, v) in &base {
         cmd.env(k, v);
     }
-    for kv in env_pairs.chunks_exact(2) {
+    for kv in env_pairs.as_chunks::<2>().0 {
         cmd.env(&kv[0], &kv[1]);
     }
     let started = std::time::Instant::now();
