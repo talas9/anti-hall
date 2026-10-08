@@ -11,7 +11,6 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod agent_scan;
-pub mod ask_guard;
 pub mod claim_ledger;
 pub mod codex;
 pub mod command;
@@ -224,7 +223,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &speculation_judge::SpeculationJudge,
         &claim_ledger::ClaimLedger,
         &output_verify::OutputVerifyGuard,
-        &ask_guard::AskGuard,
+        &scripted::ASK_GUARD,
         &silent_agent_nudge::SilentAgentNudge,
         &stale_agent_stop_note::StaleAgentStopNote,
         &merge_gate::MergeGate,
@@ -351,7 +350,7 @@ mod tests {
         let payload = serde_json::json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"header": "DESTRUCTIVE", "question": "q"}]}});
         let null = Value::Null;
         let subject = Subject { event: "PreToolUse", tool: Some("AskUserQuestion"), cwd: None, tool_input: &null, prompt: None };
-        let run = || run_env_guarded(&ask_guard::AskGuard, &subject, &payload, &Value::Null, &env);
+        let run = || run_env_guarded(&scripted::ASK_GUARD, &subject, &payload, &Value::Null, &env);
         let write = |text: &str| std::fs::write(home.join(".anti-hall/settings.json"), text).unwrap();
         // the baseline: a readable file with the block mode on is answered, not deferred
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);

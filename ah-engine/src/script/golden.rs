@@ -5,7 +5,12 @@
 //!
 //! Placeholders in every string of a case: `{HOME}` is the case's fresh home directory, `{HOMEREAL}` its canonical path,
 //! `{PLUGIN}` the canonical plugin root (for a check whose answer names it).
-//! `files` maps a path under the home to its text, or to `{"link": target}` (a symbolic link) or `{"dir": true}`.
+//! `files` maps a path under the home to its text, or to `{"link": target}` (a symbolic link), `{"dir": true}` or
+//! `{"text": t, "age_ms": n}` (a file last modified `n` ms before the case's clock).
+//!
+//! Time: a case runs at a pinned clock ([`NOW0`], the script's `ah.clock.now()`); a string may carry `{MS:-300000}` (that many
+//! ms from the clock, as a number), `{ISO:-300000}` (its ISO text) or `{HM:-300000}` (its `hh:mm UTC` text). An answer is stored
+//! with the same tokens, so the corpus does not depend on the day it is replayed.
 use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -26,22 +31,53 @@ fn plugin() -> String {
     std::fs::canonicalize(root).unwrap().to_string_lossy().into_owned()
 }
 
-fn fill(s: &str, home: &str, real: &str) -> String {
-    s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home)
+/// The pinned clock a golden case runs at (the script's `ah.clock.now()`); generation uses the real time instead.
+pub const NOW0: f64 = 1_790_000_000_000.0;
+
+fn time_tokens(s: &str) -> Vec<(String, String, i64)> {
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = R.get_or_init(|| regex::Regex::new(r"\{(MS|ISO|HM):(-?[0-9]+)\}").unwrap());
+    re.captures_iter(s).map(|c| (c[0].to_string(), c[1].to_string(), c[2].parse().unwrap())).collect()
 }
 
-fn sub(v: &Value, home: &str, real: &str) -> Value {
+fn time_text(kind: &str, now: f64, off: i64) -> String {
+    let t = now + off as f64;
+    match kind {
+        "MS" => format!("{}", t as i64),
+        "ISO" => crate::checks::agent_scan::iso_utc(t),
+        _ => crate::checks::agent_scan::hhmm(t),
+    }
+}
+
+fn fill_time(s: &str, now: f64) -> String {
+    let mut out = s.to_string();
+    for (tok, kind, off) in time_tokens(s) {
+        out = out.replace(&tok, &time_text(&kind, now, off));
+    }
+    out
+}
+
+fn fill(s: &str, home: &str, real: &str, now: f64) -> String {
+    fill_time(&s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home), now)
+}
+
+fn sub(v: &Value, home: &str, real: &str, now: f64) -> Value {
     match v {
-        Value::String(s) => Value::String(fill(s, home, real)),
-        Value::Array(a) => Value::Array(a.iter().map(|x| sub(x, home, real)).collect()),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (fill(k, home, real), sub(x, home, real))).collect()),
+        Value::String(s) => Value::String(fill(s, home, real, now)),
+        Value::Array(a) => Value::Array(a.iter().map(|x| sub(x, home, real, now)).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (fill(k, home, real, now), sub(x, home, real, now))).collect()),
         other => other.clone(),
     }
 }
 
-/// The inverse of [`sub`] for an answer (canonical path first: it contains the plain one).
-fn unsub(s: &str, home: &str, real: &str) -> String {
-    s.replace(&plugin(), "{PLUGIN}").replace(real, "{HOMEREAL}").replace(home, "{HOME}")
+/// The inverse of [`sub`] for an answer (canonical path first: it contains the plain one; then the time texts the case's
+/// tokens produced, longest first).
+fn unsub(s: &str, home: &str, real: &str, times: &[(String, String)]) -> String {
+    let mut out = s.replace(&plugin(), "{PLUGIN}").replace(real, "{HOMEREAL}").replace(home, "{HOME}");
+    for (text, tok) in times {
+        out = out.replace(text, tok);
+    }
+    out
 }
 
 /// A case laid out on disk: `(payload, opts, event, env, home, real home)`.
@@ -52,11 +88,22 @@ pub struct Laid {
     pub env: RequestEnv,
     pub home: String,
     pub real: String,
+    /// The clock the case was laid out at.
+    pub now: f64,
+    /// `(text, token)` for every time token of the case, longest text first.
+    pub times: Vec<(String, String)>,
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn lay(case: &Value) -> Laid {
+    lay_at(case, NOW0)
+}
+
+pub fn lay_at(case: &Value, now: f64) -> Laid {
+    let mut times: Vec<(String, String)> = time_tokens(&case.to_string()).into_iter().map(|(tok, kind, off)| (time_text(&kind, now, off), tok)).collect();
+    times.sort_by_key(|(t, _)| std::cmp::Reverse(t.len()));
+    times.dedup();
     let home = std::env::temp_dir().join(format!("ah-golden-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
     crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(&home).unwrap();
@@ -69,10 +116,17 @@ pub fn lay(case: &Value) -> Laid {
                 std::fs::create_dir_all(parent).unwrap();
             }
             match spec {
-                Value::String(t) => std::fs::write(&path, fill(t, &home, &real)).unwrap(),
+                Value::String(t) => std::fs::write(&path, fill(t, &home, &real, now)).unwrap(),
                 Value::Object(o) if o.contains_key("link") => {
-                    let target = fill(o["link"].as_str().unwrap(), &home, &real);
+                    let target = fill(o["link"].as_str().unwrap(), &home, &real, now);
                     std::os::unix::fs::symlink(target, &path).unwrap();
+                }
+                Value::Object(o) if o.contains_key("text") => {
+                    std::fs::write(&path, fill(o["text"].as_str().unwrap(), &home, &real, now)).unwrap();
+                    if let Some(age) = o.get("age_ms").and_then(Value::as_f64) {
+                        let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis((now - age).max(0.0) as u64);
+                        std::fs::File::options().write(true).open(&path).unwrap().set_modified(at).unwrap();
+                    }
                 }
                 _ => std::fs::create_dir_all(&path).unwrap(),
             }
@@ -81,21 +135,23 @@ pub fn lay(case: &Value) -> Laid {
     let env: Vec<(String, String)> = case
         .get("env")
         .and_then(Value::as_object)
-        .map(|o| o.iter().map(|(k, v)| (k.clone(), fill(v.as_str().unwrap_or_default(), &home, &real))).collect())
+        .map(|o| o.iter().map(|(k, v)| (k.clone(), fill(v.as_str().unwrap_or_default(), &home, &real, now))).collect())
         .unwrap_or_default();
     Laid {
-        payload: sub(case.get("payload").unwrap_or(&Value::Null), &home, &real),
-        opts: sub(case.get("opts").unwrap_or(&Value::Null), &home, &real),
+        payload: sub(case.get("payload").unwrap_or(&Value::Null), &home, &real, now),
+        opts: sub(case.get("opts").unwrap_or(&Value::Null), &home, &real, now),
         event: case.get("event").and_then(Value::as_str).unwrap_or("PreToolUse").to_string(),
         env: RequestEnv::from_pairs(env),
         home,
         real,
+        now,
+        times,
     }
 }
 
 /// The verdict as the corpus stores it, with the case's directories replaced by their placeholders.
 pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
-    let u = |s: &str| unsub(s, &l.home, &l.real);
+    let u = |s: &str| unsub(s, &l.home, &l.real, &l.times);
     match v {
         None => json!({"v": "none"}),
         Some(Verdict::Allow) => json!({"v": "allow"}),
@@ -108,9 +164,14 @@ pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
 }
 
 /// The text of a watched file with its timestamps (runs of 12 or more digits) replaced by `{TS}`, or `null` when absent.
-fn watched(home: &str, real: &str, rel: &str) -> Value {
+fn watched(home: &str, real: &str, times: &[(String, String)], mask_iso: bool, rel: &str) -> Value {
     let Ok(text) = std::fs::read_to_string(Path::new(home).join(rel)) else { return Value::Null };
-    let text = unsub(&text, home, real);
+    let mut text = unsub(&text, home, real, times);
+    if mask_iso {
+        // a case flagged `mask_iso`: the written clock readings (ISO texts) are not compared, only that one was written
+        static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        text = R.get_or_init(|| regex::Regex::new(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z").unwrap()).replace_all(&text, "{ISO*}").into_owned();
+    }
     let mut out = String::new();
     let mut run = String::new();
     for ch in text.chars().chain(std::iter::once('\0')) {
@@ -134,7 +195,15 @@ pub fn watched_all_pub(case: &Value, l: &Laid) -> Value {
 
 fn watched_all(case: &Value, l: &Laid) -> Value {
     let rels: Vec<&str> = case.get("watch").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    Value::Object(rels.iter().map(|r| (r.to_string(), watched(&l.home, &l.real, r))).collect())
+    Value::Object(rels.iter().map(|r| (r.to_string(), watched(&l.home, &l.real, &l.times, case.get("mask_iso").and_then(Value::as_bool).unwrap_or(false), r))).collect())
+}
+
+/// The script's answer to a laid-out case, at the case's pinned clock.
+pub fn run_case(check: &str, l: &Laid) -> Option<Option<Verdict>> {
+    super::host::set_clock(Some(l.now));
+    let got = run_forced(check, &l.payload, &l.opts, &l.event, &l.env);
+    super::host::set_clock(None);
+    got
 }
 
 /// Every case's answer from the script, against its stored `expect`. Returns the number of cases and of each kind.
@@ -144,7 +213,7 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
     assert!(cases.len() >= 20, "{check}: a golden corpus of real size");
     for c in &cases {
         let l = lay(c);
-        let got = run_forced(check, &l.payload, &l.opts, &l.event, &l.env).unwrap_or_else(|| panic!("{check}: no shipped script"));
+        let got = run_case(check, &l).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = verdict_json(&got, &l);
         assert_eq!(
             got,
@@ -167,8 +236,9 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
 #[allow(dead_code)]
 pub fn regenerate(check: &str, compiled: &dyn Fn(&Laid) -> Option<Verdict>) {
     let mut out = String::new();
+    let real_now = crate::checks::replykit::io::now_ms();
     for c in load(check) {
-        let l = lay(&c);
+        let l = lay_at(&c, real_now);
         let mut c = c;
         c["expect"] = verdict_json(&compiled(&l), &l);
         if c.get("watch").is_some() {

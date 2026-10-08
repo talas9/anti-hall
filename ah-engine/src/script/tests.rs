@@ -484,7 +484,7 @@ fn golden_report(check: &str, limit: usize) {
     let (mut bad, mut shown) = (0usize, 0usize);
     for c in &cases {
         let l = golden::lay(c);
-        let got = super::run_forced(check, &l.payload, &l.opts, &l.event, &l.env).unwrap_or_else(|| panic!("{check}: no shipped script"));
+        let got = golden::run_case(check, &l).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = golden::verdict_json(&got, &l);
         let mut ok = got == c["expect"];
         if ok && c.get("watch").is_some() {
@@ -513,6 +513,11 @@ fn git_script_matches_the_compiled_port() {
 #[test]
 fn sibling_sweep_script_matches_the_compiled_port() {
     golden_report("sibling-sweep", 12);
+}
+
+#[test]
+fn ask_guard_script_matches_the_compiled_port() {
+    golden_report("ask-guard", 12);
 }
 
 // ---- swarm-guard (ported from the compiled check's unit tests; the memory figures and the clock are replaced by an owner-style

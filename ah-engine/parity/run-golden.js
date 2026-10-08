@@ -11,7 +11,13 @@ const plugin = path.resolve(__dirname, '..', '..', 'plugins', 'anti-hall');
 const corpus = path.resolve(__dirname, '..', 'tests', 'golden', check + '.jsonl');
 const cases = fs.readFileSync(corpus, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const pluginReal = fs.realpathSync(plugin);
-const fill = (s, home, real) => s.split('{PLUGIN}').join(pluginReal).split('{HOMEREAL}').join(real).split('{HOME}').join(home);
+// time tokens ({MS:-300000}, {ISO:..}, {HM:..}): offsets from the real clock here (the Node hook has no pinned clock); the stored
+// answer carries the same tokens, turned back into text below
+const NOW = Date.now();
+const timeText = (kind, off) => { const t = NOW + off; return kind === 'MS' ? String(t) : kind === 'ISO' ? new Date(t).toISOString() : new Date(t).toISOString().slice(11, 16) + ' UTC'; };
+const timeTokens = (s) => [...s.matchAll(/\{(MS|ISO|HM):(-?[0-9]+)\}/g)].map((m) => [m[0], timeText(m[1], Number(m[2]))]);
+const fillTime = (s) => { let o = s; for (const [tok, txt] of timeTokens(s)) o = o.split(tok).join(txt); return o; };
+const fill = (s, home, real) => fillTime(s.split('{PLUGIN}').join(pluginReal).split('{HOMEREAL}').join(real).split('{HOME}').join(home));
 const sub = (v, home, real) => {
   if (typeof v === 'string') return fill(v, home, real);
   if (Array.isArray(v)) return v.map((x) => sub(x, home, real));
@@ -28,12 +34,14 @@ for (const c of cases) {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     if (typeof spec === 'string') fs.writeFileSync(p, sub(spec, home, real));
     else if (spec && spec.link !== undefined) fs.symlinkSync(sub(spec.link, home, real), p);
+    else if (spec && spec.text !== undefined) { fs.writeFileSync(p, sub(spec.text, home, real)); if (spec.age_ms !== undefined) { const at = new Date(NOW - spec.age_ms); fs.utimesSync(p, at, at); } }
     else fs.mkdirSync(p, { recursive: true });
   }
   const env = { PATH: process.env.PATH, ...sub(c.env || {}, home, real) };
   if (c.opts && c.opts.plugin_root) env.CLAUDE_PLUGIN_ROOT = sub(c.opts.plugin_root, home, real); else env.CLAUDE_PLUGIN_ROOT = plugin;
   const r = cp.spawnSync('node', [path.join(plugin, hook), ...hookArgs], { input: JSON.stringify(sub(c.payload, home, real)), env, encoding: 'utf8' });
-  const fix = (s) => s.split(pluginReal).join('{PLUGIN}').split(real).join('{HOMEREAL}').split(home).join('{HOME}');
+  const times = timeTokens(JSON.stringify(c)).sort((a, b) => b[1].length - a[1].length);
+  const fix = (s) => { let o = s.split(pluginReal).join('{PLUGIN}').split(real).join('{HOMEREAL}').split(home).join('{HOME}'); for (const [tok, txt] of times) o = o.split(txt).join(tok); return o; };
   const e = c.expect, out = fix(r.stdout || ''), err = fix(r.stderr || '');
   let ok;
   if (e.v === 'allow') ok = r.status === 0 && out === '' && err === '';
@@ -46,7 +54,7 @@ for (const c of cases) {
   if (c.watch) {
     for (const rel of c.watch) {
       let text = null;
-      try { text = fix(fs.readFileSync(path.join(home, rel), 'utf8')).replace(/[0-9]{12,}/g, '{TS}'); } catch (_) { /* absent */ }
+      try { text = fix(fs.readFileSync(path.join(home, rel), 'utf8')).replace(/[0-9]{12,}/g, '{TS}'); if (c.mask_iso && text !== null) text = text.replace(/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z/g, '{ISO*}'); } catch (_) { /* absent */ }
       if (text !== c.writes[rel]) { bad++; console.log('MISMATCH (file)', c.n, rel, JSON.stringify(text), JSON.stringify(c.writes[rel])); }
     }
   }

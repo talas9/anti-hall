@@ -74,3 +74,6 @@ pub static GIT_AUDIT: Scripted = Scripted::new("git-audit", "git_audit.summary")
 
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
+
+/// `ask-guard` (PreToolUse on AskUserQuestion).
+pub static ASK_GUARD: Scripted = Scripted::new("ask-guard", "ask_guard.summary");
