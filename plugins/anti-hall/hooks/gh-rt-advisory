@@ -1,0 +1,5 @@
+#!/bin/sh
+# gh-rt-advisory is ENGINE-ONLY: there is no Node twin, the ah-engine answers its dispatch-table entry in-process (a plugin script,
+# engine/logic/gh-rt-advisory.js). This no-op is the command the table falls back to when the engine cannot answer (engine down,
+# deferral), so the entry keeps an id and a readable script like every other entry. It does nothing.
+exit 0

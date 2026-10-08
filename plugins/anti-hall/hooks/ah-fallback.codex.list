@@ -63,6 +63,7 @@ Bash	10	sh "${PLUGIN_ROOT}/hooks/engine-role-guard"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/auto-handover.js"
 *	10	sh "${PLUGIN_ROOT}/hooks/procwatch-advisory"
 *	10	sh "${PLUGIN_ROOT}/hooks/agent-reminders"
+*	10	sh "${PLUGIN_ROOT}/hooks/gh-rt-advisory"
 @PermissionRequest	10	empty
 @PostCompact	10	empty
 @SubagentStart	10	empty

@@ -92,6 +92,7 @@ Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js"
 *	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
 *	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/gh-rt-advisory"
 @Setup	10	empty
 @UserPromptExpansion	10	empty
 @PermissionRequest	10	empty

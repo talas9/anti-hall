@@ -7,12 +7,20 @@ description: "Use when committing, pushing, merging or releasing and a git or me
 
 Git, merge and release guards.
 
+## Verbs
+
+| Verb | What it does | Roles |
+|---|---|---|
+| `ah-engine gh` | `<status\|segment\|poll> [--cwd <dir>] [--force]` GitHub realtime (feature #20, independent of DevSwarm): `status` prints, from the state file with no network, what is followed (the... | main, codex, workspace, subagent (owner args: poll) |
+| `ah-engine gh_poll` | `` The scheduled GitHub realtime tick (the `gh_poll` job): notices pushes, polls the followed repos that are due inside the rate budget and... | main, codex |
+
 ## Guards
 
 - `git`: Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self-credit in commits, handover commits, launcher-directory...
 - `merge-side-pick`: Advisory: a push after a conflict was resolved by taking one side wholesale, with no test run since (port of merge-side-pick.js)
 - `git-audit`: Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer (port of...
 - `merge-gate`: Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and...
+- `gh-rt-advisory`: Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull...
 
 ## Switches
 

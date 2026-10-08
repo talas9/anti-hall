@@ -936,6 +936,7 @@ mod tests {
             "dispatch.in_process",
             "dispatch.max_timeout_s",
             "session.gitignore_probe_ms",
+            "realtime.", // the file-watch facility's debounce and poll intervals: daemon-wide, not per request
             "script.", // the interpreter switch and deadline are process-wide, not per request
             "ops.shadow_rate_", // the shadow sampling rates of the operator command-line tools: each run is its own process
         ];
