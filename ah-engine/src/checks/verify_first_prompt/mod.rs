@@ -6,10 +6,10 @@
 //! in the options). The text is then passed through the emit-dedupe store under the key `verify-first`: a queued burst
 //! collapses to one copy, and an unchanged reminder repeats only every `guards.injectionRepeatEvery` delivered turns.
 //!
-//! One case stays on Node: a DevSwarm Primary session appends a dispatch-tier sentence whose gate reads the repo's
-//! `CLAUDE.md` / `AGENTS.md` chain and the git superproject (`hooks/lib/primary-tier.js`, `dispatch-tier.js`). The check
-//! settles every other session itself, and when the session could be a Primary (the supervisor is on, this is not a child
-//! workspace, and the tier text is not switched off) it defers before anything is written.
+//! A DevSwarm Primary session appends a dispatch-tier sentence whose gate reads the repo's `CLAUDE.md` / `AGENTS.md`
+//! chain and the git superproject (`hooks/lib/primary-tier.js`, `dispatch-tier.js`); [`tier_text_on`] answers it. It
+//! defers (before anything is written) only when the gate depends on something it cannot reproduce: an absent or relative
+//! working directory, or a repository layout the identity resolver cannot classify.
 //!
 //! Mirrors `hooks/verify-first.js`; the store is [`crate::checks::emit_dedupe`].
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
@@ -27,8 +27,11 @@ use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use serde_json::Value;
 
+mod tier;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use tier::tier_text_on;
 
 /// True when the session might get the DevSwarm Primary sentence, which only Node can decide.
 pub(crate) fn primary_possible(st: &Settings) -> bool {
@@ -55,19 +58,21 @@ fn nudge_for(sha1_hex: &str) -> Option<&'static str> {
 }
 
 /// The check's decision on one payload: `Ok(Some(text))` emits, `Ok(None)` is silent.
-fn decide(payload: &Value, sha1_hex: &str, st: &Settings) -> Result<Option<String>, Defer> {
+fn decide(payload: &Value, sha1_hex: &str, st: &Settings, env: &RequestEnv) -> Result<Option<String>, Defer> {
     if !get_bool(st, defaults::raw("verify_first.sw_turn")) {
         return Ok(None);
     }
-    if primary_possible(st) {
-        return Err(Defer);
-    }
+    let primary = tier_text_on(st, env, payload).ok_or(Defer)?;
     let nudge = nudge_for(sha1_hex).ok_or(Defer)?;
-    let text = format!("{}{nudge}", defaults::text("verify_first.prefix"));
+    let mut text = format!("{}{nudge}", defaults::text("verify_first.prefix"));
+    if primary {
+        text = format!("{text}{}{}", defaults::text("verify_first.primary_joiner"), defaults::text("verify_first.primary_nudge"));
+    }
     let session = emit_dedupe::session_of(payload)?;
     let transcript = emit_dedupe::transcript_of(payload)?;
     let every = get_number(st, defaults::raw("verify_first.num_repeat_every"));
-    let normalized = defaults::text("verify_first.dedupe_normalized");
+    let normalized =
+        if primary { defaults::text("verify_first.dedupe_normalized_primary") } else { defaults::text("verify_first.dedupe_normalized") };
     let emit = match &session {
         Some(sid) => emit_dedupe::should_emit(
             st,
@@ -107,7 +112,7 @@ impl Check for VerifyFirst {
         }
         let st = Settings::from_env(env);
         let Some(digest) = opts.get("payload_sha1").and_then(Value::as_str) else { return Some(Verdict::Defer) };
-        match decide(payload, digest, &st) {
+        match decide(payload, digest, &st, env) {
             Ok(None) => Some(Verdict::Allow),
             Ok(Some(text)) => Some(Verdict::Advisory(msg::advisory_json(defaults::text("verify_first.event"), &text))),
             Err(Defer) => Some(Verdict::Defer),

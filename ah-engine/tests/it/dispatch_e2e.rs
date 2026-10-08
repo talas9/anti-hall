@@ -1319,7 +1319,8 @@ fn one_agent_call_records_exactly_one_spawn_per_log() {
 // ---- token cuts: the injection gate, through the real daemon -------------------------------------------------------------
 
 fn ups_payload(session: &str) -> String {
-    serde_json::json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "UserPromptSubmit", "prompt": "hi"}).to_string()
+    // no working directory: a DevSwarm Primary's tier gate cannot be settled without it, so the native checks hand the prompt to Node
+    serde_json::json!({"session_id": session, "hook_event_name": "UserPromptSubmit", "prompt": "hi"}).to_string()
 }
 
 fn short_reminder() -> &'static str {

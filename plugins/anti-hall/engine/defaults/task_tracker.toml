@@ -238,3 +238,15 @@ value = '"name":\s*"(Agent|Task|Workflow)"'
 [task_tracker.spawn_names]
 doc = "The tools that spawn an agent."
 value = ["Agent", "Task", "Workflow"]
+
+[task_tracker.primary_what]
+doc = "The 'what' line of the DevSwarm Primary dispatch-tier block."
+value = "Primary dispatch tier: classify each task before you dispatch it."
+
+[task_tracker.primary_instead]
+doc = "The 'instead' line of the DevSwarm Primary dispatch-tier block."
+value = "a workspace-scale MATTER (feature/fix/deploy: multi-step, own branch, own review) gets its own CHILD WORKSPACE: `node scripts/devswarm.js spawn <branch> -p \"<brief>\"`. Only finer-grained work (a lookup, a single command, a scoped investigation, a review pass) goes to a background subagent. Handing a workspace-scale task to a subagent is the same failure as leaving it idle."
+
+[task_tracker.primary_key]
+doc = "The emit-dedupe key of the Primary block, rationed apart from the reminder."
+value = "task-tracker-primary"
