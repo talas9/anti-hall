@@ -319,7 +319,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `proc.read_grace_ms` | `500` |  | ms | After a helper process (git, ps, vm_stat, a scheduled job) exits, how long its output may take to reach end of file; a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer. |
+| `proc.read_grace_ms` | `500` |  | ms | After a helper process (git, ps, vm_stat, a scheduled job) exits, the least time its output may take to reach end of file (it may also use what is left of the command's own timeout, as Node's spawnSync does); a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer. |
 
 ### engine.toml / request_env
 
@@ -4044,7 +4044,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.ps_line_re` | `^\s*(\d+)\s+(\d+)\s+(.*)$` |  |  | JavaScript regex source (case-sensitive) of one process listing line: pid, parent pid, command line. |
 | `mcp_reaper.ps_max_bytes` | `33554432` |  | bytes | The largest process listing accepted; a bigger one is treated as a failed listing and the sweep does nothing. |
 | `mcp_reaper.ps_timeout_ms` | `3000` |  | ms | How long the process listing may take before the sweep gives up and does nothing. |
-| `mcp_reaper.read_ms` | `1000` |  | ms | How long to wait for a finished command's output after it exits. |
+| `mcp_reaper.read_ms` | `1000` |  | ms | The least time to wait for a finished command's output after it exits; it may also use what is left of the command's timeout. Output that never arrives fails the command (never an empty listing). |
 | `mcp_reaper.reason_fields` | `reason, end_reason` |  |  | The payload fields that carry the reason, in order: the measured wire field first, the documented one as a fallback. |
 | `mcp_reaper.reason_launchd` | `launchd-managed` |  |  | The audit log reason for a candidate the macOS service manager owns. |
 | `mcp_reaper.reason_launchd_unverifiable` | `launchd-unverifiable` |  |  | The audit log reason for every candidate when the service-manager listing failed. |

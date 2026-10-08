@@ -136,7 +136,10 @@ fn wait_out(
             }
         }
     };
-    let until = Instant::now() + defaults::millis("proc.read_grace_ms");
+    // the output is collected until the pipe closes within what is left of the timeout (never less than the grace), as Node's
+    // spawnSync bounds the whole run by its timeout: a pipe a helper of the command closes late must not turn a finished
+    // command's output into an unread one (live2 684f526, ported onto this runner)
+    let until = Instant::now() + timeout.saturating_sub(start.elapsed()).max(defaults::millis("proc.read_grace_ms"));
     let collect = |rx: &mpsc::Receiver<(Vec<u8>, bool)>| rx.recv_timeout(until.saturating_duration_since(Instant::now())).ok().filter(|(_, clean)| *clean);
     match (collect(&out), collect(&err)) {
         (Some((stdout, _)), Some((stderr, _))) => Ok(Output { status, stdout, stderr }),
@@ -182,9 +185,10 @@ mod tests {
 
     #[test]
     fn a_leftover_process_holding_the_pipe_cannot_hang_the_caller() {
-        // review finding 7: `reader.join()` waited for EOF, which a leftover process holding stdout never sends
+        // review finding 7: `reader.join()` waited for EOF, which a leftover process holding stdout never sends. The output is
+        // awaited within the command's own timeout (as Node's spawnSync), never past it.
         let t = Instant::now();
-        let r = run(sh("(exec sleep 30) & echo partial"), "test", Duration::from_secs(10), Duration::from_millis(5));
+        let r = run(sh("(exec sleep 30) & echo partial"), "test", Duration::from_secs(1), Duration::from_millis(5));
         assert!(matches!(r, Err(Error::Unread)), "{r:?}");
         assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     }

@@ -564,7 +564,7 @@ min = 1
 unit = "ms"
 
 [proc.read_grace_ms]
-doc = "After a helper process (git, ps, vm_stat, a scheduled job) exits, how long its output may take to reach end of file; a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer."
+doc = "After a helper process (git, ps, vm_stat, a scheduled job) exits, the least time its output may take to reach end of file (it may also use what is left of the command's own timeout, as Node's spawnSync does); a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer."
 value = 500
 min = 1
 unit = "ms"
