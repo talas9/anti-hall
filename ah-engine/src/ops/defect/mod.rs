@@ -192,7 +192,7 @@ fn repo_key(run: &Run, cwd: &str) -> Result<Option<String>, Defer> {
     let parent = crate::checks::git::util::posix_dirname(&common);
     let base = sanitize_repo_name(&posix_basename(&parent));
     let d = ring::digest::digest(&ring::digest::SHA256, common.as_bytes());
-    let suffix: String = d.as_ref().iter().take(3).map(|b| format!("{b:02x}")).collect();
+    let suffix: String = d.as_ref().iter().take(defaults::num("defect.repo_hash_hex") as usize / 2).map(|b| format!("{b:02x}")).collect();
     Ok(Some(format!("{base}-{suffix}")))
 }
 
@@ -460,6 +460,13 @@ fn cmd_similar(run: &Run, a: &Args) -> Result<i32, Defer> {
 
 /// `defect <verb> [flags]`
 pub fn run(p: &Parsed) -> i32 {
+    let plan = crate::ops::shadow::begin(defaults::text("ops.verb_defect"), defaults::text("ops.script_defect"), &p.raw, None);
+    let code = run_inner(p);
+    crate::ops::shadow::end(plan, code);
+    code
+}
+
+fn run_inner(p: &Parsed) -> i32 {
     let cmd = p.raw.first().map(String::as_str).unwrap_or("");
     let a = parse_args(p.raw.get(1..).unwrap_or(&[]));
     if valid_flags().iter().any(|(c, _)| *c == cmd)

@@ -498,7 +498,7 @@ fn cmd_reset(run: &mut Run, a: &Args) {
 
 fn cmd_judge(run: &mut Run, a: &Args) {
     let verb = a.positional.first().map(String::as_str);
-    let Some(verb) = verb.filter(|v| matches!(*v, "on" | "off" | "status")) else {
+    let Some(verb) = verb.filter(|v| defaults::list("ops.judge_verbs").contains(v)) else {
         run.fail(defaults::text("ops.settings_usage_judge").to_string());
         return;
     };
@@ -597,10 +597,23 @@ pub(crate) fn effective_text(section: &str, key: &str, dflt: &str) -> Option<Str
     })
 }
 
+/// `settings.get(section, key) === true`.
+pub(crate) fn effective_bool(section: &str, key: &str) -> bool {
+    let run = Run::new();
+    store::find(section, key).and_then(|e| store::get(&run.ctx, e, None)).is_some_and(|v| matches!(v, J::Bool(true)))
+}
+
 // ---- entry ------------------------------------------------------------------------------------------------------------
 
 /// `settings <verb> [args] [--json]`
 pub fn run(p: &Parsed) -> i32 {
+    let plan = super::shadow::begin(defaults::text("ops.verb_settings"), defaults::text("ops.script_settings"), &p.raw, None);
+    let code = run_inner(p);
+    super::shadow::end(plan, code);
+    code
+}
+
+fn run_inner(p: &Parsed) -> i32 {
     let verb = p.raw.first().map(String::as_str);
     let a = parse_args(p.raw.get(1..).unwrap_or(&[]));
     let mut run = Run::new();

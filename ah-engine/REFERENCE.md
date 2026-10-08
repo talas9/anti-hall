@@ -14,6 +14,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `check` | `<name>` | yes | implemented | Run one built-in check in-process on a hook payload from stdin (used by the parity harness). |
 | `config` | `[validate <file>\|heal]` | no | implemented | Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the settings they lack from the pristine copy, also in a version-controlled checkout); versions, rollback and export are planned (D18, they need the config database). |
 | `ctl` | `<ping\|reload\|stop\|status>` | no | implemented | Send a control verb to the daemon: ping, reload, stop or status. |
+| `defect` | `<report\|list\|show\|rule\|archive\|backfill\|recurring\|similar> [flags] [--json]` | no | implemented | File, list, show and rule anti-hall defect reports and query the bug history (L9a, the port of scripts/defect.js): `report`, `list [--mine\|--open\|--unfinished]`, `show <fp>`, `rule <fp> --status ...`, `archive`, and the history verbs `backfill`, `recurring` and `similar`; the store is ~/.anti-hall/defects/. |
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
 | `doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON. |
 | `gen-hooks` | `--host claude\|codex [--kind hooks\|registry\|list\|map]` | yes | implemented | Print a file generated from the dispatch table (D87): the thin hooks.json (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map, for one host. |
@@ -32,7 +33,10 @@ Every command accepts `--json`. Read-only commands never change state.
 | `restore` | `<snapshot-dir>` | no | implemented | Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then swap the databases. |
 | `schedule` | `<list\|run <job>\|history> [--job <name>] [--limit <n>]` | no | implemented | The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json. |
 | `serve` | `` | no | implemented | Run the resident daemon in the foreground (the client starts it detached when needed). |
+| `settings` | `<show\|get\|set\|reset\|judge\|trust-command-allow\|trust-edit-allow> [args] [--json]` | no | implemented | Show or change any anti-hall setting (L9a, the port of scripts/settings.js): `show [--section <key>] [--all]`, `get <section.key>`, `set <section.key> <value> [--confirmed]`, `reset <section.key> [--confirmed]`, `judge on\|off\|status`, and `trust-command-allow` / `trust-edit-allow [<repo>] [--confirmed]`; the settings.json file and the registry are the plugin's own. |
+| `shadow-compare` | `<scratch dir>` | no | implemented | Internal: the detached half of a Node shadow (L9a). Runs the Node version of a sampled operator command on a scratch home and logs a mismatch to telemetry; started by the engine, not by people. |
 | `status` | `[--memory]` | yes | implemented | Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did. |
+| `statusline` | `(session JSON on stdin)` | no | implemented | The two-line status line the host runs after each turn (L9a, the port of statusline/statusline.js and its renderers): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open. |
 | `stop` | `` | no | implemented | Ask the daemon to drain and exit. |
 | `telemetry` | `[summary\|events\|rollup] [--window <7d>] [--kind <k>] [--limit <n>]` | no | implemented | Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and spill events), `rollup` (move complete days into archive.db and apply the retention). Local only. |
 | `version` | `` | yes | implemented | Print the version this build reports. |
@@ -4360,6 +4364,470 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.what_short` | `capture every request as a priority-sorted task; keep statuses current; deleg...` |  |  | The short per-turn reminder. |
 | `task_tracker.why_joiner` | `/` |  |  | What joins the distinct reasons tasks are blocked. |
 | `task_tracker.window_ms` | `21600000` |  | ms | How long the full directive stays fresh before it is injected again. |
+
+### settings_cli.toml / settings_cli
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `settings_cli.items` | `299 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
+| `settings_cli.sections` | `16 items` |  |  | The settings sections in display order: key, label, description. |
+
+### operator.toml / defect
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `defect.ansi_re` | `\x1b\[[0-9;]*[a-zA-Z]` |  |  | An ANSI control sequence. |
+| `defect.any_word` | `(any)` |  |  | The cause shown for a component hotspot. |
+| `defect.archive_age_ms` | `2592000000` |  |  | How long a closed defect stays in the open directory after its last report (30 days), in milliseconds. |
+| `defect.archive_dir` | `archive` |  |  | The archive of ruled, stale defects, inside the store directory. |
+| `defect.backfill_failed` | `❌ anti-hall · defect: backfill could not read git history at {repo}: {msg}` |  |  | A history that could not be read. Placeholders: repo, msg. |
+| `defect.cause_enum` | `12 items` |  |  | The root-cause taxonomy of the optional cause field. |
+| `defect.cause_other` | `other` |  |  | The cause given when no rule matches. |
+| `defect.cause_rules` | `11 items` |  |  | The keyword rules that classify a fix commit into a root cause: the cause, its patterns (JavaScript syntax, matched against the lower-cased subject and body) and its case-insensitive patterns. The highest score wins, ties go to the rule listed first. |
+| `defect.changelog_file` | `CHANGELOG.md` |  |  | The changelog read by `backfill`, at the repository root. |
+| `defect.cl_any_heading` | `^#` |  |  | Any changelog heading. |
+| `defect.cl_bullet` | `^[-*]\s+(.*)$` |  |  | A changelog bullet; group 1 is its text. |
+| `defect.cl_continuation` | `^\s+\S` |  |  | A continuation line of a changelog bullet. |
+| `defect.cl_heading` | `^##\s+v?(\d+\.\d+\.\d+)\b` |  |  | A changelog release heading; group 1 is the version. |
+| `defect.class_enum` | `8 items` |  |  | The defect classes a report may name. |
+| `defect.closed_statuses` | `fixed, wontfix, notabug, dup` |  |  | The derived statuses that mean a defect is finished. |
+| `defect.col_cause` | `CAUSE` |  |  | The column heading `CAUSE`. |
+| `defect.col_commit` | `COMMIT` |  |  | The column heading `COMMIT`. |
+| `defect.col_component` | `COMPONENT` |  |  | The column heading `COMPONENT`. |
+| `defect.col_components` | `COMPONENTS` |  |  | The column heading `COMPONENTS`. |
+| `defect.col_count` | `COUNT` |  |  | The column heading `COUNT`. |
+| `defect.col_dates` | `DATES` |  |  | The column heading `DATES`. |
+| `defect.col_score` | `SCORE` |  |  | The column heading `SCORE`. |
+| `defect.col_summary` | `SUMMARY` |  |  | The column heading `SUMMARY`. |
+| `defect.col_top_cause` | `TOP CAUSE` |  |  | The column heading `TOP CAUSE`. |
+| `defect.col_version` | `VERSION` |  |  | The column heading `VERSION`. |
+| `defect.col_versions` | `VERSIONS` |  |  | The column heading `VERSIONS`. |
+| `defect.collation_symbols` | ` _-,;:!?.'"()[]{}@*/\&#%`^+<=>\|~$` |  |  | The printable ASCII symbols in the order the root collation sorts them (before digits and letters). |
+| `defect.commit_cap` | `64` |  |  | Cap of the commit field of a ruling. |
+| `defect.component_cap` | `120` |  |  | Cap of the component field. |
+| `defect.component_steps` | `^\.\/ => , ^plugins\/anti-hall\/ => , \/lib\/ => /, \.(c\\|m)?js$\\|\.(sh\\|py\\|...` |  |  | The steps that reduce a path to its module, each `regex => replacement` in order: separators, leading ./, the plugin directory, lib segments, the file extension. |
+| `defect.control_re` | `[\x00-\x1f\x7f]` |  |  | A control character. |
+| `defect.dash` | `-` |  |  | Shown for a missing value in the text reports. |
+| `defect.default_top` | `10` |  |  | How many rows the text reports show unless --top says otherwise. |
+| `defect.deferred` | `this input needs the Node defect tool to answer exactly; nothing was written` |  |  | Said when the input needs the Node tool to answer exactly; nothing was written. |
+| `defect.dir` | `defects` |  |  | The defect store directory, under the base directory of the home. |
+| `defect.err_line` | `❌ anti-hall · defect: {e}` |  |  | An error line of `defect`. Placeholder: e. |
+| `defect.explicit_word` | ` (explicit)` |  |  | Marks an explicit regression. |
+| `defect.extra_keys` | `7 items` |  |  | The optional fields a record can carry; the last line with one wins. |
+| `defect.field_caps` | `5 entries` |  |  | The length caps, in UTF-16 units, of the narrative and identifying fields of a report or ruling. |
+| `defect.file_ext` | `.jsonl` |  |  | The extension of a defect file. |
+| `defect.fix_subject` | `^fix(\(([^)]*)\))?!?:\s*` |  |  | A fix commit subject (case-insensitive); group 2 is the scope. |
+| `defect.flag_not_valid` | `--{k} is not a valid flag for `{cmd}`` |  |  | An unknown flag. Placeholders: k, cmd. |
+| `defect.flag_valid_for` | `--{k} is valid for `{others}`, not `{cmd}`` |  |  | A flag typed against the wrong subcommand. Placeholders: k, others, cmd. |
+| `defect.fp_len` | `12` |  |  | Length of a fingerprint (and of the supersededBy field). |
+| `defect.git_bin` | `git` |  |  | The git program `backfill` runs. |
+| `defect.git_command_failed` | `Command failed: {cmd}` |  |  | First line of a git failure. Placeholder: cmd. |
+| `defect.git_dir_flag` | `-C` |  |  | The git flag that names the repository directory. |
+| `defect.git_log_args` | `log, --no-merges, --no-renames, --numstat, --format={rs}%H{us}%aI{us}%s{us}%b...` |  |  | The arguments of the git log that lists the commits ({rs} and {us} are the two separators). |
+| `defect.git_revlist_args` | `rev-list, {tag}` |  |  | The arguments of the git command that lists the commits under a tag. |
+| `defect.git_spawn_failed` | `spawnSync {bin} ENOENT` |  |  | Why git could not run. Placeholder: bin. |
+| `defect.git_tag_args` | `tag, --list` |  |  | The arguments of the git command that lists the tags. |
+| `defect.history_changelog_cap` | `600` |  |  | Cap of a backfilled changelog bullet. |
+| `defect.history_dir` | `history` |  |  | Where `backfill` keeps the fixed bugs imported from git history, inside the store directory. |
+| `defect.history_subject_cap` | `200` |  |  | Cap of a backfilled commit subject. |
+| `defect.hotspot_component_min` | `3` |  |  | Fixes of one component that make it a hotspot. |
+| `defect.hotspot_pair_min` | `2` |  |  | Fixes of one component and cause that make a hotspot. |
+| `defect.identity_cap` | `64` |  |  | Cap of a project identity. |
+| `defect.indent` | `  ` |  |  | In front of every row of the text reports. |
+| `defect.key_at` | `at` |  |  | The record or result key `at`. |
+| `defect.key_chunks` | `chunks` |  |  | The record or result key `chunks`. |
+| `defect.key_commit` | `commit` |  |  | The record or result key `commit`. |
+| `defect.key_component` | `component` |  |  | The record or result key `component`. |
+| `defect.key_field` | `field` |  |  | The record or result key `field`. |
+| `defect.key_fix_commit` | `fixCommit` |  |  | The record or result key `fixCommit`. |
+| `defect.key_fixed_in` | `fixedIn` |  |  | The record or result key `fixedIn`. |
+| `defect.key_for_type` | `forType` |  |  | The record or result key `forType`. |
+| `defect.key_fp` | `fp` |  |  | The record or result key `fp`. |
+| `defect.key_of` | `of` |  |  | The record or result key `of`. |
+| `defect.key_outcome` | `outcome` |  |  | The record or result key `outcome`. |
+| `defect.key_overflow` | `overflow` |  |  | The record or result key `overflow`. |
+| `defect.key_part` | `part` |  |  | The record or result key `part`. |
+| `defect.key_seq` | `seq` |  |  | The record or result key `seq`. |
+| `defect.key_status` | `status` |  |  | The record or result key `status`. |
+| `defect.key_t` | `t` |  |  | The record or result key `t`. |
+| `defect.key_text` | `text` |  |  | The record or result key `text`. |
+| `defect.key_truncated` | `truncated` |  |  | The record or result key `truncated`. |
+| `defect.key_v` | `v` |  |  | The record or result key `v`. |
+| `defect.kind_component` | `component` |  |  | The hotspot kind for one component. |
+| `defect.kind_pair` | `component+cause` |  |  | The hotspot kind for a component and cause. |
+| `defect.label_proj_flag` | `--proj` |  |  | Names the --proj flag in a truncation warning. |
+| `defect.label_proj_setting` | `defects.defaultProj` |  |  | Names the default-project setting in a truncation warning. |
+| `defect.list_sep` | `, ` |  |  | Between items of a listed message. |
+| `defect.loose_cap` | `5000` |  |  | Cap of the project and session fields (bounds pathological input only). |
+| `defect.marker_written` | `, marker written` |  |  | Added when a truncation marker was written into the value. |
+| `defect.max_archive_files` | `1000` |  |  | Most files in the archive across all month buckets. |
+| `defect.max_file_bytes` | `65536` |  |  | Most bytes of one defect file. |
+| `defect.max_line_bytes` | `4096` |  |  | Most bytes of one NDJSON line. |
+| `defect.max_open_files` | `200` |  |  | Most open defect files; a new defect past it is refused. |
+| `defect.max_report_lines` | `20` |  |  | Most report lines of one defect. |
+| `defect.no_repo` | `no-repo` |  |  | The project of a report filed outside any repository. |
+| `defect.none` | `none` |  |  | Shown under a report section with no rows. |
+| `defect.nonsource_dir` | `(^\|\/)(tests?\|__tests__\|fixtures\|docs\|eval)\/` |  |  | Directories whose files never name a component. |
+| `defect.notice` | `{pointer} [truncated from {n} chars]` |  |  | The marker appended to a truncated value. Placeholders: pointer, n. |
+| `defect.notice_pointer` | ` (rest continued in this record's overflow lines - see `defect show`)` |  |  | Prepended to the truncation marker when the cut tail was kept in overflow lines. |
+| `defect.null_word` | `null` |  |  | How a missing value reads as text in a comparison. |
+| `defect.others_sep` | ``, `` |  |  | Between the subcommands named in a wrong-flag message. |
+| `defect.out_defect_full` | `defect-full` |  |  | The outcome word `defect-full`. |
+| `defect.out_exists` | `exists` |  |  | The outcome word `exists`. |
+| `defect.out_found` | `found` |  |  | The outcome word `found`. |
+| `defect.out_invalid_cause` | `invalid-cause` |  |  | The outcome word `invalid-cause`. |
+| `defect.out_invalid_class` | `invalid-class` |  |  | The outcome word `invalid-class`. |
+| `defect.out_invalid_regression` | `invalid-regression-of` |  |  | The outcome word `invalid-regression-of`. |
+| `defect.out_invalid_severity` | `invalid-severity` |  |  | The outcome word `invalid-severity`. |
+| `defect.out_invalid_status` | `invalid-status` |  |  | The outcome word `invalid-status`. |
+| `defect.out_not_found` | `not-found` |  |  | The outcome word `not-found`. |
+| `defect.out_occurrence_appended` | `occurrence-appended` |  |  | The outcome word `occurrence-appended`. |
+| `defect.out_occurrence_capped` | `occurrence-capped` |  |  | The outcome word `occurrence-capped`. |
+| `defect.out_recorded` | `recorded` |  |  | The outcome word `recorded`. |
+| `defect.out_registry_full` | `registry-full` |  |  | The outcome word `registry-full`. |
+| `defect.out_ruled` | `ruled` |  |  | The outcome word `ruled`. |
+| `defect.out_too_large` | `too-large` |  |  | The outcome word `too-large`. |
+| `defect.out_write_unverified` | `write-unverified` |  |  | The outcome word `write-unverified`. |
+| `defect.overflow_chunk_bytes` | `3200` |  |  | Bytes of one spilled overflow chunk, well under the line cap. |
+| `defect.pad_cut` | `~ ` |  |  | Ends a column cut to its width. |
+| `defect.pair_sep` | `` |  |  | Joins a component and cause into a grouping key. |
+| `defect.proj_key` | `defaultProj` |  |  | The setting that holds the default project. |
+| `defect.proj_section` | `defects` |  |  | The settings section of the default project. |
+| `defect.reason_archive_full` | `archive-full` |  |  | Why a closed defect was not archived. |
+| `defect.reason_too_recent` | `too-recent` |  |  | Why a closed defect was not archived. |
+| `defect.rec_by_cause` | `BY CAUSE` |  |  | Heading of the per-cause table. |
+| `defect.rec_by_component` | `BY COMPONENT` |  |  | Heading of the per-component table. |
+| `defect.rec_hotspots` | `HOTSPOTS (component fixed >= {component_min}x, or same component+cause >= {pa...` |  |  | Heading of the hotspots. Placeholders: component_min, pair_min. |
+| `defect.rec_more` | `  ... {n} more (--top N / --json)` |  |  | More regressions than shown. Placeholder: n. |
+| `defect.rec_regression_row` | `  {what} {fixed} re-fixes {was} {earlier} {component} [{cause}]{explicit}` |  |  | One likely regression row. Placeholders: what, fixed, was, earlier, component, cause, explicit. |
+| `defect.rec_regressions` | `LIKELY REGRESSIONS (same component+cause fixed again within {window} releases...` |  |  | Heading of the likely regressions. Placeholder: window. |
+| `defect.rec_since` | ` since {since}` |  |  | Added to the total line when --since was given. Placeholder: since. |
+| `defect.rec_total` | `{total} records{since} (reported + backfill)` |  |  | First line of `recurring`. Placeholders: total, since. |
+| `defect.regression_extra` | `3` |  |  | Extra report lines allowed past the cap when the defect is fixed or regressed. |
+| `defect.regression_window` | `5` |  |  | Releases within which a second fix of the same component and cause is a likely regression. |
+| `defect.repo_hash_hex` | `6` |  |  | Hex digits of the hash in a project key. |
+| `defect.repo_name_cap` | `40` |  |  | Cap of the readable repository name in a project key. |
+| `defect.repo_word` | `repo` |  |  | The repository name when nothing readable is left. |
+| `defect.rs_char` | `` |  |  | Separates commits in the git log format. |
+| `defect.ruling_status_enum` | `ack, fixed, wontfix, notabug, dup, partial` |  |  | The statuses a ruling may set. |
+| `defect.severity_enum` | `p0, p1, p2` |  |  | The severities a report may name. |
+| `defect.short_sha` | `7` |  |  | Characters of a commit hash shown in the text reports. |
+| `defect.sim_none` | `no similar past fixes found` |  |  | Said when `similar` finds nothing. |
+| `defect.skill_file` | `(^\|\/)skills\/[^/]+\/SKILL\.md$` |  |  | A skill document path. |
+| `defect.skill_suffix` | `\/SKILL\.md$` |  |  | The skill document name removed to name its directory. |
+| `defect.source_ext` | `\.(c\|m)?js$\|\.(sh\|py\|ts)$` |  |  | A file that can name a fix's component: shipped code. |
+| `defect.source_reported` | `reported` |  |  | The source of a record that was reported, not backfilled. |
+| `defect.span_sep` | `..` |  |  | Between the two ends of a version or date span. |
+| `defect.status_fixed` | `fixed` |  |  | The status of a fixed defect. |
+| `defect.status_open` | `open` |  |  | The status of a defect nobody has ruled on. |
+| `defect.status_regressed` | `regressed` |  |  | The derived status of a fixed defect that reappeared in a build at or after the fix. |
+| `defect.step_sep` | ` => ` |  |  | Separates a regex from its replacement in a component step. |
+| `defect.stop_words` | `the and for not but with from into that this than then when what does never n...` |  |  | Words ignored when matching a new bug against past fixes. |
+| `defect.subject_version` | `^fix(\([^)]*\))?!?:\s*v(\d+\.\d+(?:\.\d+)?)\b` |  |  | A fix subject that names its own release (case-insensitive); group 2 is the version. |
+| `defect.summary_cap` | `100` |  |  | Characters of a summary shown by `similar`. |
+| `defect.t_backfill` | `backfill` |  |  | The line type `backfill`. |
+| `defect.t_overflow` | `overflow` |  |  | The line type `overflow`. |
+| `defect.t_report` | `report` |  |  | The line type `report`. |
+| `defect.t_ruling` | `ruling` |  |  | The line type `ruling`. |
+| `defect.tag_re` | `^v?\d+\.\d+\.\d+$` |  |  | A release tag. |
+| `defect.test_file` | `\.test\.(c\|m)?js$\|\.spec\.(c\|m)?js$` |  |  | A test file name. |
+| `defect.tested_module` | `^tests\/(.+?)(\.[a-z0-9-]+)*\.test\.(c\|m)?js$` |  |  | A test file path; group 1 is the module it tests. |
+| `defect.true_word` | `true` |  |  | How a bare flag reads as text. |
+| `defect.trunc_part` | `{k} ({len} chars -> cap {cap}{marked})` |  |  | One cut field. Placeholders: k, len, cap, marked. |
+| `defect.unclassified` | `(unclassified)` |  |  | The group of records with no component or cause. |
+| `defect.unknown_word` | `unknown` |  |  | The version or session when none is known. |
+| `defect.unreleased` | `unreleased` |  |  | The release of a fix not in any release. |
+| `defect.us_char` | `` |  |  | Separates the fields of a commit in the git log format. |
+| `defect.usage` | `💡 anti-hall · defect: usage: defect.js <report\|list\|show\|rule\|archive\|backfil...` |  |  | Usage of `defect`. |
+| `defect.usage_rule` | `💡 anti-hall · defect: usage: defect.js rule <fp> --status ...` |  |  | Usage of `defect rule`. |
+| `defect.usage_show` | `💡 anti-hall · defect: usage: defect.js show <fp>` |  |  | Usage of `defect show`. |
+| `defect.usage_similar` | `💡 anti-hall · defect: usage: defect.js similar <text...> [--component X] [--t...` |  |  | Usage of `defect similar`. |
+| `defect.v_cap` | `40` |  |  | Cap of the version fields. |
+| `defect.valid_flags` | `8 items` |  |  | The closed set of flags of each subcommand (the first word is the subcommand). |
+| `defect.valid_flags_line` | `valid flags for `{cmd}`: {list}` |  |  | Lists the flags a subcommand accepts. Placeholders: cmd, list. |
+| `defect.version_re` | `^v?\d+\.\d+\.\d+$` |  |  | A version given to --since. |
+| `defect.warn_identity` | `⚠️ anti-hall · defect: {label} truncated to fit the identity cap: {n} chars -...` |  |  | A project identity cut to its cap. Placeholders: label, n, cap. |
+| `defect.warn_truncated` | `⚠️ anti-hall · defect: content was truncated to fit the defect schema: {parts}` |  |  | Fields cut to fit the schema. Placeholder: parts. |
+
+### operator.toml / env
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `env.antihall_session_id` | `ANTIHALL_SESSION_ID` |  |  | The session id anti-hall exports when the host does not. |
+| `env.claude_session_id` | `CLAUDE_SESSION_ID` |  |  | The session id the host exports; `defect report` files a report under it. |
+
+### operator.toml / ops
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `ops.advanced_hidden` | `_{count} advanced setting(s) hidden — rerun with `--all` to show them._` |  |  | Line shown when a section has advanced settings and `--all` was not given. Placeholder: count. |
+| `ops.advanced_label` | `**Advanced:**` |  |  | Heading of the advanced settings table. |
+| `ops.advanced_suffix` | ` (advanced)` |  |  | After the name of an advanced setting in the tables. |
+| `ops.allow_kinds` | `2 entries` |  |  | Per allowlist kind: the file in the repository, the per-user trust record and the key of the list in the file. |
+| `ops.backend_api` | `api` |  |  | Backend name when the paid API judge is used. |
+| `ops.backend_api_api` | ` (speculation-judge calls the Anthropic API)` |  |  | Detail when the judge calls the Anthropic API. |
+| `ops.backend_api_cli` | ` (speculation-judge calls the local claude CLI, jev.judgeBackend={backend})` |  |  | Detail when the judge calls the local CLI. Placeholder: backend. |
+| `ops.backend_jev` | `jev` |  |  | Backend name when the speculation guard asks Jev. |
+| `ops.backend_jev_detail` | ` (speculation-guard asks Jev; the paid API judge exits early{tail}` |  |  | Detail when the backend is Jev. Placeholder: tail. |
+| `ops.backend_lexical` | `lexical` |  |  | Backend name when only the lexical guard runs. |
+| `ops.backend_lexical_detail` | ` (lexical speculation-guard only)` |  |  | Detail when only the lexical guard runs. |
+| `ops.backend_line` | `backend: {backend}{detail}` |  |  | The backend line of `judge`. Placeholders: backend, detail. |
+| `ops.cell_sep` | ` \| ` |  |  | Between two cells of a settings table row. |
+| `ops.code_quote` | ``` |  |  | The quote around an object value in the settings tables. |
+| `ops.cost_line` | `Cost: {cost}.` |  |  | The cost line of `judge on`. Placeholder: cost. |
+| `ops.defer_exit` | `75` |  |  | Exit code of an operator command that leaves the work to the Node tool because it cannot reproduce the Node behaviour exactly (nothing is written). |
+| `ops.edit_absolute` | `absolute path` |  |  | Why an edit path is ignored. |
+| `ops.edit_backslash` | `backslash (use / separators)` |  |  | Why an edit path is ignored. |
+| `ops.edit_dotdot` | `.. path segment` |  |  | Why an edit path is ignored. |
+| `ops.edit_empty` | `empty or padded with whitespace` |  |  | Why an edit path is ignored. |
+| `ops.edit_everything` | `matches every file` |  |  | Why an edit path is ignored. |
+| `ops.edit_home` | `home-relative path` |  |  | Why an edit path is ignored. |
+| `ops.empty_value` | `(empty)` |  |  | How `settings` prints an empty or missing value. |
+| `ops.false_word` | `false` |  |  | The value `judge off` stores. |
+| `ops.get_line` | `{name} = {value} (source: {source}, default: {default})` |  |  | Output of `settings get`. Placeholders: name, value, source, default. |
+| `ops.heading_prefix` | `## ` |  |  | In front of a section label in `settings show`. |
+| `ops.integrations_title` | `**Jev integrations — effective mode** (what the runtime applies, including th...` |  |  | Heading of the Jev integrations table. |
+| `ops.jev_detail_plain` | `)` |  |  | Tail of the Jev detail when the judge switch is off. |
+| `ops.jev_detail_skipped` | `, API judge skipped)` |  |  | Tail of the Jev detail when the judge switch is on. |
+| `ops.jev_effective_key` | `jevEffectiveIntegrations` |  |  | The key of the effective-integrations list in `settings show --json`. |
+| `ops.jev_integrations_section` | `jevIntegrations` |  |  | The settings section of the per-integration Jev modes. |
+| `ops.jev_section` | `jev` |  |  | The settings section of the Jev switches. |
+| `ops.js_compile` | `new RegExp(globalThis.__ah_pattern)` |  |  | The script that checks a regex source compiles, in the embedded interpreter. |
+| `ops.js_pattern_var` | `__ah_pattern` |  |  | The name of the global the embedded interpreter receives a regex source in. |
+| `ops.judge_auto` | `auto` |  |  | The backend value that uses the API with a key and the CLI without. |
+| `ops.judge_backend_default` | `api` |  |  | The backend `judge` assumes when none is set. |
+| `ops.judge_backend_key` | `judgeBackend` |  |  | The setting that names how the judge reaches the model. |
+| `ops.judge_cli` | `cli` |  |  | The backend value that runs the local Claude CLI. |
+| `ops.judge_cost_api` | `about $0.0001–0.001 and 1–3 s per turn end, estimated, not measured; precisio...` |  |  | What the API judge costs. |
+| `ops.judge_cost_cli` | `no API bill (your Claude login's usage) and about 5–6 s per turn end, measure...` |  |  | What the CLI judge costs. |
+| `ops.judge_line` | `judge: {state}{extra}` |  |  | First line of `judge`. Placeholders: state, extra. |
+| `ops.judge_model_default` | `haiku` |  |  | The model alias `judge status` shows when none is set. |
+| `ops.judge_model_key` | `judgeModel` |  |  | The setting that names the judge model. |
+| `ops.judge_no_key_lines` | `No key visible here. Add one so the judge can call the Anthropic API:,   Clau...` |  |  | Said by `judge on` when no key is visible and the API would be used. |
+| `ops.judge_still_on` | ` (still on via env ANTIHALL_SEMANTIC_JUDGE)` |  |  | Added after `judge: on` when `judge off` finds it still on. |
+| `ops.judge_switch_key` | `semanticJudge` |  |  | The setting that switches the semantic judge. |
+| `ops.judge_verbs` | `on, off, status` |  |  | The verbs of `settings judge`. |
+| `ops.key_found` | `key: found (value not shown)` |  |  | The key line when an Anthropic key is visible. |
+| `ops.key_missing` | `key: not visible to this process` |  |  | The key line when no key is visible. |
+| `ops.kind_command` | `command` |  |  | The name of the command allowlist kind. |
+| `ops.kind_edit` | `edit` |  |  | The name of the edit allowlist kind. |
+| `ops.list_sep` | `, ` |  |  | Separator of the values listed in a settings message. |
+| `ops.lock_busy` | `settings.json is being written by another process; run the Node settings tool...` |  |  | Said when another process holds the settings lock past the wait budget; the Node tool names the holder, so the command leaves the change to it. |
+| `ops.locked_suffix` | ` (safety: needs --confirmed)` |  |  | After the name of a safety setting in the tables. |
+| `ops.logs_default` | `jev-assist.ndjson` |  |  | Where every other integration logs. |
+| `ops.logs_triage` | `jev-triage.ndjson (+ outcome rows in jev-assist.ndjson)` |  |  | Where the triage integration logs. |
+| `ops.mode_off` | `off` |  |  | The word for an integration or switch that is off. |
+| `ops.mode_on` | `on` |  |  | The word for an integration or switch that is on. |
+| `ops.model_line` | `model: {model}` |  |  | The model line of `judge status`. Placeholder: model. |
+| `ops.not_toggleable_intro` | `These parts have no switch on purpose:` |  |  | Introduction of the list of parts without a switch. |
+| `ops.not_toggleable_line` | `- `{name}`: {reason}` |  |  | One part without a switch. Placeholders: name, reason. |
+| `ops.not_toggleable_title` | `## Not toggleable` |  |  | Heading of the list of parts without a switch. |
+| `ops.pat_alt` | `top-level \| alternation` |  |  | Why a command pattern is ignored. |
+| `ops.pat_end` | `must end with $` |  |  | Why a command pattern is ignored. |
+| `ops.pat_not_string` | `not a string` |  |  | Why an allowlist entry is ignored: it is not a string. |
+| `ops.pat_regex` | `invalid regex` |  |  | Why a command pattern is ignored. |
+| `ops.pat_start` | `must start with ^` |  |  | Why a command pattern is ignored. |
+| `ops.pat_wildcard` | `unbounded wildcard ({what})` |  |  | Why a command pattern is ignored. Placeholder: what (the wildcard). |
+| `ops.pat_word` | `must begin with a literal command word after ^` |  |  | Why a command pattern is ignored. |
+| `ops.reset_line` | `{name} reset -> {value}` |  |  | Output of `settings reset`. Placeholders: name, value. |
+| `ops.row_bad` | `! ` |  |  | Between the indent and an ignored allowlist entry. |
+| `ops.row_ignored` | `   (ignored: {why})` |  |  | After an ignored allowlist entry. Placeholder: why. |
+| `ops.row_indent` | `  ` |  |  | In front of an allowlist row. |
+| `ops.row_ok` | `  ` |  |  | Between the indent and a valid allowlist entry. |
+| `ops.rule_cell` | `---` |  |  | One header-rule cell of a settings table. |
+| `ops.safety_add` | `Adding {list} to edit-guard's allow list means {note}. Ask the user to confir...` |  |  | Warning for widening an allow list. Placeholders: list, note. |
+| `ops.safety_change` | `Changing {guard} means {note}. Ask the user to confirm, then re-run with --co...` |  |  | Warning for re-targeting a bound credential. Placeholders: guard, note. |
+| `ops.safety_note_default` | `this weakens a safety guard` |  |  | The consequence named when a safety setting has no note of its own. |
+| `ops.safety_turn` | `Turning {verb} {guard} means {note}. Ask the user to confirm, then re-run wit...` |  |  | Warning for turning a guard off or a bypass on. Placeholders: verb, guard, note. |
+| `ops.safety_verb_off` | `off` |  |  | The verb of a warning about turning a guard off. |
+| `ops.safety_verb_on` | `on` |  |  | The verb of a warning about turning a bypass on. |
+| `ops.script_defect` | `scripts/defect.js` |  |  | The Node defect script, relative to the plugin root. |
+| `ops.script_settings` | `scripts/settings.js` |  |  | The Node settings script, relative to the plugin root. |
+| `ops.script_statusline` | `statusline/statusline.js` |  |  | The Node status line dispatcher, relative to the plugin root. |
+| `ops.set_err_bool` | `expected a boolean (true/false/on/off/1/0), got {got}` |  |  | Why a value is not a boolean. Placeholder: got (JSON text). |
+| `ops.set_err_enum` | `must be one of: {values}` |  |  | A value outside the allowed words. Placeholder: values. |
+| `ops.set_err_exclusive_min` | `must be > {bound}` |  |  | A number at or below the exclusive minimum. Placeholder: bound. |
+| `ops.set_err_max` | `must be <= {bound}` |  |  | A number above the maximum. Placeholder: bound. |
+| `ops.set_err_min` | `must be >= {bound}` |  |  | A number below the minimum. Placeholder: bound. |
+| `ops.set_err_number` | `expected a number, got {got}` |  |  | Why a value is not a number. Placeholder: got (JSON text). |
+| `ops.set_err_object` | `this setting is file-only (edit ~/.anti-hall/settings.json directly); it cann...` |  |  | Why a file-only setting cannot be set. |
+| `ops.set_line` | `{name} = {value}` |  |  | Output of `settings set`. Placeholders: name, value. |
+| `ops.settings_err` | `❌ anti-hall · settings: {error}` |  |  | An error line of `settings`. Placeholder: error. |
+| `ops.settings_sources` | `5 entries` |  |  | The label `settings` prints for each tier a value can come from. |
+| `ops.settings_unknown_section` | `❌ anti-hall · settings: unknown section: {name}` |  |  | Unknown `--section`. Placeholder: name. |
+| `ops.settings_unknown_setting` | `❌ anti-hall · settings: unknown setting: {name} (expected section.key)` |  |  | Unknown setting name. Placeholder: name. |
+| `ops.settings_usage` | `💡 anti-hall · settings: usage: settings.js <show\|get\|set\|reset\|judge\|trust-co...` |  |  | Usage of `settings`. |
+| `ops.settings_usage_judge` | `💡 anti-hall · settings: usage: settings.js judge on\|off\|status` |  |  | Usage of `settings judge`. |
+| `ops.settings_usage_set` | `💡 anti-hall · settings: usage: settings.js set <section.key> <value>` |  |  | Usage of `settings set`. |
+| `ops.shadow_child_env` | `AH_ENGINE_SHADOW_CHILD` |  |  | Set in the shadow child so it never starts a shadow of its own. |
+| `ops.shadow_command` | `shadow-compare` |  |  | The internal command that runs one comparison. |
+| `ops.shadow_copy` | `7 items` |  |  | The entries of ~/.anti-hall the Node shadow gets a private copy of (everything it may change); compared after both runs. |
+| `ops.shadow_copy_bytes` | `16777216` |  |  | Most bytes copied into one shadow home. |
+| `ops.shadow_digest_bytes` | `8` |  |  | Bytes of the content digest in the shadow state comparison. |
+| `ops.shadow_dir` | `shadow` |  |  | The shadow scratch directory, inside the engine state directory. |
+| `ops.shadow_dry_env` | `ANTIHALL_INGEST_DRY_RUN` |  |  | The dry-run switch every Node script honours. |
+| `ops.shadow_engine_err` | `engine.err` |  |  | The engine stderr of a sampled run. |
+| `ops.shadow_engine_out` | `engine.out` |  |  | The engine stdout of a sampled run. |
+| `ops.shadow_event` | `shadow` |  |  | The command name of the telemetry event a comparison leaves. |
+| `ops.shadow_home_word` | `HOME` |  |  | Replaces the real and the scratch home in compared text. |
+| `ops.shadow_ignore_ext` | `.lock, .tmp` |  |  | File name endings left out of the state comparison. |
+| `ops.shadow_job_file` | `job.json` |  |  | The comparison job file. |
+| `ops.shadow_keep` | `20` |  |  | How many mismatching comparisons keep their files for review. |
+| `ops.shadow_link_home` | `.claude, .claude.json` |  |  | The home entries the Node shadow reads through links. |
+| `ops.shadow_lock_ext` | `.lock` |  |  | Lock files are never linked into the shadow home. |
+| `ops.shadow_masks` | `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z => TS, corru...` |  |  | Patterns replaced before comparing (`regex => replacement`): clock values and animation frames. |
+| `ops.shadow_node` | `node` |  |  | The Node program the shadow runs when AH_ENGINE_NODE is not set. |
+| `ops.shadow_per` | `1000` |  |  | The sampling denominator of the shadow rates. |
+| `ops.shadow_rate_defect` | `1000` | `AH_ENGINE_SHADOW_RATE_DEFECT` |  | How many runs in a thousand of the defect command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one. |
+| `ops.shadow_rate_settings` | `1000` | `AH_ENGINE_SHADOW_RATE_SETTINGS` |  | How many runs in a thousand of the settings command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one. |
+| `ops.shadow_rate_statusline` | `50` | `AH_ENGINE_SHADOW_RATE_STATUSLINE` |  | How many runs in a thousand of the statusline command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one. |
+| `ops.shadow_report` | `engine exit {want}, node exit {got}\n--- engine stdout\n{e_out}\n--- node std...` |  |  | The report a mismatching comparison leaves. Placeholders: want, got, e_out, n_out, e_err, n_err, e_state, n_state. |
+| `ops.shadow_report_file` | `mismatch.txt` |  |  | The report left by a mismatching comparison. |
+| `ops.shadow_skip` | `context-pct, ah-engine, ah-node-shadow, shadow` |  |  | The entries of ~/.anti-hall the Node shadow never sees. |
+| `ops.shadow_stdin_file` | `stdin.bin` |  |  | The stdin of a sampled run. |
+| `ops.shadow_timeout_ms` | `20000` |  |  | Longest a Node shadow run may take. |
+| `ops.speculation_id` | `speculation` |  |  | The Jev integration that decides the speculation backend. |
+| `ops.state_invalid_json` | `not valid JSON` |  |  | The allowlist file state. |
+| `ops.state_unreadable` | `unreadable` |  |  | The allowlist file state. |
+| `ops.table_headers` | `Setting, Value, Default, Source, Description` |  |  | The columns of a settings table. |
+| `ops.table_headers_integrations` | `Integration, Effective, Configured, Source, Logs to` |  |  | The columns of the Jev integrations table. |
+| `ops.true_word` | `true` |  |  | The value `judge on` stores. |
+| `ops.trust_done` | `trusted {repo}/{rel} (sha256 {hash}):` |  |  | First line after a trust is recorded. Placeholders: repo, rel, hash. |
+| `ops.trust_missing` | `no {rel} in {top}` |  |  | No allowlist file. Placeholders: rel, top. |
+| `ops.trust_not_git` | `not inside a git repository: {target}` |  |  | No repository. Placeholder: target. |
+| `ops.trust_state` | `{rel} in {top} is {state}` |  |  | An unusable allowlist file. Placeholders: rel, top, state. |
+| `ops.trust_symlink` | `refusing a symlinked {rel} (or .anti-hall dir) in {top}` |  |  | A symlinked allowlist. Placeholders: rel, top. |
+| `ops.trust_unsure` | `the repository layout needs the Node settings tool to classify; nothing was r...` |  |  | Said when the repository layout cannot be classified exactly; the Node tool decides. |
+| `ops.trust_warning` | `{what}{repo} without delegating them. Re-run with --confirmed to trust this e...` |  |  | The confirmation request. Placeholders: what, repo, hash. |
+| `ops.trust_what_command` | `Trusting lets the main thread run these commands in ` |  |  | What trusting a command allowlist allows. |
+| `ops.trust_what_edit` | `Trusting lets the main thread edit files matching these paths in ` |  |  | What trusting an edit allowlist allows. |
+| `ops.trust_write_failed` | `could not write {path}: {error}` |  |  | The trust record could not be written. Placeholders: path, error. |
+| `ops.undefined_word` | `undefined` |  |  | What the Node tool prints for a missing argument. |
+| `ops.verb_defect` | `defect` |  |  | The shadow name of the defect command. |
+| `ops.verb_settings` | `settings` |  |  | The shadow name of the settings command. |
+| `ops.verb_statusline` | `statusline` |  |  | The shadow name of the status line. |
+
+### operator.toml / statusline
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `statusline.active_ms` | `60000` |  |  | How recently a task output must have changed to count as active, in milliseconds. |
+| `statusline.activity_ms` | `120000` |  |  | How recent a spawn must be to count as active, in milliseconds. |
+| `statusline.activity_template` | `[{cells}] {cyan}orchestrating{reset} {dim}·{reset} {blue}{count} agent{plural...` |  |  | The swarm activity line. Placeholders: cells cyan reset dim blue count plural. |
+| `statusline.agent_icon` | `🤖 ` |  |  | Before the subagent count. |
+| `statusline.agent_infix` | `-agent-` |  |  | Marks a todo file of an agent. |
+| `statusline.agent_many` | ` agents` |  |  | The word after several agents. |
+| `statusline.agent_one` | ` agent` |  |  | The word after one agent. |
+| `statusline.ahead_behind_re` | `\+(\d+)\s+-(\d+)` |  |  | The ahead and behind counts. |
+| `statusline.bar_empty` | `─` |  |  | An empty bar cell. |
+| `statusline.bar_fill` | `█` |  |  | A filled bar cell. |
+| `statusline.bar_width` | `20` |  |  | Cells of a bar. |
+| `statusline.base_file` | `base-statusline.json` |  |  | The base status line configuration, in the base directory. |
+| `statusline.base_key` | `base` |  |  | The setting that holds the base command. |
+| `statusline.base_max_buffer` | `262144` |  |  | Most bytes a base command may print. |
+| `statusline.branch_ab` | `# branch.ab ` |  |  | The git status line that counts commits ahead and behind. |
+| `statusline.branch_head` | `# branch.head ` |  |  | The git status line that names the branch. |
+| `statusline.branch_icon` | `🌿` |  |  | Before a branch. |
+| `statusline.chip_label` | `AH: V` |  |  | The version chip label. |
+| `statusline.claude_dir` | `.claude` |  |  | The host configuration directory name. |
+| `statusline.claude_dir_prefix` | `claude-` |  |  | Temp directories of the host start with this. |
+| `statusline.claude_json` | `.claude.json` |  |  | The host account file in the home directory. |
+| `statusline.clock_icon` | `⏱ ` |  |  | Before the duration. |
+| `statusline.compact_default` | `16.5` |  |  | The auto-compact buffer, in percent, when no window is set. |
+| `statusline.compact_env` | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` |  |  | The auto-compact window variable. |
+| `statusline.config_dir_env` | `CLAUDE_CONFIG_DIR` |  |  | The variable that moves the host configuration directory. |
+| `statusline.consolidated_file` | `consolidated-base.json` |  |  | The consolidated base configuration, in the base directory. |
+| `statusline.consolidated_timeout_ms` | `3000` |  |  | Longest a consolidated base command may run, in milliseconds. |
+| `statusline.context_template` | `{bar} {col}{pct}%{reset} {dim}context{reset}{tokens}` |  |  | The context gauge line. Placeholders: bar col pct reset dim tokens. |
+| `statusline.ctx_mark` | `● ` |  |  | Before the context percentage. |
+| `statusline.cwd_tag_prefix` | `cwd-` |  |  | Prefix of a session tag made from a directory. |
+| `statusline.default_model` | `Claude Code` |  |  | The model shown when nothing names one. |
+| `statusline.default_project` | `project` |  |  | The project shown when the directory has no name. |
+| `statusline.default_user` | `user` |  |  | The git user shown when none is configured. |
+| `statusline.desc_max` | `32` |  |  | Longest phase description shown. |
+| `statusline.detached` | `(detached)` |  |  | The branch name of a detached head. |
+| `statusline.dir` | `statusline` |  |  | The status line directory of the plugin. |
+| `statusline.dir_icon` | `📂 ` |  |  | Before the sub-directory. |
+| `statusline.down` | `↓` |  |  | Commits behind. |
+| `statusline.ellipsis` | `...` |  |  | Ends a cut label. |
+| `statusline.email_icon` | `✉ ` |  |  | Before the account email. |
+| `statusline.git_bin` | `git` |  |  | The git program. |
+| `statusline.git_branch_args` | `rev-parse, --abbrev-ref, HEAD` |  |  | The git question the simple line asks for the branch. |
+| `statusline.git_dir_args` | `rev-parse, --absolute-git-dir` |  |  | The git question for the git directory. |
+| `statusline.git_max_buffer` | `4194304` |  |  | Most bytes one git answer may have. |
+| `statusline.git_name_args` | `config, user.name` |  |  | The git question for the user name. |
+| `statusline.git_stash_args` | `stash, list` |  |  | The git question for the stash. |
+| `statusline.git_status_args` | `status, --porcelain=v2, --branch` |  |  | The git question for branch and changes. |
+| `statusline.git_timeout_ms` | `1500` |  |  | Longest one git question may take, in milliseconds. |
+| `statusline.git_top_args` | `rev-parse, --show-toplevel` |  |  | The git question for the project root. |
+| `statusline.gitmodules` | `.gitmodules` |  |  | The file that marks a monorepo. |
+| `statusline.header_mark` | `▊ ` |  |  | Starts the rich line. |
+| `statusline.in_progress` | `in_progress` |  |  | The status of the task in progress. |
+| `statusline.inner_timeout_ms` | `2500` |  |  | Longest a base command may run, in milliseconds. |
+| `statusline.level_red` | `90` |  |  | Context percentage from which the gauge is red. |
+| `statusline.level_yellow` | `70` |  |  | Context percentage from which the gauge is yellow. |
+| `statusline.max_keys` | `max_tokens, total_tokens, context_size` |  |  | The context_window fields that carry the window size. |
+| `statusline.model_id_skip` | `1` |  |  | Words skipped when a model id is shown as a name. |
+| `statusline.model_id_take` | `2` |  |  | Words kept when a model id is shown as a name. |
+| `statusline.model_words` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | The model families recognised in a model id or setting, in priority order. |
+| `statusline.no_color_env` | `NO_COLOR` |  |  | The variable that turns colors off. |
+| `statusline.no_email_key` | `noEmail` |  |  | The setting that hides the account email. |
+| `statusline.output_ext` | `.output` |  |  | A task output file ends with this. |
+| `statusline.own_re` | `^node\s+"?([^"\|;&<>]+?\.js)"?\s*$` |  |  | A base command that runs one of the plugin's own renderers. |
+| `statusline.pct_dir` | `context-pct` |  |  | Where the context figure is kept for the hooks, in the base directory. |
+| `statusline.pct_min_delta` | `1` |  |  | Smallest change of the context figure that is written before the interval has passed. |
+| `statusline.pct_write_interval_ms` | `30000` |  |  | Least time between two writes of the context figure, in milliseconds. |
+| `statusline.phase_colors` | `10 entries` |  |  | The colors of the phase bar. |
+| `statusline.phase_file` | `phase-bar.js` |  |  | The phase bar file. |
+| `statusline.phase_slow_secs` | `1200` |  |  | Seconds after which a phase's elapsed time turns yellow. |
+| `statusline.phase_stale_ms` | `1800000` |  |  | How old a phase state may be before it is ignored, in milliseconds. |
+| `statusline.phase_state_file` | `phase-state.json` |  |  | The phase state file. |
+| `statusline.phase_template` | `{bar} {yellow}{pct}%{reset} {dim}\|{reset} {bold}{magenta}{code}{reset} {dim}-...` |  |  | The phase bar line. Placeholders: bar yellow pct reset dim bold magenta code white desc cyan done total extra. |
+| `statusline.plural_s` | `s` |  |  | The plural ending. |
+| `statusline.poll_ms` | `2` |  |  | How often a bounded child is checked, in milliseconds. |
+| `statusline.porcelain_cap` | `500` |  |  | Most git status lines read. |
+| `statusline.read_chunk` | `8192` |  |  | Bytes read at a time from a child process. |
+| `statusline.read_grace_ms` | `200` |  |  | Extra time to collect a finished child's output, in milliseconds. |
+| `statusline.rich_colors` | `16 entries` |  |  | The colors of the rich line. |
+| `statusline.rich_file` | `statusline-rich.js` |  |  | The rich renderer file. |
+| `statusline.safe_bidi` | `[\u202a-\u202e\u2066-\u2069]` |  |  | Bidirectional overrides removed from labels. |
+| `statusline.safe_controls` | `[\x00-\x1F\x7F-\x9F]` |  |  | Control characters removed from labels. |
+| `statusline.safe_csi` | `\x1b[@-_][0-?]*[ -/]*[@-~]?` |  |  | Control sequences removed from labels. |
+| `statusline.safe_esc_any` | `\x1b.` |  |  | Any other escape pair removed from labels. |
+| `statusline.safe_osc` | `\x1b\][^\x07\x1b]*(?:\x07\|\x1b\\)?` |  |  | Operating-system command sequences removed from labels. |
+| `statusline.section` | `statusline` |  |  | The settings section of the status line. |
+| `statusline.sep` | `│` |  |  | Between the segments of the rich line. |
+| `statusline.session_file` | `session.json` |  |  | The local session file. |
+| `statusline.settings_file` | `settings.json` |  |  | The project settings file. |
+| `statusline.settings_local_file` | `settings.local.json` |  |  | The local project settings file. |
+| `statusline.shell` | `sh` |  |  | The shell that runs a base command. |
+| `statusline.shell_flag` | `-c` |  |  | The shell flag that takes the command. |
+| `statusline.simple_colors` | `9 entries` |  |  | The colors of the simple and monorepo lines. |
+| `statusline.simple_git_timeout_ms` | `2000` |  |  | Longest the simple renderer waits for git, in milliseconds. |
+| `statusline.simple_join` | ` \| ` |  |  | Between the segments of the simple line. |
+| `statusline.simple_model` | `Claude` |  |  | The model shown when the input names none. |
+| `statusline.spawn_log` | `agent-spawns.log` |  |  | The agent spawn log, in the base directory. |
+| `statusline.spinner` | `◐, ◓, ◑, ◒` |  |  | The spinner frames. |
+| `statusline.stash_icon` | `📦 ` |  |  | Before the stash count. |
+| `statusline.stdin_watchdog_ms` | `3000` |  |  | Longest the status line waits for its input, in milliseconds. |
+| `statusline.step_max` | `28` |  |  | Longest phase step shown. |
+| `statusline.sweep_ms` | `400` |  |  | Milliseconds the activity sweep stays on one cell. |
+| `statusline.tag_max` | `64` |  |  | Longest session tag. |
+| `statusline.tasks_dir` | `tasks` |  |  | The tasks directory of a session. |
+| `statusline.tmp_default` | `/tmp` |  |  | The temp directory when no variable names one. |
+| `statusline.tmp_dir` | `anti-hall` |  |  | The phase state directory under the temp directory. |
+| `statusline.tmp_env` | `TMPDIR, TMP, TEMP` |  |  | The variables that name the temp directory, first match wins. |
+| `statusline.todos_dir` | `todos` |  |  | The todos directory inside the host configuration directory. |
+| `statusline.tofixed_limit` | `1e21` |  |  | From this cost a number prints in exponent form, which the port leaves to Node. |
+| `statusline.tree_icon` | `🌳` |  |  | Before a linked worktree's branch. |
+| `statusline.up` | `↑` |  |  | Commits ahead. |
+| `statusline.update_star` | `★ ` |  |  | Marks an available update. |
+| `statusline.used_keys` | `used_tokens, tokens` |  |  | The context_window fields that carry the used tokens. |
+| `statusline.user_mark` | `● ` |  |  | Before the git user. |
+| `statusline.version_check` | `version-check.json` |  |  | The version check cache, in the base directory. |
+| `statusline.worktree_re` | `[/\\]\.git[/\\]worktrees[/\\]` |  |  | A git directory of a linked worktree. |
+| `statusline.xy_offset` | `2` |  |  | Where the staged and unstaged letters start in a git status line. |
 
 ## Messages
 

@@ -104,6 +104,14 @@ value = { args = "<show|get|set|reset|judge|trust-command-allow|trust-edit-allow
 doc = "File, list, show and rule anti-hall defect reports and query the bug history (L9a, the port of scripts/defect.js): `report`, `list [--mine|--open|--unfinished]`, `show <fp>`, `rule <fp> --status ...`, `archive`, and the history verbs `backfill`, `recurring` and `similar`; the store is ~/.anti-hall/defects/."
 value = { args = "<report|list|show|rule|archive|backfill|recurring|similar> [flags] [--json]", read_only = false, status = "implemented" }
 
+[cmd.statusline]
+doc = "The two-line status line the host runs after each turn (L9a, the port of statusline/statusline.js and its renderers): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open."
+value = { args = "(session JSON on stdin)", read_only = false, status = "implemented" }
+
+[cmd.shadow-compare]
+doc = "Internal: the detached half of a Node shadow (L9a). Runs the Node version of a sampled operator command on a scratch home and logs a mismatch to telemetry; started by the engine, not by people."
+value = { args = "<scratch dir>", read_only = false, status = "implemented" }
+
 [cmd.schedule]
 doc = "The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json."
 value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, status = "implemented" }
