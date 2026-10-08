@@ -625,7 +625,7 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
         }
         s.push_str(&format!("  deferred scenarios by group: {}\n", serde_json::to_string(&by).unwrap()));
     }
-    for m in mismatches.iter().take(15) {
+    for m in mismatches.iter().take(std::env::var("AH_PARITY_SHOW").ok().and_then(|v| v.parse().ok()).unwrap_or(15)) {
         s.push_str(&format!(
             "  MISMATCH {} step {} {} cmd={:?}\n    node  : {:?}\n    engine: {:?}\n",
             m.scenario,

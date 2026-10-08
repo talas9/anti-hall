@@ -16,6 +16,7 @@ mod b78_handover;
 mod b78_nudge;
 mod b78_precompact;
 mod b78_quota_detect;
+mod command_guard;
 mod coordinator_post;
 mod ctxbudget;
 mod edit_guard;
@@ -57,6 +58,15 @@ fn edit_guard_matches_node() {
     let _s = serial();
     let Some(hooks) = hooks_dir() else { return };
     guard::require(&edit_guard::opts(), &hooks, edit_guard::scenarios(), 1000);
+}
+
+#[test]
+fn command_guard_matches_node() {
+    let _s = serial();
+    let Some(hooks) = hooks_dir() else { return };
+    let rep = guard::require(&command_guard::opts(), &hooks, command_guard::scenarios(), 2500);
+    let bad: Vec<&String> = rep.stats.deferred_ids.iter().filter(|id| !command_guard::ALLOWED_DEFER.iter().any(|p| id.starts_with(p))).collect();
+    assert!(bad.is_empty(), "the engine deferred where it must decide: {} ids, first {:?}", bad.len(), bad.iter().take(40).collect::<Vec<_>>());
 }
 
 #[test]
