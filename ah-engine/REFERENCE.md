@@ -505,16 +505,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `command.agent_markers` | `agent_id, agent_type` |  |  | The payload fields that mark a subagent (coordinator-detect.js). |
-| `command.allow_dir_rel` | `.anti-hall` |  |  | The per-project allowlist directory, relative to the repository toplevel. |
 | `command.allow_file_rel` | `.anti-hall/command-allow.json` |  |  | The per-project command allowlist file. |
 | `command.allow_list_key` | `patterns` |  |  | The key of the command allowlist file that holds the patterns. |
 | `command.allow_subagent_mailbox_setting` | `7 entries` |  |  | guards.allowSubagentMailbox: a one-off allow of the subagent mailbox verbs (default off). |
 | `command.allow_trust_file_rel` | `.anti-hall/trusted-command-allow.json` |  |  | The record of trusted command allowlists, relative to the home directory. |
+| `command.anti_hall_cli_patterns` | `(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]dev...` |  |  | Segments that run anti-hall's own CLI (command-guard.js ANTI_HALL_CLI_PATTERNS, the plugin-relative devswarm.js entry; the stable launchers are built from the request's home directories). |
 | `command.audit_file` | `command-allow.ndjson` |  |  | The audit log of allowlisted commands. |
 | `command.audit_logs_dir` | `logs` |  |  | The log directory under the state directory. |
 | `command.audit_state_dir` | `.anti-hall` |  |  | The anti-hall state directory under the home directory. |
 | `command.background_chain_delims` | `;, &&, \\|, end` |  |  | Delimiters a background scratch script chain may use. |
 | `command.background_script_interpreters` | `python3, node, sh, bash` |  |  | Interpreters of a background scratch script (command-guard.js BACKGROUND_SCRIPT_INTERPRETERS). |
+| `command.binary_magics` | `7 items` |  |  | The first four bytes (hex) of a file that is a compiled binary, not a text script (command-guard.js BINARY_MAGICS). |
 | `command.cd_contexts_max` | `8` |  |  | Most working-directory possibilities kept per segment after a cd (command-guard.js cdAwareContexts). |
 | `command.cd_delims` | `&&, ;, \\|\\|, \n` |  |  | The delimiters after which a leading cd carries into the next segment (command-guard.js cdAwareContexts). |
 | `command.check_flag_refused_verbs` | `20 items` |  |  | Verbs that never get the --check/--dry-run/--list inline allowance (command-guard.js CHECK_FLAG_REFUSED_VERBS). |
@@ -523,17 +524,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.classify_pull_subs` | `pull, fetch` |  |  | git subcommands that label a block a remote pull or fetch. |
 | `command.classify_push_subs` | `push` |  |  | git subcommands that label a block a remote push. |
 | `command.claude_subagent` | `a subagent` |  |  | How the block messages name a worker on Claude. |
-| `command.cli_entrypoint` | `cli` |  |  | The entry point value of the terminal CLI. |
 | `command.cloud_binaries` | `gcloud, gh, kubectl` |  |  | Cloud CLIs with a read-only inspect exemption (command-guard.js CLOUD_BINARIES). |
 | `command.cloud_mutating_verbs` | `17 items` |  |  | Words that disqualify the gh/kubectl read-only exemption (command-guard.js CLOUD_MUTATING_VERBS). |
 | `command.cloud_readonly_verbs` | `describe, list, get, view` |  |  | First words after gh/kubectl that read only (command-guard.js CLOUD_READONLY_VERBS). |
 | `command.codex_cheap` | `a sub-agent (spawn_agent, fast-tier model)` |  |  | How the block messages name the cheap worker on Codex (host-text.js CODEX_CHEAP). |
-| `command.codex_patch_tool` | `apply_patch` |  |  | The tool name that marks a Codex payload on its own (coordinator-detect.js isCodexPayload). |
 | `command.codex_subagent` | `a sub-agent (spawn_agent)` |  |  | How the block messages name a worker on Codex (host-text.js CODEX_SUBAGENT). |
 | `command.control_keyword_prefix` | `^\s*(?:(?:do\|then\|else\|if\|while\|until\|!)\s+)+` |  |  | Leading shell keywords stripped before a segment is judged (command-guard.js CONTROL_KEYWORD_PREFIX_RE). |
 | `command.curl_bare_flags` | `--silent, --show-error, --fail` |  |  | Valueless curl flags of the token-authorized silent GET. |
-| `command.defer_path_parts` | `inbox, store` |  |  | If the command or the payload cwd has one of these as a path component (lower-cased; split at slashes, backslashes, blanks and shell punctuation), the engine defers: the raw DevSwarm inbox/store read guard denies only paths whose first component under the DevSwarm root is one of them (lib/devswarm-inbox-paths.js classifyDevswarmPath). |
-| `command.defer_substrings` | `devswarm.js, stash` |  |  | If the command, lower-cased with quotes and backslashes removed, contains any of these, the engine defers: the DevSwarm subagent-mailbox guard needs the literal script name (devswarm.js) and the git-stash guard a `stash` word, and both need state the engine does not mirror. |
 | `command.devswarm_cli_rel` | `scripts/devswarm.js` |  |  | The devswarm CLI, relative to the plugin root. |
 | `command.devswarm_cli_verbs` | `hivecontrol, devswarm` |  |  | If any segment the DevSwarm read/send guards scan has one of these as its effective verb, the engine defers (command-guard.js DEVSWARM_CLI_VERBS). |
 | `command.devswarm_inbox_dir` | `inbox` |  |  | The inbox directory under the DevSwarm root (a raw read is blocked). |
@@ -553,7 +550,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.eg_plan_mode` | `plan` |  |  | The permission mode in which non-source files may be edited. |
 | `command.eg_plans_rel` | `.claude/plans` |  |  | The host's plan directory under the home directory. |
 | `command.eg_project_deny_segments` | `.git, .anti-hall, .claude, .codex, .husky, .githooks` |  |  | Path segments the per-project edit allowlist never reaches (edit-guard.js PROJECT_EDIT_DENY_SEGMENTS). |
-| `command.entrypoint_env` | `CLAUDE_CODE_ENTRYPOINT` |  |  | The environment variable that names the host entry point (coordinator-detect.js isCoordinator). |
 | `command.file_read_verbs` | `12 items` |  |  | Verbs that read file contents (the raw DevSwarm inbox read guard). |
 | `command.gcloud_boolean_flags` | `--quiet, --uri` |  |  | gcloud flags without a value the read-only grammar accepts (command-guard.js GCLOUD_BOOLEAN_FLAGS). |
 | `command.gcloud_inspect_verbs` | `describe, list, get, view, read` |  |  | gcloud command-path verbs that read only (command-guard.js GCLOUD_INSPECT_VERBS). |
@@ -568,18 +564,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.gh_gql_bool_flags` | `--paginate, --slurp, --silent, -i, --include, --verbose` |  |  | gh api graphql options without a value (command-guard.js GH_GQL_BOOL_FLAGS). |
 | `command.gh_gql_value_flags` | `8 items` |  |  | gh api graphql options that take a value (command-guard.js GH_GQL_VALUE_FLAGS). |
 | `command.gh_mutating_subcommands` | `6 entries` |  |  | gh group and subcommand pairs that are heavy (command-guard.js GH_MUTATING_SUBCOMMANDS, plus `workflow run`). |
+| `command.git_always_work` | `12 items` |  |  | git subcommands that always count as work for the coordinator work window (command-guard.js GIT_ALWAYS_WORK). |
 | `command.git_branch_argv` | `symbolic-ref, --short, HEAD` |  |  | The git arguments that print the current branch (plain-push carve-out). |
 | `command.git_fetch_dangerous_flags` | `--prune, -p, --prune-tags, --force, -f` |  |  | git fetch options that rewrite or delete local refs (command-guard.js GIT_FETCH_DANGEROUS_FLAGS). |
+| `command.git_global_flag_opts` | `8 items` |  |  | git global options without a value, skipped to find the subcommand (command-guard.js GIT_GLOBAL_FLAG_OPTS). |
 | `command.git_global_value_opts` | `8 items` |  |  | git global options that take a value (command-guard.js GIT_GLOBAL_VALUE_OPTS). |
 | `command.git_heavy_subs` | `push, pull, clone` |  |  | git subcommands that are always heavy (command-guard.js isHeavyGitSegment). |
+| `command.git_status_timeout_ms` | `2000` |  | ms | How long the `git status` question about a script file may take (command-guard.js gitCleanTracked: 2000 ms). |
+| `command.git_tag_value_flags` | `10 items` |  |  | git tag options that take a value (command-guard.js GIT_TAG_VALUE_FLAGS). |
 | `command.git_timeout_ms` | `5000` |  | ms | How long a git question of the plain-push carve-out may take (command-guard.js: 5000 ms). |
 | `command.guard_name` | `command-guard` |  |  | The guard id command-guard answers to in skip.json and in its messages. |
 | `command.heavy_default_label` | `heavy` |  |  | The category label when a heavy command has no classification. |
 | `command.heavy_pattern_label` | `heavy-pattern` |  |  | The category label of a heavy command found by a pattern. |
 | `command.heavy_patterns` | `7 items` |  |  | Patterns over the quote-neutralized segment that make it heavy (command-guard.js HEAVY_PATTERNS). |
 | `command.heavy_verbs` | `63 items` |  |  | Effective verbs that are always heavy in the main thread (command-guard.js HEAVY_VERBS). |
-| `command.ide_entrypoint_prefix` | `terminal_ide_` |  |  | Entry points that start with this are IDE terminals (a main thread). |
-| `command.ide_entrypoints` | `vscode, jetbrains, vim, emacs` |  |  | Entry points of editor hosts (main threads). |
+| `command.home_managed_dirs` | `9 items` |  |  | Directories under the home directory that hold managed tool installs: a script run from there is not work (command-guard.js HOME_MANAGED_DIRS). |
+| `command.home_personal_dirs` | `.local/bin, Library, .claude/plugins` |  |  | Directories under the home directory that hold personal tools: an old script run from there is not work (command-guard.js HOME_PERSONAL_DIRS). |
 | `command.inbox_cmd_setting` | `6 entries` |  |  | devswarm.inboxCmd: a consumer-configured command to read pending mesh messages (no default). |
 | `command.inline_other_flags` | `-e, -E` |  |  | The inline-code flags of perl, ruby and node (command-guard.js inlineCodeBody). |
 | `command.inline_python_flags` | `-c` |  |  | The inline-code flag of the python interpreters (command-guard.js inlineCodeBody). |
@@ -657,15 +657,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.node_script_ext` | `(?i)\.(?:js\|mjs\|cjs)$` |  |  | Script file extensions of node for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
 | `command.pattern_first_verbs` | `grep, sed, awk` |  |  | Verbs whose first operand is a pattern, blanked before the heavy patterns run (command-guard.js PATTERN_FIRST_VERBS). |
 | `command.pipeline_ends` | `end, ;, &&, \\|\\|, \n` |  |  | The delimiters that end a pipeline in the bounded verification scan (command-guard.js PIPELINE_ENDS). |
-| `command.plain_read_git_segments` | `^git\s+log\s+--oneline(?:\s+-\d+)?\s*$, ^git\s+status(?:\s+(?:--short\\|-s))?\...` |  |  | Exact shapes of one plain read-only git segment inside a chain, after a trailing `2>&1` is stripped (command-guard.js PLAIN_LOG_SEGMENT_RE, PLAIN_STATUS_SEGMENT_RE, PLAIN_SHOW_SEGMENT_RE, PLAIN_REVPARSE_SEGMENT_RE; the JavaScript negative lookahead on the first character is the equivalent first-character class). |
 | `command.plugin_manifest_rel` | `.claude-plugin/plugin.json` |  |  | The plugin manifest, relative to a plugin root. |
 | `command.plugin_name` | `anti-hall` |  |  | The name anti-hall's manifest carries. |
+| `command.plugin_walk_levels` | `16` |  |  | How many directory levels above a script the plugin-manifest search climbs to tell a script of the anti-hall plugin (command-guard.js isInsideAntiHallPlugin). |
 | `command.port_digits_max` | `5` |  |  | Most digits a URL port may have. |
 | `command.port_max` | `65535` |  |  | Largest TCP port a URL may carry. |
 | `command.python_script_ext` | `(?i)\.py$` |  |  | Script file extension of the other interpreters for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
 | `command.scratch_leaf` | `scratchpad` |  |  | Name of the scratchpad directory of a session. |
 | `command.scratch_uid_prefix` | `claude-` |  |  | Prefix of the per-user directory under a tmp root that holds session scratchpads. |
 | `command.script_check_interpreter` | `^(?:python[0-9.]*\|node\|ruby\|perl\|php)$` |  |  | Interpreters whose flagged script runs are heavy (command-guard.js SCRIPT_CHECK_INTERPRETER_RE). |
+| `command.script_interpreters` | `9 items` |  |  | Interpreters whose script-file run is classified (command-guard.js SCRIPT_INTERPRETERS). |
+| `command.script_not_a_run_flag` | `4 entries` |  |  | Per interpreter family, the flag pattern that means the command is not a script-file run: inline code, module, syntax check or stdin (command-guard.js SCRIPT_NOT_A_RUN_FLAG). |
+| `command.script_shells` | `sh, bash, zsh, dash` |  |  | Shells whose script run counts as work (command-guard.js SCRIPT_SHELLS). |
+| `command.script_value_flags` | `12 items` |  |  | Interpreter options whose next word is their value, not the script (command-guard.js SCRIPT_VALUE_FLAGS). |
 | `command.setting_allow_bg_scratch` | `7 entries` |  |  | guards.allowBackgroundScratchScripts: the background scratch script allowance (default on). |
 | `command.setting_allow_gcloud_reads` | `7 entries` |  |  | guards.allowGcloudReads: the narrow read-only Google Cloud access (default on). |
 | `command.setting_allow_plain_push` | `7 entries` |  |  | guards.allowPlainPush: the plain git push chain allowance (default on). |
@@ -684,13 +688,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.stash_push_value_flags` | `-m, --message` |  |  | git stash push flags that take a value. |
 | `command.stash_read_subs` | `list, show, branch` |  |  | git stash subcommands that never mutate. |
 | `command.store_deny_patterns` | `9 items` |  |  | Paths under the store directory that are raw store files (lib/devswarm-inbox-paths.js isStoreDenyTarget). A raw store read depends on the store module being present, so the engine defers it. |
-| `command.subagent_entrypoint` | `agent_tool` |  |  | The entry point value of a subagent process. |
 | `command.sudo_value_flags` | `16 items` |  |  | sudo options that take a value (command-guard.js effectiveVerb SUDO_VAL). |
 | `command.taskpolicy_value_flags` | `-c, -t, -p` |  |  | taskpolicy options that take a value (command-guard.js effectiveVerb). |
 | `command.test_keywords` | `7 items` |  |  | Words after which a `[[` or `((` is at command position, so its `<`/`>` are comparisons, not redirects (command-guard.js TEST_KEYWORDS). |
 | `command.tier_detect_setting` | `7 entries` |  |  | jev.dispatchTierDetectNoWorkspaces: also read CLAUDE.md and AGENTS.md for the no-workspaces rule (default on). |
 | `command.tier_doc_files` | `CLAUDE.md, AGENTS.md` |  |  | The repository docs searched for the no-workspaces rule. |
 | `command.tier_doc_levels` | `8` |  |  | How many directory levels the no-workspaces search climbs (dispatch-tier.js: 8). |
+| `command.tier_doc_pattern` | `(?i)no\s+workspaces?\s+for\s+real\s+work` |  |  | The rule in a repository's CLAUDE.md or AGENTS.md that opts the repository out of workspaces (dispatch-tier.js NO_WS_RE). |
 | `command.tier_repos_setting` | `6 entries` |  |  | jev.dispatchTierNoWorkspaceRepos: repositories where workspaces are off-limits (comma separated, empty by default). |
 | `command.tier_text_setting` | `7 entries` |  |  | devswarm.dispatchTierText: the DevSwarm Primary dispatch-tier text (default on). |
 | `command.timeout_prefix` | `^\s*timeout\s+(?:-[ks]\s+\S+\s+\|-\S+\s+)*\d+[smhd]?\s+` |  |  | A leading `timeout [opts] N` stripped for the light-exception test (command-guard.js TIMEOUT_PREFIX_RE). |
@@ -698,7 +702,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.tmp_default` | `/tmp` |  |  | os.tmpdir() when none is set. |
 | `command.tmp_env_names` | `TMPDIR, TMP, TEMP` |  |  | The variables os.tmpdir() reads, in order. |
 | `command.tmp_fixed_roots` | `/tmp, /private/tmp` |  |  | The tmp roots added after os.tmpdir() (scratchpad.js tmpRoots). |
-| `command.trailing_stderr_merge` | `\s+2>&1\s*$` |  |  | A trailing `2>&1` stripped before a plain git chain segment is classified (command-guard.js TRAILING_STDERR_MERGE_RE). |
 | `command.verify_syntax_only_compilers` | `c++, cc, gcc, clang, clang++, g++` |  |  | Compilers whose -fsyntax-only run is an inline check. |
 | `command.verify_trivial_verbs` | `cd, pwd, true` |  |  | Verbs that are harmless in a verification chain. |
 | `command.whole_command_clis` | `12 items` |  |  | CLIs whose whole-command read-only form (version query or gcloud read piped to a closed sink) is light (command-guard.js isWholeCommandReadOnlyForm and VERSION_CLI_RE). |
@@ -987,14 +990,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `coordinator_work.agent_markers` | `agent_id, agent_type` |  |  | Payload fields the host puts on a subagent's hook payload and never on the main thread's. |
+| `coordinator_work.block_allowed` | `reads, recovery commands (--abort/--quit, stash pop/apply) and loosely matche...` |  |  | What stays allowed past the block threshold. |
+| `coordinator_work.block_instead` | `hand this and the remaining steps (patch applies and test runs included) to a...` |  |  | What to do instead of a blocked work call. |
+| `coordinator_work.block_override` | `{skip} (15-min TTL)` |  |  | The override line of the block ({skip} is the skip command). |
 | `coordinator_work.block_setting` | `5 entries` |  |  | The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never. |
+| `coordinator_work.block_what` | `{count} state-changing calls in the main thread within {minutes} min; this on...` |  |  | Block headline; {count} is the number of work calls in the window and {minutes} the window length. |
+| `coordinator_work.block_why` | `Too much hands-on work in the main thread; the window clears as calls age out.` |  |  | Why a work call past the block threshold is blocked. |
 | `coordinator_work.cap_setting` | `5 entries` |  |  | Safety cap on the stored window timestamps per session (guards.coordinatorWorkMaxEntries). |
 | `coordinator_work.codex_markers` | `turn_id, model` |  |  | Payload fields that, both non-empty strings, identify a Codex payload. |
 | `coordinator_work.codex_tool` | `apply_patch` |  |  | The tool name only Codex sends; a payload naming it is a Codex payload. |
 | `coordinator_work.command_guard_name` | `command-guard` |  |  | The skip.json key of command-guard, which also silences the work window. |
 | `coordinator_work.command_guard_setting` | `6 entries` |  |  | Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it. |
-| `coordinator_work.coordinator_entrypoint_prefix` | `terminal_ide_` |  |  | Prefix of the CLAUDE_CODE_ENTRYPOINT values (IDE terminals) that also mean the main thread. |
-| `coordinator_work.coordinator_entrypoints` | `cli, vscode, jetbrains, vim, emacs` |  |  | CLAUDE_CODE_ENTRYPOINT values that mean the interactive main thread. |
 | `coordinator_work.counters` | `calls, work, blocks, skippedWouldBlock` |  |  | The counters a window file keeps and the metrics fold, by their key in the files. |
 | `coordinator_work.entrypoint_env` | `CLAUDE_CODE_ENTRYPOINT` |  |  | The environment variable that names the host entry point. |
 | `coordinator_work.fold_stamp_file` | `.coordinator-work-fold-stamp.json` |  |  | Name of the stamp file that throttles folding stale window files into the metrics. |
@@ -1002,7 +1008,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `coordinator_work.git_output_flag` | `output\|^-o` |  |  | Regex source of a git argument that writes output to a file (so the command is not read-only). |
 | `coordinator_work.git_verb` | `git` |  |  | The verb of a git command. |
 | `coordinator_work.guard_name` | `coordinator-work-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
+| `coordinator_work.lock_boot_slop_s` | `5` |  |  | Two boot times closer than this many seconds are the same boot (window and metrics locks). |
 | `coordinator_work.lock_isolation_env` | `ANTIHALL_TEST_HOME_ISOLATED` |  |  | The variable that marks an isolated test home (enables the lock wait override). |
+| `coordinator_work.lock_reclaim_stale_ms` | `5000` |  |  | Age after which another process's takeover marker of a window or metrics lock is taken over. |
+| `coordinator_work.lock_release_step_ms` | `10` |  |  | Pause between those tries. |
+| `coordinator_work.lock_release_tries` | `5` |  |  | How many times releasing a window or metrics lock tries to take its takeover marker. |
+| `coordinator_work.lock_stale_ms` | `5000` |  |  | Age after which another process's window or metrics lock is considered abandoned and taken over (the lock group of the coordinator-work-guard script). |
+| `coordinator_work.lock_step_ms` | `5` |  |  | Pause between two attempts to take a held window or metrics lock. |
 | `coordinator_work.lock_suffix` | `.lock` |  |  | Suffix of a lock file next to the file it guards. |
 | `coordinator_work.lock_wait_env` | `ANTIHALL_COORDINATOR_WORK_LOCK_WAIT_MS` |  |  | Test-only variable that overrides the lock wait (honoured only with the isolation flag set). |
 | `coordinator_work.lock_wait_ms` | `250` |  |  | How long a lock held by another process is waited for before the call is handed to the Node hook. |
@@ -1025,9 +1037,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `coordinator_work.segment_split` | `&&\|\\|\\|\|;\|\\|\|\n` |  |  | Regex source that splits a provably-not-work candidate into segments (&&, \|\|, ;, \|, newline). |
 | `coordinator_work.session_file_prefix` | `coordinator-work-session-` |  |  | Prefix of a per-session window file under the state directory. |
 | `coordinator_work.session_id_max` | `80` |  |  | Longest session id part, in UTF-16 units, of a window file name. |
+| `coordinator_work.session_start_ms` | `21600000` |  |  | How long before now a session with no recorded first call is taken to have started (the classifier's freshness reference for script files). |
 | `coordinator_work.subagent_entrypoint` | `agent_tool` |  |  | CLAUDE_CODE_ENTRYPOINT value of a subagent process. |
 | `coordinator_work.summary` | `Main-thread work window. PreToolUse: allows subagent Bash calls in the engine...` |  |  | One-line description of the coordinator-work-guard check in the generated reference. |
+| `coordinator_work.trip_block` | `block` |  |  | The trip-log event of a blocked call. |
 | `coordinator_work.trip_nudge` | `nudge` |  |  | The event name a nudge is logged under in the trips log. |
+| `coordinator_work.trip_skipped` | `skipped` |  |  | The trip-log event of a call the window would have blocked but a skip let through. |
 | `coordinator_work.trips_file` | `coordinator-work-trips.log` |  |  | Name of the JSONL log of nudges and blocks. |
 | `coordinator_work.trips_max_bytes` | `1048576` |  |  | Size at which the trips log is rotated to its .1 file. |
 | `coordinator_work.unknown_version` | `unknown` |  |  | The version text used when the manifest cannot be read. |
@@ -4550,8 +4565,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.exec_programs` | `git` |  |  | Program names `ah.exec` may run (bare names, resolved through the request's PATH). Anything else answers null. |
 | `script.exec_timeout_max_ms` | `5000` |  | ms | Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit. |
 | `script.ext` | `.js` |  |  | File extension of a check script and of a lib file. |
-| `script.includes` | `1 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
+| `script.includes` | `2 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
 | `script.lib_dir` | `lib` |  |  | Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script. |
+| `script.lock_max_held` | `2` |  |  | Most locks (`ah.state.lock`) one script call may hold at once; they must be taken and released in a fixed order by the script. |
 | `script.logic_dir` | `engine/logic` |  |  | Directory of the shipped check scripts, relative to the plugin root. |
 | `script.msg_bad_verdict` | `unexpected verdict {value}` |  |  | Logged reason (then the call defers) when a script returns a value that is not a verdict. |
 | `script.msg_env_incomplete` | `request environment incomplete` |  |  | Reason logged (then the failure policy applies) when the request's environment is incomplete, so no check can be evaluated. |
@@ -4565,7 +4581,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_unknown_op` | `unknown file operation {op}` |  |  | Error a script sees when it asks a file operation the host does not have. Placeholder: {op}. |
 | `script.msg_write_refused` | `write refused: {why}` |  |  | Error a script sees when its write was refused. Placeholder: {why}. |
 | `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
-| `script.p95_budget_by_check` | `12 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. |
+| `script.p95_budget_by_check` | `14 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. |
 | `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
 | `script.read_max_bytes` | `4194304` |  | bytes | Upper bound of one `ah.fs.readText` read, whatever the script asks for. |
 | `script.readdir_max` | `10000` |  |  | Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole). |
@@ -4574,7 +4590,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.sweep_max_remove` | `200` |  |  | Most files one `ah.state.sweep` call may delete, whatever the script asks for. |
 | `script.tail_buf_bytes` | `65536` |  | bytes | Size of the buffer `ah.transcript.tailLines` reads a file through. |
 | `script.tail_max_bytes` | `16777216` |  | bytes | Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for. |
-| `script.time_limit_by_check` | `2 entries` |  |  | Per-check wall-clock limit of one script call (ms), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; its SessionStart advisory only lists and stats files. |
+| `script.time_limit_by_check` | `3 entries` |  |  | Per-check wall-clock limit of one script call (ms), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; its SessionStart advisory only lists and stats files. |
 | `script.time_limit_ms` | `50` | `AH_ENGINE_SCRIPT_TIME_MS` | ms | Wall-clock limit of one script call; past it the interpreter is interrupted and the call defers to Node (never a silent allow). |
 | `script.write_max_bytes` | `1048576` |  | bytes | Largest text one `ah.state.writeAtomic` call may write; a larger text is refused. |
 | `script.write_path_max` | `600` |  |  | Longest relative path one `ah.state.writeAtomic` call may name. |

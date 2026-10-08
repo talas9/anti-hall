@@ -22,19 +22,9 @@ value = 65536
 doc = "Nesting depth of inline shells, eval and command substitutions the heavy and write scans follow (command-guard.js `d < 3`)."
 value = 3
 
-[command.defer_substrings]
-doc = "If the command, lower-cased with quotes and backslashes removed, contains any of these, the engine defers: the DevSwarm subagent-mailbox guard needs the literal script name (devswarm.js) and the git-stash guard a `stash` word, and both need state the engine does not mirror."
-value = ["devswarm.js", "stash"]
-
 [command.devswarm_cli_verbs]
 doc = "If any segment the DevSwarm read/send guards scan has one of these as its effective verb, the engine defers (command-guard.js DEVSWARM_CLI_VERBS)."
 value = ["hivecontrol", "devswarm"]
-
-[command.defer_path_parts]
-doc = "If the command or the payload cwd has one of these as a path component (lower-cased; split at slashes, backslashes, blanks and shell punctuation), the engine defers: the raw DevSwarm inbox/store read guard denies only paths whose first component under the DevSwarm root is one of them (lib/devswarm-inbox-paths.js classifyDevswarmPath)."
-value = ["inbox", "store"]
-
-# ---- shell grammar tables -----------------------------------------------------------------------------------------
 
 [command.wrappers]
 doc = "Words skipped when finding a segment's effective verb (command-guard.js WRAPPERS)."
@@ -236,21 +226,6 @@ value = "logging"
 doc = "CLIs whose whole-command read-only form (version query or gcloud read piped to a closed sink) is light (command-guard.js isWholeCommandReadOnlyForm and VERSION_CLI_RE)."
 value = ["firebase", "gcloud", "aws", "az", "kubectl", "helm", "terraform", "pulumi", "vercel", "netlify", "heroku", "serverless"]
 
-[command.plain_read_git_segments]
-doc = "Exact shapes of one plain read-only git segment inside a chain, after a trailing `2>&1` is stripped (command-guard.js PLAIN_LOG_SEGMENT_RE, PLAIN_STATUS_SEGMENT_RE, PLAIN_SHOW_SEGMENT_RE, PLAIN_REVPARSE_SEGMENT_RE; the JavaScript negative lookahead on the first character is the equivalent first-character class)."
-value = [
-  '^git\s+log\s+--oneline(?:\s+-\d+)?\s*$',
-  '^git\s+status(?:\s+(?:--short|-s))?\s*$',
-  '^git\s+show\s+--stat(?:\s+(?:-\d+|HEAD))?\s*$',
-  '^git\s+rev-parse(?:\s+--short)?\s+[A-Za-z0-9_./][A-Za-z0-9_./-]*\s*$',
-]
-
-[command.trailing_stderr_merge]
-doc = "A trailing `2>&1` stripped before a plain git chain segment is classified (command-guard.js TRAILING_STDERR_MERGE_RE)."
-value = '\s+2>&1\s*$'
-
-# ---- gh -----------------------------------------------------------------------------------------------------------
-
 [command.gh_mutating_subcommands]
 doc = "gh group and subcommand pairs that are heavy (command-guard.js GH_MUTATING_SUBCOMMANDS, plus `workflow run`)."
 value = { pr = ["merge", "close", "edit", "create", "review"], issue = ["create", "close", "delete", "edit"], release = ["create", "delete", "edit", "upload"], repo = ["delete", "edit"], secret = ["set", "delete"], workflow = ["run"] }
@@ -302,30 +277,6 @@ value = "command-guard"
 [command.edit_guard_name]
 doc = "The skip.json id of edit-guard, whose verdict the Bash edit parity applies."
 value = "edit-guard"
-
-[command.codex_patch_tool]
-doc = "The tool name that marks a Codex payload on its own (coordinator-detect.js isCodexPayload)."
-value = "apply_patch"
-
-[command.entrypoint_env]
-doc = "The environment variable that names the host entry point (coordinator-detect.js isCoordinator)."
-value = "CLAUDE_CODE_ENTRYPOINT"
-
-[command.subagent_entrypoint]
-doc = "The entry point value of a subagent process."
-value = "agent_tool"
-
-[command.cli_entrypoint]
-doc = "The entry point value of the terminal CLI."
-value = "cli"
-
-[command.ide_entrypoint_prefix]
-doc = "Entry points that start with this are IDE terminals (a main thread)."
-value = "terminal_ide_"
-
-[command.ide_entrypoints]
-doc = "Entry points of editor hosts (main threads)."
-value = ["vscode", "jetbrains", "vim", "emacs"]
 
 [command.agent_markers]
 doc = "The payload fields that mark a subagent (coordinator-detect.js)."
@@ -506,10 +457,6 @@ value = ["c++", "cc", "gcc", "clang", "clang++", "g++"]
 [command.verify_trivial_verbs]
 doc = "Verbs that are harmless in a verification chain."
 value = ["cd", "pwd", "true"]
-
-[command.allow_dir_rel]
-doc = "The per-project allowlist directory, relative to the repository toplevel."
-value = ".anti-hall"
 
 [command.allow_file_rel]
 doc = "The per-project command allowlist file."
@@ -890,3 +837,64 @@ value = 65535
 [command.port_digits_max]
 doc = "Most digits a URL port may have."
 value = 5
+
+# ---- the command classifier and the scripted decision (engine/logic/command.js) -------------------------------------------
+
+[command.git_global_flag_opts]
+doc = "git global options without a value, skipped to find the subcommand (command-guard.js GIT_GLOBAL_FLAG_OPTS)."
+value = ["--no-pager", "-p", "-P", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs", "--no-optional-locks"]
+
+[command.git_always_work]
+doc = "git subcommands that always count as work for the coordinator work window (command-guard.js GIT_ALWAYS_WORK)."
+value = ["commit", "am", "revert", "merge", "rebase", "cherry-pick", "reset", "push", "pull", "restore", "rm", "mv"]
+
+[command.git_tag_value_flags]
+doc = "git tag options that take a value (command-guard.js GIT_TAG_VALUE_FLAGS)."
+value = ["-m", "--message", "-F", "--file", "-u", "--local-user", "--cleanup", "--sort", "--format", "--trailer"]
+
+[command.script_shells]
+doc = "Shells whose script run counts as work (command-guard.js SCRIPT_SHELLS)."
+value = ["sh", "bash", "zsh", "dash"]
+
+[command.script_interpreters]
+doc = "Interpreters whose script-file run is classified (command-guard.js SCRIPT_INTERPRETERS)."
+value = ["sh", "bash", "zsh", "dash", "node", "python", "python3", "ruby", "perl"]
+
+[command.script_not_a_run_flag]
+doc = "Per interpreter family, the flag pattern that means the command is not a script-file run: inline code, module, syntax check or stdin (command-guard.js SCRIPT_NOT_A_RUN_FLAG)."
+value = { shell = '^-[A-Za-z]*[cns]', python = '^-[A-Za-z]*[cm]', node = '^(?:-[A-Za-z]*[epc]|--(?:eval|print|check|interactive)(?:=|$))', rubyperl = '^-[A-Za-z]*[eEc]' }
+
+[command.script_value_flags]
+doc = "Interpreter options whose next word is their value, not the script (command-guard.js SCRIPT_VALUE_FLAGS)."
+value = ["-o", "+o", "-O", "+O", "-W", "-X", "-r", "--require", "--import", "--loader", "--experimental-loader", "-I"]
+
+[command.binary_magics]
+doc = "The first four bytes (hex) of a file that is a compiled binary, not a text script (command-guard.js BINARY_MAGICS)."
+value = ["7f454c46", "feedface", "feedfacf", "cafebabe", "cffaedfe", "cefaedfe", "bebafeca"]
+
+[command.home_managed_dirs]
+doc = "Directories under the home directory that hold managed tool installs: a script run from there is not work (command-guard.js HOME_MANAGED_DIRS)."
+value = [".nvm", ".pyenv", ".rbenv", ".cargo/bin", ".volta", ".asdf", "go/bin", ".dotnet/tools", ".bun/bin"]
+
+[command.home_personal_dirs]
+doc = "Directories under the home directory that hold personal tools: an old script run from there is not work (command-guard.js HOME_PERSONAL_DIRS)."
+value = [".local/bin", "Library", ".claude/plugins"]
+
+[command.anti_hall_cli_patterns]
+doc = "Segments that run anti-hall's own CLI (command-guard.js ANTI_HALL_CLI_PATTERNS, the plugin-relative devswarm.js entry; the stable launchers are built from the request's home directories)."
+value = ['(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]devswarm\.js(?=\s|$)']
+
+[command.tier_doc_pattern]
+doc = "The rule in a repository's CLAUDE.md or AGENTS.md that opts the repository out of workspaces (dispatch-tier.js NO_WS_RE)."
+value = '(?i)no\s+workspaces?\s+for\s+real\s+work'
+
+[command.plugin_walk_levels]
+doc = "How many directory levels above a script the plugin-manifest search climbs to tell a script of the anti-hall plugin (command-guard.js isInsideAntiHallPlugin)."
+value = 16
+min = 1
+
+[command.git_status_timeout_ms]
+doc = "How long the `git status` question about a script file may take (command-guard.js gitCleanTracked: 2000 ms)."
+value = 2000
+unit = "ms"
+min = 100

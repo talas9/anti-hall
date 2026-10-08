@@ -130,15 +130,15 @@ cargo run -q --locked -- docs --format md > REFERENCE.md
 git diff --stat -- REFERENCE.md
 ```
 
-**Property tests, fuzzing and benchmarks.** The hand-written parsers (the git tokenizer and heredoc parsers, the command shell splitter, the JavaScript-semantics JSON readers and the `when` glob matcher) have three layers of correctness tooling. None of it is linked into the release binary: `proptest` and `criterion` are dev-dependencies, and the fuzz crate is a separate workspace.
+**Property tests, fuzzing and benchmarks.** The hand-written parsers (the heredoc parsers, the JavaScript-semantics JSON readers and the `when` glob matcher) have three layers of correctness tooling. None of it is linked into the release binary: `proptest` and `criterion` are dev-dependencies, and the fuzz crate is a separate workspace.
 
 | Layer | What it checks | Where | Cost |
 |---|---|---|---|
-| Property tests | no panic, bounded time per input, structural invariants (segments are never blank, a heredoc body is a substring of the command, JSON round-trips, `glob_match` equals a regex-compiled oracle) | `ah-engine/tests/it/prop_parsers.rs`, part of `./test.sh` | about 1,000 cases per property by default; `PROPTEST_CASES=100000` for a soak run |
-| Fuzzing | no panic, no hang (`-timeout`), no OOM (`-rss_limit_mb`) on arbitrary bytes | `ah-engine/fuzz/` (five targets: `tokenize`, `heredoc`, `shell`, `json`, `glob`), nightly CI in `.github/workflows/ah-engine-fuzz.yml` | needs the nightly toolchain and `cargo install cargo-fuzz` |
-| Benchmarks | `glob_match` (including the `*a` and `**a` worst cases for a backtracking matcher) and the tokenizers | `ah-engine/benches/parsers.rs` | a few minutes |
+| Property tests | no panic, bounded time per input, structural invariants (a heredoc opener parses totally, JSON round-trips, `glob_match` equals a regex-compiled oracle) | `ah-engine/tests/it/prop_parsers.rs`, part of `./test.sh` | about 1,000 cases per property by default; `PROPTEST_CASES=100000` for a soak run |
+| Fuzzing | no panic, no hang (`-timeout`), no OOM (`-rss_limit_mb`) on arbitrary bytes | `ah-engine/fuzz/` (three targets: `heredoc`, `json`, `glob`), nightly CI in `.github/workflows/ah-engine-fuzz.yml` | needs the nightly toolchain and `cargo install cargo-fuzz` |
+| Benchmarks | `glob_match` (including the `*a` and `**a` worst cases for a backtracking matcher) | `ah-engine/benches/parsers.rs` | a few minutes |
 
-`command::shell` is ASCII-only by contract (the command check defers every other command), so its properties and fuzz target feed it ASCII; the public `decide_in` gate is fed everything. A property or fuzz failure is a real bug: fix it at the root, check what the Node original does for the same input (D74: never weaker than Node), and keep the minimal input as a regression test. The proptest run prints the shrunk input; a fuzz crash leaves a reproducer under `ah-engine/fuzz/artifacts/<target>/`.
+A property or fuzz failure is a real bug: fix it at the root, check what the Node original does for the same input (D74: never weaker than Node), and keep the minimal input as a regression test. The proptest run prints the shrunk input; a fuzz crash leaves a reproducer under `ah-engine/fuzz/artifacts/<target>/`.
 
 ```sh
 cd ah-engine

@@ -1,7 +1,6 @@
-//! Benchmarks for the pattern matcher and the shell tokenizers (`cargo bench --bench parsers`). The `**/**/**` groups
+//! Benchmarks for the pattern matcher (`cargo bench --bench parsers`). The `**/**/**` groups
 //! are the worst case for a backtracking glob: time must stay flat-linear in the text length.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
-use ah_engine::checks::command::shell;
 use ah_engine::hookcfg::when::glob_match;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
@@ -27,17 +26,5 @@ fn glob(c: &mut Criterion) {
     g.finish();
 }
 
-fn tokenizers(c: &mut Criterion) {
-    let small = "git -C /repo commit -m 'fix: thing' && git push origin main | tee out.log";
-    let heredoc = "cat <<'EOF' > notes.md\nline one\nline two with $(not run)\nEOF\ngit add notes.md && git commit -F notes.md";
-    let big = format!("{small} ; {heredoc}\n").repeat(40);
-    let mut g = c.benchmark_group("tokenize");
-    for (name, text) in [("small", small.to_string()), ("heredoc", heredoc.to_string()), ("big", big)] {
-        g.bench_with_input(BenchmarkId::new("shell_split_detailed", name), &text, |b, t| b.iter(|| shell::split_detailed(black_box(t))));
-        g.bench_with_input(BenchmarkId::new("shell_heredoc_bodies", name), &text, |b, t| b.iter(|| shell::heredoc_bodies_in(black_box(t))));
-    }
-    g.finish();
-}
-
-criterion_group!(benches, glob, tokenizers);
+criterion_group!(benches, glob);
 criterion_main!(benches);

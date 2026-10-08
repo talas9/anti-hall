@@ -3,7 +3,6 @@
 //! comments state (segments are never blank, a body is a substring of the command, JSON round-trips, glob = regex).
 //! The case count follows `PROPTEST_CASES` (default below), so a soak run can raise it without editing the file.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
-use ah_engine::checks::command::shell;
 use ah_engine::checks::git::tokenize as tk;
 use ah_engine::checks::guardkit::jsval::{self, Js};
 use ah_engine::hookcfg::when::glob_match;
@@ -44,12 +43,6 @@ fn any_text() -> impl Strategy<Value = String> {
     prop_oneof![shellish(), any::<String>(), ".{0,200}"]
 }
 
-/// `command::shell` documents ASCII-only input (its module doc: byte indexes stand for JavaScript's UTF-16 indexes; the
-/// command check defers every non-ASCII command before it reaches the splitter), so its properties draw ASCII text.
-fn ascii_text() -> impl Strategy<Value = String> {
-    prop_oneof![shellish().prop_map(|s| s.chars().filter(char::is_ascii).collect::<String>()), "[ -~\\t\\n\\r]{0,200}",]
-}
-
 proptest! {
     #![proptest_config(cfg())]
 
@@ -59,48 +52,6 @@ proptest! {
         bounded("parse_heredoc_raw", &s, SLOW, || tk::parse_heredoc_raw(&cs, at));
         let mut st = tk::ArithScan::new();
         bounded("parse_heredoc_at", &s, SLOW, || tk::parse_heredoc_at(&cs, at, &mut st));
-    }
-
-    /// The public gate answers (or defers) on any text, ASCII or not, and never panics.
-    #[test]
-    fn command_decide_total(s in any_text(), sub in any::<bool>()) {
-        bounded("decide_in", &s, SLOW, || ah_engine::checks::command::decide_in(&s, Some("/repo"), sub));
-    }
-
-    #[test]
-    fn shell_split_invariants(s in ascii_text()) {
-        let sp = bounded("split_detailed", &s, SLOW, || shell::split_detailed(&s));
-        prop_assert_eq!(sp.segments.len(), sp.delims.len());
-        for seg in &sp.segments {
-            prop_assert!(!shell::trim(seg).is_empty(), "blank segment {:?} from {:?}", seg, s);
-        }
-        prop_assert_eq!(shell::split_segments(&s), sp.segments.clone());
-    }
-
-    #[test]
-    fn shell_helpers_never_panic(s in ascii_text()) {
-        bounded("shell helpers", &s, SLOW, || {
-            shell::words(&s);
-            shell::effective_verb(&s);
-            shell::tokenize_quoted(&s);
-            shell::dequote_segment(&s);
-            shell::extract_substitutions(&s);
-            shell::extract_shell_c_payload(&s);
-            shell::extract_eval_payload(&s);
-            shell::neutralize_quoted_contents(&s);
-            shell::blank_pattern_argument(&s, "grep");
-            shell::has_unquoted_redirect_char(&s);
-            shell::has_shell_expansion_anywhere(&s);
-            shell::mask_process_substitutions(&s);
-            shell::blank_test_operators(&s);
-        });
-        let bodies = bounded("heredoc_bodies_in", &s, SLOW, || shell::heredoc_bodies_in(&s));
-        let flat = s.replace('\t', "");
-        for b in &bodies {
-            prop_assert!(flat.contains(&b.replace('\t', "")), "body {:?} is not a substring of {:?}", b, s);
-        }
-        let segs = shell::split_segments(&s);
-        bounded("segment_heredoc_bodies", &s, SLOW, || shell::segment_heredoc_bodies(&segs, &s));
     }
 }
 

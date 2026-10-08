@@ -132,8 +132,8 @@ pub static JEV_REVIEW_REMINDER: Scripted = Scripted::new("jev-review-reminder", 
 
 /// `repair-on-reload` (SessionStart and UserPromptSubmit).
 pub static REPAIR_ON_RELOAD: Scripted = Scripted::new("repair-on-reload", "repair_reload.summary");
-/// `ask-guard` (PreToolUse on AskUserQuestion).
 
+/// `ask-guard` (PreToolUse on AskUserQuestion).
 pub static ASK_GUARD: Scripted = Scripted::new("ask-guard", "ask_guard.summary");
 
 /// `phase-tracker` (PreToolUse on Agent and Task; records the spawn for the statusline).
@@ -177,3 +177,10 @@ pub static AUTO_HANDOVER: Scripted = Scripted::new("auto-handover", "ctxbudget.s
 
 /// `handover-resume` (SessionStart).
 pub static HANDOVER_RESUME: Scripted = Scripted::new("handover-resume", "codex_handover.resume_summary");
+
+/// `command` (PreToolUse on Bash): command-guard, the heavy-command gate, the Bash edit parity and the DevSwarm / stash guards. Its
+/// script is also the shared command classifier (`classifyBashWork`) that coordinator-work-guard builds on.
+pub static COMMAND_GUARD: Scripted = Scripted::new("command", "command.check_summary");
+
+/// `coordinator-work-guard` (PreToolUse and PostToolUse on Bash): the main-thread work window; it classifies with the command script.
+pub static COORDINATOR_WORK_GUARD: Scripted = Scripted::new("coordinator-work-guard", "coordinator_work.summary");

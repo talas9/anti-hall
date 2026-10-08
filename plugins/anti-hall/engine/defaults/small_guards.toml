@@ -1126,14 +1126,6 @@ value = { section = "guards", key = "coordinatorWorkBlockAt", env = "ANTIHALL_CO
 doc = "Safety cap on the stored window timestamps per session (guards.coordinatorWorkMaxEntries)."
 value = { section = "guards", key = "coordinatorWorkMaxEntries", env = "ANTIHALL_COORDINATOR_WORK_MAX_ENTRIES", default = 50, min = 1 }
 
-[coordinator_work.coordinator_entrypoints]
-doc = "CLAUDE_CODE_ENTRYPOINT values that mean the interactive main thread."
-value = ["cli", "vscode", "jetbrains", "vim", "emacs"]
-
-[coordinator_work.coordinator_entrypoint_prefix]
-doc = "Prefix of the CLAUDE_CODE_ENTRYPOINT values (IDE terminals) that also mean the main thread."
-value = "terminal_ide_"
-
 [coordinator_work.subagent_entrypoint]
 doc = "CLAUDE_CODE_ENTRYPOINT value of a subagent process."
 value = "agent_tool"
@@ -1172,6 +1164,11 @@ doc = "Minimum time between two folds of stale window files into the metrics (6 
 value = 21600000
 min = 0
 
+[coordinator_work.session_start_ms]
+doc = "How long before now a session with no recorded first call is taken to have started (the classifier's freshness reference for script files)."
+value = 21600000
+min = 0
+
 [coordinator_work.pre_cap]
 doc = "How many pre-call verdicts (kept until the matching post-call) a window file holds."
 value = 20
@@ -1184,6 +1181,36 @@ value = 5000
 [coordinator_work.lock_wait_ms]
 doc = "How long a lock held by another process is waited for before the call is handed to the Node hook."
 value = 250
+min = 0
+
+[coordinator_work.lock_stale_ms]
+doc = "Age after which another process's window or metrics lock is considered abandoned and taken over (the lock group of the coordinator-work-guard script)."
+value = 5000
+min = 1
+
+[coordinator_work.lock_step_ms]
+doc = "Pause between two attempts to take a held window or metrics lock."
+value = 5
+min = 1
+
+[coordinator_work.lock_reclaim_stale_ms]
+doc = "Age after which another process's takeover marker of a window or metrics lock is taken over."
+value = 5000
+min = 1
+
+[coordinator_work.lock_release_tries]
+doc = "How many times releasing a window or metrics lock tries to take its takeover marker."
+value = 5
+min = 1
+
+[coordinator_work.lock_release_step_ms]
+doc = "Pause between those tries."
+value = 10
+min = 1
+
+[coordinator_work.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot (window and metrics locks)."
+value = 5
 min = 0
 
 [coordinator_work.lock_wait_env]
@@ -1258,6 +1285,34 @@ value = "delegate the rest to a subagent now."
 [coordinator_work.nudge_instead_block]
 doc = "Advisory advice with a block threshold; {block_at} is the call that is blocked."
 value = "delegate the rest to a subagent now; call {block_at} in the window is blocked."
+
+[coordinator_work.block_what]
+doc = "Block headline; {count} is the number of work calls in the window and {minutes} the window length."
+value = "{count} state-changing calls in the main thread within {minutes} min; this one is blocked."
+
+[coordinator_work.block_why]
+doc = "Why a work call past the block threshold is blocked."
+value = "Too much hands-on work in the main thread; the window clears as calls age out."
+
+[coordinator_work.block_instead]
+doc = "What to do instead of a blocked work call."
+value = "hand this and the remaining steps (patch applies and test runs included) to a subagent (Agent tool) that returns a tight summary."
+
+[coordinator_work.block_allowed]
+doc = "What stays allowed past the block threshold."
+value = "reads, recovery commands (--abort/--quit, stash pop/apply) and loosely matched inline code."
+
+[coordinator_work.block_override]
+doc = "The override line of the block ({skip} is the skip command)."
+value = "{skip} (15-min TTL)"
+
+[coordinator_work.trip_skipped]
+doc = "The trip-log event of a call the window would have blocked but a skip let through."
+value = "skipped"
+
+[coordinator_work.trip_block]
+doc = "The trip-log event of a blocked call."
+value = "block"
 
 [coordinator_work.trip_nudge]
 doc = "The event name a nudge is logged under in the trips log."

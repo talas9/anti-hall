@@ -28,8 +28,9 @@ var ah = {
     // The SCOPED append, same path rules; one O_APPEND write. false when the disk refuses.
     appendFile: function (rel, t) { return ahHost.appendFile(rel, t); },
     // The cross-process lock file `rel` (Node lock protocol) with the timings of the defaults group `group`: a handle, or null
-    // when it could not be taken. At most one per call; a lock still held when the call ends is released by the engine.
-    lock: function (rel, group) { return ahNull(ahHost.lockAcquire(rel, group)); },
+    // when it could not be taken. A few at once (script.lock_max_held), taken in the script's fixed order; a lock still held when the call ends is released by the engine.
+    // `waitMs` (optional) replaces the group's wait.
+    lock: function (rel, group, waitMs) { return ahNull(ahHost.lockAcquire(rel, group, waitMs === undefined ? null : waitMs)); },
     unlock: function (h) { return ahHost.lockRelease(h); },
     // The retention sweep of the state files of one writer prefix (stale ones go; `keep` stays).
     // Scoped read of a file under the state directory (null when absent, unreadable or over the cap).
@@ -60,6 +61,9 @@ var ah = {
     // Local calendar fields of an instant: {year, month (1-12), day, hour, minute, second, weekday (0 = Sunday), offsetMinutes}.
     local: function (ms) { var r = ahHost.localTime(ms === undefined ? ahHost.now() : ms); return JSON.parse(r); },
   },
+  // Call right before the first change to shared state: the time limit is lifted for the rest of the call (an interrupt after the
+  // change would defer the call, and the Node hook would apply the change again).
+  commit: function () { ahHost.commit(); },
   home: function () { return ahHost.home(); },
   pid: function () { return ahHost.pid(); },
   fnv: function (t) { return ahHost.fnv(t); },
@@ -68,6 +72,10 @@ var ah = {
     bool: function (key) { return ahHost.settingBool(key); },
     enum: function (key) { return ahHost.settingEnum(key); },
     num: function (key) { return ahHost.settingNum(key); },
+    // Like `num`, but a value below the entry's minimum is dropped (the next source is asked), the way the Node `settings.get` does.
+    numStrict: function (key) { return ahHost.settingNumStrict(key); },
+    // The effective value of a free-text setting (its default when unset).
+    str: function (key) { return ahHost.settingStr(key); },
     skipped: function (guard) { return ahHost.skipped(guard); },
     // `get(section, key, dflt)` of the settings chain for the described entry; `dflt` undefined: the entry's own default.
     // Returns {status: 'value'|'none'|'undecidable', value}.
@@ -96,7 +104,13 @@ var ah = {
     // The target text of a symbolic link, or null.
     readlink: function (p) { return ahNull(ahHost.readlink(p)); },
     readText: function (p, max) { return ahNull(ahHost.readText(p, max === undefined ? 0 : max)); },
+    // Lowercase hex SHA-256 of a regular file (links not followed), or null.
+    sha256File: function (p) { return ahNull(ahHost.fileSha256(p)); },
+    // The first `n` bytes of a regular file as lowercase hex, or null.
+    readHeadHex: function (p, n) { return ahNull(ahHost.readHeadHex(p, n)); },
   },
+  // The numeric user id of the engine's process (the hook runs as the same user).
+  uid: function () { return ahHost.uid(); },
   path: {
     isAbsolute: function (p) { return ahHost.pathIsAbsolute(p); },
     basename: function (p) { return ahHost.pathBasename(p); },
@@ -118,6 +132,8 @@ var ah = {
   // The effective value of a defaults key through the owner's editable layers (settings.json, config.toml, shipped default).
   cfgLive: function (key) { return JSON.parse(ahHost.cfgLive(key)); },
   sha1: function (t) { return ahHost.sha1(t); },
+  // The engine's outbound secret scrubber (the `jev.scrub_rules` of the plugin's jev.toml).
+  scrub: function (t) { return ahHost.scrubSecrets(t); },
   log: function (kind, t) { ahHost.log(kind, t); },
   // Milliseconds left of the request being answered (null outside a daemon). The Jev ask itself is in lib/60-b3.js.
   jev: { deadlineLeftMs: function () { return ahNull(ahHost.deadlineLeftMs()); } },
@@ -128,7 +144,8 @@ var ah = {
   repo: {
     // {unsure, toplevel, root}: the checkout around a directory (root: the outermost superproject); unsure when the answer
     // depends on something the engine does not reproduce.
-    context: function (dir) { return JSON.parse(ahHost.repoContext(dir)); },
+    // `ancestor` (default true) is the Node `missingPath: 'ancestor'` option of `resolveContext`.
+    context: function (dir, ancestor) { return JSON.parse(ahHost.repoContext(dir, ancestor === undefined ? true : !!ancestor)); },
   },
   transcript: {
     // The running agents of a transcript: null (unreadable), {unsure: true}, or {rows: [{id, description, spawnInput}]}.

@@ -7,6 +7,7 @@
 //! | raw function | what it does |
 //! |---|---|
 //! | `cfg(key)` | a shipped defaults entry as JSON text (throws for an unknown key) |
+//! | `commit()` | lift the call's time limit before the first change to shared state: an interrupt after it would repeat the change in the Node hook |
 //! | `cfgGen()` | the defaults snapshot generation (a memo of `cfg` values is valid while it is unchanged) |
 //! | `cfgNum(key)` | a numeric defaults entry with its env override and clamps applied |
 //! | `settingBool(key)` | the effective value of the boolean setting described by defaults entry `key` (the request's settings chain) |
@@ -17,7 +18,7 @@
 //! | `reTest(src, flags, text)` | a linear-time regex test (`flags`: `i` ignore case, `m` multiline (`^`/`$` at line boundaries), `r` engine syntax; else JavaScript syntax) |
 //! | `reFind(src, flags, text)` / `reFindAll` | match positions in UTF-16 units: `[start, end]` / `[s0, e0, s1, e1, ...]` |
 //! | `env(name)` | a variable of the hook's own environment (the request's, never the daemon's), or `null` |
-//! | `settingEnum(key)` / `settingNum(key)` | the effective value of the enum / numeric setting described by defaults entry `key` |
+//! | `settingEnum(key)` / `settingNum(key)` / `settingNumStrict(key)` / `settingStr(key)` | the effective value of the enum / numeric (clamped to the entry's range; strict: a value below its minimum is dropped, as `settings.get` does) / string setting described by defaults entry `key` |
 //! | `fileSize(path)` | the size in bytes of a regular file, or `null` |
 //! | `passwdHome()` | the user's home as the passwd database has it, or `null` |
 //! | `realpath(path)` | the canonical path (links resolved), or `null` when it does not exist |
@@ -26,6 +27,7 @@
 //! | `appendFile(rel, text)` | the SCOPED append (same path rules as `writeAtomic`; one `O_APPEND` write): see [`append_file`] |
 //! | `lstat(path)` | JSON `{kind,size,mtimeMs,mode}` of the path itself (links not followed), or `null`: see [`lstat`] |
 //! | `realpathEx(path)` | JSON `{path}` or `{error}`: the canonical path, or why there is none: see [`realpath_ex`] |
+//! | `uid()` / `fileSha256(path)` / `readHeadHex(path, n)` | the numeric user id; SHA-256 hex of a regular file; the first bytes of a regular file as hex |
 //! | `isDir(path)` | whether `path` is a directory (links followed) |
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
@@ -84,13 +86,24 @@ pub(super) fn credit_blocking(since: std::time::Instant) {
     });
 }
 
+/// `commit()`: lift the call's time limit for the rest of the call. A script calls it right before it first changes shared state
+/// (a file another process reads): an interrupt after that point would defer the call to the Node hook, which would apply the same
+/// change again. What follows is bounded host work (a lock, a write), not script computation.
+pub(super) fn lift_deadline() {
+    DEADLINE.with(|c| {
+        if let Some(d) = c.borrow().as_ref() {
+            d.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
 /// Run `f` with `st` as the request state the host functions read.
 pub fn with_call<R>(st: Settings, f: impl FnOnce() -> R) -> R {
     CALL.with(|c| *c.borrow_mut() = Some(st));
     EXECS.with(|c| *c.borrow_mut() = 0);
     let r = f();
     // a lock a script still holds when its call ends (an exception, an interrupt) is released here, never left to go stale
-    for (_, held, _guard) in HELD.with(|h| std::mem::take(&mut *h.borrow_mut())) {
+    for (_, held, _guard) in HELD.with(|h| std::mem::take(&mut *h.borrow_mut())).into_iter().rev() {
         held.release();
     }
     CALL.with(|c| *c.borrow_mut() = None);
@@ -179,7 +192,8 @@ pub fn write_atomic(home: &str, rel: &str, text: &str) -> rquickjs::Result<bool>
 /// I/O failure.
 pub fn append_file(home: &str, rel: &str, text: &str) -> rquickjs::Result<bool> {
     let Some(cur) = scoped_target(home, rel, text.len(), false)? else { return Ok(false) };
-    let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&cur) else { return Ok(false) };
+    use std::os::unix::fs::OpenOptionsExt;
+    let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(&cur) else { return Ok(false) };
     Ok(std::io::Write::write_all(&mut f, text.as_bytes()).is_ok())
 }
 
@@ -196,6 +210,8 @@ pub enum Op {
     Mkdir,
     /// Remove a regular file; an absent file is the goal state.
     Remove,
+    /// Rename the file to the path named by `text` (also under the write root).
+    Rename,
 }
 
 /// The scoped file API under any absolute `root` (the home directory, or a project root the script names): `rel` must start with
@@ -206,6 +222,11 @@ pub fn scoped(root: &str, rel: &str, text: &str, op: Op) -> rquickjs::Result<boo
         Op::Write => write_atomic(root, rel, text),
         Op::Append => append_file(root, rel, text),
         Op::Remove => state_remove(root, rel),
+        Op::Rename => {
+            let Some(from) = scoped_existing(root, rel)? else { return Ok(false) };
+            let Some(to) = scoped_target(root, text, 0, false)? else { return Ok(false) };
+            Ok(std::fs::rename(from, to).is_ok())
+        }
         Op::Mkdir => Ok(scoped_target(root, rel, 0, true)?.is_some()),
         Op::WriteAfterReply => {
             let Some(path) = scoped_target(root, rel, text.len(), false)? else { return Ok(false) };
@@ -255,7 +276,7 @@ fn scoped_target(home: &str, rel: &str, len: usize, want_dir: bool) -> rquickjs:
     Ok(Some(cur))
 }
 
-/// `lstat(path)` as JSON text: `{"kind":"file"|"dir"|"link"|"other","size":n,"mtimeMs":n,"mode":n}` (the link itself, never its
+/// `lstat(path)` as JSON text: `{"kind":"file"|"dir"|"link"|"other","size":n,"mtimeMs":n,"mode":n,"nlink":n}` (the link itself, never its
 /// target), `null` when the path does not exist, and `{"kind":"error","code":"<io error kind>"}` when it cannot be examined for any
 /// other reason (permission, a file where a directory should be, too many links).
 pub fn lstat(path: &str) -> String {
@@ -275,7 +296,31 @@ pub fn lstat(path: &str) -> String {
     } else {
         "other"
     };
-    serde_json::json!({"kind": kind, "size": m.len(), "mtimeMs": m.mtime() as f64 * 1000.0 + (m.mtime_nsec() / 1_000_000) as f64, "mode": m.mode()}).to_string()
+    serde_json::json!({"kind": kind, "size": m.len(), "mtimeMs": m.mtime() as f64 * 1000.0 + (m.mtime_nsec() / 1_000_000) as f64, "mode": m.mode(), "nlink": m.nlink()}).to_string()
+}
+
+/// `fileSha256(path)`: lowercase hex SHA-256 of a regular file's bytes (at most `script.read_max_bytes`; links are not followed), or `null`
+/// when it is absent, not a regular file, over the cap or unreadable.
+pub fn file_sha256(path: &str) -> Option<String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path).ok()?;
+    let m = f.metadata().ok().filter(std::fs::Metadata::is_file)?;
+    if m.len() > defaults::num("script.read_max_bytes") {
+        return None;
+    }
+    let mut b = Vec::new();
+    f.read_to_end(&mut b).ok()?;
+    Some(ring::digest::digest(&ring::digest::SHA256, &b).as_ref().iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// `readHeadHex(path, n)`: the first `n` bytes (at most `script.read_max_bytes`) of a regular file as lowercase hex, or `null`.
+pub fn read_head_hex(path: &str, n: f64) -> Option<String> {
+    let want = (n.max(0.0) as u64).min(defaults::num("script.read_max_bytes"));
+    let f = std::fs::File::open(path).ok()?;
+    f.metadata().ok().filter(std::fs::Metadata::is_file)?;
+    let mut b = Vec::new();
+    f.take(want).read_to_end(&mut b).ok()?;
+    Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// `realpathEx(path)`: the canonical path as `{"path":s}`, or `{"error":"NotFound"}` / `{"error":"<io error kind>"}` when it cannot be
@@ -306,7 +351,9 @@ pub fn readdir(path: &str) -> Option<Vec<String>> {
 /// other's lock file (processes cannot share a mutex, which is what the file is for).
 static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-type Held = (u64, crate::checks::guardkit::nodelock::Held, std::sync::MutexGuard<'static, ()>);
+/// A held lock: the handle number, the lock file, and the in-process guard (only the first lock of a call holds it; the ones taken
+/// after it in the same call are covered by it).
+type Held = (u64, crate::checks::guardkit::nodelock::Held, Option<std::sync::MutexGuard<'static, ()>>);
 
 thread_local! {
     static CLOCK: RefCell<Option<f64>> = const { RefCell::new(None) };
@@ -316,20 +363,27 @@ thread_local! {
     static EXECS: RefCell<u64> = const { RefCell::new(0) };
 }
 
-/// `lockAcquire(rel, group)`: take the cross-process lock file `rel` (the scoped path rules of [`write_atomic`]) with the Node
+/// `lockAcquire(rel, group, waitMs?)`: take the cross-process lock file `rel` (the scoped path rules of [`write_atomic`]) with the Node
 /// lock protocol of `companion/lib/lock.js`, timings from the defaults group `group` (`<group>.lock_*`). Returns a handle number,
 /// or `null` when the lock could not be taken (the script decides what that means; the swarm guard fails open). A lock still
-/// held when the script call ends is released by the host. At most one lock is held per call.
-pub fn lock_acquire(home: &str, rel: &str, group: &str) -> rquickjs::Result<Option<f64>> {
-    let Some(params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
+/// held when the script call ends is released by the host. At most `script.lock_max_held` locks are held at once.
+pub fn lock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -> rquickjs::Result<Option<f64>> {
+    let Some(mut params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
         return Err(err("lockAcquire", defaults::render("script.msg_unknown_key", &[("key", &group)])));
     };
-    if HELD.with(|h| !h.borrow().is_empty()) {
+    // a script may shorten or lengthen the wait (a test home asks for its own)
+    if let Some(w) = wait_ms.filter(|w| w.is_finite() && *w >= 0.0) {
+        params.wait_ms = w as u64;
+    }
+    // nested locks (a window lock, then the metrics lock under it) are taken in the script's fixed order; how many a call may hold at
+    // once is `script.lock_max_held`
+    let held_now = HELD.with(|h| h.borrow().len());
+    if held_now as u64 >= defaults::num("script.lock_max_held") {
         return Ok(None);
     }
     let Some(path) = scoped_target(home, rel, 0, false)? else { return Ok(None) };
     let started = std::time::Instant::now();
-    let guard = IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = if held_now == 0 { Some(IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner())) } else { None };
     let taken = crate::checks::guardkit::nodelock::acquire(&path.to_string_lossy(), params);
     credit_blocking(started);
     let Some(held) = taken else { return Ok(None) };
@@ -372,9 +426,11 @@ pub fn agents(path: &str) -> String {
 
 /// `repoContext(dir)`: the checkout around `dir` as the Node `resolveContext(dir, {missingPath: 'ancestor'})` finds it:
 /// `{"unsure":bool,"toplevel":s|null,"root":s|null}` (`root`: the outermost superproject checkout).
-pub fn repo_context(dir: &str) -> rquickjs::Result<String> {
+pub fn repo_context(dir: &str, ancestor: bool) -> rquickjs::Result<String> {
     let env = with_settings(|st| crate::reqenv::RequestEnv::from_pairs(st.env.clone()))?;
-    let c = crate::checks::jsport::ident::resolve_context(dir, true, &env);
+    let started = std::time::Instant::now();
+    let c = crate::checks::jsport::ident::resolve_context(dir, ancestor, &env);
+    credit_blocking(started); // the identity resolver may run `git`: that wait is not script time
     Ok(serde_json::json!({"unsure": c.unsure, "toplevel": c.toplevel, "root": c.worktree_root}).to_string())
 }
 
@@ -619,6 +675,8 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     let h = Object::new(c.clone())?;
     h.set("cfg", Function::new(c.clone(), |key: String| -> rquickjs::Result<String> { Ok(entry(&key)?.value.to_json().to_string()) })?)?;
     h.set("cfgGen", Function::new(c.clone(), || defaults::generation() as f64)?)?;
+    h.set("now", Function::new(c.clone(), now_ms)?)?;
+    h.set("commit", Function::new(c.clone(), lift_deadline)?)?;
     h.set(
         "cfgNum",
         Function::new(c.clone(), |key: String| -> rquickjs::Result<f64> {
@@ -655,6 +713,20 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
         })?,
     )?;
     h.set(
+        "settingNumStrict",
+        Function::new(c.clone(), |key: String| -> rquickjs::Result<f64> {
+            let e = entry(&key)?;
+            with_settings(|st| settings::get_num(st, &e.value))
+        })?,
+    )?;
+    h.set(
+        "settingStr",
+        Function::new(c.clone(), |key: String| -> rquickjs::Result<String> {
+            let e = entry(&key)?;
+            with_settings(|st| settings::get_string(st, &e.value))
+        })?,
+    )?;
+    h.set(
         "settingNum",
         Function::new(c.clone(), |key: String| -> rquickjs::Result<f64> {
             let e = entry(&key)?;
@@ -670,6 +742,27 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
         Function::new(c.clone(), |rel: String, text: String| -> rquickjs::Result<bool> {
             let home = with_settings(|st| st.home.clone())?;
             write_atomic(&home, &rel, &text)
+        })?,
+    )?;
+    h.set(
+        "stateRead",
+        Function::new(c.clone(), |rel: String| -> rquickjs::Result<Option<String>> {
+            let home = with_settings(|st| st.home.clone())?;
+            state_read(&home, &rel)
+        })?,
+    )?;
+    h.set(
+        "stateRemove",
+        Function::new(c.clone(), |rel: String| -> rquickjs::Result<bool> {
+            let home = with_settings(|st| st.home.clone())?;
+            state_remove(&home, &rel)
+        })?,
+    )?;
+    h.set(
+        "stateSweep",
+        Function::new(c.clone(), |dir: String, prefix: String, age: f64, max: f64| -> rquickjs::Result<f64> {
+            let home = with_settings(|st| st.home.clone())?;
+            state_sweep(&home, &dir, &prefix, age, max)
         })?,
     )?;
     h.set(
@@ -703,15 +796,16 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     )?;
     h.set(
         "lockAcquire",
-        Function::new(c.clone(), |rel: String, group: String| -> rquickjs::Result<Option<f64>> {
+        Function::new(c.clone(), |rel: String, group: String, wait: Option<f64>| -> rquickjs::Result<Option<f64>> {
             let home = with_settings(|st| st.home.clone())?;
-            lock_acquire(&home, &rel, &group)
+            lock_acquire(&home, &rel, &group, wait)
         })?,
     )?;
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;
     h.set("memory", Function::new(c.clone(), memory)?)?;
     h.set("agents", Function::new(c.clone(), |p: String| agents(&p))?)?;
-    h.set("repoContext", Function::new(c.clone(), |d: String| -> rquickjs::Result<String> { repo_context(&d) })?)?;
+    h.set("repoContext", Function::new(c.clone(), |d: String, anc: Option<bool>| -> rquickjs::Result<String> { repo_context(&d, anc.unwrap_or(true)) })?)?;
+    h.set("scrubSecrets", Function::new(c.clone(), |t: String| crate::jev::scrub::scrub_secrets(&t))?)?;
     h.set("cfgLive", Function::new(c.clone(), |k: String| -> rquickjs::Result<String> { cfg_live(&k) })?)?;
     h.set("now", Function::new(c.clone(), now_ms)?)?; // documented (`ah.clock.now()`) but not installed by the host API commit
     h.set("sha1", Function::new(c.clone(), |t: String| crate::checks::replykit::io::sha1_hex(&t))?)?;
@@ -730,6 +824,9 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("isDir", Function::new(c.clone(), |p: String| std::fs::metadata(p).is_ok_and(|m| m.is_dir()))?)?;
     h.set("lstat", Function::new(c.clone(), |p: String| lstat(&p))?)?;
     h.set("readdir", Function::new(c.clone(), |p: String| readdir(&p))?)?;
+    h.set("uid", Function::new(c.clone(), || crate::checks::jsport::home::uid() as f64)?)?;
+    h.set("fileSha256", Function::new(c.clone(), |p: String| file_sha256(&p))?)?;
+    h.set("readHeadHex", Function::new(c.clone(), |p: String, n: f64| read_head_hex(&p, n))?)?;
     h.set("readlink", Function::new(c.clone(), |p: String| std::fs::read_link(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
     h.set(
         "exec",

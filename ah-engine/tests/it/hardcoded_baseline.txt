@@ -11,7 +11,6 @@
 [number] src/checks/agent_scan/mod.rs: let era = if y >= 0 { y } else { y - 399 } / 400;
 [number] src/checks/agent_scan/mod.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 };
 [number] src/checks/agent_scan/mod.rs: let y = yoe + doe_era * 400 + i64::from(m <= 2);
-[number] src/checks/coordinator_work/post.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 };
 [number] src/dispatch/inject.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 59 {
 [number] src/dispatch/inject.rs: if oh > 23 || om > 59 {
 [number] src/checks/guardkit/jsval/mod.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 24 || mi > 59 || se > 59 || (h == 24 && (mi != 0 || se != 0 || ms != 0)) {
