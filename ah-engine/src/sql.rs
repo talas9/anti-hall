@@ -274,6 +274,8 @@ pub const TEL_DAILY_RANGE: &str = "SELECT day, k, h, e, o, n, us_sum, ib_sum, hi
 pub const MESH_MESSAGES: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE workspace_id = ?1 ORDER BY id ASC LIMIT -1 OFFSET ?2";
 /// The newest `?2` messages of one workspace, newest first.
 pub const MESH_MESSAGES_LAST: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE workspace_id = ?1 ORDER BY id DESC LIMIT ?2";
+/// The newest `?2` messages a workspace SENT, whichever inbox they went to (the evidence sweep reads what a child told its parent).
+pub const MESH_SENT_BY: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE sender = ?1 ORDER BY id DESC LIMIT ?2";
 /// How many messages one workspace holds.
 pub const MESH_MESSAGE_COUNT: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?1";
 /// Every workspace id that has messages.

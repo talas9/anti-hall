@@ -316,6 +316,18 @@ impl MeshReader {
         Ok(out)
     }
 
+    /// The newest `n` messages `sender` sent, to any inbox, oldest first. Their `index` is the row's position in that inbox.
+    pub fn sent_by(&self, sender: &str, n: u64) -> Res<Vec<Value>> {
+        let mut st = self.conn.prepare_cached(sql::MESH_SENT_BY)?;
+        let mut rows = st.query(params![sender, n as i64])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            out.push(Self::message(r, 0)?);
+        }
+        out.reverse();
+        Ok(out)
+    }
+
     /// The direct rows of workspace `id` that need a reply: sender, timestamp and mesh seq (Node's `listNeedsReply`).
     pub fn needs_reply(&self, id: &str) -> Res<Vec<Value>> {
         let mut st = self.conn.prepare_cached(sql::MESH_NEEDS_REPLY)?;

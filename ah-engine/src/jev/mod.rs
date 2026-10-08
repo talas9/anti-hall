@@ -44,6 +44,7 @@ pub mod question;
 pub mod scrub;
 pub mod settings;
 pub mod shared;
+pub mod sweep;
 pub mod transport;
 
 #[cfg(test)]

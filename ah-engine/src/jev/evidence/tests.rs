@@ -86,7 +86,8 @@ fn loop_is_asked_only_to_confirm_a_rule_found_candidate() {
     assert_eq!(gate(&cfg, &base(&[("minutes_since_progress", 20.0), ("repeat_cmd_max", 5.0)]), &d), Gate::Label { rule: "recent_progress".into(), label: "not_looping".into() });
     assert_eq!(gate(&cfg, &base(&[("repeat_cmd_max", 2.0), ("minutes_since_progress", 200.0)]), &d), Gate::NoCandidate("not_looping".into()), "no repeat, no revert: no candidate");
     assert_eq!(gate(&cfg, &base(&[("repeat_cmd_max", 3.0), ("commits_on_step", 1.0)]), &d), Gate::NoCandidate("not_looping".into()), "a commit in between is not a loop");
-    assert_eq!(gate(&cfg, &base(&[("repeat_cmd_max", 3.0), ("minutes_since_progress", 200.0)]), &d), Gate::Ask);
+    assert_eq!(gate(&cfg, &base(&[("repeat_cmd_max", 3.0), ("minutes_since_progress", 200.0), ("git_known", 1.0)]), &d), Gate::Ask);
+    assert_eq!(gate(&cfg, &base(&[("repeat_cmd_max", 3.0), ("minutes_since_progress", 200.0)]), &d), Gate::NoCandidate("not_looping".into()), "without a readable git log a missing commit proves nothing");
     assert_eq!(gate(&cfg, &base(&[("reverts", 1.0)]), &d), Gate::Ask, "a reverted change is a candidate too");
 }
 

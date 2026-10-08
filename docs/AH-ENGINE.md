@@ -649,6 +649,16 @@ judgement calls do.
   answer must cite a line that exists or it is discarded), step-map goes through the shared Jev layer and its cascade (`cascade.escalate_below`
   0.8 for it; the cascade stays off until its own switch is turned on). Modes are untouched: nothing here enables an integration, and a
   `shadow` integration's answers are logged but never actionable. Hook-blocking paths never wait on Haiku.
+- **The evidence sweep (`jev_sweep`).** The engine gathers the facts the gate needs; Node no longer asks these three questions.
+  `src/jev/sweep.rs` runs as the scheduled job `jev_sweep` (every `schedule.jev_sweep_ms`, 15 minutes; a subprocess, so a timeout
+  kills any model call it started) or by hand as `ah-engine jev sweep`. For each child with a plan file
+  (`~/.anti-hall/devswarm/plans`) and each of the three integrations whose mode is not `off` it reads the plan, the end of the
+  child's own transcript (tool calls, texts, errors, usage-limit text), `git log` of its worktree, the CI runs of its branch (the
+  GitHub CLI) and the mesh store (what the child sent and was sent), builds the facts and sections, and hands them to the gate,
+  which writes the decision row. A question whose subject has not changed is not asked again within `sweep.limits.reask_ms`. The
+  sweep does not edit a plan or a signal: acting on an answer is still each integration's mode (the `~N` inferred step and the
+  Node warning annotation for these three are not applied). Settings read from the environment only: held partitions and the
+  stall window. Everything tunable is in `jev_sweep.toml`.
 - **Evidence telemetry.** One row per gate decision in `~/.anti-hall/logs/jev-evidence.ndjson` (emptied past 1 MB): `phase`
   (`rule`, `skipped` or `asked`), `source` (`rule`, `jev`, `haiku`, `none`), `reason` (`insufficient`, `rule-skip`,
   `no-candidate`, `daily-cap`, `bad-evidence-ref`, `low-confidence`, `shadow`, `no-answer`), the `rule`, the `label`, `confidence`,
@@ -729,6 +739,7 @@ Files:
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
 | `gitcache.toml` | the git cache: git invocations, timeouts, TTLs, signed file names, the bypass environment, messages |
+| `jev_sweep.toml` | the evidence sweep: the `jev_sweep` job and interval, where plans/transcripts/mesh stores are read, windows and limits, the transcript, git and CI commands and patterns, the evidence line words |
 | `jev_evidence.toml` | the evidence gate for the supervisor integrations: per-integration backend, daily cap, pack caps, required evidence, rules and question, the pack headings, the Haiku system prompt, the evidence log and its words |
 | `jev.toml` | the Jev lane: vendor endpoints and models, budgets, breaker and fallback timing, the integration table with its default modes, cache and log limits, key-file rules, messages |
 | `setup.toml` | the operator helper commands (`jev-setup`, `capability-scan`, `harvest`, `briefing`): the shared limits, the marker grammar and table widths, the briefing's scan limits, the settings lock timing, and the message texts, which are the Node scripts' own |

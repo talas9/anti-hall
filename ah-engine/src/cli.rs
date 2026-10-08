@@ -58,6 +58,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("config", cmd_config),
         ("schedule", cmd_schedule),
         ("jev", crate::jev::cli::run_cmd),
+        ("jev_sweep", cmd_jev_sweep),
         ("migrate", crate::migrate::cli::run_migrate),
         ("doctor", crate::doctor::run_doctor),
         ("jev-setup", crate::setup::cmd_jev_setup),
@@ -652,5 +653,13 @@ mod tests {
         let v = json!({"a": 1, "b": {"c": "x", "d": [1, 2]}});
         let h = human(&v);
         assert!(h.contains("a: 1") && h.contains("b:\n  c: x") && h.contains("d: 1, 2"), "{h}");
+    }
+}
+
+/// The `jev_sweep` scheduled job (`ah-engine jev_sweep --json`): one evidence sweep of the supervisor's Jev questions.
+fn cmd_jev_sweep(_p: &Parsed) -> i32 {
+    match defaults::env_var("home") {
+        Some(h) => crate::jev::sweep::run(std::path::Path::new(&h)),
+        None => 64,
     }
 }

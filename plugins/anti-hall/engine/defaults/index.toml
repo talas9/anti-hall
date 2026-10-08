@@ -22,6 +22,7 @@ files = [
     "jev.toml",
     "judge.toml",
     "jev_evidence.toml",
+    "jev_sweep.toml",
     "dispatch.toml",
     "hooks.toml",
     "verify_first.toml",

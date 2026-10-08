@@ -150,6 +150,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
         "status" => status(p),
         "scrub" => scrub(),
         "evidence" => evidence(),
+        "sweep" => home().map(|h| super::sweep::run(&h)),
         "triage" => Ok(crate::judge::triage::run_cmd()),
         _ => Err(JevError::Request(defaults::text("msg.jev_usage").to_string())),
     };
