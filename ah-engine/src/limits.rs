@@ -99,6 +99,7 @@ pub fn rss_kb() -> u64 {
         if let Ok(s) = std::fs::read_to_string("/proc/self/statm")
             && let Some(pages) = s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok())
         {
+            // SAFETY: sysconf takes only a name constant and has no memory effects.
             return pages * (unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64) / 1024;
         }
     }
@@ -154,6 +155,7 @@ pub fn peer_uid(s: &UnixStream) -> Option<u32> {
     {
         let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
         let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: `cred` and `len` describe a writable ucred buffer of exactly `len` bytes; the fd is live for the call.
         let rc = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
         (rc == 0).then_some(cred.uid)
     }
