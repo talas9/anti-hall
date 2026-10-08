@@ -114,10 +114,6 @@ value = "Stop gate: blocks once per reply that states something with a hedge wor
 doc = "The guard id this check answers to in skip.json and in messages."
 value = "speculation-guard"
 
-[speculation_guard.event]
-doc = "The only event this check answers."
-value = "Stop"
-
 [speculation_guard.setting]
 doc = "Where the on/off switch is read from (guards.speculationGuard, default on)."
 value = { section = "guards", key = "speculationGuard", env = "", aliases = [], option = "guards_speculation_guard", default = true }

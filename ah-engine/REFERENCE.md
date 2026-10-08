@@ -2523,7 +2523,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_guard.backtick_re` | ``[^`\n]+`` |  |  | Regex source of an inline code span. |
 | `speculation_guard.curly_double_re` | `“[^“”\n]*”` |  |  | Regex source of a curly double-quoted span. |
 | `speculation_guard.curly_single_re` | `‘[^‘’\n]*’` |  |  | Regex source of a curly single-quoted span. |
-| `speculation_guard.event` | `Stop` |  |  | The only event this check answers. |
 | `speculation_guard.fence_line_re` | `^[ \t]{0,3}(`{3,}\|~{3,})` |  |  | Regex source of a code fence line; the first group is the fence marker. |
 | `speculation_guard.frame_heading` | `^\s*#{1,6}\s+(.+?)\s*#*\s*$` |  |  | Regex source of a markdown heading line; group 1 is its text. |
 | `speculation_guard.frame_heading_label` | `^LABEL\b` |  |  | Regex source (case-insensitive) a heading's text must start with to frame what is under it (the token LABEL is replaced by frame_label). |
@@ -2687,7 +2686,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.ever_key` | `everNudged` |  |  | Field of the state file that holds the once-per-agent records. |
 | `silent_nudge.ever_nudged_ttl_ms` | `2592000000` |  | ms | How long a once-per-agent nudge record is kept (30 days). |
 | `silent_nudge.ever_sep` | `::` |  |  | Separator between session id and agent id in a once-per-agent key. |
-| `silent_nudge.expecting` | `a JSON object` |  |  | Parser error text for a state file member that is not a JSON object. |
 | `silent_nudge.finished_words` | `done complete completed finished stopped success succeeded error failed` |  |  | Heartbeat statuses (case-insensitive, whole text) that mean the agent finished. |
 | `silent_nudge.guard_name` | `silent-agent-nudge` |  |  | The guard id this check answers to in skip.json. |
 | `silent_nudge.heartbeat_ext` | `.json` |  |  | Extension of a heartbeat file. |

@@ -57,3 +57,8 @@ fn speculation_judge_script_matches_the_compiled_port() {
 fn speculation_guard_script_matches_the_compiled_port() {
     golden_report("speculation-guard", 12);
 }
+
+#[test]
+fn silent_agent_nudge_script_matches_the_compiled_port() {
+    golden_report("silent-agent-nudge", 12);
+}
