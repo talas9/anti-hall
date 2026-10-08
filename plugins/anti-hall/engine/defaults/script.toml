@@ -1,0 +1,85 @@
+# ah-engine shipped defaults for scripted check logic (D88 spike): hook DECISION logic lives in editable plugin JavaScript
+# (`engine/logic/<check>.js`, shared helpers in `engine/logic/lib/*.js`), run by an embedded QuickJS-NG runtime. The engine
+# keeps only generic, read-only primitives the scripts call. Format: see the header of engine.toml.
+
+[script.enabled]
+doc = "1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline)."
+value = 1
+env = "AH_ENGINE_SCRIPT"
+min = 0
+max = 1
+
+[script.logic_dir]
+doc = "Directory of the shipped check scripts, relative to the plugin root."
+value = "engine/logic"
+
+[script.override_dir]
+doc = "Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one."
+value = ".anti-hall/logic"
+
+[script.lib_dir]
+doc = "Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script."
+value = "lib"
+
+[script.ext]
+doc = "File extension of a check script and of a lib file."
+value = ".js"
+
+[script.entry]
+doc = "Global function a check script defines; it is called with the hook payload and returns the verdict."
+value = "decide"
+
+[script.time_limit_ms]
+doc = "Wall-clock limit of one script call; past it the interpreter is interrupted and the call defers to Node (never a silent allow)."
+value = 50
+env = "AH_ENGINE_SCRIPT_TIME_MS"
+min = 1
+unit = "ms"
+
+[script.call_memory_bytes]
+doc = "Heap a single script call may allocate above the runtime's size after its scripts were loaded; past it the call fails and defers."
+value = 16777216
+min = 1048576
+unit = "bytes"
+
+[script.stack_bytes]
+doc = "Largest interpreter stack one script call may use."
+value = 262144
+min = 65536
+unit = "bytes"
+
+[script.read_max_bytes]
+doc = "Upper bound of one `ah.fs.readText` read, whatever the script asks for."
+value = 4194304
+min = 1024
+unit = "bytes"
+
+[script.regex_cache_max]
+doc = "Compiled regular expressions kept per worker thread for `ah.re.*`; the cache is cleared when it is full."
+value = 256
+min = 8
+
+[script.p95_budget_us]
+doc = "Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way)."
+value = 1000
+unit = "us"
+
+[script.msg_invalid_pattern]
+doc = "Error a script sees when it hands `ah.re.*` a pattern that does not compile."
+value = "invalid pattern {src}"
+
+[script.msg_no_request]
+doc = "Error a host function raises when it is called outside a check call (no request state)."
+value = "no request state"
+
+[script.msg_unknown_key]
+doc = "Error a script sees when it asks `ah.cfg` for a key that is not shipped."
+value = "unknown defaults key {key}"
+
+[script.msg_not_number]
+doc = "Error a script sees when it asks `ah.cfgNum` for a key whose value is not a number."
+value = "{key} is not a number"
+
+[script.msg_bad_verdict]
+doc = "Logged reason (then the call defers) when a script returns a value that is not a verdict."
+value = "unexpected verdict {value}"

@@ -22,6 +22,9 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 ring = { version = "0.17", default-features = false }
 # Heap profiler for the opt-in `diag` feature only (a dependency no default or release build compiles).
 dhat = { version = "0.3.3", optional = true }
+# Scripted check logic (D88): an embedded QuickJS-NG interpreter runs the plugin's editable check scripts. Default features
+# off: no module loader, no async, no Rust allocator hook (so `set_memory_limit` stays enforced), pre-generated bindings.
+rquickjs = { version = "0.14.0", default-features = false }
 
 # Allocator that returns freed pages (the system allocators keep them, so RSS stayed at the largest transient). Only on the targets
 # the crate supports (see src/main.rs).
@@ -52,6 +55,11 @@ lto = true
 strip = true
 codegen-units = 1
 # panic stays "unwind": the client wraps everything in catch_unwind so a bug fails open (exit 0), never SIGABRT.
+
+# The QuickJS-NG interpreter (C, built by rquickjs-sys) is the hot loop of every scripted check: build it for speed, not size
+# (D88 spike, measured: the interpreter runs about 2.4x faster at opt-level 3 than at "z").
+[profile.release.package.rquickjs-sys]
+opt-level = 3
 
 # Lint gate (clippy `-D warnings`, wired into test.sh). Rule ids are those of the Rust standards audit (rust-standards.md).
 #   E2   no unwrap/expect in non-test paths: a violated invariant is a Result or a stated `expect` with a one-line allow.

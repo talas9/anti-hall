@@ -164,6 +164,10 @@ pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value
     if guardkit::settings::unreadable_settings_file(home) {
         return Some(Verdict::Defer);
     }
+    // D88: a check whose logic ships as a plugin script runs the script (unless `script.enabled` is 0).
+    if let Some(v) = crate::script::run(check.name(), payload, env) {
+        return v;
+    }
     check.run_env(subject, payload, opts, env)
 }
 

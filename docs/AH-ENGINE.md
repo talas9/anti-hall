@@ -682,6 +682,7 @@ Files:
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |
 | `response_guards.toml` | patterns, switches, limits and messages of the four response-correctness ports (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`) and their shared helpers |
 | `sibling_sweep.toml` | phrases, hedge and tool lists, messages, limits and the follow-through window of the sibling-sweep check; all read at call time through the config layers, so editing a settings file changes the next call |
+| `script.toml` | scripted check logic (D88 spike): the on/off switch, where check scripts and the owner override live, and the per-call time, heap and stack limits of the embedded QuickJS-NG runtime |
 | `agent_controls.toml` | patterns, switches, limits and messages of ask-guard, silent-agent-nudge, stale-agent-stop-note and the transcript agent scan they share |
 | `codex_handover.toml` | patterns, switches, limits, file names and messages of the handover and Codex hook ports and the JavaScript-behavior helpers they share |
 | `devswarm_gates.toml` | switches, role and mode variables and the command pre-filter words of the DevSwarm child gate, reply tracker and drain checks |

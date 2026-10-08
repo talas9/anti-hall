@@ -6,13 +6,14 @@
 # dependency goes away.
 
 [budget]
-# Distinct `name version` entries in the normal graph for the host target on 2026-10-07, counted by the test (the `(*)` repeat
-# markers and the engine itself are not counted; the raw `cargo tree ... | sort -u` line count is 59 because of both, and the
-# earlier crate-plan figure of 58 included crates only other targets pull in).
-base_crates = 53
-# Crates approved this round but not yet in the tree; the headroom covers their own entries only. Their transitive
-# dependencies are not measured yet: the commit that adds them must replace this with the measured count.
-approved = ["tikv-jemallocator", "rquickjs"]
-approved_headroom = 2
+# Distinct `name version` entries in the normal graph for the host target, counted by the test (the `(*)` repeat markers and
+# the engine itself are not counted). 2026-10-07: 53 measured, plus the approved tikv-jemallocator (+2, in the tree since,
+# measured 55 on 118852f). 2026-10-08 (D88 spike, lane-script): rquickjs 0.14.0 with default features off adds 5 measured
+# crates (rquickjs, rquickjs-core, rquickjs-sys, allocator-api2, equivalent; hashbrown and foldhash were already in the
+# tree): 55 -> 60. Build-only dependencies (cc for the QuickJS-NG C sources) are not in the normal graph.
+base_crates = 60
+# Crates approved but not yet in the tree; the headroom covers their own entries only.
+approved = []
+approved_headroom = 0
 # The limit the test enforces: base_crates + approved_headroom.
-max_crates = 55
+max_crates = 60
