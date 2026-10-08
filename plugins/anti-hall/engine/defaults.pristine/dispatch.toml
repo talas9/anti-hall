@@ -366,6 +366,7 @@ value = [
   { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },
   { id = "procwatch-advisory", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "agent-reminders", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
+  { id = "gh-rt-advisory", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/gh-rt-advisory\"", timeout = 10, check = "gh-rt-advisory" },
 ]
 
 [dispatch.hooks_claude_TaskCreated]
@@ -532,6 +533,7 @@ value = [
   { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },
   { id = "procwatch-advisory", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "agent-reminders", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
+  { id = "gh-rt-advisory", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/gh-rt-advisory\"", timeout = 10, check = "gh-rt-advisory" },
 ]
 
 [dispatch.hooks_codex_PreToolUse]

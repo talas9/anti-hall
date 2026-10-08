@@ -22,6 +22,7 @@ pub mod doctor;
 pub mod error;
 pub mod frame;
 pub mod gate;
+pub mod ghrt;
 pub mod gitcache;
 pub mod handovers;
 pub mod health;

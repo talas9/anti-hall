@@ -77,6 +77,13 @@ value = { args = "", read_only = false, status = "implemented" }
 [cmd.agents]
 doc = "The agent tracker (feature 21): `status` lists every tracked agent (main sessions, subagents and background tasks, DevSwarm workspaces) with tokens, progress, last output, state and flags, plus today's reminder and recovery totals; `tick` runs one tracker tick now (the scheduled job `agent_tick` does the same every minute). It never stops or kills an agent."
 value = { args = "<status|tick> [--json]", read_only = false, read_only_args = ["status"], status = "implemented" }
+[cmd.gh]
+doc = "GitHub realtime (feature #20, independent of DevSwarm): `status` prints, from the state file with no network, what is followed (the repos of the working directories of live sessions, their pull request, review, CI and mergeability), the rate-limit budget, the hold in force (backoff, budget, gh missing, logged out or offline) and the measured rate-limit cost of 200 and 304 answers; `segment [--cwd <dir>]` prints the statusline piece for the repo that holds the directory (empty when there is nothing to say); `poll [--force]` runs one tick now."
+value = { args = "<status|segment|poll> [--cwd <dir>] [--force]", read_only = false, status = "implemented" }
+
+[cmd.gh_poll]
+doc = "The scheduled GitHub realtime tick (the `gh_poll` job): notices pushes, polls the followed repos that are due inside the rate budget and records the edges; prints its counts with --json and always exits 0."
+value = { args = "", read_only = false, status = "implemented" }
 
 [cmd.migrate]
 doc = "The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state, gate-intent and auto-archive state forward-migrations, the settings.json migration from the legacy jev.json and the stored plugin options, the Jev triage cache repair, the lock scratch sweep and the retention sweeps, with Node's report; `--dry-run` previews and writes nothing. Steps that need the DevSwarm stores are left to the Node doctor while DevSwarm state is present."

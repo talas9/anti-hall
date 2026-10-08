@@ -349,6 +349,11 @@
             "type": "command",
             "command": "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/gh-rt-advisory\"",
+            "timeout": 10
           }
         ]
       }

@@ -196,3 +196,6 @@ pub static ENGINE_ROLE_GUARD: Scripted = Scripted::new("engine-role-guard", "rol
 
 /// `engine-role-note` (SessionStart and SubagentStart; engine-only).
 pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles.summary_note");
+
+/// `gh-rt-advisory` (UserPromptSubmit; engine-only): tells a session about GitHub edges (CI red or green, PR merged, changes requested).
+pub static GH_RT_ADVISORY: Scripted = Scripted::new("gh-rt-advisory", "github_rt.advisory_summary");
