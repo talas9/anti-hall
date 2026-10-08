@@ -37,7 +37,7 @@ pub const NOW0: f64 = 1_790_000_000_000.0;
 
 fn time_tokens(s: &str) -> Vec<(String, String, i64)> {
     static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = R.get_or_init(|| regex::Regex::new(r"\{(MS|ISO|HM):(-?[0-9]+)\}").unwrap());
+    let re = R.get_or_init(|| regex::Regex::new(r"\{(MS|ISO|HM|DATE|LDATE):(-?[0-9]+)\}").unwrap());
     re.captures_iter(s).map(|c| (c[0].to_string(), c[1].to_string(), c[2].parse().unwrap())).collect()
 }
 
@@ -46,6 +46,12 @@ fn time_text(kind: &str, now: f64, off: i64) -> String {
     match kind {
         "MS" => format!("{}", t as i64),
         "ISO" => crate::checks::agent_scan::iso_utc(t),
+        "DATE" => crate::checks::agent_scan::iso_utc(t)[..10].to_string(),
+        "LDATE" => {
+            // the machine's local calendar date (what a hook that names a directory after "today" sees)
+            let v: Value = serde_json::from_str(&super::host_b3::local_time(t)).unwrap();
+            format!("{:04}-{:02}-{:02}", v["year"].as_i64().unwrap(), v["month"].as_i64().unwrap(), v["day"].as_i64().unwrap())
+        }
         _ => crate::checks::agent_scan::hhmm(t),
     }
 }
@@ -65,7 +71,9 @@ fn pinned(case: &Value) -> bool {
 }
 
 fn fill(s: &str, home: &str, real: &str, now: f64) -> String {
-    super::expand_now(&fill_time(&s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home), now), now)
+    // `{HOMEENC}`: the real home path as the host names a project directory (`/`, `\\`, `:` and `.` become `-`)
+    let enc: String = real.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '.') { '-' } else { c }).collect();
+    super::expand_now(&fill_time(&s.replace("{PLUGIN}", &plugin()).replace("{HOMEENC}", &enc).replace("{HOMEREAL}", real).replace("{HOME}", home), now), now)
 }
 
 fn sub(v: &Value, home: &str, real: &str, now: f64) -> Value {
@@ -105,6 +113,8 @@ pub struct Laid {
     pub times: Vec<(String, String)>,
     /// The case sets `mask_iso`: written ISO clock readings are not compared, only that one was written.
     pub mask_iso: bool,
+    /// The case's `vmask`: regular expressions whose matches in an answer's text are not compared.
+    pub vmask: Vec<String>,
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -125,7 +135,7 @@ pub fn lay_at(case: &Value, now: f64, pinned: bool) -> Laid {
     let home = home.to_string_lossy().into_owned();
     if let Some(files) = case.get("files").and_then(Value::as_object) {
         for (rel, spec) in files {
-            let path = Path::new(&home).join(rel.replace("{HOME}/", ""));
+            let path = Path::new(&home).join(fill_time(&rel.replace("{HOME}/", ""), now));
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).unwrap();
             }
@@ -163,6 +173,7 @@ pub fn lay_at(case: &Value, now: f64, pinned: bool) -> Laid {
         pinned,
         times,
         mask_iso: case.get("mask_iso").and_then(Value::as_bool).unwrap_or(false),
+        vmask: case.get("vmask").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
     }
 }
 
@@ -230,7 +241,13 @@ fn iso_ts(text: &str) -> String {
 
 /// The verdict as the corpus stores it, with the case's directories replaced by their placeholders.
 pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
-    let u = |s: &str| if l.norm { norm_ts(&unsub(s, &l.home, &l.real, &l.times), true) } else { unsub(s, &l.home, &l.real, &l.times) };
+    let u = |s: &str| {
+        let mut t = unsub(s, &l.home, &l.real, &l.times);
+        for m in &l.vmask {
+            t = regex::Regex::new(m).unwrap().replace_all(&t, "{V*}").into_owned();
+        }
+        if l.norm { norm_ts(&t, true) } else { t }
+    };
     match v {
         None => json!({"v": "none"}),
         Some(Verdict::Allow) => json!({"v": "allow"}),
@@ -255,14 +272,26 @@ pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
 }
 
 /// The text of a watched file with its timestamps (runs of 12 or more digits) replaced by `{TS}`, or `null` when absent.
-fn watched(l: &Laid, rel: &str) -> Value {
-    let Ok(text) = std::fs::read_to_string(Path::new(&l.home).join(rel)) else { return Value::Null };
-    let mut text = unsub(&text, &l.home, &l.real, &l.times);
+fn watched(l: &Laid, masks: &[String], rel: &str) -> Value {
+    let Ok(mut text) = std::fs::read_to_string(Path::new(&l.home).join(rel)) else { return Value::Null };
     if l.mask_iso {
-        static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        text = R.get_or_init(|| regex::Regex::new(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z").unwrap()).replace_all(&text, "{ISO*}").into_owned();
+        // a case flagged `mask_iso`: the written clock readings (ISO texts) are not compared, only that one was written; they are
+        // masked before the case's own time tokens are turned back, or a date inside an ISO text would be tokenized first
+        static R0: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        text = R0.get_or_init(|| regex::Regex::new(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z").unwrap()).replace_all(&text, "{ISO*}").into_owned();
+        // the Jev log row names the project of the PROCESS's working directory, which differs between runs and runners
+        static P: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        text = P.get_or_init(|| regex::Regex::new(r#""project":"[^"]*""#).unwrap()).replace_all(&text, r#""project":"{P*}""#).into_owned();
+    }
+    let mut text = unsub(&text, &l.home, &l.real, &l.times);
+    for m in masks {
+        // a case's own `mask` list: regular expressions whose matches are not compared (values that depend on the day or the path)
+        text = regex::Regex::new(m).unwrap().replace_all(&text, "{M*}").into_owned();
     }
     let out = norm_ts(&text, l.norm);
+    // a time with a fraction of a millisecond (a modification time Node read with its nanoseconds): the fraction is not compared
+    static F: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let out = F.get_or_init(|| regex::Regex::new(r"\{TS\}\.[0-9]+").unwrap()).replace_all(&out, "{TS}").into_owned();
     Value::String(out)
 }
 
@@ -272,18 +301,28 @@ pub fn watched_all_pub(case: &Value, l: &Laid) -> Value {
 }
 
 fn watched_all(case: &Value, l: &Laid) -> Value {
+    let masks: Vec<String> = case.get("mask").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
     let rels: Vec<&str> = case.get("watch").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    Value::Object(rels.iter().map(|r| (r.to_string(), watched(l, &super::expand_now(&fill_time(r, l.now), l.now)))).collect())
+    Value::Object(rels.iter().map(|r| (r.to_string(), watched(l, &masks, &super::expand_now(&fill_time(r, l.now), l.now)))).collect())
 }
 
 /// The script's answer to a laid-out case (at the case's pinned clock when it has one).
-pub fn run_case(check: &str, l: &Laid) -> Option<Option<Verdict>> {
+pub fn run_case(check: &str, l: &Laid, repeat: usize) -> Option<Option<Verdict>> {
     if l.pinned {
         super::host::set_clock(Some(l.now));
+    }
+    // `repeat` runs: the earlier ones only leave their state behind, the last one is the answer
+    for _ in 1..repeat {
+        let _ = run_forced(check, &l.payload, &l.opts, &l.event, &l.env);
     }
     let got = run_forced(check, &l.payload, &l.opts, &l.event, &l.env);
     super::host::set_clock(None);
     got
+}
+
+/// How many times a case runs on the same home (`"repeat"`, default 1).
+pub fn repeat_of(case: &Value) -> usize {
+    case.get("repeat").and_then(Value::as_u64).map_or(1, |n| n.max(1) as usize)
 }
 
 /// Every case's answer from the script, against its stored `expect`. Returns the number of cases and of each kind.
@@ -293,7 +332,7 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
     assert!(cases.len() >= 20, "{check}: a golden corpus of real size");
     for c in &cases {
         let l = lay(c);
-        let got = run_case(check, &l).unwrap_or_else(|| panic!("{check}: no shipped script"));
+        let got = run_case(check, &l, repeat_of(c)).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = verdict_json(&got, &l);
         assert_eq!(
             got,
@@ -320,6 +359,9 @@ pub fn regenerate(check: &str, compiled: &dyn Fn(&Laid) -> Option<Verdict>) {
     for c in load(check) {
         let l = lay_at(&c, real_now, false);
         let mut c = c;
+        for _ in 1..repeat_of(&c) {
+            let _ = compiled(&l);
+        }
         c["expect"] = verdict_json(&compiled(&l), &l);
         if c.get("watch").is_some() {
             c["writes"] = watched_all(&c, &l);

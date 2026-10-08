@@ -24,7 +24,14 @@ var gk = {
       }
       var body = {}; body[ah.cfg('guardkit.prune_stamp_key')] = Math.floor(now);
       ah.state.writeAtomic(stamp, JSON.stringify(body));
-      ah.state.sweep(dirRel, prefix + '-', ah.cfgNum('guardkit.prune_ttl_ms'), 1000000);
+      // the files `<prefix>-*.json` older than the TTL (the live session's own file is the newest, so it stays)
+      var names = ah.fs.listDir(ah.home() + '/' + dirRel), ttl = ah.cfgNum('guardkit.prune_ttl_ms'), left = ah.cfgNum('script.sweep_max_remove'), ext = ah.cfg('guardkit.state_ext');
+      for (var i = 0; names && i < names.length && left > 0; i++) {
+        var n = names[i];
+        if (n.indexOf(prefix + '-') !== 0 || n.slice(-ext.length) !== ext) continue;
+        var m = ah.fs.mtimeMs(ah.home() + '/' + dirRel + '/' + n);
+        if (m !== null && (now - m) > ttl && ah.state.remove(dirRel + '/' + n)) left--;
+      }
     } catch (e) { /* best effort, as in Node */ }
   },
 };
@@ -69,7 +76,7 @@ var turnGate = {
       var turn = o.agentId ? ah.cfg('turn_gate.agent_prefix') + o.agentId : turnGate.currentTurnId(o.transcriptPath);
       if (!turn) return true;
       var slot = String(o.key) + '|' + (o.agentId || ah.cfg('turn_gate.main_label'));
-      var sig = o.sig === undefined ? '' : String(o.sig).slice(0, 200);
+      var sig = o.sig === undefined ? '' : String(o.sig).slice(0, ah.cfgNum('turn_gate.sig_max'));
       var rel = turnGate.stateRel(o.sessionId), state = {};
       var raw = ah.state.readText(rel);
       try { state = JSON.parse(raw === null ? '' : raw) || {}; } catch (e) { state = {}; }

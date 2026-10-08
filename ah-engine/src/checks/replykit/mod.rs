@@ -7,7 +7,6 @@
 pub mod io;
 pub mod json;
 pub mod transcript;
-pub mod turn_gate;
 
 /// The engine cannot reproduce what the Node hook would do here; the Node hook decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

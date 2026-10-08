@@ -21,9 +21,9 @@
 //! - a value whose JavaScript string form is not reproduced (an object as a session id or task id, a non-number fired
 //!   percent that `+` would concatenate), and a latch with a `__proto__` key (`Object.assign` would not copy it).
 use super::pct::{Pct, Reading, context_pct, parse_line, write_inferred};
-use super::setting::{Sv, get, js_parse_int};
+use super::setting::{get, js_parse_int};
 use super::text;
-use super::{hazard, is_objectish, judge_child, now_ms, settings_of, subagent_by_payload, ups_empty};
+use super::{hazard, is_objectish, judge_child, now_ms, settings_of, subagent_by_payload};
 use crate::checks::Verdict;
 use crate::checks::emit_dedupe::sha1_hex;
 use crate::checks::git::util::Settings;
@@ -46,10 +46,7 @@ struct Eff {
     nag: bool,
     nag_step: f64,
     nag_quiet: f64,
-    gate_new_work: bool,
-    gate_budget: f64,
     decisive: bool,
-    markers: Vec<String>,
 }
 
 fn resolve(st: &Settings) -> Eff {
@@ -60,10 +57,7 @@ fn resolve(st: &Settings) -> Eff {
         nag: false,
         nag_step: 0.0,
         nag_quiet: 0.0,
-        gate_new_work: false,
-        gate_budget: 0.0,
         decisive: false,
-        markers: Vec::new(),
     };
     // the one rule the settings schema cannot express: the percent variable set to 0 disables the feature outright
     if let Some(raw) = st.env.get(defaults::text("ctxbudget.env_pct_off"))
@@ -75,15 +69,6 @@ fn resolve(st: &Settings) -> Eff {
     if !get(st, defaults::raw("ctxbudget.set_ah_enabled")).flag() {
         return off;
     }
-    let markers = match get(st, defaults::raw("ctxbudget.set_ah_markers")) {
-        Sv::Str(s) => s
-            .split(|c: char| defaults::list("ctxbudget.ah_marker_seps").iter().any(|d| d.starts_with(c)))
-            .map(js_trim)
-            .filter(|m| !m.is_empty())
-            .map(str::to_string)
-            .collect(),
-        _ => Vec::new(),
-    };
     Eff {
         enabled: true,
         pct: get(st, defaults::raw("ctxbudget.set_ah_pct")).num(),
@@ -91,10 +76,7 @@ fn resolve(st: &Settings) -> Eff {
         nag: get(st, defaults::raw("ctxbudget.set_ah_nag")).flag(),
         nag_step: get(st, defaults::raw("ctxbudget.set_ah_nag_step")).num(),
         nag_quiet: get(st, defaults::raw("ctxbudget.set_ah_nag_quiet")).num(),
-        gate_new_work: get(st, defaults::raw("ctxbudget.set_ah_gate")).flag(),
-        gate_budget: get(st, defaults::raw("ctxbudget.set_ah_gate_budget")).num(),
         decisive: get(st, defaults::raw("ctxbudget.set_ah_decisive")).flag(),
-        markers,
     }
 }
 
@@ -136,16 +118,6 @@ fn over_threshold(r: &Reading, eff: &Eff) -> Option<Over> {
 
 // ---- the latch ---------------------------------------------------------------------------------------------------
 
-/// A JavaScript truthiness test.
-fn truthy(v: Option<&Js>) -> bool {
-    match v {
-        None | Some(Js::Null) => false,
-        Some(Js::Bool(b)) => *b,
-        Some(Js::Num(n)) => *n != 0.0 && !n.is_nan(),
-        Some(Js::Str(s)) => !s.is_empty(),
-        Some(_) => true,
-    }
-}
 
 /// A finite number field (`Number.isFinite(latch.x)`).
 fn fin(l: &Js, key: &str) -> Option<f64> {
@@ -160,11 +132,6 @@ fn obj(fields: Vec<(&str, Js)>) -> Js {
     Js::Obj(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
-fn remove(l: &mut Js, key: &str) {
-    if let Js::Obj(v) = l {
-        v.retain(|(k, _)| k != key);
-    }
-}
 
 /// `sessionTag(payload)`: the sanitized session id, else the first 16 hex digits of the transcript path's SHA-1.
 pub(crate) fn session_tag(p: &Value) -> Option<String> {
@@ -242,16 +209,6 @@ fn transcript_of(p: &Value) -> Option<&str> {
     p.get("transcript_path").and_then(Value::as_str)
 }
 
-fn ups_text(text: &str) -> Verdict {
-    if text.is_empty() {
-        return ups_empty();
-    }
-    Verdict::Exact(crate::checks::Exact {
-        code: 0,
-        out: crate::checks::guardkit::msg::render("ctxbudget.ups_line", &[("text", &quote(text))]),
-        err: String::new(),
-    })
-}
 
 fn stop_block(reason: &str) -> Verdict {
     Verdict::Exact(crate::checks::Exact {
@@ -263,163 +220,8 @@ fn stop_block(reason: &str) -> Verdict {
 
 // ---- the post-handover gate (hooks/lib/auto-handover-gate.js) ----------------------------------------------------
 
-/// `noteHandover(latch, payload, pct, now)`: the latch with this session's newest handover recorded, when it is new.
-fn note_handover(l: &Js, p: &Value, pct: f64, now: f64, st: &Settings, env: &RequestEnv) -> Result<Option<Js>, ()> {
-    if !fired(l) || !pct.is_finite() {
-        return Ok(None);
-    }
-    let Some((file, mtime)) = text::session_handover(p, st, env)? else { return Ok(None) };
-    let since = fin(l, "firedAt").map_or(0.0, |f| f - defaults::num("ctxbudget.ah_mtime_slack_ms") as f64);
-    if mtime < since || fin(l, "handoverMtime").is_some_and(|h| mtime <= h) {
-        return Ok(None);
-    }
-    let mut next = l.clone();
-    next.set("handoverMtime", Js::Num(mtime));
-    next.set("handoverPath", Js::Str(file));
-    next.set("handoverPct", Js::Num(pct));
-    next.set("handoverSeenAt", Js::Num(now));
-    remove(&mut next, "gateBackstopAt");
-    remove(&mut next, "gateBackstopPct");
-    Ok(Some(next))
-}
 
-/// `isArmed(cfg, latch)`.
-fn is_armed(eff: &Eff, l: &Js) -> bool {
-    eff.enabled && eff.gate_new_work && fired(l) && fin(l, "handoverPct").is_some()
-}
 
-/// `isHousekeepingPrompt(prompt, extraMarkers)`.
-fn is_housekeeping(prompt: Option<&Value>, extra: &[String]) -> bool {
-    let Some(p) = prompt.and_then(Value::as_str).filter(|p| !js_trim(p).is_empty()) else { return false };
-    let lower = p.to_lowercase();
-    let builtin = defaults::list("ctxbudget.ah_housekeeping");
-    builtin.iter().map(|m| m.to_string()).chain(extra.iter().cloned()).any(|m| !js_trim(&m).is_empty() && lower.contains(&m.to_lowercase()))
-}
-
-// ---- auto-handover.js ----------------------------------------------------------------------------------------------
-
-/// `auto-handover.js`.
-pub fn decide_prompt(p: &Value, env: &RequestEnv) -> Verdict {
-    if judge_child(env) {
-        return Verdict::Allow;
-    }
-    let st = match gate(p, env, false) {
-        Gate::Quiet => return ups_empty(),
-        Gate::Defer => return Verdict::Defer,
-        Gate::Go(st) => st,
-    };
-    let _zone = ZoneGuard::new(env);
-    let eff = resolve(&st);
-    let Some(tag) = session_tag(p) else { return ups_empty() };
-    let Ok(latch) = read_latch(&st, &tag) else { return Verdict::Defer };
-    let mut w = Writes::default();
-    if !eff.enabled {
-        if fired(&latch) {
-            w.latch = Some(obj(vec![("fired", Js::Bool(false))]));
-        }
-        w.commit(&st, p, &tag);
-        return ups_empty();
-    }
-    let r = match context_pct(&st, p.get("session_id"), transcript_of(p), None) {
-        Pct::Defer => return Verdict::Defer,
-        Pct::None => return ups_empty(),
-        Pct::Reading(r) => r,
-    };
-    w.inferred = r.infer_write;
-    let text = match prompt_text(p, &st, env, &eff, &latch, &r, &mut w) {
-        Ok(t) => t,
-        Err(()) => return Verdict::Defer,
-    };
-    w.commit(&st, p, &tag);
-    ups_text(&text)
-}
-
-/// The context `auto-handover.js` injects for a reading, with the latch write it implies. `Err` = defer.
-fn prompt_text(p: &Value, st: &Settings, env: &RequestEnv, eff: &Eff, latch: &Js, r: &Reading, w: &mut Writes) -> Result<String, ()> {
-    if !r.pct.is_finite() {
-        return Ok(String::new());
-    }
-    let now = now_ms();
-    let Some(over) = over_threshold(r, eff) else {
-        if fired(latch) || truthy(latch.get("softFired")) {
-            w.latch = Some(obj(vec![("fired", Js::Bool(false)), ("softFired", Js::Bool(false))]));
-        }
-        return Ok(String::new());
-    };
-    if !fired(latch) {
-        if over == Over::PctUnknownWindow {
-            // unknown window: never the mandatory directive, one soft advisory per arm
-            if latch.get("softFired") == Some(&Js::Bool(true)) {
-                return Ok(String::new());
-            }
-            let mut next = latch.clone();
-            next.set("softFired", Js::Bool(true));
-            next.set("lastNagAt", Js::Num(now));
-            w.latch = Some(next);
-            return Ok(text::soft(r.pct));
-        }
-        let hp = text::expected_handover_path(p, st, env)?;
-        w.latch = Some(obj(vec![
-            ("fired", Js::Bool(true)),
-            ("firedAt", Js::Num(now)),
-            ("firedPct", Js::Num(r.pct)),
-            ("firedVia", Js::Str(over.via().to_string())),
-            ("lastNagPct", Js::Num(r.pct)),
-            ("lastNagAt", Js::Num(now)),
-            ("softFired", Js::Bool(false)),
-        ]));
-        return Ok(text::fire(r, over == Over::Tokens, p, eff.max_tokens, hp.as_deref()));
-    }
-    // already fired this arm: the post-handover new-work gate, then the milestone nag
-    let mut cur = latch.clone();
-    let mut dirty = false;
-    let mut parts: Vec<String> = Vec::new();
-    let mut backstop = false;
-    if eff.gate_new_work && !is_housekeeping(p.get("prompt"), &eff.markers) {
-        if let Some(noted) = note_handover(&cur, p, r.pct, now, st, env)? {
-            cur = noted;
-            dirty = true;
-        }
-        if is_armed(eff, &cur) {
-            let hp = fin(&cur, "handoverPct").unwrap_or(0.0);
-            if fin(&cur, "gateBackstopAt").is_none() && r.pct > hp + eff.gate_budget {
-                parts.push(text::backstop(r.pct, hp, eff.gate_budget, p));
-                cur.set("gateBackstopAt", Js::Num(now));
-                cur.set("gateBackstopPct", Js::Num(r.pct));
-                cur.set("lastNagPct", Js::Num(r.pct));
-                cur.set("lastNagAt", Js::Num(now));
-                dirty = true;
-                backstop = true;
-            }
-            parts.push(text::gate(r, hp, eff.gate_budget, p));
-            // consultJevShadow: a prompt with text gets a Jev decision row (see the module docs)
-            if p.get("prompt").and_then(Value::as_str).is_some_and(|s| !js_trim(s).is_empty()) {
-                return Err(());
-            }
-        }
-    }
-    if !backstop && eff.nag {
-        let last = match fin(&cur, "lastNagPct") {
-            Some(n) => n,
-            // `cur.firedPct || settings.pct`: a truthy non-number would be concatenated by `+`
-            None => match cur.get("firedPct") {
-                Some(Js::Num(n)) if *n != 0.0 && !n.is_nan() => *n,
-                v if !truthy(v) => eff.pct,
-                _ => return Err(()),
-            },
-        };
-        if r.pct >= last + eff.nag_step {
-            parts.push(text::milestone(r.pct, p));
-            cur.set("lastNagPct", Js::Num(r.pct));
-            cur.set("lastNagAt", Js::Num(now));
-            dirty = true;
-        }
-    }
-    if dirty {
-        w.latch = Some(cur);
-    }
-    Ok(parts.join(defaults::text("ctxbudget.ah_parts_sep")))
-}
 
 // ---- auto-handover-pause-nag.js -----------------------------------------------------------------------------------
 
@@ -740,5 +542,4 @@ fn stop_reason(
     Ok(Some(text::pause(r.pct, p) + &suffix))
 }
 
-super::check_impl!(AutoHandover, "auto-handover", "ctxbudget.summary_auto_handover", decide_prompt);
 super::check_impl!(AutoHandoverPauseNag, "auto-handover-pause-nag", "ctxbudget.summary_pause_nag", decide_stop);

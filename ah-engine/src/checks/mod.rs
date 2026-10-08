@@ -27,7 +27,6 @@ pub mod handover;
 pub mod idle_agent_sweep;
 pub mod jsport;
 pub mod mcp_reaper;
-pub mod output_verify;
 pub mod replykit;
 pub mod scripted;
 pub mod session;
@@ -192,21 +191,21 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &verify_first_orch::VerifyFirstOrchCodex,
         &verify_first_prompt::VerifyFirst,
         &idle_agent_sweep::IdleAgentSweep,
-        &emit_dedupe::EmitDedupeReset,
-        &ctxbudget::limit::LimitConserveInject,
-        &ctxbudget::handover::AutoHandover,
+        &scripted::EMIT_DEDUPE_RESET,
+        &scripted::LIMIT_CONSERVE_INJECT,
+        &scripted::AUTO_HANDOVER,
         &ctxbudget::handover::AutoHandoverPauseNag,
         &ctxbudget::advice::CompactAdviceGuard,
-        &session::version_alert::VersionAlert,
-        &session::devswarm_version::DevswarmVersion,
-        &session::claude_cli_version::ClaudeCliVersion,
-        &session::repo_self_drift::RepoSelfDrift,
-        &session::defect_nudge::DefectNudge,
-        &session::progress_prune::ProgressPrune,
+        &scripted::VERSION_ALERT,
+        &scripted::DEVSWARM_VERSION,
+        &scripted::CLAUDE_CLI_VERSION,
+        &scripted::REPO_SELF_DRIFT,
+        &scripted::DEFECT_NUDGE,
+        &scripted::PROGRESS_PRUNE,
         &scripted::SPECULATION_GUARD,
         &scripted::SPECULATION_JUDGE,
         &claim_ledger::ClaimLedger,
-        &output_verify::OutputVerifyGuard,
+        &scripted::OUTPUT_VERIFY_GUARD,
         &scripted::ASK_GUARD,
         &scripted::SILENT_AGENT_NUDGE,
         &stale_agent_stop_note::StaleAgentStopNote,
@@ -221,8 +220,8 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &codex::availability::CodexAvailability,
         &codex::detect::CodexQuotaDetect,
         &codex::nudge::CodexNudge,
-        &handover::precompact::PrecompactSnapshot,
-        &handover::resume::HandoverResume,
+        &scripted::PRECOMPACT_SNAPSHOT,
+        &scripted::HANDOVER_RESUME,
         &scripted::TASK_LIFECYCLE_LOG,
         &scripted::DISPATCH_TIER,
         &scripted::TASK_GUARD,

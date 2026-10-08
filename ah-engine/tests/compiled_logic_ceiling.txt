@@ -5,4 +5,6 @@
 # sibling-sweep: 50.
 # Lane d88fa moved task-lifecycle-log, the three session gates, merge-side-pick, scan-throttle and merge-gate to scripts: 43.
 # Lane d88fb moved dispatch-tier, model-routing, speculation-judge, speculation-guard, silent-agent-nudge, task-guard and tasklist-guard to scripts (-1 each).
-33
+# Lane d88fc moved ask-guard, phase-tracker, failure-root-cause-nudge, output-verify-guard, the six session checks, emit-dedupe-reset,
+# precompact-snapshot, handover-resume, limit-conserve-inject and auto-handover to scripts.
+21

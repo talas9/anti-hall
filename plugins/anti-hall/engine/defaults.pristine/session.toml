@@ -279,12 +279,6 @@ value = 'Hooks:\s*\*\*(\d+)\*\*\s*`\.js`\s*files'
 doc = "Regex source (JavaScript syntax) of the skill count docs/KB.md claims; the first group is the number."
 value = 'Claude\s*\n?>?\s*skills:\s*\*\*(\d+)\*\*'
 
-[session.claim_max_digits]
-doc = "The most digits of a claimed count compared here; a longer one is rounded by JavaScript, so the hook defers."
-value = 15
-min = 1
-max = 15
-
 [session.model_kb_audit_date]
 doc = "The UTC date (YYYY-MM-DD) the model KBs were last audited (hooks/lib/repo-audit-baseline.js); a test keeps the two equal."
 value = "2026-09-03"
@@ -452,14 +446,6 @@ value = "> "
 doc = "What is appended to the history ledger for one pruned progress file; {pruned_at} is the UTC time and {quote} the quoted content."
 value = "\n## Archived progress (pruned {pruned_at})\n\n{quote}\n"
 
-[session.dot_git]
-doc = "The name that marks a git checkout's root."
-value = ".git"
-
-[session.gitdir_tag]
-doc = "The prefix of the single line of a `.git` file that points at the real git directory."
-value = "gitdir:"
-
 [session.check_ignore_args]
 doc = "The git arguments (after -C <root>) that ask whether .anti-hall/ is ignored: exit 0 ignored, 1 not ignored."
 value = ["check-ignore", "-q", ".anti-hall/probe"]
@@ -474,13 +460,6 @@ value = 1000
 env = "AH_ENGINE_GITIGNORE_PROBE_MS"
 unit = "ms"
 min = 10
-
-[session.git_poll_ms]
-doc = "How often the gitignore probe checks whether git has finished."
-value = 5
-unit = "ms"
-min = 1
-max = 100
 
 [session.gitignore_remind_ms]
 doc = "The least time between two gitignore reminders for one project."

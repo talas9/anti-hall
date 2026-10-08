@@ -16,7 +16,6 @@
 //! path Node would resolve against its own directory, a missing home directory) defers.
 pub mod advice;
 pub mod handover;
-pub mod limit;
 pub mod pct;
 pub mod phrase;
 pub mod setting;
@@ -25,7 +24,6 @@ pub mod text;
 #[cfg(test)]
 mod tests;
 
-use crate::checks::Verdict;
 use crate::checks::compact_decl::json_depth;
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsdiff::js_reads_differently_str;
@@ -73,10 +71,6 @@ pub(crate) fn judge_child(env: &RequestEnv) -> bool {
     env.get(defaults::text("ctxbudget.judge_child_env")) == Some(defaults::text("ctxbudget.judge_child_on"))
 }
 
-/// The line a UserPromptSubmit hook prints when it injects nothing.
-pub(crate) fn ups_empty() -> Verdict {
-    Verdict::Exact(crate::checks::Exact { code: 0, out: defaults::text("ctxbudget.ups_empty").to_string(), err: String::new() })
-}
 
 /// `payload && typeof payload === 'object'`: an object or an array (not null, not a scalar).
 pub(crate) fn is_objectish(p: &Value) -> bool {
