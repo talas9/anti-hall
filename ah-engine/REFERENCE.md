@@ -21,6 +21,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `harvest` | `[--dir <path>] [--stale-days <n>]` | yes | implemented | Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of scripts/harvest-debt.js), and flag the ones with no payback trigger or in files untouched for the stale window. |
 | `hook` | `[--fallback <hook.js>] \| --event <Event> [--tool <Tool>] [--host claude\|codex] [--fallback-map <file>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would. |
 | `impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77). |
+| `install-codex` | `[--global] [--dry-run] [--root <plugin dir>]` | no | implemented | Install the anti-hall hooks for Codex (D81, lane L9b, the port of codex/install-codex.js): merge the generated hook registration into .codex/hooks.json (project, or --global for the home directory), replacing only anti-hall's own groups, and enable the hooks feature in config.toml. A changed file is copied to <file>.bak-<time> first; --dry-run writes nothing. |
 | `install-statusline` | `[--user\|--project] [--consolidate]` | no | implemented | Put the anti-hall status line into the host's statusLine setting (L9a, the port of statusline/install-statusline.js): `--user` (default, ~/.claude/settings.json) or `--project` (./.claude/settings.local.json), `--consolidate` to merge an existing status line into one line. Wraps an existing statusLine as line 1, backs the settings up once, never clobbers other keys, a re-run changes nothing. |
 | `jev` | `<ask\|status\|scrub\|evidence>` | no | implemented | The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line. |
 | `jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|mode> [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` | no | implemented | Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, and `mode <integration> on\|shadow\|off`; `test` and the review verbs stay in the Node script. |
@@ -42,6 +43,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `stop` | `` | no | implemented | Ask the daemon to drain and exit. |
 | `telemetry` | `[summary\|events\|rollup] [--window <7d>] [--kind <k>] [--limit <n>]` | no | implemented | Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and spill events), `rollup` (move complete days into archive.db and apply the retention). Local only. |
 | `uninstall-statusline` | `[--user\|--project] [--purge-base]` | no | implemented | Take the anti-hall status line out of the host's settings (L9a, the port of statusline/uninstall-statusline.js): restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration. |
+| `update` | `[--check] [--post-pull-only]` | no | implemented | Update anti-hall (D81, lane L9b, the port of skills/update/scripts/update.js): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP, offline fails open), a copy of the plugin into a new version-pinned cache directory, the harness's own `claude plugin update` when its registry is behind (bounded, never answering a confirmation; installed_plugins.json is only read), the changelog delta, then one JSON status line and a human summary. `--check` only compares versions. The DevSwarm store sweeps and the settings migration still run by the plugin's own update.js --post-pull-only and are merged into the status. |
 | `version` | `` | yes | implemented | Print the version this build reports. |
 
 ## Socket protocol
@@ -2486,8 +2488,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.line_terminators` | `\n
-  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
+| `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
@@ -5015,6 +5016,185 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.write_failed_1` | `❌ anti-hall · install-statusline: Could not write {path}: {msg}` |  |  | stderr: the settings file could not be written. Placeholders: path msg. |
 | `slcfg.write_failed_2` | `Do instead: restore from backup:` |  |  | stderr: how to get back. |
 | `slcfg.write_failed_3` | `  node "{path}"` |  |  | stderr: the restore command. Placeholders: path. |
+
+### update_cli.toml / codex_install
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `codex_install.backup_fmt` | `{file}.bak-{stamp}` |  |  | The name of the copy kept of a file before it changes: the file name, then this with the time. |
+| `codex_install.changed` | `changed` |  |  | State word. |
+| `codex_install.config_file` | `config.toml` |  |  | The Codex configuration file inside it. |
+| `codex_install.dir` | `.codex` |  |  | The Codex configuration directory name (under the home directory for --global, else under the working directory). |
+| `codex_install.err_home` | `install-codex: cannot find the home directory` |  |  | Printed when --global is asked for and no home directory can be found. |
+| `codex_install.err_hooks` | `install-codex: cannot read the hook registration {path}: {error}` |  |  | Printed when the generated registration cannot be read or has no `hooks`. |
+| `codex_install.err_no_root` | `install-codex: cannot find the plugin directory (pass --root <dir> or set the...` |  |  | Printed when the plugin directory cannot be found. |
+| `codex_install.err_write` | `install-codex: cannot write {path}: {error}` |  |  | Printed when a file cannot be written. |
+| `codex_install.features_heading` | `[features]` |  |  | The [features] table heading. |
+| `codex_install.features_new` | `[features]\nhooks = true\n` |  |  | The table appended to a file with none. |
+| `codex_install.features_nl` | `[features]\n` |  |  | The heading with its line break, replaced by itself plus the hooks setting. |
+| `codex_install.features_nl_hooks` | `[features]\nhooks = true\n` |  |  | The replacement. |
+| `codex_install.features_with_hooks_re` | `(?m)\[features\][\s\S]*?^\s*hooks\s*=` |  |  | A [features] table that already sets `hooks`. |
+| `codex_install.heading` | `anti-hall Codex install ({scope}): {status}\n` |  |  | First output line. |
+| `codex_install.hook_group_re` | `/plugins/anti-hall/hooks/\|/hooks/ah-hook\.sh"` |  |  | A hook command that belongs to anti-hall (after backslashes become slashes): a path under its hooks directory, or its thin trigger. |
+| `codex_install.hooks_file` | `hooks.json` |  |  | The Codex hooks file inside it. |
+| `codex_install.line_config` | `- config: {path} {state}\n` |  |  | Output line. |
+| `codex_install.line_hooks` | `- hooks: {path} {state}\n` |  |  | Output line. |
+| `codex_install.notes` | `- note: edit guards run on apply_patch only (Codex >= 0.134); shell writes by...` |  |  | The closing notes, each one output line. |
+| `codex_install.root_token` | `${PLUGIN_ROOT}` |  |  | The placeholder in that file the installer replaces with the plugin directory. |
+| `codex_install.scope_global` | `global` |  |  | Scope word. |
+| `codex_install.scope_project` | `project` |  |  | Scope word. |
+| `codex_install.separator` | `\n\n` |  |  | What replaces that trailing whitespace before an appended table. |
+| `codex_install.status_done` | `updated` |  |  | Status word. |
+| `codex_install.status_dry` | `would update` |  |  | Status word for --dry-run. |
+| `codex_install.thin_hooks_rel` | `codex/hooks/hooks.json` |  |  | The generated one-wrapper-call-per-event registration, relative to the plugin directory. |
+| `codex_install.trailing_ws_re` | `\s*$` |  |  | Trailing whitespace of a file. |
+| `codex_install.unchanged` | `unchanged` |  |  | State word. |
+
+### update_cli.toml / env
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `env.claude_execpath` | `CLAUDE_CODE_EXECPATH` |  |  | The running Claude Code binary; the fallback `update` runs `plugin update` with when `claude` is not on the PATH. |
+| `env.update_marketplace_dir` | `ANTIHALL_MARKETPLACE_DIR` |  |  | Overrides the marketplace clone `update` works on (an absolute path to an existing directory, else ignored with a warning). Test-only escape hatch. |
+| `env.update_postpull_budget` | `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS` |  |  | Time budget in ms for the post-pull stages of `update` (0 = unlimited); also sizes the wait for the Node stage run. |
+| `env.update_quiet` | `ANTIHALL_UPDATE_QUIET` |  |  | When 1 (or true), `update` prints no `[update] <stage> start/done` progress lines on stderr. Settings key updates.quiet is the other source. |
+| `env.update_reexec` | `ANTIHALL_UPDATE_REEXEC` |  |  | Set by `update` on the Node stage run it starts, so that run never starts another. |
+
+### update_cli.toml / operator
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `operator.codex_script_rel` | `codex/install-codex.js` |  |  | The Node installer inside the plugin directory. |
+| `operator.dry_run_flag` | `--dry-run` |  |  | The flag that makes install-codex write nothing (given to the Node shadow run). |
+| `operator.shadow` | `1` |  |  | 1 = the Node version of an operator command runs read-only beside the engine's (update: `--check` after the update; install-codex: `--dry-run` before the write) and a difference in the reported result is logged. The engine's result is always the real one; the Node script is never run in a way that repeats a side effect. 0 = off. |
+| `operator.shadow_check_log` | `update --check shadow mismatch: node={node} engine={engine}` |  |  | Event-log text when the Node `update.js --check` prints a different status line than `update --check`. |
+| `operator.shadow_codex_log` | `install-codex shadow mismatch: node={node} engine={engine}` |  |  | Event-log text when the Node `install-codex.js --dry-run` reports something other than what the engine then wrote. |
+| `operator.shadow_timeout_ms` | `30000` |  | ms | How long the Node shadow run may take before it is abandoned (nothing is logged for an abandoned run). |
+| `operator.shadow_update_log` | `update shadow mismatch: node --check reports latest {nl}, the engine updated ...` |  |  | Event-log text when the Node `update.js --check` disagrees with the engine's update about the latest version. |
+
+### update_cli.toml / update
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `update.cache_rel` | `cache/anti-hall/anti-hall` |  |  | The version-pinned cache root, relative to the plugins root (two levels above the marketplace clone). |
+| `update.changelog_file` | `CHANGELOG.md` |  |  | The changelog at the top of the marketplace clone. |
+| `update.check_flag` | `--check` |  |  | The flag that only compares versions. |
+| `update.claude_bin` | `claude` |  |  | The Claude Code binary the harness registration runs. |
+| `update.confirm_re` | `(?i)accept-command\|sha256` |  |  | A harness reply that asks for a confirmation (command-source installs); the engine never supplies it. |
+| `update.confirm_shown` | `300` |  |  | How many UTF-16 units of that reply are shown. |
+| `update.default_postpull_budget_ms` | `90000` |  | ms | The post-pull stages' overall budget when the environment does not set one. |
+| `update.enoent` | `ENOENT` |  |  | The error word for a binary that is not there. |
+| `update.failed_re` | `(?i-u)\bSTOP\b\|dirty\|diverged\|failed\|error` |  |  | The words in a status action that make the human summary read as a failure. |
+| `update.git_bin` | `git` |  |  | The git binary. |
+| `update.git_default_ref` | `origin/HEAD` |  |  | The remote ref used when the branch has no upstream. |
+| `update.git_error_fallback` | `git error` |  |  | The reason when a git error has no text at all. |
+| `update.git_failed_error` | `Command failed: {cmd}` |  |  | What a call that exited non-zero with nothing on stderr reads as. |
+| `update.git_fetch` | `fetch, --quiet` |  |  | git arguments: fetch without merging (`--check`). |
+| `update.git_pull` | `pull, --ff-only` |  |  | git arguments: fast-forward only. Never a merge, a rebase or a force. |
+| `update.git_show` | `show` |  |  | git arguments to read a file from a ref: the word, then `<ref>:<path>` is appended. |
+| `update.git_spawn_error` | `spawnSync {prog} {code}` |  |  | What a git call that could not start reads as ({code} is ENOENT for a missing binary). |
+| `update.git_status` | `status, --porcelain` |  |  | git arguments: is the clone clean. |
+| `update.git_timeout_error` | `spawnSync {prog} ETIMEDOUT` |  |  | What a call that ran past its timeout reads as. |
+| `update.git_timeout_ms` | `20000` |  | ms | How long one git call of `update` may take before it fails into the offline path. |
+| `update.git_upstream` | `rev-parse, --abbrev-ref, --symbolic-full-name, @{u}` |  |  | git arguments: the upstream ref of the current branch. |
+| `update.harness_args` | `plugin, update, anti-hall@anti-hall` |  |  | The arguments the harness registration runs the Claude binary with. |
+| `update.harness_timeout_ms` | `20000` |  | ms | How long `claude plugin update` may take before the registration is reported as failed. |
+| `update.heading_re` | `^##\s+v?([0-9]+(?:\.[0-9]+)*)(?-u:\b)` |  |  | A changelog section heading; the first group is the version. |
+| `update.installed_json` | `installed_plugins.json` |  |  | The harness-owned registry of installed plugins under the plugins root. `update` reads it and never writes it. |
+| `update.json_max_depth` | `512` |  |  | Nesting past which a JSON file `update` reads counts as unreadable. |
+| `update.kept_local` | `installed, latest, updated, action, cacheSynced` |  |  | The status keys the engine computes itself and never takes from the Node stage run. |
+| `update.marketplace_rel` | `.claude/plugins/marketplaces/anti-hall` |  |  | The marketplace clone of the plugin, relative to the home directory. |
+| `update.max_bytes` | `4194304` |  | bytes | Largest manifest, registry or changelog `update` reads; a larger file counts as unread. |
+| `update.node_script_rel` | `skills/update/scripts/update.js` |  |  | The Node update script inside the plugin directory, run with --post-pull-only for the stages the engine does not port (the DevSwarm store sweeps and the settings migration). |
+| `update.null_word` | `null` |  |  | How a missing version reads inside a text. |
+| `update.offline_patterns` | `19 items` |  |  | The ONLY pull-failure shapes that fail open (case-insensitive): network, resolver and no-git errors. Any other pull failure is a hard STOP. |
+| `update.plugin_json_rel` | `.claude-plugin/plugin.json` |  |  | The plugin manifest inside the plugin directory (its version is the version authority). |
+| `update.plugin_src_rel` | `plugins/anti-hall` |  |  | The plugin directory inside the marketplace clone. |
+| `update.poll_ms` | `25` |  | ms | How often `update` checks a child process it waits for. |
+| `update.post_pull_flag` | `--post-pull-only` |  |  | The flag that runs only the post-pull part (also the flag passed to the Node stage script). |
+| `update.reexec_margin_ms` | `60000` |  | ms | Extra wait for the Node stage run beyond its budget and the harness registration (one overrunning stage plus process start). |
+| `update.reexec_value` | `1` |  |  | The value of the stage-run marker variable. |
+| `update.remote_manifest` | `plugins/anti-hall/.claude-plugin/plugin.json` |  |  | The manifest as git names it on a remote ref (`--check` reads the remote version from it). |
+| `update.semver_re` | `^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$` |  |  | A version string: X.Y.Z with an optional pre-release or build suffix; no path separators. Fully anchored. |
+| `update.settings_file` | `.anti-hall/settings.json` |  |  | The settings file, relative to the home directory (updates.quiet is read from it). |
+| `update.undefined_word` | `undefined` |  |  | How a missing stage field reads inside a text. |
+| `update.v_strip_re` | `^[vV]` |  |  | A leading v on a version. |
+| `update.version_prefix_re` | `^([0-9]+(?:\.[0-9]+)*)` |  |  | The leading numeric part of a version string. |
+| `update.zero_version` | `0` |  |  | The version a missing remote version is compared as. |
+| `update.zero_word` | `0` |  |  | How a missing count reads. |
+
+### update_cli.toml / update_human
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `update_human.action` | `  action:    {value}` |  |  | Summary line. |
+| `update_human.bit_archived` | `archived` |  |  | The skip reason when a result names none. |
+| `update_human.bit_duplicate` | `duplicate {n}` |  |  | Reconcile result part. |
+| `update_human.bit_error` | `ERROR: {error}` |  |  | Reconcile result part. |
+| `update_human.bit_imported` | `imported {n}` |  |  | Reconcile result part. |
+| `update_human.bit_locked` | `locked — another pull in progress, skipped` |  |  | Reconcile result part. |
+| `update_human.bit_lost` | `LOST {n}` |  |  | Reconcile result part. |
+| `update_human.bit_sep` | `, ` |  |  | Separator of the parts of one reconcile result. |
+| `update_human.bit_skipped` | `skipped: {reason}` |  |  | Reconcile result part. |
+| `update_human.cache_synced` | ` (cache synced)` |  |  | Appended to the updated line when the cache was synced. |
+| `update_human.changelog_head` | `Changelog delta:` |  |  | Heading above the changelog delta. |
+| `update_human.head` | `{icon} anti-hall · update: {state}` |  |  | First summary line. |
+| `update_human.icon_failed` | `❌` |  |  | Summary icon: not updated. |
+| `update_human.icon_ok` | `✅` |  |  | Summary icon: already up to date. |
+| `update_human.icon_updated` | `⬆️` |  |  | Summary icon: updated. |
+| `update_human.installed` | `  installed: {value}` |  |  | Summary line. |
+| `update_human.latest` | `  latest:    {value}` |  |  | Summary line. |
+| `update_human.latest_none` | `?` |  |  | The version in the head line when none is known. |
+| `update_human.reconcile_item` | `    - {id}: {bits}` |  |  | One reconcile result. |
+| `update_human.stage_lines` | `20 items` |  |  | The stage lines of the summary, in order: the status key, the line prefix (with its padding), and which detail follows (`reconcile` and `heal` list more). |
+| `update_human.state_failed` | `not updated` |  |  | Head state. |
+| `update_human.state_ok` | `already up to date` |  |  | Head state. |
+| `update_human.state_updated` | `updated to v{latest}` |  |  | Head state. |
+| `update_human.store_item` | `    - {repoKey}: {rows}` |  |  | One healed store. |
+| `update_human.unknown` | `(unknown)` |  |  | Shown for a missing installed version. |
+| `update_human.updated` | `  updated:   {value}{synced}` |  |  | Summary line. |
+
+### update_cli.toml / update_msg
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `update_msg.available` | `update available ({installed} → {latest}) — run without --check to apply` |  |  | `--check` action when a newer version exists. |
+| `update_msg.cache_copied` | `copied {version}` |  |  | Cache sync reason. |
+| `update_msg.cache_failed` | `copy failed: {error}` |  |  | Cache sync reason. |
+| `update_msg.cache_has` | `cache already has {version}` |  |  | Cache sync reason. |
+| `update_msg.cache_no_root` | `cache root absent (nothing to mirror)` |  |  | Cache sync reason. |
+| `update_msg.cache_no_src` | `plugin source dir missing` |  |  | Cache sync reason. |
+| `update_msg.cache_no_target` | `no target version` |  |  | Cache sync reason. |
+| `update_msg.cache_unsafe` | `unsafe version string` |  |  | Cache sync reason. |
+| `update_msg.check_failed` | `check failed (offline / no git): {reason}` |  |  | `--check` action when the remote could not be read. |
+| `update_msg.harness_confirm` | `harness update requires confirmation — run manually: {cmd} (see: {text})` |  |  | Detail when the harness asks for a confirmation. |
+| `update_msg.harness_done` | `harness re-registered to {latest} — run /reload-plugins to load it (restart C...` |  |  | Detail after a successful registration. |
+| `update_msg.harness_failed` | `harness update failed — run manually: {cmd}, then run /reload-plugins ({reason})` |  |  | Detail after a failed registration. |
+| `update_msg.harness_manual` | `run manually: {cmd} — then run /reload-plugins (restart Claude Code only if a...` |  |  | Action after a failed harness registration. |
+| `update_msg.harness_noop` | `harness already registered at latest (or version unknown) — nothing to do` |  |  | Detail when the harness already registers the latest version. |
+| `update_msg.harness_ok` | `run /reload-plugins — the harness now registers {latest} (restart Claude Code...` |  |  | Action after a successful harness registration. |
+| `update_msg.lag_ahead` | ` [installed_plugins.json reports {json}, cache shows {cache} — run /reload-pl...` |  |  | Appended when the registry is AHEAD of the cache. |
+| `update_msg.lag_behind` | ` [installed_plugins.json reports {json}, cache shows {cache} — run {cmd}, the...` |  |  | Appended when the harness registry is BEHIND the cache. |
+| `update_msg.no_git` | `offline / no git — cannot update: {reason}` |  |  | Action when git cannot read the clone. |
+| `update_msg.no_home` | `update: cannot find the home directory` |  |  | Printed when no home directory can be found. |
+| `update_msg.override_ignored` | `warning: ANTIHALL_MARKETPLACE_DIR ignored (not an absolute path to an existin...` |  |  | Printed first when the marketplace override is not an absolute path to an existing directory. |
+| `update_msg.pull_offline` | `update failed (offline / network): {reason}` |  |  | Action when the pull failed with an offline shape. |
+| `update_msg.pull_stop` | `STOP: git pull --ff-only failed (likely divergence) — resolve manually in {di...` |  |  | Action when the pull failed any other way: a hard STOP. |
+| `update_msg.reason_failed` | `the Node stage run failed` |  |  | Why the Node stages are missing: the run failed. |
+| `update_msg.reason_unusable` | `the Node stage run printed no usable status` |  |  | Why the Node stages are missing: it printed nothing usable. |
+| `update_msg.reexec_failed` | ` (post-pull re-exec of {latest}'s update.js failed — kept local stage results...` |  |  | Appended to the action when the Node stage run failed. |
+| `update_msg.reexec_raised` | ` (post-pull re-exec raised: {error} — kept local stage results)` |  |  | Appended to the action when starting the Node stage run raised. |
+| `update_msg.reexec_unusable` | ` (post-pull re-exec of {latest}'s update.js produced no usable status — kept ...` |  |  | Appended to the action when the Node stage run printed nothing usable. |
+| `update_msg.reload` | `run /reload-plugins` |  |  | Action when the cache was synced and nothing else is needed. |
+| `update_msg.remote_json_bad` | `invalid JSON in the remote manifest` |  |  | The reason when the remote manifest is not JSON. |
+| `update_msg.stage_done` | `[update] {name} done {ms}ms\n` |  |  | Progress line on stderr after a stage. |
+| `update_msg.stage_harness` | `harness-register` |  |  | The name of the harness-registration stage in the progress lines. |
+| `update_msg.stage_start` | `[update] {name} start\n` |  |  | Progress line on stderr before a stage. |
+| `update_msg.stages_unavailable` | ` (post-pull stages not run: {reason})` |  |  | Appended to the action when the DevSwarm and settings stages could not be run (no Node, or no stage script) and no version change was involved. |
+| `update_msg.stop_dirty` | `STOP: marketplace clone has local changes — refusing to pull. Resolve them in...` |  |  | Action when the clone has local changes: a hard STOP. |
+| `update_msg.unknown_error` | `unknown error` |  |  | The reason when a failed registration has no text. |
+| `update_msg.unknown_installed` | `unknown-installed-version — could not determine the installed anti-hall versi...` |  |  | Action when no source yields an installed version: never reported as up to date. |
+| `update_msg.up_to_date` | `already up to date` |  |  | Action when nothing is newer. |
 
 ## Messages
 
