@@ -426,6 +426,12 @@ impl Effective {
 
     /// The settings of `layers` resolved with this process's own environment (the dispatcher client, which is the process
     /// the engine tunables configure).
+    ///
+    /// In the daemon this is the environment it was started with, fixed for its life (review finding 19): a request's own
+    /// environment never changes the env layer. That is right because every setting with an `env` override is a tunable of
+    /// the process that reads it (the daemon's workers, queue, limits, storage, schedule, telemetry and spool; the client's
+    /// deadline, breaker and dispatch mode; a probe timeout), never an input to a decision a check makes for one session;
+    /// those read the request's environment (D76). `tests::every_env_override_is_a_process_tunable` keeps it so.
     pub fn resolve_process(layers: &Layers) -> Effective {
         Effective::resolve(layers, &|n| std::env::var(n).ok())
     }
@@ -911,6 +917,17 @@ mod tests {
                 assert!(name.starts_with("AH_ENGINE_"), "{} reads {name} from the daemon's environment", e.key);
             }
         }
+    }
+
+    #[test]
+    fn every_env_override_is_a_process_tunable() {
+        // review finding 19: the daemon resolves the env layer from its own environment, fixed at start; that is only right
+        // while no env-overridable setting decides anything for one request. A new `env` key outside these sections fails
+        // here until it is reviewed (and, if it is per request, read from the request's environment instead).
+        const PROCESS: &[&str] =
+            &["daemon.", "client.", "storage.", "schedule.", "telemetry.", "spool.", "config.", "tier.", "dispatch.in_process", "dispatch.max_timeout_s", "session.gitignore_probe_ms"];
+        let odd: Vec<&str> = defaults::all().iter().filter(|e| e.env.is_some() && !PROCESS.iter().any(|p| e.key.starts_with(p))).map(|e| e.key).collect();
+        assert!(odd.is_empty(), "env-overridable settings that are not process tunables: {odd:?}");
     }
 
     use super::*;
