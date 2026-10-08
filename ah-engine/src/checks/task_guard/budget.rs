@@ -107,5 +107,7 @@ pub fn write(file: &Path, body: &str) -> bool {
     {
         return false;
     }
-    crate::atomic::write_styled(file, body, crate::atomic::Style { keep_json_ext: false, leave_temp_on_rename_failure: true, ..Default::default() }).is_ok()
+    // staged until the reply is delivered (review P1-2): a spent budget must not silence the Node fallback
+    crate::atomic::write_after_reply(file, body, crate::atomic::Style { keep_json_ext: false, leave_temp_on_rename_failure: true, ..Default::default() })
+        .is_ok()
 }

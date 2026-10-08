@@ -255,7 +255,8 @@ fn open_tasks(
         (defaults::text("task_guard.state_hash_key").to_string(), Js::Str(hash)),
         (defaults::text("task_guard.state_blocks_key").to_string(), Js::Num(blocks + 1.0)),
     ]);
-    let written = state_file.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(state_file, state.stringify()).is_ok();
+    let written = state_file.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok())
+        && crate::atomic::write_after_reply(state_file, state.stringify(), crate::atomic::Style::default()).is_ok(); // lands with the reply (review P1-2)
     if !written {
         return Ok(Some(exact(std::mem::take(out))));
     }

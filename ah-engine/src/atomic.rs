@@ -71,6 +71,29 @@ pub fn write_styled(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Styl
     replace(&tmp, path, style)
 }
 
+/// [`write_styled`] for state that silences a later answer (a Stop block's loop counter, a nudge's once-only cap). Inside a
+/// daemon request the temporary file is written now and renamed over `path` only after the reply reached the client in time
+/// ([`crate::deadline::commit_staged`]); otherwise `path` is left as it was, so the Node fallback that answers a client which
+/// stopped waiting does not find a stamp for a decision it never received (review P1-2). Outside a request it is
+/// [`write_styled`].
+///
+/// # Errors
+/// As [`write_styled`] when written at once; inside a request only the staging (create, write, sync) can fail, and a failed
+/// rename at commit is logged.
+pub fn write_after_reply(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Style) -> std::io::Result<()> {
+    let path = path.as_ref();
+    if !crate::deadline::in_request() {
+        return write_styled(path, bytes, style);
+    }
+    let tmp = tmp_path(path, style);
+    if let Err(e) = stage(&tmp, bytes, style) {
+        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
+        return Err(e);
+    }
+    crate::deadline::stage(tmp, path.to_path_buf(), style);
+    Ok(())
+}
+
 /// The first half of an atomic write, for a caller that must name the temporary file itself (a temp name the Node hooks
 /// share, see DECISIONS "atomic-write exceptions"): create `tmp` (with `style.mode`), write `bytes`, sync it to disk.
 ///

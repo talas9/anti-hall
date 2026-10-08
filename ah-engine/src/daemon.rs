@@ -839,12 +839,14 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         }
     };
     let late = crate::deadline::remaining() == Some(Duration::ZERO);
-    if write_reply(&mut s, &reply, &cfg) {
+    let delivered = write_reply(&mut s, &reply, &cfg);
+    if delivered {
         sh.telemetry.stage_commit();
     } else {
         // the client never read it: what the request recorded is not a decision anyone saw (review finding 4)
         telemetry::stage_discard();
     }
+    crate::deadline::settle_staged(delivered);
     if late {
         // answered after the client's deadline: slow but healthy, which is not a failure of the engine
         SLOW_REPLIES.fetch_add(1, SeqCst);
