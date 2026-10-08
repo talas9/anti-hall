@@ -23,7 +23,6 @@ pub mod devswarm_prompt;
 pub mod devswarm_role;
 pub mod dispatch_tier;
 pub mod emit_dedupe;
-pub mod failure_nudge;
 pub mod git;
 pub mod guardkit;
 pub mod handover;
@@ -34,7 +33,6 @@ pub mod merge_gate;
 pub mod merge_side_pick;
 pub mod model_routing;
 pub mod output_verify;
-pub mod phase_tracker;
 pub mod replykit;
 pub mod scan_throttle;
 pub mod scripted;
@@ -196,13 +194,13 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &compact_decl::CompactDeclarationGuard,
         &command::CommandGuard,
         &model_routing::ModelRouting,
-        &failure_nudge::FailureRootCauseNudge,
+        &scripted::FAILURE_ROOT_CAUSE_NUDGE,
         &scripted::GIT_AUDIT,
         &scripted::VERIFY_FIRST_SUBAGENT,
         &scripted::VERIFY_FIRST_FULL,
         &scripted::FABLE_AVAILABILITY,
         &scripted::INBOX_READ_GUARD,
-        &phase_tracker::PhaseTracker,
+        &scripted::PHASE_TRACKER,
         &scripted::ORCH_ON_SPAWN,
         &verify_first_orch::VerifyFirstOrch,
         &verify_first_orch::VerifyFirstOrchCodex,

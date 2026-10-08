@@ -488,7 +488,11 @@ fn golden_report(check: &str, limit: usize) {
         let got = golden::verdict_json(&got, &l);
         let mut ok = got == c["expect"];
         if ok && c.get("watch").is_some() {
-            ok = golden::watched_all_pub(c, &l) == c["writes"];
+            let w = golden::watched_all_pub(c, &l);
+            ok = w == c["writes"];
+            if !ok {
+                eprintln!("FILES differ on {check} n={}\n  expect={}\n  got   ={}", c["n"], c["writes"], w);
+            }
         }
         if !ok {
             bad += 1;
@@ -518,6 +522,16 @@ fn sibling_sweep_script_matches_the_compiled_port() {
 #[test]
 fn ask_guard_script_matches_the_compiled_port() {
     golden_report("ask-guard", 12);
+}
+
+#[test]
+fn failure_nudge_script_matches_the_compiled_port() {
+    golden_report("failure-root-cause-nudge", 12);
+}
+
+#[test]
+fn phase_tracker_script_matches_the_compiled_port() {
+    golden_report("phase-tracker", 12);
 }
 
 // ---- swarm-guard (ported from the compiled check's unit tests; the memory figures and the clock are replaced by an owner-style

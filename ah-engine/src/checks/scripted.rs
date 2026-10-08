@@ -77,3 +77,9 @@ pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_swe
 
 /// `ask-guard` (PreToolUse on AskUserQuestion).
 pub static ASK_GUARD: Scripted = Scripted::new("ask-guard", "ask_guard.summary");
+
+/// `phase-tracker` (PreToolUse on Agent and Task; records the spawn for the statusline).
+pub static PHASE_TRACKER: Scripted = Scripted::new("phase-tracker", "phase_tracker.summary");
+
+/// `failure-root-cause-nudge` (PostToolUseFailure on Bash; advisory only).
+pub static FAILURE_ROOT_CAUSE_NUDGE: Scripted = Scripted::new("failure-root-cause-nudge", "failure_nudge.summary");

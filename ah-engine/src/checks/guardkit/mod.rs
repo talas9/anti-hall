@@ -21,7 +21,6 @@ pub mod settings;
 pub mod state;
 pub mod tail;
 pub mod text;
-pub mod turn_gate;
 
 #[cfg(test)]
 mod tests;
