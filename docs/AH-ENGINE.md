@@ -431,15 +431,28 @@ Group `defer` lines by `reason` to see which unported case to port next.
 **`heartbeat` (plain form) and the unread union.** `ah-engine mesh heartbeat <id> --session S [--progress N --phase T --wip T --blockers T]`
 writes `heartbeats/<id>.json` and refreshes `liveness/<id>.json` to `alive` with `pending`, `notDraining` and `oldestUnreadAgeMs` from the
 NDJSON-inbox + store-partition union (`src/meshw/union.rs`: Node's `unionUnread`, deduplicated by `_h`, the legacy line hash and, last, by
-body; read bases from the partition's `reader_cursors` floor rows). It reads the store and the inbox, never writes either. It defers (before
-writing anything; nothing is lost) when the call has `--summary` (a mesh broadcast row and the identity families), has `--step` and the
-workspace has a plan file (`plan-present`: Node updates the plan under its lock and records supervision metrics), has no `--session` (Node would log the caller process), is
+body; read bases from the partition's `reader_cursors` floor rows). Besides the heartbeat and verdict files it writes what the call asks for (below). It defers (before
+writing anything; nothing is lost) when the call has no `--session` (Node would log the caller process), is
 a `primary-<hash>` label, is a child addressing another id (Node warns on stderr), is a Primary checkout whose anchor session Node would
 refresh, meets a partition without `#floor` rows (`cursor-import`),
 a journal or unmarked store (`journal-backend`, `store-backend`), a store file it cannot open, a cursor file whose `line` is not a scalar,
-or an inbox line whose `_h` is not a string, number or boolean, or an app database value it cannot convert like JavaScript (see below).
+or an inbox line whose `_h` is not a string, number or boolean, or an app database value it cannot convert like JavaScript (see below), or one of the write-side cases below.
 `--step` for a workspace WITHOUT a plan is answered natively (`"plan":{"ok":false,"reason":"no-plan","hint":...}`, exactly Node's text). Telemetry: `Heartbeat` lines; the `reason` of a `defer` line is one of those
 names.
+
+**Heartbeat write side: `--summary` and a step plan (`src/meshw/plan.rs`, Node: `devswarm-lib/heartbeat-plan.js`, `companion/lib/devswarm-plan.js`,
+`devswarm-supervision-metrics.js`).** `--summary TEXT` appends a heartbeat broadcast row (`is_heartbeat = 1`, sender = the id, urgency `mesh_write.hb_urgency_default`)
+to the project's shared store and refreshes the summary projection, in Node's order (heartbeat record, verdict, row, summary, plan), after the ownership check
+(the caller is the id, or owns it by its registry row, or by the identity family: cross-linked rows, the row's session, a placeholder). `--step N [--status S]`,
+and a `--summary` for a workspace that has a plan, update the plan file read-modify-write under its lock (`<key>.json.lock`, 5 s wait, 30 s stale, dead holder taken over at once),
+as an ordered JSON value so every key the supervisor keeps survives in place, and append the supervision events (`step`, `correction-followed`, `respawn-progress`) to
+`logs/devswarm-supervision.ndjson`. A busy lock answers `lock-busy` and a bad step `bad-step` (exit 2), exactly as Node. Defers, before any write: a refused or first-claim
+ownership (Node drops the summary and writes an attempt record), an archived workspace, no project, a bad `--urgency` (Node logs these through the verb-outcome log), a
+plan whose steps are not objects or whose file is not UTF-8, a `respawn` that is an array, a non-ASCII summary for a workspace WITH a plan (JavaScript's UTF-16 slicing
+and lowercase tables), a `devswarm.stepStallMin` set anywhere (env, settings, plugin option) when a correction is being matched, and a supervision log past 1 MB (rotation stays
+Node's). A failure after the heartbeat record was written (a store another process holds past the busy timeout, a plan write error) exits 70 and Node is never run. The Node
+check copies the store with SQLite's online backup (never a link) and compares stdout, the heartbeat, verdict and cache files, the plan, the log lines, the summary projection and the
+appended row (without the process-ancestry nonce); `mesh-verify.jsonl` lines carry `diff` and a `detail` window of the first difference.
 
 **The DevSwarm app database reader (`src/meshw/appdb.rs`, Node: `companion/lib/devswarm-app-db.js`).** A heartbeat for a workspace with a
 descriptor asks whether the app reports the workspace archived (`builders.isActive = 0 AND isHidden = 1`; without an `isHidden` column, `isActive = 0`;

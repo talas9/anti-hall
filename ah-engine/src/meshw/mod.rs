@@ -36,6 +36,7 @@ pub mod heartbeat;
 pub mod ident;
 pub mod idlock;
 pub mod inbox;
+pub mod plan;
 pub mod read;
 pub mod send;
 pub mod store;
@@ -64,6 +65,32 @@ pub fn mark_committed() {
 
 fn committed() -> bool {
     COMMITTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The files a native verb wrote (path under the home, bytes appended or written) and the mesh row it appended, kept for the
+/// background Node check, which compares what Node writes on a scratch copy with exactly what the engine wrote.
+static WRITTEN: std::sync::Mutex<(Vec<(String, Vec<u8>)>, Option<String>)> = std::sync::Mutex::new((Vec::new(), None));
+
+/// Remember that `rel` (a path under the home) now holds / got `bytes` from this verb; bytes for the same path accumulate.
+pub fn note_written(rel: &str, bytes: &[u8]) {
+    if let Ok(mut w) = WRITTEN.lock() {
+        match w.0.iter_mut().find(|(k, _)| k == rel) {
+            Some((_, b)) => b.extend_from_slice(bytes),
+            None => w.0.push((rel.to_string(), bytes.to_vec())),
+        }
+    }
+}
+
+/// Remember the hash of the mesh row this verb appended.
+pub fn note_row(hash: &str) {
+    if let Ok(mut w) = WRITTEN.lock() {
+        w.1 = Some(hash.to_string());
+    }
+}
+
+/// What [`note_written`] and [`note_row`] collected (the background check reads it once).
+pub fn take_written() -> (Vec<(String, Vec<u8>)>, Option<String>) {
+    WRITTEN.lock().map(|mut w| std::mem::take(&mut *w)).unwrap_or_default()
 }
 
 /// Log a summary refresh the engine could not do after its write (Node's next derive refreshes it).
@@ -253,7 +280,8 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                 return node_with(&argv, stdin.as_deref());
             };
             // a writing verb keeps Node as a background check on a scratch copy (never a second write on the real home)
-            let scratch = (verb_of(&a) == Some(Verb::Heartbeat)).then(|| verify::prepare(&inv)).flatten();
+            let scratch =
+                (verb_of(&a) == Some(Verb::Heartbeat)).then(|| verify::prepare(&inv, a.one(defaults::text("mesh_write.flag_summary")).is_some())).flatten();
             let r = std::panic::catch_unwind(|| run_native(&inv, &a));
             let (step, result, reason) = next_step(r, committed());
             shadow_log(
