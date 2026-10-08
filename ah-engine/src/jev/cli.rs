@@ -6,6 +6,8 @@
 //!   not read-only.
 //! * `jev scrub` reads JSON strings, one per stdin line, and prints each one's scrubbed text as a JSON string per line:
 //!   the outbound redaction on its own, so it can be compared with Node's `scrubSecrets` over a large corpus.
+//! * `jev evidence` reads evidence packs as JSON, one per stdin line, and prints what the evidence gate did with each (a rule
+//!   answer, a skip for insufficient evidence, or a Jev / Haiku answer with the facts that were present); see [`super::evidence`].
 //! * `jev status` prints the resolved settings and every integration's mode. It never prints a key, only whether one
 //!   resolves.
 use super::assist::{AskRequest, Decision, Jev, Trust};
@@ -112,6 +114,12 @@ fn scrub() -> Result<i32, JevError> {
     Ok(0)
 }
 
+fn evidence() -> Result<i32, JevError> {
+    let mut text = String::new();
+    std::io::stdin().read_to_string(&mut text).map_err(|e| JevError::Io { what: defaults::text("jev.what_read_requests").into(), source: e })?;
+    Ok(super::evidence::run(&home()?, &text))
+}
+
 fn status(p: &Parsed) -> Result<i32, JevError> {
     let home = home()?;
     let jev = Jev::new(&home, Env::process());
@@ -141,6 +149,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
         "ask" => ask(p),
         "status" => status(p),
         "scrub" => scrub(),
+        "evidence" => evidence(),
         "triage" => Ok(crate::judge::triage::run_cmd()),
         _ => Err(JevError::Request(defaults::text("msg.jev_usage").to_string())),
     };

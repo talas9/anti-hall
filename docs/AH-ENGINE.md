@@ -353,7 +353,7 @@ arguments, is in the generated reference.
 | `ah-engine reset` | no | Clear the breaker, crash-loop stop and failure record. |
 | `ah-engine maintain` | no | Size control: move inactive rows to `archive.db`, prune derived bookkeeping, checkpoint and VACUUM; prints a report. |
 | `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. A write the engine cannot take is spooled. |
-| `ah-engine jev <ask\|status\|scrub>` | no | The optional Jev lane: `ask` reads JSON requests (one per stdin line) and prints each decision, `status` prints the resolved settings and every integration's mode (never a key), `scrub` redacts secrets from JSON strings. |
+| `ah-engine jev <ask\|status\|scrub\|evidence>` | no | The optional Jev lane: `evidence` reads one evidence pack per stdin line and prints what the evidence gate did with it (see "The evidence gate" under the Jev lane); `ask` reads JSON requests (one per stdin line) and prints each decision, `status` prints the resolved settings and every integration's mode (never a key), `scrub` redacts secrets from JSON strings. |
 | `ah-engine doctor [--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet]` | no | The health check and repair, in the Node doctor's layout and finding texts. Read-only unless `--repair`; `--dry-run` previews; `--migrations-only` with either prints only the migration report as one JSON line. Each built-in guard is run in-process on a crafted payload (a payload the engine defers is run through its Node hook, as the dispatcher would; with no Node it is reported as a deferral, never a pass). |
 | `ah-engine migrate [--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | The persisted-state migrations and sweeps of the Node doctor's repair pass, with Node's report: legacy progress/history copy, reply-state, gate-intent and auto-archive forward migrations, the `settings.json` migration, the Jev triage cache repair, the lock scratch sweep and the retention sweeps. Idempotent, fail-open, no repo file is moved or deleted. |
 | `ah-engine jev-setup <status\|enable\|disable\|set-key\|bind-generic-key\|mode>` | no | The port of `scripts/jev-setup.js` (D81): `status` prints the resolved settings, key presence yes or no, every integration's mode, the calls of the last 24 hours and the Vercel credit balance; `enable`, `disable`, `bind-generic-key` and `mode <integration> on\|shadow\|off` write `settings.json` and `jev.json` the way the script does (read-modify-write, key order kept, a corrupt file moved aside); `set-key` reads the key from stdin only and writes the key file with mode 0600. `test` and the review verbs stay in the Node script. |
@@ -634,6 +634,26 @@ judgement calls do.
 - **The log.** One row per decision in `~/.anti-hall/logs/jev-assist.ndjson`, in the row shape `jev report` reads: hashes,
   verdicts, confidences, latencies, costs and the reason a call produced nothing; never prompt text, never a key. It rotates
   at 2 MB. The daily rollups and the spend budget watch the Node client also writes are planned (D38).
+- **The evidence gate (owner rule J1).** A model is asked, Jev or Haiku through the cascade, only when the concrete evidence a
+  confident answer needs is in the call. For the supervisor integrations `devswarmWaitKind`, `devswarmLoop` and `devswarmStepMap`
+  (`src/jev/evidence.rs`, configured per integration in `jev_evidence.toml`; `ah-engine jev evidence` is the entry point a
+  supervisor calls with a pack of facts and sections), a decision goes: mode (an `off` integration writes nothing), then
+  deterministic **rules** (a done, archived or held child is never asked about; running CI, an unanswered question to the parent,
+  a report newer than anything received or a usage-limit pause mean *waiting*; a commit or progress in the last 60 minutes means
+  *not looping*; one step in progress with no sequencing word, or a summary that quotes a step's text, *is* the step), then
+  **sufficiency** (`required` minimums per integration: wait-kind needs 5 tool calls, 1 assistant text and mesh coverage; loop
+  needs 10 tool calls; step-map needs 2 steps, a 15-character summary and an earlier summary that reported a step), then, for
+  loop, a **candidate** check (the same command and error three times with no commit, or a revert: the model only confirms it).
+  Only then is the labelled pack (`FACTS`, then line-numbered sections such as `[tool_calls.3]`, capped per section and in
+  total) asked: wait-kind and loop go to Haiku directly (alias from `jev.judgeModel`, `daily_cap` per integration per UTC day, the
+  answer must cite a line that exists or it is discarded), step-map goes through the shared Jev layer and its cascade (`cascade.escalate_below`
+  0.8 for it; the cascade stays off until its own switch is turned on). Modes are untouched: nothing here enables an integration, and a
+  `shadow` integration's answers are logged but never actionable. Hook-blocking paths never wait on Haiku.
+- **Evidence telemetry.** One row per gate decision in `~/.anti-hall/logs/jev-evidence.ndjson` (emptied past 1 MB): `phase`
+  (`rule`, `skipped` or `asked`), `source` (`rule`, `jev`, `haiku`, `none`), `reason` (`insufficient`, `rule-skip`,
+  `no-candidate`, `daily-cap`, `bad-evidence-ref`, `low-confidence`, `shadow`, `no-answer`), the `rule`, the `label`, `confidence`,
+  `evidenceRef`, `present` (the facts that had a value) and `missing` (the required items below their minimum, as `fact:min`), the
+  `child` key the caller gave, and `ms`. Direct Haiku calls also leave the usual `judge-calls.ndjson` row. Never prompt text.
 - **Parity.** `parity/run-jev.js` checks request bodies, headers, decisions, log rows, settings and the scrub against the Node
   client (`ah-engine/parity/run-jev.js`). The deliberate differences (relax-block, a `true` advisory baseline, no row for an
   off call) are asserted separately.
@@ -709,6 +729,7 @@ Files:
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
 | `gitcache.toml` | the git cache: git invocations, timeouts, TTLs, signed file names, the bypass environment, messages |
+| `jev_evidence.toml` | the evidence gate for the supervisor integrations: per-integration backend, daily cap, pack caps, required evidence, rules and question, the pack headings, the Haiku system prompt, the evidence log and its words |
 | `jev.toml` | the Jev lane: vendor endpoints and models, budgets, breaker and fallback timing, the integration table with its default modes, cache and log limits, key-file rules, messages |
 | `setup.toml` | the operator helper commands (`jev-setup`, `capability-scan`, `harvest`, `briefing`): the shared limits, the marker grammar and table widths, the briefing's scan limits, the settings lock timing, and the message texts, which are the Node scripts' own |
 | `dispatch.toml` | the dispatcher's settings and the hand-maintained per-event table of hook entries (the table of record: the plugin's `hooks.json` files are generated from it) |

@@ -404,7 +404,7 @@ value = {}
 
 [cascade.escalate_below]
 doc = "Per-integration confidence under which Jev's answer is escalated to the model, keyed by the Jev integration id, as a decimal in [0,1] in text. An integration not listed escalates below its own act threshold (jev.confidenceThreshold)."
-value = {}
+value = { devswarmStepMap = "0.8" }
 
 [cascade.settings_section]
 doc = "The settings.json section that holds the owner's per-integration cascade switch (jevCascade.<id> = on|off)."

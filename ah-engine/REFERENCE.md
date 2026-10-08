@@ -20,7 +20,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `harvest` | `[--dir <path>] [--stale-days <n>]` | yes | implemented | Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of scripts/harvest-debt.js), and flag the ones with no payback trigger or in files untouched for the stale window. |
 | `hook` | `[--fallback <hook.js>] \| --event <Event> [--tool <Tool>] [--host claude\|codex] [--fallback-map <file>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would. |
 | `impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77). |
-| `jev` | `<ask\|status\|scrub>` | no | implemented | The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line. |
+| `jev` | `<ask\|status\|scrub\|evidence>` | no | implemented | The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line. |
 | `jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|mode> [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` | no | implemented | Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, and `mode <integration> on\|shadow\|off`; `test` and the review verbs stay in the Node script. |
 | `maintain` | `` | no | implemented | Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report. |
 | `mesh` | `<roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | implemented | Read a repo's DevSwarm store (D45 stage S0), read-only: `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node. The store is opened read-only and never created; a journal-backed store is refused (Node owns it). |
@@ -1407,7 +1407,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `cascade.enabled_setting` | `6 entries` |  |  | Global kill switch of the cascade. false turns it off for every integration whatever their own switch says. Setting jev.cascade, env ANTIHALL_JEV_CASCADE. |
 | `cascade.env_prefix` | `ANTIHALL_JEV_CASCADE_` |  |  | Prefix of the per-integration cascade environment switch; the snake-cased upper-case id is appended (ANTIHALL_JEV_CASCADE_MODEL_ROUTING). A boolean word wins over every other source. |
 | `cascade.err_busy` | `busy` |  |  | Telemetry error word: too many escalations were running, so this one was skipped. |
-| `cascade.escalate_below` | `0 entries` |  |  | Per-integration confidence under which Jev's answer is escalated to the model, keyed by the Jev integration id, as a decimal in [0,1] in text. An integration not listed escalates below its own act threshold (jev.confidenceThreshold). |
+| `cascade.escalate_below` | `1 entries` |  |  | Per-integration confidence under which Jev's answer is escalated to the model, keyed by the Jev integration id, as a decimal in [0,1] in text. An integration not listed escalates below its own act threshold (jev.confidenceThreshold). |
 | `cascade.inflight_cap` | `4` |  |  | Escalations that may run in the background at once; an escalation past it is skipped (its Jev answer stands) and recorded as busy. |
 | `cascade.input_evidence` | `\nEVIDENCE:\n` |  |  | Heading of the evidence in the model's input. |
 | `cascade.input_jev` | `\nFIRST CLASSIFIER ANSWERED: {answer} (confidence {confidence})\n` |  |  | The line that shows the first classifier's answer and confidence ({answer}, {confidence}); written only when cascade.show_setting is true. |
@@ -1532,6 +1532,37 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `triage.urgency_key` | `urgency` |  |  | The question key of the urgency question in the multi-question call. |
 | `triage.urgency_true` | `The message is a live blocker or an unanswered question gating the sender's p...` |  |  | URGENCY_QUESTION criteria.true. |
 | `triage.urgent` | `urgent` |  |  | The urgency label of an urgent message. |
+
+### jev_evidence.toml / evidence
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `evidence.answer_key` | `answer` |  |  | The field of a Haiku reply that holds its answer. |
+| `evidence.cfg` | `3 entries` |  |  | The evidence gate of each supervisor integration, keyed by its Jev integration id (fields described in the header). devswarmWaitKind: stuck or waiting (design card 4.5): asked only with enough transcript and mesh evidence and only when no rule settles it; a done, archived or held child is never asked about, and running CI, an unanswered question to the parent, a report newer than anything received or a usage-limit pause each mean waiting. devswarmLoop (card 4.10): a rule decides; recent progress means not looping, and the model only confirms a candidate (the same command and error repeated, or a change reverted). devswarmStepMap (card 4.6): asked only for a plan with at least two steps, a summary of enough text and an earlier summary that reported a step; one step in progress with no sequencing word, or a summary that quotes a step's text, decides without a model. |
+| `evidence.confidence_key` | `confidence` |  |  | The field of a Haiku reply that holds its confidence. |
+| `evidence.date_chars` | `10` |  |  | Characters of an ISO timestamp that make its UTC date, which the per-day Haiku cap counts by. |
+| `evidence.dur_placeholder` | `{dur}` |  |  | The placeholder in a question that the caller's `dur` text (how long there was no progress) replaces. |
+| `evidence.earlier_line` | `step {step}: {text}` |  |  | How one earlier summary is written in the evidence pack: {step} the step it reported ({unreported} when none), {text} its text. |
+| `evidence.fact_line` | `{name} = {value}` |  |  | How one fact is written in the facts block: {name} and {value}. |
+| `evidence.heading_evidence` | `\nEVIDENCE:\n` |  |  | Heading written before the evidence pack in the model's input. |
+| `evidence.heading_facts` | `FACTS:\n` |  |  | Heading of the facts block of the evidence pack. |
+| `evidence.heading_options` | `\nALLOWED ANSWERS:\n` |  |  | Heading written before the allowed answers in the model's input; each option follows as `label: meaning`. |
+| `evidence.heading_question` | `QUESTION:\n` |  |  | Heading written before the question in the model's input. |
+| `evidence.heading_section` | `\n{section}:\n` |  |  | Heading of one pack section ({section}). |
+| `evidence.kind_steps` | `steps` |  |  | The `kind` value of an integration whose question is a pick-one over the numbered steps of a plan. |
+| `evidence.line_id` | `[{section}.{i}]` |  |  | How a pack line is labelled so an answer can cite it: {section} the section name, {i} the line number starting at 1. |
+| `evidence.log` | `logs/jev-evidence.ndjson` |  |  | One row per evidence-gate decision (asked, skipped for insufficient evidence, decided by a rule, over the daily cap), relative to the anti-hall home directory. Each row names the facts that were present and the required ones that were missing. Empty turns the rows off. |
+| `evidence.log_max_bytes` | `1048576` |  |  | The evidence log is emptied before a row that would take it past this size. |
+| `evidence.plan_line` | `{n} [{status}] {text}` |  |  | How one plan step is written in the evidence pack: {n} the step number, {status} its status, {text} its text. |
+| `evidence.ref_key` | `evidence_ref` |  |  | The field of a Haiku reply that names the evidence line it rests on. |
+| `evidence.stepmap_doing_status` | `doing` |  |  | The status word of a plan step that is in progress. |
+| `evidence.stepmap_sequence_words` | `7 items` |  |  | Words that make a summary span more than one step, so the single in-progress step is not assumed (design card 4.6). |
+| `evidence.system_prompt` | `You judge one decision for a supervisor of coding agents. You are given a QUE...` |  |  | System prompt of a direct Haiku evidence call. The answer must name the pack line it rests on; an answer whose line does not exist is discarded. |
+| `evidence.timeout_ms` | `25000` |  | ms | How long a direct Haiku evidence call may take. These calls run supervisor-side and never inside a hook that blocks. |
+| `evidence.token_min_len` | `3` |  |  | Shortest word (in characters) that counts when a summary is compared with a step's text for overlap. |
+| `evidence.unreported` | `none` |  |  | What an earlier summary that reported no step shows in place of the step number. |
+| `evidence.usage` | `usage: ah-engine jev evidence < pack.json  (one JSON object per line: id, fac...` |  |  | The usage line of `ah-engine jev evidence` when its input is missing or malformed. |
+| `evidence.words` | `21 entries` |  |  | The words the evidence gate uses in its result and log rows: phases (rule, skipped, asked), sources (jev, haiku, rule, none), the skip reasons and the answer shapes. |
 
 ### dispatch.toml / dispatch
 

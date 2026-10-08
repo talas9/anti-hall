@@ -21,6 +21,7 @@ files = [
     "spawn_context.toml",
     "jev.toml",
     "judge.toml",
+    "jev_evidence.toml",
     "dispatch.toml",
     "hooks.toml",
     "verify_first.toml",

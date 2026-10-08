@@ -1,0 +1,128 @@
+# ah-engine shipped defaults for the Jev / Haiku evidence gate (the `jev::evidence` module, `ah-engine jev evidence`). Format:
+# see the header of engine.toml. Owner rule J1: a model (Jev, or Haiku through the cascade) is asked only when the concrete
+# evidence a confident answer needs has been gathered; a deterministic rule decides first whenever the facts alone settle the
+# case; otherwise the call is skipped. Every threshold, minimum, window, rule, prompt and word below is tuned here, never in Rust.
+#
+# One entry per integration in the table `evidence.cfg` (keyed by its Jev integration id). Its fields:
+#   backend       jev | haiku | cascade. jev asks Jev (the shared cascade layer may escalate when its own switch is on); haiku asks
+#                 the Claude CLI alias directly with an evidence-referenced answer; cascade is jev with the cascade expected on.
+#   kind          noul (a yes/no question) or steps (a pick-one over the numbered steps of a plan, built from the plan input).
+#   daily_cap     most direct Haiku calls per UTC day for this integration; past it the call is skipped with the reason daily-cap.
+#   pack_cap      characters of the whole evidence pack sent; section_cap the most one section may take of it.
+#   act_threshold the confidence under which an answer is reported as not actionable.
+#   sections      the pack sections, in the order they are written; the caller supplies them (steps: the engine builds them).
+#   required      sufficiency: each "fact:min" must be met by the pack's facts (a bool fact counts 1 when true); a missing fact is 0.
+#   rules         decided before the sufficiency check and before any model: first match wins. `when` is all-of; each condition is
+#                 "fact" (true or non-zero), "!fact" (false, zero or absent), or "fact<op>number" with op one of >= <= == > <
+#                 (an absent fact satisfies no comparison). `then` is skip, label:<word>, doing_step or overlap_step.
+#   ask_when      when set, the model is asked only if one of these "cond&cond" groups holds; otherwise default_label is the rule answer.
+
+
+
+
+[evidence.kind_steps]
+doc = "The `kind` value of an integration whose question is a pick-one over the numbered steps of a plan."
+value = "steps"
+
+[evidence.cfg]
+doc = "The evidence gate of each supervisor integration, keyed by its Jev integration id (fields described in the header). devswarmWaitKind: stuck or waiting (design card 4.5): asked only with enough transcript and mesh evidence and only when no rule settles it; a done, archived or held child is never asked about, and running CI, an unanswered question to the parent, a report newer than anything received or a usage-limit pause each mean waiting. devswarmLoop (card 4.10): a rule decides; recent progress means not looping, and the model only confirms a candidate (the same command and error repeated, or a change reverted). devswarmStepMap (card 4.6): asked only for a plan with at least two steps, a summary of enough text and an earlier summary that reported a step; one step in progress with no sequencing word, or a summary that quotes a step's text, decides without a model."
+value = { devswarmWaitKind = { backend = "haiku", kind = "noul", daily_cap = 30, pack_cap = 3500, section_cap = 1200, act_threshold = "0.85", question = "No step progress for {dur}. From the evidence, is this child workspace STUCK, or legitimately waiting (on CI, the owner, a peer or a running job)? Cite the evidence line you relied on.", true_label = "stuck", false_label = "waiting", true_meaning = "stuck: no outside thing it is waiting on", false_meaning = "legitimately waiting on CI, the owner, a peer or a running job", sections = ["tool_calls", "assistant_texts", "mesh", "ci", "errors"], required = ["tool_calls:5", "assistant_texts:1", "mesh_coverage:1"], rules = [ { id = "child_done", when = ["done_reported"], then = "skip" }, { id = "child_archived", when = ["archived"], then = "skip" }, { id = "child_on_hold", when = ["on_hold"], then = "skip" }, { id = "ci_running", when = ["ci_running"], then = "label:waiting" }, { id = "unanswered_question_to_parent", when = ["unanswered_q_to_parent"], then = "label:waiting" }, { id = "last_report_newer", when = ["last_report_newer"], then = "label:waiting" }, { id = "usage_limit_pause", when = ["usage_limit_pause"], then = "label:waiting" } ], ask_when = [], default_label = "" }, devswarmLoop = { backend = "haiku", kind = "noul", daily_cap = 10, pack_cap = 3500, section_cap = 1200, act_threshold = "0.85", question = "Is this child workspace LOOPING: repeating the same work without getting closer to finishing its current step? A rule already found a repeated command or a reverted change; confirm or refute it from the evidence and cite the line.", true_label = "looping", false_label = "not_looping", true_meaning = "looping: the same work repeated with no progress", false_meaning = "making real progress", sections = ["tool_calls", "repeats", "git", "heartbeats"], required = ["tool_calls:10"], rules = [ { id = "recent_progress", when = ["minutes_since_progress<60"], then = "label:not_looping" } ], ask_when = ["repeat_cmd_max>=3&!commits_on_step", "reverts>=1"], default_label = "not_looping" }, devswarmStepMap = { backend = "cascade", kind = "steps", daily_cap = 30, pack_cap = 3500, section_cap = 1500, act_threshold = "0.8", question = "Which numbered step of the plan does this progress summary describe? Use the earlier summaries and the step statuses as evidence, and cite the line you relied on.", unknown_label = "unknown", unknown_meaning = "none of these steps", step_text_cap = 60, sections = ["plan", "summary", "earlier"], required = ["steps:2", "summary_chars:15", "earlier_with_step:1"], rules = [ { id = "single_doing_step", when = ["doing_count==1", "!has_sequence_word"], then = "doing_step" }, { id = "summary_quotes_step", when = ["best_overlap>=0.6"], then = "overlap_step" } ], ask_when = [], default_label = "" } }
+
+[evidence.stepmap_sequence_words]
+doc = "Words that make a summary span more than one step, so the single in-progress step is not assumed (design card 4.6)."
+value = ["next", "then", "also", "afterwards", "after", "finally", "moving"]
+
+[evidence.stepmap_doing_status]
+doc = "The status word of a plan step that is in progress."
+value = "doing"
+
+[evidence.token_min_len]
+doc = "Shortest word (in characters) that counts when a summary is compared with a step's text for overlap."
+value = 3
+min = 1
+max = 10
+
+[evidence.plan_line]
+doc = "How one plan step is written in the evidence pack: {n} the step number, {status} its status, {text} its text."
+value = "{n} [{status}] {text}"
+
+[evidence.earlier_line]
+doc = "How one earlier summary is written in the evidence pack: {step} the step it reported ({unreported} when none), {text} its text."
+value = "step {step}: {text}"
+
+[evidence.unreported]
+doc = "What an earlier summary that reported no step shows in place of the step number."
+value = "none"
+
+[evidence.line_id]
+doc = "How a pack line is labelled so an answer can cite it: {section} the section name, {i} the line number starting at 1."
+value = "[{section}.{i}]"
+
+[evidence.heading_facts]
+doc = "Heading of the facts block of the evidence pack."
+value = "FACTS:\n"
+
+[evidence.heading_section]
+doc = "Heading of one pack section ({section})."
+value = "\n{section}:\n"
+
+[evidence.heading_question]
+doc = "Heading written before the question in the model's input."
+value = "QUESTION:\n"
+
+[evidence.heading_options]
+doc = "Heading written before the allowed answers in the model's input; each option follows as `label: meaning`."
+value = "\nALLOWED ANSWERS:\n"
+
+[evidence.heading_evidence]
+doc = "Heading written before the evidence pack in the model's input."
+value = "\nEVIDENCE:\n"
+
+[evidence.fact_line]
+doc = "How one fact is written in the facts block: {name} and {value}."
+value = "{name} = {value}"
+
+[evidence.dur_placeholder]
+doc = "The placeholder in a question that the caller's `dur` text (how long there was no progress) replaces."
+value = "{dur}"
+
+[evidence.system_prompt]
+doc = "System prompt of a direct Haiku evidence call. The answer must name the pack line it rests on; an answer whose line does not exist is discarded."
+value = "You judge one decision for a supervisor of coding agents. You are given a QUESTION, its ALLOWED ANSWERS and an EVIDENCE pack whose lines each carry an id such as [tool_calls.3]. Decide from the evidence only. If the evidence does not settle it, answer with a low confidence. Respond with ONLY valid JSON, no prose, no code fences: {\"answer\":<answer>,\"confidence\":<number between 0 and 1>,\"evidence_ref\":\"<the id of the one evidence line your answer rests on, without the brackets>\"} where <answer> is true or false for a yes/no question, or exactly one allowed label as a string."
+
+[evidence.answer_key]
+doc = "The field of a Haiku reply that holds its answer."
+value = "answer"
+
+[evidence.confidence_key]
+doc = "The field of a Haiku reply that holds its confidence."
+value = "confidence"
+
+[evidence.ref_key]
+doc = "The field of a Haiku reply that names the evidence line it rests on."
+value = "evidence_ref"
+
+[evidence.timeout_ms]
+doc = "How long a direct Haiku evidence call may take. These calls run supervisor-side and never inside a hook that blocks."
+value = 25000
+unit = "ms"
+
+[evidence.log]
+doc = "One row per evidence-gate decision (asked, skipped for insufficient evidence, decided by a rule, over the daily cap), relative to the anti-hall home directory. Each row names the facts that were present and the required ones that were missing. Empty turns the rows off."
+value = "logs/jev-evidence.ndjson"
+
+[evidence.log_max_bytes]
+doc = "The evidence log is emptied before a row that would take it past this size."
+value = 1048576
+
+[evidence.words]
+doc = "The words the evidence gate uses in its result and log rows: phases (rule, skipped, asked), sources (jev, haiku, rule, none), the skip reasons and the answer shapes."
+value = { phase_rule = "rule", phase_skipped = "skipped", phase_asked = "asked", source_jev = "jev", source_haiku = "haiku", source_rule = "rule", source_none = "none", reason_off = "mode-off", reason_insufficient = "insufficient", reason_rule_skip = "rule-skip", reason_no_candidate = "no-candidate", reason_daily_cap = "daily-cap", reason_no_answer = "no-answer", reason_bad_ref = "bad-evidence-ref", reason_low_confidence = "low-confidence", reason_unknown_integration = "unknown-integration", reason_bad_pack = "bad-pack", reason_shadow = "shadow", reason_no_model = "no-model", answer_unknown = "unknown", tag_haiku = "haiku" }
+
+[evidence.usage]
+doc = "The usage line of `ah-engine jev evidence` when its input is missing or malformed."
+value = "usage: ah-engine jev evidence < pack.json  (one JSON object per line: id, facts, sections, dur; a steps pack gives plan instead of sections)"
+
+[evidence.date_chars]
+doc = "Characters of an ISO timestamp that make its UTC date, which the per-day Haiku cap counts by."
+value = 10
