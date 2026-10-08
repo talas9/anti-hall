@@ -25,6 +25,11 @@ dhat = { version = "0.3.3", optional = true }
 # Scripted check logic (D88): an embedded QuickJS-NG interpreter runs the plugin's editable check scripts. Default features
 # off: no module loader, no async, no Rust allocator hook (so `set_memory_limit` stays enforced), pre-generated bindings.
 rquickjs = { version = "0.14.0", default-features = false }
+# File-change events for the realtime watch facility (src/watch): FSEvents on macOS, inotify on Linux. Default features off,
+# only the macOS FSEvents backend on (no kqueue, no serde). Pinned exactly: 9.x is still a release candidate. Added because the
+# poll backend measured 15 permille of a core at 250 ms (4.5 at 800 ms) on a realistic watch set against 0.009 for events
+# (DECISIONS.md, "Realtime watch backend"). Directories on 9p, drvfs, NFS, SMB and FUSE are still polled.
+notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
 
 # Allocator that returns freed pages (the system allocators keep them, so RSS stayed at the largest transient). Only on the targets
 # the crate supports (see src/main.rs).

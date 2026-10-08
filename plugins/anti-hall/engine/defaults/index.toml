@@ -51,5 +51,6 @@ files = [
     "devswarm_rt.toml",
     "task_tracker.toml",
     "devswarm_act.toml",
+    "realtime.toml",
 ]
 extra_dir = "hooks.d"

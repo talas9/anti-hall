@@ -256,6 +256,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Update checks as a scheduled job | planned (D44) | D44 |
 | One dispatcher call per hook event: `ah-engine hook --event`, built-in checks in the engine, the other hooks as Node, combined in table order; the plugin's `hooks.json` is one thin trigger per event, generated from the table (`ah-engine gen-hooks`) | implemented on the `engine-proto` branch (the installed plugin changes when it merges) | D58, D75, D87 |
 | Per-event and per-entry hook configuration (`[events.<Event>]`, `[entries.<id>]`: mode, max_rules, budget_ms, order) and the `when` predicate | implemented | D87 |
+| Realtime watch facility (`src/watch/`, generic: directories and file names in, coalesced batches or one rescan signal out): OS file events (FSEvents, inotify) by default, stat polling for 9p, drvfs, NFS, SMB, FUSE and any directory the OS refuses; bounded queue; no consumer wired yet | implemented | R1 (DECISIONS.md, "Realtime watch backend") |
 | Porting the other guards | planned (D57) | D57 |
 | Prebuilt binaries for every Unix target, release automation (prepare, publish, sha256 and attestation), the plugin-side bootstrap with a pinned lock | implemented (see Install, go-live and rollback) | D56, D64, D67, D68 |
 
@@ -812,6 +813,7 @@ Files:
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `mcp_reaper.toml` | the session-end MCP sweep: its patterns, init names, age floor, cap, grace period, commands and audit log texts |
 | `task_tracker.toml` | the task-tracker directive and reminder texts, window and growth thresholds, the open-tasks line, the Jev label question and the demand-metrics file |
+| `realtime.toml` | the realtime watch facility: backend, poll interval, debounce and ceiling, queue and directory caps, the filesystem types that are polled, SQLite side-file suffixes, the mount-table path, and the latency and CPU targets |
 | `judge.toml` | the judge calls the engine makes itself: the local Claude CLI client, the speculation-judge prompts and evidence limits, the mesh-triage worker's prompts and budgets, and the Jev-first cascade (thresholds, prompts, telemetry words) |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
 | `inject_gate.toml` | the injection gate: its settings (`context.injectGate*`), what it recognises in the hooks' output, its state bounds and wire words |
