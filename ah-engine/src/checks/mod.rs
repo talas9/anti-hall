@@ -21,7 +21,6 @@ pub mod devswarm_comms;
 pub mod devswarm_gates;
 pub mod devswarm_role;
 pub mod emit_dedupe;
-pub mod failure_nudge;
 pub mod git;
 pub mod guardkit;
 pub mod handover;
@@ -29,7 +28,6 @@ pub mod idle_agent_sweep;
 pub mod jsport;
 pub mod mcp_reaper;
 pub mod output_verify;
-pub mod phase_tracker;
 pub mod replykit;
 pub mod scripted;
 pub mod session;
@@ -182,13 +180,13 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::COMPACT_DECLARATION_GUARD,
         &command::CommandGuard,
         &scripted::MODEL_ROUTING,
-        &failure_nudge::FailureRootCauseNudge,
+        &scripted::FAILURE_ROOT_CAUSE_NUDGE,
         &scripted::GIT_AUDIT,
         &scripted::VERIFY_FIRST_SUBAGENT,
         &scripted::VERIFY_FIRST_FULL,
         &scripted::FABLE_AVAILABILITY,
         &scripted::INBOX_READ_GUARD,
-        &phase_tracker::PhaseTracker,
+        &scripted::PHASE_TRACKER,
         &scripted::ORCH_ON_SPAWN,
         &verify_first_orch::VerifyFirstOrch,
         &verify_first_orch::VerifyFirstOrchCodex,
