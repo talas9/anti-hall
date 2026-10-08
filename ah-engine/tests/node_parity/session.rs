@@ -378,7 +378,8 @@ fn plugin_root(tmp: &Path, repo: &Path, spec: Option<&J>, cache: &Mutex<BTreeMap
     let root = top.join("plugins/anti-hall");
     std::fs::create_dir_all(&root).expect("plugin root");
     let src = repo.join("plugins/anti-hall");
-    for d in ["hooks", "companion", ".claude-plugin"] {
+    // `engine` holds the defaults the engine reads at run time (D17 amended); a plugin root without it is not a real one
+    for d in ["hooks", "companion", ".claude-plugin", "engine"] {
         let st = std::process::Command::new("cp").arg("-R").arg(src.join(d)).arg(root.join(d)).status().expect("cp");
         assert!(st.success(), "copying {d} failed");
     }

@@ -56,7 +56,11 @@ pub fn atomic_write(file: &str, data: &J) -> std::io::Result<()> {
     if let Some(dir) = Path::new(file).parent() {
         crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write that follows fails too when the directory is missing
     }
-    crate::atomic::write(file, data.stringify())
+    // Node's own temp name and failure behaviour (a temp left after a failed rename), not `crate::atomic`: the session hooks
+    // share these files with the Node hooks and the parity tests compare the trees byte for byte.
+    let tmp = format!("{file}.tmp.{}", std::process::id());
+    std::fs::write(&tmp, data.stringify())?;
+    std::fs::rename(&tmp, file)
 }
 
 /// `persistAdvisedKey(file, cache, key)`: rewrite the cache with `lastAdvised` set to `key`; a failure is swallowed.
