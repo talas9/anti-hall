@@ -242,7 +242,14 @@ pub fn ack_for(st: &MeshStore, home: &Path, partition: &str, ns: &str, reader: O
         }
         let next = f.max(live_min(&rows, ns).map_or(if reader.is_some() { f } else { target }, |p| p.value));
         tx.put(&CursorPut { partition: partition.into(), ns: ns.into(), reader: floor_name.into(), value: next, retired_line: None, updated_at: now })?;
-        Ok(Some(Acked { ok: true, own: Some(if reader.is_some() { own.unwrap_or(next) } else { next }), floor: Some(next), from: Some(f), retired, error: None }))
+        Ok(Some(Acked {
+            ok: true,
+            own: Some(if reader.is_some() { own.unwrap_or(next) } else { next }),
+            floor: Some(next),
+            from: Some(f),
+            retired,
+            error: None,
+        }))
     });
     match res {
         Ok(Some(a)) => {

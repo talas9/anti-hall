@@ -119,10 +119,7 @@ fn mark_drain(inv: &Inv, id: &str) {
     let p = dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let mut m = Obj::default();
     m.put("startedAt", n(inv.now as f64))
-        .put(
-            "sessionId",
-            inv.env.get(defaults::text("mesh_write.env_session_id")).filter(|x| !x.is_empty()).map_or(OVal::Null, |x| OVal::Str(x.clone())),
-        )
+        .put("sessionId", inv.env.get(defaults::text("mesh_write.env_session_id")).filter(|x| !x.is_empty()).map_or(OVal::Null, |x| OVal::Str(x.clone())))
         .put("pid", n(f64::from(std::process::id())))
         .put("count", n(0.0));
     let write = || -> std::io::Result<()> {
@@ -283,10 +280,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         crate::discard::harmless(write()); // keep: the cursors moved; the ackedAt stamp is informational (Node's catch)
     }
     let mut out = Obj::default();
-    out.put("ok", OVal::Bool(true))
-        .put("action", s(defaults::text("mesh_write.action_ack_primary")))
-        .put("id", s(id))
-        .put("readReceiptId", s(rid));
+    out.put("ok", OVal::Bool(true)).put("action", s(defaults::text("mesh_write.action_ack_primary"))).put("id", s(id)).put("readReceiptId", s(rid));
     if let Some(x) = acked {
         out.put("acked", n(x));
     }

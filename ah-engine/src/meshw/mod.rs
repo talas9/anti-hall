@@ -233,7 +233,9 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
             };
             let r = std::panic::catch_unwind(|| run_native(&inv, &a));
             let (step, result, reason) = next_step(r, committed());
-            shadow_log(&serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": result, "reason": reason, "ms": common::now_ms() - t0}));
+            shadow_log(
+                &serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": result, "reason": reason, "ms": common::now_ms() - t0}),
+            );
             match step {
                 Next::Print(ans) => {
                     emit(ans.stdout.as_bytes());
