@@ -7,7 +7,7 @@
 //! collapses to one copy, and an unchanged reminder repeats only every `guards.injectionRepeatEvery` delivered turns.
 //!
 //! A DevSwarm Primary session appends a dispatch-tier sentence whose gate reads the repo's `CLAUDE.md` / `AGENTS.md`
-//! chain and the git superproject (`hooks/lib/primary-tier.js`, `dispatch-tier.js`); [`tier_text_on`] answers it. It
+//! chain and the git superproject (`hooks/lib/primary-tier.js`, `dispatch-tier.js`); `tier_text_on` answers it. It
 //! defers (before anything is written) only when the gate depends on something it cannot reproduce: an absent or relative
 //! working directory, or a repository layout the identity resolver cannot classify.
 //!

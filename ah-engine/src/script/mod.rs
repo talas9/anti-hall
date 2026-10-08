@@ -21,7 +21,7 @@
 //! Teardown rule (the "runtime teardown assertion" root cause): `JS_FreeRuntime` asserts that no object is still alive. A
 //! `Persistent` handle, or a JS value kept outside `Context::with`, that outlives the runtime aborts the process. So no JS
 //! value is ever stored outside a `with` block (the entry function is looked up by name per call), a pending exception is
-//! always taken with `catch`, and [`Pool`] drops its contexts before its runtime (field order) and runs a GC in between.
+//! always taken with `catch`, and `Pool` drops its contexts before its runtime (field order) and runs a GC in between.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file or directory is the same as an absent one
 // A failure that must be seen goes through `crate::discard` instead.

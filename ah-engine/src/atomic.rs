@@ -56,10 +56,10 @@ pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result
     write_styled(path, bytes, Style::default())
 }
 
-/// [`write`] with an explicit [`Style`].
+/// [`write()`] with an explicit [`Style`].
 ///
 /// # Errors
-/// As [`write`]; with `leave_temp_on_rename_failure` the temporary file stays after a failed rename.
+/// As [`write()`]; with `leave_temp_on_rename_failure` the temporary file stays after a failed rename.
 pub fn write_styled(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Style) -> std::io::Result<()> {
     let path = path.as_ref();
     let tmp = tmp_path(path, style);

@@ -513,7 +513,7 @@ pub fn load(root: &Path, prev: Option<&Data>) -> Result<Data, DefaultsError> {
     load_from(root, bootstrap::lkg_dir().as_deref(), prev)
 }
 
-/// [`load`] with the last-known-good base directory given (`None`: no last-known-good layer).
+/// `load` with the last-known-good base directory given (`None`: no last-known-good layer).
 pub fn load_from(root: &Path, lkg_base: Option<&Path>, prev: Option<&Data>) -> Result<Data, DefaultsError> {
     let print = files_print(root);
     let d = Dirs::new(root, lkg_base);

@@ -6,7 +6,7 @@
 //!
 //! 1. **A block wins.** One blocking entry (exit 2, or JSON that blocks per `dispatch.blocking_decisions`) is the answer,
 //!    byte for byte. Several blocking entries are one block that carries every one of their reasons, in table order, as the
-//!    host shows the model each of them ([`blocked`]); the JSON advisories of the entries that did not block ride along (their
+//!    host shows the model each of them (`blocked`); the JSON advisories of the entries that did not block ride along (their
 //!    messages and contexts join the block's) only when the block exits 0: on exit 2 the host ignores stdout JSON and reads
 //!    stderr alone, so there the advisories (and notes) are carried in the JSON for parity but the host does not read them.
 //! 2. **One answer passes through.** When exactly one entry printed anything or exited non-zero, its output, stderr

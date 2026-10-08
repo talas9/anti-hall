@@ -8,7 +8,7 @@
 //!
 //! # Where the data comes from
 //!
-//! The data is one immutable, validated snapshot behind an `Arc` that is swapped atomically (see [`load`]). The
+//! The data is one immutable, validated snapshot behind an `Arc` that is swapped atomically (see `load`). The
 //! accessors below keep their signatures (`&'static` values), so call sites do not care that the backend is a snapshot:
 //! a value that changed in a reload is leaked once, an unchanged one is reused, and a request that already holds a value
 //! sees the old or the new one entirely.

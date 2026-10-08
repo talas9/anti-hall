@@ -8,7 +8,7 @@
 //!    limit is a file edit away, never a rebuild.
 //! 2. The per-scope state file (small JSON) is read. When the reply (the payload's `last_assistant_message`) holds no cause
 //!    statement and no reminder is pending, the check ends here: the transcript is not touched.
-//! 3. Otherwise the last turn is read from the transcript end in one bounded pass ([`turn`]). A pending reminder is
+//! 3. Otherwise the last turn is read from the transcript end in one bounded pass (`turn`). A pending reminder is
 //!    resolved first (follow-through: was a search among the next `sibling_sweep.follow_window` tool calls?).
 //! 4. A cause statement in a fix context (fix words in the turn, or an edit tool call) with no search call after it and no
 //!    explicit "no other occurrences" statement gets one reminder, at most once per cause per turn and

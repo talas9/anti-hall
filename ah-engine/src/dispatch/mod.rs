@@ -774,7 +774,7 @@ fn mark_done() {
 
 /// `ah-engine hook --event ...`: read stdin, dispatch, print, exit with the combined code. Never panics out, and never
 /// turns a failure into an allow for a guard event: a usage error there, an unreadable payload and a panic hand the event
-/// to the Node hooks ([`defer`], [`on_panic`]).
+/// to the Node hooks ([`defer`], `on_panic`).
 pub fn hook_main(args: &[String]) -> i32 {
     let event = flag(args, "--event").unwrap_or_default();
     let guard = guarded(&event);
