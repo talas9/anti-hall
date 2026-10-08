@@ -531,6 +531,50 @@ the run marker (or never reaped on a panic), and with `daemon.idle_exit_s` = 0 n
   a pid that is an `ah-engine serve`); every test env that can start a daemon reaps it in its `Drop` before removing its
   dir. `reliability::no_daemon_of_this_build_outlives_its_test_run` fails on a leak from an earlier run.
 
+## Realtime watch backend (lane R1, 2026-10-09)
+
+`src/watch/` is a generic file-change watcher (no DevSwarm or GitHub knowledge): directories plus file names in, coalesced
+batches or one rescan signal out. Two backends, chosen per directory:
+
+- **events** (default): the `notify` crate pinned `=8.2.0`, default features off, only `macos_fsevent` (FSEvents on macOS,
+  inotify on Linux). Read-only access events are dropped so a consumer reading its source cannot wake itself.
+- **poll**: stat signature (mtime, size, inode) every `realtime.poll_ms`. Used for 9p, drvfs, NFS, SMB and FUSE (statfs
+  `f_fstypename` on macOS, `/proc/self/mounts` on Linux and WSL2, list `realtime.fs_poll_types`), when the OS refuses a watch
+  (watch limit, missing directory) and when `realtime.backend = poll`.
+
+**Why events were added (owner rule: simplicity bounded by performance).** Polling was built first and measured on a
+realistic watch set counted on the owner's machine (app DB with its WAL and SHM, 8 mesh stores, inbox 311, plans 30,
+workspaces 102, heartbeats 661, 4 transcript dirs: about 1260 files in 16 directories; Apple Silicon, release build, machine
+busy with other lanes; `tests/watch_bench.rs`, 30 probes at varied poll phases). The running daemon spends about 1.3 permille
+of a core in total (59 s CPU over 12.4 h).
+
+| backend | idle CPU (permille of a core) | detection latency p50 / p95 / max |
+|---|---|---|
+| poll 250 ms | 12.3 (15.2 in an earlier run) | 255 / 371 / 372 ms |
+| poll 500 ms | 9.1 | 354 / 455 / 460 ms |
+| poll 800 ms | 3.6 (4.5 earlier) | 653 / 750 / 761 ms |
+| poll 2000 ms | 1.5 | 1862 / 1947 / 1954 ms |
+| events (debounce 100 ms) | 0.010 | 111 / 172 / 211 ms |
+| events, no debounce (scratch crate) | 0.009 | 9 / 15 / 86 ms |
+
+Polling stays within `realtime.cpu_budget_permille` (5) only at 800 ms or slower, which is a 750 ms p95 and 3 to 4 times the
+daemon's whole idle cost; at a sub-second interval that suits a supervisor it is 10 times over. Events cost nothing at idle.
+Targets set in `realtime.toml`: p95 latency 1000 ms, idle CPU 5 permille.
+
+**Dependency cost** (`deps-budget.toml`): macOS host 60 -> 65 crates (notify, notify-types, fsevent-sys, walkdir, same-file);
+Linux x86_64 and arm64 hosts 60 -> 67 (notify, notify-types, inotify, inotify-sys, mio, walkdir, same-file). `base_crates` 66
+with one crate of headroom, so the budget and staleness tests pass on both host families. Owner amendment 3 allows raising
+the budget in the lane that needs it.
+
+**Bounds.** Changes coalesce per file over `debounce_ms` with a `max_delay_ms` ceiling; at most `queue_cap` distinct files
+are held, past which the queue is dropped and ONE rescan signal is sent; a polled directory with more than `max_entries`
+matching files asks for a rescan when its listing changes. A 10000-write storm produced a handful of reports; 2000 distinct
+new files produced one rescan.
+
+**Not verified here.** Only the aarch64-apple-darwin target is installed on the build machine: the Linux inotify path,
+Intel macOS and WSL2 are covered by CI builds and by fixture tests of the mount-table parser (`tests/` of `fstype.rs`), not run.
+FSEvents replays changes made a moment before a stream starts; they are hints, and a consumer reconciles at start anyway.
+
 ## Revision log
 
 - **1.0** (2026-10-04): initial record, D1–D43.
