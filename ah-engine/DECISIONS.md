@@ -1,6 +1,6 @@
 # ah-engine decision record
 
-**Version: 1.94** (2026-10-07). Bump the minor version for each added or changed decision, and add a line to the Revision log at the end.
+**Version: 1.101** (2026-10-07). Bump the minor version for each added or changed decision, and add a line to the Revision log at the end.
 
 Status: living document. Owner decisions from 2026-10-04, recorded in the order they were made. Where a later decision supersedes an earlier one, that is stated. Branch: `engine-proto`.
 
