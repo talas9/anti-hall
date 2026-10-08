@@ -835,7 +835,8 @@ fn small_payloads_do_not_need_a_usable_spool_dir() {
     let mark = e.dir.join("pretool-ran");
     let map = e.map(&[("command-guard", r#"wc -c > "$AH_TEST_MARK""#)]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let payload = bash("npm test", &e.dir);
+    // a non-ASCII command is one the engine's command-guard leaves to the Node hook, so the fallback runs
+    let payload = bash("echo \u{e9}", &e.dir);
     let (code, out, err) =
         e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
     assert_eq!((code, out.as_str()), (0, ""));

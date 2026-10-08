@@ -25,6 +25,10 @@ const ALLOW: &[(&str, &str)] = &[
         "src/meshw/mod.rs",
         "the `ah-engine mesh` command-line process (D45 stage 2): it stands in for `node devswarm.js`, whose context is its own process environment, home and cwd; the daemon is not involved",
     ),
+    (
+        "src/meshw/verify.rs",
+        "the detached background checker (`ah-engine mesh --verify`, its own process): its environment is the home it was launched with, handed to the Node check it compares against (D45)",
+    ),
     ("src/cfgstore.rs", "integer `AH_ENGINE_*` engine tunables only (test `only_engine_tunables_read_the_process_environment`)"),
     (
         "src/checks/jsport/date.rs",
