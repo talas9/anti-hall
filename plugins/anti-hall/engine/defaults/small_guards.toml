@@ -489,29 +489,13 @@ value = "handover"
 doc = "Where the update-in-session switch is read from (guards.updateInSession, default on)."
 value = { section = "guards", key = "updateInSession", env = "ANTIHALL_UPDATE_IN_SESSION", aliases = [], option = "guards_update_in_session", default = true }
 
-[model_routing.mode_env]
-doc = "Environment variable whose value advisory downgrades strict omitted-model blocks."
-value = "ANTIHALL_MODEL_ROUTING"
+[model_routing.mode_setting]
+doc = "Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then the plugin option; strict when none holds a valid value."
+value = { section = "guards", key = "modelRouting", env = "ANTIHALL_MODEL_ROUTING", aliases = [], option = "guards_model_routing", default = "strict", values = ["strict", "advisory", "off"] }
 
-[model_routing.deploy_floor_env]
-doc = "Environment variable that sets the deploy/migration/secret minimum model floor."
-value = "ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR"
-
-[model_routing.mode_option]
-doc = "Claude plugin option key for guards.modelRouting."
-value = "guards_model_routing"
-
-[model_routing.deploy_floor_option]
-doc = "Claude plugin option key for guards.modelRoutingDeployFloor."
-value = "guards_model_routing_deploy_floor"
-
-[model_routing.mode_values]
-doc = "Valid guards.modelRouting enum values."
-value = ["strict", "advisory", "off"]
-
-[model_routing.deploy_floor_values]
-doc = "Valid guards.modelRoutingDeployFloor enum values."
-value = ["sonnet", "opus", "off"]
+[model_routing.deploy_floor_setting]
+doc = "Where the deploy/migration/secret model floor (sonnet, opus, off) is read from (guards.modelRoutingDeployFloor): the environment variable, settings.json, then the plugin option; sonnet when none holds a valid value."
+value = { section = "guards", key = "modelRoutingDeployFloor", env = "ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR", aliases = [], option = "guards_model_routing_deploy_floor", default = "sonnet", values = ["sonnet", "opus", "off"] }
 
 [model_routing.advisory_mode]
 doc = "Routing-mode value that downgrades omitted-model strict blocks to advisories."
@@ -539,22 +523,6 @@ unit = "utf16-code-units"
 doc = "Number of distinct weak deploy/migration/secret signal kinds needed to activate the deploy floor."
 value = 2
 min = 1
-
-[model_routing.setting_section]
-doc = "Settings section containing the model-routing settings."
-value = "guards"
-
-[model_routing.setting_key]
-doc = "Settings key containing the model-routing mode."
-value = "modelRouting"
-
-[model_routing.deploy_floor_key]
-doc = "Settings key containing the deploy/migration/secret model floor."
-value = "modelRoutingDeployFloor"
-
-[model_routing.routing_mode_default]
-doc = "Default model-routing mode when no setting or env override is present."
-value = "strict"
 
 [model_routing.generic_type]
 doc = "The generic subagent type whose spawns are eligible for the generic-agent routing rows."
@@ -885,18 +853,6 @@ value = "research"
 [model_routing.jev_label_plan_review]
 doc = "Jev answer label for planning/review work."
 value = "plan-review"
-
-[model_routing.msg_fail_closed_what]
-doc = "Fail-closed headline for internal model-routing errors."
-value = "model-routing could not safely evaluate this spawn."
-
-[model_routing.msg_fail_closed_why]
-doc = "Fail-closed reason for internal model-routing errors."
-value = "The built-in check hit a decode/config/runtime error; a silent allow would violate fail-closed routing."
-
-[model_routing.msg_fail_closed_instead]
-doc = "Fail-closed advice for internal model-routing errors."
-value = "run the Node hook fallback or set an explicit safe model before spawning."
 
 [model_routing.msg_row3_what]
 doc = "Row-3 advisory headline."
