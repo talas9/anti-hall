@@ -68,6 +68,8 @@ impl Capture {
 pub struct Running {
     id: String,
     child: Option<Child>,
+    /// Why the command could not be started (`None` once it is running).
+    spawn_err: Option<std::io::Error>,
     out: Option<Capture>,
     err: Option<Capture>,
     timeout: Duration,
@@ -108,19 +110,25 @@ enum Input {
 /// Start `entry`'s command with in-memory `payload` on stdin. A command that cannot start is a hook with no child (its
 /// fate is [`Fate::Spawn`]; the host's "could not run" is no decision either).
 pub fn start(entry: &Entry, payload: &[u8]) -> Running {
-    start_with_input(entry, Some(Input::Bytes(payload.to_vec())))
+    start_with_input(entry, Ok(Input::Bytes(payload.to_vec())))
 }
 
 /// Start `entry`'s command with stdin copied from `payload`. Each child gets an independent descriptor and the feeder
 /// uses positional reads, so concurrent hooks never share or race a file offset.
 pub fn start_file(entry: &Entry, payload: &File) -> Running {
-    start_with_input(entry, payload.try_clone().ok().map(Input::File))
+    start_with_input(entry, payload.try_clone().map(Input::File))
 }
 
-fn start_with_input(entry: &Entry, input: Option<Input>) -> Running {
+fn start_with_input(entry: &Entry, input: std::io::Result<Input>) -> Running {
     let shell = defaults::list("dispatch.shell");
-    let spawned = input.and_then(|input| {
-        Command::new(shell.first().copied().unwrap_or_default())
+    let mut spawn_err = None;
+    let spawned = match input {
+        // the payload descriptor could not be duplicated (EMFILE): the same as a command the OS would not start
+        Err(e) => {
+            spawn_err = Some(e);
+            None
+        }
+        Ok(input) => match Command::new(shell.first().copied().unwrap_or_default())
             .args(&shell[1.min(shell.len())..])
             .arg(&entry.command)
             .stdin(Stdio::piped())
@@ -128,9 +136,14 @@ fn start_with_input(entry: &Entry, input: Option<Input>) -> Running {
             .stderr(Stdio::piped())
             .process_group(0)
             .spawn()
-            .ok()
-            .map(|child| (child, input))
-    });
+        {
+            Ok(child) => Some((child, input)),
+            Err(e) => {
+                spawn_err = Some(e);
+                None
+            }
+        },
+    };
     let (mut child, mut out, mut err) = (None, None, None);
     if let Some((mut c, input)) = spawned {
         if let Some(mut stdin) = c.stdin.take() {
@@ -150,6 +163,7 @@ fn start_with_input(entry: &Entry, input: Option<Input>) -> Running {
     Running {
         id: entry.id.clone(),
         child,
+        spawn_err,
         out,
         err,
         timeout: Duration::from_secs(
@@ -256,7 +270,9 @@ fn conclude(r: Running, w: Waited) -> Finished {
             return Finished { result: nothing(r.id), fate: Fate::Died };
         }
         Waited::NotStarted => {
-            log("dispatch_hook_spawn", "dispatch.msg_hook_spawn");
+            let (errno, err) = r.spawn_err.as_ref().map_or((0, String::new()), |e| (e.raw_os_error().unwrap_or(0), e.to_string()));
+            let detail = defaults::render("dispatch.msg_hook_spawn", &[("errno", &format!("os{errno}")), ("err", &err)]);
+            crate::health::log_event("dispatch_hook_spawn", &r.id, &detail);
             return Finished { result: nothing(r.id), fate: Fate::Spawn };
         }
     };
@@ -376,7 +392,7 @@ mod tests {
     #[test]
     fn a_read_error_on_a_pipe_is_incomplete_output_not_a_whole_answer() {
         let running =
-            Running { id: "broken".into(), child: None, out: reader(Some(Broken(false))), err: None, timeout: Duration::from_secs(5), started: Instant::now() };
+            Running { id: "broken".into(), child: None, spawn_err: None, out: reader(Some(Broken(false))), err: None, timeout: Duration::from_secs(5), started: Instant::now() };
         let f = conclude(running, Waited::Code(0));
         assert_eq!(f.fate, Fate::Incomplete);
         assert_eq!(f.result.code, Some(1));

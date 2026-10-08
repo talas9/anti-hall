@@ -10,9 +10,11 @@
 //!     entry whose check defers, and every check when the daemon cannot answer, runs as its Node hook too (D11).
 //!  4. Combine the results in table order the way the host combines separate hooks ([`combine`]).
 //!
-//! A guard event (`dispatch.guard_events`) whose Node hook cannot run (no runnable command, an unreadable
-//! `--fallback-map`, a usage error, a panic) fails CLOSED: exit 2 with `dispatch.msg_fail_closed`, never a silent allow
-//! (D74). Any other event runs the hooks it can and logs the ones it cannot. Results one output cannot express are
+//! A guard event (`dispatch.guard_events`) whose Node hook is known not to exist (no runnable command, a module Node
+//! cannot resolve) or was killed by a signal fails CLOSED: exit 2 with `dispatch.msg_fail_closed`, never a silent allow
+//! (D74). An infrastructure fault (a hook the OS would not start, stdin that cannot be read or spooled, an unreadable
+//! `--fallback-map`, a usage error, the event's budget spent, a panic) is no verdict: the event is handed to the
+//! wrapper's Node hooks with `dispatch.defer_exit` ([`defer`]), never a block and never a skip. Any other event runs the hooks it can and logs the ones it cannot. Results one output cannot express are
 //! delivered one after another ([`combine::sequential`]); a join over the host's context cap is handed back to the
 //! wrapper with `dispatch.defer_exit` so the hooks run separately, as the host runs them.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
@@ -377,6 +379,27 @@ pub fn closed(event: &str, payload: Option<&Value>, why: &str) -> Outcome {
     Outcome { out: String::new(), code: 2, err: format!("{}\n", defaults::render(key, &[("event", &event), ("why", &why)])) }
 }
 
+/// The answer when an infrastructure fault keeps the dispatcher from deciding (a hook the OS would not start, stdin that
+/// cannot be read or spooled, a usage error, an unreadable `--fallback-map`, the event's budget spent): the event is handed
+/// to the wrapper's Node hooks with `dispatch.defer_exit`, logged with its reason. Never a block (a transient fault must not
+/// lock the user out) and never an allow (a skipped guard).
+pub fn defer(event: &str, why: &str) -> Outcome {
+    log_defer(event, why);
+    let note = defaults::render("dispatch.msg_infra_defer", &[("event", &event), ("why", &why)]);
+    Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{note}\n") }
+}
+
+/// Finish the hooks already started and return a genuine block among them (it still decides), else [`defer`].
+fn finish_then_defer(event: &str, started: Vec<(usize, node::Running)>, mut done: Vec<Option<combine::HookResult>>, shadow: &[bool], why: &str) -> Outcome {
+    let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
+    for (i, f) in slots.iter().zip(node::finish(running)) {
+        if f.fate == node::Fate::Ran && !shadow[*i] {
+            done[*i] = Some(f.result);
+        }
+    }
+    genuine_block(done).unwrap_or_else(|| defer(event, why))
+}
+
 /// The genuine blocks among the results that did run (exit 2, or a JSON block) as one answer: one block verbatim, several as
 /// one block that carries every reason ([`combine::combine`]).
 fn genuine_block(done: Vec<Option<combine::HookResult>>) -> Option<Outcome> {
@@ -480,7 +503,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     if let Some(path) = &args.map {
         match table::FallbackMap::load(path) {
             Ok(m) => m.apply(&args.event, &mut entries),
-            Err(e) if guard => return closed(&args.event, parsed.as_ref(), &e.to_string()),
+            // an unreadable map is an install or disk fault: the wrapper's own Node hooks decide (review finding 16)
+            Err(e) if guard => return defer(&args.event, &e.to_string()),
             Err(e) => log_defer(&args.event, &e.to_string()),
         }
     }
@@ -518,14 +542,9 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.check.is_none()) {
         if budget.exceeded() {
             if guard {
-                let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
-                let mut done: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
-                for (i, f) in slots.iter().zip(node::finish(running)) {
-                    if f.fate == node::Fate::Ran && !shadow[*i] {
-                        done[*i] = Some(f.result);
-                    }
-                }
-                return genuine_block(done).unwrap_or_else(|| closed(&args.event, parsed.as_ref(), &defaults::render("hooks.msg_budget", &[("id", &e.id)])));
+                // a spent budget is a slow machine, not a verdict: the Node hooks decide (review finding 17)
+                let why = defaults::render("hooks.msg_budget", &[("id", &e.id)]);
+                return finish_then_defer(&args.event, started, vec![None; entries.len()], &shadow, &why);
             }
             tele.mark(&e.id, plan::Outcome::SkippedBudget);
             continue;
@@ -564,17 +583,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             _ if budget.exceeded() => {
                 // the event's budget has passed: start nothing further (a guard event fails closed, as for a hook that cannot run)
                 if guard {
-                    let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
-                    let mut done = results.clone();
-                    for (i, f) in slots.iter().zip(node::finish(running)) {
-                        if f.fate == node::Fate::Ran && !shadow[*i] {
-                            done[*i] = Some(f.result);
-                        }
-                    }
-                    if let Some(o) = genuine_block(done) {
-                        return o;
-                    }
-                    return closed(&args.event, parsed.as_ref(), &defaults::render("hooks.msg_budget", &[("id", &e.id)]));
+                    let why = defaults::render("hooks.msg_budget", &[("id", &e.id)]);
+                    return finish_then_defer(&args.event, started, results.clone(), &shadow, &why);
                 }
                 tele.mark(&e.id, plan::Outcome::SkippedBudget);
             }
@@ -624,6 +634,12 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             if node::module_resolution_error(&bad.result) {
                 return closed(&args.event, parsed.as_ref(), &no_command(&bad.result.id));
             }
+            if bad.fate == node::Fate::Spawn {
+                // the OS would not start it (EAGAIN, EMFILE, ENOMEM: a transient fault, logged with its errno by `node`):
+                // the wrapper's Node hooks decide, never a block (review finding 2)
+                return defer(&args.event, &defaults::render("dispatch.msg_why_spawn", &[("id", &bad.result.id)]));
+            }
+            // Fate::Died (a hook killed by a signal) still fails closed, by design (D74)
             let key = match bad.fate {
                 node::Fate::Spawn => "dispatch.msg_why_spawn",
                 node::Fate::Died => "dispatch.msg_why_died",
@@ -692,8 +708,8 @@ fn mark_done() {
 }
 
 /// `ah-engine hook --event ...`: read stdin, dispatch, print, exit with the combined code. Never panics out, and never
-/// turns a failure into an allow for a guard event: a usage error there answers exit 2 like [`fail_closed`], and a panic
-/// hands the event to the Node hooks ([`on_panic`]).
+/// turns a failure into an allow for a guard event: a usage error there, an unreadable payload and a panic hand the event
+/// to the Node hooks ([`defer`], [`on_panic`]).
 pub fn hook_main(args: &[String]) -> i32 {
     let event = flag(args, "--event").unwrap_or_default();
     let guard = guarded(&event);
@@ -702,7 +718,8 @@ pub fn hook_main(args: &[String]) -> i32 {
         let mut a = match parse_args(args) {
             Ok(a) => a,
             Err(e) if guard => {
-                let o = fail_closed(&event, &e.to_string());
+                // a usage error is a wiring fault, not a verdict: the wrapper's Node hooks decide (review finding 16)
+                let o = defer(&event, &e.to_string());
                 crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
                 return o.code;
             }
@@ -726,17 +743,15 @@ pub fn hook_main(args: &[String]) -> i32 {
         let max = defaults::num("client.max_stdin");
         let payload = match PayloadInput::read_stdin(max) {
             Ok(p) => p,
-            Err(e) if guard => {
+            Err(e) => {
+                // stdin could not be read, or an over-cap payload could not be spooled (a full disk, EMFILE): the wrapper
+                // holds the payload and runs the Node hooks; never a block, and never a silent skip of a non-guard event
+                // (review finding 3)
                 let why = defaults::render("msg.dispatch_stdin_spool", &[("err", &e)]);
-                let o = fail_closed(&event, &why);
+                health::log_event_or_stderr("dispatch_spool_unavailable", &event, &why);
+                let o = defer(&event, &why);
                 crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
                 return o.code;
-            }
-            Err(e) => {
-                let note = defaults::render("msg.dispatch_stdin_spool_note", &[("event", &event), ("err", &e)]);
-                health::log_event_or_stderr("dispatch_spool_unavailable", &event, &note);
-                crate::discard::harmless(writeln!(std::io::stderr(), "{note}")); // keep: a closed pipe leaves nobody to tell
-                return 0;
             }
         };
         let over_cap = payload.over_cap();

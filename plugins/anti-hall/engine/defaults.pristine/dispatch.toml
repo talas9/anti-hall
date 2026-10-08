@@ -181,6 +181,10 @@ value = 75
 min = 1
 max = 255
 
+[dispatch.msg_infra_defer]
+doc = "Printed on stderr with dispatch.defer_exit when an infrastructure fault (a hook the OS would not start, an unreadable payload or fallback map, a usage error, the event's budget spent) keeps the dispatcher from deciding: the wrapper then runs the Node hooks. Placeholders: {event}, {why}."
+value = "anti-hall: the engine could not dispatch {event} ({why}); the Node hooks decide"
+
 [dispatch.msg_fail_closed]
 doc = "Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}."
 value = "anti-hall: the engine could not run the guards for {event} ({why}). The call is blocked rather than allowed unguarded; repair the install (`doctor --repair`) or retry."
@@ -238,11 +242,11 @@ doc = "Event-log detail when a Node hook was killed by a signal or could not be 
 value = "the hook was killed by a signal or could not be waited for"
 
 [dispatch.msg_hook_spawn]
-doc = "Event-log detail when a Node hook's command could not be started."
-value = "the hook's command could not be started"
+doc = "Event-log detail when a Node hook's command could not be started (the event code is the hook id). Placeholders: {errno} (os<n>, the OS error number), {err} (its text)."
+value = "the hook's command could not be started: {errno} {err}"
 
 [dispatch.msg_why_spawn]
-doc = "Reason in dispatch.msg_fail_closed when a guard event's Node hook could not be started. Placeholder: {id}."
+doc = "Reason in dispatch.msg_infra_defer when a guard event's Node hook could not be started (EAGAIN, EMFILE, ENOMEM: the Node hooks then decide). Placeholder: {id}."
 value = "hook {id} could not be started"
 
 [dispatch.msg_why_died]

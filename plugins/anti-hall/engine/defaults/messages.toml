@@ -257,12 +257,8 @@ doc = "Reason in dispatch.msg_fail_closed when a guard event's stdin payload is 
 value = "the hook payload is not valid UTF-8"
 
 [msg.dispatch_stdin_spool]
-doc = "Reason in dispatch.msg_fail_closed when an over-cap stdin payload cannot be spooled for Node hooks. Placeholder: {err}."
-value = "the hook payload is over the in-memory cap and could not be spooled for Node hooks: {err}"
-
-[msg.dispatch_stdin_spool_note]
-doc = "Printed on stderr when a non-guard event has an over-cap stdin payload but the anonymous spool file could not be created. Placeholders: {event}, {err}."
-value = "anti-hall: skipped {event} Node hooks because the over-cap hook payload could not be spooled safely: {err}"
+doc = "Reason (event log and stderr, with dispatch.defer_exit) when the hook's stdin payload cannot be read, or an over-cap payload cannot be spooled for the Node hooks. Placeholder: {err}."
+value = "the hook payload could not be read, or spooled when over the in-memory cap: {err}"
 
 # ---- typed errors (Display text) ----------------------------------------------------------------------
 
