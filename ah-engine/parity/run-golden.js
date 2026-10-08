@@ -11,8 +11,8 @@ const plugin = path.resolve(__dirname, '..', '..', 'plugins', 'anti-hall');
 const corpus = path.resolve(__dirname, '..', 'tests', 'golden', check + '.jsonl');
 const cases = fs.readFileSync(corpus, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const pluginReal = fs.realpathSync(plugin);
-// {NOW}, {NOW-<ms>}, {NOW+<ms>}: the current time in ms; {ISO}, {ISO-<ms>}, {ISO+<ms>}: the same as ISO text (see script::expand_now)
-const expandNow = (s) => s.replace(/\{(NOW|ISO)([-+][0-9]+)?\}/g, (m, k, d) => { const t = Date.now() + (d ? Number(d) : 0); return k === 'NOW' ? String(t) : new Date(t).toISOString(); });
+// {NOW}, {NOW-<ms>}, {NOW+<ms>}: the current time in ms; {ISO}, {ISO-<ms>}, {ISO+<ms>}: the same as ISO text, {DATE}: its UTC day (see script::expand_now)
+const expandNow = (s) => s.replace(/\{(NOW|ISO|DATE)([-+][0-9]+)?\}/g, (m, k, d) => { const t = Date.now() + (d ? Number(d) : 0); return k === 'NOW' ? String(t) : k === 'DATE' ? new Date(t).toISOString().slice(0, 10) : new Date(t).toISOString(); });
 const fill = (s, home, real) => expandNow(s.split('{PLUGIN}').join(pluginReal).split('{HOMEREAL}').join(real).split('{HOME}').join(home));
 const sub = (v, home, real) => {
   if (typeof v === 'string') return fill(v, home, real);
@@ -36,7 +36,7 @@ for (const c of cases) {
   if (c.opts && c.opts.plugin_root) env.CLAUDE_PLUGIN_ROOT = sub(c.opts.plugin_root, home, real); else env.CLAUDE_PLUGIN_ROOT = plugin;
   const r = cp.spawnSync('node', [path.join(plugin, hook), ...hookArgs], { input: JSON.stringify(sub(c.payload, home, real)), env, encoding: 'utf8' });
   // normTs: a clock reading (12 or more digits) is {TS} in the stored and compared answers
-  const fix = (s) => { const t = s.split(pluginReal).join('{PLUGIN}').split(real).join('{HOMEREAL}').split(home).join('{HOME}'); return c.normTs ? t.replace(/[0-9]{12,}/g, '{TS}').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g, '{ISO}') : t; };
+  const fix = (s) => { const t = s.split(pluginReal).join('{PLUGIN}').split(real).join('{HOMEREAL}').split(home).join('{HOME}'); return c.normTs ? t.replace(/[0-9]{12,}/g, '{TS}').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g, '{ISO}').replace(/(?<!\d)\d{4}-\d\d-\d\d(?!\d)/g, '{DATE}') : t; };
   // a routing check's answer is a verdict plus telemetry rows: the oracle compares the verdict
   const e = c.expect.v === 'routed' ? c.expect.verdict : c.expect, out = fix(r.stdout || ''), err = fix(r.stderr || '');
   let ok;
@@ -48,10 +48,11 @@ for (const c of cases) {
   compared++;
   if (!ok) { bad++; console.log('MISMATCH', c.n, JSON.stringify(c.payload).slice(0, 200), JSON.stringify({ status: r.status, out, err }).slice(0, 400), JSON.stringify(e).slice(0, 400)); }
   if (c.watch) {
-    for (const rel of c.watch) {
+    for (const rel0 of c.watch) {
+      const rel = expandNow(rel0);
       let text = null;
-      try { text = fix(fs.readFileSync(path.join(home, rel), 'utf8')).replace(/[0-9]{12,}/g, '{TS}').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g, '{ISO}'); } catch (_) { /* absent */ }
-      if (text !== c.writes[rel]) { bad++; console.log('MISMATCH (file)', c.n, rel, JSON.stringify(text), JSON.stringify(c.writes[rel])); }
+      try { text = fix(fs.readFileSync(path.join(home, rel), 'utf8')).replace(/[0-9]{12,}/g, '{TS}'); if (c.normTs) text = text.replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g, '{ISO}').replace(/(?<!\d)\d{4}-\d\d-\d\d(?!\d)/g, '{DATE}'); } catch (_) { /* absent */ }
+      if (text !== c.writes[rel0]) { bad++; console.log('MISMATCH (file)', c.n, rel, JSON.stringify(text), JSON.stringify(c.writes[rel0])); }
     }
   }
   fs.rmSync(home, { recursive: true, force: true });

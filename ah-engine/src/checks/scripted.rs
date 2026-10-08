@@ -102,6 +102,9 @@ pub static SILENT_AGENT_NUDGE: Scripted = Scripted::new("silent-agent-nudge", "s
 /// `task-guard`.
 pub static TASK_GUARD: Scripted = Scripted::new("task-guard", "task_guard.summary");
 
+/// `tasklist-guard`.
+pub static TASKLIST_GUARD: Scripted = Scripted::new("tasklist-guard", "tasklist_guard.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

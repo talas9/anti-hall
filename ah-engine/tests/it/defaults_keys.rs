@@ -101,6 +101,13 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             literals.insert(format!("git.{}", &c[1]));
         }
     }
+    // the tasklist-guard script reads its `tasklist_guard.*` keys through the helpers `tlT('short_name')` and `tlN('short_name')`
+    let tl_re = regex::Regex::new(r#"\btl[TN]\('([a-z][a-z0-9_]*)'\)"#).unwrap();
+    for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == "tasklist-guard.js")) {
+        for c in tl_re.captures_iter(&fs::read_to_string(f).unwrap()) {
+            literals.insert(format!("tasklist_guard.{}", &c[1]));
+        }
+    }
     let indirect = |k: &str| {
         k.starts_with("cmd.") // handlers are checked against the registry by cli::tests; planned commands have no handler
             || k.starts_with("protocol.") // documents the wire format; the request words are parsed in daemon.rs

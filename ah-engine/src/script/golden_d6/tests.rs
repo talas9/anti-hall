@@ -67,3 +67,8 @@ fn silent_agent_nudge_script_matches_the_compiled_port() {
 fn task_guard_script_matches_the_compiled_port() {
     golden_report("task-guard", 12);
 }
+
+#[test]
+fn tasklist_guard_script_matches_the_compiled_port() {
+    golden_report("tasklist-guard", 12);
+}

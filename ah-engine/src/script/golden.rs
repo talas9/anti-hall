@@ -97,7 +97,7 @@ pub fn lay(case: &Value) -> Laid {
 }
 
 /// `text` with every run of 12 or more digits (a clock reading) replaced by `{TS}`.
-fn norm_ts(text: &str) -> String {
+fn norm_ts(text: &str, full: bool) -> String {
     let mut out = String::new();
     let mut run = String::new();
     for ch in text.chars().chain(std::iter::once('\0')) {
@@ -111,7 +111,31 @@ fn norm_ts(text: &str) -> String {
             out.push(ch);
         }
     }
-    iso_ts(&out)
+    if full { day_ts(&iso_ts(&out)) } else { out }
+}
+
+/// `text` with every calendar day (`2026-10-09`) replaced by `{DATE}`.
+fn day_ts(text: &str) -> String {
+    let b = text.as_bytes();
+    let shape = b"dddd-dd-dd";
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < b.len() {
+        let digit_before = i > 0 && b[i - 1].is_ascii_digit();
+        let hit = !digit_before
+            && i + shape.len() <= b.len()
+            && shape.iter().zip(&b[i..]).all(|(s, c)| if *s == b'd' { c.is_ascii_digit() } else { s == c })
+            && !b.get(i + shape.len()).is_some_and(u8::is_ascii_digit);
+        if hit {
+            out.push_str("{DATE}");
+            i += shape.len();
+        } else {
+            let ch = text[i..].chars().next().unwrap_or('\0');
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
 }
 
 /// `text` with every ISO-8601 UTC instant with milliseconds (`2026-10-09T00:12:51.123Z`) replaced by `{ISO}`.
@@ -136,7 +160,7 @@ fn iso_ts(text: &str) -> String {
 
 /// The verdict as the corpus stores it, with the case's directories replaced by their placeholders.
 pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
-    let u = |s: &str| if l.norm { norm_ts(&unsub(s, &l.home, &l.real)) } else { unsub(s, &l.home, &l.real) };
+    let u = |s: &str| if l.norm { norm_ts(&unsub(s, &l.home, &l.real), true) } else { unsub(s, &l.home, &l.real) };
     match v {
         None => json!({"v": "none"}),
         Some(Verdict::Allow) => json!({"v": "allow"}),
@@ -161,9 +185,9 @@ pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
 }
 
 /// The text of a watched file with its timestamps (runs of 12 or more digits) replaced by `{TS}`, or `null` when absent.
-fn watched(home: &str, real: &str, rel: &str) -> Value {
+fn watched(home: &str, real: &str, rel: &str, full: bool) -> Value {
     let Ok(text) = std::fs::read_to_string(Path::new(home).join(rel)) else { return Value::Null };
-    let out = norm_ts(&unsub(&text, home, real));
+    let out = norm_ts(&unsub(&text, home, real), full);
     Value::String(out)
 }
 
@@ -174,7 +198,7 @@ pub fn watched_all_pub(case: &Value, l: &Laid) -> Value {
 
 fn watched_all(case: &Value, l: &Laid) -> Value {
     let rels: Vec<&str> = case.get("watch").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    Value::Object(rels.iter().map(|r| (r.to_string(), watched(&l.home, &l.real, r))).collect())
+    Value::Object(rels.iter().map(|r| (r.to_string(), watched(&l.home, &l.real, &super::expand_now(r, crate::checks::replykit::io::now_ms()), l.norm))).collect())
 }
 
 /// Every case's answer from the script, against its stored `expect`. Returns the number of cases and of each kind.
