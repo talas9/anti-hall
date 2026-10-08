@@ -228,8 +228,6 @@ pub struct Tables {
     pub handover_git_timeout: std::time::Duration,
     /// Child poll interval.
     pub child_poll: std::time::Duration,
-    /// Child output read allowance.
-    pub child_read: std::time::Duration,
     /// Check thread stack size in bytes.
     pub stack_bytes: usize,
     /// Guard id.
@@ -437,7 +435,6 @@ fn build() -> Tables {
         git_timeout: std::time::Duration::from_millis(num("git_timeout_ms")),
         handover_git_timeout: std::time::Duration::from_millis(num("handover_git_timeout_ms")),
         child_poll: std::time::Duration::from_millis(num("child_poll_ms")),
-        child_read: std::time::Duration::from_millis(num("child_read_ms")),
         stack_bytes: (num("stack_mb") as usize) << 20,
         guard_name: text("guard_name"),
         settings_file: text("settings_file"),

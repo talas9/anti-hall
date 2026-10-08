@@ -426,11 +426,6 @@ doc = "Poll interval while a git child process runs."
 value = 1
 unit = "ms"
 
-[git.child_read_ms]
-doc = "Time allowed to collect the output of a child process after it exits."
-value = 500
-unit = "ms"
-
 [git.stack_mb]
 doc = "Stack size of the thread the check runs on: the parsers recurse on nested input, so a pathological command must not overflow a daemon worker."
 value = 64

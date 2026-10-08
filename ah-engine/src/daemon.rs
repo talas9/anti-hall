@@ -884,6 +884,7 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
     let code = if forced_exit { "forced" } else { "drain_timeout" };
     std::thread::spawn(move || {
         std::thread::sleep(grace);
+        crate::proc::kill_all();
         health::clear_marker();
         health::log_event("exit", code, &why);
         std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
@@ -1082,6 +1083,7 @@ pub fn serve() {
         sh.telemetry.snapshot_metrics(); // the counters as they are at exit
         db.close(); // everything queued commits before the process exits
     }
+    crate::proc::kill_all(); // a scheduled job still running must not outlive its daemon
     health::clear_marker();
     health::log_event("exit", "clean", "drained");
     // The socket was unlinked when the drain began (a successor may already own that path); the lock

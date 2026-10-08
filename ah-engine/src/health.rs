@@ -168,11 +168,27 @@ pub fn pid_alive(pid: u32) -> bool {
 }
 
 /// The command line of `pid` as the probe command in `health.pid_probe` reports it (empty when it cannot be read).
+///
+/// It runs on the hook path (a client deciding whether to start a daemon), so it never blocks: Linux reads
+/// `health.proc_cmdline` directly, and elsewhere the probe runs bounded by `health.probe_timeout_ms` (review finding 6).
 fn process_command(pid: u32) -> String {
-    let probe = defaults::list("health.pid_probe");
+    if cfg!(target_os = "linux")
+        && let Ok(raw) = std::fs::read(defaults::text("health.proc_cmdline").replace("{pid}", &pid.to_string()))
+    {
+        return String::from_utf8_lossy(&raw).replace('\0', " ");
+    }
+    probe_output(defaults::list("health.pid_probe"), pid)
+}
+
+/// Run a probe command (`program`, then its arguments with `{pid}` substituted) under `health.probe_timeout_ms`; its stdout,
+/// or empty when it cannot run or does not finish in time.
+pub(crate) fn probe_output(probe: Vec<&str>, pid: u32) -> String {
     let Some((program, args)) = probe.split_first() else { return String::new() };
-    let args: Vec<String> = args.iter().map(|a| a.replace("{pid}", &pid.to_string())).collect();
-    std::process::Command::new(program).args(&args).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default()
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args.iter().map(|a| a.replace("{pid}", &pid.to_string())));
+    crate::proc::run(cmd, program, defaults::millis("health.probe_timeout_ms"), defaults::millis("health.probe_poll_ms"))
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
 }
 
 /// True when `pid` is a live process running `<this binary> serve`.

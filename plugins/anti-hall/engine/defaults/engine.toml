@@ -537,6 +537,28 @@ value = [
 doc = "Command used to read a process's command line when checking whether a pid is a live engine: the program, then its arguments with `{pid}` substituted."
 value = ["ps", "-p", "{pid}", "-o", "command="]
 
+[health.proc_cmdline]
+doc = "Where Linux keeps a process's command line (NUL-separated); read instead of running the pid probe. `{pid}` is substituted."
+value = "/proc/{pid}/cmdline"
+
+[health.probe_timeout_ms]
+doc = "Longest a pid or memory probe command (health.pid_probe, health.rss_probe) may run; it runs on the hook path, so a wedged one is cut off and reads as no answer."
+value = 1000
+min = 1
+unit = "ms"
+
+[health.probe_poll_ms]
+doc = "How often a running probe command is checked for completion."
+value = 2
+min = 1
+unit = "ms"
+
+[proc.read_grace_ms]
+doc = "After a helper process (git, ps, vm_stat, a scheduled job) exits, how long its output may take to reach end of file; a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer."
+value = 500
+min = 1
+unit = "ms"
+
 [health.rss_probe]
 doc = "Command used to read this process's resident set where /proc is unavailable (macOS): the program, then its arguments with `{pid}` substituted."
 value = ["ps", "-o", "rss=", "-p", "{pid}"]

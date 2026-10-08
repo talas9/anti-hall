@@ -115,10 +115,8 @@ pub fn rss_kb() -> u64 {
             return ti.pti_resident_size / 1024;
         }
     }
-    let probe = crate::defaults::list("health.rss_probe");
-    let Some((program, args)) = probe.split_first() else { return 0 };
-    let args: Vec<String> = args.iter().map(|a| a.replace("{pid}", &std::process::id().to_string())).collect();
-    std::process::Command::new(program).args(&args).output().ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(0)
+    // bounded (review finding 6): a wedged `ps` must not hold the watchdog
+    crate::health::probe_output(crate::defaults::list("health.rss_probe"), std::process::id()).trim().parse().unwrap_or(0)
 }
 
 /// Cap the data segment. Returns a status word for `status`: `ok:<mb>`, `off`, or `err:<errno>`.

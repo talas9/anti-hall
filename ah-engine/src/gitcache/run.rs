@@ -7,10 +7,7 @@ use super::layout::Layout;
 use super::{GitCacheError, GitLimits};
 use crate::defaults;
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::process::Command;
 
 /// Runs git inside one repository's work tree.
 pub(super) struct Runner<'a> {
@@ -30,7 +27,7 @@ impl<'a> Runner<'a> {
         let shown = args.join(" ");
         let fail = |source: std::io::Error| GitCacheError::Run { args: shown.clone(), source };
         let mut cmd = Command::new(&self.lim.git_binary);
-        cmd.args(args).current_dir(self.work_dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0);
+        cmd.args(args).current_dir(self.work_dir);
         for a in defaults::list("gitcache.run_env") {
             if let Some((k, v)) = a.split_once('=') {
                 cmd.env(k, v);
@@ -44,34 +41,11 @@ impl<'a> Runner<'a> {
         for (k, v) in self.env {
             cmd.env(k, v);
         }
-        // never past the time the daemon's client still waits (review finding 4); a timed-out run is never cached
+        // never past the time the daemon's client still waits (review finding 4); a timed-out run is never cached. The run
+        // is bounded end to end: its group is killed on timeout and a leftover holding stdout cannot hang it (findings 7, 8)
         let timeout = crate::deadline::clamp(self.lim.timeout);
-        let mut child = cmd.spawn().map_err(fail)?;
-        let pid = child.id() as i32;
-        let mut out = child.stdout.take().ok_or_else(|| fail(std::io::Error::other("no stdout")))?;
-        let reader = std::thread::spawn(move || {
-            let mut b = Vec::new();
-            crate::discard::harmless(out.read_to_end(&mut b)); // keep: reaping or draining a child or thread that already ended
-            b
-        });
-        let start = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(st)) => break st,
-                Ok(None) if start.elapsed() < timeout => std::thread::sleep(self.lim.poll),
-                Ok(None) => {
-                    // the whole group: a git that spawned a helper must not leave it running (D9)
-                    // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a pid that already exited just fails with ESRCH.
-                    unsafe { libc::kill(-pid, libc::SIGKILL) };
-                    crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
-                    crate::discard::harmless(reader.join()); // keep: reaping or draining a child or thread that already ended
-                    return Err(fail(std::io::Error::from(std::io::ErrorKind::TimedOut)));
-                }
-                Err(e) => return Err(fail(e)),
-            }
-        };
-        let bytes = reader.join().unwrap_or_default();
-        Ok(status.success().then(|| String::from_utf8_lossy(&bytes).to_string()))
+        let o = crate::proc::run(cmd, &self.lim.git_binary, timeout, self.lim.poll).map_err(|e| fail(e.into_io()))?;
+        Ok(o.status.success().then(|| String::from_utf8_lossy(&o.stdout).to_string()))
     }
 }
 
