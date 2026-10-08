@@ -43,7 +43,6 @@ pub mod ship_it;
 pub mod silent_agent_nudge;
 pub mod spawnctx;
 pub mod speculation_guard;
-pub mod speculation_judge;
 pub mod stale_agent_stop_note;
 pub mod task_guard;
 pub mod task_lifecycle_log;
@@ -219,7 +218,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &session::defect_nudge::DefectNudge,
         &session::progress_prune::ProgressPrune,
         &speculation_guard::SpeculationGuard,
-        &speculation_judge::SpeculationJudge,
+        &scripted::SPECULATION_JUDGE,
         &claim_ledger::ClaimLedger,
         &output_verify::OutputVerifyGuard,
         &ask_guard::AskGuard,

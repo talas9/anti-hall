@@ -1462,15 +1462,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `speculation_judge.backend_jev` | `jev` |  |  | The speculationBackend value that leaves the speculation question to Jev alone. |
 | `speculation_judge.backend_setting` | `7 entries` |  |  | Which backend answers the speculation question when the semantic judge is on: haiku (default, today's behaviour: the judge asks the model, except while Jev's own speculation integration is on) jev (the judge never asks the model; speculation-guard's Jev path is the only semantic check) or cascade (as jev, with the Jev-first cascade switched on for the speculation integration: a Jev answer under the escalation threshold is re-judged by the model in the background and applies from the next turn). Setting jev.speculationBackend, env ANTIHALL_JEV_SPECULATION_BACKEND. |
-| `speculation_judge.claim_bidi_re` | `[‪-‮⁦-⁩]` |  |  | Bidi overrides and isolates removed from the judge's claim (U+202A-U+202E, U+2066-U+2069). |
-| `speculation_judge.claim_controls_re` | `[\x00-\x1F\x7F-\x9F]` |  |  | Control characters replaced by a space in the judge's claim (Node: /[\x00-\x1F\x7F-\x9F]/g). |
-| `speculation_judge.claim_default` | `an unverified factual claim` |  |  | The claim named in the block when the judge gave none (Node: sanitizeClaim fallback). |
-| `speculation_judge.claim_ellipsis` | `…` |  |  | Appended to a claim cut at claim_max. |
-| `speculation_judge.claim_max` | `120` |  |  | UTF-16 units of the judge's claim kept in the block reason. |
-| `speculation_judge.claim_ws_re` | `\s+` |  |  | White space runs collapsed to one space in the judge's claim (Node: /\s+/g). |
 | `speculation_judge.decision_allow` | `allow` |  |  | The decision value that allows. |
 | `speculation_judge.decision_block` | `block` |  |  | The decision value that blocks. |
-| `speculation_judge.evidence_window` | `1048576` |  |  | Bytes of the transcript tail read for the user request and the tool evidence (Node: 1024 * 1024). |
 | `speculation_judge.hash_suffix` | `:judge` |  |  | Appended to the reply before hashing it, so the judge's hashes never collide with speculation-guard's. |
 | `speculation_judge.input_evidence` | `\n\nTOOL EVIDENCE (most recent last):\n` |  |  | Heading of the tool evidence in the judge input. |
 | `speculation_judge.input_item` | `[{n}] ` |  |  | Prefix of each evidence chunk; {n} is its 1-based number. |
@@ -1484,13 +1477,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_judge.max_evidence` | `6000` |  |  | UTF-16 units of tool evidence the judge sees, newest chunks first (Node: MAX_EVIDENCE). |
 | `speculation_judge.max_message` | `8000` |  |  | UTF-16 units of the reply the judge sees (Node: MAX_MESSAGE). |
 | `speculation_judge.max_request` | `2000` |  |  | UTF-16 units of the user request the judge sees (Node: MAX_REQUEST). |
-| `speculation_judge.msg_instead` | `verify it with a tool, or say what is unverified ('I don't know, here is what...` |  |  | What to do instead. |
-| `speculation_judge.msg_what` | `your reply states '{claim}' as fact, but nothing this session checked shows i...` |  |  | What the block says; {claim} is the sanitized claim. |
-| `speculation_judge.msg_why` | `Unverified claims read as facts.` |  |  | Why the block matters. |
 | `speculation_judge.reply_window` | `524288` |  |  | Bytes of the transcript tail read for the reply when the payload does not carry it (Node: readTranscriptTail default 512 KB). |
 | `speculation_judge.state_prefix` | `judge-state-` |  |  | Name prefix of the per-session state file under the anti-hall directory (Node: judge-state-<session>.json). |
-| `speculation_judge.system_prompt` | `You are an anti-hallucination evaluator for a coding assistant.\nYour job: as...` |  |  | The judge's system prompt (judge-core.js JUDGE_SYSTEM), byte for byte. |
-| `speculation_judge.timeout_ms` | `25000` |  |  | The CLI judge's timeout (Node: runCliJudge timeoutMs 25000; the Stop hook's budget is 30 s). |
 
 ### judge.toml / triage
 
@@ -2353,7 +2341,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `speculation_judge.child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable the judge's own `claude -p` child carries; a hook that runs inside the child does nothing (no recursion). |
 | `speculation_judge.child_value` | `1` |  |  | The value of the judge-child variable that means this process is the judge's child. |
-| `speculation_judge.event` | `Stop` |  |  | The only event this check answers. |
 | `speculation_judge.guard_name` | `speculation-judge` |  |  | The guard id this check answers to in skip.json. |
 | `speculation_judge.setting` | `6 entries` |  |  | Where the opt-in switch is read from (jev.semanticJudge, default off). |
 | `speculation_judge.summary` | `Stop: the opt-in semantic judge; answers every path without a model call, and...` |  |  | One-line description of the speculation-judge check in the generated reference. |

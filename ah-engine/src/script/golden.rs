@@ -111,6 +111,26 @@ fn norm_ts(text: &str) -> String {
             out.push(ch);
         }
     }
+    iso_ts(&out)
+}
+
+/// `text` with every ISO-8601 UTC instant with milliseconds (`2026-10-09T00:12:51.123Z`) replaced by `{ISO}`.
+fn iso_ts(text: &str) -> String {
+    let b = text.as_bytes();
+    let shape = b"dddd-dd-ddTdd:dd:dd.dddZ";
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hit = i + shape.len() <= b.len() && shape.iter().zip(&b[i..]).all(|(s, c)| if *s == b'd' { c.is_ascii_digit() } else { s == c });
+        if hit {
+            out.push_str("{ISO}");
+            i += shape.len();
+        } else {
+            let ch = text[i..].chars().next().unwrap_or('\0');
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
     out
 }
 
