@@ -17,6 +17,8 @@ Object.assign(ah.transcript, {
 Object.assign(ah.jev, {
   // Report a later observed result against the decision with that hash (the decision log row `outcome`); projectFrom: a directory.
   recordOutcome: function (id, hash, outcome, source, projectFrom) { ahHost.jevRecordOutcome(id, hash, outcome, source || null, projectFrom || null); },
+  // Whether the Jev master switch is on for this request (an integration can still be off: see jev.mode).
+  enabled: function () { return ahHost.jevEnabled(); },
   // Whether the shared answer cache holds an answer under `hash`: true, false, or null when the file is one only JavaScript reads.
   cacheHas: function (hash) { return ahNull(ahHost.jevCacheHas(hash)); },
 });

@@ -7,6 +7,7 @@
 //! | `transcriptTasks(path, variant, window, wide)` | the task list of a transcript tail, rebuilt exactly as the Node hooks rebuild it: see [`transcript_tasks`] |
 //! | `agentScan(path, tailBytes)` | every agent a transcript tail shows launched, with its times, output file and the ids with terminal evidence: see [`agent_scan`] |
 //! | `jevRecordOutcome(id, hash, outcome, source, projectFrom)` | report a later observed result against a Jev decision by hash: see [`jev_record_outcome`] |
+//! | `jevEnabled()` | whether the Jev master switch is on for this request (an integration can still be off) |
 //! | `jevCacheHas(hash)` | whether the shared Jev answer cache holds an answer under `hash` (`null` when the file is one only JavaScript reads) |
 //! | `pluginVersions(root)` | the version of the plugin at `root` and the one the host registered: see [`plugin_versions`] |
 //! | `homeGuard()` | the home directory state files may live under: `{status: "ok" \| "guarded" \| "unknown", home}`: see [`home_guard`] |
@@ -156,6 +157,13 @@ fn jev_cache_has(hash: &str) -> rquickjs::Result<Option<bool>> {
     Ok(crate::jev::cache::FileCache::for_home(std::path::Path::new(&home)).contains(hash))
 }
 
+/// `jevEnabled()`: the Jev master switch for this request, through the same settings chain the lane reads.
+fn jev_enabled() -> rquickjs::Result<bool> {
+    let (home, env) = with_settings(|st| (st.home.clone(), crate::jev::Env::from_pairs(st.env.clone())))?;
+    let home = std::path::Path::new(&home);
+    Ok(crate::jev::JevSettings::resolve(home, crate::jev::settings::Sources::load(home, env)).enabled)
+}
+
 /// `pluginVersions(root)`: JSON `{"running": string|null, "registered": string|null, "unsure": bool}`. `running` is the `version`
 /// of the plugin manifest under `root` (null when absent, unreadable, not JSON or without a string version); `registered` is
 /// the version the host's plugin registry names for anti-hall, found the way `update.js` finds it (null when none). `unsure` is
@@ -244,6 +252,7 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
             jev_record_outcome(&id, &hash, &outcome, source, project)
         })?,
     )?;
+    h.set("jevEnabled", Function::new(c.clone(), jev_enabled)?)?;
     h.set("jevCacheHas", Function::new(c.clone(), |hash: String| jev_cache_has(&hash))?)?;
     h.set("pluginVersions", Function::new(c.clone(), |root: String| plugin_versions(&root))?)?;
     h.set("cores", Function::new(c.clone(), cores)?)?;

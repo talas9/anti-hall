@@ -36,7 +36,7 @@ for (const c of cases) {
   if (c.opts && c.opts.plugin_root) env.CLAUDE_PLUGIN_ROOT = sub(c.opts.plugin_root, home, real); else env.CLAUDE_PLUGIN_ROOT = plugin;
   const r = cp.spawnSync('node', [path.join(plugin, hook), ...hookArgs], { input: JSON.stringify(sub(c.payload, home, real)), env, encoding: 'utf8' });
   // normTs: a clock reading (12 or more digits) is {TS} in the stored and compared answers
-  const fix = (s) => { const t = s.split(pluginReal).join('{PLUGIN}').split(real).join('{HOMEREAL}').split(home).join('{HOME}'); return c.normTs ? t.replace(/[0-9]{12,}/g, '{TS}') : t; };
+  const fix = (s) => { const t = s.split(pluginReal).join('{PLUGIN}').split(real).join('{HOMEREAL}').split(home).join('{HOME}'); return c.normTs ? t.replace(/[0-9]{12,}/g, '{TS}').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g, '{ISO}') : t; };
   // a routing check's answer is a verdict plus telemetry rows: the oracle compares the verdict
   const e = c.expect.v === 'routed' ? c.expect.verdict : c.expect, out = fix(r.stdout || ''), err = fix(r.stderr || '');
   let ok;
@@ -50,7 +50,7 @@ for (const c of cases) {
   if (c.watch) {
     for (const rel of c.watch) {
       let text = null;
-      try { text = fix(fs.readFileSync(path.join(home, rel), 'utf8')).replace(/[0-9]{12,}/g, '{TS}'); } catch (_) { /* absent */ }
+      try { text = fix(fs.readFileSync(path.join(home, rel), 'utf8')).replace(/[0-9]{12,}/g, '{TS}').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g, '{ISO}'); } catch (_) { /* absent */ }
       if (text !== c.writes[rel]) { bad++; console.log('MISMATCH (file)', c.n, rel, JSON.stringify(text), JSON.stringify(c.writes[rel])); }
     }
   }

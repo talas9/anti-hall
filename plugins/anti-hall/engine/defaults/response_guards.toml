@@ -356,10 +356,6 @@ value = "Stop: the opt-in semantic judge; answers every path without a model cal
 doc = "The guard id this check answers to in skip.json."
 value = "speculation-judge"
 
-[speculation_judge.event]
-doc = "The only event this check answers."
-value = "Stop"
-
 [speculation_judge.setting]
 doc = "Where the opt-in switch is read from (jev.semanticJudge, default off)."
 value = { section = "jev", key = "semanticJudge", env = "ANTIHALL_SEMANTIC_JUDGE", aliases = [], option = "jev_semantic_judge", default = false }

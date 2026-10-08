@@ -90,6 +90,9 @@ pub static DISPATCH_TIER: Scripted = Scripted::new("dispatch-tier", "dispatch_ti
 /// `model-routing`.
 pub static MODEL_ROUTING: Scripted = Scripted::new("model-routing", "model_routing.summary");
 
+/// `speculation-judge`.
+pub static SPECULATION_JUDGE: Scripted = Scripted::new("speculation-judge", "speculation_judge.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

@@ -47,3 +47,13 @@ fn dispatch_tier_script_matches_the_compiled_port() {
 fn model_routing_script_matches_the_compiled_port() {
     golden_report("model-routing", 12);
 }
+
+#[test]
+fn speculation_judge_script_matches_the_compiled_port() {
+    golden_report("speculation-judge", 12);
+}
+
+#[test]
+fn speculation_guard_script_matches_the_compiled_port() {
+    golden_report("speculation-guard", 12);
+}
