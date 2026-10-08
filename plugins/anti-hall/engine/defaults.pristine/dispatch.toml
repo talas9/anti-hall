@@ -384,6 +384,7 @@ value = [
 doc = "The claude SubagentStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-subagent", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\"", timeout = 10, check = "verify-first-subagent" },
+  { id = "engine-role-note", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-roles\"", timeout = 10, check = "engine-role-note" },
 ]
 
 [dispatch.hooks_claude_SubagentStop]
@@ -413,6 +414,7 @@ value = [
   { id = "defect-nudge", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js\"", timeout = 10, check = "defect-nudge" },
   { id = "repair-on-reload", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
   { id = "procwatch-advisory", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "engine-role-note", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-roles\"", timeout = 10, check = "engine-role-note" },
 ]
 
 [dispatch.hooks_claude_Stop]
@@ -457,6 +459,7 @@ value = [
   { id = "ask-guard", matcher = "AskUserQuestion", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js\"", timeout = 10, check = "ask-guard" },
   { id = "stale-agent-stop-note", matcher = "TaskStop", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"", timeout = 10, check = "stale-agent-stop-note" },
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "engine-role-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-roles\"", timeout = 10, check = "engine-role-guard" },
 ]
 
 [dispatch.hooks_claude_PostToolUse]
@@ -513,6 +516,7 @@ value = [
   { id = "defect-nudge", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/defect-nudge.js\"", timeout = 10, check = "defect-nudge" },
   { id = "repair-on-reload", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
   { id = "procwatch-advisory", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "engine-role-note", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/engine-roles\"", timeout = 10, check = "engine-role-note" },
 ]
 
 [dispatch.hooks_codex_UserPromptSubmit]
@@ -543,6 +547,7 @@ value = [
   { id = "ship-it-guard", matcher = "apply_patch|Bash", command = "node \"${PLUGIN_ROOT}/hooks/ship-it-guard.js\"", timeout = 10, check = "ship-it-guard" },
   { id = "edit-guard", matcher = "apply_patch", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/edit-guard.js\"", timeout = 10, check = "edit-guard" },
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "engine-role-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/engine-roles\"", timeout = 10, check = "engine-role-guard" },
 ]
 
 [dispatch.hooks_codex_Stop]

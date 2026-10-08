@@ -190,3 +190,9 @@ pub static PROCWATCH_ADVISORY: Scripted = Scripted::new("procwatch-advisory", "p
 
 /// `agent-reminders` (UserPromptSubmit, PostToolUse; engine-only): delivers the agent tracker's queued reminders.
 pub static AGENT_REMINDERS: Scripted = Scripted::new("agent-reminders", "agent_tracker.summary");
+
+/// `engine-role-guard` (PreToolUse on Bash; engine-only).
+pub static ENGINE_ROLE_GUARD: Scripted = Scripted::new("engine-role-guard", "roles.summary_guard");
+
+/// `engine-role-note` (SessionStart and SubagentStart; engine-only).
+pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles.summary_note");

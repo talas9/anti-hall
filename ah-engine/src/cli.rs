@@ -222,6 +222,15 @@ pub fn run(args: &[String]) -> i32 {
         emit(&p, msg.clone(), json!({"error": msg, "status": info.status}));
         return 64;
     }
+    // role gate (owner feature 22): the hook path is every role's plumbing and stays out of it
+    if !hook && let Err((code, msg)) = crate::roles::gate(&p.command, &p.rest) {
+        if p.json {
+            println!("{}", json!({"error": msg}));
+        } else {
+            eprintln!("{msg}");
+        }
+        return code;
+    }
     // a read-only command (or form) writes nothing, not even the telemetry its in-process checks would leave in the state directory
     let first = p.rest.iter().find(|a| !a.starts_with("--")).map_or("", String::as_str);
     if info.read_only || info.read_only_args.iter().any(|a| a == first) || info.read_only_flags.iter().any(|f| p.rest.iter().any(|a| a == f)) {
@@ -323,6 +332,20 @@ fn cmd_docs(p: &Parsed) -> i32 {
         println!("{}", docs::json());
     } else if fmt.is_empty() || fmt == "md" {
         print!("{}", docs::markdown());
+    } else if fmt == "skill" || fmt == "skill-list" {
+        // the generated engine skill family (owner feature 22): `skill-list` prints `<path>` per file, `skill --name <n>` one file
+        let host = Some(flag(p, "host")).filter(|h| !h.is_empty()).unwrap_or_else(|| defaults::text("dispatch.default_host").to_string());
+        let family = crate::skillgen::family(&host);
+        if fmt == "skill-list" {
+            for s in &family {
+                println!("{}", s.path);
+            }
+        } else if let Some(s) = crate::skillgen::find(&host, &flag(p, "name")) {
+            print!("{}", s.text);
+        } else {
+            eprintln!("{}", defaults::render("msg.cli_unknown", &[("command", &format!("--name {}", flag(p, "name")))]));
+            return 64;
+        }
     } else {
         eprintln!("{}", defaults::render("msg.cli_unknown", &[("command", &format!("--format {fmt}"))]));
         return 64;

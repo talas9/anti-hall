@@ -36,6 +36,7 @@ SendMessage	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js"
 AskUserQuestion	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js"
 TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js"
 Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
+Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-roles"
 @SessionEnd	5
 *	5	node "${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js"
 @SessionStart	10
@@ -57,6 +58,7 @@ Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js"
 *	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-roles"
 @Stop	30
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js"
@@ -72,6 +74,7 @@ Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
 *	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep"
 @SubagentStart	10
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-roles"
 @SubagentStop	10
 *	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep"
 @TaskCompleted	10
