@@ -95,3 +95,48 @@ pub static TASKLIST_GUARD: Scripted = Scripted::new("tasklist-guard", "tasklist_
 
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
+
+/// `ask-guard` (PreToolUse on AskUserQuestion).
+pub static ASK_GUARD: Scripted = Scripted::new("ask-guard", "ask_guard.summary");
+
+/// `phase-tracker` (PreToolUse on Agent and Task; records the spawn for the statusline).
+pub static PHASE_TRACKER: Scripted = Scripted::new("phase-tracker", "phase_tracker.summary");
+
+/// `failure-root-cause-nudge` (PostToolUseFailure on Bash; advisory only).
+pub static FAILURE_ROOT_CAUSE_NUDGE: Scripted = Scripted::new("failure-root-cause-nudge", "failure_nudge.summary");
+
+/// `output-verify-guard` (PostToolUse on Bash; advisory only).
+pub static OUTPUT_VERIFY_GUARD: Scripted = Scripted::new("output-verify-guard", "output_verify.summary");
+
+/// `version-alert` (SessionStart).
+pub static VERSION_ALERT: Scripted = Scripted::new("version-alert", "session.version_alert_summary");
+
+/// `devswarm-version` (SessionStart).
+pub static DEVSWARM_VERSION: Scripted = Scripted::new("devswarm-version", "session.devswarm_summary");
+
+/// `claude-cli-version` (SessionStart).
+pub static CLAUDE_CLI_VERSION: Scripted = Scripted::new("claude-cli-version", "session.claude_cli_summary");
+
+/// `repo-self-drift` (SessionStart).
+pub static REPO_SELF_DRIFT: Scripted = Scripted::new("repo-self-drift", "session.repo_self_drift_summary");
+
+/// `defect-nudge` (SessionStart).
+pub static DEFECT_NUDGE: Scripted = Scripted::new("defect-nudge", "session.defect_nudge_summary");
+
+/// `progress-prune` (SessionStart).
+pub static PROGRESS_PRUNE: Scripted = Scripted::new("progress-prune", "session.progress_prune_summary");
+
+/// `emit-dedupe-reset` (SessionStart).
+pub static EMIT_DEDUPE_RESET: Scripted = Scripted::new("emit-dedupe-reset", "emit_dedupe.summary");
+
+/// `precompact-snapshot` (PreCompact).
+pub static PRECOMPACT_SNAPSHOT: Scripted = Scripted::new("precompact-snapshot", "codex_handover.precompact_summary");
+
+/// `limit-conserve-inject` (UserPromptSubmit).
+pub static LIMIT_CONSERVE_INJECT: Scripted = Scripted::new("limit-conserve-inject", "ctxbudget.summary_limit_conserve");
+
+/// `auto-handover` (UserPromptSubmit).
+pub static AUTO_HANDOVER: Scripted = Scripted::new("auto-handover", "ctxbudget.summary_auto_handover");
+
+/// `handover-resume` (SessionStart).
+pub static HANDOVER_RESUME: Scripted = Scripted::new("handover-resume", "codex_handover.resume_summary");

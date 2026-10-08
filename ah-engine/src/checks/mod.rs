@@ -11,7 +11,6 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod agent_scan;
-pub mod ask_guard;
 pub mod claim_ledger;
 pub mod codex;
 pub mod command;
@@ -23,7 +22,6 @@ pub mod devswarm_gates;
 pub mod devswarm_prompt;
 pub mod devswarm_role;
 pub mod emit_dedupe;
-pub mod failure_nudge;
 pub mod git;
 pub mod guardkit;
 pub mod handover;
@@ -32,8 +30,6 @@ pub mod jsport;
 pub mod mcp_reaper;
 pub mod merge_gate;
 pub mod merge_side_pick;
-pub mod output_verify;
-pub mod phase_tracker;
 pub mod replykit;
 pub mod scan_throttle;
 pub mod scripted;
@@ -190,34 +186,34 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &compact_decl::CompactDeclarationGuard,
         &command::CommandGuard,
         &scripted::MODEL_ROUTING,
-        &failure_nudge::FailureRootCauseNudge,
+        &scripted::FAILURE_ROOT_CAUSE_NUDGE,
         &scripted::GIT_AUDIT,
         &scripted::VERIFY_FIRST_SUBAGENT,
         &scripted::VERIFY_FIRST_FULL,
         &scripted::FABLE_AVAILABILITY,
         &scripted::INBOX_READ_GUARD,
-        &phase_tracker::PhaseTracker,
+        &scripted::PHASE_TRACKER,
         &scripted::ORCH_ON_SPAWN,
         &verify_first_orch::VerifyFirstOrch,
         &verify_first_orch::VerifyFirstOrchCodex,
         &verify_first_prompt::VerifyFirst,
         &idle_agent_sweep::IdleAgentSweep,
-        &emit_dedupe::EmitDedupeReset,
-        &ctxbudget::limit::LimitConserveInject,
-        &ctxbudget::handover::AutoHandover,
+        &scripted::EMIT_DEDUPE_RESET,
+        &scripted::LIMIT_CONSERVE_INJECT,
+        &scripted::AUTO_HANDOVER,
         &ctxbudget::handover::AutoHandoverPauseNag,
         &ctxbudget::advice::CompactAdviceGuard,
-        &session::version_alert::VersionAlert,
-        &session::devswarm_version::DevswarmVersion,
-        &session::claude_cli_version::ClaudeCliVersion,
-        &session::repo_self_drift::RepoSelfDrift,
-        &session::defect_nudge::DefectNudge,
-        &session::progress_prune::ProgressPrune,
+        &scripted::VERSION_ALERT,
+        &scripted::DEVSWARM_VERSION,
+        &scripted::CLAUDE_CLI_VERSION,
+        &scripted::REPO_SELF_DRIFT,
+        &scripted::DEFECT_NUDGE,
+        &scripted::PROGRESS_PRUNE,
         &scripted::SPECULATION_GUARD,
         &scripted::SPECULATION_JUDGE,
         &claim_ledger::ClaimLedger,
-        &output_verify::OutputVerifyGuard,
-        &ask_guard::AskGuard,
+        &scripted::OUTPUT_VERIFY_GUARD,
+        &scripted::ASK_GUARD,
         &scripted::SILENT_AGENT_NUDGE,
         &stale_agent_stop_note::StaleAgentStopNote,
         &merge_gate::MergeGate,
@@ -231,8 +227,8 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &codex::availability::CodexAvailability,
         &codex::detect::CodexQuotaDetect,
         &codex::nudge::CodexNudge,
-        &handover::precompact::PrecompactSnapshot,
-        &handover::resume::HandoverResume,
+        &scripted::PRECOMPACT_SNAPSHOT,
+        &scripted::HANDOVER_RESUME,
         &task_lifecycle_log::TaskLifecycleLog,
         &scripted::DISPATCH_TIER,
         &scripted::TASK_GUARD,
@@ -344,7 +340,7 @@ mod tests {
         let payload = serde_json::json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"header": "DESTRUCTIVE", "question": "q"}]}});
         let null = Value::Null;
         let subject = Subject { event: "PreToolUse", tool: Some("AskUserQuestion"), cwd: None, tool_input: &null, prompt: None };
-        let run = || run_env_guarded(&ask_guard::AskGuard, &subject, &payload, &Value::Null, &env);
+        let run = || run_env_guarded(&scripted::ASK_GUARD, &subject, &payload, &Value::Null, &env);
         let write = |text: &str| std::fs::write(home.join(".anti-hall/settings.json"), text).unwrap();
         // the baseline: a readable file with the block mode on is answered, not deferred
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);

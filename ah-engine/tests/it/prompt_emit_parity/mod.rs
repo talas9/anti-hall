@@ -30,7 +30,7 @@ fn run_corpus(name: &str, scenarios: Vec<Scn>, min_scenarios: usize, min_handled
         r.divergences.is_empty(),
         "{name}: {} divergences, first:\n{}",
         r.divergences.len(),
-        r.divergences.iter().take(12).cloned().collect::<Vec<_>>().join("\n---\n")
+        r.divergences.iter().take(40).cloned().collect::<Vec<_>>().join("\n---\n")
     );
     assert!(r.handled >= min_handled, "{name}: the engine handled only {} steps (< {min_handled}): a corpus the engine defers is not a parity test", r.handled);
     r

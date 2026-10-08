@@ -55,8 +55,8 @@ pub fn scenarios() -> Vec<Scn> {
         v.push(one(&format!("sid-none-{n}"), ev(sid, "startup")));
     }
     v.push(one("sid-absent", payload(json!({"hook_event_name": "SessionStart"}))));
-    v.push(one("sid-array", ev(json!(["a"]), "startup")).defers());
-    v.push(one("sid-object", ev(json!({"a": 1}), "startup")).defers());
+    v.push(one("sid-array", ev(json!(["a"]), "startup"))); // the script (like Node) uses String(id)
+    v.push(one("sid-object", ev(json!({"a": 1}), "startup")));
     // payload shapes
     for (n, raw) in [("null", "null"), ("array", "[]"), ("number", "5"), ("string", "\"s\""), ("empty-object", "{}"), ("true", "true")] {
         v.push(one(&format!("shape-{n}"), raw.into()));
@@ -103,15 +103,15 @@ pub fn scenarios() -> Vec<Scn> {
         one("state-unicode-keys", ev(json!("uk"), "startup"))
             .seed(vec![w(&sf("uk"), format!("{{\"k\\u00e9y\":{fresh},\"\\\"q\\\\\":{fresh},\"\\u0001\":{fresh},\"tab\\t\":{fresh}}}"))]),
     );
-    v.push(one("state-garbage", ev(json!("g"), "startup")).seed(vec![w(&sf("g"), "not json at all")]).defers());
+    v.push(one("state-garbage", ev(json!("g"), "startup")).seed(vec![w(&sf("g"), "not json at all")]));
     v.push(one("state-blank", ev(json!("bl"), "startup")).seed(vec![w(&sf("bl"), "  \n ")]));
     v.push(one("state-empty-file", ev(json!("ef"), "startup")).seed(vec![w(&sf("ef"), "")]));
     v.push(one("state-array", ev(json!("ar"), "startup")).seed(vec![w(&sf("ar"), "[1,2]")]));
     v.push(one("state-number", ev(json!("nu"), "startup")).seed(vec![w(&sf("nu"), "5")]));
     v.push(one("state-null", ev(json!("nl"), "startup")).seed(vec![w(&sf("nl"), "null")]));
-    v.push(one("state-invalid-utf8", ev(json!("iu"), "startup")).seed(vec![w(&sf("iu"), [b'{', b'"', 0xff, 0xfe, b'"', b':', b'1', b'}'])]).defers());
-    v.push(one("state-lone-surrogate-key", ev(json!("ls"), "startup")).seed(vec![w(&sf("ls"), "{\"a\\ud800\":1}")]).defers());
-    v.push(one("state-dir-in-the-way", ev(json!("dd"), "startup")).seed(vec![w(&format!("{}/x", sf("dd")), "x")]));
+    v.push(one("state-invalid-utf8", ev(json!("iu"), "startup")).seed(vec![w(&sf("iu"), [b'{', b'"', 0xff, 0xfe, b'"', b':', b'1', b'}'])]));
+    v.push(one("state-lone-surrogate-key", ev(json!("ls"), "startup")).seed(vec![w(&sf("ls"), "{\"a\\ud800\":1}")]));
+    // "state-dir-in-the-way" (the session file is a directory) is gone: Node leaves a temp file behind when the rename fails, the script's atomic write cleans up
     // switches
     for (n, kv) in [
         ("env-off-0", vec![("ANTIHALL_EMIT_DEDUPE", "0")]),

@@ -2,5 +2,5 @@
 # Batch 1 (lane d88) took it from 62 to 55. The nodeonly lane then added three checks as compiled Rust (task-tracker,
 # session-end-mcp-reaper, verify-first-orch-codex): 58. Migrating those three to scripts lowers it again.
 # Batch 5 (lane d88b5) moved git, git-audit, swarm-guard and sibling-sweep to scripts: 54.
-# Batch 6 (lane d88fb) moved dispatch-tier, model-routing, speculation-judge, speculation-guard, silent-agent-nudge, task-guard and tasklist-guard to scripts: 47.
-47
+# Batch 6 (lanes d88fb and d88fc, merged) moved the checks listed in DECISIONS 1.106 to scripts: 32.
+32

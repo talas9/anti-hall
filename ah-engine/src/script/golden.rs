@@ -5,7 +5,12 @@
 //!
 //! Placeholders in every string of a case: `{HOME}` is the case's fresh home directory, `{HOMEREAL}` its canonical path,
 //! `{PLUGIN}` the canonical plugin root (for a check whose answer names it).
-//! `files` maps a path under the home to its text, or to `{"link": target}` (a symbolic link) or `{"dir": true}`.
+//! `files` maps a path under the home to its text, or to `{"link": target}` (a symbolic link), `{"dir": true}` or
+//! `{"text": t, "age_ms": n}` (a file last modified `n` ms before the case's clock).
+//!
+//! Time: a case runs at a pinned clock ([`NOW0`], the script's `ah.clock.now()`); a string may carry `{MS:-300000}` (that many
+//! ms from the clock, as a number), `{ISO:-300000}` (its ISO text) or `{HM:-300000}` (its `hh:mm UTC` text). An answer is stored
+//! with the same tokens, so the corpus does not depend on the day it is replayed.
 use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -26,22 +31,62 @@ fn plugin() -> String {
     std::fs::canonicalize(root).unwrap().to_string_lossy().into_owned()
 }
 
-fn fill(s: &str, home: &str, real: &str) -> String {
-    super::expand_now(&s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home), crate::checks::replykit::io::now_ms())
+/// The pinned clock a golden case runs at (the script's `ah.clock.now()`); generation uses the real time instead.
+pub const NOW0: f64 = 1_790_000_000_000.0;
+
+fn time_tokens(s: &str) -> Vec<(String, String, i64)> {
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = R.get_or_init(|| regex::Regex::new(r"\{(MS|ISO|HM|DATE|LDATE):(-?[0-9]+)\}").unwrap());
+    re.captures_iter(s).map(|c| (c[0].to_string(), c[1].to_string(), c[2].parse().unwrap())).collect()
 }
 
-fn sub(v: &Value, home: &str, real: &str) -> Value {
+fn time_text(kind: &str, now: f64, off: i64) -> String {
+    let t = now + off as f64;
+    match kind {
+        "MS" => format!("{}", t as i64),
+        "ISO" => crate::checks::agent_scan::iso_utc(t),
+        "DATE" => crate::checks::agent_scan::iso_utc(t)[..10].to_string(),
+        "LDATE" => {
+            // the machine's local calendar date (what a hook that names a directory after "today" sees)
+            let v: Value = serde_json::from_str(&super::host_b3::local_time(t)).unwrap();
+            format!("{:04}-{:02}-{:02}", v["year"].as_i64().unwrap(), v["month"].as_i64().unwrap(), v["day"].as_i64().unwrap())
+        }
+        _ => crate::checks::agent_scan::hhmm(t),
+    }
+}
+
+fn fill_time(s: &str, now: f64) -> String {
+    let mut out = s.to_string();
+    for (tok, kind, off) in time_tokens(s) {
+        out = out.replace(&tok, &time_text(&kind, now, off));
+    }
+    out
+}
+
+fn fill(s: &str, home: &str, real: &str, now: f64) -> String {
+    // `{HOMEENC}`: the real home path as the host names a project directory (`/`, `\\`, `:` and `.` become `-`)
+    let enc: String = real.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '.') { '-' } else { c }).collect();
+    // `{NOW}`, `{NOW-<ms>}`, `{ISO..}`, `{DATE..}` (no colon) are the other token family: see `script::expand_now`
+    super::expand_now(&fill_time(&s.replace("{PLUGIN}", &plugin()).replace("{HOMEENC}", &enc).replace("{HOMEREAL}", real).replace("{HOME}", home), now), now)
+}
+
+fn sub(v: &Value, home: &str, real: &str, now: f64) -> Value {
     match v {
-        Value::String(s) => Value::String(fill(s, home, real)),
-        Value::Array(a) => Value::Array(a.iter().map(|x| sub(x, home, real)).collect()),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (fill(k, home, real), sub(x, home, real))).collect()),
+        Value::String(s) => Value::String(fill(s, home, real, now)),
+        Value::Array(a) => Value::Array(a.iter().map(|x| sub(x, home, real, now)).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (fill(k, home, real, now), sub(x, home, real, now))).collect()),
         other => other.clone(),
     }
 }
 
-/// The inverse of [`sub`] for an answer (canonical path first: it contains the plain one).
-fn unsub(s: &str, home: &str, real: &str) -> String {
-    s.replace(&plugin(), "{PLUGIN}").replace(real, "{HOMEREAL}").replace(home, "{HOME}")
+/// The inverse of [`sub`] for an answer (canonical path first: it contains the plain one; then the time texts the case's
+/// tokens produced, longest first).
+fn unsub(s: &str, home: &str, real: &str, times: &[(String, String)]) -> String {
+    let mut out = s.replace(&plugin(), "{PLUGIN}").replace(real, "{HOMEREAL}").replace(home, "{HOME}");
+    for (text, tok) in times {
+        out = out.replace(text, tok);
+    }
+    out
 }
 
 /// A case laid out on disk: `(payload, opts, event, env, home, real home)`.
@@ -52,13 +97,28 @@ pub struct Laid {
     pub env: RequestEnv,
     pub home: String,
     pub real: String,
-    /// The case sets `normTs`: runs of 12 or more digits (a clock reading) are `{TS}` in its stored and compared answers.
+    /// The clock the case was laid out at.
+    pub now: f64,
+    /// `(text, token)` for every time token of the case, longest text first.
+    pub times: Vec<(String, String)>,
+    /// The case's `vmask`: regular expressions whose matches in an answer's text are not compared.
+    pub vmask: Vec<String>,
+    /// The case sets `normTs`: runs of 12 or more digits (a clock reading) are `{TS}` in its stored and compared answers, and
+    /// the case runs at the real clock.
     pub norm: bool,
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn lay(case: &Value) -> Laid {
+    let norm = case.get("normTs").and_then(Value::as_bool).unwrap_or(false);
+    lay_at(case, if norm { crate::checks::replykit::io::now_ms() } else { NOW0 })
+}
+
+pub fn lay_at(case: &Value, now: f64) -> Laid {
+    let mut times: Vec<(String, String)> = time_tokens(&case.to_string()).into_iter().map(|(tok, kind, off)| (time_text(&kind, now, off), tok)).collect();
+    times.sort_by_key(|(t, _)| std::cmp::Reverse(t.len()));
+    times.dedup();
     let home = std::env::temp_dir().join(format!("ah-golden-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
     crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(&home).unwrap();
@@ -66,15 +126,22 @@ pub fn lay(case: &Value) -> Laid {
     let home = home.to_string_lossy().into_owned();
     if let Some(files) = case.get("files").and_then(Value::as_object) {
         for (rel, spec) in files {
-            let path = Path::new(&home).join(rel.replace("{HOME}/", ""));
+            let path = Path::new(&home).join(fill_time(&rel.replace("{HOME}/", ""), now));
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).unwrap();
             }
             match spec {
-                Value::String(t) => std::fs::write(&path, fill(t, &home, &real)).unwrap(),
+                Value::String(t) => std::fs::write(&path, fill(t, &home, &real, now)).unwrap(),
                 Value::Object(o) if o.contains_key("link") => {
-                    let target = fill(o["link"].as_str().unwrap(), &home, &real);
+                    let target = fill(o["link"].as_str().unwrap(), &home, &real, now);
                     std::os::unix::fs::symlink(target, &path).unwrap();
+                }
+                Value::Object(o) if o.contains_key("text") => {
+                    std::fs::write(&path, fill(o["text"].as_str().unwrap(), &home, &real, now)).unwrap();
+                    if let Some(age) = o.get("age_ms").and_then(Value::as_f64) {
+                        let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis((now - age).max(0.0) as u64);
+                        std::fs::File::options().write(true).open(&path).unwrap().set_modified(at).unwrap();
+                    }
                 }
                 _ => std::fs::create_dir_all(&path).unwrap(),
             }
@@ -83,16 +150,19 @@ pub fn lay(case: &Value) -> Laid {
     let env: Vec<(String, String)> = case
         .get("env")
         .and_then(Value::as_object)
-        .map(|o| o.iter().map(|(k, v)| (k.clone(), fill(v.as_str().unwrap_or_default(), &home, &real))).collect())
+        .map(|o| o.iter().map(|(k, v)| (k.clone(), fill(v.as_str().unwrap_or_default(), &home, &real, now))).collect())
         .unwrap_or_default();
     Laid {
-        payload: sub(case.get("payload").unwrap_or(&Value::Null), &home, &real),
-        opts: sub(case.get("opts").unwrap_or(&Value::Null), &home, &real),
+        payload: sub(case.get("payload").unwrap_or(&Value::Null), &home, &real, now),
+        opts: sub(case.get("opts").unwrap_or(&Value::Null), &home, &real, now),
         event: case.get("event").and_then(Value::as_str).unwrap_or("PreToolUse").to_string(),
         env: RequestEnv::from_pairs(env),
         home,
         real,
+        now,
+        times,
         norm: case.get("normTs").and_then(Value::as_bool).unwrap_or(false),
+        vmask: case.get("vmask").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
     }
 }
 
@@ -160,7 +230,13 @@ fn iso_ts(text: &str) -> String {
 
 /// The verdict as the corpus stores it, with the case's directories replaced by their placeholders.
 pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
-    let u = |s: &str| if l.norm { norm_ts(&unsub(s, &l.home, &l.real), true) } else { unsub(s, &l.home, &l.real) };
+    let u = |s: &str| {
+        let mut t = unsub(s, &l.home, &l.real, &l.times);
+        for m in &l.vmask {
+            t = regex::Regex::new(m).unwrap().replace_all(&t, "{V*}").into_owned();
+        }
+        if l.norm { norm_ts(&t, true) } else { t }
+    };
     match v {
         None => json!({"v": "none"}),
         Some(Verdict::Allow) => json!({"v": "allow"}),
@@ -181,14 +257,44 @@ pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
                 .collect();
             json!({"v": "routed", "verdict": verdict_json(&Some((**inner).clone()), l), "meta": m})
         }
+        Some(other) => json!({"v": format!("{other:?}")}),
     }
 }
 
 /// The text of a watched file with its timestamps (runs of 12 or more digits) replaced by `{TS}`, or `null` when absent.
-fn watched(home: &str, real: &str, rel: &str, full: bool) -> Value {
-    let Ok(text) = std::fs::read_to_string(Path::new(home).join(rel)) else { return Value::Null };
-    let out = norm_ts(&unsub(&text, home, real), full);
-    Value::String(out)
+fn watched(home: &str, real: &str, times: &[(String, String)], mask_iso: bool, masks: &[String], rel: &str, full: bool) -> Value {
+    let Ok(mut text) = std::fs::read_to_string(Path::new(home).join(rel)) else { return Value::Null };
+    if mask_iso {
+        // a case flagged `mask_iso`: the written clock readings (ISO texts) are not compared, only that one was written; they are
+        // masked before the case's own time tokens are turned back, or a date inside an ISO text would be tokenized first
+        static R0: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        text = R0.get_or_init(|| regex::Regex::new(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z").unwrap()).replace_all(&text, "{ISO*}").into_owned();
+        // the Jev log row names the project of the PROCESS's working directory, which differs between runs and runners
+        static P: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        text = P.get_or_init(|| regex::Regex::new(r#""project":"[^"]*""#).unwrap()).replace_all(&text, r#""project":"{P*}""#).into_owned();
+    }
+    let mut text = unsub(&text, home, real, times);
+    for m in masks {
+        // a case's own `mask` list: regular expressions whose matches are not compared (values that depend on the day or the path)
+        text = regex::Regex::new(m).unwrap().replace_all(&text, "{M*}").into_owned();
+    }
+    let mut out = String::new();
+    let mut run = String::new();
+    for ch in text.chars().chain(std::iter::once('\0')) {
+        if ch.is_ascii_digit() {
+            run.push(ch);
+            continue;
+        }
+        out.push_str(if run.len() >= 12 { "{TS}" } else { &run });
+        run.clear();
+        if ch != '\0' {
+            out.push(ch);
+        }
+    }
+    // a time with a fraction of a millisecond (a modification time Node read with its nanoseconds): the fraction is not compared
+    static F: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let out = F.get_or_init(|| regex::Regex::new(r"\{TS\}\.[0-9]+").unwrap()).replace_all(&out, "{TS}").into_owned();
+    Value::String(if full { day_ts(&iso_ts(&out)) } else { out })
 }
 
 /// What a case's `watch` files hold after a run: `{rel: text-with-{TS}-or-null}`.
@@ -197,8 +303,26 @@ pub fn watched_all_pub(case: &Value, l: &Laid) -> Value {
 }
 
 fn watched_all(case: &Value, l: &Laid) -> Value {
+    let masks: Vec<String> = case.get("mask").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
     let rels: Vec<&str> = case.get("watch").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    Value::Object(rels.iter().map(|r| (r.to_string(), watched(&l.home, &l.real, &super::expand_now(r, crate::checks::replykit::io::now_ms()), l.norm))).collect())
+    Value::Object(rels.iter().map(|r| (r.to_string(), watched(&l.home, &l.real, &l.times, case.get("mask_iso").and_then(Value::as_bool).unwrap_or(false), &masks, &super::expand_now(&fill_time(r, l.now), l.now), l.norm))).collect())
+}
+
+/// The script's answer to a laid-out case, at the case's pinned clock.
+pub fn run_case(check: &str, l: &Laid, repeat: usize) -> Option<Option<Verdict>> {
+    super::host::set_clock(Some(l.now));
+    // `repeat` runs: the earlier ones only leave their state behind, the last one is the answer
+    for _ in 1..repeat {
+        let _ = run_forced(check, &l.payload, &l.opts, &l.event, &l.env);
+    }
+    let got = run_forced(check, &l.payload, &l.opts, &l.event, &l.env);
+    super::host::set_clock(None);
+    got
+}
+
+/// How many times a case runs on the same home (`"repeat"`, default 1).
+pub fn repeat_of(case: &Value) -> usize {
+    case.get("repeat").and_then(Value::as_u64).map_or(1, |n| n.max(1) as usize)
 }
 
 /// Every case's answer from the script, against its stored `expect`. Returns the number of cases and of each kind.
@@ -208,7 +332,7 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
     assert!(cases.len() >= 20, "{check}: a golden corpus of real size");
     for c in &cases {
         let l = lay(c);
-        let got = run_forced(check, &l.payload, &l.opts, &l.event, &l.env).unwrap_or_else(|| panic!("{check}: no shipped script"));
+        let got = run_case(check, &l, repeat_of(c)).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = verdict_json(&got, &l);
         assert_eq!(
             got,
@@ -231,9 +355,13 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
 #[allow(dead_code)]
 pub fn regenerate(check: &str, compiled: &dyn Fn(&Laid) -> Option<Verdict>) {
     let mut out = String::new();
+    let real_now = crate::checks::replykit::io::now_ms();
     for c in load(check) {
-        let l = lay(&c);
+        let l = lay_at(&c, real_now);
         let mut c = c;
+        for _ in 1..repeat_of(&c) {
+            let _ = compiled(&l);
+        }
         c["expect"] = verdict_json(&compiled(&l), &l);
         if c.get("watch").is_some() {
             c["writes"] = watched_all(&c, &l);
