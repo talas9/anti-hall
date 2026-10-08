@@ -27,6 +27,9 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod host;
+pub mod host_b3;
+mod host_io;
+pub mod sysmem;
 
 use crate::checks::git::util::Settings;
 use crate::checks::{Exact, Verdict};
@@ -126,6 +129,12 @@ fn resolve(name: &str, home: &str) -> Option<Fingerprint> {
         }
     }
     let mut fp: Fingerprint = libs.into_values().collect();
+    // scripts the owner's configuration says this check builds on (`script.includes`: check name to script names), loaded as
+    // libraries after the shared helpers and before the check's own script, which may then redefine the entry
+    let includes: Vec<String> = defaults::raw("script.includes").get(name).map(|v| v.strings().into_iter().map(str::to_string).collect()).unwrap_or_default();
+    for inc in includes {
+        fp.push(ds.iter().find_map(|d| file_id(&d.join(format!("{inc}{ext}"))))?);
+    }
     fp.push(script);
     Some(fp)
 }
@@ -229,6 +238,7 @@ fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str
         let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
         let limit = defaults::num("script.time_limit_ms").saturating_mul(1_000_000);
         host::with_call(st, || {
+            host::set_deadline(Some(pool.deadline.clone()));
             pool.deadline.store((pool.epoch.elapsed().as_nanos() as u64).saturating_add(limit).max(1), Ordering::Relaxed);
             let out = ctx.with(|c| -> Result<String, String> {
                 let f: Function = c.globals().get(defaults::text("script.entry")).catch(&c).map_err(|e| e.to_string())?;
@@ -242,6 +252,7 @@ fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str
                 Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
             });
             pool.deadline.store(0, Ordering::Relaxed);
+            host::set_deadline(None);
             let text = out?;
             let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
             verdict_of(&v)
@@ -262,3 +273,5 @@ pub fn p95_budget_us() -> u64 {
 mod golden;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_host;

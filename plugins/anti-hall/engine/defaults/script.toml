@@ -144,3 +144,54 @@ doc = "1: a scripted write fsyncs the file before the atomic rename (survives a 
 value = 0
 min = 0
 max = 1
+
+[script.readdir_max]
+doc = "Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole)."
+value = 10000
+min = 16
+
+[script.exec_programs]
+doc = "Program names `ah.exec` may run (bare names, resolved through the request's PATH). Anything else answers null."
+value = ["git"]
+
+[script.exec_timeout_max_ms]
+doc = "Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit."
+value = 5000
+min = 10
+unit = "ms"
+
+[script.exec_poll_ms]
+doc = "How often the bounded runner checks whether an `ah.exec` child has finished."
+value = 2
+min = 1
+unit = "ms"
+
+[script.exec_max_calls]
+doc = "Most `ah.exec` runs one script call may start; past it the call answers null."
+value = 64
+min = 1
+
+[script.exec_output_max_bytes]
+doc = "Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set."
+value = 4194304
+min = 1024
+unit = "bytes"
+
+[script.tail_max_bytes]
+doc = "Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for."
+value = 16777216
+min = 65536
+unit = "bytes"
+
+[script.includes]
+doc = "Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable."
+value = { git-audit = ["git"] }
+
+[script.sweep_max_remove]
+doc = "Most files one `ah.state.sweep` call may delete, whatever the script asks for."
+value = 200
+min = 1
+
+[script.msg_unknown_op]
+doc = "Error a script sees when it asks a file operation the host does not have. Placeholder: {op}."
+value = "unknown file operation {op}"
