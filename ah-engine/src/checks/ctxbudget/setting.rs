@@ -24,7 +24,7 @@ pub enum Sv {
     Bool(bool),
     /// A number.
     Num(f64),
-    /// An enum word (lower case).
+    /// An enum word (lower case), or a text (`csv`, `string`: trimmed).
     Str(String),
 }
 
@@ -126,6 +126,7 @@ fn coerce_str(e: &V, raw: &str) -> Option<Sv> {
             let w = t.to_lowercase();
             e.get("values").map(V::strings).unwrap_or_default().contains(&w.as_str()).then_some(Sv::Str(w))
         }
+        "str" => Some(Sv::Str(t.to_string())),
         _ => None,
     }
 }
@@ -134,10 +135,16 @@ fn coerce_str(e: &V, raw: &str) -> Option<Sv> {
 fn coerce_value(e: &V, v: &Value) -> Option<Sv> {
     match v {
         Value::String(s) => coerce_str(e, s),
-        Value::Bool(b) => (e.str_field("kind") == "bool").then_some(Sv::Bool(*b)),
+        Value::Bool(b) => match e.str_field("kind") {
+            "bool" => Some(Sv::Bool(*b)),
+            "str" => Some(Sv::Str(b.to_string())),
+            _ => None,
+        },
         Value::Number(n) => match e.str_field("kind") {
             "bool" => coerce_json(v).map(Sv::Bool),
             "num" => n.as_f64().filter(|f| f.is_finite()).map(|f| Sv::Num(clamp(e, f))),
+            // `String(n)`
+            "str" => n.as_f64().map(|f| Sv::Str(crate::checks::replykit::json::js_number(f))),
             _ => None,
         },
         _ => None,

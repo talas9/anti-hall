@@ -8,14 +8,14 @@ fn st(home: &str) -> Settings {
 #[test]
 fn no_transcript_path_does_nothing() {
     for p in [json!({}), json!(null), json!({"transcript_path": ""}), json!({"transcript_path": 5})] {
-        assert_eq!(decide(&p, &st("/nonexistent-home")), Verdict::Allow, "{p}");
+        assert_eq!(decide(&p, &st("/nonexistent-home"), ""), Verdict::Allow, "{p}");
     }
 }
 
 #[test]
 fn plan_mode_prints_the_advisory_and_never_blocks() {
     let p = json!({"permission_mode": "Plan", "transcript_path": "/x"});
-    match decide(&p, &st("/h")) {
+    match decide(&p, &st("/h"), "") {
         Verdict::Exact(x) => {
             assert_eq!(x.code, 0);
             assert!(x.out.starts_with("[tasklist-guard] PLAN MODE") && x.out.ends_with(".\n"), "{:?}", x.out);
