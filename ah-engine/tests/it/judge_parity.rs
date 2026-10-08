@@ -373,6 +373,13 @@ fn the_speculation_judge_makes_the_same_cli_call_and_decision_as_node() {
                 failures.push(format!("{who}: {side} left {left:?} in its temporary directory"));
             }
         }
+        // D88: the model call is the Node hook's; the speculation-judge script answers every path without one and defers the rest
+        if c.calls > 0 {
+            if !eo.iter().all(|o| o.0 == 0 && o.1.contains("AHFALLBACK")) || !ec.is_empty() {
+                failures.push(format!("{who}: the engine must defer without calling the model: {eo:?} calls={}", ec.len()));
+            }
+            continue;
+        }
         if no != eo {
             failures.push(format!("{who}: output differs\n  node  ={no:?}\n  engine={eo:?}"));
         }
@@ -468,7 +475,7 @@ fn plugin_with(edit: impl Fn(String) -> String) -> PathBuf {
 }
 
 #[test]
-fn a_judge_that_runs_past_its_timeout_is_killed_and_allows() {
+fn a_judge_call_is_left_to_node_so_the_engine_never_waits_for_the_model() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = plugin_with(|t| {
         t.replace("[speculation_judge.timeout_ms]\ndoc = ", "[speculation_judge.timeout_ms]\nvalue = 2000\ndoc = ").replace("\nvalue = 25000\n", "\n")
@@ -477,13 +484,10 @@ fn a_judge_that_runs_past_its_timeout_is_killed_and_allows() {
     c.env = vec![("FAKE_CLAUDE_SLEEP", "8".into())];
     let started = Instant::now();
     let e = judge_side(&c, true, Some(&root));
-    assert!(started.elapsed() < Duration::from_secs(6), "the call was not cut at its timeout: {:?}", started.elapsed());
-    assert_eq!((e.outs[0].0, e.outs[0].1.as_str()), (0, ""), "{:?}", e.outs);
-    assert_eq!(e.calls.len(), 1);
-    assert!(e.tree.is_empty(), "no state on a timeout: {:?}", e.tree);
-    assert_eq!(e.telemetry.len(), 1);
-    assert_eq!(e.telemetry[0]["error"], "timeout");
-    assert!(e.leftover.is_empty(), "the private directory is removed after a timeout: {:?}", e.leftover);
+    // the script never waits on a model: it defers at once and the Node hook owns the call and its timeout
+    assert!(started.elapsed() < Duration::from_secs(6), "the engine waited for the model: {:?}", started.elapsed());
+    assert!(e.outs[0].1.contains("AHFALLBACK"), "{:?}", e.outs);
+    assert!(e.calls.is_empty() && e.tree.is_empty() && e.telemetry.is_empty(), "no call, no state: {:?}", e.calls.len());
     ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
 }
 
