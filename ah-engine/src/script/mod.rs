@@ -313,7 +313,7 @@ pub fn p95_budget_for(check: &str) -> u64 {
 }
 
 /// `{NOW}`, `{NOW-<ms>}` and `{NOW+<ms>}` become the current time in milliseconds since the epoch, `{ISO}`, `{ISO-<ms>}` and
-/// `{ISO+<ms>}` the same instant as an ISO-8601 UTC text: a case can place an event a fixed distance from the moment it is
+/// `{ISO+<ms>}` the same instant as an ISO-8601 UTC text, `{DATE}` its UTC calendar day (`YYYY-MM-DD`): a case can place an event a fixed distance from the moment it is
 /// replayed, so a check that compares times against the clock answers the same today and in a year.
 pub fn expand_now(s: &str, now_ms: f64) -> String {
     let mut out = String::with_capacity(s.len());
@@ -330,6 +330,7 @@ pub fn expand_now(s: &str, now_ms: f64) -> String {
             match (kind, delta) {
                 ("NOW", Some(d)) => Some((close, format!("{}", (now_ms + d) as i64))),
                 ("ISO", Some(d)) => Some((close, crate::checks::agent_scan::iso_utc(now_ms + d))),
+                ("DATE", Some(d)) => Some((close, crate::checks::agent_scan::iso_utc(now_ms + d)[..10].to_string())),
                 _ => None,
             }
         });
