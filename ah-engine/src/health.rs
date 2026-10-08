@@ -116,6 +116,11 @@ pub fn log_event(kind: &str, code: &str, detail: &str) {
     }
 }
 
+/// Append an event; false when it could not be written (the caller keeps it to try again).
+pub fn try_log_event(kind: &str, code: &str, detail: &str) -> bool {
+    append_event_line(&event_line(kind, code, detail)).is_ok()
+}
+
 /// Append an event, or write the exact sanitized event line to stderr when the state-dir log is unavailable for any reason.
 pub fn log_event_or_stderr(kind: &str, code: &str, detail: &str) {
     let line = event_line(kind, code, detail);

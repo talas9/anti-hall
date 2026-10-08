@@ -517,6 +517,20 @@ Whole-file state goes through `crate::atomic` (temporary file beside the target,
 - **Not state:** lock files (`guardkit/nodelock.rs`, `guardkit/filelock.rs`, unchanged), the dispatcher's empty done marker, the backup manifest written before the backup is published, the one-time backup copy of an edited defaults file, the doctor self-test's scratch fixtures, the developer generators under `src/bin`.
 - **The event log** is appended under a shared lock on `<log>.lock` and trimmed under the exclusive one, the trim replacing the log through `crate::atomic` (review finding 9); the stop-loop counter is read and rewritten under an exclusive lock on `<counter>.lock` (finding 11).
 
+## Daemon lifetime bounds (lane errfix, 2026-10-08)
+
+Test runs left 48 `ah-engine serve` daemons running for hours: a test removed its state dir before its teardown could find
+the run marker (or never reaped on a panic), and with `daemon.idle_exit_s` = 0 nothing ever ended them. Now:
+
+- **Footing check:** every `daemon.orphan_check_ms` a daemon checks that its state dir, its lock file (same inode) and its
+  executable still exist; once one is gone it drains and exits (`exit/orphaned` in the log).
+- **Idle exit on by default:** `daemon.idle_exit_s` = 21600 (6 h without a request). This amends D7 (resident with no
+  session open): a normal pause keeps the scheduler and mailbox running; after that the next hook starts a fresh daemon
+  and the scheduler catches up its missed jobs. 0 still keeps a daemon resident.
+- **Teardown:** `tests/common::reap` falls back to the pid in the lock file when the run marker is gone (and only signals
+  a pid that is an `ah-engine serve`); every test env that can start a daemon reaps it in its `Drop` before removing its
+  dir. `reliability::no_daemon_of_this_build_outlives_its_test_run` fails on a leak from an earlier run.
+
 ## Revision log
 
 - **1.0** (2026-10-04): initial record, D1–D43.
