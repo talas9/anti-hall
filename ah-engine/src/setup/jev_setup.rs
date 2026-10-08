@@ -142,6 +142,7 @@ fn lock_params() -> nodelock::Params {
         release_tries: defaults::num("setup.lock_release_tries"),
         release_step_ms: defaults::num("setup.lock_release_step_ms"),
         boot_slop_s: defaults::num("setup.lock_boot_slop_s"),
+        steal_dead: false,
     }
 }
 

@@ -41,6 +41,9 @@ pub struct Params {
     pub release_step_ms: u64,
     /// Two boot times closer than this many seconds are the same boot.
     pub boot_slop_s: u64,
+    /// Take over a lock whose holder is a dead process at once, whatever its age (Node's `stealDead`; the per-workspace
+    /// lock of `recovery.js` sets it, the swarm-guard does not).
+    pub steal_dead: bool,
 }
 
 impl Params {
@@ -54,6 +57,7 @@ impl Params {
             release_tries: defaults::num("swarm_guard.lock_release_tries"),
             release_step_ms: defaults::num("swarm_guard.lock_release_step_ms"),
             boot_slop_s: defaults::num("swarm_guard.lock_boot_slop_s"),
+            steal_dead: false,
         }
     }
 }
@@ -324,8 +328,10 @@ fn release_unguarded(path: &str, token: &str) -> bool {
     false
 }
 
+/// `shouldSteal` for the policies in use: the live-holder limit equals `stale_ms` in both callers, so a dead holder
+/// (with `steal_dead`) or any holder older than `stale_ms` is taken over.
 fn stealable(h: &Holder, p: &Params) -> bool {
-    h.age_ms > p.stale_ms as f64
+    (p.steal_dead && h.dead) || h.age_ms > p.stale_ms as f64
 }
 
 /// `acquire(path, ...)`: `None` when the lock could not be taken (the caller fails open).

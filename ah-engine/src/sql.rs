@@ -305,3 +305,82 @@ pub const MESH_PREVIEW: &str =
 pub const MESH_READER_CURSORS: &str = "SELECT partition, ns, reader, value, retired_line, updated_at FROM reader_cursors WHERE partition = ?1";
 /// The newest message of one workspace, without its body: when and what, for the unread summary.
 pub const MESH_LAST_META: &str = "SELECT ts, seq, sender, recipient, mtype FROM messages WHERE workspace_id = ?1 ORDER BY id DESC LIMIT 1";
+
+// ---- the DevSwarm mesh store WRITER (D45 stage 2): Node's own schema and write statements, byte for byte -----------
+// Every statement below is the text `companion/lib/devswarm-store.js` (sqlite backend) runs, so the engine and Node can
+// write one store side by side: the same DDL (a store the engine creates is identical to one Node creates), the same
+// AUTOINCREMENT/seq/write_seq arithmetic inside one statement, and the same MAX-only reader-cursor upsert.
+
+/// Node's `messages` table.
+pub const MESHW_DDL_MESSAGES: &str = "CREATE TABLE IF NOT EXISTS messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL, ts INTEGER NOT NULL, hash TEXT, body TEXT, sender TEXT, recipient TEXT, mtype TEXT, urgency TEXT, is_heartbeat INTEGER, needs_reply INTEGER, orig_hash TEXT, instance_nonce TEXT, seq INTEGER, UNIQUE(hash));";
+/// Node's needs-reply index.
+pub const MESHW_DDL_NEEDS_REPLY_INDEX: &str = "CREATE INDEX IF NOT EXISTS idx_messages_needs_reply ON messages (workspace_id, needs_reply);";
+/// Node's `registry` table.
+pub const MESHW_DDL_REGISTRY: &str = "CREATE TABLE IF NOT EXISTS registry ( id TEXT PRIMARY KEY, worktree_path TEXT, session_id TEXT, inbox_path TEXT, cursor_path TEXT, nudge_command TEXT, updated_at INTEGER, write_seq INTEGER);";
+/// Node's `cursors` table.
+pub const MESHW_DDL_CURSORS: &str = "CREATE TABLE IF NOT EXISTS cursors ( workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER);";
+/// Node's `gates` table.
+pub const MESHW_DDL_GATES: &str = "CREATE TABLE IF NOT EXISTS gates ( id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL, gate_name TEXT NOT NULL, value INTEGER NOT NULL, set_at INTEGER, set_by TEXT);";
+/// Node's `broadcast_cursors` table.
+pub const MESHW_DDL_BROADCAST_CURSORS: &str =
+    "CREATE TABLE IF NOT EXISTS broadcast_cursors ( workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER);";
+/// Node's `reader_cursors` table.
+pub const MESHW_DDL_READER_CURSORS: &str = "CREATE TABLE IF NOT EXISTS reader_cursors ( partition TEXT NOT NULL, ns TEXT NOT NULL CHECK (ns IN ('store','nd')), reader TEXT NOT NULL, value INTEGER NOT NULL CHECK (value >= 0), retired_line INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (partition, ns, reader)) WITHOUT ROWID;";
+/// Column names of a table (`PRAGMA table_info`), for Node's additive migrations.
+pub const MESHW_TABLE_INFO_MESSAGES: &str = "PRAGMA table_info(messages);";
+/// Column names of the registry.
+pub const MESHW_TABLE_INFO_REGISTRY: &str = "PRAGMA table_info(registry);";
+/// `appendMeshRow` with a hash: a duplicate hash is ignored; the mesh seq is computed inside the statement.
+pub const MESHW_APPEND_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
+/// `appendMeshRow` without a hash.
+pub const MESHW_APPEND: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
+/// The seq of the row just inserted.
+pub const MESHW_SEQ_OF_ID: &str = "SELECT seq FROM messages WHERE id = ?;";
+/// `upsertRegistry`'s id-collision probe.
+pub const MESHW_REGISTRY_PATH_OF: &str = "SELECT worktree_path FROM registry WHERE id = ?;";
+/// `upsertRegistry` on a store with `write_seq`.
+pub const MESHW_REGISTRY_UPSERT: &str = "INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq) VALUES (?, ?, ?, ?, ?, ?, ?, 1) ON CONFLICT(id) DO UPDATE SET worktree_path=excluded.worktree_path, session_id=excluded.session_id, inbox_path=excluded.inbox_path, cursor_path=excluded.cursor_path, nudge_command=excluded.nudge_command, updated_at=excluded.updated_at, write_seq=COALESCE(registry.write_seq,0)+1;";
+/// `upsertRegistry` on a store without `write_seq`.
+pub const MESHW_REGISTRY_UPSERT_LEGACY: &str = "INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET worktree_path=excluded.worktree_path, session_id=excluded.session_id, inbox_path=excluded.inbox_path, cursor_path=excluded.cursor_path, nudge_command=excluded.nudge_command, updated_at=excluded.updated_at;";
+/// `setCursor`.
+pub const MESHW_SET_CURSOR: &str = "INSERT INTO cursors (workspace_id, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;";
+/// `setBroadcastCursor` and the write half of `advanceBroadcastCursor`.
+pub const MESHW_SET_BROADCAST_CURSOR: &str = "INSERT INTO broadcast_cursors (workspace_id, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;";
+/// The head of the broadcast partition (`advanceBroadcastCursor`).
+pub const MESHW_BROADCAST_HEAD: &str = "SELECT MAX(seq) AS m FROM messages WHERE mtype = 'broadcast';";
+/// `readerCursorTxn`'s put: the value only ever rises; `retired_line` is replaced only when the record carries it.
+pub const MESHW_READER_CURSOR_PUT: &str = "INSERT INTO reader_cursors (partition, ns, reader, value, retired_line, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(partition, ns, reader) DO UPDATE SET value = MAX(value, excluded.value), retired_line = CASE WHEN ? THEN excluded.retired_line ELSE retired_line END, updated_at = excluded.updated_at;";
+/// Begin Node's reader-cursor write transaction.
+pub const MESHW_BEGIN_IMMEDIATE: &str = "BEGIN IMMEDIATE;";
+/// Commit it.
+pub const MESHW_COMMIT: &str = "COMMIT;";
+/// Roll it back.
+pub const MESHW_ROLLBACK: &str = "ROLLBACK;";
+/// Node's additive `messages` migration, followed by `<name> <type>;` for each missing column.
+pub const MESHW_ALTER_MESSAGES_ADD: &str = "ALTER TABLE messages ADD COLUMN ";
+/// Node's additive `registry` migration.
+pub const MESHW_ALTER_REGISTRY_WRITE_SEQ: &str = "ALTER TABLE registry ADD COLUMN write_seq INTEGER;";
+/// Node's WAL journal pragma.
+pub const MESHW_JOURNAL_WAL: &str = "PRAGMA journal_mode = WAL;";
+/// Node's foreign-keys pragma.
+pub const MESHW_FOREIGN_KEYS: &str = "PRAGMA foreign_keys = ON;";
+/// The DevSwarm app's `builders` columns (`devswarm-app-db.js` `tableColumns`), read-only.
+pub const MESHW_APP_BUILDER_COLUMNS: &str = "PRAGMA table_info(builders)";
+/// Start of the `builders` read `builderForWorktree` needs: id and active flag, then the worktree and type columns.
+pub const MESHW_APP_BUILDERS_SELECT: &str = "SELECT \"id\", \"isActive\", ";
+/// The worktree column.
+pub const MESHW_APP_COL_WORKTREE: &str = "\"worktreePath\"";
+/// The builder-type column.
+pub const MESHW_APP_COL_BUILDER_TYPE: &str = "\"builderType\"";
+/// A column the app database lacks reads as null (`selectPresent`).
+pub const MESHW_APP_COL_NULL: &str = "NULL";
+/// End of the `builders` read.
+pub const MESHW_APP_BUILDERS_FROM: &str = " FROM builders";
+/// The newest message rowid (the shadow's snapshot mark).
+pub const MESHW_MAX_MESSAGE_ID: &str = "SELECT MAX(id) FROM messages";
+/// Rows written after a mark (the shadow's concurrency signal).
+pub const MESHW_COUNT_AFTER_ID: &str = "SELECT COUNT(*) FROM messages WHERE id > ?1";
+/// One message row by hash, every column but the rowid (the shadow compares the two stores' copies).
+pub const MESHW_ROW_BY_HASH: &str = "SELECT workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE hash = ?1";
+/// A row's timestamp by hash (the shadow replays Node's clock).
+pub const MESHW_TS_BY_HASH: &str = "SELECT ts FROM messages WHERE hash = ?1";
