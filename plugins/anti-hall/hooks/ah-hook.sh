@@ -23,6 +23,18 @@
 # AH_HOOK_SWEEP_AGE_S. The engine is otherwise located only at $HOME/.anti-hall/ah-engine/bin/ah-engine
 # or on PATH. Honored values are validated so bad values cannot turn a guard into a silent allow.
 
+# `ah-hook.sh --doctor [flags]`: the shell doctor (hooks/ah-doctor.sh), the diagnosis that needs neither the engine nor Node. It is
+# not an event, so it is handled before anything else (the test-only variables below are not read for it).
+if [ "${1:-}" = --doctor ]; then
+  shift
+  doctor_dir=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || doctor_dir=.
+  if [ -f "$doctor_dir/ah-doctor.sh" ]; then
+    exec sh "$doctor_dir/ah-doctor.sh" "$@"
+  fi
+  printf 'anti-hall: ah-doctor.sh is missing next to ah-hook.sh; reinstall the plugin\n' >&2
+  exit 1
+fi
+
 event=$1
 shift 1 2>/dev/null || true
 

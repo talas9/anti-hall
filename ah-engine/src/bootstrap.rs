@@ -35,6 +35,13 @@ pub const LKG_STAMP: &str = "STAMP";
 pub const INDEX_FILE: &str = "index.toml";
 /// Environment variables naming the plugin root, in order of precedence.
 pub const ROOT_ENVS: &[&str] = &["AH_ENGINE_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"];
+/// The hook wrapper, relative to the plugin root: what the doctor hands over to when the defaults cannot load (the shell doctor
+/// has its own texts). Like the other names in this file it is needed before any defaults exist.
+pub const WRAPPER_REL: &str = "hooks/ah-hook.sh";
+/// The wrapper argument that runs the shell doctor.
+pub const SHELL_DOCTOR_ARG: &str = "--doctor";
+/// The variable that carries the reason the defaults failed to load to the shell doctor.
+pub const DEFAULTS_ERROR_ENV: &str = "AH_DOCTOR_DEFAULTS_ERROR";
 /// The snapshot cache file inside the state directory.
 pub const CACHE_FILE: &str = "defaults.cache";
 /// The last-resort error note inside the state directory (written when no defaults could be loaded, so no log path exists).

@@ -182,6 +182,10 @@ pub fn run(args: &[String]) -> i32 {
         defaults::write_cache_on_load();
     }
     if let Err(e) = defaults::init() {
+        if p.command == "doctor" {
+            // the doctor must still diagnose a plugin whose defaults cannot load; it writes nothing and hands over to the shell doctor
+            return crate::doctor::degraded(&p, &e.to_string());
+        }
         defaults::report_unavailable(&e);
         if p.command == "serve" {
             defaults::log_start_failure(&e);

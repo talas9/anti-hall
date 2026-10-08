@@ -3618,61 +3618,243 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `doctor.apple_silicon_name` | `aarch64` |  |  | The architecture name of Apple Silicon and 64-bit ARM. |
+| `doctor.arch_aliases` | `2 entries` |  |  | Machine names mapped to the architecture names the release assets use. |
+| `doctor.bin_dir` | `bin` |  |  | The directory of the installed engine binary, under the engine state directory. |
+| `doctor.bin_label` | `ah-engine version` |  |  | The name a run of the installed engine is logged under. |
+| `doctor.bin_name` | `ah-engine` |  |  | The file name of the installed engine binary. |
+| `doctor.bootstrap_script` | `hooks/ah-engine-bootstrap.sh` |  |  | The engine bootstrap, relative to the plugin root (shown in fixes). |
+| `doctor.claude_bin` | `claude` |  |  | The Claude Code CLI program name. |
+| `doctor.claude_cache` | `claude-doctor.version` |  |  | File in the state directory remembering, per Claude Code version, whether `claude doctor` exists. |
+| `doctor.claude_clean` | `No installation issues found` |  |  | Text `claude doctor` prints when it found nothing. |
+| `doctor.claude_hooks_file` | `hooks/hooks.json` |  |  | The Claude hooks file, relative to a plugin's root. |
+| `doctor.claude_marker` | `Claude Code doctor` |  |  | Text that `claude doctor` prints first; without it the subcommand is not the installation check (an older version). |
+| `doctor.claude_max_lines` | `10` |  |  | How many problem lines of `claude doctor` are shown. |
+| `doctor.claude_no` | `no` |  |  | Cache word: the subcommand does not exist. |
+| `doctor.claude_problem_words` | `8 items` |  |  | Lowercase words that mark a line of `claude doctor` output as a problem worth surfacing. |
+| `doctor.claude_settings` | `.claude/settings.json` |  |  | The host's user settings file, relative to the home directory. |
+| `doctor.claude_sub` | `doctor` |  |  | The Claude Code subcommand that checks its installation. |
+| `doctor.claude_timeout_ms` | `20000` |  |  | How long `claude doctor` may run before the sub-check is abandoned. |
+| `doctor.claude_yes` | `yes` |  |  | Cache word: the subcommand exists. |
+| `doctor.core_dirs` | `/usr/bin, /bin` |  |  | System directories a usable PATH has at least one of. |
+| `doctor.cpu_other` | `other` |  |  | The name shown for a CPU type that is not in the tables above. |
+| `doctor.day_s` | `86400` |  |  | Seconds in a day. |
+| `doctor.db_files` | `hot.db, archive.db` |  |  | Database files in the state directory that must be real SQLite files. |
 | `doctor.decision_block_re` | `"decision"\s*:\s*"block"` |  |  | The pattern of a Stop hook's block decision in what a guard prints. |
 | `doctor.default_event` | `PreToolUse` |  |  | The hook event a self-test payload is evaluated as when it names none. |
+| `doctor.elf_data_offset` | `5` |  |  | Byte offset of the byte-order field in an ELF header (2 means big-endian). |
+| `doctor.elf_machine_offset` | `18` |  |  | Byte offset of the machine field in an ELF header. |
+| `doctor.elf_machines` | `2 entries` |  |  | ELF machine codes (hex) to architecture names. |
+| `doctor.exe_magic_elf` | `7f454c46` |  |  | Leading bytes (hex) of an ELF executable. |
+| `doctor.exe_magic_fat` | `cafebabe` |  |  | Leading bytes (hex) of a universal (fat) Mach-O executable. |
+| `doctor.exe_magic_macho64` | `cffaedfe` |  |  | Leading bytes (hex) of a thin 64-bit little-endian Mach-O executable. |
+| `doctor.exe_magic_script` | `2321` |  |  | Leading bytes (hex) of an interpreter script: '#!'. |
+| `doctor.exe_min_bytes` | `32` |  |  | A file shorter than this that is not a script cannot be an executable. |
+| `doctor.exec_bit` | `73` |  |  | Permission bits that mean 'executable' (octal 0111). |
+| `doctor.fat_count_offset` | `4` |  |  | Byte offset of the entry count in a universal Mach-O header (big-endian). |
+| `doctor.fat_entry_size` | `20` |  |  | Size in bytes of one entry in a universal Mach-O header. |
+| `doctor.fat_first_offset` | `8` |  |  | Byte offset of the first entry in a universal Mach-O header. |
+| `doctor.fat_max_entries` | `8` |  |  | How many entries of a universal Mach-O header are read. |
+| `doctor.hash_chunk` | `65536` |  |  | Bytes read at a time when hashing a file. |
+| `doctor.hash_shown` | `12` |  |  | How many leading characters of a sha256 the report shows. |
+| `doctor.header_re` | `^\[([^\]\n]+)\]\s*$` |  |  | A table header line of a defaults file; group 1 is the key. |
+| `doctor.header_read_bytes` | `512` |  |  | How many leading bytes of the engine binary are read to tell what kind of executable it is. |
 | `doctor.hooks_dir` | `hooks` |  |  | The hooks directory under the plugin root. |
+| `doctor.hooks_files` | `2 entries, 2 entries` |  |  | The hooks files that must be the thin form, per host, relative to the plugin root. |
 | `doctor.hooks_json` | `hooks.json` |  |  | The generated hook registration file under the hooks directory. |
 | `doctor.hooks_registry` | `hooks.registry.json` |  |  | The per-hook registry under the hooks directory, which lists the hook scripts the thin triggers hand to the engine. |
+| `doctor.intel_name` | `x86_64` |  |  | The architecture name of 64-bit Intel/AMD. |
+| `doctor.linux_name` | `linux` |  |  | The OS name the engine and the release assets use for Linux. |
+| `doctor.lock_file` | `ah-engine.lock` |  |  | The plugin's pin of the engine release, relative to the plugin root. |
+| `doctor.log_warn_factor` | `2` |  |  | A log or inbox larger than its cap times this is reported as not being trimmed. |
+| `doctor.macho_cpu_offset` | `4` |  |  | Byte offset of the CPU type in a thin 64-bit Mach-O header (little-endian). |
+| `doctor.macho_cpus` | `2 entries` |  |  | Mach-O CPU type codes (hex) to architecture names. |
+| `doctor.macos_name` | `macos` |  |  | The OS name the engine and the release assets use for macOS. |
+| `doctor.marker_file` | `bootstrap.installed` |  |  | The file the bootstrap writes after an install: '<version> <asset sha256> <binary sha256>'. |
+| `doctor.max_daemon_probes` | `16` |  |  | How many of the most recent daemon start events the two-daemons check looks at. |
 | `doctor.max_hook_output` | `1048576` |  | bytes | The most bytes of a Node hook's output a live self-test keeps. |
+| `doctor.mb` | `1048576` |  |  | Bytes in a megabyte, for the sizes the report shows. |
+| `doctor.min_free_mb` | `100` |  |  | A state directory on a volume with less free space than this (MB) is reported as nearly full. |
+| `doctor.mode_mask` | `511` |  |  | Mask of the permission bits shown for a file mode (octal 0777). |
 | `doctor.node_default` | `node` |  |  | The Node binary a live self-test runs a deferred hook with when the engine's own variable for it is not set. |
+| `doctor.node_min_major` | `22` |  |  | The oldest Node major version the fallback hooks support. |
 | `doctor.node_timeout_ms` | `30000` |  | ms | How long a Node hook gets in a live self-test before it is killed and the self-test fails. |
+| `doctor.others_mask` | `63` |  |  | Mask of the group and other permission bits (octal 0077): a private directory has none. |
+| `doctor.owner_exec_bit` | `64` |  |  | The owner-execute permission bit (octal 0100). |
 | `doctor.passthrough_env` | `PATH, TMPDIR` |  |  | The process environment variables a live self-test keeps (the rest of its environment is the test's own). |
+| `doctor.passwd_buf` | `4096` |  |  | Buffer size for the user database lookup of the account's home. |
 | `doctor.platform_names` | `3 entries` |  |  | Node's name for each operating system and architecture Rust names differently (process.platform and process.arch). |
+| `doctor.plugin_prefix` | `anti-hall@` |  |  | The registry key prefix of anti-hall plugin installs. |
 | `doctor.plugin_root_envs` | `CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT` |  |  | Environment variables that name the plugin root, first set one wins, after the engine's own and the --plugin-root flag. |
 | `doctor.poll_ms` | `20` |  | ms | How often a live self-test checks whether its Node hook has finished. |
+| `doctor.probe_label` | `doctor probe` |  |  | The name a probe of another program is logged under. |
+| `doctor.probe_poll_ms` | `20` |  |  | How often a running probe is polled. |
+| `doctor.probe_timeout_ms` | `5000` |  |  | How long a probe of another program (node, git, the installed engine, ps) may run. |
+| `doctor.proc_version` | `/proc/version` |  |  | The kernel version text on Linux; mentions Microsoft on WSL. |
+| `doctor.quarantine_attr` | `com.apple.quarantine` |  |  | The extended attribute macOS Gatekeeper sets on a downloaded file. |
+| `doctor.registry_file` | `.claude/plugins/installed_plugins.json` |  |  | The host's plugin registry, relative to the home directory. |
+| `doctor.required_tools` | `19 items` |  |  | Programs the hook wrapper and bootstrap need on PATH. |
+| `doctor.rosetta_marker` | `/Library/Apple/usr/libexec/oah/libRosettaRuntime` |  |  | A file that exists when Rosetta is installed. |
+| `doctor.rosetta_sysctl` | `hw.optional.arm64` |  |  | The macOS sysctl that is 1 on an Apple-Silicon machine, even for a process Rosetta translates. |
 | `doctor.script_re` | `[\w-]+\.js` |  |  | The name pattern of a hook script in the registry. |
 | `doctor.selftest_home_prefix` | `anti-hall-doctor-` |  |  | The name prefix of the throwaway home the live self-tests run against. |
 | `doctor.selftests` | `21 items` |  |  | The live self-tests. Each runs the named built-in check in-process (when the engine defers the payload, as the dispatcher would, its Node hook `script` is run instead) on the payload with the given environment (HOME is always the throwaway home) and expects: block (the guard denies: exit 2), allow (it does not), stop-block (a Stop decision of block), or alert-stale (see version-alert). `ok` and `bad` are the findings; `warn` is used instead of `bad` when set. |
+| `doctor.settings_scopes` | `2 entries, 2 entries, 2 entries` |  |  | The settings files that carry enabledPlugins, in precedence order (later wins); home = relative to the home directory, else to the project. |
+| `doctor.shadow_dir` | `ah-node-shadow` |  |  | The Node witness kit's directory, under the base directory. |
+| `doctor.shadow_log` | `node-shadow.ndjson` |  |  | The witness's comparison log. |
+| `doctor.shadow_log_warn_mb` | `256` |  |  | A Node witness log larger than this many MB is reported. |
+| `doctor.shadow_root` | `root` |  |  | The file naming the plugin root the witness follows. |
+| `doctor.shadow_script` | `node-shadow.sh` |  |  | The Node witness script. |
+| `doctor.shadow_skip` | `node-shadow.skip` |  |  | The witness's list of hooks it never runs (without it the witness runs nothing). |
+| `doctor.shadow_stale_days` | `7` |  |  | A registered Node witness whose log has not changed for this many days is reported as silent. |
+| `doctor.sqlite_magic` | `SQLite format 3` |  |  | The text a SQLite database file starts with. |
 | `doctor.stale_version` | `999.0.0` |  |  | The version the version-alert self-test caches as newer than the running one. |
+| `doctor.start_event` | `start` |  |  | The kind of event log line a daemon writes when it starts. |
+| `doctor.start_pid_re` | `\bpid (\d+)` |  |  | Finds the daemon's pid in the detail of a start event (group 1). |
+| `doctor.stat_gnu_args` | `-c, %s, /` |  |  | Arguments that only GNU/busybox stat accepts, to tell the userland flavour. |
 | `doctor.statusline_marker` | `statusline.js` |  |  | A statusLine command that contains this is the anti-hall dispatcher. |
 | `doctor.statusline_scopes` | `3 entries, 3 entries, 3 entries` |  |  | Where a statusLine command may be configured, in order: label and file relative to the project (a leading ~ means the home directory). |
 | `doctor.statusline_shown` | `48` |  |  | How many UTF-16 units of a custom statusLine command the doctor shows. |
+| `doctor.tail_bytes` | `262144` |  |  | How many trailing bytes of a log are sampled for unparsable lines. |
+| `doctor.toml_ext` | `.toml` |  |  | The extension of a defaults file. |
 | `doctor.transcript_file` | `t.jsonl` |  |  | The file name of the throwaway transcript a Stop self-test reads. |
+| `doctor.triples` | `2 entries` |  |  | The release asset triple per OS ({cpu} is the architecture; Linux leaves the libc open). |
 | `doctor.unhandled_flags` | `--prune-cache, --reclaim-ingest-lock, --repair-ingest-orphans, --repair-test-...` |  |  | Flags of the Node doctor that the engine doctor does not handle yet; each is reported and the run continues. |
 | `doctor.version_alert_env` | `ANTIHALL_VERSION_ALERT=` |  |  | Environment pairs of the version-alert self-test (the off switch is cleared so an inherited one cannot fake a pass). |
 | `doctor.version_alert_payload` | `{"hook_event_name":"SessionStart","session_id":"{SID}"}` |  |  | The SessionStart payload of the version-alert self-test; {SID} is a unique session id. |
 | `doctor.version_alert_re` | `"additionalContext"\s*:\s*"[^"]*version-alert: v{stale} is available \(you ar...` |  |  | The pattern of the version nudge in what the version-alert check prints; {stale} is the cached newer version, already escaped. |
 | `doctor.version_alert_script` | `version-alert.js` |  |  | The Node hook that answers the version-alert self-test when the engine defers it. |
 | `doctor.version_alert_sessions` | `doctor-va-stale, doctor-va-current` |  |  | Session id prefixes of the stale-cache and current-cache version-alert runs. |
+| `doctor.version_arg` | `version` |  |  | The argument that makes the engine print its version. |
 | `doctor.version_check_file` | `version-check.json` |  |  | The cached latest-version file the version-alert self-test seeds, under the anti-hall directory. |
+| `doctor.why_max` | `160` |  |  | How many characters of a failing program's first message the report shows. |
 | `doctor.workflow_dir` | `.claude/workflows` |  |  | The directory of saved Workflow templates under the home directory and under the project (relative to each). |
 | `doctor.workflow_patterns` | `(?i)^deadly-loop.*\.js$, (?i)^ship-it.*\.js$` |  |  | The names of the saved Workflow templates the doctor looks for (case-insensitive patterns). |
+| `doctor.wrapper_file` | `hooks/ah-hook.sh` |  |  | The hook wrapper, relative to the plugin root. |
+| `doctor.wsl_markers` | `microsoft, wsl` |  |  | Words (lowercase) in the kernel version text that mean WSL. |
+| `doctor.wsl_mount_re` | `^/mnt/[a-zA-Z](/\|$)` |  |  | A path on a Windows drive mounted into WSL. |
 
 ### doctor.toml / doctor_msg
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `doctor_msg.bin_corrupt` | `{path} is not a runnable program ({why}) - Fix: reinstall: sh {bootstrap} -v` |  |  | BIN-04. Placeholders: {path}, {why}, {bootstrap}. |
+| `doctor_msg.bin_hash_differs` | `{path} differs from the build the bootstrap installed (sha256 {have}... vs {w...` |  |  | BIN-07. Placeholders: {path}, {have}, {want}, {bootstrap}. |
+| `doctor_msg.bin_missing` | `engine binary not installed at {path} (hooks use ah-engine on PATH, else the ...` |  |  | BIN-01. Placeholders: {path}, {bootstrap}. |
+| `doctor_msg.bin_no_rosetta` | `{path} is an {bin_arch} build and Rosetta is not installed on this {host_arch...` |  |  | BIN-06c. Same placeholders. |
+| `doctor_msg.bin_no_run` | `{path} does not run: {why} - Fix: reinstall: sh {bootstrap} -v` |  |  | BIN-12. Placeholders: {path}, {why}, {bootstrap}. |
+| `doctor_msg.bin_not_bootstrapped` | `{path} was not installed by the bootstrap (a local build); the bootstrap leav...` |  |  | BIN-08. Placeholder: {path}. |
+| `doctor_msg.bin_not_exec` | `{path} is not executable (mode {mode}) - Fix: chmod u+x {path} (ah-engine doc...` |  |  | BIN-03. Placeholders: {path}, {mode}. |
+| `doctor_msg.bin_not_file` | `{path} is not a regular file ({kind}) - Fix: move it aside, then run: sh {boo...` |  |  | BIN-02. Placeholders: {path}, {kind}, {bootstrap}. |
+| `doctor_msg.bin_ok` | `engine binary {path} ({triple}) runs and reports {ver}` |  |  | BIN-14. Placeholders: {path}, {triple}, {ver}. |
+| `doctor_msg.bin_other_engine` | `this doctor is engine {running}; the installed engine reports {installed}` |  |  | BIN-13. Placeholders: {running}, {installed}. |
+| `doctor_msg.bin_quarantined` | `{path} is quarantined by macOS Gatekeeper (com.apple.quarantine); it will not...` |  |  | BIN-11. Placeholder: {path}. |
+| `doctor_msg.bin_rosetta` | `{path} is an {bin_arch} build running under Rosetta on this {host_arch} Mac (...` |  |  | BIN-06b. Same placeholders. |
+| `doctor_msg.bin_unreadable` | `{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: sh ...` |  |  | The binary cannot be read. Placeholders: {path}, {err}, {bootstrap}. |
+| `doctor_msg.bin_version_differs` | `engine {have} is installed but the plugin pins {want} - Fix: it updates at th...` |  |  | BIN-09. Placeholders: {have}, {want}, {bootstrap}. |
+| `doctor_msg.bin_wrong_arch` | `{path} was built for {bin_arch} but this {host_os} machine is {host_arch}; it...` |  |  | BIN-06a. Placeholders: {path}, {bin_arch}, {host_os}, {host_arch}, {bootstrap}. |
+| `doctor_msg.bin_wrong_os` | `{path} was built for {bin_os} but this machine runs {host_os} - Fix: reinstal...` |  |  | BIN-05. Placeholders: {path}, {bin_os}, {host_os}, {bootstrap}. |
+| `doctor_msg.breaker` | `client circuit breaker open for {secs}s more ({reason}); hooks use the Node f...` |  |  | DMN-09. Placeholders: {secs}, {reason}. |
 | `doctor_msg.capture_failed` | `the output of {script} could not be captured` |  |  | The thread that captured a Node hook's output failed. Placeholder: {script}. |
+| `doctor_msg.claude_missing` | `the claude CLI is not on PATH; Claude Code's own `claude doctor` was skipped` |  |  | The claude CLI is not on PATH; the optional sub-check is skipped. |
+| `doctor_msg.claude_ok` | `claude doctor (Claude Code {v}): no installation issues found` |  |  | Placeholder: {v}. |
+| `doctor_msg.claude_problem` | `claude doctor: {line} (see `claude doctor` for details)` |  |  | A problem line from `claude doctor`. Placeholder: {line}. |
+| `doctor_msg.claude_timeout` | ``claude doctor` (Claude Code {v}) did not finish in time; skipped` |  |  | Placeholder: {v}. |
+| `doctor_msg.claude_unsupported` | `Claude Code {v} has no usable `claude doctor`; skipped` |  |  | Placeholder: {v}. |
+| `doctor_msg.config_fell_back` | `{file}: {detail}; using the {layer} copy instead - Fix: correct the edit, or ...` |  |  | CF-02. Placeholders: {file}, {detail}, {layer}, {code}. |
+| `doctor_msg.config_missing_keys` | `{file} lacks {n} setting(s) the engine reads ({keys}); the shipped value is u...` |  |  | CF-03. Placeholders: {file}, {n}, {keys}. |
+| `doctor_msg.config_no_pristine` | `{dir} is missing; a broken edit of the defaults would have no last-resort cop...` |  |  | CF-04. Placeholder: {dir}. |
+| `doctor_msg.config_ok` | `configuration: {n} settings read from the plugin's defaults` |  |  | CF-01. Placeholder: {n}. |
+| `doctor_msg.config_settings_bad` | `{path} is unreadable ({err}); anti-hall settings fall back to defaults - Fix:...` |  |  | CF-07. Placeholders: {path}, {err}. |
+| `doctor_msg.config_unknown` | `{file}: unknown setting(s) {keys} (a typo?); they are ignored` |  |  | CF-05. Placeholders: {file}, {keys}. |
+| `doctor_msg.config_user_broken` | `{path}: {err}; ignored, the plugin defaults apply - Fix: correct the file or ...` |  |  | CF-06. Placeholders: {path}, {err}. |
+| `doctor_msg.crashloop` | `daemon crash-looping: restarts halted for {secs}s more ({reason}) - Fix: read...` |  |  | DMN-08. Placeholders: {secs}, {reason}. |
 | `doctor_msg.daemon_down` | `the engine daemon is not running (it starts on the first hook call)` |  |  | The engine daemon is not running, which is normal until the first hook call. |
+| `doctor_msg.daemon_hung` | `a daemon holds {lock} (pid {pid}) but does not answer on {sock}; it is hung -...` |  |  | DMN-03. Placeholders: {lock}, {pid}, {sock}. |
+| `doctor_msg.daemon_other_version` | `the daemon runs engine {daemon}, this binary is {engine}; the daemon hands ov...` |  |  | DMN-01b. Placeholders: {daemon}, {engine}. |
 | `doctor_msg.daemon_up` | `the engine daemon is running ({reply})` |  |  | The engine daemon is running. Placeholder: {reply}. |
+| `doctor_msg.daemons_many` | `{n} engine daemons are running; the extra ones (pids {pids}) do not serve {so...` |  |  | DMN-10. Placeholders: {n}, {pids}, {sock}. |
+| `doctor_msg.db_bad` | `{file} is not a SQLite database (bad header) - Fix: mv {file} {file}.bad (the...` |  |  | ST-09. Placeholder: {file}. |
 | `doctor_msg.deferred` | `{check}: the engine defers this self-test to its Node hook, so it was not exe...` |  |  | A live self-test the engine could not decide itself: the check defers this payload to its Node hook. Placeholder: {check}. |
 | `doctor_msg.engine_version` | `ah-engine {version}` |  |  | The engine version finding. Placeholder: {version}. |
+| `doctor_msg.enotdir` | `Not a directory (os error 20)` |  |  | The OS error for a path component that is a file. |
+| `doctor_msg.failure_recorded` | `last recorded failure ({class}): {reason} {hint}` |  |  | DMN-11. Placeholders: {class}, {reason}, {hint}. |
+| `doctor_msg.fix_exec` | `made {path} executable` |  |  | Repair row. Placeholder: {path}. |
+| `doctor_msg.fix_heal_dry` | `would add the missing settings to {n} defaults file(s)` |  |  | Dry-run repair row. Placeholder: {n}. |
+| `doctor_msg.fix_heal_nothing` | `no defaults to heal` |  |  | Repair row. |
+| `doctor_msg.fix_mkdir` | `created the private state directory {dir}` |  |  | Repair row. Placeholder: {dir}. |
+| `doctor_msg.fix_private` | `set {dir} to mode 700` |  |  | Repair row. Placeholder: {dir}. |
+| `doctor_msg.fix_quarantine` | `removed the quarantine attribute from {path}` |  |  | Repair row. Placeholder: {path}. |
+| `doctor_msg.gh_missing` | `gh is not on PATH; only the optional PR/CI helpers need it` |  |  | EV-07. |
+| `doctor_msg.git_broken` | `git is on PATH but does not run ({why}) - Fix: xcode-select --install (macOS)...` |  |  | EV-06. Placeholder: {why}. |
+| `doctor_msg.git_missing` | `git is not on PATH; git-aware guards and project detection are off - Fix: ins...` |  |  | EV-05. |
+| `doctor_msg.head_claude` | `Claude Code (claude doctor)` |  |  | Section heading. |
+| `doctor_msg.head_config` | `Configuration` |  |  | Section heading. |
 | `doctor_msg.head_engine` | `Engine` |  |  | The heading of the engine section. |
 | `doctor_msg.head_environment` | `Environment` |  |  | The heading of the environment section. |
 | `doctor_msg.head_guards` | `Guard behavior (live self-tests)` |  |  | The heading of the live self-test section. |
 | `doctor_msg.head_hooks` | `Hooks (present)` |  |  | The heading of the hooks section. |
+| `doctor_msg.head_install` | `Engine install` |  |  | Section heading. |
+| `doctor_msg.head_logs` | `Logs and telemetry` |  |  | Section heading. |
+| `doctor_msg.head_plugin` | `Plugin registration` |  |  | Section heading. |
+| `doctor_msg.head_state` | `State directory` |  |  | Section heading. |
 | `doctor_msg.head_statusline` | `Statusline` |  |  | The heading of the statusline section. |
+| `doctor_msg.head_thin` | `Hooks wiring (thin form)` |  |  | Section heading. |
+| `doctor_msg.head_toolchain` | `Toolchain and environment` |  |  | Section heading. |
 | `doctor_msg.head_unhandled` | `Not handled by the engine doctor` |  |  | The heading of the section that lists flags the engine doctor does not handle. |
+| `doctor_msg.head_witness` | `Node witness` |  |  | Section heading. |
 | `doctor_msg.head_workflows` | `Workflow templates (deadly-loop / ship-it)` |  |  | The heading of the Workflow templates section. |
+| `doctor_msg.home_differs` | `HOME ({home}) differs from the account's home ({pw}) and is not yours; state ...` |  |  | EV-04. Placeholders: {home}, {pw}. |
+| `doctor_msg.home_not_dir` | `HOME "{home}" is not a directory - Fix: export HOME=<your home directory>` |  |  | EV-03. Placeholder: {home}. |
+| `doctor_msg.home_relative` | `HOME is "{home}", a relative path; state would land under the current directo...` |  |  | EV-02. Placeholder: {home}. |
+| `doctor_msg.home_unset` | `HOME is not set; the engine cannot find its state (~/.anti-hall) - Fix: expor...` |  |  | EV-01. |
 | `doctor_msg.hook_missing` | `{file} — REGISTERED BUT MISSING` |  |  | A registered hook script is not on disk. Placeholder: {file}. |
 | `doctor_msg.hook_present` | `{file} present` |  |  | A registered hook script is on disk. Placeholder: {file}. |
 | `doctor_msg.hook_timeout` | `{script} did not finish within the self-test time limit` |  |  | A Node hook did not finish a live self-test in time. Placeholder: {script}. |
 | `doctor_msg.hooks_invalid` | `hooks.json invalid or unreadable: {error}` |  |  | hooks.json or its registry does not parse. Placeholder: {error}. |
 | `doctor_msg.hooks_valid` | `hooks.json is valid JSON ({n} hook script(s) registered)` |  |  | hooks.json and its registry parse. Placeholder: {n}. |
+| `doctor_msg.inbox_corrupt` | `{n} of the last {m} lines of {file} are not JSON` |  |  | LG-04. Placeholders: {n}, {m}, {file}. |
+| `doctor_msg.inbox_huge` | `{file} is {mb} MB (cap {cap_mb} MB) - Fix: ah-engine maintain` |  |  | LG-03. Placeholders: {file}, {mb}, {cap_mb}. |
+| `doctor_msg.kind_dangling` | `a symlink to nothing` |  |  | What a path turned out to be. |
+| `doctor_msg.kind_dir` | `a directory` |  |  | What a path turned out to be. |
+| `doctor_msg.kind_file` | `a regular file` |  |  | What a path turned out to be. |
+| `doctor_msg.kind_other` | `not a file` |  |  | What a path turned out to be. |
+| `doctor_msg.lock_no_asset` | `the plugin's ah-engine.lock has no build for {triple}; the Node hooks stay in...` |  |  | BIN-10. Placeholder: {triple}. |
+| `doctor_msg.lock_no_version` | `the lock has no version` |  |  | The lock has no version. |
+| `doctor_msg.lock_unreadable` | `ah-engine.lock is missing or unreadable at {path} ({err}); the bootstrap cann...` |  |  | BIN-15. Placeholders: {path}, {err}. |
+| `doctor_msg.log_corrupt` | `{n} of the last {m} lines of {file} are not event lines` |  |  | LG-02. Placeholders: {n}, {m}, {file}. |
+| `doctor_msg.log_huge` | `{file} is {mb} MB (cap {cap_mb} MB); the engine's trim is not running - Fix: ...` |  |  | LG-01. Placeholders: {file}, {mb}, {cap_mb}. |
+| `doctor_msg.logs_ok` | `event log and telemetry inbox look healthy` |  |  | Logs fine. |
+| `doctor_msg.no_engine_no_node` | `neither a working engine nor node is available; every guard fails closed - Fi...` |  |  | ND-04. |
+| `doctor_msg.no_entry` | `(no entry)` |  |  | Stands for an event with no entry. |
+| `doctor_msg.no_parent` | `no parent directory exists` |  |  | Reason. |
 | `doctor_msg.no_plugin_root` | `plugin root not found (pass --plugin-root <dir> or set AH_ENGINE_PLUGIN_ROOT)...` |  |  | The doctor could not find the plugin root, so the checks that read the plugin's files were skipped. |
+| `doctor_msg.no_write` | `write permission denied or read-only volume` |  |  | Reason. |
+| `doctor_msg.no_write_in` | `{parent} is not writable` |  |  | Reason. Placeholder: {parent}. |
+| `doctor_msg.node_broken` | `node does not run: {why} - Fix: reinstall Node` |  |  | ND-03. Placeholder: {why}. |
+| `doctor_msg.node_missing` | `node is not on PATH; the Node fallback hooks cannot run (if the engine is dow...` |  |  | ND-01. Placeholder: {min}. |
+| `doctor_msg.node_ok` | `Node {v} (>= {min}) — hooks can run` |  |  | ND-05. Placeholders: {v}, {min}. The Node doctor's text. |
+| `doctor_msg.node_old` | `Node {v} is < {min} — plugin.json requires Node.js >= {min} on PATH; hooks ma...` |  |  | ND-02. Placeholders: {v}, {min}. The Node doctor's text. |
 | `doctor_msg.not_json` | `{file} is not valid JSON` |  |  | A plugin file that does not parse as JSON. Placeholder: {file}. |
+| `doctor_msg.path_empty` | `PATH is empty; no tool can be found - Fix: export PATH=/usr/bin:/bin:...` |  |  | EV-08. |
+| `doctor_msg.path_empty_entry` | `an empty` |  |  | Words for an empty PATH entry. |
+| `doctor_msg.path_lacks` | `PATH lacks {dirs}; the hook wrapper may not find its tools - Fix: add them to...` |  |  | EV-08. Placeholder: {dirs}. |
+| `doctor_msg.path_relative` | `PATH has {entry} entry, resolved against the current directory - Fix: remove ...` |  |  | EV-08. Placeholder: {entry}. |
+| `doctor_msg.pid_gone` | `{file} names pid {pid}, which is gone; the next daemon takes it over` |  |  | DMN-07. Placeholders: {file}, {pid}. |
+| `doctor_msg.pid_reused` | `{file} names pid {pid}, which is now another program ({cmd}), not the engine;...` |  |  | DMN-06. Placeholders: {file}, {pid}, {cmd}. |
 | `doctor_msg.platform` | `Platform {platform} / {arch}` |  |  | The platform finding. Placeholders: {platform}, {arch}. |
+| `doctor_msg.plugin_disabled` | `anti-hall ({key}) is installed but disabled in {file}; no hook runs - Fix: /p...` |  |  | PL-03. Placeholders: {key}, {file}. |
+| `doctor_msg.plugin_double` | `{n} anti-hall plugins are enabled ({keys}); every hook runs twice - Fix: disa...` |  |  | PL-04. Placeholders: {n}, {keys}. |
+| `doctor_msg.plugin_json_bad` | `{file} is not valid JSON ({err}); plugin enablement could not be checked - Fi...` |  |  | PL-09. Placeholders: {file}, {err}. |
+| `doctor_msg.plugin_moved` | `{key} is registered at {path}, which does not exist (moved or pruned) - Fix: ...` |  |  | PL-07. Placeholders: {key}, {path}. |
+| `doctor_msg.plugin_no_registry` | `no plugin registry at {file} (a manual or Codex install); plugin enablement w...` |  |  | No registry file. Placeholder: {file}. |
+| `doctor_msg.plugin_not_registered` | `no anti-hall plugin is registered in {file}; the hooks do not run - Fix: /plu...` |  |  | PL-02. Placeholder: {file}. |
+| `doctor_msg.plugin_ok` | `plugin {key} v{version} is registered and enabled` |  |  | PL-08. Placeholders: {key}, {version}. |
+| `doctor_msg.plugin_old_node` | `enabled plugin {key} (v{version}) still wires Node hooks directly; it runs be...` |  |  | PL-05. Placeholders: {key}, {version}. |
+| `doctor_msg.plugin_registry_behind` | `the plugin registry still says {registered} but {running} is running - Fix: c...` |  |  | PL-06. Placeholders: {registered}, {running}. |
+| `doctor_msg.plugin_reload` | `the plugin registry says {registered} but this session runs {running} - Fix: ...` |  |  | PL-06. Placeholders: {registered}, {running}. |
 | `doctor_msg.plugin_version` | `anti-hall plugin version {version}` |  |  | The plugin version finding. Placeholder: {version}. |
+| `doctor_msg.private_dir_owner` | `private socket directory {dir} is owned by uid {owner}, not you - Fix: remove...` |  |  | ST-08. Placeholders: {dir}, {owner}. |
 | `doctor_msg.repair_failed` | `FAILED [{id}] {msg}` |  |  | A repair row that failed. Placeholders: {id}, {msg}. |
 | `doctor_msg.repair_fixed` | `FIXED [{id}] {msg}` |  |  | A repair row that fixed something. Placeholders: {id}, {msg}. |
 | `doctor_msg.repair_gated` | `GATED [{id}] {msg}` |  |  | A repair row held back by a gate. Placeholders: {id}, {msg}. |
@@ -3681,23 +3863,60 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.repair_none` | `nothing to repair` |  |  | The repair pass found no rows and nothing failed. |
 | `doctor_msg.repair_read_only` | `read-only run — nothing was changed. Run with --repair to apply the safe repa...` |  |  | The note under the repair heading when no repair was asked for. |
 | `doctor_msg.repair_skipped` | `skipped [{id}] {msg}` |  |  | A repair row that did nothing. Placeholders: {id}, {msg}. |
+| `doctor_msg.repair_would` | `{id}: would have {msg}` |  |  | Dry-run repair row. Placeholders: {id}, {msg}. |
 | `doctor_msg.row_bad` | `❌` |  |  | The marker in front of a failing finding. |
 | `doctor_msg.row_ok` | `✅` |  |  | The marker in front of a passing finding. |
 | `doctor_msg.row_prefix_info` | `i` |  |  | The marker in front of an informational finding. |
 | `doctor_msg.row_warn` | `⚠️` |  |  | The marker in front of a warning. |
+| `doctor_msg.sock_not_socket` | `{sock} exists but is not a socket ({kind}); the daemon cannot start - Fix: mv...` |  |  | DMN-05. Placeholders: {sock}, {kind}. |
+| `doctor_msg.sock_stale` | `socket {sock} exists but no daemon holds the lock; a leftover from a crash - ...` |  |  | DMN-04. Placeholder: {sock}. |
+| `doctor_msg.spool_quarantined` | `{n} spool file(s) were quarantined in {dir} - Fix: inspect them; they are kept` |  |  | LG-05. Placeholders: {n}, {dir}. |
+| `doctor_msg.state_disk_full` | `no space left on the volume of {dir} ({free_mb} MB free); the engine cannot l...` |  |  | ST-04. Placeholders: {dir}, {free_mb}. |
+| `doctor_msg.state_low_space` | `only {free_mb} MB free on the volume of {dir} (limit {min_mb}) - Fix: free di...` |  |  | ST-04b. Placeholders: {dir}, {free_mb}, {min_mb}. |
+| `doctor_msg.state_missing` | `state directory {dir} does not exist yet; it is created on first use (ah-engi...` |  |  | ST-01. Placeholder: {dir}. |
+| `doctor_msg.state_not_dir` | `{path} is a file where the state directory (or a parent) should be ({err}) - ...` |  |  | ST-02. Placeholders: {path}, {err}. |
+| `doctor_msg.state_ok` | `state directory {dir} is usable` |  |  | State directory healthy. Placeholder: {dir}. |
+| `doctor_msg.state_open` | `{dir} is accessible to others (mode {mode}) - Fix: chmod 700 {dir} (ah-engine...` |  |  | ST-06. Placeholders: {dir}, {mode}. |
+| `doctor_msg.state_owner` | `{dir} is owned by uid {owner}, not you (uid {uid}) - Fix: sudo chown -R "$(id...` |  |  | ST-05. Placeholders: {dir}, {owner}, {uid}. |
+| `doctor_msg.state_uncreatable` | `state directory {dir} cannot be created ({err}) - Fix: make the parent direct...` |  |  | ST-01b. Placeholders: {dir}, {err}. |
+| `doctor_msg.state_unwritable` | `state directory {dir} is not writable ({err}) - Fix: chmod u+w {dir}, or remo...` |  |  | ST-03. Placeholders: {dir}, {err}. |
+| `doctor_msg.state_windows_mount` | `{dir} is on a Windows drive ({mount}); file locks and sockets are unreliable ...` |  |  | ST-07. Placeholders: {dir}, {mount}. |
 | `doctor_msg.statusline_installed` | `statusline installed ({label}) -> anti-hall dispatcher` |  |  | The statusline is the anti-hall dispatcher. Placeholder: {label}. |
 | `doctor_msg.statusline_none` | `no statusLine configured — run the install-statusline skill (then restart)` |  |  | No statusLine is configured. |
 | `doctor_msg.statusline_set` | `statusline set ({label}) -> {command}…` |  |  | A custom statusline is configured. Placeholders: {label}, {command}. |
+| `doctor_msg.thin_missing` | `{file} is missing - Fix: reinstall the plugin` |  |  | HK-01. Placeholder: {file}. |
+| `doctor_msg.thin_not` | `{file} is not the thin form: {n} event(s) differ (first: {first}) - Fix: ah-e...` |  |  | HK-01. Placeholders: {file}, {n}, {first}, {host}. |
+| `doctor_msg.thin_ok` | `{file} is the thin form` |  |  | Thin hooks file. Placeholder: {file}. |
 | `doctor_msg.title` | `anti-hall doctor v{version}` |  |  | The first line of the report. Placeholder: {version}. |
+| `doctor_msg.tools_missing` | `required tool(s) missing from PATH: {tools} - Fix: install coreutils/procps, ...` |  |  | EV-10. Placeholder: {tools}. |
 | `doctor_msg.unhandled_flag` | `{flag} is not handled by the engine doctor yet (D81); run the Node doctor for it` |  |  | A flag of the Node doctor that the engine doctor does not handle. Placeholder: {flag}. |
+| `doctor_msg.unknown_pid` | `unknown` |  |  | A pid that is not known. |
 | `doctor_msg.unknown_version` | `(unknown)` |  |  | The version shown when the plugin manifest cannot be read. |
+| `doctor_msg.userland` | `userland: {flavour} stat` |  |  | EV-11. Placeholder: {flavour}. |
+| `doctor_msg.userland_bsd` | `BSD` |  |  | Flavour. |
+| `doctor_msg.userland_gnu` | `GNU/busybox` |  |  | Flavour. |
 | `doctor_msg.verdict_fail` | `❌ anti-hall · doctor: {fail} failure(s), {pass} passed, {warn} warning(s)` |  |  | The verdict when something failed. Placeholders: {fail}, {pass}, {warn}. |
 | `doctor_msg.verdict_ok` | `✅ anti-hall · doctor: active, {pass} checks passed` |  |  | The verdict when nothing failed. Placeholder: {pass}. |
 | `doctor_msg.verdict_warn` | `, {warn} warning(s)` |  |  | Appended to the passing verdict when there are warnings. Placeholder: {warn}. |
 | `doctor_msg.version_alert_bad` | `version-alert did NOT behave correctly for stale-vs-current cache` |  |  | The version-alert self-test failed. |
 | `doctor_msg.version_alert_ok` | `version-alert nudges on a stale cached version and stays silent when current` |  |  | The version-alert self-test passed. |
+| `doctor_msg.why_empty` | `empty file` |  |  | BIN-04 reason. |
+| `doctor_msg.why_exit` | `exit {code} {err}` |  |  | A program exited non-zero. Placeholders: {code}, {err}. |
+| `doctor_msg.why_signal` | `killed by signal {sig} {err}` |  |  | A program died of a signal. Placeholders: {sig}, {err}. |
+| `doctor_msg.why_timeout` | `timed out` |  |  | A program did not finish in time. |
+| `doctor_msg.why_truncated` | `truncated header` |  |  | BIN-04 reason. |
+| `doctor_msg.why_unknown` | `unrecognised header` |  |  | BIN-04 reason. |
+| `doctor_msg.witness_absent` | `Node witness not installed (optional)` |  |  | SH-01. |
+| `doctor_msg.witness_log_huge` | `{file} is {mb} MB - Fix: rotate it` |  |  | SH-05. Placeholders: {file}, {mb}. |
+| `doctor_msg.witness_no_skip` | `{dir} has no node-shadow.skip; the witness runs nothing - Fix: node-shadow.sh...` |  |  | SH-03. Placeholder: {dir}. |
+| `doctor_msg.witness_ok` | `Node witness installed ({n} hook entries, log {mb} MB)` |  |  | SH-02. Placeholders: {mb}, {n}. |
+| `doctor_msg.witness_root_gone` | `the witness root {root} does not exist - Fix: node-shadow.sh --install` |  |  | SH-04. Placeholder: {root}. |
+| `doctor_msg.witness_script_gone` | `settings.json runs {cmd}, which does not exist - Fix: node-shadow.sh --instal...` |  |  | SH-06. Placeholder: {cmd}. |
+| `doctor_msg.witness_stale` | `the witness log has not changed for {days} days - Fix: check that node is on ...` |  |  | SH-07. Placeholder: {days}. |
 | `doctor_msg.workflow_found` | `saved workflow template(s) found: {files}` |  |  | Saved Workflow templates exist. Placeholder: {files}. |
 | `doctor_msg.workflow_missing` | `no saved deadly-loop/ship-it Workflow template found in ~/.claude/workflows/ ...` |  |  | No saved deadly-loop or ship-it Workflow template exists. |
+| `doctor_msg.wrapper_missing` | `{file} is missing; every hook command fails (non-blocking) - Fix: reinstall t...` |  |  | HK-03. Placeholder: {file}. |
+| `doctor_msg.wsl` | `WSL detected ({release})` |  |  | EV-09. Placeholder: {release}. |
 
 ### setup.toml / env
 

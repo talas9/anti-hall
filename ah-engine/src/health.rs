@@ -189,7 +189,7 @@ pub fn record_failure(kind: &str, code: &str, reason: &str) {
     }
 }
 
-fn read_json(key: &str) -> Option<Value> {
+pub(crate) fn read_json(key: &str) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(state_file(key)).ok()?).ok()
 }
 
@@ -216,7 +216,7 @@ pub fn pid_alive(pid: u32) -> bool {
 ///
 /// It runs on the hook path (a client deciding whether to start a daemon), so it never blocks: Linux reads
 /// `health.proc_cmdline` directly, and elsewhere the probe runs bounded by `health.probe_timeout_ms` (review finding 6).
-fn process_command(pid: u32) -> String {
+pub(crate) fn process_command(pid: u32) -> String {
     if cfg!(target_os = "linux")
         && let Ok(raw) = std::fs::read(defaults::text("health.proc_cmdline").replace("{pid}", &pid.to_string()))
     {

@@ -334,3 +334,892 @@ value = ["doctor-va-stale", "doctor-va-current"]
 doc = "How often a live self-test checks whether its Node hook has finished."
 value = 20
 unit = "ms"
+
+# ---- install-health checks (lane-doctor): the engine binary, daemon, state directory, configuration, plugin registry, toolchain, logs, witness ----
+
+[doctor.exec_bit]
+doc = "Permission bits that mean 'executable' (octal 0111)."
+value = 73
+
+[doctor.owner_exec_bit]
+doc = "The owner-execute permission bit (octal 0100)."
+value = 64
+
+[doctor.mode_mask]
+doc = "Mask of the permission bits shown for a file mode (octal 0777)."
+value = 511
+
+[doctor.others_mask]
+doc = "Mask of the group and other permission bits (octal 0077): a private directory has none."
+value = 63
+
+[doctor.mb]
+doc = "Bytes in a megabyte, for the sizes the report shows."
+value = 1048576
+
+[doctor.min_free_mb]
+doc = "A state directory on a volume with less free space than this (MB) is reported as nearly full."
+value = 100
+
+[doctor.hash_chunk]
+doc = "Bytes read at a time when hashing a file."
+value = 65536
+
+[doctor.hash_shown]
+doc = "How many leading characters of a sha256 the report shows."
+value = 12
+
+[doctor.header_read_bytes]
+doc = "How many leading bytes of the engine binary are read to tell what kind of executable it is."
+value = 512
+
+[doctor.tail_bytes]
+doc = "How many trailing bytes of a log are sampled for unparsable lines."
+value = 262144
+
+[doctor.log_warn_factor]
+doc = "A log or inbox larger than its cap times this is reported as not being trimmed."
+value = 2
+
+[doctor.node_min_major]
+doc = "The oldest Node major version the fallback hooks support."
+value = 22
+
+[doctor.probe_timeout_ms]
+doc = "How long a probe of another program (node, git, the installed engine, ps) may run."
+value = 5000
+
+[doctor.probe_poll_ms]
+doc = "How often a running probe is polled."
+value = 20
+
+[doctor.passwd_buf]
+doc = "Buffer size for the user database lookup of the account's home."
+value = 4096
+
+[doctor.why_max]
+doc = "How many characters of a failing program's first message the report shows."
+value = 160
+
+[doctor.shadow_log_warn_mb]
+doc = "A Node witness log larger than this many MB is reported."
+value = 256
+
+[doctor.shadow_stale_days]
+doc = "A registered Node witness whose log has not changed for this many days is reported as silent."
+value = 7
+
+[doctor.day_s]
+doc = "Seconds in a day."
+value = 86400
+
+[doctor.elf_machine_offset]
+doc = "Byte offset of the machine field in an ELF header."
+value = 18
+
+[doctor.elf_data_offset]
+doc = "Byte offset of the byte-order field in an ELF header (2 means big-endian)."
+value = 5
+
+[doctor.macho_cpu_offset]
+doc = "Byte offset of the CPU type in a thin 64-bit Mach-O header (little-endian)."
+value = 4
+
+[doctor.fat_count_offset]
+doc = "Byte offset of the entry count in a universal Mach-O header (big-endian)."
+value = 4
+
+[doctor.fat_first_offset]
+doc = "Byte offset of the first entry in a universal Mach-O header."
+value = 8
+
+[doctor.fat_entry_size]
+doc = "Size in bytes of one entry in a universal Mach-O header."
+value = 20
+
+[doctor.fat_max_entries]
+doc = "How many entries of a universal Mach-O header are read."
+value = 8
+
+[doctor.exe_min_bytes]
+doc = "A file shorter than this that is not a script cannot be an executable."
+value = 32
+
+[doctor.macos_name]
+doc = "The OS name the engine and the release assets use for macOS."
+value = "macos"
+
+[doctor.linux_name]
+doc = "The OS name the engine and the release assets use for Linux."
+value = "linux"
+
+[doctor.apple_silicon_name]
+doc = "The architecture name of Apple Silicon and 64-bit ARM."
+value = "aarch64"
+
+[doctor.intel_name]
+doc = "The architecture name of 64-bit Intel/AMD."
+value = "x86_64"
+
+[doctor.rosetta_sysctl]
+doc = "The macOS sysctl that is 1 on an Apple-Silicon machine, even for a process Rosetta translates."
+value = "hw.optional.arm64"
+
+[doctor.rosetta_marker]
+doc = "A file that exists when Rosetta is installed."
+value = "/Library/Apple/usr/libexec/oah/libRosettaRuntime"
+
+[doctor.quarantine_attr]
+doc = "The extended attribute macOS Gatekeeper sets on a downloaded file."
+value = "com.apple.quarantine"
+
+[doctor.exe_magic_script]
+doc = "Leading bytes (hex) of an interpreter script: '#!'."
+value = "2321"
+
+[doctor.exe_magic_elf]
+doc = "Leading bytes (hex) of an ELF executable."
+value = "7f454c46"
+
+[doctor.exe_magic_macho64]
+doc = "Leading bytes (hex) of a thin 64-bit little-endian Mach-O executable."
+value = "cffaedfe"
+
+[doctor.exe_magic_fat]
+doc = "Leading bytes (hex) of a universal (fat) Mach-O executable."
+value = "cafebabe"
+
+[doctor.sqlite_magic]
+doc = "The text a SQLite database file starts with."
+value = "SQLite format 3"
+
+[doctor.bin_dir]
+doc = "The directory of the installed engine binary, under the engine state directory."
+value = "bin"
+
+[doctor.bin_name]
+doc = "The file name of the installed engine binary."
+value = "ah-engine"
+
+[doctor.bin_label]
+doc = "The name a run of the installed engine is logged under."
+value = "ah-engine version"
+
+[doctor.version_arg]
+doc = "The argument that makes the engine print its version."
+value = "version"
+
+[doctor.probe_label]
+doc = "The name a probe of another program is logged under."
+value = "doctor probe"
+
+[doctor.marker_file]
+doc = "The file the bootstrap writes after an install: '<version> <asset sha256> <binary sha256>'."
+value = "bootstrap.installed"
+
+[doctor.lock_file]
+doc = "The plugin's pin of the engine release, relative to the plugin root."
+value = "ah-engine.lock"
+
+[doctor.bootstrap_script]
+doc = "The engine bootstrap, relative to the plugin root (shown in fixes)."
+value = "hooks/ah-engine-bootstrap.sh"
+
+[doctor.wrapper_file]
+doc = "The hook wrapper, relative to the plugin root."
+value = "hooks/ah-hook.sh"
+
+[doctor.claude_hooks_file]
+doc = "The Claude hooks file, relative to a plugin's root."
+value = "hooks/hooks.json"
+
+[doctor.plugin_prefix]
+doc = "The registry key prefix of anti-hall plugin installs."
+value = "anti-hall@"
+
+[doctor.registry_file]
+doc = "The host's plugin registry, relative to the home directory."
+value = ".claude/plugins/installed_plugins.json"
+
+[doctor.claude_settings]
+doc = "The host's user settings file, relative to the home directory."
+value = ".claude/settings.json"
+
+[doctor.proc_version]
+doc = "The kernel version text on Linux; mentions Microsoft on WSL."
+value = "/proc/version"
+
+[doctor.toml_ext]
+doc = "The extension of a defaults file."
+value = ".toml"
+
+[doctor.header_re]
+doc = "A table header line of a defaults file; group 1 is the key."
+value = "^\\[([^\\]\\n]+)\\]\\s*$"
+
+[doctor.wsl_mount_re]
+doc = "A path on a Windows drive mounted into WSL."
+value = "^/mnt/[a-zA-Z](/|$)"
+
+[doctor.shadow_dir]
+doc = "The Node witness kit's directory, under the base directory."
+value = "ah-node-shadow"
+
+[doctor.shadow_script]
+doc = "The Node witness script."
+value = "node-shadow.sh"
+
+[doctor.shadow_skip]
+doc = "The witness's list of hooks it never runs (without it the witness runs nothing)."
+value = "node-shadow.skip"
+
+[doctor.shadow_root]
+doc = "The file naming the plugin root the witness follows."
+value = "root"
+
+[doctor.shadow_log]
+doc = "The witness's comparison log."
+value = "node-shadow.ndjson"
+
+[doctor.wsl_markers]
+doc = "Words (lowercase) in the kernel version text that mean WSL."
+value = ["microsoft", "wsl"]
+
+[doctor.core_dirs]
+doc = "System directories a usable PATH has at least one of."
+value = ["/usr/bin", "/bin"]
+
+[doctor.db_files]
+doc = "Database files in the state directory that must be real SQLite files."
+value = ["hot.db", "archive.db"]
+
+
+[doctor.stat_gnu_args]
+doc = "Arguments that only GNU/busybox stat accepts, to tell the userland flavour."
+value = ["-c", "%s", "/"]
+
+[doctor.required_tools]
+doc = "Programs the hook wrapper and bootstrap need on PATH."
+value = ["sh", "ps", "tr", "sed", "awk", "od", "find", "tar", "uname", "id", "kill", "mkdir", "mv", "date", "head", "tail", "wc", "cut", "grep"]
+
+[doctor.arch_aliases]
+doc = "Machine names mapped to the architecture names the release assets use."
+value = { arm64 = "aarch64", amd64 = "x86_64" }
+
+[doctor.triples]
+doc = "The release asset triple per OS ({cpu} is the architecture; Linux leaves the libc open)."
+value = { macos = "{cpu}-apple-darwin", linux = "{cpu}-unknown-linux-" }
+
+[doctor.elf_machines]
+doc = "ELF machine codes (hex) to architecture names."
+value = { "3e" = "x86_64", "b7" = "aarch64" }
+
+[doctor.macho_cpus]
+doc = "Mach-O CPU type codes (hex) to architecture names."
+value = { "100000c" = "aarch64", "1000007" = "x86_64" }
+
+[doctor.hooks_files]
+doc = "The hooks files that must be the thin form, per host, relative to the plugin root."
+value = [
+  { host = "claude", file = "hooks/hooks.json" },
+  { host = "codex", file = "codex/hooks/hooks.json" },
+]
+
+[doctor.settings_scopes]
+doc = "The settings files that carry enabledPlugins, in precedence order (later wins); home = relative to the home directory, else to the project."
+value = [
+  { file = ".claude/settings.json", home = true },
+  { file = ".claude/settings.json", home = false },
+  { file = ".claude/settings.local.json", home = false },
+]
+
+# ---- install-health finding texts ----
+
+[doctor_msg.head_install]
+doc = "Section heading."
+value = "Engine install"
+
+[doctor_msg.head_state]
+doc = "Section heading."
+value = "State directory"
+
+[doctor_msg.head_config]
+doc = "Section heading."
+value = "Configuration"
+
+[doctor_msg.head_plugin]
+doc = "Section heading."
+value = "Plugin registration"
+
+[doctor_msg.head_thin]
+doc = "Section heading."
+value = "Hooks wiring (thin form)"
+
+[doctor_msg.head_toolchain]
+doc = "Section heading."
+value = "Toolchain and environment"
+
+[doctor_msg.head_logs]
+doc = "Section heading."
+value = "Logs and telemetry"
+
+[doctor_msg.head_witness]
+doc = "Section heading."
+value = "Node witness"
+
+[doctor_msg.bin_missing]
+doc = "BIN-01. Placeholders: {path}, {bootstrap}."
+value = "engine binary not installed at {path} (hooks use ah-engine on PATH, else the Node hooks) - Fix: sh {bootstrap} -v"
+
+[doctor_msg.bin_not_file]
+doc = "BIN-02. Placeholders: {path}, {kind}, {bootstrap}."
+value = "{path} is not a regular file ({kind}) - Fix: move it aside, then run: sh {bootstrap} -v"
+
+[doctor_msg.bin_unreadable]
+doc = "The binary cannot be read. Placeholders: {path}, {err}, {bootstrap}."
+value = "{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: sh {bootstrap} -v"
+
+[doctor_msg.bin_not_exec]
+doc = "BIN-03. Placeholders: {path}, {mode}."
+value = "{path} is not executable (mode {mode}) - Fix: chmod u+x {path} (ah-engine doctor --repair does this)"
+
+[doctor_msg.bin_corrupt]
+doc = "BIN-04. Placeholders: {path}, {why}, {bootstrap}."
+value = "{path} is not a runnable program ({why}) - Fix: reinstall: sh {bootstrap} -v"
+
+[doctor_msg.why_empty]
+doc = "BIN-04 reason."
+value = "empty file"
+
+[doctor_msg.why_truncated]
+doc = "BIN-04 reason."
+value = "truncated header"
+
+[doctor_msg.why_unknown]
+doc = "BIN-04 reason."
+value = "unrecognised header"
+
+[doctor_msg.bin_wrong_os]
+doc = "BIN-05. Placeholders: {path}, {bin_os}, {host_os}, {bootstrap}."
+value = "{path} was built for {bin_os} but this machine runs {host_os} - Fix: reinstall: sh {bootstrap} -v"
+
+[doctor_msg.bin_wrong_arch]
+doc = "BIN-06a. Placeholders: {path}, {bin_arch}, {host_os}, {host_arch}, {bootstrap}."
+value = "{path} was built for {bin_arch} but this {host_os} machine is {host_arch}; it cannot run - Fix: reinstall: sh {bootstrap} -v"
+
+[doctor_msg.bin_rosetta]
+doc = "BIN-06b. Same placeholders."
+value = "{path} is an {bin_arch} build running under Rosetta on this {host_arch} Mac (slower) - Fix: sh {bootstrap} -v installs the native build"
+
+[doctor_msg.bin_no_rosetta]
+doc = "BIN-06c. Same placeholders."
+value = "{path} is an {bin_arch} build and Rosetta is not installed on this {host_arch} Mac; it will not start - Fix: softwareupdate --install-rosetta --agree-to-license, or sh {bootstrap} -v for the native build"
+
+[doctor_msg.bin_quarantined]
+doc = "BIN-11. Placeholder: {path}."
+value = "{path} is quarantined by macOS Gatekeeper (com.apple.quarantine); it will not run - Fix: xattr -d com.apple.quarantine {path} (ah-engine doctor --repair does this for the build the bootstrap verified)"
+
+[doctor_msg.bin_not_bootstrapped]
+doc = "BIN-08. Placeholder: {path}."
+value = "{path} was not installed by the bootstrap (a local build); the bootstrap leaves it alone"
+
+[doctor_msg.bin_hash_differs]
+doc = "BIN-07. Placeholders: {path}, {have}, {want}, {bootstrap}."
+value = "{path} differs from the build the bootstrap installed (sha256 {have}... vs {want}...): a local build, or damaged - Fix: to restore the pinned build: mv {path} {path}.local && sh {bootstrap} -v"
+
+[doctor_msg.bin_version_differs]
+doc = "BIN-09. Placeholders: {have}, {want}, {bootstrap}."
+value = "engine {have} is installed but the plugin pins {want} - Fix: it updates at the next session start, or run: sh {bootstrap} -v"
+
+[doctor_msg.bin_no_run]
+doc = "BIN-12. Placeholders: {path}, {why}, {bootstrap}."
+value = "{path} does not run: {why} - Fix: reinstall: sh {bootstrap} -v"
+
+[doctor_msg.bin_ok]
+doc = "BIN-14. Placeholders: {path}, {triple}, {ver}."
+value = "engine binary {path} ({triple}) runs and reports {ver}"
+
+[doctor_msg.bin_other_engine]
+doc = "BIN-13. Placeholders: {running}, {installed}."
+value = "this doctor is engine {running}; the installed engine reports {installed}"
+
+[doctor_msg.lock_unreadable]
+doc = "BIN-15. Placeholders: {path}, {err}."
+value = "ah-engine.lock is missing or unreadable at {path} ({err}); the bootstrap cannot verify or update the engine - Fix: reinstall the plugin"
+
+[doctor_msg.lock_no_version]
+doc = "The lock has no version."
+value = "the lock has no version"
+
+[doctor_msg.lock_no_asset]
+doc = "BIN-10. Placeholder: {triple}."
+value = "the plugin's ah-engine.lock has no build for {triple}; the Node hooks stay in use - Fix: none, this platform is not released yet"
+
+[doctor_msg.why_signal]
+doc = "A program died of a signal. Placeholders: {sig}, {err}."
+value = "killed by signal {sig} {err}"
+
+[doctor_msg.why_exit]
+doc = "A program exited non-zero. Placeholders: {code}, {err}."
+value = "exit {code} {err}"
+
+[doctor_msg.why_timeout]
+doc = "A program did not finish in time."
+value = "timed out"
+
+[doctor_msg.enotdir]
+doc = "The OS error for a path component that is a file."
+value = "Not a directory (os error 20)"
+
+[doctor_msg.state_not_dir]
+doc = "ST-02. Placeholders: {path}, {err}."
+value = "{path} is a file where the state directory (or a parent) should be ({err}) - Fix: mv {path} {path}.old, then run: ah-engine doctor --repair"
+
+[doctor_msg.state_missing]
+doc = "ST-01. Placeholder: {dir}."
+value = "state directory {dir} does not exist yet; it is created on first use (ah-engine doctor --repair creates it now)"
+
+[doctor_msg.state_uncreatable]
+doc = "ST-01b. Placeholders: {dir}, {err}."
+value = "state directory {dir} cannot be created ({err}) - Fix: make the parent directory writable for your user"
+
+[doctor_msg.no_write_in]
+doc = "Reason. Placeholder: {parent}."
+value = "{parent} is not writable"
+
+[doctor_msg.no_parent]
+doc = "Reason."
+value = "no parent directory exists"
+
+[doctor_msg.state_unwritable]
+doc = "ST-03. Placeholders: {dir}, {err}."
+value = "state directory {dir} is not writable ({err}) - Fix: chmod u+w {dir}, or remount the volume read-write"
+
+[doctor_msg.no_write]
+doc = "Reason."
+value = "write permission denied or read-only volume"
+
+[doctor_msg.state_owner]
+doc = "ST-05. Placeholders: {dir}, {owner}, {uid}."
+value = "{dir} is owned by uid {owner}, not you (uid {uid}) - Fix: sudo chown -R \"$(id -un)\" {dir}"
+
+[doctor_msg.state_open]
+doc = "ST-06. Placeholders: {dir}, {mode}."
+value = "{dir} is accessible to others (mode {mode}) - Fix: chmod 700 {dir} (ah-engine doctor --repair does this)"
+
+[doctor_msg.state_disk_full]
+doc = "ST-04. Placeholders: {dir}, {free_mb}."
+value = "no space left on the volume of {dir} ({free_mb} MB free); the engine cannot log or keep state - Fix: free disk space"
+
+[doctor_msg.state_low_space]
+doc = "ST-04b. Placeholders: {dir}, {free_mb}, {min_mb}."
+value = "only {free_mb} MB free on the volume of {dir} (limit {min_mb}) - Fix: free disk space"
+
+[doctor_msg.state_windows_mount]
+doc = "ST-07. Placeholders: {dir}, {mount}."
+value = "{dir} is on a Windows drive ({mount}); file locks and sockets are unreliable there - Fix: keep HOME on the Linux filesystem"
+
+[doctor_msg.private_dir_owner]
+doc = "ST-08. Placeholders: {dir}, {owner}."
+value = "private socket directory {dir} is owned by uid {owner}, not you - Fix: remove or rename it as that user; the daemon recreates it"
+
+[doctor_msg.db_bad]
+doc = "ST-09. Placeholder: {file}."
+value = "{file} is not a SQLite database (bad header) - Fix: mv {file} {file}.bad (the engine creates a new one)"
+
+[doctor_msg.state_ok]
+doc = "State directory healthy. Placeholder: {dir}."
+value = "state directory {dir} is usable"
+
+[doctor_msg.daemon_other_version]
+doc = "DMN-01b. Placeholders: {daemon}, {engine}."
+value = "the daemon runs engine {daemon}, this binary is {engine}; the daemon hands over on the next hook call"
+
+[doctor_msg.sock_not_socket]
+doc = "DMN-05. Placeholders: {sock}, {kind}."
+value = "{sock} exists but is not a socket ({kind}); the daemon cannot start - Fix: mv {sock} {sock}.old"
+
+[doctor_msg.daemon_hung]
+doc = "DMN-03. Placeholders: {lock}, {pid}, {sock}."
+value = "a daemon holds {lock} (pid {pid}) but does not answer on {sock}; it is hung - Fix: ah-engine stop; if it stays, kill {pid} (the next hook starts a fresh daemon)"
+
+[doctor_msg.unknown_pid]
+doc = "A pid that is not known."
+value = "unknown"
+
+[doctor_msg.sock_stale]
+doc = "DMN-04. Placeholder: {sock}."
+value = "socket {sock} exists but no daemon holds the lock; a leftover from a crash - Fix: none needed, the next daemon replaces it"
+
+[doctor_msg.pid_gone]
+doc = "DMN-07. Placeholders: {file}, {pid}."
+value = "{file} names pid {pid}, which is gone; the next daemon takes it over"
+
+[doctor_msg.pid_reused]
+doc = "DMN-06. Placeholders: {file}, {pid}, {cmd}."
+value = "{file} names pid {pid}, which is now another program ({cmd}), not the engine; a stale file, nothing signals that process - Fix: none needed; do NOT kill pid {pid}"
+
+[doctor_msg.daemons_many]
+doc = "DMN-10. Placeholders: {n}, {pids}, {sock}."
+value = "{n} engine daemons are running; the extra ones (pids {pids}) do not serve {sock} - Fix: ah-engine stop, then kill the extra pids; the next hook starts one"
+
+
+[doctor_msg.crashloop]
+doc = "DMN-08. Placeholders: {secs}, {reason}."
+value = "daemon crash-looping: restarts halted for {secs}s more ({reason}) - Fix: read ah-engine status, fix the cause, then run: ah-engine reset"
+
+[doctor_msg.breaker]
+doc = "DMN-09. Placeholders: {secs}, {reason}."
+value = "client circuit breaker open for {secs}s more ({reason}); hooks use the Node fallback meanwhile - Fix: after fixing the cause: ah-engine reset"
+
+[doctor_msg.failure_recorded]
+doc = "DMN-11. Placeholders: {class}, {reason}, {hint}."
+value = "last recorded failure ({class}): {reason} {hint}"
+
+[doctor_msg.config_fell_back]
+doc = "CF-02. Placeholders: {file}, {detail}, {layer}, {code}."
+value = "{file}: {detail}; using the {layer} copy instead - Fix: correct the edit, or restore the file from engine/defaults.pristine/"
+
+[doctor_msg.config_missing_keys]
+doc = "CF-03. Placeholders: {file}, {n}, {keys}."
+value = "{file} lacks {n} setting(s) the engine reads ({keys}); the shipped value is used - Fix: ah-engine config heal (ah-engine doctor --repair does this)"
+
+[doctor_msg.config_no_pristine]
+doc = "CF-04. Placeholder: {dir}."
+value = "{dir} is missing; a broken edit of the defaults would have no last-resort copy - Fix: update or reinstall the plugin"
+
+[doctor_msg.config_unknown]
+doc = "CF-05. Placeholders: {file}, {keys}."
+value = "{file}: unknown setting(s) {keys} (a typo?); they are ignored"
+
+[doctor_msg.config_user_broken]
+doc = "CF-06. Placeholders: {path}, {err}."
+value = "{path}: {err}; ignored, the plugin defaults apply - Fix: correct the file or move it aside"
+
+[doctor_msg.config_settings_bad]
+doc = "CF-07. Placeholders: {path}, {err}."
+value = "{path} is unreadable ({err}); anti-hall settings fall back to defaults - Fix: correct the file or move it aside"
+
+[doctor_msg.config_ok]
+doc = "CF-01. Placeholder: {n}."
+value = "configuration: {n} settings read from the plugin's defaults"
+
+[doctor_msg.plugin_json_bad]
+doc = "PL-09. Placeholders: {file}, {err}."
+value = "{file} is not valid JSON ({err}); plugin enablement could not be checked - Fix: correct the file"
+
+[doctor_msg.plugin_no_registry]
+doc = "No registry file. Placeholder: {file}."
+value = "no plugin registry at {file} (a manual or Codex install); plugin enablement was not checked"
+
+[doctor_msg.plugin_not_registered]
+doc = "PL-02. Placeholder: {file}."
+value = "no anti-hall plugin is registered in {file}; the hooks do not run - Fix: /plugin install anti-hall@anti-hall"
+
+[doctor_msg.plugin_moved]
+doc = "PL-07. Placeholders: {key}, {path}."
+value = "{key} is registered at {path}, which does not exist (moved or pruned) - Fix: claude plugin update {key}, or reinstall it"
+
+[doctor_msg.plugin_double]
+doc = "PL-04. Placeholders: {n}, {keys}."
+value = "{n} anti-hall plugins are enabled ({keys}); every hook runs twice - Fix: disable all but one: /plugin disable <key>"
+
+[doctor_msg.plugin_old_node]
+doc = "PL-05. Placeholders: {key}, {version}."
+value = "enabled plugin {key} (v{version}) still wires Node hooks directly; it runs beside the engine - Fix: claude plugin update {key}, or disable it"
+
+[doctor_msg.plugin_disabled]
+doc = "PL-03. Placeholders: {key}, {file}."
+value = "anti-hall ({key}) is installed but disabled in {file}; no hook runs - Fix: /plugin enable {key}"
+
+[doctor_msg.plugin_reload]
+doc = "PL-06. Placeholders: {registered}, {running}."
+value = "the plugin registry says {registered} but this session runs {running} - Fix: /reload-plugins"
+
+[doctor_msg.plugin_registry_behind]
+doc = "PL-06. Placeholders: {registered}, {running}."
+value = "the plugin registry still says {registered} but {running} is running - Fix: claude plugin update anti-hall@anti-hall"
+
+[doctor_msg.plugin_ok]
+doc = "PL-08. Placeholders: {key}, {version}."
+value = "plugin {key} v{version} is registered and enabled"
+
+[doctor_msg.wrapper_missing]
+doc = "HK-03. Placeholder: {file}."
+value = "{file} is missing; every hook command fails (non-blocking) - Fix: reinstall the plugin"
+
+[doctor_msg.thin_missing]
+doc = "HK-01. Placeholder: {file}."
+value = "{file} is missing - Fix: reinstall the plugin"
+
+[doctor_msg.thin_ok]
+doc = "Thin hooks file. Placeholder: {file}."
+value = "{file} is the thin form"
+
+[doctor_msg.thin_not]
+doc = "HK-01. Placeholders: {file}, {n}, {first}, {host}."
+value = "{file} is not the thin form: {n} event(s) differ (first: {first}) - Fix: ah-engine gen-hooks --host {host} > {file}"
+
+[doctor_msg.no_entry]
+doc = "Stands for an event with no entry."
+value = "(no entry)"
+
+[doctor_msg.home_unset]
+doc = "EV-01."
+value = "HOME is not set; the engine cannot find its state (~/.anti-hall) - Fix: export HOME=<your home directory>"
+
+[doctor_msg.home_relative]
+doc = "EV-02. Placeholder: {home}."
+value = "HOME is \"{home}\", a relative path; state would land under the current directory - Fix: export HOME=<absolute path>"
+
+[doctor_msg.home_not_dir]
+doc = "EV-03. Placeholder: {home}."
+value = "HOME \"{home}\" is not a directory - Fix: export HOME=<your home directory>"
+
+[doctor_msg.home_differs]
+doc = "EV-04. Placeholders: {home}, {pw}."
+value = "HOME ({home}) differs from the account's home ({pw}) and is not yours; state goes to HOME - Fix: run without sudo, or export HOME={pw}"
+
+[doctor_msg.path_empty]
+doc = "EV-08."
+value = "PATH is empty; no tool can be found - Fix: export PATH=/usr/bin:/bin:..."
+
+[doctor_msg.path_empty_entry]
+doc = "Words for an empty PATH entry."
+value = "an empty"
+
+[doctor_msg.path_relative]
+doc = "EV-08. Placeholder: {entry}."
+value = "PATH has {entry} entry, resolved against the current directory - Fix: remove it from PATH"
+
+[doctor_msg.path_lacks]
+doc = "EV-08. Placeholder: {dirs}."
+value = "PATH lacks {dirs}; the hook wrapper may not find its tools - Fix: add them to PATH"
+
+[doctor_msg.tools_missing]
+doc = "EV-10. Placeholder: {tools}."
+value = "required tool(s) missing from PATH: {tools} - Fix: install coreutils/procps, or fix PATH"
+
+[doctor_msg.userland]
+doc = "EV-11. Placeholder: {flavour}."
+value = "userland: {flavour} stat"
+
+[doctor_msg.userland_gnu]
+doc = "Flavour."
+value = "GNU/busybox"
+
+[doctor_msg.userland_bsd]
+doc = "Flavour."
+value = "BSD"
+
+[doctor_msg.wsl]
+doc = "EV-09. Placeholder: {release}."
+value = "WSL detected ({release})"
+
+[doctor_msg.git_missing]
+doc = "EV-05."
+value = "git is not on PATH; git-aware guards and project detection are off - Fix: install git"
+
+[doctor_msg.git_broken]
+doc = "EV-06. Placeholder: {why}."
+value = "git is on PATH but does not run ({why}) - Fix: xcode-select --install (macOS) or reinstall git"
+
+[doctor_msg.gh_missing]
+doc = "EV-07."
+value = "gh is not on PATH; only the optional PR/CI helpers need it"
+
+[doctor_msg.node_missing]
+doc = "ND-01. Placeholder: {min}."
+value = "node is not on PATH; the Node fallback hooks cannot run (if the engine is down, guards fail closed) - Fix: install Node >= {min}"
+
+[doctor_msg.no_engine_no_node]
+doc = "ND-04."
+value = "neither a working engine nor node is available; every guard fails closed - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v) or install Node"
+
+[doctor_msg.node_broken]
+doc = "ND-03. Placeholder: {why}."
+value = "node does not run: {why} - Fix: reinstall Node"
+
+[doctor_msg.node_ok]
+doc = "ND-05. Placeholders: {v}, {min}. The Node doctor's text."
+value = "Node {v} (>= {min}) — hooks can run"
+
+[doctor_msg.node_old]
+doc = "ND-02. Placeholders: {v}, {min}. The Node doctor's text."
+value = "Node {v} is < {min} — plugin.json requires Node.js >= {min} on PATH; hooks may silently no-op. Install Node >= {min}."
+
+[doctor_msg.log_huge]
+doc = "LG-01. Placeholders: {file}, {mb}, {cap_mb}."
+value = "{file} is {mb} MB (cap {cap_mb} MB); the engine's trim is not running - Fix: ah-engine maintain"
+
+[doctor_msg.log_corrupt]
+doc = "LG-02. Placeholders: {n}, {m}, {file}."
+value = "{n} of the last {m} lines of {file} are not event lines"
+
+[doctor_msg.inbox_huge]
+doc = "LG-03. Placeholders: {file}, {mb}, {cap_mb}."
+value = "{file} is {mb} MB (cap {cap_mb} MB) - Fix: ah-engine maintain"
+
+[doctor_msg.inbox_corrupt]
+doc = "LG-04. Placeholders: {n}, {m}, {file}."
+value = "{n} of the last {m} lines of {file} are not JSON"
+
+[doctor_msg.spool_quarantined]
+doc = "LG-05. Placeholders: {n}, {dir}."
+value = "{n} spool file(s) were quarantined in {dir} - Fix: inspect them; they are kept"
+
+[doctor_msg.logs_ok]
+doc = "Logs fine."
+value = "event log and telemetry inbox look healthy"
+
+[doctor_msg.witness_absent]
+doc = "SH-01."
+value = "Node witness not installed (optional)"
+
+[doctor_msg.witness_script_gone]
+doc = "SH-06. Placeholder: {cmd}."
+value = "settings.json runs {cmd}, which does not exist - Fix: node-shadow.sh --install, or remove the entries"
+
+[doctor_msg.witness_no_skip]
+doc = "SH-03. Placeholder: {dir}."
+value = "{dir} has no node-shadow.skip; the witness runs nothing - Fix: node-shadow.sh --install"
+
+[doctor_msg.witness_root_gone]
+doc = "SH-04. Placeholder: {root}."
+value = "the witness root {root} does not exist - Fix: node-shadow.sh --install"
+
+[doctor_msg.witness_log_huge]
+doc = "SH-05. Placeholders: {file}, {mb}."
+value = "{file} is {mb} MB - Fix: rotate it"
+
+[doctor_msg.witness_stale]
+doc = "SH-07. Placeholder: {days}."
+value = "the witness log has not changed for {days} days - Fix: check that node is on PATH and node-shadow.skip exists"
+
+[doctor_msg.witness_ok]
+doc = "SH-02. Placeholders: {mb}, {n}."
+value = "Node witness installed ({n} hook entries, log {mb} MB)"
+
+[doctor_msg.fix_exec]
+doc = "Repair row. Placeholder: {path}."
+value = "made {path} executable"
+
+[doctor_msg.fix_quarantine]
+doc = "Repair row. Placeholder: {path}."
+value = "removed the quarantine attribute from {path}"
+
+[doctor_msg.fix_mkdir]
+doc = "Repair row. Placeholder: {dir}."
+value = "created the private state directory {dir}"
+
+[doctor_msg.fix_private]
+doc = "Repair row. Placeholder: {dir}."
+value = "set {dir} to mode 700"
+
+[doctor_msg.fix_heal_dry]
+doc = "Dry-run repair row. Placeholder: {n}."
+value = "would add the missing settings to {n} defaults file(s)"
+
+[doctor_msg.fix_heal_nothing]
+doc = "Repair row."
+value = "no defaults to heal"
+
+[doctor_msg.repair_would]
+doc = "Dry-run repair row. Placeholders: {id}, {msg}."
+value = "{id}: would have {msg}"
+
+[doctor.max_daemon_probes]
+doc = "How many of the most recent daemon start events the two-daemons check looks at."
+value = 16
+
+[doctor.start_event]
+doc = "The kind of event log line a daemon writes when it starts."
+value = "start"
+
+[doctor.start_pid_re]
+doc = "Finds the daemon's pid in the detail of a start event (group 1)."
+value = "\\bpid (\\d+)"
+
+[doctor.claude_bin]
+doc = "The Claude Code CLI program name."
+value = "claude"
+
+[doctor.claude_sub]
+doc = "The Claude Code subcommand that checks its installation."
+value = "doctor"
+
+[doctor.claude_marker]
+doc = "Text that `claude doctor` prints first; without it the subcommand is not the installation check (an older version)."
+value = "Claude Code doctor"
+
+[doctor.claude_clean]
+doc = "Text `claude doctor` prints when it found nothing."
+value = "No installation issues found"
+
+[doctor.claude_problem_words]
+doc = "Lowercase words that mark a line of `claude doctor` output as a problem worth surfacing."
+value = ["warning", "issue", "error", "invalid", "problem", "missing", "failed", "conflict"]
+
+[doctor.claude_max_lines]
+doc = "How many problem lines of `claude doctor` are shown."
+value = 10
+
+[doctor.claude_timeout_ms]
+doc = "How long `claude doctor` may run before the sub-check is abandoned."
+value = 20000
+
+[doctor.claude_cache]
+doc = "File in the state directory remembering, per Claude Code version, whether `claude doctor` exists."
+value = "claude-doctor.version"
+
+[doctor.claude_yes]
+doc = "Cache word: the subcommand exists."
+value = "yes"
+
+[doctor.claude_no]
+doc = "Cache word: the subcommand does not exist."
+value = "no"
+
+[doctor_msg.head_claude]
+doc = "Section heading."
+value = "Claude Code (claude doctor)"
+
+[doctor_msg.claude_missing]
+doc = "The claude CLI is not on PATH; the optional sub-check is skipped."
+value = "the claude CLI is not on PATH; Claude Code's own `claude doctor` was skipped"
+
+[doctor_msg.claude_unsupported]
+doc = "Placeholder: {v}."
+value = "Claude Code {v} has no usable `claude doctor`; skipped"
+
+[doctor_msg.claude_timeout]
+doc = "Placeholder: {v}."
+value = "`claude doctor` (Claude Code {v}) did not finish in time; skipped"
+
+[doctor_msg.claude_ok]
+doc = "Placeholder: {v}."
+value = "claude doctor (Claude Code {v}): no installation issues found"
+
+[doctor_msg.claude_problem]
+doc = "A problem line from `claude doctor`. Placeholder: {line}."
+value = "claude doctor: {line} (see `claude doctor` for details)"
+
+[doctor.cpu_other]
+doc = "The name shown for a CPU type that is not in the tables above."
+value = "other"
+
+[doctor_msg.kind_dir]
+doc = "What a path turned out to be."
+value = "a directory"
+
+[doctor_msg.kind_file]
+doc = "What a path turned out to be."
+value = "a regular file"
+
+[doctor_msg.kind_dangling]
+doc = "What a path turned out to be."
+value = "a symlink to nothing"
+
+[doctor_msg.kind_other]
+doc = "What a path turned out to be."
+value = "not a file"
