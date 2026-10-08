@@ -423,3 +423,29 @@ min = 1
 [jev.rollup_dir]
 doc = "Directory of the daily rollups, relative to the log directory (Node: jev-daily); one JSON file per UTC day."
 value = "jev-daily"
+
+[jev.scrub_rules]
+doc = "The outbound secret-scrub rules every Jev request body passes through, in order (Node: hooks/lib/secret-scrub.js scrubSecrets, rule for rule): `pattern` (Rust regex syntax: JavaScript look-behind is `no_alnum_before`, a hit right after an ASCII letter or digit is skipped; `\\s` is spelled as JavaScript's whitespace set; the `i` flag as explicit [xX] classes), `to` the replacement (`${n}` a group). A rule that does not compile makes the scrubber redact the whole text (jev.scrub_failed_text)."
+value = [
+  { pattern = '''-----BEGIN [A-Z0-9 ]+-----(?s:.)*?(?:-----END [A-Z0-9 ]+-----|$)''', to = '''[REDACTED_PEM]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)([a-zA-Z][a-zA-Z0-9+.-]*://)[^\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}/:@]+:[^\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}/@]+@''', to = '''${1}[REDACTED]@''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+''', to = '''[REDACTED_JWT]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)([aA][uU][tT][hH][oO][rR][iI][zZ][aA][tT][iI][oO][nN][\x22']?[\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]*[:=][\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]*[\x22']?)([bB][aA][sS][iI][cC]|[bB][eE][aA][rR][eE][rR])[\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]+[^\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}\x22']+''', to = '''${1}${2} [REDACTED]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)[bB][eE][aA][rR][eE][rR][\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]+[A-Za-z0-9\-_.=]+''', to = '''Bearer [REDACTED]''', no_alnum_before = false },
+  { pattern = '''[sr]k_(?:live|test)_[A-Za-z0-9]{8,}(?-u:\b)''', to = '''[REDACTED_KEY]''', no_alnum_before = true },
+  { pattern = '''glpat-[A-Za-z0-9_-]{10,}''', to = '''[REDACTED_KEY]''', no_alnum_before = true },
+  { pattern = '''npm_[A-Za-z0-9]{20,}(?-u:\b)''', to = '''[REDACTED_KEY]''', no_alnum_before = true },
+  { pattern = '''(?-u:\b)(?:sk|pk)-[A-Za-z0-9]{10,}(?-u:\b)''', to = '''[REDACTED_KEY]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)AIza[0-9A-Za-z_-]{10,}(?-u:\b)''', to = '''[REDACTED_KEY]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)gh[pousr]_[A-Za-z0-9]{10,}(?-u:\b)''', to = '''[REDACTED_KEY]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)xox[baprs]-[A-Za-z0-9-]{10,}(?-u:\b)''', to = '''[REDACTED_KEY]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)''', to = '''[REDACTED_AWS_KEY]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)([A-Za-z0-9_.-]*(?:[sS][eE][cC][rR][eE][tT]|[pP][aA][sS][sS][wW][oO][rR][dD]|[pP][aA][sS][sS][wW][dD]|[tT][oO][kK][eE][nN]|[aA][pP][iI][kK][eE][yY]|[aA][pP][iI]_[kK][eE][yY]|[kK][eE][yY])[A-Za-z0-9_.-]*)([\x22']?[\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]*[:=][\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]*)(?:\x22[^\x22\n]*\x22|'[^'\n]*')''', to = '''${1}${2}[REDACTED]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)([A-Za-z0-9_.-]*(?:[sS][eE][cC][rR][eE][tT]|[pP][aA][sS][sS][wW][oO][rR][dD]|[pP][aA][sS][sS][wW][dD]|[tT][oO][kK][eE][nN]|[aA][pP][iI][kK][eE][yY]|[aA][pP][iI]_[kK][eE][yY]|[kK][eE][yY])[A-Za-z0-9_.-]*)([\x22']?[\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]*[:=][\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]*)(?:\x22[^\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}\x22',}]+\x22|'[^\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}\x22',}]+'|[^\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}\x22',}]+)''', to = '''${1}${2}[REDACTED]''', no_alnum_before = false },
+  { pattern = '''[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}''', to = '''[REDACTED_EMAIL]''', no_alnum_before = false },
+  { pattern = '''(?-u:\b)[A-Za-z0-9+/=_-]{32,}(?-u:\b)''', to = '''[REDACTED_TOKEN]''', no_alnum_before = false },
+]
+
+[jev.scrub_failed_text]
+doc = "What the scrubber returns instead of the text when one of jev.scrub_rules does not compile: nothing unscrubbed ever leaves."
+value = "[REDACTED_UNSCRUBBED]"
