@@ -348,7 +348,7 @@ value = "the dispatch table has no well-formed row for {host} {event}: the Node 
 doc = "The claude UserPromptSubmit hook entries, in dispatch order."
 value = [
   { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "verify-first" },
-  { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "" },
+  { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "task-tracker" },
   { id = "idle-agent-sweep", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "limit-conserve-inject" },
   { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "devswarm-parent-inbox" },
@@ -473,7 +473,7 @@ value = [
 [dispatch.hooks_claude_SessionEnd]
 doc = "The claude SessionEnd hook entries, in dispatch order."
 value = [
-  { id = "session-end-mcp-reaper", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js\"", timeout = 5, check = "" },
+  { id = "session-end-mcp-reaper", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js\"", timeout = 5, check = "session-end-mcp-reaper" },
 ]
 
 # ---- codex ----
@@ -482,7 +482,7 @@ value = [
 doc = "The codex SessionStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-full", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-full.js\"", timeout = 10, check = "verify-first-full" },
-  { id = "verify-first-orch", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-orch.js\"", timeout = 10, check = "" },
+  { id = "verify-first-orch", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-orch.js\"", timeout = 10, check = "verify-first-orch-codex" },
   { id = "devswarm-child-role", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-child-role.js\"", timeout = 10, check = "devswarm-child-role" },
   { id = "version-alert", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/version-alert.js\"", timeout = 10, check = "version-alert" },
   { id = "codex-availability", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/codex-availability.js\"", timeout = 10, check = "codex-availability" },
@@ -502,7 +502,7 @@ value = [
 doc = "The codex UserPromptSubmit hook entries, in dispatch order."
 value = [
   { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "verify-first" },
-  { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "" },
+  { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "task-tracker" },
   { id = "idle-agent-sweep", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "limit-conserve-inject" },
   { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "devswarm-parent-inbox" },

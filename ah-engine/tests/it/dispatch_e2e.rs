@@ -1302,9 +1302,15 @@ fn the_gate_cuts_a_repeated_reminder_through_the_daemon_and_off_it_is_the_node_o
     let e = Env::new("inject-gate");
     // task-tracker's Node command is replaced by a stand-in that prints the short reminder every turn
     let say = format!(r#"printf '{{"hookSpecificOutput":{{"hookEventName":"UserPromptSubmit","additionalContext":"{}"}}}}\n'"#, short_reminder());
-    let map = event_map(&e, "UserPromptSubmit", &say, "true");
+    // the engine answers the real task-tracker natively; a session that could be a DevSwarm Primary is handed to Node, which is
+    // what lets the stand-in take its place
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "UserPromptSubmit").into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().map(|id| (id.clone(), if id == "task-tracker" { say.as_str() } else { "true" }.into())).collect();
+    let map = e.dir.join("UserPromptSubmit-map.json");
+    std::fs::write(&map, serde_json::json!({ "UserPromptSubmit": m }).to_string()).unwrap();
     let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
-    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
+    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3"), ("DEVSWARM_REPO_ID", "r")];
     warm(&e, &args, &on);
     let seen: Vec<String> = (0..5).map(|_| context_of(&e.run_with(&args, false, &ups_payload("sess-on"), true, &on).1)).collect();
     // turn 1 is the first injection of the session; 2 and 3 are suppressed; 4 is the keepalive; 5 suppressed again
@@ -1326,7 +1332,7 @@ fn the_gate_cuts_a_repeated_reminder_through_the_daemon_and_off_it_is_the_node_o
     assert!(status.contains("inject_gate"), "{status}");
     assert!(report.contains("sess-on") && report.contains("suppressed_bytes"), "{report}");
     // switched off, every turn is the hook's own output, byte for byte
-    let off = [("ANTIHALL_INJECT_GATE", "0")];
+    let off = [("ANTIHALL_INJECT_GATE", "0"), ("DEVSWARM_REPO_ID", "r")];
     let node_bytes = e.run_with(&args, true, &ups_payload("sess-off"), true, &off).1;
     for _ in 0..4 {
         assert_eq!(e.run_with(&args, false, &ups_payload("sess-off"), true, &off).1, node_bytes);

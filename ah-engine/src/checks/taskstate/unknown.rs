@@ -82,12 +82,39 @@ fn counter(v: Option<&Value>) -> R<f64> {
     Ok(if n.is_nan() { 0.0 } else { n })
 }
 
-/// `unknownNote(taskMap, { sessionId, tag })`: the one short line, or an empty string. Throttled by the set of unknown ids and a
-/// per-session maximum; state lives in `<home>/.anti-hall/last-unknown-<tag>-<session>.json`.
-pub fn unknown_note(tasks: &TaskMap, home: &str, session_id: &str, tag: &str) -> R<String> {
+/// What the unknown-state note will say and the file write that goes with saying it.
+pub struct NotePlan {
+    /// The note, empty when there is nothing to say (or it was said already, or said too often).
+    pub note: String,
+    write: Option<NoteWrite>,
+}
+
+struct NoteWrite {
+    dir: std::path::PathBuf,
+    file: std::path::PathBuf,
+    body: String,
+    prefix: &'static str,
+}
+
+impl NotePlan {
+    /// Remember that the note was said and sweep stale files of its kind. The note when it was saved, else nothing: a note that
+    /// could not be remembered is not said, as in Node.
+    pub fn apply(self) -> String {
+        let Some(w) = self.write else { return self.note };
+        if std::fs::create_dir_all(&w.dir).is_err() || std::fs::write(&w.file, w.body).is_err() {
+            return String::new();
+        }
+        prune_stale(&w.dir, w.prefix, &w.file);
+        self.note
+    }
+}
+
+/// `unknownNote(taskMap, { sessionId, tag })` decided but not yet written: the note, and the write that must follow it.
+pub fn unknown_note_plan(tasks: &TaskMap, home: &str, session_id: &str, tag: &str) -> R<NotePlan> {
     let mut ids = unknown_ids(tasks);
+    let none = NotePlan { note: String::new(), write: None };
     if ids.is_empty() {
-        return Ok(String::new());
+        return Ok(none);
     }
     let count = ids.len();
     js_sort(&mut ids);
@@ -109,11 +136,14 @@ pub fn unknown_note(tasks: &TaskMap, home: &str, session_id: &str, tag: &str) ->
         last_n = counter(parsed.get("n"))?;
     }
     if last_hash == hash || last_n >= defaults::num("taskstate.unknown_max_notes") as f64 {
-        return Ok(String::new());
+        return Ok(none);
     }
-    if std::fs::create_dir_all(&dir).is_err() || std::fs::write(&file, format!("{{\"hash\":\"{hash}\",\"n\":{}}}", last_n + 1.0)).is_err() {
-        return Ok(String::new());
-    }
-    prune_stale(&dir, prefix, &file);
-    Ok(defaults::render("taskstate.unknown_note_text", &[("n", &count)]))
+    let body = format!("{{\"hash\":\"{hash}\",\"n\":{}}}", last_n + 1.0);
+    Ok(NotePlan { note: defaults::render("taskstate.unknown_note_text", &[("n", &count)]), write: Some(NoteWrite { dir, file, body, prefix }) })
+}
+
+/// `unknownNote(taskMap, { sessionId, tag })`: the one short line, or an empty string. Throttled by the set of unknown ids and a
+/// per-session maximum; state lives in `<home>/.anti-hall/last-unknown-<tag>-<session>.json`.
+pub fn unknown_note(tasks: &TaskMap, home: &str, session_id: &str, tag: &str) -> R<String> {
+    Ok(unknown_note_plan(tasks, home, session_id, tag)?.apply())
 }

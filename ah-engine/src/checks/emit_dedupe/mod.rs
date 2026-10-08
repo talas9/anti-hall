@@ -307,6 +307,54 @@ fn entry(fields: Vec<(&str, Js)>) -> Js {
 
 /// `shouldEmit(opts)`: decide and record. `Ok(true)` = emit.
 pub fn should_emit(st: &Settings, o: &Opts<'_>) -> Result<bool, Defer> {
+    evaluate(st, o, true)
+}
+
+/// The decision of [`should_emit`] without recording it: for a caller that has other effects to order and must learn first
+/// whether the store can decide at all ([`Defer`]), so that a deferral leaves no trace. `Ok(emit)` is what `should_emit` would
+/// answer on the same state, except that a failed write there answers `true` whatever the decision.
+pub fn dry_run(st: &Settings, o: &Opts<'_>) -> Result<bool, Defer> {
+    evaluate(st, o, false)
+}
+
+/// `record(opts)`: record an emit the caller makes regardless, so that later lookalikes still pending are suppressed.
+/// A write that fails is lost silently, as in Node.
+pub fn record(st: &Settings, o: &Opts<'_>) -> Result<(), Defer> {
+    if disabled(st) || o.session_id.is_empty() || o.key.is_empty() {
+        return Ok(());
+    }
+    if st.home.is_empty() {
+        return Err(Defer);
+    }
+    let now = now_ms();
+    let (ch, k) = exact_id(o.content);
+    let e = entry(vec![
+        ("hash", Js::Str(sha1_hex((o.normalize)(o.content).as_bytes()))),
+        ("tp", js_opt(tp_id(o.transcript_path))),
+        ("lastEmittedAt", Js::Num(now)),
+        ("lastSeenAt", Js::Num(now)),
+        ("turnsSinceEmit", Js::Num(0.0)),
+        ("ch", ch),
+        ("k", k),
+    ]);
+    match write_entry(&st.home, o.session_id, o.key, e, now) {
+        Ok(()) | Err(WriteErr::Io) => Ok(()),
+        Err(WriteErr::Defer) => Err(Defer),
+    }
+}
+
+/// Whether [`record`] could write for this session: `Err` when the session file is one the engine cannot read as Node does.
+pub fn record_ready(st: &Settings, session: &str) -> Result<(), Defer> {
+    if disabled(st) || session.is_empty() {
+        return Ok(());
+    }
+    if st.home.is_empty() {
+        return Err(Defer);
+    }
+    read_state(&state_path(&st.home, session)).map(|_| ())
+}
+
+fn evaluate(st: &Settings, o: &Opts<'_>, write: bool) -> Result<bool, Defer> {
     if disabled(st) || o.session_id.is_empty() || o.key.is_empty() {
         return Ok(true);
     }
@@ -415,6 +463,9 @@ pub fn should_emit(st: &Settings, o: &Opts<'_>) -> Result<bool, Defer> {
         f.push(("turnsSinceEmit", Js::Num(next_turns)));
         entry(f)
     };
+    if !write {
+        return Ok(emit);
+    }
     match write_entry(home, o.session_id, o.key, new_entry, now) {
         Ok(()) => {}
         Err(WriteErr::Io) => return Ok(true), // cannot persist: never suppress on unverifiable state

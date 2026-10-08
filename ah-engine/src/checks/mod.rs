@@ -30,6 +30,7 @@ pub mod guardkit;
 pub mod handover;
 pub mod idle_agent_sweep;
 pub mod jsport;
+pub mod mcp_reaper;
 pub mod merge_gate;
 pub mod merge_side_pick;
 pub mod model_routing;
@@ -50,6 +51,7 @@ pub mod stale_agent_stop_note;
 pub mod swarm_guard;
 pub mod task_guard;
 pub mod task_lifecycle_log;
+pub mod task_tracker;
 pub mod taskkit;
 pub mod tasklist_guard;
 pub mod taskstate;
@@ -188,7 +190,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 62] = [
+    static ALL: [&dyn Check; 65] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -206,6 +208,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &phase_tracker::PhaseTracker,
         &scripted::ORCH_ON_SPAWN,
         &verify_first_orch::VerifyFirstOrch,
+        &verify_first_orch::VerifyFirstOrchCodex,
         &verify_first_prompt::VerifyFirst,
         &idle_agent_sweep::IdleAgentSweep,
         &emit_dedupe::EmitDedupeReset,
@@ -251,6 +254,8 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &devswarm_gates::DevswarmParentReplyTracker,
         &devswarm_gates::DevswarmChildDrain,
         &sibling_sweep::SiblingSweep,
+        &mcp_reaper::SessionEndMcpReaper,
+        &task_tracker::TaskTracker,
     ];
     &ALL
 }

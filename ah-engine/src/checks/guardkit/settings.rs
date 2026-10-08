@@ -279,6 +279,36 @@ pub fn get_number(st: &Settings, entry: &V) -> f64 {
     }
 }
 
+/// A string setting without a plugin option or a legacy file (`settings.get` of a `type: 'string'` entry): the first of the
+/// environment variable, the `settings.json` value (a string, a number or a boolean, read as its JavaScript text) that is not
+/// blank after trimming, else the entry's `default`.
+///
+/// Mirrors `hooks/lib/settings.js` `get` for a string entry.
+pub fn get_string(st: &Settings, entry: &V) -> String {
+    let env_name = entry.str_field("env");
+    if !env_name.is_empty()
+        && let Some(raw) = st.env.get(env_name)
+        && !js_trim(raw).is_empty()
+    {
+        return js_trim(raw).to_string();
+    }
+    let (section, key) = (entry.str_field("section"), entry.str_field("key"));
+    if let Some(v) =
+        read_object(st, defaults::text("guardkit.settings_file")).and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).cloned())
+    {
+        match &v {
+            Value::String(t) if !js_trim(t).is_empty() => return js_trim(t).to_string(),
+            Value::Number(_) | Value::Bool(_) => {
+                if let Some(t) = js_string_of(&v) {
+                    return t;
+                }
+            }
+            _ => {}
+        }
+    }
+    entry.str_field("default").to_string()
+}
+
 /// The effective value of a boolean switch: `entry` is the switch table from the defaults.
 ///
 /// Mirrors `hooks/lib/settings.js` `get` for a boolean setting without a legacy file.

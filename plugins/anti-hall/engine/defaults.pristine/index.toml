@@ -44,5 +44,7 @@ files = [
     "sibling_sweep.toml",
     "limits.toml",
     "script.toml",
+    "mcp_reaper.toml",
+    "task_tracker.toml",
 ]
 extra_dir = "hooks.d"

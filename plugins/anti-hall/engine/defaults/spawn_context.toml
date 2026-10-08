@@ -229,6 +229,10 @@ value = ["agent_id", "agent_type"]
 doc = "One-line description of the verify-first-orch check in the generated reference."
 value = "SessionStart orchestration text for the Claude entry: composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node (port of verify-first-orch.js --host=claude)."
 
+[verify_first_orch.summary_codex]
+doc = "One-line description of the verify-first-orch-codex check in the generated reference."
+value = "SessionStart orchestration text for the Codex entry (the same hook without --host=claude, so never Claude-confident): composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node."
+
 [verify_first_orch.event]
 doc = "The only event the hook answers."
 value = "SessionStart"

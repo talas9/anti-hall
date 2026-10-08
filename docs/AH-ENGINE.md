@@ -141,8 +141,19 @@ labelled with how it was measured in the README of `ah-engine/`.
   the Node hook's; and the batch 14 to 16 ports: the spawn and comms guards `swarm-guard` (the spawn-rate and
   memory-pressure limiter, with a lock file shared with the Node hook) and `devswarm-comms-guard`, and the session gates
   `jev-weekly-scorecard`, `jev-review-reminder` and `repair-on-reload`.
+- **Node-only ports.** `task-tracker` (UserPromptSubmit, Claude and Codex entries) reproduces the directive/reminder cycle,
+  the transcript-growth and window triggers, the keepalive and burst dedupe, the open-tasks line, the unknown-state note, the
+  scoring of the previous turn's dispatch demand and the Jev `newRequest` label of each prompt (the same request through the
+  engine's Jev lane). It hands to Node, before anything is written, a session that could be a DevSwarm Primary, a session with a
+  task the per-turn DISPATCH NOW line would name (it counts running agents and asks Jev for a tier), a dispatch-tier outcome
+  still to label, and any state file only JavaScript reads. `session-end-mcp-reaper` (SessionEnd) sweeps the MCP orphans a crashed
+  session left behind with Node's exact selection rules (PID 1 must be init, parent PID 1, MCP command signature, not a test
+  runner or user-excluded, old enough, not owned by the service manager, capped) and Node's audit log; it never signals more than
+  Node would, never itself, its parent or a pid below 2, and hands to Node a user pattern it cannot translate exactly, a start
+  time not in the `ps` form, an ambiguous local time and a request whose `TZ` differs from the daemon's. Compared with the real
+  hooks in `tests/task_tracker_parity.rs` and `tests/mcp_reaper_parity.rs` (the latter on fake `ps` and `launchctl` programs).
 - **Spawn/path context ports.** `inbox-read-guard` (PreToolUse on Read), `phase-tracker` (PreToolUse on Agent and Task),
-  `orch-on-spawn` (PreToolUse on spawns) and `verify-first-orch` (SessionStart, the Claude entry only). They share
+  `orch-on-spawn` (PreToolUse on spawns), `verify-first-orch` (SessionStart, the Claude entry) and `verify-first-orch-codex` (the Codex entry: the same hook without the `--host=claude` flag, so no session is ever Claude-confident and the host's config directory is never read; same coverage otherwise). They share
   `checks/spawnctx`: the home directory the state files live under (with the test-run refusal of the real home), the
   DevSwarm detector, session-id sanitizing and the orchestration marker with its prune sweep. Each was compared against
   the real Node hook on a corpus of 70 to 103 payloads, on exit code, stdout bytes, stderr bytes and the state files left
@@ -199,7 +210,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |
 | Built-in `fable-availability` check: reads the host's model cache, writes `~/.anti-hall/fable-availability.json` and prints the availability note when a Fable model is entitled; a config file the engine's JSON reader rejects defers | implemented | D29-D31, D74 |
-| Built-in `inbox-read-guard`, `phase-tracker`, `orch-on-spawn` and `verify-first-orch` checks (the spawn/path context ports) with exact parity on the paths they answer; the cases that need Node's own probes defer | implemented | D29-D31, D74, D75 |
+| Built-in `inbox-read-guard`, `phase-tracker`, `orch-on-spawn`, `verify-first-orch` and `verify-first-orch-codex` checks (the spawn/path context ports) with exact parity on the paths they answer; the cases that need Node's own probes defer | implemented | D29-D31, D74, D75 |
 | Built-in `handover-resume` and `precompact-snapshot` checks (handover persistence) with exact parity on the corpus; unreproducible cases defer | implemented | D29-D31, D74 |
 | Built-in `codex-availability`, `codex-quota-detect` and `codex-nudge` checks (Codex availability and quota) with exact parity on the corpus; unreproducible cases defer | implemented | D29-D31, D74 |
 | Built-in `model-routing` check for Agent/Task spawns: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches | implemented | D29-D31, D75 |
@@ -677,6 +688,8 @@ Files:
 | `devswarm_role.toml` | names, switches and message templates of the `devswarm-child-role` and `devswarm-parent-gate` checks |
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
+| `mcp_reaper.toml` | the session-end MCP sweep: its patterns, init names, age floor, cap, grace period, commands and audit log texts |
+| `task_tracker.toml` | the task-tracker directive and reminder texts, window and growth thresholds, the open-tasks line, the Jev label question and the demand-metrics file |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
 | `inject_gate.toml` | the injection gate: its settings (`context.injectGate*`), what it recognises in the hooks' output, its state bounds and wire words |
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |

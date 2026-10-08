@@ -77,6 +77,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `phase-tracker` | Records each Agent or Task spawn in ~/.anti-hall (the statusline's live swarm bar and the running-agents heartbeat); never blocks (port of phase-tracker.js). |
 | `orch-on-spawn` | Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker defers to Node, which owns the claim race (port of orch-on-spawn.js). |
 | `verify-first-orch` | SessionStart orchestration text for the Claude entry: composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node (port of verify-first-orch.js --host=claude). |
+| `verify-first-orch-codex` | SessionStart orchestration text for the Codex entry (the same hook without --host=claude, so never Claude-confident): composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node. |
 | `verify-first` | UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node (port of verify-first.js). |
 | `idle-agent-sweep` | UserPromptSubmit: lists agents that finished but were never stopped or closed, and the call that ends each (port of idle-agent-sweep.js). |
 | `emit-dedupe-reset` | SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted (port of emit-dedupe-reset.js). |
@@ -122,6 +123,8 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `devswarm-parent-reply-tracker` | DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm send (switch off, child workspace, other tool, command without the devswarm and send words); a plausible send defers to the Node hook, which records the reply state (port of devswarm-parent-reply-tracker.js). |
 | `devswarm-child-drain` | DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child) and when it would stay silent before counting any mail (not a Bash call, a subagent's call, an `inbox read-primary` command, no usable workspace id, no descriptor naming an inbox); anything that needs the unread count defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js). |
 | `sibling-sweep` | Stop and SubagentStop reminder: when the reply states the cause of a bug in a fix context and the turn shows no search for other occurrences of the same pattern, asks once per cause to search, fix or list every occurrence and state the search run; counts reminders and follow-through (engine-only, no Node twin). |
+| `session-end-mcp-reaper` | SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node (port of session-end-mcp-reaper.js). |
+| `task-tracker` | UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the newRequest Jev label of each prompt and the previous turn's demand score; a session that could be a DevSwarm Primary, or has a task the per-turn DISPATCH NOW line would name or a dispatch-tier outcome still to record, defers to Node (port of task-tracker.js). |
 
 ## Settings
 
@@ -1286,6 +1289,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first_orch.projects_dir` | `projects` |  |  | Directory of the host's transcripts, relative to the host's config directory. |
 | `verify_first_orch.root_placeholder` | `<abs>` |  |  | Placeholder in the compact text that is replaced by the plugin root. |
 | `verify_first_orch.summary` | `SessionStart orchestration text for the Claude entry: composes the full or co...` |  |  | One-line description of the verify-first-orch check in the generated reference. |
+| `verify_first_orch.summary_codex` | `SessionStart orchestration text for the Codex entry (the same hook without --...` |  |  | One-line description of the verify-first-orch-codex check in the generated reference. |
 
 ### jev.toml / env
 
@@ -2085,7 +2089,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
+| `output_verify.line_terminators` | `\n
+  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
