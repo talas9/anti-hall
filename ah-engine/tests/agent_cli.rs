@@ -245,7 +245,8 @@ fn metrics_impact_and_rollups_survive_a_restart_and_a_kill() {
     assert_eq!(e.hook(FORCE).2, 2);
     assert_eq!(e.hook("git status").2, 0);
     let before = counter_total(&e.json(&["metrics", "--json"]), "check_calls");
-    assert!(before >= 3, "{before}");
+    // the two calls above; the warm-up call counts only when the daemon is up within client.cold_start_wait_ms
+    assert!(before >= 2, "{before}");
 
     // a clean stop keeps a snapshot at exit
     e.run(&["stop"]);
