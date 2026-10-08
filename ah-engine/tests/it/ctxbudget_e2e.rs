@@ -113,7 +113,7 @@ fn a_quiet_prompt_has_no_stray_newlines_whichever_checks_answer_natively() {
 }
 
 #[test]
-fn a_prompt_fire_is_answered_natively_and_only_what_still_defers_reaches_node() {
+fn a_prompt_fire_and_the_post_handover_gate_are_answered_by_the_scripts() {
     let e = Env::new("ups-defer");
     let loud = ["limit-conserve-inject", "auto-handover"];
     let map = e.map("UserPromptSubmit", &loud, "echo NODE-{id}");
@@ -123,11 +123,11 @@ fn a_prompt_fire_is_answered_natively_and_only_what_still_defers_reaches_node() 
     assert!(!out.contains("NODE-") && out.contains("auto-handover: context is at ~90%"), "{out:?}");
     let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW, ("ANTIHALL_LIMIT_CONSERVE", "on")]);
     assert!(!out.contains("NODE-") && out.contains("limit conservation is active (manual-on)"), "{out:?}");
-    // the post-handover gate on a prompt with text consults Jev in Node: still deferred
+    // the post-handover gate on a prompt with text (it asks Jev without waiting, as Node does) is answered by the script too
     std::fs::create_dir_all(e.dir.join("home/.anti-hall/auto-handover")).unwrap();
     std::fs::write(e.dir.join("home/.anti-hall/auto-handover/e2e.json"), r#"{"fired":true,"firedPct":85,"lastNagPct":89,"handoverPct":80}"#).unwrap();
     let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW]);
-    assert!(out.contains("NODE-auto-handover") && !out.contains("NODE-limit-conserve-inject"), "{out:?}");
+    assert!(!out.contains("NODE-") && out.contains("post-handover new-work gate"), "{out:?}");
 }
 
 #[test]

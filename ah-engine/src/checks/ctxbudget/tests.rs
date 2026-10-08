@@ -2,7 +2,7 @@
 //! change that makes a check defer less (a missed state write) or more (a lost offload) fails here. The Node-versus-
 //! engine comparison over a large corpus is `tests/node_parity` (the Rust Node-parity test); the expected values of the JavaScript coercions
 //! below were computed with Node (`Number()`, `parseInt(x, 10)`, `new Date(x).getTime()`).
-use super::limit::iso_ms;
+use crate::dispatch::inject::iso_ms;
 use super::pct::{Pct, context_pct};
 use super::setting::{get, js_number, js_parse_int};
 use crate::checks::git::util::Settings;
@@ -13,27 +13,11 @@ use crate::rules::Subject;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-const CACHE: &str = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json";
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
 }
 
-fn iso(ms: u64) -> String {
-    // seconds precision is enough for these fixtures; format from the civil date
-    let secs = (ms / 1000) as i64;
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem % 3600 / 60, rem % 60)
-}
 
 /// A scratch home with the files given (path relative to the home, content).
 struct Home(PathBuf);
@@ -84,7 +68,7 @@ fn call(name: &str, payload: &Value, env: &RequestEnv) -> Verdict {
 }
 
 fn empty() -> Verdict {
-    super::ups_empty()
+    Verdict::Exact(crate::checks::Exact { code: 0, out: defaults::text("ctxbudget.ups_empty").to_string(), err: String::new() })
 }
 
 /// A native answer that injects or blocks (not the quiet answer, not a deferral).
@@ -100,13 +84,6 @@ fn lines(ls: &[String]) -> String {
     ls.join("\n") + "\n"
 }
 
-fn ups(home: &Home, tr: bool) -> Value {
-    let mut p = json!({"hook_event_name":"UserPromptSubmit","session_id":"sess1","prompt":"hello","cwd":"/tmp"});
-    if tr {
-        p["transcript_path"] = json!(format!("{}/tr.jsonl", home.path()));
-    }
-    p
-}
 
 fn stop(home: &Home) -> Value {
     json!({"hook_event_name":"Stop","session_id":"sess1","stop_hook_active":false,"transcript_path":format!("{}/tr.jsonl", home.path())})
@@ -282,43 +259,7 @@ fn settings_resolve_env_then_file_then_option_then_default() {
 
 // ---- limit-conserve-inject -----------------------------------------------------------------------------------
 
-fn cache(five: u32, resets: &str, ts: u64) -> (&'static str, String) {
-    (CACHE, json!({"timestamp": ts, "data": {"fiveHourPercent": five, "fiveHourResetsAt": resets}}).to_string())
-}
 
-#[test]
-fn limit_conserve_answers_quiet_and_active_cases() {
-    let name = "limit-conserve-inject";
-    let p = ups(&Home::new("x", &[]), false);
-    let future = iso(now_ms() + 3_600_000);
-    let past = iso(now_ms() - 3_600_000);
-    let run = |files: Vec<(&str, String)>, env: &[(&str, &str)]| {
-        let h = Home::new("lc", &files);
-        call(name, &p, &h.env(env))
-    };
-    assert_eq!(run(vec![], &[]), empty(), "no cache");
-    assert_eq!(run(vec![(CACHE, "{bad".into())], &[]), empty(), "unreadable cache");
-    assert_eq!(run(vec![cache(84, &future, now_ms())], &[]), empty(), "just under the threshold");
-    assert!(loud(&run(vec![cache(85, &future, now_ms())], &[])), "at the threshold");
-    assert_eq!(run(vec![cache(99, &past, now_ms())], &[]), empty(), "the bucket has reset");
-    assert_eq!(run(vec![cache(99, "", now_ms() - 7 * 3_600_000)], &[]), empty(), "an old snapshot without a reset time");
-    assert!(loud(&run(vec![cache(99, "", now_ms() - 3_600_000)], &[])), "a recent snapshot without a reset time");
-    assert_eq!(run(vec![cache(99, "2099-01-01T00:00:00", now_ms())], &[]), Verdict::Defer, "a reset text only JavaScript can read");
-    assert_eq!(run(vec![cache(99, &future, now_ms())], &[("ANTIHALL_LIMIT_CONSERVE", "off")]), empty(), "mode off");
-    assert!(loud(&run(vec![], &[("ANTIHALL_LIMIT_CONSERVE", "on")])), "mode on");
-    assert!(loud(&run(vec![cache(60, &future, now_ms())], &[("ANTIHALL_LIMIT_THRESHOLD", "0x32")])), "a hexadecimal threshold");
-    assert_eq!(run(vec![cache(60, &future, now_ms())], &[("ANTIHALL_LIMIT_THRESHOLD", "100")]), empty(), "a threshold above the maximum clamps to 99");
-    assert_eq!(
-        run(vec![cache(99, &future, now_ms()), (".anti-hall/skip.json", format!("{{\"limit-conserve\":{}}}", now_ms() + 60_000))], &[]),
-        empty(),
-        "skipped"
-    );
-    assert!(loud(&run(vec![cache(99, &future, now_ms()), (".anti-hall/skip.json", format!("{{\"all\":{}}}", now_ms() - 1))], &[])), "an expired skip");
-    assert_eq!(run(vec![cache(99, &future, now_ms())], &[("ANTIHALL_JUDGE_CHILD", "1")]), Verdict::Allow, "the judge child prints nothing");
-    assert_eq!(run(vec![("x", String::new())], &[]), empty());
-    assert_eq!(run(vec![(CACHE, "{\"data\":{\"x\":\"\\ud83d\"}}".into())], &[]), Verdict::Defer, "a lone surrogate escape is for Node");
-    assert_eq!(call(name, &p, &RequestEnv::from_pairs([("HOME", "relative")])), Verdict::Defer, "no usable home directory");
-}
 
 // ---- context percent -----------------------------------------------------------------------------------------
 
@@ -373,79 +314,6 @@ fn latch(v: Value) -> (&'static str, String) {
     (".anti-hall/auto-handover/sess1.json", v.to_string())
 }
 
-#[test]
-fn auto_handover_answers_quiet_fire_nag_and_rearm_cases() {
-    let name = "auto-handover";
-    let at = |pct: u64| lines(&[usage_line(pct * 2000)]);
-    let env200 = [("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")];
-    let case = |files: Vec<(&str, String)>, env: &[(&str, &str)], payload: &dyn Fn(&Home) -> Value| {
-        let mut files = files;
-        files.insert(0, ("tr.jsonl", String::new()));
-        let h = Home::new("ah", &files);
-        call(name, &payload(&h), &h.env(env))
-    };
-    let tr = |pct: u64| ("tr.jsonl", at(pct));
-    let plain = |h: &Home| ups(h, true);
-    assert_eq!(case(vec![tr(50)], &env200, &plain), empty(), "below the threshold");
-    assert_eq!(case(vec![tr(84)], &env200, &plain), empty(), "just below");
-    assert!(loud(&case(vec![tr(85)], &env200, &plain)), "the crossing fires");
-    assert!(loud(&case(vec![tr(90), latch(json!({"fired": true}))], &env200, &plain)), "fired and still over: nags and the gate are Node's");
-    assert_eq!(case(vec![tr(20), latch(json!({"fired": true}))], &env200, &plain), empty(), "back below: the latch is re-armed by a write");
-    assert_eq!(case(vec![tr(20), latch(json!({"softFired": true}))], &env200, &plain), empty(), "back below with the soft latch set");
-    assert_eq!(case(vec![tr(20), latch(json!({"fired": "true"}))], &env200, &plain), empty(), "only a literal true counts as fired");
-    assert!(loud(&case(vec![tr(90)], &[], &plain)), "against a guessed window one soft advisory is due, and it is Node's");
-    assert_eq!(case(vec![tr(90), latch(json!({"softFired": true}))], &[], &plain), empty(), "but it is not repeated");
-    assert_eq!(case(vec![tr(90), ("x", "".into())], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain), empty(), "the variable set to 0 disables it");
-    assert_eq!(
-        case(vec![tr(90), latch(json!({"fired": true}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain),
-        empty(),
-        "disabled with a latch set: cleared by a write"
-    );
-    assert_eq!(case(vec![tr(90)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0x32")], &plain), empty(), "parseInt reads 0x32 as 0, which disables it");
-    assert_eq!(
-        case(vec![tr(90), (".anti-hall/settings.json", r#"{"autoHandover":{"enabled":false}}"#.into())], &env200, &plain),
-        empty(),
-        "disabled in settings"
-    );
-    assert!(loud(&case(vec![tr(30)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "25"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain)), "a lower threshold");
-    assert!(
-        loud(&case(vec![tr(10)], &[("ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", "15000"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain)),
-        "the token ceiling"
-    );
-    assert_eq!(case(vec![tr(90), (".anti-hall/skip.json", format!("{{\"auto-handover\":{}}}", now_ms() + 60_000))], &env200, &plain), empty(), "skipped");
-    assert_eq!(case(vec![tr(90)], &[("ANTIHALL_JUDGE_CHILD", "1")], &plain), Verdict::Allow);
-    assert_eq!(
-        case(vec![tr(90)], &env200, &|h| ups(h, true)
-            .as_object()
-            .map(|o| {
-                let mut o = o.clone();
-                o.insert("agent_id".into(), json!("a"));
-                Value::Object(o)
-            })
-            .unwrap()),
-        empty(),
-        "a subagent"
-    );
-    assert_eq!(case(vec![tr(90)], &env200, &|_| json!([1])), empty(), "an array payload");
-    assert_eq!(case(vec![tr(90)], &env200, &|_| json!(5)), empty(), "a scalar payload");
-    assert!(
-        loud(&case(vec![tr(90)], &env200, &|h| {
-            let mut p = ups(h, true);
-            p.as_object_mut().unwrap().remove("session_id");
-            p
-        })),
-        "the tag is a hash of the path"
-    );
-    assert_eq!(case(vec![tr(90)], &env200, &|_| json!({"prompt": "x"})), empty(), "no session and no transcript: nothing to key on");
-    assert_eq!(
-        case(vec![tr(20), (".anti-hall/auto-handover/sess1.json", "{\"fired\":true,\"x\":\"\\ud83d\"}".into())], &env200, &plain),
-        Verdict::Defer,
-        "a latch only JavaScript can parse"
-    );
-    let fresh = |pct: u64, age_ms: u64| (".anti-hall/context-pct/sess1.json", json!({"pct": pct, "maxTokens": 200_000, "ts": now_ms() - age_ms}).to_string());
-    assert!(loud(&case(vec![tr(10), fresh(95, 1000)], &env200, &plain)), "a fresh statusline reading over the threshold");
-    assert_eq!(case(vec![tr(10), fresh(95, 3_600_000)], &env200, &plain), empty(), "a stale one is ignored");
-}
 
 // ---- auto-handover-pause-nag -----------------------------------------------------------------------------------
 

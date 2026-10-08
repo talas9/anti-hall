@@ -559,6 +559,31 @@ value = "tokens"
 doc = "The Markdown mark that opens a handover section heading (followed by white space)."
 value = "##"
 
+[ctxbudget.ah_jev_id]
+doc = "The Jev integration the post-handover gate consults (detached, never changes the injected text)."
+value = "postHandoverGate"
+
+[ctxbudget.ah_jev_instructions]
+doc = "The question put to Jev about the user's request; {b} is the budget percent and {tok} the token estimate text."
+value = "The session is past its auto-handover threshold and a handover is saved. Does the user's request below fit in the remaining post-handover budget of about {b}% of the context window{tok} \u2014 e.g. a quick question, finishing the in-flight task, or spawning a separate workspace \u2014 rather than needing a fresh context?"
+
+[ctxbudget.ah_jev_tokens]
+doc = "Token estimate appended to the Jev question; {k} is thousands of tokens."
+value = " (about {k}K tokens)"
+
+[ctxbudget.ah_jev_true]
+doc = "The label of a Jev answer that the request fits."
+value = "fits in the remaining budget"
+
+[ctxbudget.ah_jev_false]
+doc = "The label of a Jev answer that the request needs more than the budget."
+value = "needs more than the remaining budget"
+
+[ctxbudget.ah_jev_state_chars]
+doc = "How much of the prompt, in UTF-16 units, the Jev question carries."
+value = 4000
+min = 100
+
 # ---- compact-advice-guard ------------------------------------------------------------------------------------
 
 [ctxbudget.summary_compact_advice]

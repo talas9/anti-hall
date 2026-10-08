@@ -841,10 +841,6 @@ doc = "How long after a handover its writer may keep writing before the resume s
 value = 300000
 unit = "ms"
 
-[codex_handover.iso_ms_tail]
-doc = "How many characters the milliseconds and the zone end of an ISO time take (`.123Z`), which the writer note replaces by `Z`."
-value = 5
-
 [codex_handover.agent_type_keys]
 doc = "The fields of a spawn that can name the agent type, in the order they are tried."
 value = ["subagent_type", "agentType", "agent_type"]
@@ -876,3 +872,7 @@ value = ["-C", "{root}", "rev-parse", "--show-superproject-working-tree"]
 [codex_handover.tz_var]
 doc = "The environment variable that sets the time zone; a request whose value differs from this process's has its local-time conversions left to the Node hook."
 value = "TZ"
+
+[codex_handover.utc_zone_names]
+doc = "Values of the TZ variable that name UTC itself (no offset, no daylight saving): a request that sets one of these has its local date computed from the UTC clock; any other value of TZ hands the hook to Node."
+value = ["UTC", "GMT", "Etc/UTC", "Etc/GMT", "UCT", "Etc/UCT", "Zulu", "Etc/Zulu", "Universal", "Etc/Universal", "Greenwich", "Etc/Greenwich"]

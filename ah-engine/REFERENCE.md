@@ -1363,6 +1363,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `turn_gate.max_sigs` | `16` |  |  | How many distinct advisory signatures one key remembers per turn. |
 | `turn_gate.prefix` | `tg` |  |  | Family name of a turn-gate state file: the file is `<prefix>-<session>.json` and the pruning sweep takes the same name (the Node hook passes `tg` and the sweep appends the dash itself, commit ef0a30b). |
 | `turn_gate.session_max` | `80` |  |  | Longest session id part, in UTF-16 units, of a turn-gate file name. |
+| `turn_gate.sig_max` | `200` |  |  | Longest signature, in UTF-16 units, kept for one advisory (a longer one is cut). |
 | `turn_gate.tail_bytes` | `524288` |  |  | How many bytes at the end of the transcript are read to find the newest human prompt. |
 
 ### spawn_context.toml / inbox_read
@@ -2091,6 +2092,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ah_heading_next` | `Next action` |  |  | The handover section whose done-word marks the task complete. |
 | `ctxbudget.ah_heading_open` | `Open items` |  |  | The handover section whose emptiness marks the task complete. |
 | `ctxbudget.ah_housekeeping` | `inbox tick, peer check, BROADCAST bug sweep` |  |  | The built-in markers (case-insensitive substrings) of a scheduled housekeeping prompt that never gets the new-work gate (auto-handover-gate.js HOUSEKEEPING_MARKERS). |
+| `ctxbudget.ah_jev_false` | `needs more than the remaining budget` |  |  | The label of a Jev answer that the request needs more than the budget. |
+| `ctxbudget.ah_jev_id` | `postHandoverGate` |  |  | The Jev integration the post-handover gate consults (detached, never changes the injected text). |
+| `ctxbudget.ah_jev_instructions` | `The session is past its auto-handover threshold and a handover is saved. Does...` |  |  | The question put to Jev about the user's request; {b} is the budget percent and {tok} the token estimate text. |
+| `ctxbudget.ah_jev_state_chars` | `4000` |  |  | How much of the prompt, in UTF-16 units, the Jev question carries. |
+| `ctxbudget.ah_jev_tokens` | ` (about {k}K tokens)` |  |  | Token estimate appended to the Jev question; {k} is thousands of tokens. |
+| `ctxbudget.ah_jev_true` | `fits in the remaining budget` |  |  | The label of a Jev answer that the request fits. |
 | `ctxbudget.ah_label_estimated` | ` (ESTIMATED, assuming a standard 200k window; for a 1M-context session set AN...` |  |  | The estimate clause for any other estimated window. |
 | `ctxbudget.ah_label_inferred` | ` (inferred 1M window: observed usage already exceeded the standard 200k, so t...` |  |  | The estimate clause when the window was inferred to be one million tokens. |
 | `ctxbudget.ah_line_complete` | `🟢 **GOOD POINT TO {clear} NOW**: handover saved at {path}. Task looks complet...` |  |  | The good-point line when the task looks complete; {clear} the fresh-session command, {path} the handover path. |
@@ -2297,7 +2304,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session.case_update` | `update` |  |  | The case name stored in the update advisory's dedupe key. |
 | `session.changelog_file` | `CHANGELOG.md` |  |  | The changelog of a mirrored release, relative to its directory. |
 | `session.check_ignore_args` | `check-ignore, -q, .anti-hall/probe` |  |  | The git arguments (after -C <root>) that ask whether .anti-hall/ is ignored: exit 0 ignored, 1 not ignored. |
-| `session.claim_max_digits` | `15` |  |  | The most digits of a claimed count compared here; a longer one is rounded by JavaScript, so the hook defers. |
 | `session.claude_cli_baseline` | `2.1.238` |  |  | The Claude Code version the harness KB was last audited against (hooks/lib/claude-cli-baseline.js); a test keeps the two equal. |
 | `session.claude_cli_cache` | `.anti-hall/claude-cli-version.json` |  |  | The Claude CLI version cache the background probe writes, under the home directory. |
 | `session.claude_cli_guard` | `claude-cli-version` |  |  | The guard id of claude-cli-version, in its messages and in the skip file. |
@@ -2329,7 +2335,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session.devswarm_instead` | `see docs/KB-devswarm-hivecontrol.md.` |  |  | Advice of the DevSwarm drift advisory. |
 | `session.devswarm_summary` | `SessionStart advisory: the DevSwarm CLI drifted by major or minor from the ve...` |  |  | One-line description of the devswarm-version check in the generated reference. |
 | `session.devswarm_what` | `DevSwarm {installed} is installed; anti-hall's integration is verified agains...` |  |  | Headline of the DevSwarm drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing). |
-| `session.dot_git` | `.git` |  |  | The name that marks a git checkout's root. |
 | `session.drift_cache_ttl_ms` | `86400000` |  | ms | How long a drift probe's cache (claude-cli-version, devswarm-version, repo-self-drift) counts as fresh; an older one makes Node refresh it, which defers the engine's answer. |
 | `session.drift_counts_line` | `anti-hall repo self-drift — {parts} (docs/KB.md)` |  |  | The count-drift advisory line; {parts} are the differing counts. |
 | `session.drift_hooks_part` | `hooks: KB.md claims {claimed}, actual {actual}` |  |  | The hook-count part of the count-drift line. |
@@ -2338,9 +2343,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session.drift_why` | `Behavior may have drifted.` |  |  | The Why line of the DevSwarm and Claude CLI drift advisories. |
 | `session.event` | `SessionStart` |  |  | The only event these hooks run on, and the event name in the advisory envelope they print. |
 | `session.git_binary` | `git` |  |  | The git program the gitignore probe runs, found on the PATH the client forwarded. |
-| `session.git_poll_ms` | `5` |  | ms | How often the gitignore probe checks whether git has finished. |
 | `session.git_scrub_env` | `GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_PREFIX` |  |  | Environment variables removed before git runs, so the answer derives from the project directory alone. |
-| `session.gitdir_tag` | `gitdir:` |  |  | The prefix of the single line of a `.git` file that points at the real git directory. |
 | `session.gitignore_guard` | `gitignore-hint` |  |  | The guard id of the gitignore reminder in its message. |
 | `session.gitignore_instead` | `add `.anti-hall/` to .gitignore (or run /anti-hall:doctor --repair).` |  |  | Advice of the gitignore reminder. |
 | `session.gitignore_probe_ms` | `1000` | `AH_ENGINE_GITIGNORE_PROBE_MS` | ms | The longest the engine waits for the gitignore probe before it hands the hook to Node. Node waits 3000 ms, but the client gives up on the engine after client.deadline_ms, so a longer wait here could answer after the client has already left; a test keeps the shipped value below that deadline. |
@@ -2463,8 +2466,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.line_terminators` | `\n
-  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
@@ -2482,24 +2483,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.tool` | `Bash` |  |  | The only tool whose output is read. |
 | `output_verify.truncation_marker` | `\n...(truncated)...\n` |  |  | What joins the head and the tail of a cut scan text. |
 | `output_verify.ws_split_re` | `\s+` |  |  | Regex source that splits a simple command into words. |
-
-### response_guards.toml / reply_turn_gate
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `reply_turn_gate.agent_prefix` | `agent:` |  |  | Prefix of the turn id of a subagent payload: a subagent's turn is its own whole run. |
-| `reply_turn_gate.dir` | `turn-gate` |  |  | Directory of the gate's state files under the state directory. |
-| `reply_turn_gate.injected_re` | `^\s*<(?:task-notification\|system-reminder\|local-command\|command-name\|command-...` |  |  | Regex source of the text an injected block starts with (notifications and reminders), which is never a human prompt. |
-| `reply_turn_gate.main_agent` | `main` |  |  | The agent part of a slot key for the main agent (a payload without an agent id). |
-| `reply_turn_gate.max_sigs` | `16` |  |  | How many signatures one slot remembers for a turn (the oldest beyond this are dropped). |
-| `reply_turn_gate.prefix` | `tg` |  |  | Family name of a gate state file (`<prefix>-<session>.json`, the sanitised session id and the JSON extension follow); also the family name of its stale-file sweep, which appends the dash itself. |
-| `reply_turn_gate.session_max` | `80` |  |  | Longest session part of a gate state file name, in UTF-16 units. |
-| `reply_turn_gate.sig_max` | `200` |  |  | Longest advisory signature kept, in UTF-16 units. |
-| `reply_turn_gate.tail_bytes` | `524288` |  | bytes | How much of the end of the transcript is read to find the newest human prompt. |
-| `reply_turn_gate.type_text` | `text` |  |  | The content block type of a text block. |
-| `reply_turn_gate.type_tool_result` | `tool_result` |  |  | The content block type of a tool result: an entry holding one is not a human prompt. |
-| `reply_turn_gate.type_user` | `user` |  |  | The type of a user transcript entry. |
-| `reply_turn_gate.user_marker` | `"user"` |  |  | Text a transcript line must contain to be considered as a human prompt (a cheap filter before parsing). |
 
 ### response_guards.toml / replykit
 
@@ -2940,7 +2923,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_handover.index_file` | `INDEX.md` |  |  | The handover index file name. |
 | `codex_handover.index_sep` | `·` |  |  | The column separator of an INDEX.md row. |
 | `codex_handover.index_seq_prefix` | `seq ` |  |  | The text before the sequence number in the sequence column of an INDEX.md row. |
-| `codex_handover.iso_ms_tail` | `5` |  |  | How many characters the milliseconds and the zone end of an ISO time take (`.123Z`), which the writer note replaces by `Z`. |
 | `codex_handover.job_log_suffix` | `.log` |  |  | The suffix of a Codex job log file name. |
 | `codex_handover.job_logs_dir` | `jobs` |  |  | The directory of job logs inside each repository state directory. |
 | `codex_handover.job_max_age_ms` | `86400000` |  | ms | Oldest job log that is scanned, by modification time. |
@@ -3103,6 +3085,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_handover.unknown_session` | `unknown-session` |  |  | The session name used when a payload carries no usable session id. |
 | `codex_handover.until_re` | `\b(?:until\|resets?(?: at)?\|resum(?:e\|ing)(?: at)?\|available again(?: at)?)\s+...` |  |  | JavaScript source (flag i) of a trailing clause that names when Codex is back; the original lookahead after the terminator is written as a consumed character, which changes neither the match start nor the capture. |
 | `codex_handover.utc_words` | `utc, gmt, z` |  |  | Words after a date and time that mean UTC (compared without case). |
+| `codex_handover.utc_zone_names` | `12 items` |  |  | Values of the TZ variable that name UTC itself (no offset, no daylight saving): a request that sets one of these has its local date computed from the UTC clock; any other value of TZ hands the hook to Node. |
 | `codex_handover.weekdays` | `7 items` |  |  | Weekday names, lower case (a date string may lead with one, full or its first three letters). |
 | `codex_handover.writer_grace_ms` | `300000` |  | ms | How long after a handover its writer may keep writing before the resume says it kept running. |
 
@@ -4582,7 +4565,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_unknown_op` | `unknown file operation {op}` |  |  | Error a script sees when it asks a file operation the host does not have. Placeholder: {op}. |
 | `script.msg_write_refused` | `write refused: {why}` |  |  | Error a script sees when its write was refused. Placeholder: {why}. |
 | `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
-| `script.p95_budget_by_check` | `5 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). Batch 6 (2026-10-09, release no LTO, machine load average 12 to 17, so roughly twice the quiet figures): speculation-guard p50 236 us, p95 1,064 us (its corpus holds Jev asks and state writes), tasklist-guard p50 881 us, p95 2,775 us (it creates the progress directory, stats the progress and history files and appends to the session indexes); the other batch-6 checks stay under the 1,000 us default (dispatch-tier p95 510, model-routing 607, speculation-judge 338, silent-agent-nudge 967, task-guard 935). The compiled ports were not timed before removal, so these are the scripts' own p95s, not an added figure. A check not listed here is held to script.p95_budget_us. |
+| `script.p95_budget_by_check` | `12 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. |
 | `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
 | `script.read_max_bytes` | `4194304` |  | bytes | Upper bound of one `ah.fs.readText` read, whatever the script asks for. |
 | `script.readdir_max` | `10000` |  |  | Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole). |

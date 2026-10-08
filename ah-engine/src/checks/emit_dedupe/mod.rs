@@ -1,5 +1,5 @@
-//! The per-session emit-dedupe store (`hooks/lib/emit-dedupe.js`) and the built-in `emit-dedupe-reset` check
-//! (`hooks/emit-dedupe-reset.js`, SessionStart).
+//! The per-session emit-dedupe store (`hooks/lib/emit-dedupe.js`); the `emit-dedupe-reset` check (`hooks/emit-dedupe-reset.js`,
+//! SessionStart) is a plugin script (`engine/logic/emit-dedupe-reset.js`, store in `lib/74-emit-dedupe.js`).
 //!
 //! Several UserPromptSubmit hooks decide whether to repeat a block the model already holds. They share one state file per
 //! session, `~/.anti-hall/emit-dedupe/dedupe-<session>.json`, which the Node hooks that are not ported still read and
@@ -23,10 +23,7 @@ use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsval::{DateParse, Js, date_parse, js_to_string, number_to_string, parse_line};
 use crate::checks::guardkit::settings::{get_bool, get_number};
 use crate::checks::guardkit::tail::read_tail;
-use crate::checks::{Check, Verdict};
 use crate::defaults;
-use crate::reqenv::RequestEnv;
-use crate::rules::Subject;
 use serde_json::Value;
 
 #[cfg(test)]
@@ -489,7 +486,9 @@ fn bump_suppressed(home: &str, session: &str, now: f64) {
     }
 }
 
-/// `resetSession`: mark a context loss, so every record emitted before now counts as absent. Fail-open.
+/// `resetSession`: mark a context loss, so every record emitted before now counts as absent. Fail-open. The `emit-dedupe-reset`
+/// check is a plugin script now; this stays for the store's own unit tests.
+#[cfg(test)]
 pub fn reset_session(st: &Settings, session: &str) -> Result<(), Defer> {
     if disabled(st) || session.is_empty() {
         return Ok(());
@@ -502,16 +501,6 @@ pub fn reset_session(st: &Settings, session: &str) -> Result<(), Defer> {
     match write_entry(&st.home, session, defaults::text("emit_dedupe.reset_key"), e, now) {
         Err(WriteErr::Defer) => Err(Defer),
         _ => Ok(()),
-    }
-}
-
-/// The session id string `emit-dedupe-reset.js` derives: `String(payload.session_id)` unless null or absent. `Err` for an
-/// array or object id (`String(..)` of those is not reproduced here).
-fn reset_session_id(p: &Value) -> Result<String, Defer> {
-    match p.get("session_id") {
-        None | Some(Value::Null) => Ok(String::new()),
-        Some(Value::Array(_)) | Some(Value::Object(_)) => Err(Defer),
-        Some(v) => Ok(js_to_string(v)),
     }
 }
 
@@ -539,34 +528,5 @@ pub fn transcript_of(p: &Value) -> Result<Option<&str>, Defer> {
             }
         }
         _ => Ok(None),
-    }
-}
-
-/// The registered `emit-dedupe-reset` check.
-pub struct EmitDedupeReset;
-
-impl Check for EmitDedupeReset {
-    fn name(&self) -> &'static str {
-        "emit-dedupe-reset"
-    }
-
-    fn summary(&self) -> &'static str {
-        defaults::text("emit_dedupe.summary")
-    }
-
-    fn run(&self, _s: &Subject<'_>, _opts: &Value) -> Option<Verdict> {
-        Some(Verdict::Defer)
-    }
-
-    fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        if env.get(defaults::text("prompt_emit.judge_child_env")) == Some("1") {
-            return Some(Verdict::Allow);
-        }
-        let st = Settings::from_env(env);
-        let Ok(session) = reset_session_id(payload) else { return Some(Verdict::Defer) };
-        match reset_session(&st, &session) {
-            Ok(()) => Some(Verdict::Allow),
-            Err(Defer) => Some(Verdict::Defer),
-        }
     }
 }

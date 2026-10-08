@@ -331,12 +331,12 @@ fn ship_it_guard_script_matches_the_compiled_port() {
 }
 
 /// Every case of a golden corpus through the script; mismatches are listed (up to `limit`) before the test fails.
-fn golden_report(check: &str, limit: usize) {
+pub(super) fn golden_report(check: &str, limit: usize) {
     let cases = golden::load(check);
     let (mut bad, mut shown) = (0usize, 0usize);
     for c in &cases {
         let l = golden::lay(c);
-        let got = golden::run_case(check, &l).unwrap_or_else(|| panic!("{check}: no shipped script"));
+        let got = golden::run_case(check, &l, golden::repeat_of(c)).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = golden::verdict_json(&got, &l);
         let mut ok = got == c["expect"];
         if ok && c.get("watch").is_some() {
@@ -379,6 +379,25 @@ fn ask_guard_script_matches_the_compiled_port() {
 #[test]
 fn failure_nudge_script_matches_the_compiled_port() {
     golden_report("failure-root-cause-nudge", 12);
+}
+
+#[test]
+fn output_verify_script_matches_the_compiled_port() {
+    golden_report("output-verify-guard", 12);
+}
+
+#[test]
+fn session_scripts_match_their_compiled_ports() {
+    for check in ["devswarm-version", "claude-cli-version", "version-alert", "repo-self-drift", "defect-nudge", "progress-prune"] {
+        golden_report(check, 12);
+    }
+}
+
+#[test]
+fn handover_and_budget_scripts_match_their_compiled_ports() {
+    for check in ["emit-dedupe-reset", "precompact-snapshot", "limit-conserve-inject", "auto-handover", "handover-resume"] {
+        golden_report(check, 12);
+    }
 }
 
 #[test]
@@ -939,4 +958,53 @@ fn scan_throttle_script_matches_the_compiled_port() {
 fn merge_gate_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-gate");
     assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 10, "every answer: {kinds:?}");
+}
+// ---- output-verify-guard: the Jev shadow question (ported from the compiled check's unit tests) ----
+
+mod output_verify_jev {
+    use super::*;
+    use crate::jev::testkit::{install_scripted, log_rows, ok};
+
+    const ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")];
+
+    fn env_with(h: &str, extra: &[(&str, &str)]) -> RequestEnv {
+        let mut pairs = vec![("HOME".to_string(), h.to_string())];
+        pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        RequestEnv::from_pairs(pairs)
+    }
+
+    fn payload(out: &str) -> Value {
+        json!({"tool_name":"Bash","tool_input":{"command":"npm test"},"tool_response":{"stdout":out},"session_id":"sv"})
+    }
+
+    #[test]
+    fn a_test_runner_output_is_asked_with_the_regex_verdict_as_baseline_and_the_advisory_is_unchanged() {
+        let h = home("ov-jev-on");
+        let (jev, fake) = install_scripted(std::path::Path::new(&h), &ON, vec![ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)]);
+        let v = super::super::run_forced("output-verify-guard", &payload("Tests: 3 passed, 2 failed"), &Value::Null, "PostToolUse", &env_with(&h, &ON));
+        assert!(matches!(v, Some(Some(Verdict::Exact(_)))), "the advisory is still emitted: {v:?}");
+        assert!(jev.drain(std::time::Duration::from_secs(5)));
+        let seen = fake.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let body: Value = serde_json::from_str(seen[0].2.as_ref().unwrap()).unwrap();
+        assert!(body["state"].as_str().unwrap().contains("3 passed"));
+        let rows = log_rows(std::path::Path::new(&h));
+        assert_eq!(
+            (rows.len(), &rows[0]["id"], &rows[0]["base"], &rows[0]["mode"], &rows[0]["sessionId"]),
+            (1, &json!("outputVerifyGuard"), &json!(true), &json!("shadow"), &json!("sv"))
+        );
+    }
+
+    #[test]
+    fn an_off_integration_logs_the_off_row_and_a_clean_run_is_asked_with_baseline_false() {
+        let h = home("ov-jev-off");
+        let off = [("ANTIHALL_JEV", "0")];
+        let (jev, fake) = install_scripted(std::path::Path::new(&h), &off, vec![]);
+        let v = super::super::run_forced("output-verify-guard", &payload("Tests: 5 passed"), &Value::Null, "PostToolUse", &env_with(&h, &off));
+        assert_eq!(v, Some(Some(Verdict::Allow)));
+        assert!(jev.drain(std::time::Duration::from_secs(5)));
+        assert!(fake.seen.lock().unwrap().is_empty());
+        let rows = log_rows(std::path::Path::new(&h));
+        assert_eq!((rows.len(), &rows[0]["mode"], &rows[0]["base"]), (1, &json!("off"), &json!(false)));
+    }
 }
