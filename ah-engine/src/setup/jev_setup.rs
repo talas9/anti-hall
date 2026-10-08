@@ -580,7 +580,9 @@ fn write_credit_cache(path: &Path, entry: &J) -> Result<(), SetupError> {
     let tmp = defaults::render("setup.tmp_fmt", &[("file", &path.display()), ("pid", &std::process::id())]);
     // Node's temp name and its leftover after a failed rename (DECISIONS, atomic-write exceptions); synced before the rename
     let style = crate::atomic::Style { leave_temp_on_rename_failure: true, ..crate::atomic::Style::default() };
-    crate::atomic::stage(&tmp, stringify(entry), style).and_then(|()| crate::atomic::replace(&tmp, path, style)).map_err(io_err(what("setup.what_write", &path.display())))
+    crate::atomic::stage(&tmp, stringify(entry), style)
+        .and_then(|()| crate::atomic::replace(&tmp, path, style))
+        .map_err(io_err(what("setup.what_write", &path.display())))
 }
 
 /// `getCreditBalanceCached({})`: a fresh vendor-tagged cache entry is served, else one request whose answer is cached

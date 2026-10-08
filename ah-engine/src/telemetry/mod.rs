@@ -289,14 +289,7 @@ impl Telemetry {
 
     /// A regex rule matched while serving hook event `event`.
     pub fn observe_rule_in(&self, event: &str, rule_id: &str, action: Action, project: &str) {
-        self.record(
-            Kind::Check,
-            defaults::text("telemetry.rule_label"),
-            event,
-            if action == Action::Deny { Outcome::Block } else { Outcome::Advise },
-            0,
-            0,
-        );
+        self.record(Kind::Check, defaults::text("telemetry.rule_label"), event, if action == Action::Deny { Outcome::Block } else { Outcome::Advise }, 0, 0);
         let (name, kind) = match action {
             Action::Deny => ("deny", "block"),
             Action::Warn => ("warn", "warning"),
