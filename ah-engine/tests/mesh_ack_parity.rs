@@ -176,7 +176,13 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
     let with = |extra: Value| merge(vec![base(), extra]);
     let one = |r: Value| json!({"receipts": [r]});
     let child_wt = fx.child.to_string_lossy().to_string();
-    let family = |parts: Vec<Value>| merge(vec![base(), json!({"registry": [{"id": "child-1b", "worktreePath": child_wt.clone(), "sessionId": "child-1b"}], "rows": floors("child-1b")}), merge(parts)]);
+    let family = |parts: Vec<Value>| {
+        merge(vec![
+            base(),
+            json!({"registry": [{"id": "child-1b", "worktreePath": child_wt.clone(), "sessionId": "child-1b"}], "rows": floors("child-1b")}),
+            merge(parts),
+        ])
+    };
     let cases = vec![
         Case {
             name: "headless-own-child",
@@ -219,7 +225,15 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             cwd: "main",
             argv: args(&primary, "runk1", &[]),
             extra: vec![],
-            spec: with(one(receipt(&primary, "runk1", &primary, Value::Null, created, json!([{"k": "future", "x": 1}, null, 7, own(&primary, 1)]), Value::Null))),
+            spec: with(one(receipt(
+                &primary,
+                "runk1",
+                &primary,
+                Value::Null,
+                created,
+                json!([{"k": "future", "x": 1}, null, 7, own(&primary, 1)]),
+                Value::Null,
+            ))),
             native: true,
             expect: vec!["\"acked\":1"],
         },
@@ -263,7 +277,10 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             cwd: "main",
             argv: args(&primary, "rdecl1", &[]),
             extra: vec![],
-            spec: with(merge(vec![session.clone(), one(receipt(&primary, "rdecl1", &primary, json!(reader), created, json!([own(&primary, 2)]), Value::Null))])),
+            spec: with(merge(vec![
+                session.clone(),
+                one(receipt(&primary, "rdecl1", &primary, json!(reader), created, json!([own(&primary, 2)]), Value::Null)),
+            ])),
             native: true,
             expect: vec!["\"acked\":2"],
         },
@@ -357,7 +374,15 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             native: false,
             expect: vec!["unknown-receipt"],
         },
-        Case { name: "missing-receipt-flag", cwd: "main", argv: vec![s("inbox"), s("ack-primary"), primary.clone()], extra: vec![], spec: base(), native: false, expect: vec!["missing-receipt"] },
+        Case {
+            name: "missing-receipt-flag",
+            cwd: "main",
+            argv: vec![s("inbox"), s("ack-primary"), primary.clone()],
+            extra: vec![],
+            spec: base(),
+            native: false,
+            expect: vec!["missing-receipt"],
+        },
         Case {
             name: "expired-receipt",
             cwd: "main",
@@ -446,7 +471,15 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             native: false,
             expect: vec!["window-flags-unsupported-on-acking-verb"],
         },
-        Case { name: "help", cwd: "main", argv: vec![s("inbox"), s("ack-primary"), s("--help")], extra: vec![], spec: base(), native: false, expect: vec!["\"action\":\"help\""] },
+        Case {
+            name: "help",
+            cwd: "main",
+            argv: vec![s("inbox"), s("ack-primary"), s("--help")],
+            extra: vec![],
+            spec: base(),
+            native: false,
+            expect: vec!["\"action\":\"help\""],
+        },
         Case {
             name: "unsafe-id",
             cwd: "main",
