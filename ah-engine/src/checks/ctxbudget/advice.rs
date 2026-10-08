@@ -143,7 +143,7 @@ fn judge(p: &Value, st: &crate::checks::git::util::Settings, path: &str, lines: 
         write_inferred(st, p.get("session_id"));
     }
     let body = msg::render("ctxbudget.ca_state_json", &[("hash", &quote(&hash)), ("at", &number_to_string(now_ms()))]);
-    let wrote = std::path::Path::new(&sp).parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&sp, body).is_ok();
+    let wrote = std::path::Path::new(&sp).parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok()) && crate::atomic::write(&sp, body).is_ok();
     if !wrote {
         return Ok(Verdict::Allow); // cannot record the block: never block (no loop)
     }
