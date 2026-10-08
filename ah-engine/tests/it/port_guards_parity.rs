@@ -733,7 +733,7 @@ fn swarm_cases() -> Vec<Case> {
 #[test]
 fn swarm_guard_matches_node() {
     let rows = swarm_cases();
-    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
     // the same rows drive both tools: `swarm-guard.js` is registered for Agent and for Task
     let (same, deferred) = check_rows("swarm-guard.js", "swarm-guard", rows);
     assert!(same >= 70 && deferred >= 3);

@@ -20,7 +20,6 @@ use crate::checks::git::util::Settings;
 use crate::checks::guardkit::paths::join;
 use crate::checks::guardkit::settings::{get_bool, get_number, is_skipped};
 use crate::checks::guardkit::text::{js_trim, slice_utf16};
-use crate::checks::task_lifecycle_log::append_index_line_if_absent;
 use crate::checks::taskkit::jsval::{R, Unsure, get, truthy};
 use crate::checks::taskkit::root::session_project_root;
 use crate::checks::taskkit::workdetect::{Ctx, tmpdir};
@@ -90,6 +89,31 @@ fn dated(base: &[&str], date: &str, sid: &str) -> Vec<String> {
 
 fn join_all(root: &str, segs: &[String]) -> String {
     segs.iter().fold(root.to_string(), |acc, s| join(&acc, s))
+}
+
+/// `appendIndexLineIfAbsent`: nothing when the index already mentions the session id anywhere.
+fn append_index_line_if_absent(index: &str, sid: &str, line: &str) {
+    use std::io::Write;
+    let existing = match std::fs::read(index) {
+        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            crate::discard::note("task_log_read", &e.to_string());
+            String::new()
+        }
+    };
+    if existing.contains(sid) {
+        return;
+    }
+    if let Some(parent) = std::path::Path::new(index).parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return;
+    }
+    crate::discard::logged(
+        "task_log_append",
+        std::fs::OpenOptions::new().append(true).create(true).open(index).and_then(|mut f| f.write_all(format!("{line}\n").as_bytes())),
+    );
 }
 
 /// `maintainSessionIndex(root, date, sid, kind)`.

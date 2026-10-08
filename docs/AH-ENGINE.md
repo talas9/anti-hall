@@ -950,7 +950,7 @@ missing file) follows one rule: a check with a Node twin defers to it, an engine
 quietly elsewhere. Time a primitive spends blocked (a child process, a lock wait, a Jev consult) is not script time.
 
 Checks that decide in a script today: `api-guard`, `inbox-read-guard`, `orch-on-spawn`, `verify-first-subagent`,
-`verify-first-full`, `fable-availability`, `edit-guard`, `git` (the git guard), `git-audit` (its PostToolUse audit, built on `git.js` through `script.includes`), `swarm-guard`, `sibling-sweep` and `handover-hygiene`. Each has a
+`verify-first-full`, `fable-availability`, `edit-guard`, `git` (the git guard), `git-audit` (its PostToolUse audit, built on `git.js` through `script.includes`), `swarm-guard`, `sibling-sweep`, `handover-hygiene`, `task-lifecycle-log`, the three session gates (`jev-weekly-scorecard`, `jev-review-reminder`, `repair-on-reload`), `merge-side-pick`, `scan-throttle` and `merge-gate`. Each has a
 golden corpus (`tests/golden/<check>.jsonl`, frozen from its compiled port before the port was removed) that the script must
 reproduce byte for byte, and `parity/run-golden.js` replays the same corpus against the Node hook.
 

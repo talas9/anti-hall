@@ -71,6 +71,11 @@ min = 1
 doc = "The separator between the fields of a ledger line (a middle dot with a space on each side)."
 value = " · "
 
+[task_lifecycle_log.name_max]
+doc = "Longest file name (in bytes) the file system takes; a ledger name past it cannot be created, so the event is not recorded (Node: the append fails and the hook stops quietly)."
+value = 255
+min = 1
+
 [task_lifecycle_log.history_dir]
 doc = "The ledger directory under the project root, as path segments."
 value = [".anti-hall", "history"]
