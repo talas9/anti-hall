@@ -75,6 +75,7 @@ impl Env {
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
+            .env("ANTIHALL_JEV_RECOMMEND_NOTICE", "false") // the session gate answers the notice itself; these tests probe the Node fallback
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             // DevSwarm active makes the native verify-first-orch check defer to its mapped Node command, so the
             // SessionStart tests below keep driving Node hooks only (the check itself is covered by spawn_ctx_parity.rs)
@@ -1468,10 +1469,10 @@ fn deferred_stop_blocks_keep_every_reason_and_message() {
     let joiner = ah_engine::defaults::text("dispatch.reason_joiner");
     assert_eq!(v["decision"], "block");
     assert_eq!(v["reason"], format!("TASK-REASON{joiner}SPEC-REASON"), "{out:?}");
-    assert_eq!(v["systemMessage"], "task msg");
-    // exit 2: stderr carries every reason too, then codex-nudge's plain note (the host shows neither to the model next to
-    // the JSON block's reason, and stdout must stay one object)
-    assert_eq!(err, format!("TASK-REASON{joiner}SPEC-REASON\nadvisory plain text\n"));
+    // codex-nudge's plain note rides in the system message (user-facing); stdout stays one object
+    assert_eq!(v["systemMessage"], "task msg\nadvisory plain text");
+    // exit 2: stderr is the reason the model reads, so it carries every reason and no note
+    assert_eq!(err, format!("TASK-REASON{joiner}SPEC-REASON\n"));
     assert_no_stop_counters(&e);
 }
 
