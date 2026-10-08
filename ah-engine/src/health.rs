@@ -324,7 +324,8 @@ pub fn fnv(s: &str) -> u64 {
 
 /// The engine's health over the last `health.degraded_window_s`: self-restarts by reason, the crash-loop breaker and the client
 /// breaker with when they tripped, and how often a call fell back to Node and why. `degraded` is true when the engine is
-/// not at full strength (a restart in the window, the crash-loop breaker tripped, the client breaker open). Everything is
+/// not at full strength (a restart in the window, the crash-loop breaker tripped, the client breaker open, or a defaults
+/// fallback of a `health.degraded_kinds` kind in the window). Everything is
 /// read from the event log, so it works with the daemon down and survives a restart.
 pub fn summary() -> Value {
     let window = defaults::secs("health.degraded_window_s");
@@ -347,7 +348,14 @@ pub fn summary() -> Value {
     let total = |m: &serde_json::Map<String, Value>| m.values().filter_map(Value::as_u64).sum::<u64>();
     let last = |kind: &str| ev.iter().rev().find(|e| e.kind == kind).map(|e| json!({"ts": e.ts, "code": e.code, "detail": e.detail}));
     let (loop_left, breaker_left) = (crashloop_remaining(), breaker_remaining());
-    let degraded = total(&restarts) > 0 || loop_left.is_some() || breaker_left.is_some();
+    let degraded_kinds = defaults::list("health.degraded_kinds");
+    let defaults_fb = tally(&|e| degraded_kinds.contains(&e.kind.as_str()).then(|| format!("{}:{}", e.kind, e.code)));
+    let last_defaults = ev
+        .iter()
+        .rev()
+        .find(|e| e.ts >= floor && degraded_kinds.contains(&e.kind.as_str()))
+        .map(|e| json!({"ts": e.ts, "kind": e.kind, "code": e.code, "detail": e.detail}));
+    let degraded = total(&restarts) > 0 || loop_left.is_some() || breaker_left.is_some() || total(&defaults_fb) > 0;
     json!({
         "degraded": degraded,
         "window_s": window.as_secs(),
@@ -355,6 +363,7 @@ pub fn summary() -> Value {
         "crashloop": {"tripped": loop_left.is_some(), "remaining_s": loop_left.map(|d| d.as_secs() + 1), "last_trip": last("crashloop")},
         "breaker": {"open": breaker_left.is_some(), "remaining_s": breaker_left.map(|d| d.as_secs() + 1), "last_open": last("breaker_open")},
         "fallbacks": {"total": total(&fallbacks), "by_reason": fallbacks},
+        "defaults": {"total": total(&defaults_fb), "by_reason": defaults_fb, "last": last_defaults},
         "log": file(log_name()).display().to_string(),
     })
 }
@@ -392,7 +401,7 @@ fn degraded_notice(session: &str) -> Option<String> {
     let stamp = dir.join(format!("{:016x}", fnv(&format!("{session}|degraded"))));
     std::fs::OpenOptions::new().write(true).create_new(true).open(&stamp).ok()?; // already told => None
     prune_advised(&dir);
-    Some(defaults::render(
+    let mut text = defaults::render(
         "msg.advisory_degraded",
         &[
             ("restarts", &s["restarts"]["total"]),
@@ -400,7 +409,14 @@ fn degraded_notice(session: &str) -> Option<String> {
             ("fallbacks", &s["fallbacks"]["total"]),
             ("log", &s["log"].as_str().unwrap_or("")),
         ],
-    ))
+    );
+    if s["defaults"]["total"].as_u64().unwrap_or(0) > 0 {
+        text.push_str(&defaults::render(
+            "msg.advisory_defaults",
+            &[("count", &s["defaults"]["total"]), ("last", &s["defaults"]["last"]["detail"].as_str().unwrap_or(""))],
+        ));
+    }
+    Some(text)
 }
 
 fn prune_advised(dir: &std::path::Path) {

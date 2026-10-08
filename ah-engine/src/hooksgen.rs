@@ -117,14 +117,15 @@ pub fn registry_json(host: &str) -> String {
 pub fn fallback_list(host: &str) -> String {
     let mut out = String::from(defaults::text("dispatch.list_banner"));
     out.push('\n');
+    let mark = defaults::text("dispatch.list_event_mark");
     for ev in events(host) {
         let entries = table::entries(host, ev);
         let t = event_timeout(host, ev);
         if entries.is_empty() {
-            crate::discard::harmless(writeln!(out, "@{ev}\t{t}\t{}", defaults::text("dispatch.list_empty_word"))); // keep: formatting into a String cannot fail
+            crate::discard::harmless(writeln!(out, "{mark}{ev}\t{t}\t{}", defaults::text("dispatch.list_empty_word"))); // keep: formatting into a String cannot fail
             continue;
         }
-        crate::discard::harmless(writeln!(out, "@{ev}\t{t}")); // keep: formatting into a String cannot fail
+        crate::discard::harmless(writeln!(out, "{mark}{ev}\t{t}")); // keep: formatting into a String cannot fail
         for e in entries {
             let matcher = if e.matcher.is_empty() { "*" } else { e.matcher.as_str() };
             let timeout = if e.timeout_s == 0 { t } else { e.timeout_s };

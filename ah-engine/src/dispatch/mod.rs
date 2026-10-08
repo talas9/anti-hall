@@ -427,7 +427,25 @@ fn retain_both(entries: &mut Vec<table::Entry>, shadow: &mut Vec<bool>, mut keep
     shadow.retain(|_| *it.next().unwrap_or(&true));
 }
 
+/// The answer for an event without a usable table row: `None` when the row has entries; the neutral no-op when the
+/// fallback list marks the event as a thin trigger (exactly what the wrapper would answer); otherwise `dispatch.defer_exit`,
+/// so the Node hooks run. Never an allow the wrapper would not give.
+fn unlisted(host: &str, event: &str) -> Option<Outcome> {
+    match table::row(host, event) {
+        table::Row::Entries(e) if !e.is_empty() => None,
+        table::Row::Entries(_) | table::Row::Missing if table::trigger_only(host, event) => Some(Outcome { out: String::new(), code: 0, err: String::new() }),
+        _ => {
+            let why = defaults::render("dispatch.msg_no_row", &[("host", &host), ("event", &event)]);
+            log_defer(event, &why);
+            Some(Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{why}\n") })
+        }
+    }
+}
+
 fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele: &mut plan::Tele) -> Outcome {
+    if let Some(o) = unlisted(&args.host, &args.event) {
+        return o;
+    }
     let guard = guarded(&args.event);
     let parsed = complete.then(|| serde_json::from_str::<Value>(raw).ok()).flatten();
     let p = parsed.clone().unwrap_or(Value::Null);
@@ -671,7 +689,8 @@ fn mark_done() {
 }
 
 /// `ah-engine hook --event ...`: read stdin, dispatch, print, exit with the combined code. Never panics out, and never
-/// turns a failure into an allow for a guard event: a usage error or a panic there answers exit 2 like [`fail_closed`].
+/// turns a failure into an allow for a guard event: a usage error there answers exit 2 like [`fail_closed`], and a panic
+/// hands the event to the Node hooks ([`on_panic`]).
 pub fn hook_main(args: &[String]) -> i32 {
     let event = flag(args, "--event").unwrap_or_default();
     let guard = guarded(&event);
@@ -691,10 +710,15 @@ pub fn hook_main(args: &[String]) -> i32 {
         };
         // D87: an event the table has no entry for (a thin trigger only) has nothing to run and nothing to guard, whatever its
         // payload looks like, even invalid UTF-8 or over the cap: answer the neutral no-op after letting the host finish writing
-        if table::entries(&a.host, &a.event).is_empty() {
+        // A missing or malformed row is a neutral no-op only when the wrapper's own list agrees; otherwise the Node hooks decide
+        // (a lost row must never turn into an allow where the wrapper would run hooks).
+        if let Some(o) = unlisted(&a.host, &a.event) {
             crate::discard::harmless(std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())); // keep: a closed pipe leaves nobody to tell
-            mark_done();
-            return 0;
+            crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
+            if o.code == 0 {
+                mark_done();
+            }
+            return o.code;
         }
         let max = defaults::num("client.max_stdin");
         let payload = match PayloadInput::read_stdin(max) {
@@ -743,11 +767,37 @@ pub fn hook_main(args: &[String]) -> i32 {
         o.code
     });
     res.unwrap_or_else(|_| {
-        if !guard {
-            return 0;
-        }
-        let o = fail_closed(&event, defaults::text("dispatch.msg_panic"));
+        let o = on_panic(&event, guard);
         crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
         o.code
     })
+}
+
+/// The answer after a panic in [`hook_main`]: the engine cannot say what the hooks decide, so a guard event is handed to the
+/// Node hooks (`dispatch.defer_exit`), never blocked (which locked the user out of tools) and never allowed. The defer code is
+/// read under its own guard: when the panic came from the defaults themselves, the wrapper's fixed protocol code stands in.
+fn on_panic(event: &str, guard: bool) -> Outcome {
+    if !guard {
+        return Outcome { out: String::new(), code: 0, err: String::new() };
+    }
+    let read = std::panic::catch_unwind(|| (defaults::num("dispatch.defer_exit") as i32, defaults::text("dispatch.msg_panic").to_string()));
+    let (code, why) = read.unwrap_or_else(|_| (crate::bootstrap::UNAVAILABLE_EXIT, String::new()));
+    if !why.is_empty() {
+        crate::discard::harmless(std::panic::catch_unwind(|| log_defer(event, &why))); // keep: the deferral stands without its log line
+    }
+    Outcome { out: String::new(), code, err: if why.is_empty() { why } else { format!("{why}\n") } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_in_a_guard_event_defers_to_node_instead_of_blocking() {
+        // review P1 #2: a panic went to fail_closed (exit 2), locking the user out of tools on a bug of the engine's own
+        let o = on_panic("PreToolUse", true);
+        assert_eq!(o.code, defaults::num("dispatch.defer_exit") as i32, "a guard-event panic must defer, not block: {o:?}");
+        assert_ne!(o.code, 2);
+        assert_eq!(on_panic("Notification", false).code, 0, "a non-guard event stays the neutral no-op");
+    }
 }

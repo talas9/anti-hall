@@ -1,0 +1,452 @@
+# ah-engine shipped defaults for the prompt-emission checks ported from Node: verify-first, idle-agent-sweep and
+# emit-dedupe-reset, and the per-session emit-dedupe store they share (hooks/verify-first.js, hooks/idle-agent-sweep.js,
+# hooks/emit-dedupe-reset.js, hooks/lib/emit-dedupe.js, hooks/lib/idle-agents.js, hooks/lib/agent-scan.js).
+#
+# Regex sources use JavaScript syntax (the Node hooks are the authority) and are translated by `checks::guardkit::jsre`; they
+# are written as TOML literal strings so no backslash is doubled, and a single quote is written \x27. Format: see the header
+# of engine.toml.
+
+[prompt_emit.judge_child_env]
+doc = "When this variable is 1 the hook runs inside the `claude -p` judge child, whose hooks must do nothing (hooks/lib/judge-child-exit.js): the check answers with no output and no state."
+value = "ANTIHALL_JUDGE_CHILD"
+
+# ---- emit-dedupe store (hooks/lib/emit-dedupe.js) ----------------------------------------------------------
+
+[emit_dedupe.summary]
+doc = "One-line description of the emit-dedupe-reset check in the generated reference."
+value = "SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted (port of emit-dedupe-reset.js)."
+
+[emit_dedupe.sw_enabled]
+doc = "Where the emit-dedupe on/off switch is read from (guards.emitDedupe, default on): off emits every block every time and records nothing."
+value = { section = "guards", key = "emitDedupe", env = "ANTIHALL_EMIT_DEDUPE", option = "guards_emit_dedupe", default = true }
+
+[emit_dedupe.num_window_min]
+doc = "Where the fallback suppression window is read from (context.dedupeWindowMin, minutes, default 20): used when the transcript cannot show whether a block was delivered; 0 turns the whole feature off."
+value = { section = "context", key = "dedupeWindowMin", env = "ANTIHALL_DEDUPE_WINDOW_MIN", option = "context_dedupe_window_min", default = 20, min = 0 }
+
+[emit_dedupe.ms_per_minute]
+doc = "Milliseconds in a minute (converts the window setting and the sweep thresholds)."
+value = 60000
+
+[emit_dedupe.window_default_ms]
+doc = "The fallback window when the setting cannot be read, and the gap that counts as a new turn when the transcript is unusable."
+value = 15000
+unit = "ms"
+
+[emit_dedupe.max_pending_ms]
+doc = "A copy still undelivered after this long (a queued prompt the user cancelled, say) is emitted again."
+value = 600000
+unit = "ms"
+
+[emit_dedupe.key_ttl_ms]
+doc = "A block key unseen for this long is dropped from the session file when it is next written."
+value = 86400000
+unit = "ms"
+
+[emit_dedupe.ts_tolerance_ms]
+doc = "How far before a block's own timestamp a transcript attachment may be stamped and still count as its delivery."
+value = 1000
+unit = "ms"
+
+[emit_dedupe.tail_bytes]
+doc = "The first transcript window searched for a block's delivery."
+value = 262144
+unit = "bytes"
+
+[emit_dedupe.tail_bytes_wide]
+doc = "The wider transcript window searched once when the first has no delivery and the file is larger than it."
+value = 4194304
+unit = "bytes"
+
+[emit_dedupe.segment_sep]
+doc = "How the hooks join their blocks into one additionalContext; a delivery may hold the emitted block as a run of whole segments."
+value = "\n\n"
+
+[emit_dedupe.state_dir]
+doc = "The session state directory, relative to the home directory."
+value = ".anti-hall/emit-dedupe"
+
+[emit_dedupe.file_prefix]
+doc = "Prefix of a session's state file name (dedupe-<session>.json) and of the sweep stamp."
+value = "dedupe"
+
+[emit_dedupe.session_safe_max]
+doc = "Longest session part of a state file name, in UTF-16 units, after characters outside letters, digits, dot, underscore and hyphen become underscores."
+value = 128
+
+[emit_dedupe.reset_key]
+doc = "The state key that records the last context loss."
+value = "__reset"
+
+[emit_dedupe.stats_key]
+doc = "The state key that holds the suppression counter doctor reports."
+value = "__stats"
+
+[emit_dedupe.attachment_type]
+doc = "The transcript attachment type the host writes for a delivered hook context."
+value = "hook_additional_context"
+
+[emit_dedupe.hook_event]
+doc = "The hook event whose delivered context counts as a block's delivery."
+value = "UserPromptSubmit"
+
+[emit_dedupe.prune_stamp_prefix]
+doc = "Prefix of the stamp file that throttles the sweep of idle session files."
+value = ".prune-stamp-"
+
+[emit_dedupe.prune_throttle_ms]
+doc = "The sweep of idle session files runs at most this often."
+value = 21600000
+unit = "ms"
+
+[emit_dedupe.prune_ttl_ms]
+doc = "A session file not modified for this long is removed by the sweep (never the file of the session being written)."
+value = 604800000
+unit = "ms"
+
+# ---- verify-first (hooks/verify-first.js) ---------------------------------------------------------------------
+
+[verify_first.summary]
+doc = "One-line description of the verify-first check in the generated reference."
+value = "UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node (port of verify-first.js)."
+
+[verify_first.event]
+doc = "The hook event name in the check's output."
+value = "UserPromptSubmit"
+
+[verify_first.sw_turn]
+doc = "Where the on/off switch is read from (context.verifyFirstTurn, default on)."
+value = { section = "context", key = "verifyFirstTurn", option = "context_verify_first_turn", default = true }
+
+[verify_first.num_repeat_every]
+doc = "Where the repeat interval is read from (guards.injectionRepeatEvery, delivered turns, default 10); 0 repeats the reminder every turn."
+value = { section = "guards", key = "injectionRepeatEvery", env = "ANTIHALL_INJECTION_REPEAT_EVERY", option = "guards_injection_repeat_every", default = 10, min = 0 }
+
+[verify_first.prefix]
+doc = "Text in front of the rotating line."
+value = "VERIFY-FIRST: "
+
+[verify_first.dedupe_key]
+doc = "The emit-dedupe key of the reminder."
+value = "verify-first"
+
+[verify_first.dedupe_normalized]
+doc = "What every rotating line is normalized to before hashing, so a different line is still the same block."
+value = "VERIFY-FIRST"
+
+[verify_first.sw_supervisor_mode]
+doc = "Where the DevSwarm supervisor mode is read from (devswarm.supervisorMode: auto, on or off, default auto): the first condition of the Primary gate."
+value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", values = ["auto", "on", "off"] }
+
+[verify_first.sw_dispatch_tier_text]
+doc = "Where the switch of the DevSwarm Primary dispatch-tier text is read from (devswarm.dispatchTierText, default on)."
+value = { section = "devswarm", key = "dispatchTierText", env = "ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT", default = true }
+
+[verify_first.env_devswarm_disable]
+doc = "Setting this variable to 1 turns the DevSwarm integration off."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[verify_first.env_devswarm_repo]
+doc = "The variable DevSwarm sets for a session it runs; a non-blank value makes the session a DevSwarm session in auto mode."
+value = "DEVSWARM_REPO_ID"
+
+[verify_first.env_devswarm_source_branch]
+doc = "The variable DevSwarm sets for a child workspace; a non-blank value means this session is a child, never a Primary."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[verify_first.nudges]
+doc = "The rotating reminder lines, in the order the Node hook lists them (the index is the payload digest modulo their number)."
+value = [
+  "Verify before you claim: evidence from a tool, or say 'I haven't checked'. No guessed facts.",
+  "NO SPECULATION: an inference - a cause, an attribution, a metric reading, a tidy 'because X' story - is a CLAIM. Verify it with data before stating it. Plausible is not verified.",
+  "'likely' / 'plausibly' / 'I suspect' / 'I think' / 'it must be' = a guess in disguise. Hedging doesn't make it safe. Pull the data, or say 'I don't know - here's what I'd check'.",
+  "Root cause before fix. The error you see is a symptom; trace it before you change anything.",
+  "'Probably' / 'should work' / 'seems to' = STOP and verify. Show the output, don't assume.",
+  "Done/fixed/passing only if you ran the check THIS turn and can paste the result.",
+  "User agreement is not correctness. Challenge a wrong premise with evidence, not agreement.",
+  "COMMAND DELEGATION: never run build/test/deploy/push/pull/install inline in the coordinator - delegate to a cheap subagent; never fill main context with raw command output.",
+  "Bias toward delegation: default to a subagent for any file/tool/command/build/test work; inline only genuinely atomic things. If it balloons, delegate.",
+  "Run builds/tests/deploys via a Haiku subagent; never dump raw command output into the main thread.",
+  "Capture every request and interruption in a priority-sorted task list before acting; run independent work as parallel agents (up to concurrency cap ~min(16, cores-2)); actively drain the list - no neglected tasks.",
+  "Communicate concisely: enough to convey meaning, not pages; offer to expand if the user wants more detail.",
+  "SCOPE & FIDELITY: solve the ACTUAL ask with the SIMPLEST sufficient solution - add no scope/platform/abstraction/dependency the user didn't request. Confirm before expanding scope.",
+  "Intent over letter: don't take wording hyper-literally or inflate a small ask into a big build. Match rigor to blast radius - heavy process is for risky/large work, not a reflex.",
+  "VERIFY DELEGATED WORK: a subagent's 'done / tests pass' is an UNVERIFIED CLAIM. Re-run the authoritative check yourself before marking a delegated task complete; reconcile multiple workers against ground truth, not against each other.",
+  "Default delegated heavy/long/parallel work to the BACKGROUND yourself (pass run_in_background) so the main thread stays free and the user never has to background it manually; then drain each on its completion notification and verify it - never fire-and-forget.",
+  "SYNTHESIZE, NEVER RELAY: never paste a subagent's raw return into the user thread - the #1 cause of message-context bloat. Subagents return TIGHT summaries under an output budget; for a big result require a structured {claim, evidence:file:line, verdict, blockers, next} schema (measured ~5x smaller, lossless); coordinator reports findings in its own words.",
+  "DONE = verified against the AGREED acceptance criteria, not 'tests pass' (tests prove behavior, not that it matches what was agreed) and not a subagent's 'per-spec/done'. Fidelity you can't verify mechanically (does the UI match the agreed mockup?) is 'built, PENDING OWNER REVIEW' - an open item, never a hidden follow-up. Autonomy doesn't lower this bar.",
+  "DISTRIBUTE MODELS - never an all-Opus fan-out (it inherits the flagship and burns the limit fast). Set model per seat by shape: implementation->sonnet, correctness/verify review->Codex (it doesn't use the Claude limit), planning/architecture->opus. Inside a Workflow this is YOUR authoring job - the model-routing guard exempts review seats. Always pull Codex for a second opinion on substantial code (correctness lens); keep architecture review on Opus.",
+  "Prefer SHALLOW+WIDE over deep nesting: a subagent is a worker, not a sub-orchestrator - it does the work, it doesn't re-delegate unless told. Route read-only research to Explore (can't recurse). When work is breadth-first and needs 3+ parallel/nested spawns, lift it into ONE deterministic Workflow instead of ad-hoc chains.",
+]
+
+# ---- idle-agent-sweep (hooks/idle-agent-sweep.js, hooks/lib/idle-agents.js, hooks/lib/agent-scan.js) ---------------------
+
+[idle_sweep.summary]
+doc = "One-line description of the idle-agent-sweep check in the generated reference."
+value = "UserPromptSubmit: lists agents that finished but were never stopped or closed, and the call that ends each (port of idle-agent-sweep.js)."
+
+[idle_sweep.event]
+doc = "The hook event name in the check's output."
+value = "UserPromptSubmit"
+
+[idle_sweep.guard_name]
+doc = "The guard id the advisory names."
+value = "idle-agents"
+
+[idle_sweep.skip_name]
+doc = "The name that ~/.anti-hall/skip.json uses to skip this hook."
+value = "idle-agent-sweep"
+
+[idle_sweep.dedupe_key]
+doc = "The emit-dedupe key of the advisory."
+value = "idle-agent-sweep"
+
+[idle_sweep.sw_enabled]
+doc = "Where the on/off switch is read from (guards.idleAgentSweep, default on)."
+value = { section = "guards", key = "idleAgentSweep", env = "ANTIHALL_IDLE_AGENT_SWEEP", default = true }
+
+[idle_sweep.num_count]
+doc = "Where the idle-agent count that fires the advisory is read from (guards.idleAgentSweepCount, default 3)."
+value = { section = "guards", key = "idleAgentSweepCount", env = "ANTIHALL_IDLE_AGENT_SWEEP_COUNT", default = 3, min = 1 }
+
+[idle_sweep.num_minutes]
+doc = "Where the idle minutes that fire the advisory for any one agent are read from (guards.idleAgentSweepMin, default 15)."
+value = { section = "guards", key = "idleAgentSweepMin", env = "ANTIHALL_IDLE_AGENT_SWEEP_MIN", default = 15, min = 1 }
+
+[idle_sweep.env_test_isolation]
+doc = "When this variable is 1, the injected clock below is honoured (tests and replays only, as in the Node hook)."
+value = "ANTIHALL_TEST_ISOLATION"
+
+[idle_sweep.env_test_now]
+doc = "The injected clock, in milliseconds, honoured only when the isolation variable is 1."
+value = "ANTIHALL_TEST_NOW_MS"
+
+[idle_sweep.ms_per_minute]
+doc = "Milliseconds in a minute (idle ages are shown and compared in minutes)."
+value = 60000
+
+[idle_sweep.scan_bytes]
+doc = "How much of the transcript tail is read: wide enough that a teammate's spawn record is in the window with its reports."
+value = 12582912
+unit = "bytes"
+
+[idle_sweep.max_named]
+doc = "How many agents the advisory names; the rest are counted."
+value = 10
+
+[idle_sweep.label_max]
+doc = "Longest agent label shown, in UTF-16 units."
+value = 60
+
+[idle_sweep.ellipsis]
+doc = "Appended to a label that was cut."
+value = "…"
+
+[idle_sweep.be_one]
+doc = "The words after `finished agent` when one agent is idle."
+value = " is"
+
+[idle_sweep.be_many]
+doc = "The words after `finished agent` when several agents are idle."
+value = "s are"
+
+[idle_sweep.more]
+doc = "Appended to the list when agents beyond the named ones exist; {m} is how many."
+value = ", and {m} more"
+
+[idle_sweep.what]
+doc = "Advisory headline; {n} agents, {be} the verb phrase, {past} closed or stopped, {shown} the named agents, {more} the overflow."
+value = "{n} finished agent{be} idle and not {past}: {shown}{more}."
+
+[idle_sweep.why]
+doc = "Advisory reason; {why_head} is the platform's reason, {past} closed or stopped."
+value = "{why_head} until it is {past}."
+
+[idle_sweep.instead]
+doc = "Advisory advice; {verb} close or stop, {call} the exact call for the first agent."
+value = "if you have no more work for them, {verb} each one, e.g. {call} (one call per agent). Keep any you will re-task."
+
+[idle_sweep.call_claude]
+doc = "The call that stops a Claude teammate; {id} is its name."
+value = 'TaskStop {"task_id":"{id}"}'
+
+[idle_sweep.call_codex]
+doc = "The call that closes a Codex agent; {id} is its id."
+value = 'close_agent {"target":"{id}"}'
+
+[idle_sweep.words_claude]
+doc = "The platform words of the Claude advisory."
+value = { past = "stopped", verb = "stop", why_head = "each one keeps its process and context alive" }
+
+[idle_sweep.words_codex]
+doc = "The platform words of the Codex advisory."
+value = { past = "closed", verb = "close", why_head = "an open agent holds a thread slot" }
+
+[idle_sweep.notification_tag]
+doc = "The tag a background task's completion notice starts with; a turn that is one is not a human turn."
+value = "<task-notification>"
+
+[idle_sweep.re_codex_rollout]
+doc = "A Codex rollout transcript path (JavaScript regex)."
+value = '(^|[\\/])rollout-[^\\/]*\.jsonl$'
+
+[idle_sweep.re_codex_dir]
+doc = "A path under a .codex directory (JavaScript regex)."
+value = '[\\/]\.codex[\\/]'
+
+[idle_sweep.re_minutes]
+doc = "The age shown after an agent, which the dedupe hash ignores (JavaScript regex, replaced globally)."
+value = '\(\d+m\)'
+
+[idle_sweep.re_control_chars]
+doc = "Control characters replaced by a space in a label (JavaScript regex, replaced globally)."
+value = '[\x00-\x1F\x7F-\x9F]'
+
+# ---- the Claude transcript scan (agent-scan.js) ----------------------------------------------------------
+
+[idle_sweep.prefilter]
+doc = "A transcript line is read only when it holds one of these (the Node scan's cheap pre-filter, in the same terms)."
+value = ["idle_notification", "Async agent launched successfully", "<task-notification>", "\"name\":\"Agent\"", "\"name\": \"Agent\"", "tool_result", "\"tool_use\"", "\"name\":\"TaskStop\"", "\"name\": \"TaskStop\"", "\"task_status\""]
+
+[idle_sweep.task_stop_marks]
+doc = "How a TaskStop call appears in a transcript line."
+value = ["\"name\":\"TaskStop\"", "\"name\": \"TaskStop\""]
+
+[idle_sweep.idle_marker]
+doc = "The text a teammate's end-of-turn report carries."
+value = "idle_notification"
+
+[idle_sweep.launch_phrase]
+doc = "What a background agent's launch tool result begins with."
+value = "Async agent launched successfully"
+
+[idle_sweep.spawned_status]
+doc = "The `toolUseResult.status` of a named teammate's spawn."
+value = "teammate_spawned"
+
+[idle_sweep.launch_tools]
+doc = "The tools whose results can be a launch or a teammate spawn."
+value = ["Agent", "Task"]
+
+[idle_sweep.resume_tools]
+doc = "The tools whose results can resume an agent."
+value = ["SendMessage", "Agent", "Task"]
+
+[idle_sweep.send_tools]
+doc = "The tools whose results can be a message sent to a teammate."
+value = ["SendMessage"]
+
+[idle_sweep.queued_marker]
+doc = "Text of a SendMessage result for an agent that is still running."
+value = "Message queued for delivery to"
+
+[idle_sweep.inbox_marker]
+doc = "Text of a SendMessage result for a teammate."
+value = "'s inbox"
+
+[idle_sweep.report_prefix]
+doc = "What a teammate report entry's text begins with."
+value = "Another Claude session sent a message:"
+
+[idle_sweep.block_open]
+doc = "The start of one teammate message block, up to its opening quote of the teammate id."
+value = "<teammate-message teammate_id=\""
+
+[idle_sweep.block_close]
+doc = "The end of one teammate message block, with the newline before it."
+value = "\n</teammate-message>"
+
+[idle_sweep.not_a_report_keys]
+doc = "Keys the host stamps on typed, queued, tool-result and compaction records; a genuine teammate report carries none of them (isSidechain only when true)."
+value = ["origin", "promptSource", "turnOrigin", "permissionMode", "isMeta", "isCompactSummary", "isSidechain", "toolUseResult", "sourceToolAssistantUUID", "imagePasteIds", "queuePriority", "scheduledTaskId"]
+
+[idle_sweep.report_future_skew_ms]
+doc = "A report's inner timestamp further than this after its entry's own timestamp is forged or garbage and is ignored."
+value = 5000
+unit = "ms"
+
+[idle_sweep.re_terminal_status]
+doc = "Notification and attachment statuses that mean an agent ended (JavaScript regex, ignore case)."
+value = '^(completed|failed|stopped|killed|cancelled|canceled)$'
+
+[idle_sweep.re_finished_reason]
+doc = "Idle reasons that end a teammate's work (JavaScript regex)."
+value = '^(available|failed)$'
+
+[idle_sweep.re_hex_id]
+doc = "A background agent id (JavaScript regex)."
+value = '^[0-9a-fA-F]{6,40}$'
+
+[idle_sweep.re_agent_id]
+doc = "The agent id in a launch result's text (JavaScript regex)."
+value = 'agentId:\s*([0-9a-fA-F]{6,40})'
+
+[idle_sweep.re_resume_message]
+doc = "A resume result's message (JavaScript regex, ignore case)."
+value = '^Resuming\s+agent\s+([0-9a-fA-F]{6,40})'
+
+[idle_sweep.re_queued_message]
+doc = "A queued-delivery result's message (JavaScript regex)."
+value = '^Message queued for delivery to\s'
+
+[idle_sweep.re_inbox_message]
+doc = "A teammate send result's message; the group is the teammate's name (JavaScript regex)."
+value = '^Message sent to (.+)\x27s inbox$'
+
+[idle_sweep.re_notification_block]
+doc = "One task-notification block of a text (JavaScript regex, global)."
+value = '<task-notification>([\s\S]*?)</task-notification>'
+
+[idle_sweep.re_task_id]
+doc = "The task id inside one notification block (JavaScript regex)."
+value = '<task-id>([^<]*)</task-id>'
+
+[idle_sweep.re_status]
+doc = "The status inside one notification block (JavaScript regex)."
+value = '<status>([^<]*)</status>'
+
+[idle_sweep.re_system_reminder_notice]
+doc = "A notification block directly inside a system-reminder block (JavaScript regex)."
+value = '<system-reminder>\s*<task-notification>'
+
+# ---- the Codex rollout scan (idle-agents.js) ------------------------------------------------------------
+
+[idle_sweep.codex_prefilter]
+doc = "A rollout line is read only when it holds one of these."
+value = ["_agent", "send_input", "function_call_output"]
+
+[idle_sweep.codex_call_names]
+doc = "The agent tool calls the scan follows."
+value = ["spawn_agent", "wait_agent", "close_agent", "send_input", "resume_agent"]
+
+[idle_sweep.codex_spawn_call]
+doc = "The call whose output names a new agent."
+value = "spawn_agent"
+
+[idle_sweep.codex_wait_call]
+doc = "The call whose output reports agent statuses."
+value = "wait_agent"
+
+[idle_sweep.codex_close_call]
+doc = "The call that closes an agent."
+value = "close_agent"
+
+[idle_sweep.codex_retask_calls]
+doc = "The calls that give an agent more work."
+value = ["send_input", "resume_agent"]
+
+[idle_sweep.codex_finished_keys]
+doc = "Keys of a wait_agent status entry that mean the agent finished."
+value = ["completed", "errored"]
+
+[idle_sweep.codex_arg_keys]
+doc = "Arguments of an agent tool call that name one agent."
+value = ["target", "id", "agent_id"]
+
+[idle_sweep.codex_arg_list_key]
+doc = "The argument of an agent tool call that names several agents."
+value = "targets"
+
+[idle_sweep.re_codex_id]
+doc = "A Codex agent id (JavaScript regex, ignore case)."
+value = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'

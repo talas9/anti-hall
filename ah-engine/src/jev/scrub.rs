@@ -1,88 +1,47 @@
 //! Outbound secret scrubbing: the one redaction point every Jev request body passes through.
 //!
-//! Mirrors `hooks/lib/secret-scrub.js` (`scrubSecrets`) rule for rule and in the same order, because the text it
-//! returns is part of the request body and parity (D31) is checked byte for byte. The JavaScript source relies on
-//! features the `regex` crate does not have (look-behind and back-references) and on JavaScript's own character
-//! classes, so each translation is spelled out here:
+//! The rules are data (`jev.scrub_rules` in the plugin's `jev.toml`), compiled per defaults snapshot. They mirror
+//! `hooks/lib/secret-scrub.js` (`scrubSecrets`) rule for rule and in the same order, because the text this returns is part
+//! of the request body and parity (D31) is checked byte for byte. The JavaScript source relies on features the `regex`
+//! crate does not have (look-behind and back-references) and on JavaScript's own character classes, so the shipped
+//! patterns spell each translation out:
 //!
 //! * `(?<![A-Za-z0-9])X` is a search that rejects a hit whose previous character is alphanumeric (`replace_lb`).
 //! * `(["'])...\3` (a quote, text without that quote, the same quote) is the alternation of the two quote kinds.
 //! * `\b` is ASCII-only in JavaScript, so it is written `(?-u:\b)`.
-//! * `\s` is JavaScript's whitespace set (`WS`), not the Unicode `White_Space` property (they differ on U+0085
+//! * `\s` is JavaScript's whitespace set (an explicit class), not the Unicode `White_Space` property (they differ on U+0085
 //!   and U+FEFF).
 //! * the `i` flag is ASCII-only in JavaScript (without `u`), so keywords are expanded to explicit `[xX]` classes
 //!   instead of using `(?i)`, which would also fold U+017F and U+212A.
+use crate::defaults::{self, V};
 use regex::Regex;
-use std::sync::OnceLock;
-
-/// The characters JavaScript's `\s` matches, as the inside of a character class.
-const WS: &str = r"\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}";
-
-/// ASCII-case-insensitive form of a literal: each letter becomes a two-letter class.
-fn ci(word: &str) -> String {
-    word.chars()
-        .map(|c| if c.is_ascii_alphabetic() { format!("[{}{}]", c.to_ascii_lowercase(), c.to_ascii_uppercase()) } else { regex::escape(&c.to_string()) })
-        .collect()
-}
-
-/// Alternation of case-insensitive literals.
-fn ci_any(words: &[&str]) -> String {
-    words.iter().map(|w| ci(w)).collect::<Vec<_>>().join("|")
-}
 
 /// One rule: the expression, what replaces a hit, and whether a hit must not follow an ASCII alphanumeric.
 struct Rule {
     re: Regex,
-    to: &'static str,
+    to: String,
     no_alnum_before: bool,
 }
 
-/// Compile a pattern that is a literal of this module (a failure is a bug the unit tests catch).
-fn compile(pattern: &str) -> Regex {
-    Regex::new(pattern).unwrap_or_else(|e| panic!("jev scrub pattern {pattern:?}: {e}"))
-}
-
-fn rules() -> &'static [Rule] {
-    static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
-    RULES.get_or_init(|| {
-        let b = r"(?-u:\b)";
-        let key_words = ci_any(&["secret", "password", "passwd", "token", "apikey", "api_key", "key"]);
-        // Any identifier containing a secret-ish word, then `:` or `=`.
-        let named = format!(r"{b}([A-Za-z0-9_.-]*(?:{key_words})[A-Za-z0-9_.-]*)([\x22']?[{WS}]*[:=][{WS}]*)");
-        let mut v: Vec<Rule> = Vec::new();
-        let mut add = |pattern: String, to: &'static str, lb: bool| v.push(Rule { re: compile(&pattern), to, no_alnum_before: lb });
-        // PEM blocks first (multi-line): header, body and footer all go.
-        add(r"-----BEGIN [A-Z0-9 ]+-----(?s:.)*?(?:-----END [A-Z0-9 ]+-----|$)".into(), "[REDACTED_PEM]", false);
-        // URL credentials: scheme://user:pass@host -> scheme://[REDACTED]@host
-        add(format!(r"{b}([a-zA-Z][a-zA-Z0-9+.-]*://)[^{WS}/:@]+:[^{WS}/@]+@"), "${1}[REDACTED]@", false);
-        // JWTs (three base64url segments, the first starting with eyJ).
-        add(format!(r"{b}eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"), "[REDACTED_JWT]", false);
-        // Authorization header values, then bare Bearer tokens.
-        add(
-            format!(r#"{b}({}[\x22']?[{WS}]*[:=][{WS}]*[\x22']?)({}|{})[{WS}]+[^{WS}\x22']+"#, ci("Authorization"), ci("Basic"), ci("Bearer")),
-            "${1}${2} [REDACTED]",
-            false,
-        );
-        add(format!(r"{b}{}[{WS}]+[A-Za-z0-9\-_.=]+", ci("Bearer")), "Bearer [REDACTED]", false);
-        // Standalone provider tokens.
-        add(format!(r"[sr]k_(?:live|test)_[A-Za-z0-9]{{8,}}{b}"), "[REDACTED_KEY]", true);
-        add(r"glpat-[A-Za-z0-9_-]{10,}".into(), "[REDACTED_KEY]", true);
-        add(format!(r"npm_[A-Za-z0-9]{{20,}}{b}"), "[REDACTED_KEY]", true);
-        add(format!(r"{b}(?:sk|pk)-[A-Za-z0-9]{{10,}}{b}"), "[REDACTED_KEY]", false);
-        add(format!(r"{b}AIza[0-9A-Za-z_-]{{10,}}{b}"), "[REDACTED_KEY]", false);
-        add(format!(r"{b}gh[pousr]_[A-Za-z0-9]{{10,}}{b}"), "[REDACTED_KEY]", false);
-        add(format!(r"{b}xox[baprs]-[A-Za-z0-9-]{{10,}}{b}"), "[REDACTED_KEY]", false);
-        // AWS access key ids (long-term AKIA, temporary ASIA).
-        add(format!(r"{b}(?:AKIA|ASIA)[0-9A-Z]{{16}}{b}"), "[REDACTED_AWS_KEY]", false);
-        // key=value assignments: a quoted value may hold spaces and runs to the closing quote; an unquoted one ends at
-        // whitespace, a quote, a comma or a brace.
-        add(format!(r#"{named}(?:\x22[^\x22\n]*\x22|'[^'\n]*')"#), "${1}${2}[REDACTED]", false);
-        add(format!(r#"{named}(?:\x22[^{WS}\x22',}}]+\x22|'[^{WS}\x22',}}]+'|[^{WS}\x22',}}]+)"#), "${1}${2}[REDACTED]", false);
-        add(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}".into(), "[REDACTED_EMAIL]", false);
-        // Generic catch-all: any remaining long base64 or hex-like run.
-        add(format!(r"{b}[A-Za-z0-9+/=_-]{{32,}}{b}"), "[REDACTED_TOKEN]", false);
-        v
-    })
+/// The rules of `jev.scrub_rules`, compiled once per defaults snapshot (a reload applies an edit). `None` when a rule is
+/// malformed or does not compile: the scrubber then redacts the whole text.
+fn rules() -> Option<&'static [Rule]> {
+    static RULES: defaults::Cache<Option<Vec<Rule>>> = defaults::Cache::new();
+    RULES
+        .get_or_init(|| {
+            defaults::raw("jev.scrub_rules")
+                .as_array()?
+                .iter()
+                .map(|r| {
+                    Some(Rule {
+                        re: Regex::new(r.get("pattern").and_then(V::as_str)?).ok()?,
+                        to: r.get("to").and_then(V::as_str)?.to_string(),
+                        no_alnum_before: r.get("no_alnum_before").and_then(V::as_bool).unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .as_deref()
 }
 
 /// True when `c` is an ASCII letter or digit.
@@ -116,9 +75,10 @@ fn replace_lb(re: &Regex, hay: &str, to: &str) -> String {
 /// Node: `secret-scrub.js` `scrubSecrets`. The rules run in the same order, because the named shapes must be scrubbed
 /// before the generic long-run catch-all so their short placeholders never re-trigger it.
 pub fn scrub_secrets(text: &str) -> String {
+    let Some(rules) = rules() else { return defaults::text("jev.scrub_failed_text").to_string() };
     let mut s = text.to_string();
-    for r in rules() {
-        s = if r.no_alnum_before { replace_lb(&r.re, &s, r.to) } else { r.re.replace_all(&s, r.to).into_owned() };
+    for r in rules {
+        s = if r.no_alnum_before { replace_lb(&r.re, &s, &r.to) } else { r.re.replace_all(&s, r.to.as_str()).into_owned() };
     }
     s
 }
@@ -129,7 +89,7 @@ mod tests {
 
     #[test]
     fn every_pattern_compiles() {
-        assert_eq!(rules().len(), 17, "one rule per replace() in secret-scrub.js");
+        assert_eq!(rules().map(<[Rule]>::len), Some(17), "one rule per replace() in secret-scrub.js");
     }
 
     #[test]

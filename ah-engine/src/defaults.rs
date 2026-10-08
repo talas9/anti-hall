@@ -23,7 +23,7 @@
 //!
 //! Where the plugin root is found is documented in [`crate::bootstrap`].
 mod load;
-pub use load::{DefaultsError, Fingerprint, fingerprint};
+pub use load::{DefaultsError, Fingerprint, Healed, Layer, Note, Report, fingerprint, heal, heal_file, heal_line, in_checkout, load_from, write_lkg};
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an absent field is the empty value
 // - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
@@ -139,6 +139,25 @@ pub struct Entry {
     pub unit: Option<&'static str>,
 }
 
+/// The value type a source read of a setting expects (collected by `build.rs`, see `build_support/keyscan.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Any type: the key must exist.
+    Any,
+    /// An integer.
+    Int,
+    /// A string.
+    Str,
+    /// A list.
+    List,
+}
+
+/// The keys this build reads, with the type each read expects: a plugin whose defaults lack one, or give it another
+/// type, is rejected at load.
+pub fn required() -> &'static [(&'static str, Kind)] {
+    generated::REQUIRED
+}
+
 mod generated {
     //! The keys this build reads (collected from the source by `build.rs`): a plugin whose defaults lack one is rejected at load.
     include!(concat!(env!("OUT_DIR"), "/required_keys.rs"));
@@ -178,6 +197,14 @@ fn cache_best_effort(d: &load::Data) {
     }
 }
 
+/// What follows a load that may write (the daemon, a client that parsed the files): log its fallbacks, keep the
+/// last-known-good copy. In-process tests and one-off commands write nothing.
+fn after_load(report: &load::Report, root: &Path) {
+    if CACHE_WRITES.load(Ordering::SeqCst) {
+        load::after(report, root);
+    }
+}
+
 /// Load the defaults if nothing is loaded yet. Idempotent. In cache mode ([`use_cache`]) this reads the snapshot cache and
 /// parses the plugin's files only when the cache is missing or belongs to another plugin root.
 pub fn init() -> Result<(), DefaultsError> {
@@ -202,9 +229,13 @@ pub fn init() -> Result<(), DefaultsError> {
     })?;
     let data = load::load(&root, None)?;
     cache_best_effort(&data);
-    let mut w = CUR.write().unwrap_or_else(|e| e.into_inner());
-    w.get_or_insert_with(|| Arc::new(Backend::Full(data)));
+    let (report, root) = (data.report.clone(), data.root().to_path_buf());
+    {
+        let mut w = CUR.write().unwrap_or_else(|e| e.into_inner());
+        w.get_or_insert_with(|| Arc::new(Backend::Full(data)));
+    }
     GENERATION.fetch_add(1, Ordering::SeqCst);
+    after_load(&report, &root);
     Ok(())
 }
 
@@ -276,11 +307,15 @@ pub fn reload(root: Option<&Path>) -> Result<Reloaded, DefaultsError> {
         && p.entries.len() == data.entries.len()
         && p.entries.iter().zip(data.entries).all(|(a, b)| std::ptr::eq(*a, *b))
     {
+        // the same values, but possibly from another layer (a broken edit answered by its last-known-good copy): say so
+        after_load(&data.report, data.root());
         return Ok(Reloaded::Unchanged);
     }
     cache_best_effort(&data);
+    let (report, root) = (data.report.clone(), data.root().to_path_buf());
     *CUR.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Backend::Full(data)));
     GENERATION.fetch_add(1, Ordering::SeqCst);
+    after_load(&report, &root);
     Ok(Reloaded::Applied)
 }
 
@@ -300,6 +335,11 @@ pub fn root() -> Option<PathBuf> {
 /// Note a failed load where it can be found (see `load::report_unavailable`).
 pub fn report_unavailable(e: &DefaultsError) {
     load::report_unavailable(e);
+}
+
+/// Log a daemon that could not start for want of defaults as a crash (see `load::log_start_failure`).
+pub fn log_start_failure(e: &DefaultsError) {
+    load::log_start_failure(e);
 }
 
 /// The snapshot, loading it on first use. Panics (a bug) when nothing can be loaded: entry points call [`init`] first and

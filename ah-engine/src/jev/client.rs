@@ -223,7 +223,10 @@ fn is_eligible(r: &CallResult) -> bool {
     match &r.reason {
         None => false,
         Some(Reason::Timeout | Reason::NetworkError) => true,
-        Some(Reason::Http(s)) => *s >= 500 || *s == 402 || *s == 429 || ((*s == 400 || *s == 403) && r.balance),
+        Some(Reason::Http(s)) => {
+            let listed = |key: &str| defaults::raw(key).as_array().is_some_and(|a| a.iter().any(|v| v.as_integer() == Some(i64::from(*s))));
+            u64::from(*s) >= defaults::num("jev.retry_status_min") || listed("jev.retry_statuses") || (r.balance && listed("jev.retry_statuses_balance"))
+        }
         Some(_) => false,
     }
 }

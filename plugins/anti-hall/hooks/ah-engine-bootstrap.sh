@@ -6,8 +6,9 @@
 #   There is no trust-on-first-use: an asset whose sha256 differs from the lock is refused and nothing is installed.
 # - Safe: never fails a session. Every outcome exits 0 and is logged to $HOME/.anti-hall/ah-engine/bootstrap.log. The wrapper
 #   (ah-hook.sh) falls back to the Node hooks whenever the engine is absent or cannot answer, so a skipped install is harmless.
-# - Idempotent: a marker records "<version> <sha256>" of what this script installed; the same lock does nothing. A binary that was
-#   not installed by this script (hand-built, on PATH only) is never overwritten.
+# - Idempotent: a marker records "<version> <asset sha256> <binary sha256>" of what this script installed; the same lock does
+#   nothing. A binary that was not installed by this script (no marker), or that no longer matches the binary sha256 the marker
+#   recorded (replaced by hand, e.g. a local build), is never overwritten.
 # - Rate limited: after a failed attempt for a version, the next attempt waits AH_BOOTSTRAP_RETRY_S (default 21600 = 6 h).
 # - Atomic: the new binary is staged next to its target and renamed over it; the previous one is kept as bin/ah-engine.prev.
 #
@@ -141,13 +142,31 @@ case "$sha" in
 esac
 [ "${#sha}" -eq 64 ] || { say "skip: lock has no valid sha256 for $asset"; exit 0; }
 
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" 2>/dev/null | sed 's/^.*= *//'
+  fi
+}
+
 # ---- idempotence + rate limit -----------------------------------------------
 bin=$dir/bin/ah-engine
 marker=$dir/bootstrap.installed
 want="$version $sha"
 if [ -x "$bin" ]; then
-  if [ "$(cat "$marker" 2>/dev/null)" = "$want" ]; then exit 0; fi
   if [ ! -f "$marker" ]; then say "skip: $bin was not installed by the bootstrap; leaving it alone"; exit 0; fi
+  # "<version> <asset sha256> [<binary sha256>]" (a marker written before the binary hash was recorded has two fields)
+  # shellcheck disable=SC2046 # the marker's fields are split on purpose
+  set -- $(cat "$marker" 2>/dev/null)
+  m_bin=${3:-}
+  if [ -n "$m_bin" ] && [ "$(sha256_of "$bin")" != "$m_bin" ]; then
+    say "skip: $bin is not the binary the bootstrap installed (sha256 differs from the marker; a local build?); leaving it alone"
+    exit 0
+  fi
+  if [ "${1:-} ${2:-}" = "$want" ]; then exit 0; fi
 fi
 attempt=$dir/bootstrap.attempt
 if [ -f "$attempt" ]; then
@@ -191,29 +210,26 @@ else
   fail "neither curl nor wget is available"
 fi
 
-if command -v sha256sum >/dev/null 2>&1; then
-  got=$(sha256sum "$tmp/asset" 2>/dev/null | cut -d' ' -f1)
-elif command -v shasum >/dev/null 2>&1; then
-  got=$(shasum -a 256 "$tmp/asset" 2>/dev/null | cut -d' ' -f1)
-elif command -v openssl >/dev/null 2>&1; then
-  got=$(openssl dgst -sha256 "$tmp/asset" 2>/dev/null | sed 's/^.*= *//')
-else
-  fail "no sha256 tool available"
-fi
+got=$(sha256_of "$tmp/asset")
+[ -n "$got" ] || fail "no sha256 tool available"
 [ "$got" = "$sha" ] || fail "sha256 mismatch for $asset: expected $sha, got ${got:-none}; refusing to install"
 
 # Extract only the one expected member to a fixed path, never the archive's own paths.
 tar -xzOf "$tmp/asset" "ah-engine-v$version-$triple/ah-engine" >"$tmp/ah-engine" 2>/dev/null || fail "archive has no ah-engine-v$version-$triple/ah-engine"
 [ -s "$tmp/ah-engine" ] || fail "extracted binary is empty"
 chmod 755 "$tmp/ah-engine" 2>/dev/null
-reported=$("$tmp/ah-engine" version 2>/dev/null </dev/null | head -1)
+# The engine reads its settings from the plugin at run time, so the check names this plugin (the one whose lock pinned the
+# binary) and a scratch state directory: it must not depend on a host variable or touch the real state.
+plugin_root=$(CDPATH= cd -- "$here/.." 2>/dev/null && pwd)
+reported=$(AH_ENGINE_PLUGIN_ROOT=$plugin_root AH_ENGINE_DIR=$tmp/state "$tmp/ah-engine" version 2>/dev/null </dev/null | head -1)
 case "$reported" in *"$version"*) ;; *) fail "downloaded binary does not run or reports '$reported', not $version" ;; esac
 
 if [ -f "$bin" ]; then
   cp -p "$bin" "$tmp/prev" 2>/dev/null && mv -f "$tmp/prev" "$bin.prev" 2>/dev/null
 fi
+binsha=$(sha256_of "$tmp/ah-engine")
 mv -f "$tmp/ah-engine" "$bin" 2>/dev/null || fail "cannot install $bin"
-printf '%s\n' "$want" >"$marker"
+printf '%s %s\n' "$want" "$binsha" >"$marker"
 rm -f "$attempt"
 say "ok: installed ah-engine $version ($triple) at $bin"
 exit 0

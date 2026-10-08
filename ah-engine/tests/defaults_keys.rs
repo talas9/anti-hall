@@ -18,27 +18,26 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Quoted string literals that directly follow one of `callers` (`defaults::num("a.b")`, `note("x")`, ...).
-fn keys_after(text: &str, callers: &[&str]) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for c in callers {
-        let mut rest = text;
-        let mut base = 0;
-        while let Some(p) = rest.find(&format!("{c}(\"")) {
-            let at = base + p;
-            // a bare call, not a method (`.text("x")`) or a longer name (`fn_text("x")`)
-            let prev = text[..at].chars().last();
-            let after = &rest[p + c.len() + 2..];
-            if !prev.is_some_and(|ch| ch == '.' || ch == ':' || ch.is_alphanumeric() || ch == '_')
-                && let Some(end) = after.find('"')
-            {
-                out.insert(after[..end].to_string());
-            }
-            base += p + c.len() + 2;
-            rest = &rest[p + c.len() + 2..];
-        }
+#[path = "../build_support/keyscan.rs"]
+#[allow(dead_code)] // `HELPERS` and `Kind::name` serve build.rs
+mod keyscan;
+
+/// Review P1 #3: the keys the build compiles in (and the load rejects a plugin without) are exactly what the shared scanner
+/// collects, including the shapes the first scanner missed: `env_var`/`env_name` (`env.*`), the settings-view methods of
+/// sibling_sweep (`t.num("sibling_sweep.*")`), and keys built from a prefix (`git.*` short names, `files.*`, `store.*`).
+#[test]
+fn the_compiled_key_list_is_the_scanned_one_and_covers_every_call_shape() {
+    let scanned = keyscan::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    let compiled: BTreeSet<&str> = ah_engine::defaults::required().iter().map(|(k, _)| *k).collect();
+    assert_eq!(compiled, scanned.keys().map(String::as_str).collect::<BTreeSet<_>>(), "build.rs and the scanner disagree");
+    for k in ["env.done_file", "sibling_sweep.text_max_bytes", "git.label_override", "files.log", "store.kv_cap", "dispatch.msg_no_fallback"] {
+        assert!(compiled.contains(k), "{k} is read by the source but not checked at load");
     }
-    out
+    let kind = |k: &str| ah_engine::defaults::required().iter().find(|(x, _)| *x == k).map(|(_, t)| *t);
+    use ah_engine::defaults::Kind;
+    assert_eq!(kind("sibling_sweep.text_max_bytes"), Some(Kind::Int));
+    assert_eq!(kind("env.done_file"), Some(Kind::Str));
+    assert_eq!(kind("dispatch.guard_events"), Some(Kind::List));
 }
 
 #[test]
@@ -46,33 +45,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
     let mut files = Vec::new();
     rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
     let shipped: BTreeSet<String> = ah_engine::defaults::all().iter().map(|e| e.key.to_string()).collect();
-    let mut used: BTreeSet<String> = BTreeSet::new();
-    let dotted = [
-        "defaults::num",
-        "defaults::millis",
-        "defaults::secs",
-        "defaults::text",
-        "defaults::list",
-        "defaults::words",
-        "defaults::render",
-        "defaults::raw",
-        "defaults::env_of",
-    ];
-    let git_short = ["note", "plain", "block", "argv_template", "words", "strings", "text", "num", "switch"];
-    for f in &files {
-        let text = fs::read_to_string(f).unwrap();
-        // tests may reference keys on purpose, including in negative tests
-        let text = text.split("#[cfg(test)]\nmod tests {").next().unwrap_or("").to_string();
-        used.extend(keys_after(&text, &dotted));
-        if f.to_string_lossy().contains("checks/git") {
-            used.extend(keys_after(&text, &git_short).into_iter().map(|k| format!("git.{k}")));
-        }
-        // keys built from a prefix: files.<key>, env.<name>, store.<name>
-        for (prefix, callers) in [("files.", vec!["state_file", "halted", "halt", "read_json"]), ("env.", vec!["env_var", "env_name"]), ("store.", vec!["cap"])]
-        {
-            used.extend(keys_after(&text, &callers).into_iter().map(|k| format!("{prefix}{k}")));
-        }
-    }
+    let used: BTreeSet<String> = keyscan::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).into_keys().collect();
     let missing: Vec<&String> = used.iter().filter(|k| k.contains('.') && !shipped.contains(*k)).collect();
     assert!(missing.is_empty(), "keys read by the source but not shipped: {missing:?}");
     // A shipped key counts as read when its full name appears as a string literal in the source, or, for sections whose

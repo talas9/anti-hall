@@ -27,6 +27,10 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The Node parity lanes run the Node hooks; with CI=true they fail rather than skip when Node is missing.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
       # Install exactly the toolchain pinned in rust-toolchain.toml (channel, rustfmt and clippy), so CI never drifts from it.
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal

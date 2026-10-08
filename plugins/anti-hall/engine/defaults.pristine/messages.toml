@@ -1,0 +1,503 @@
+# ah-engine shipped message texts (D17): everything a person or an agent can read that the engine produces,
+# except the git check's block messages (git.toml). `{name}` marks a placeholder filled at the call site.
+# Format: see the header of engine.toml. Error codes and event kinds are stable identifiers and live in code.
+
+# ---- failure hints (one per environment-class error code group, see engine.toml health.error_codes) ----
+
+[msg.hint_disk_full]
+doc = "Self-fix hint when the disk is full (error code os28)."
+value = "the disk is full (no space left); free some space, then it recovers by itself"
+
+[msg.hint_state_dir]
+doc = "Self-fix hint when the state directory is not writable or not private. Placeholders: {state_dir}, {env_dir}."
+value = "ah-engine's state directory is not writable or not private; fix its ownership (chown to yourself) and permissions (chmod 700 {state_dir}), or set {env_dir} to a directory you own"
+
+[msg.hint_socket_path]
+doc = "Self-fix hint when the socket path is too long. Placeholder: {env_dir}."
+value = "the socket path is too long; set {env_dir} to a shorter path (e.g. /tmp/ah)"
+
+[msg.hint_fds]
+doc = "Self-fix hint when the process ran out of file descriptors."
+value = "the process ran out of file descriptors; raise `ulimit -n` or close other programs"
+
+[msg.hint_memory]
+doc = "Self-fix hint when the OS killed or starved the daemon. Placeholder: {env_mem}."
+value = "the OS killed or starved ah-engine (low memory); close other programs or lower {env_mem}"
+
+# ---- advisories ---------------------------------------------------------------------------------------
+
+[msg.advisory_env]
+doc = "Once-per-session advisory for an environment-class failure. Placeholder: {hint}."
+value = "⚠️ anti-hall · ah-engine: {hint}. Using the built-in checks instead."
+
+[msg.advisory_degraded]
+doc = "Once-per-session notice that the engine is running below full strength. Placeholders: {restarts} self-restarts and {fallbacks} fallbacks to Node in the last {mins} minutes, {log} the event-log path."
+value = "anti-hall engine degraded: {restarts} self-restarts, {fallbacks} Node fallbacks in the last {mins} min (`ah-engine status --json`, log {log})."
+
+[msg.advisory_permanent]
+doc = "Once-per-session advisory for a permanent failure; nothing is ever filed automatically. Placeholders: {reason}, {diagnostics}."
+value = "⚠️ anti-hall · ah-engine: stopped after repeated failures ({reason}). Using the built-in checks instead. Please file an issue: https://github.com/talas9/anti-hall/issues/new\n{diagnostics}"
+
+[msg.diagnostics]
+doc = "Secret-scrubbed diagnostic block attached to a permanent-failure advisory. Placeholders: {version}, {os}, {arch}, {code}, {log}."
+value = "--- anti-hall ah-engine diagnostics ---\nversion: {version}\nos: {os} {arch}\nerror code: {code}\nlast log lines (ts, kind, code, detail):\n{log}\n---"
+
+[msg.reason_crashloop]
+doc = "Recorded reason when the daemon keeps dying. Placeholders: {n}, {secs}."
+value = "daemon died {n} times in {secs} s"
+
+[msg.reason_breaker]
+doc = "Recorded reason when the client breaker opens. Placeholders: {n}, {secs}, {why}."
+value = "{n} engine failures in {secs} s (last: {why})"
+
+[msg.state_open]
+doc = "Status text for a breaker that is open. Placeholder: {secs}."
+value = "open ({secs} s left)"
+
+[msg.state_stopped]
+doc = "Status text for a crash-loop stop that is active. Placeholder: {secs}."
+value = "stopped ({secs} s left)"
+
+# ---- event log details --------------------------------------------------------------------------------
+
+[msg.log_daemon_killed]
+doc = "Log detail when the daemon was killed by a signal while starting."
+value = "daemon killed while starting"
+
+[msg.log_fallback_timeout]
+doc = "Log detail when the Node fallback did not finish in time."
+value = "node fallback did not finish"
+
+[msg.log_fallback_read_timeout]
+doc = "Log detail when the Node fallback finished but its stdout or stderr was still open at the deadline."
+value = "node fallback output not read to the end"
+
+[msg.log_fallback_read_error]
+doc = "Log detail when reading the Node fallback's stdout or stderr failed part-way."
+value = "node fallback output could not be read to the end (read error)"
+
+[msg.fallback_read_error]
+doc = "Printed on stderr when reading the Node fallback's output failed part-way, so the output is incomplete and no decision exists (exit 1)."
+value = "anti-hall: the Node hook's output could not be read to the end; no decision was made for this call"
+
+[msg.fallback_read_timeout]
+doc = "Printed on stderr when the Node fallback finished but its output could not be read to the end in time, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1."
+value = "anti-hall: the Node hook finished but its output was not complete before the deadline; no decision was made for this call"
+
+[msg.log_fallback_signal]
+doc = "Log detail when the Node fallback was killed by a signal (out of memory, a crash)."
+value = "node fallback was killed by signal {signal}"
+
+[msg.fallback_signal]
+doc = "Printed on stderr when the Node fallback was killed by a signal, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1. Placeholder: {signal}."
+value = "anti-hall: the Node hook was killed by signal {signal}; no decision was made for this call"
+
+[msg.log_operator_reset]
+doc = "Log detail for `reset`."
+value = "operator reset"
+
+[msg.log_crash]
+doc = "Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}."
+value = "daemon pid {pid} died without a clean exit"
+
+[msg.log_budget]
+doc = "Log detail when a rule evaluation exceeded its CPU budget."
+value = "rule evaluation exceeded its cpu budget"
+
+[msg.log_panic]
+doc = "Log and failure detail when a request handler panicked."
+value = "a request handler panicked"
+
+[msg.log_stall]
+doc = "Log detail when the accept loop stalled."
+value = "accept loop stalled"
+
+[msg.failure_stall]
+doc = "Failure reason when the accept loop stalled."
+value = "the ah-engine loop stalled"
+
+[msg.log_stuck]
+doc = "Log detail when a worker is stuck. Placeholder: {i}."
+value = "worker {i} stuck"
+
+[msg.failure_stuck]
+doc = "Failure reason when a worker is stuck."
+value = "an ah-engine worker got stuck"
+
+[msg.log_rss]
+doc = "Log detail when the daemon is over its memory cap. Placeholders: {rss}, {cap}."
+value = "rss {rss} KB over cap {cap} KB; restarting cleanly"
+
+[msg.log_start]
+doc = "Log detail for a daemon start. Placeholders: {version}, {pid}, {rlimit}."
+value = "v{version} pid {pid} mem_limit {rlimit}"
+
+[msg.log_lock_fail]
+doc = "Start-failure detail when the lock file cannot be opened. Placeholders: {path}, {err}."
+value = "lock {path}: {err}"
+
+[msg.log_not_socket]
+doc = "Start-failure detail when something other than a socket sits at the socket path. Placeholder: {path}."
+value = "{path} exists and is not a socket"
+
+[msg.log_bind_fail]
+doc = "Start-failure detail when binding the socket fails. Placeholders: {path}, {err}."
+value = "bind {path}: {err}"
+
+[msg.log_check_spawn]
+doc = "Log detail when a built-in check's thread cannot start, so every command is deferred to Node. Placeholder: {err}."
+value = "a check thread could not start ({err}); the data-segment limit daemon.mem_mb may be smaller than git.stack_mb times the workers"
+
+[msg.exit_reason_handoff]
+doc = "Drain reason for a handoff to a newer build or a stop request."
+value = "handoff or stop"
+
+[msg.exit_reason_stall]
+doc = "Drain reason for a stalled loop."
+value = "loop stalled"
+
+[msg.exit_reason_stuck]
+doc = "Drain reason for a stuck worker."
+value = "worker stuck"
+
+[msg.exit_reason_rss]
+doc = "Drain reason for exceeding the memory cap."
+value = "rss cap"
+
+[msg.exit_reason_idle]
+doc = "Drain reason for idle exit (only when daemon.idle_exit_s is set)."
+value = "idle"
+
+[msg.exit_reason_sigterm]
+doc = "Drain reason for SIGTERM."
+value = "SIGTERM"
+
+# ---- daemon replies -----------------------------------------------------------------------------------
+
+[msg.reply_unknown_request]
+doc = "ERR body for a request the daemon does not understand."
+value = "unknown request"
+
+[msg.reply_malformed]
+doc = "ERR body for a hook payload that is not JSON."
+value = "malformed payload"
+
+[msg.reply_defer]
+doc = "ERR body when a built-in check defers to the Node hook."
+value = "built-in check defers to the Node hook"
+
+[msg.reply_budget]
+doc = "ERR body when evaluation exceeded the CPU budget."
+value = "cpu budget exceeded"
+
+[msg.reply_missing_cwd]
+doc = "ERR body for a project request without a cwd."
+value = "missing cwd"
+
+[msg.reply_internal]
+doc = "ERR body after a contained panic."
+value = "internal error"
+
+[msg.reply_read_deadline]
+doc = "ERR body when the client did not deliver its request in time."
+value = "read deadline"
+
+[msg.reply_too_large]
+doc = "ERR body for an oversize request."
+value = "request too large"
+
+[msg.reply_read_error]
+doc = "ERR body for a socket read error."
+value = "read error"
+
+[msg.reply_test_panic]
+doc = "Panic text of the test-only `panic` verb."
+value = "test panic"
+
+# ---- client failure reasons ---------------------------------------------------------------------------
+
+[msg.client_bad_socket]
+doc = "Exchange failure when the socket path is not a socket owned by this user."
+value = "socket is not a socket owned by this user"
+
+[msg.client_timeout]
+doc = "Exchange failure when the hard deadline passed."
+value = "timeout"
+
+[msg.client_connect]
+doc = "Exchange failure when connecting failed. Placeholder: {err}."
+value = "connect: {err}"
+
+[msg.client_io]
+doc = "Exchange failure for another I/O step. Placeholders: {what}, {err}."
+value = "{what}: {err}"
+
+[msg.client_bad_frame]
+doc = "Exchange failure when the reply frame was damaged. Placeholder: {err}."
+value = "bad reply frame: {err}"
+
+[msg.client_fallback_unavailable]
+doc = "Printed on stderr when stdin cannot safely be sent to the engine and the Node fallback cannot answer. Guard events exit 2; non-guard events exit 0 with this note."
+value = "hook fallback unavailable for undecodable or oversized stdin\n"
+
+[msg.dispatch_stdin_utf8]
+doc = "Reason in dispatch.msg_fail_closed when a guard event's stdin payload is not valid UTF-8."
+value = "the hook payload is not valid UTF-8"
+
+[msg.dispatch_stdin_spool]
+doc = "Reason in dispatch.msg_fail_closed when an over-cap stdin payload cannot be spooled for Node hooks. Placeholder: {err}."
+value = "the hook payload is over the in-memory cap and could not be spooled for Node hooks: {err}"
+
+[msg.dispatch_stdin_spool_note]
+doc = "Printed on stderr when a non-guard event has an over-cap stdin payload but the anonymous spool file could not be created. Placeholders: {event}, {err}."
+value = "anti-hall: skipped {event} Node hooks because the over-cap hook payload could not be spooled safely: {err}"
+
+# ---- typed errors (Display text) ----------------------------------------------------------------------
+
+[msg.err_rules_json]
+doc = "Rules file is not valid JSON. Placeholder: {err}."
+value = "rules json: {err}"
+
+[msg.err_rules_version]
+doc = "Rules file version is not supported. Placeholder: {version}."
+value = "unsupported rules version {version}"
+
+[msg.err_rules_action]
+doc = "A rule has an unknown action. Placeholders: {index}, {action}."
+value = "rule {index}: unknown action {action}"
+
+[msg.err_rules_check]
+doc = "A rule names an unknown check. Placeholders: {index}, {name}."
+value = "rule {index}: unknown check {name}"
+
+[msg.err_rules_pattern]
+doc = "A rule's pattern is not a valid regular expression. Placeholders: {index}, {id}, {err}."
+value = "rule {index} ({id}): {err}"
+
+[msg.err_path_io]
+doc = "An OS error on a path. Placeholders: {path}, {err}."
+value = "{path}: {err}"
+
+[msg.err_not_dir]
+doc = "A state or socket directory is not a plain directory. Placeholder: {path}."
+value = "{path} is not a plain directory"
+
+[msg.err_wrong_owner]
+doc = "A state or socket directory belongs to another user. Placeholders: {path}, {found}, {expected}."
+value = "{path} is owned by uid {found}, not {expected}"
+
+[msg.err_too_many_projects]
+doc = "The project partition limit was reached."
+value = "too many projects"
+
+[msg.err_value_too_large]
+doc = "A stored value exceeds the per-value cap."
+value = "value too large"
+
+[msg.err_mailbox_full]
+doc = "The project mailbox is full."
+value = "mailbox full"
+
+[msg.err_too_many_keys]
+doc = "The project key limit was reached."
+value = "too many keys"
+
+[msg.err_unknown_verb]
+doc = "A project operation verb is not known. Placeholder: {verb}."
+value = "unknown verb {verb}"
+
+[msg.err_db_sql]
+doc = "A storage operation failed inside SQLite. Placeholder: {err}."
+value = "storage error: {err}"
+
+[msg.err_db_schema]
+doc = "A database was written by a newer build of the engine. Placeholders: {db}, {found}, {known}."
+value = "{db} has schema version {found}, newer than this build knows ({known}); storage stays off until the matching build runs"
+
+[msg.err_db_journal]
+doc = "The journal mode could not be set. Placeholder: {mode}."
+value = "the database journal mode could not be set (got {mode}); the file system may not support it"
+
+[msg.err_db_busy]
+doc = "The storage writer queue is full."
+value = "storage is busy; retry later"
+
+[msg.err_db_unavailable]
+doc = "Storage is not open."
+value = "storage is not available"
+
+[msg.err_db_timeout]
+doc = "A write did not commit in time; it may still commit, and its write id makes a retry harmless."
+value = "the write did not commit in time; retry with the same write id"
+
+[msg.storage_ok]
+doc = "Status value when the databases are open."
+value = "ok"
+
+[msg.storage_off]
+doc = "Status value when the daemon runs without storage (unit tests, or before it opened)."
+value = "memory only"
+
+[msg.spool_spooled]
+doc = "Printed by `proj` when the engine could not take a write and it was spooled. Placeholder: {id}."
+value = "spooled {id}: the engine applies it when it is back"
+
+[msg.spool_full]
+doc = "Printed by `proj` when the spool is full, so the write was not kept."
+value = "the engine is unavailable and the spool is full; the write was not kept"
+
+[msg.spool_io]
+doc = "Printed by `proj` when the spool could not be written. Placeholder: {err}."
+value = "the engine is unavailable and the spool could not be written: {err}"
+
+[msg.spool_rewrite_failed]
+doc = "Log detail when the spool could not be rewritten after a drain. Placeholders: {err} the OS error, {n} unapplied records that may be lost."
+value = "{err}; {n} unapplied record(s) may be lost"
+
+[msg.spool_damaged]
+doc = "Quarantine reason for spool bytes that are not a valid record."
+value = "damaged spool record"
+
+[msg.log_pruned]
+doc = "Event-log detail when maintenance forgets old applied write ids. Placeholder: {n}."
+value = "forgot {n} applied write ids past retention"
+
+[msg.backup_exists]
+doc = "A backup destination already holds a snapshot. Placeholder: {path}."
+value = "{path} already holds a snapshot; choose another directory"
+
+[msg.restore_daemon_busy]
+doc = "A restore could not stop the daemon or take its lock in time."
+value = "the daemon did not stop in time; nothing was changed"
+
+[msg.restore_damaged]
+doc = "A snapshot database failed its integrity check. Placeholders: {path}, {check}."
+value = "{path} failed its integrity check ({check}); nothing was changed"
+
+[msg.restore_no_hot]
+doc = "A snapshot directory has no hot.db. Placeholder: {path}."
+value = "{path} holds no hot.db snapshot; nothing was changed"
+
+[msg.log_restored]
+doc = "Event-log detail of a restore. Placeholders: {from}, {kept}."
+value = "restored from {from}; the state before it is kept in {kept}"
+
+[msg.schedule_unknown_action]
+doc = "A job names an action the scheduler does not know; the job is ignored. Placeholders: {job}, {action}."
+value = "job {job} names unknown action {action}; it is ignored"
+
+[msg.schedule_unknown_job]
+doc = "`schedule run` named a job that is not configured. Placeholder: {job}."
+value = "no job named {job}"
+
+[msg.schedule_agent_planned]
+doc = "Result of an agent-targeted job until mailbox delivery exists (D45)."
+value = "delivery to a session's mailbox is planned (D45); the run is recorded, not delivered"
+
+[msg.schedule_timeout]
+doc = "Detail of a run that passed its timeout."
+value = "the run passed its timeout and was stopped"
+
+[msg.schedule_failed]
+doc = "Event-log detail of a failed run. Placeholders: {job}, {detail}."
+value = "job {job} failed: {detail}"
+
+[msg.schedule_daemon_gone]
+doc = "An in-process job found the daemon gone (it was exiting)."
+value = "the daemon is exiting"
+
+[msg.schedule_snapshot_failed]
+doc = "The metrics snapshot job could not keep its snapshot."
+value = "the metrics snapshot could not be stored"
+
+[msg.err_unknown_check]
+doc = "`check` was asked for a check that is not registered. Placeholder: {name}."
+value = "unknown check {name}"
+
+# ---- command line -------------------------------------------------------------------------------------
+
+[msg.cli_no_daemon]
+doc = "Printed to stderr when a control command finds no daemon."
+value = "no daemon"
+
+[msg.cli_usage]
+doc = "Usage text for an unknown or missing subcommand. The command list is generated from the command registry."
+value = "usage: ah-engine {commands}"
+
+# ---- warnings -----------------------------------------------------------------------------------------
+
+[msg.regex_literal_invalid]
+doc = "Panic text when a literal regular expression in the source does not compile (a bug the tests catch)."
+value = "literal regex is valid (compiled by the tests that run its code path)"
+
+[msg.cli_planned]
+doc = "Printed when a planned command is run. Placeholders: {command}, {decision}."
+value = "{command} is planned ({decision}) and is not implemented yet"
+
+[msg.cli_unknown]
+doc = "Printed to stderr for an unknown command. Placeholder: {command}."
+value = "unknown command {command}"
+
+[msg.cli_not_running]
+doc = "Printed in place of a report when no daemon is running (`--json` output carries running=false)."
+value = "no daemon is running: start one with a hook call or `ah-engine serve`; metrics and impact are kept in memory by the running daemon"
+
+[msg.docs_intro]
+doc = "Opening paragraph of the generated reference."
+value = "This reference is generated from the engine's registries and shipped defaults by `ah-engine docs --format md`; do not edit it by hand. A test fails when it differs from the generated text."
+
+[msg.docs_checks_note]
+doc = "Paragraph under the checks heading of the generated reference."
+value = "A rule selects a built-in check with `\"check\": \"<name>\"`; the check's tables, limits and messages are in its defaults file."
+
+[msg.docs_rule_fields]
+doc = "Paragraph listing the fields of a rule in the generated reference."
+value = "Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`, `options`, `action` (deny, warn or context), `message`, `paths`."
+
+[msg.impact_no_routing]
+doc = "Status shown in place of a model-routing saving figure while no routing events are recorded."
+value = "no model-routing events are recorded yet (planned, D52)"
+
+[msg.metrics_quantile_note]
+doc = "Printed with every latency histogram: how to read its percentiles."
+value = "upper bound of the histogram bucket holding that rank"
+
+[msg.tel_err]
+doc = "A telemetry value was refused. Placeholders: {code} (stable short code) and {field} (the field, when one is named)."
+value = "telemetry value refused: {code} {field}"
+
+[msg.tel_loss_window]
+doc = "Printed with the telemetry summary: how much a crash can lose. Placeholder: {flush_ms}."
+value = "counters are kept in memory and flushed to hot.db every {flush_ms} ms and at shutdown; a kill -9 loses at most the data recorded since the last flush"
+
+[msg.tel_net_status]
+doc = "Status shown with the model-routing saving once routing decisions exist. Placeholders: {n} decisions, {days} days."
+value = "computed from {n} routing decisions in the last {days} days (estimate, see net)"
+
+[msg.tel_no_db]
+doc = "The telemetry rollup cannot run: storage did not open."
+value = "telemetry rollup needs the database, and storage is not open"
+
+[msg.no_price_for_model]
+doc = "Said by `impact` for a model that is not in the price table, instead of a guessed figure. Placeholder: {model}."
+value = "no price for model {model}"
+
+[msg.err_mesh_missing]
+doc = "A mesh reader was pointed at a store file that does not exist (a reader never creates one). Placeholder: {path}."
+value = "{path}: no such store file"
+
+[msg.err_mesh_backend]
+doc = "A mesh reader refused a store directory whose BACKEND marker is not sqlite. Placeholders: {path}, {backend}."
+value = "{path}: the store backend is {backend}, not sqlite; Node owns it"
+
+[msg.err_mesh_sql]
+doc = "A mesh read failed in SQLite or hit a value it cannot read the way Node does. Placeholder: {err}."
+value = "store read failed: {err}"
+
+[msg.err_mesh_usage]
+doc = "The mesh command was called without a verb or without --db."
+value = "usage: ah-engine mesh <roster|unread|read|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]"
+
+[msg.err_mesh_range]
+doc = "A store value is an integer JavaScript cannot represent exactly, which Node's reader rejects too. Placeholder: {value}."
+value = "integer {value} is out of range for a JavaScript number"

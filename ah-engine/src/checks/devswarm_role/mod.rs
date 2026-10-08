@@ -45,7 +45,7 @@ mod tests;
 /// The home directory of the settings reads and the file paths, when it is one this check can use exactly as Node
 /// does: `HOME` set, absolute, already normalized (Node joins paths lexically), and not the real home under a test
 /// marker (where the Node settings reader refuses).
-fn usable_settings(env: &RequestEnv) -> Option<Settings> {
+pub(crate) fn usable_settings(env: &RequestEnv) -> Option<Settings> {
     let home = env.get(defaults::env_name("home"))?;
     if !home.starts_with('/') || posix_normalize(home) != home {
         return None;
@@ -71,7 +71,7 @@ fn passwd_home() -> Option<String> {
 }
 
 /// True when the claude -p judge child is running: every anti-hall hook is a silent no-op there.
-fn judge_child(env: &RequestEnv) -> bool {
+pub(crate) fn judge_child(env: &RequestEnv) -> bool {
     env.get(defaults::text("devswarm_role.judge_env")) == Some("1")
 }
 
@@ -114,14 +114,14 @@ pub fn parent_gate(env: &RequestEnv) -> Verdict {
 }
 
 /// The real path of the plugin root's parent of `hooks`, which is where a Node hook's `path.join(__dirname, '..')` points.
-fn node_root(plugin_root: &str) -> Option<String> {
+pub(crate) fn node_root(plugin_root: &str) -> Option<String> {
     let hooks = std::fs::canonicalize(std::path::Path::new(plugin_root).join(defaults::text("devswarm_role.hooks_dir"))).ok()?;
     Some(hooks.parent()?.to_str()?.to_string())
 }
 
 /// The path of a launcher the Node hook would install, when it is already there with exactly the content Node would
 /// write (so Node would neither write nor change it); `None` when Node would have to install it.
-fn current_launcher(home: &str, root: &str, key: &str) -> Option<String> {
+pub(crate) fn current_launcher(home: &str, root: &str, key: &str) -> Option<String> {
     let l = defaults::raw(key);
     let (name, target) = (l.str_field("name"), l.str_field("target"));
     let dest = posix_normalize(&format!("{home}/{}/{name}", defaults::text("devswarm_role.bin_dir")));
@@ -228,10 +228,14 @@ impl Check for DevswarmParentGate {
         Some(Verdict::Defer)
     }
 
-    fn run_env(&self, s: &Subject<'_>, _payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+    fn run_env(&self, s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
         if s.event != "Stop" {
             return Some(Verdict::Defer);
         }
-        Some(parent_gate(env))
+        let root = opts.get("plugin_root").and_then(Value::as_str).or_else(|| env.get(defaults::env_name("plugin_root")));
+        Some(match parent_gate(env) {
+            Verdict::Defer => crate::checks::devswarm_gates::readside::parent_gate(payload, env, root),
+            v => v,
+        })
     }
 }

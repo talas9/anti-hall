@@ -12,7 +12,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `briefing` | `[--root <plugin dir>]` | yes | implemented | A derived inventory of a plugin tree (D81, the port of scripts/briefing.js): every registered hook by event with the purpose from its own header comment, the skills, the DevSwarm substrate and the docs map. |
 | `capability-scan` | `[--root <plugin dir>]` | yes | implemented | A read-only gap report (D81, the port of scripts/capability-scan.js): for each opt-in capability of a plugin tree, whether it is shipped and whether it is active on this machine, and how to enable it; prints the JSON report, then one line per capability. |
 | `check` | `<name>` | yes | implemented | Run one built-in check in-process on a hook payload from stdin (used by the parity harness). |
-| `config` | `[validate <file>]` | yes | implemented | Show the effective config and where each value comes from, or validate a config file; versions, rollback and export are planned (D18, they need the config database). |
+| `config` | `[validate <file>\|heal]` | no | implemented | Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the settings they lack from the pristine copy, also in a version-controlled checkout); versions, rollback and export are planned (D18, they need the config database). |
 | `ctl` | `<ping\|reload\|stop\|status>` | no | implemented | Send a control verb to the daemon: ping, reload, stop or status. |
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
 | `doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON. |
@@ -117,10 +117,10 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `devswarm-parent-inbox` | DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) in the engine; an active Primary defers to the Node hook, which owns the roster, mailbox and dedupe state (port of the gate of devswarm-parent-inbox.js). |
 | `devswarm-child-turn` | DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) in the engine; an active child defers to the Node hook, which writes the heartbeat and descriptor and renders the mailbox (port of the gate of devswarm-child-turn.js). |
 | `devswarm-child-role` | SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace (port of devswarm-child-role.js); a Primary session, a stale stable launcher or anything else it cannot prove byte-identical defers to Node. |
-| `devswarm-parent-gate` | Stop: allows without running Node when the Node gate would exit silently before reading any mailbox (switch off, user skip, supervisor inactive, child workspace, judge child); every other session defers to the Node gate (port of devswarm-parent-gate.js, early exits only). |
+| `devswarm-parent-gate` | Stop: allows without running Node when the Node gate would exit silently before reading any mailbox (switch off, user skip, supervisor inactive, child workspace, judge child, or the model already continuing after a Stop block); every other session defers to the Node gate (port of devswarm-parent-gate.js, early exits only). |
 | `devswarm-child-gate` | DevSwarm child Stop gate: allows the stop when the hook cannot act (switch off, skip recorded, not a DevSwarm child); a child workspace defers to the Node gate, which owns the heartbeat state, the stop budgets, the mailbox store and the hivecontrol probe (port of devswarm-child-gate.js). |
 | `devswarm-parent-reply-tracker` | DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm send (switch off, child workspace, other tool, command without the devswarm and send words); a plausible send defers to the Node hook, which records the reply state (port of devswarm-parent-reply-tracker.js). |
-| `devswarm-child-drain` | DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child); a child workspace defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js). |
+| `devswarm-child-drain` | DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child) and when it would stay silent before counting any mail (not a Bash call, a subagent's call, an `inbox read-primary` command, no usable workspace id, no descriptor naming an inbox); anything that needs the unread count defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js). |
 | `sibling-sweep` | Stop and SubagentStop reminder: when the reply states the cause of a bug in a fix context and the turn shows no search for other occurrences of the same pattern, asks once per cause to search, fix or list every occurrence and state the search run; counts reminders and follow-through (engine-only, no Node twin). |
 
 ## Settings
@@ -192,6 +192,20 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.workers` | `4` | `AH_ENGINE_WORKERS` |  | Worker threads evaluating requests. |
 | `daemon.write_ms` | `1000` | `AH_ENGINE_WRITE_MS` | ms | Time allowed to write a reply. |
 
+### engine.toml / defaults_load
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `defaults_load.backup_infix` | `.bak-` |  |  | What separates a defaults file's name from the time stamp of its one-time backup, taken before the first heal writes the file. |
+| `defaults_load.lkg_keep` | `3` |  |  | How many last-known-good copies of the defaults (one per engine version, plugin root and shipped content) the state directory keeps; older ones are removed. |
+| `defaults_load.msg_fallback` | `defaults {file} {key} rejected ({why}): using the {layer} copy` |  |  | Event-log detail when a defaults file or setting was rejected and another layer answered. Placeholders: {file}, {key} (empty for a whole file), {layer} (lkg or pristine), {why}. |
+| `defaults_load.msg_heal` | `defaults {file}: added missing {keys} from the pristine copy (backup {backup})` |  |  | Event-log detail (and `config heal` output) when missing settings were added to an edited defaults file from the pristine copy. Placeholders: {file}, {keys}, {backup} (the backup file, or empty when one already existed). |
+| `defaults_load.msg_heal_failed` | `defaults {file}: could not add missing {keys}: {err}` |  |  | Event-log detail (and `config heal` output) when missing settings could not be added. Placeholders: {file}, {keys}, {err}. |
+| `defaults_load.msg_heal_none` | `nothing to heal: the edited defaults have every setting of the pristine copy` |  |  | Printed by `config heal` when no edited defaults file lacks a setting of the pristine copy. |
+| `defaults_load.msg_heal_skipped` | `defaults {file}: missing keys {keys}: run `ah-engine config heal` to add them` |  |  | Event-log detail when missing settings were not written because the plugin root is a version-controlled checkout. Placeholders: {file}, {keys}. |
+| `defaults_load.msg_lkg_failed` | `could not write the last-known-good defaults: {err}` |  |  | Event-log detail when the last-known-good copy of the defaults could not be written. Placeholder: {err}. |
+| `defaults_load.vcs_markers` | `.git` |  |  | Entries (a directory or a file) that mark a version-controlled checkout: when the plugin root or a directory above it holds one, missing settings are never written into its files automatically (only `ah-engine config heal` writes there). |
+
 ### engine.toml / discard
 
 | Key | Default | Env override | Unit | What it is |
@@ -243,6 +257,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.advisory_ttl_ms` | `3600000` |  | ms | A recorded failure older than this no longer produces an advisory. |
 | `health.context_events` | `PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SubagentStart` |  |  | Hook events whose output carries `additionalContext`; other events use `systemMessage` when an advisory is merged. |
 | `health.crashy_kinds` | `crash, panic, start_fail, watchdog, rss` |  |  | Event kinds that count toward the crash-loop threshold. |
+| `health.degraded_kinds` | `defaults_fallback, defaults_heal_skipped` |  |  | Event-log kinds that mark the engine degraded while one is in the degraded window (a defaults file or setting that fell back to the last-known-good or pristine copy, or missing settings that could not be healed). |
 | `health.degraded_window_s` | `3600` |  | s | The window over which `status` counts self-restarts and Node fallbacks, and over which a restart marks the engine degraded (shown by `status`, the shadow report and, once per session, in the session context). |
 | `health.diag_lines` | `8` |  |  | Event-log lines included in the diagnostic block of a permanent-failure advisory. |
 | `health.error_codes` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | Error-code classification: environment-class codes get a plain self-fix hint (a message key); every other code is a permanent failure that asks for an issue. |
@@ -341,6 +356,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.credit_coauthor_alts` | `7 items` |  |  | Text after a Co-Authored-By trailer that names an AI tool (case-insensitive prefix match). |
 | `git.credit_generated_alts` | `claude code, claude, chatgpt, codex, copilot` |  |  | Names after a "Generated with" footer that count as an AI tool. |
 | `git.credit_gpt` | `2 entries` |  |  | A gpt- model name in a trailer: the prefix and the version digits that count. |
+| `git.credit_label_gh_words` | `2` |  |  | How many non-flag words of a gh command name it in a credit-elsewhere block message (git-guard.js creditElsewhereLabel: `gh pr create`). |
 | `git.file_write_tip` | `\nTip: this file's content was scanned as shell. Write the file with the Writ...` |  |  | Added to a block when the command writes a file with shell text: the file was scanned as shell. |
 | `git.find_exec_flags` | `-exec, -execdir, -ok, -okdir` |  |  | find actions that run a command. |
 | `git.forward_config_indexed` | `KEY_, VALUE_` |  |  | GIT_CONFIG_<prefix><n> variable families that are forwarded. |
@@ -362,6 +378,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.handover_dir_prefix` | `.anti-hall/handovers/` |  |  | Directory under which handovers live (never committed). |
 | `git.handover_git_timeout_ms` | `3000` |  | ms | Timeout for each git query of the handover check. |
 | `git.handover_skipped_advisory` | `anti-hall git-guard: the handover-commit check was skipped for {n} commit(s) ...` |  |  | Advisory when the handover check ran out of budget. Placeholder: {n}. |
+| `git.hd_assign` | `^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./~+@%:,=-]+)$` |  |  | A standalone literal assignment `NAME=value` beside a data heredoc (git-guard.js HD_ASSIGN_RE); group 1 is the name, group 2 the value. |
 | `git.hd_bad_dirs` | `10 items` |  |  | Directory names whose files a heredoc must not be written into (hooks, config, credentials). |
 | `git.hd_data_ext` | `12 items` |  |  | File extensions a heredoc may be written to as plain data. |
 | `git.hd_deny_first` | `59 items` |  |  | First words that make a heredoc consumer a script runner, so the heredoc is not data. |
@@ -372,11 +389,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.hd_read_long` | `35 items` |  |  | Read-only long options accepted for log, diff and show in a heredoc-fed command. |
 | `git.hd_read_opt` | `10 items` |  |  | Read-only long options with an optional value. |
 | `git.hd_read_val` | `11 items` |  |  | Read-only long options with a required value. |
+| `git.hd_sed_operand` | `^[A-Za-z0-9_./~$+@%:,=][A-Za-z0-9_./~$+@%:,=-]*$` |  |  | A plain-word operand of a neighbouring sed: no leading dash, no flag (git-guard.js hdSedOk). |
+| `git.hd_sed_range` | `^sed[ \t]+-n[ \t]+[0-9]+(?:,[0-9]+)?p(?:[ \t]+[A-Za-z0-9_./~$+@%:,=][A-Za-z0-...` |  |  | The only sed shape that may sit beside a data heredoc: a fixed print range `sed -n <N>[,<M>]p <files>` with plain-word operands (git-guard.js HD_SED_RANGE_RE; the JavaScript negative lookahead on an operand's first character is the equivalent first-character class). |
+| `git.hd_sed_script` | `^[0-9]+(?:,[0-9]+)?p$` |  |  | The fixed print-range script word of a neighbouring sed (git-guard.js hdSedOk). |
 | `git.hd_sinks_basic` | `/dev/null, /dev/stdout, /dev/stderr` |  |  | Device paths a heredoc may be written to. |
 | `git.hd_sinks_fd` | `/dev/fd/1, /dev/fd/2` |  |  | Extra descriptor paths accepted as data sinks in redirects. |
 | `git.hd_specs` | `10 entries` |  |  | Option grammar per git subcommand for heredoc-fed commands: s = short flags, v = short flags with a value, o = short flags with an optional value, l / big_l / big_o = long flags (none / required value / optional value), num = numeric -<n> allowed, strict = unknown options are not data, read = also accept the shared read-only option sets, l_extra = more long flags. |
+| `git.hd_var_deny` | `20 items` |  |  | Variable names (case-insensitive) a standalone assignment beside a data heredoc must not set: ones the shell or the allowed tools read implicitly (git-guard.js HD_VAR_DENY). |
+| `git.hd_var_deny_prefix` | `13 items` |  |  | Variable-name prefixes (case-insensitive) a standalone assignment beside a data heredoc must not set: loader, git/gh config, ssh, locale and language-runtime hooks (git-guard.js HD_VAR_DENY_PREFIX). |
 | `git.heredoc_git_msg_subs` | `commit, tag, notes, merge` |  |  | git subcommands that take a message from a heredoc. |
-| `git.heredoc_safe_verbs` | `21 items` |  |  | Commands a data heredoc may be fed to without being treated as a shell script. |
+| `git.heredoc_safe_verbs` | `28 items` |  |  | Commands a data heredoc may be fed to without being treated as a shell script. |
 | `git.jev_backstop_ms` | `500` |  | ms | Extra time Node's synchronous worker is allowed beyond the budget; counted in the total-time guard (Node: the +500 in the guard). |
 | `git.jev_budget_ms` | `1500` |  | ms | Time budget of one self-credit consult (Node: CONSULT_BUDGET_MS). |
 | `git.jev_consult_cap` | `8` |  |  | Most distinct texts one command may consult Jev about (Node: JEV_CONSULT_CAP). |
@@ -493,6 +515,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.node_fs_read_allowlist` | `readFileSync, readdirSync, statSync, existsSync, lstatSync` |  |  | fs methods a safe `node -e` payload may call (command-guard.js NODE_FS_READ_ALLOWLIST). |
 | `command.node_script_ext` | `(?i)\.(?:js\|mjs\|cjs)$` |  |  | Script file extensions of node for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
 | `command.pattern_first_verbs` | `grep, sed, awk` |  |  | Verbs whose first operand is a pattern, blanked before the heavy patterns run (command-guard.js PATTERN_FIRST_VERBS). |
+| `command.plain_read_git_segments` | `^git\s+log\s+--oneline(?:\s+-\d+)?\s*$, ^git\s+status(?:\s+(?:--short\\|-s))?\...` |  |  | Exact shapes of one plain read-only git segment inside a chain, after a trailing `2>&1` is stripped (command-guard.js PLAIN_LOG_SEGMENT_RE, PLAIN_STATUS_SEGMENT_RE, PLAIN_SHOW_SEGMENT_RE, PLAIN_REVPARSE_SEGMENT_RE; the JavaScript negative lookahead on the first character is the equivalent first-character class). |
 | `command.python_script_ext` | `(?i)\.py$` |  |  | Script file extension of the other interpreters for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
 | `command.script_check_interpreter` | `^(?:python[0-9.]*\|node\|ruby\|perl\|php)$` |  |  | Interpreters whose flagged script runs are heavy (command-guard.js SCRIPT_CHECK_INTERPRETER_RE). |
 | `command.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument or heredoc body is itself a script (lib/shell-scan.js SHELL_VERBS). |
@@ -502,6 +525,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.test_keywords` | `7 items` |  |  | Words after which a `[[` or `((` is at command position, so its `<`/`>` are comparisons, not redirects (command-guard.js TEST_KEYWORDS). |
 | `command.timeout_prefix` | `^\s*timeout\s+(?:-[ks]\s+\S+\s+\|-\S+\s+)*\d+[smhd]?\s+` |  |  | A leading `timeout [opts] N` stripped for the light-exception test (command-guard.js TIMEOUT_PREFIX_RE). |
 | `command.timeout_value_flags` | `-s, --signal, -k, --kill-after` |  |  | timeout options that take a value (command-guard.js effectiveVerb). |
+| `command.trailing_stderr_merge` | `\s+2>&1\s*$` |  |  | A trailing `2>&1` stripped before a plain git chain segment is classified (command-guard.js TRAILING_STDERR_MERGE_RE). |
 | `command.whole_command_clis` | `12 items` |  |  | CLIs whose whole-command read-only form (version query or gcloud read piped to a closed sink) is light (command-guard.js isWholeCommandReadOnlyForm and VERSION_CLI_RE). |
 | `command.wrappers` | `18 items` |  |  | Words skipped when finding a segment's effective verb (command-guard.js WRAPPERS). |
 | `command.write_target_unknowable` | `$`*?[]{}` |  |  | A write target containing one of these characters cannot be resolved and is skipped (command-guard.js resolveWriteTarget). |
@@ -570,6 +594,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `spool.backoff_max_ms` | `400` |  | ms | Longest retry delay. |
 | `spool.backoff_ms` | `20` | `AH_ENGINE_SPOOL_BACKOFF_MS` | ms | First retry delay; each retry doubles it, up to backoff_max_ms, with random jitter of up to half the delay. |
+| `spool.backoff_shift_max` | `16` |  |  | The largest doubling exponent of a spool retry delay (backoff_ms times 2^n, at most this power), before backoff_max_ms; it keeps the shift from overflowing. |
 | `spool.drain_ms` | `1000` | `AH_ENGINE_SPOOL_DRAIN_MS` | ms | Interval of the scheduled spool drain job (it also drains on start and before each project write). |
 | `spool.max_bytes` | `16777216` | `AH_ENGINE_SPOOL_MAX_BYTES` | bytes | Largest spool; a write that would grow it past this is refused instead of spooled, so the client learns it was not kept. |
 | `spool.retries` | `4` | `AH_ENGINE_SPOOL_RETRIES` |  | Retries of a project write before it is spooled (the first attempt is not counted). |
@@ -711,6 +736,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `schedule.actions` | `maintain, backup, metrics_snapshot, spool_drain, telemetry_rollup, noop` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
 | `schedule.history_default` | `50` |  |  | Runs `schedule history` lists unless asked for more. |
@@ -915,6 +941,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guardkit.prune_stamp_key` | `lastSweep` |  |  | Key of the stamp file that holds the time of the last sweep. |
 | `guardkit.prune_throttle_ms` | `21600000` |  |  | Minimum time, in milliseconds, between two pruning sweeps of one state-file family (6 hours). |
 | `guardkit.prune_ttl_ms` | `604800000` |  |  | How old, in milliseconds, a per-session state file must be before the pruning sweep removes it (7 days). |
+| `guardkit.render_reserve` | `32` |  | bytes | Extra bytes reserved beyond a message template's length when its placeholders are filled (a capacity hint, not a limit). |
 | `guardkit.session_key_max` | `120` |  |  | Longest session key, in UTF-16 units, after the characters outside letters, digits, dot, underscore and hyphen are replaced (the Node state file name limit). |
 | `guardkit.settings_dir` | `.anti-hall` |  |  | The anti-hall directory under the home directory, where the legacy settings files live. |
 | `guardkit.settings_file` | `.anti-hall/settings.json` |  |  | Settings file, relative to the home directory. |
@@ -1326,7 +1353,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.question_version` | `v1` |  |  | Part of the cache key, bumped when a question's wording changes so old answers are not reused (Node: QUESTION_VERSION). |
 | `jev.queue_cap` | `64` |  |  | Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). |
 | `jev.relax_sync_cap_ms` | `1500` |  | ms | Longest a relax-block consult inside a hook that is about to nudge or block waits for Jev when the integration is on; a slower answer keeps today's verdict (Node: RELAX_SYNC_CAP_MS). |
+| `jev.retry_status_min` | `500` |  |  | An HTTP status at or above this one is a retry-eligible failure of the primary (Node: status >= 500). |
+| `jev.retry_statuses` | `402, 429` |  |  | HTTP statuses below jev.retry_status_min that are retry-eligible (Node: 402, 429). |
+| `jev.retry_statuses_balance` | `400, 403` |  |  | HTTP statuses that are retry-eligible only when the response body names an exhausted balance (Node: 400 and 403 with the balance pattern). |
 | `jev.rollup_dir` | `jev-daily` |  |  | Directory of the daily rollups, relative to the log directory (Node: jev-daily); one JSON file per UTC day. |
+| `jev.scrub_failed_text` | `[REDACTED_UNSCRUBBED]` |  |  | What the scrubber returns instead of the text when one of jev.scrub_rules does not compile: nothing unscrubbed ever leaves. |
+| `jev.scrub_rules` | `17 items` |  |  | The outbound secret-scrub rules every Jev request body passes through, in order (Node: hooks/lib/secret-scrub.js scrubSecrets, rule for rule): `pattern` (Rust regex syntax: JavaScript look-behind is `no_alnum_before`, a hit right after an ASCII letter or digit is skipped; `\s` is spelled as JavaScript's whitespace set; the `i` flag as explicit [xX] classes), `to` the replacement (`${n}` a group). A rule that does not compile makes the scrubber redact the whole text (jev.scrub_failed_text). |
 | `jev.settings_file` | `settings.json` |  |  | The unified settings file, relative to the anti-hall home directory (Node: settings.json). |
 | `jev.settings_recheck_ms` | `2000` |  | ms | How often the settings files are re-checked for changes: at most one stat of each of the two files per window, taken by the first call after it elapses; between checks a call costs one clock read, so an off Jev stays off the hot path. |
 | `jev.state_dir` | `state` |  |  | Directory of the Jev budget-watch state, relative to the anti-hall home directory (Node: state/). |
@@ -1346,6 +1378,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.default_timeout_s` | `600` |  | s | The timeout of a Node hook whose hooks.json entry has none (0 in the table): the host's own default for a command hook (600 s on Claude per docs/KB-claude-code-hooks.md; Codex's default is not verified here, so the same bound is used). Never zero: a zero timeout would kill the hook at its first poll. |
 | `dispatch.defer_exit` | `75` |  |  | Exit code with which the dispatcher asks its wrapper to run the event's Node hooks one by one, as the host does (the joined output could not be delivered faithfully). EX_TEMPFAIL; the host reads it as a non-blocking hook error and shows stderr, so without a wrapper the deferral is visible, never silent. |
 | `dispatch.exact_chars` | `_- ,\|` |  |  | Besides letters and digits, the characters a Claude matcher may contain and still be an exact name or list. |
+| `dispatch.fallback_lists` | `2 entries` |  |  | Per host, the wrapper's fallback list relative to the plugin root (the same files as dispatch.generated_files): a defaults load is rejected when a list runs hooks for an event the table has no row for, and the dispatcher answers an event without a row with the neutral no-op only when this list marks it as a thin trigger. |
 | `dispatch.gen_default_kind` | `hooks` |  |  | The file `gen-hooks` prints when `--kind` is not given. |
 | `dispatch.generated_files` | `2 entries` |  |  | Per host and kind of generated file (hooks, registry, list, map), its path relative to the repository root. `tests/hooks_files.rs` requires each committed file to equal what `gen-hooks` prints and `ah-gen-fallback-list` writes them. |
 | `dispatch.guard_events` | `PreToolUse, PermissionRequest, Stop, SubagentStop` |  |  | Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call (Claude ignores exit 2 on PermissionRequest, so a fail-closed exit 2 there is harmless, and the event stays listed so a hook registered on it later is guarded from the start), Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74). |
@@ -1370,7 +1403,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_codex_UserPromptSubmit` | `8 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.in_process` | `0` | `AH_ENGINE_DISPATCH_IN_PROCESS` |  | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
 | `dispatch.list_banner` | `# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are:...` |  |  | The first line of the generated fallback list. |
+| `dispatch.list_comment_mark` | `#` |  |  | The mark that starts a comment line of the generated fallback list. |
 | `dispatch.list_empty_word` | `empty` |  |  | The word that marks an event row of the fallback list whose event has no table entry (a thin trigger only): the wrapper answers it with the neutral no-op. |
+| `dispatch.list_event_mark` | `@` |  |  | The mark that starts an event row of the generated fallback list (the wrapper reads the same mark). |
 | `dispatch.list_separators` | `\|,` |  |  | Characters that separate the names of an exact-list matcher. |
 | `dispatch.match_all` | `, *` |  |  | Matcher values that match every occurrence of the event. |
 | `dispatch.matcher_field` | `9 entries` |  |  | Per event, the payload field a matcher is tested against; on an event not listed here the matcher is ignored. |
@@ -1388,7 +1423,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.msg_hook_spawn` | `the hook's command could not be started` |  |  | Event-log detail when a Node hook's command could not be started. |
 | `dispatch.msg_hook_timeout` | `the hook ran past its timeout and was killed; the host discards a timed-out hook` |  |  | Event-log detail when a Node hook was still running at its timeout and was killed with its group (the host discards such a hook, so the call goes on). |
 | `dispatch.msg_no_fallback` | `entry {id} deferred with no runnable Node command` |  |  | Reason logged when a deferred hook entry has no runnable Node command. |
-| `dispatch.msg_panic` | `the dispatcher hit an internal error` |  |  | Reason given in dispatch.msg_fail_closed when the dispatcher panicked. |
+| `dispatch.msg_no_row` | `the dispatch table has no well-formed row for {host} {event}: the Node hooks ...` |  |  | Deferral reason when the dispatch table has no well-formed row for an event the fallback list does not mark as a thin trigger. Placeholders: {host}, {event}. |
+| `dispatch.msg_panic` | `the dispatcher hit an internal error: the Node hooks decide` |  |  | Deferral reason (event log and stderr) when the dispatcher panicked on a guard event: the Node hooks answer instead of a block. |
 | `dispatch.msg_skipped_entry` | `entry {id} skipped: no runnable Node command` |  |  | Event-log detail when a non-guard event goes on without an entry that has no runnable Node command. Placeholder: {id}. |
 | `dispatch.msg_skipped_entry_stderr` | `anti-hall: skipped {event} Node hook {id}: no runnable Node command` |  |  | Printed on stderr when a non-guard event goes on without an entry that has no runnable Node command. Placeholders: {event}, {id}. |
 | `dispatch.msg_spool_sweep` | `removed {n} stale dispatch stdin spool file(s)` |  |  | Event-log detail when stale named raw-payload spool files were removed. Placeholder: {n}. |
@@ -2683,6 +2719,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.kill_env_value` | `1` |  |  | The value of the kill variable that turns the integration off. |
 | `devswarm_gates.mode_off` | `off` |  |  | Supervisor mode value that forces the integration off. |
 | `devswarm_gates.mode_on` | `on` |  |  | Supervisor mode value that forces the integration on. |
+| `devswarm_gates.readside_builder_env` | `DEVSWARM_BUILDER_ID` |  |  | Environment variable that holds a child workspace's own id (the name of its descriptor file). |
+| `devswarm_gates.readside_command_field` | `command` |  |  | Field of the tool input that holds the Bash command. |
+| `devswarm_gates.readside_descriptor_dir` | `.anti-hall/devswarm/workspaces` |  |  | Directory of the workspace descriptors, relative to the home directory. |
+| `devswarm_gates.readside_descriptor_ext` | `.json` |  |  | File extension of a workspace descriptor. |
+| `devswarm_gates.readside_id_extra` | `._-` |  |  | Characters besides ASCII letters and digits that a workspace id may contain (an id with `..` is never safe). |
+| `devswarm_gates.readside_inbox_field` | `inboxPath` |  |  | Descriptor field naming the workspace's durable inbox file; without it the drain nudge has nothing to count and stays silent. |
+| `devswarm_gates.readside_input_field` | `tool_input` |  |  | Hook payload field that holds the tool's input. |
+| `devswarm_gates.readside_read_primary_re` | `\binbox\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*read-primary\b` |  |  | JavaScript regex source (case-insensitive) for a Bash command that reads the Primary-originated channel (`inbox ... read-primary`); the drain nudge skips that one call so it does not contradict the read's own follow-up instruction. |
+| `devswarm_gates.readside_stop_field` | `stop_hook_active` |  |  | Stop payload field that is exactly `true` when the model is already continuing because of an earlier Stop block; the Primary Stop gate then allows without reading anything. |
+| `devswarm_gates.readside_subagent_fields` | `agent_id, agent_type` |  |  | Payload fields the host stamps only on a subagent's own calls; either one present and not null marks the call as a subagent's, which the drain nudge never addresses. |
+| `devswarm_gates.readside_tool_field` | `tool_name` |  |  | Hook payload field that names the tool of a PostToolUse call. |
 | `devswarm_gates.reply_tracker_setting` | `6 entries` |  |  | Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable). |
 | `devswarm_gates.reply_tracker_summary` | `DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm...` |  |  | One-line description of the devswarm-parent-reply-tracker check in the generated reference. |
 | `devswarm_gates.repo_id_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable DevSwarm sets on a workspace's processes; non-empty means the supervisor is in play in auto mode. |
@@ -3171,7 +3218,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `setup.stdin_max_bytes` | `65536` |  | bytes | Most bytes `jev-setup set-key` reads from stdin; a key is a short single line. |
 | `setup.tier_keys` | `3 entries` |  |  | How each key that a status warning compares is read: what it must be (boolean, or the list of allowed words), its default, and the plugin-option suffix. |
 | `setup.tmp_fmt` | `{file}.tmp.{pid}` |  |  | The temporary file a write goes through. Placeholders: file, pid. |
-| `setup.tmp_settings_fmt` | `{file}.{pid}.{ms}.tmp` |  |  | The temporary file a settings write goes through. Placeholders: file, pid, ms. |
 | `setup.valid_fallbacks` | `none, vercel, typesafe` |  |  | The values a fallback transport may take. |
 | `setup.valid_modes` | `on, shadow, off` |  |  | The modes an integration may be set to. |
 | `setup.valid_transports` | `vercel, typesafe` |  |  | The vendors a primary transport or a key may name. |
@@ -3381,6 +3427,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 
 | Key | When it is shown |
 |---|---|
+| `msg.advisory_defaults` | Appended to the degraded notice when defaults fell back to another layer. Placeholders: {count} fallbacks in the window, {last} the last one's detail. |
 | `msg.advisory_degraded` | Once-per-session notice that the engine is running below full strength. Placeholders: {restarts} self-restarts and {fallbacks} fallbacks to Node in the last {mins} minutes, {log} the event-log path. |
 | `msg.advisory_env` | Once-per-session advisory for an environment-class failure. Placeholder: {hint}. |
 | `msg.advisory_permanent` | Once-per-session advisory for a permanent failure; nothing is ever filed automatically. Placeholders: {reason}, {diagnostics}. |
@@ -3507,10 +3554,12 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_commit_file_jev` | Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased). |
 | `git.msg_commit_jev` | Block: Jev judged an inline commit message to credit an AI assistant (paraphrased). |
 | `git.msg_creating_credit` | Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}. |
+| `git.msg_creating_credit_elsewhere` | Block: a commit-creating command is chained with another git/gh command that carries the AI self-credit. Placeholders: {sub}, {elsewhere} (the carrying command, e.g. `gh pr create`). |
 | `git.msg_delete_ref` | Block: remote ref deletion. Placeholder: {skip}. |
 | `git.msg_find_push` | Block: a push through find -exec. |
 | `git.msg_force_push` | Block: a force push. |
 | `git.msg_gh_credit` | Block: a gh pr, issue or release body or title carries an AI self-credit. |
+| `git.msg_gh_credit_elsewhere` | Block: a gh pr, issue or release command is chained with another git/gh command that carries the AI self-credit. Placeholder: {elsewhere} (the carrying command, e.g. `git commit`). |
 | `git.msg_gh_jev` | Block: Jev judged a gh body or title to credit an AI assistant (paraphrased). |
 | `git.msg_handover` | Block: a commit that includes a session handover. Placeholders: {shown}, {skip}. |
 | `git.msg_launcher` | Block: a write into the launcher directory. |

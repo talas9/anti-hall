@@ -42,9 +42,9 @@ fn fingerprint(s: &str) -> String {
 
 /// `s` with every ISO timestamp replaced by its minute number, so a reset time whose milliseconds jitter hashes the same.
 fn round_times(s: &str) -> String {
-    use std::sync::OnceLock;
-    // a pattern that does not compile leaves the text as it is: the gate then only treats a literally repeated block as unchanged
-    static RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
+    // a pattern that does not compile leaves the text as it is: the gate then only treats a literally repeated block as
+    // unchanged. Compiled once per defaults snapshot, so an edit of the setting applies on reload.
+    static RE: defaults::Cache<Option<regex::Regex>> = defaults::Cache::new();
     let Some(re) = RE.get_or_init(|| regex::Regex::new(defaults::text("inject_gate.iso_re")).ok()) else { return s.to_string() };
     re.replace_all(s, |c: &regex::Captures| match crate::checks::ctxbudget::limit::iso_ms(&c[0]) {
         Some(ms) => format!("@{}", (ms / 60_000.0).round() as i64),

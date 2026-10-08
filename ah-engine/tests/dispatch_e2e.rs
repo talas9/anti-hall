@@ -1334,3 +1334,52 @@ fn the_gate_cuts_a_repeated_reminder_through_the_daemon_and_off_it_is_the_node_o
     assert!(context_of(&node_bytes).contains(short));
     e.stop();
 }
+
+/// Copy `from` into `to`, recursively.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let (p, q) = (e.path(), to.join(e.file_name()));
+        if p.is_dir() {
+            copy_tree(&p, &q);
+        } else {
+            std::fs::copy(&p, &q).unwrap();
+        }
+    }
+}
+
+/// `text` without the TOML table `[name]` (up to the next table header).
+fn drop_table(text: &str, name: &str) -> String {
+    let head = format!("[{name}]\n");
+    let at = text.find(&head).unwrap_or_else(|| panic!("{name} not in file"));
+    let end = text[at + head.len()..].find("\n[").map_or(text.len(), |n| at + head.len() + n + 1);
+    format!("{}{}", &text[..at], &text[end..])
+}
+
+/// Review P1 #1: an event whose table row is gone (and whose fallback list is not there for the load check to compare
+/// against) is handed to the Node hooks with `dispatch.defer_exit` and no done mark, never answered with the neutral no-op
+/// the wrapper would not give. A thin trigger the fallback list marks empty stays the neutral no-op.
+#[test]
+fn a_missing_table_row_defers_to_node_instead_of_allowing() {
+    let e = Env::new("norow");
+    let plugin = e.dir.join("plugin");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    copy_tree(&src.join("engine"), &plugin.join("engine"));
+    let dispatch = plugin.join("engine/defaults/dispatch.toml");
+    let text = std::fs::read_to_string(&dispatch).unwrap();
+    std::fs::write(&dispatch, drop_table(&text, "dispatch.hooks_claude_Stop")).unwrap();
+    // the pristine copy too: a row only the edited copy lost is otherwise taken from it
+    std::fs::write(plugin.join("engine/defaults.pristine/dispatch.toml"), drop_table(&text, "dispatch.hooks_claude_Stop")).unwrap();
+    let done = e.dir.join("done");
+    let root = plugin.to_string_lossy().to_string();
+    let env = [("AH_ENGINE_PLUGIN_ROOT", root.as_str()), ("AH_ENGINE_DONE_FILE", done.to_str().unwrap()), ("AH_ENGINE_NOSPAWN", "1")];
+    let (code, out, err) = e.run_with(&["hook", "--event", "Stop", "--host", "claude"], true, "{}", false, &env);
+    assert_eq!(code, 75, "a lost Stop row must defer to Node, not allow: out={out} err={err}");
+    assert!(!done.exists(), "a deferral must not mark the dispatch done (the wrapper would skip its Node fallback)");
+    // with the plugin's fallback lists present, an event they mark as a thin trigger is the neutral no-op, as in the wrapper
+    copy_tree(&src.join("hooks"), &plugin.join("hooks"));
+    std::fs::write(&dispatch, &text).unwrap();
+    let (code, out, err) = e.run_with(&["hook", "--event", "Notification", "--host", "claude"], true, "{}", false, &env);
+    assert_eq!((code, out.as_str()), (0, ""), "a thin trigger stays the neutral no-op: err={err}");
+    assert!(done.exists(), "the neutral no-op is the answer, so the dispatch is marked done");
+}

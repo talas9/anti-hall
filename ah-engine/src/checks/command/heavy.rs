@@ -10,13 +10,14 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 use super::shell::{
-    blank_pattern_argument, effective_verb, extract_eval_payload, extract_shell_c_payload, extract_substitutions, has_shell_expansion_anywhere,
-    has_unquoted_redirect_char, is_ws, neutralize_quoted_contents, split_detailed, split_segments, tokenize_quoted, trim, words,
+    Split, blank_pattern_argument, effective_verb, extract_eval_payload, extract_shell_c_payload, extract_substitutions, has_shell_expansion_anywhere,
+    has_substitution_outside_single_quotes, has_unquoted_redirect_char, is_ws, neutralize_quoted_contents, split_detailed, tokenize_quoted, trim, words,
 };
 use super::tables::{NegLight, tables};
 use crate::checks::git::tokenize::basename;
 use crate::checks::lit_re;
 use regex::Regex;
+use std::collections::HashSet;
 
 /// True when `text[..e]` ends where JavaScript `\b` holds after a word character.
 fn word_boundary_after(text: &str, e: usize) -> bool {
@@ -490,6 +491,53 @@ fn is_heavy_segment(segment: &str, command: &str) -> bool {
     t.heavy_patterns.iter().any(|re| re.is_match(&for_patterns))
 }
 
+/// One plain read-only git segment: a fetch that [`is_safe_git_fetch`] accepts, or a log/status/show/rev-parse in the exact
+/// shapes of `classifyPlainGitChainSegment` (no redirect, no expansion, no extra flags).
+///
+/// Mirrors `command-guard.js` `isPlainReadGitSegment`.
+fn is_plain_read_git_segment(segment: &str) -> bool {
+    if is_safe_git_fetch(segment) {
+        return !has_unquoted_redirect_char(segment) && !has_shell_expansion_anywhere(segment);
+    }
+    let t = tables();
+    let trimmed = t.trailing_stderr_merge.replacen(trim(segment), 1, "");
+    if has_unquoted_redirect_char(&trimmed) || has_substitution_outside_single_quotes(&trimmed) {
+        return false;
+    }
+    t.plain_read_git.iter().any(|re| re.is_match(&trimmed))
+}
+
+/// Segment indexes that belong to a chain unit which is, on its own, exactly one whole read-only form.
+///
+/// A chain is cut into units at `;` / `&&` only; the exemption applies only when EVERY unit is read-only on its face.
+/// Mirrors `command-guard.js` `readOnlyFormUnits`.
+fn read_only_form_units(split: &Split) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    let (segments, delims) = (&split.segments, &split.delims);
+    if segments.len() < 2 || !delims.iter().any(|x| *x == "&&" || *x == ";") {
+        return HashSet::new();
+    }
+    let mut start = 0;
+    for i in 0..segments.len() {
+        let last = i == segments.len() - 1;
+        let cut = last || delims[i] == "&&" || delims[i] == ";";
+        if !cut {
+            if delims[i] != "|" {
+                return HashSet::new();
+            }
+            continue;
+        }
+        let text = segments[start..=i].iter().map(|s| trim(s)).collect::<Vec<_>>().join(" | ");
+        if is_whole_command_read_only_form(&text) {
+            out.extend(start..=i);
+        } else if !(start == i && is_plain_read_git_segment(trim(&segments[i]))) {
+            return HashSet::new();
+        }
+        start = i + 1;
+    }
+    out
+}
+
 /// Whether the command is heavy in the main thread (the engine defers on `true`).
 ///
 /// Mirrors `command-guard.js` `isHeavyCommand`, except that the stable-launcher light exception is never granted
@@ -502,16 +550,21 @@ pub fn is_heavy_command(command: &str, d: usize) -> bool {
         return false;
     }
     let max = tables().max_depth;
-    for seg in split_segments(command) {
-        if is_heavy_segment(&seg, command) {
+    let split = split_detailed(command);
+    let exempt = if d == 0 { read_only_form_units(&split) } else { HashSet::new() };
+    for (si, seg) in split.segments.iter().enumerate() {
+        if exempt.contains(&si) {
+            continue;
+        }
+        if is_heavy_segment(seg, command) {
             return true;
         }
         if d < max {
-            let p = extract_shell_c_payload(&seg);
+            let p = extract_shell_c_payload(seg);
             if !p.is_empty() && is_heavy_command(&p, d + 1) {
                 return true;
             }
-            let e = extract_eval_payload(&seg);
+            let e = extract_eval_payload(seg);
             if !e.is_empty() && is_heavy_command(&e, d + 1) {
                 return true;
             }

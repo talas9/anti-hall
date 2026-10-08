@@ -1,0 +1,153 @@
+# Limits, sizes, phrases and short texts that were literals in the engine's source (D17 amendment: nothing is compiled in).
+# Each entry sits next to the section it belongs to by name; the file is only a place to keep the late additions together.
+
+[io.chunk_bytes]
+doc = "Size of the buffer used to copy a hook payload between pipes and files: spooling stdin, scanning it for the tool name, feeding a spooled file to a hook."
+value = 65536
+unit = "bytes"
+min = 4096
+max = 4194304
+
+[io.small_chunk_bytes]
+doc = "Size of the buffer used to read a request from the daemon socket and a hook child's output."
+value = 8192
+unit = "bytes"
+min = 512
+max = 1048576
+
+[guardkit.tail_reader_buf_bytes]
+doc = "Capacity of the buffered reader the shared transcript tail reader (`guardkit::tail::tail_lines`) streams lines through."
+value = 65536
+unit = "bytes"
+min = 4096
+
+[agent_scan.reader_buf_bytes]
+doc = "Capacity of the buffered reader over the tail of a transcript the agent scan reads."
+value = 1048576
+unit = "bytes"
+min = 4096
+max = 67108864
+
+[git.max_recursion]
+doc = "Deepest nesting of wrapper commands (`xargs xargs ...`) the git check follows before it defers to Node, whose own stack overflows at about this depth."
+value = 1500
+min = 10
+max = 100000
+
+[git.path_arg_max_chars]
+doc = "Longest directory argument (in characters) the git check tracks through a `cd`; a longer one is left to Node."
+value = 4096
+min = 64
+max = 1048576
+
+[git.path_arg_max_segments]
+doc = "Most path segments in a directory argument the git check tracks through a `cd`; a deeper one is left to Node."
+value = 64
+min = 2
+max = 4096
+
+[git.handover_adds_max]
+doc = "Most `git add` commands the git check remembers in one command line when it looks for a staged handover file."
+value = 50
+min = 1
+max = 10000
+
+[git.shown_hits]
+doc = "How many commit hashes the handover message names before it adds the more-marker."
+value = 3
+min = 1
+max = 100
+
+[git.self_credit_coauthor_key]
+doc = "The trailer key (lowercase) that credits a co-author; an AI tool named after it is a self-credit."
+value = "co-authored-by"
+
+[git.self_credit_generated_prefix]
+doc = "The footer prefix (lowercase, with its trailing space) after which an AI tool name is a self-credit."
+value = "generated with "
+
+[git.self_credit_trailer_keys]
+doc = "The trailer keys (lowercase) that a `-c trailer.<key>.key=` remap must not write a credit under."
+value = ["co-authored-by", "generated-with", "generated with"]
+
+[codex_handover.nudge_shown_files]
+doc = "How many edited file names the Codex handover nudge lists before it adds the more-marker."
+value = 3
+min = 1
+max = 100
+
+[guardkit.settings_seen_max]
+doc = "Most settings files the guard kit remembers the validity of before it starts over."
+value = 256
+min = 1
+max = 100000
+
+[gitcache.content_cap_bytes]
+doc = "Bytes of a signed file read when the cache fingerprints a repository (a HEAD or a loose ref is a few dozen bytes)."
+value = 4096
+unit = "bytes"
+min = 64
+max = 1048576
+
+[dispatch.stop_id_max_chars]
+doc = "Longest session or agent id the stop-loop guard keeps in a state file name; the rest is cut."
+value = 64
+min = 8
+max = 255
+
+[coordinator_work.window_default]
+doc = "Default of the coordinator work window setting, in minutes, when the setting is absent or unusable."
+value = 10
+min = 0
+
+[coordinator_work.nudge_default]
+doc = "Default of the coordinator work nudge threshold when the setting is absent or unusable."
+value = 4
+min = 0
+
+[coordinator_work.block_default]
+doc = "Default of the coordinator work block threshold when the setting is absent or unusable."
+value = 7
+min = 0
+
+[coordinator_work.cap_default]
+doc = "Default of the coordinator work tracked-call cap when the setting is absent or unusable."
+value = 50
+min = 1
+
+[taskstate.no_tasks_marker]
+doc = "The text in a task tool result that says the list is empty."
+value = "No tasks found"
+
+[model_routing.fail_closed_marker]
+doc = "The reason carried by the last-resort block when even the fail-closed message could not be built."
+value = "model-routing fail-closed"
+
+[msg.client_what_timeout]
+doc = "What the client was doing when a socket option could not be set (the {what} of msg.client_io)."
+value = "set timeout"
+
+[jev.what_read_requests]
+doc = "What the Jev `ask` command was doing when reading its stdin failed."
+value = "read the requests from stdin"
+
+[jev.what_read_texts]
+doc = "What the Jev `scrub` command was doing when reading its stdin failed."
+value = "read the texts from stdin"
+
+[jev.what_create_dir]
+doc = "What the decision log was doing when creating its directory failed."
+value = "create the directory of"
+
+[msg.cli_usage_schedule_run]
+doc = "The usage line of `schedule run`."
+value = "schedule run <job>"
+
+[msg.cli_usage_restore]
+doc = "The usage line of `restore`."
+value = "restore <snapshot-dir>"
+
+[task_lifecycle_log.index_file]
+doc = "Name of the per-kind session index file the lifecycle log maintains under the state directory."
+value = "INDEX.md"
+

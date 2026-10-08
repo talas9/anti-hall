@@ -87,17 +87,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "internal I/O error text for exhausting unique temp names; not user-facing configuration",
     ),
     ("src/health.rs", "for key in [\"breaker_until\"", "keys of the files.* settings the operator reset clears: names of settings, not values"),
-    // ---- the Jev lane: security grammar kept in code on purpose ----------------------------------------------
-    (
-        "src/jev/scrub.rs",
-        "const WS",
-        "JavaScript's whitespace class, the grammar of the redaction patterns; part of the byte-exact scrub parity, not a tunable",
-    ),
-    (
-        "src/jev/scrub.rs",
-        "ci_any(&[\"secret\"",
-        "the secret-word grammar of the outbound redaction, kept in code so a config edit cannot weaken what leaves the machine (D16); mirrors secret-scrub.js",
-    ),
     // ---- telemetry: the event schema and the recorder's memory layout ------------------------------------------------
     (
         "src/telemetry/event.rs",

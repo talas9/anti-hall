@@ -4,7 +4,8 @@
 //! resolved through the engine's config layers (`cfgstore`): `<home>/.anti-hall/settings.json` (section `sibling_sweep`),
 //! then the engine's own `config.toml`, then the shipped default in the plugin's `engine/defaults/sibling_sweep.toml`. Editing either file
 //! changes the next call; nothing is rebuilt. The resolved settings and the compiled patterns are cached per pair of
-//! files and rebuilt only when one of them changes (modification time and size), so a call costs two `stat`s.
+//! files and rebuilt only when one of them changes (modification time and size) or a defaults reload is applied, so a call
+//! costs two `stat`s.
 //!
 //! A pattern that the user's file makes invalid is not fatal: the shipped pattern of that key is used and the problem is
 //! reported once per process.
@@ -153,18 +154,20 @@ fn stamp(paths: &Paths) -> Stamp {
     v
 }
 
-/// The settings for `paths`, from the cache when neither file changed since the cached build.
+/// The settings for `paths`, from the cache when neither file changed and no defaults reload was applied since the cached
+/// build (the shipped defaults are the last layer, so a reload changes what an unset setting resolves to).
 pub fn load(paths: &Paths) -> Arc<Tune> {
-    static CACHE: Mutex<Option<(Stamp, Arc<Tune>)>> = Mutex::new(None);
-    let now = stamp(paths);
+    static CACHE: Mutex<Option<(Stamp, u64, Arc<Tune>)>> = Mutex::new(None);
+    let (now, generation) = (stamp(paths), defaults::generation());
     let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((s, t)) = g.as_ref()
+    if let Some((s, gen_at, t)) = g.as_ref()
         && *s == now
+        && *gen_at == generation
     {
         return Arc::clone(t);
     }
     let (layers, errs) = cfgstore::load_layers_cold(paths);
     let t = Arc::new(Tune::build(&layers, errs.iter().map(ToString::to_string).collect()));
-    *g = Some((now, Arc::clone(&t)));
+    *g = Some((now, generation, Arc::clone(&t)));
     t
 }

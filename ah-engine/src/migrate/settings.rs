@@ -444,7 +444,7 @@ pub(crate) fn set(ctx: &Ctx, section: &str, key: &str, value: &J, guard: Option<
             ctx.io_note("mkdir", dir, &e);
             return fail_set();
         }
-        match write_atomic(ctx, &file, &(pretty(&next) + "\n"), &super::tmp_suffix()) {
+        match write_atomic(&file, &(pretty(&next) + "\n")) {
             Ok(()) => Set { ok: true, skipped: false },
             Err(e) => {
                 ctx.io_note("open", &file, &e);
@@ -606,7 +606,7 @@ pub(super) fn jev_triage_cache(ctx: &Ctx, rows: &mut Vec<Row>) {
         return;
     }
     let kept = keep.len();
-    match write_atomic(ctx, &file, &json::stringify(&J::Obj(keep)), &format!("{}.{}", defaults::text("migrate.tmp_ext"), std::process::id())) {
+    match write_atomic(&file, &json::stringify(&J::Obj(keep))) {
         Ok(()) => rows.push(row("fixed", defaults::render("migrate_msg.triage_fixed", &[("n", &poisoned), ("kept", &kept)]))),
         Err(e) => rows.push(row("failed", defaults::render("migrate_msg.triage_raised", &[("error", &super::node_err(&e, "open", &file))]))),
     }

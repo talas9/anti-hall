@@ -2,7 +2,8 @@
 //!
 //! The invariant, for every combination: the call EITHER exits 2 with a non-empty message on stderr (the engine could
 //! not run the guards, or a hook really blocked), OR ends the way Node's separate hooks would (a real block stays a
-//! block with its exit code and message, a real decision stays a decision). It is never exit 0 with empty stdout and
+//! block with its exit code and message, a real decision stays a decision), OR hands the event to the wrapper's Node
+//! fallback with `dispatch.defer_exit` (no table row for it). It is never exit 0 with empty stdout and
 //! stderr unless a hook that actually ran allowed: every injected hook touches a marker file first, so "a hook ran" is
 //! proved, not assumed.
 //!
@@ -85,6 +86,9 @@ enum Want {
     Open,
     /// Exit 0 and every hook ran: the host's own reading of a hook that said nothing, timed out or only printed text.
     Allow,
+    /// Exit `dispatch.defer_exit` and no hook ran: the engine has no table row for the event and the wrapper's fallback list
+    /// does not mark it as a thin trigger, so the wrapper's Node fallback answers exactly as the separate hooks would.
+    Defer,
 }
 
 /// How the built-in checks are answered.
@@ -170,9 +174,9 @@ fn rows() -> Vec<Row> {
         Row { name: "stdin read error, no --tool", stdin: Stdin::ReadError, tool: Tool::Omitted, ..BASE },
         Row { name: "no --tool, valid payload", tool: Tool::Omitted, ..BASE },
         Row { name: "no --tool, payload without tool_name", stdin: Stdin::NoToolName, tool: Tool::Omitted, ..BASE },
-        // ---- unknown tool / event: nothing applies, so a quiet exit 0 is right ----
+        // ---- unknown tool: nothing applies, so a quiet exit 0 is right; unknown event: the Node fallback answers ----
         Row { name: "unknown tool", tool: Tool::Unknown, hook: Hook::Cmd { first: MARK, second: MARK2 }, want: Want::Quiet, events: PRE, ..BASE },
-        Row { name: "unknown event", event_arg: Some("NoSuchEvent"), hook: Hook::Cmd { first: MARK, second: MARK2 }, want: Want::Quiet, ..BASE },
+        Row { name: "unknown event", event_arg: Some("NoSuchEvent"), hook: Hook::Cmd { first: MARK, second: MARK2 }, want: Want::Defer, ..BASE },
         // ---- wiring ----
         Row { name: "bad host", host_arg: Some("nope"), want: Want::Closed, ..BASE },
         Row { name: "unset plugin root", runnable: false, want: Want::Closed, ..BASE },
@@ -600,7 +604,7 @@ fn check(what: &str, row: &Row, want: Want, r: &Run) {
     }
     let closed = r.code == 2 && r.err.contains("could not run the guards");
     // every hook the dispatcher starts runs, whatever another one says: a skipped second guard is not an allow
-    if !closed && !matches!(want, Want::Quiet | Want::Open | Want::Closed) && r.second_expected {
+    if !closed && !matches!(want, Want::Quiet | Want::Open | Want::Closed | Want::Defer) && r.second_expected {
         assert!(r.marked2, "the second hook never ran: {ctx}");
     }
     match want {
@@ -615,6 +619,7 @@ fn check(what: &str, row: &Row, want: Want, r: &Run) {
         Want::ClosedOrAllow => assert!(closed || (r.code == 0 && r.marked), "expected closed or a real allow: {ctx}"),
         Want::Allow => assert!(r.code == 0 && r.marked && !closed, "expected an allow from hooks that ran: {ctx}"),
         Want::Open => assert!(r.code == 0 && r.out.is_empty() && r.err.contains("could not run the guards"), "expected a fail-open note: {ctx}"),
+        Want::Defer => assert!(r.code == 75 && !r.marked && r.out.is_empty(), "expected a deferral to the Node fallback: {ctx}"),
     }
     let _ = row;
 }

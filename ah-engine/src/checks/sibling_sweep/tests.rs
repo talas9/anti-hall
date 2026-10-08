@@ -479,3 +479,24 @@ fn an_invalid_pattern_in_the_file_falls_back_to_the_shipped_one() {
     assert!(t.problems.iter().any(|x| x.contains("hedge_any_re")), "{:?}", t.problems);
     assert!(matches!(decide(&stop(&h, &p, CAUSE), &settings(&h), 1, None), Verdict::Advisory(_)), "the shipped patterns keep the check working");
 }
+
+#[test]
+fn the_state_write_does_not_depend_on_a_fixed_temporary_name() {
+    // review P2 #8: the state went through `<state>.tmp-<pid>` without a flush; two writers of one process (the daemon's
+    // workers) shared the name, and anything already at it broke the write
+    let h = home("tmpname");
+    let path = std::path::Path::new(&h).join("state.json");
+    std::fs::create_dir_all(path.with_extension(format!("tmp-{}", std::process::id()))).unwrap();
+    save(&path, &State::default()).unwrap();
+    assert!(path.is_file());
+}
+
+#[test]
+fn the_reminder_is_a_stop_block_and_the_module_doc_says_so() {
+    // review P2 #11: the module doc said "never a block" while the reminder is the Stop continuation block
+    let v: Value = serde_json::from_str(&reminder(&tn(), "x")).unwrap();
+    assert_eq!(v["decision"], "block");
+    let doc = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/checks/sibling_sweep/mod.rs")).unwrap();
+    assert!(!doc.contains("never a block"), "the module doc must not deny the block it emits");
+    assert!(doc.contains("The reminder IS a Stop block"));
+}

@@ -520,13 +520,34 @@ pub fn hook_main(args: &[String]) -> i32 {
         }
         o.code
     });
-    res.unwrap_or(0)
+    res.unwrap_or_else(|_| panic_code(args))
+}
+
+/// The exit code after a panic in [`hook_main`]: when a Node fallback was given (`--fallback`, or its environment
+/// variable), `dispatch.defer_exit` so the wrapper runs it, never a silent allow; with no fallback there is nothing to
+/// hand over and the call stays the neutral no-op. Every read is guarded: the panic may have come from the defaults.
+fn panic_code(args: &[String]) -> i32 {
+    let given =
+        args.iter().any(|a| a == "--fallback") || std::panic::catch_unwind(|| std::env::var_os(defaults::env_name("fallback")).is_some()).unwrap_or(false);
+    if !given {
+        return 0;
+    }
+    std::panic::catch_unwind(|| defaults::num("dispatch.defer_exit") as i32).unwrap_or(crate::bootstrap::UNAVAILABLE_EXIT)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::checks::Exact;
+
+    #[test]
+    fn a_panic_with_a_node_fallback_given_defers_to_it() {
+        // review P2 #4: a panic answered 0 (an allow) even when the wrapper had a Node fallback to run
+        assert_eq!(panic_code(&["--fallback".into(), "/x/hook.js".into()]), defaults::num("dispatch.defer_exit") as i32);
+        if std::env::var_os(defaults::env_name("fallback")).is_none() {
+            assert_eq!(panic_code(&[]), 0, "no fallback to hand over: the neutral no-op");
+        }
+    }
 
     #[test]
     fn an_exact_verdict_reaches_the_host_byte_for_byte() {
