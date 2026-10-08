@@ -1418,7 +1418,7 @@ value = [
 
 [api_guard.summary]
 doc = "One-line description of the api-guard check in the generated reference."
-value = "Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js)."
+value = "Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js)."
 
 [api_guard.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -1471,6 +1471,14 @@ value = '\.([a-z]+)$'
 [api_guard.code_name_pattern]
 doc = "Regex source (case-insensitive) that finds a code file name inside a Bash command or an apply_patch text. Written without a word boundary, so it finds every spelling the Node guard's own pattern finds, and more."
 value = '\.(?:py|pyi|js|mjs|cjs|ts|tsx|jsx)'
+
+[api_guard.shell_write_pattern]
+doc = "Regex source (case-sensitive) of the Node pre-filter that says a Bash command could write a file (a redirect, tee, an in-place editor, cp or mv, an inline-code write); a command it does not match yields no code chunk, so the guard allows it."
+value = '[>]|\btee\b|\bsed\b|\bperl\b|\bcp\b|\bmv\b|\bopen\b|createWriteStream|File(?:Sync)?\s*\(|\.write\('
+
+[api_guard.noise_pattern]
+doc = "Regex source (global) of the characters dropped from a Bash command before the verifiable-reference test: every character that is not an ASCII letter, digit, underscore or dot. The code a shell write puts in a file is built from the command text by quote removal and escape decoding, so its words are contiguous runs of what remains."
+value = '[^A-Za-z0-9_.]'
 
 [api_guard.python_stdlib]
 doc = "Python standard-library modules whose attributes the Node guard verifies by default."

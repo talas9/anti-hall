@@ -41,6 +41,17 @@ function jsMayVerify(code, thirdparty) {
     (thirdparty || ah.cfg('api_guard.node_builtins').some(function (m) { return code.indexOf(m) >= 0; }));
 }
 
+// True when the command text could carry a reference pyMayVerify or jsMayVerify accept in the code a shell write builds from it.
+// The text is reduced to its word characters, so quote removal and escape decoding cannot hide a word, and the words are
+// tested as substrings (a superset of the Node tests, which look at whole words).
+function textMayVerify(c, thirdparty) {
+  var t = c.replace(new RegExp(ah.cfg('api_guard.noise_pattern'), 'g'), '');
+  var hasMod = function (list) { return list.some(function (m) { return t.indexOf(m) >= 0; }); };
+  if (t.indexOf(ah.cfg('api_guard.python_import_word')) >= 0 && (thirdparty || hasMod(ah.cfg('api_guard.python_stdlib')))) return true;
+  if (ah.cfg('api_guard.js_globals').some(function (g) { return t.indexOf(g + '.') >= 0; })) return true;
+  return t.indexOf(ah.cfg('api_guard.js_require_word')) >= 0 && (thirdparty || hasMod(ah.cfg('api_guard.node_builtins')));
+}
+
 function editCodes(tool, ti) {
   var str = function (v) { return typeof v === 'string' ? [v] : []; };
   if (tool === ah.cfg('api_guard.tool_write')) return isObj(ti) ? str(ti.content) : [];
@@ -64,6 +75,12 @@ function decide(p) {
     var c = isObj(ti) ? ti.command : undefined;
     if (c === undefined || c === null) return 'allow';
     if (typeof c === 'string' && !ah.re.test(ah.cfg('api_guard.code_name_pattern'), 'i', c)) return 'allow';
+    // Bash: Node reads code only from a command its pre-filter says may write a file, and the code is built from the command
+    // text (heredoc body, echo/printf arguments), so a verifiable reference needs its words in the text.
+    if (is('api_guard.tool_shell') && typeof c === 'string') {
+      if (!new RegExp(ah.cfg('api_guard.shell_write_pattern')).test(c)) return 'allow';
+      if (!textMayVerify(c, ah.settings.bool('api_guard.thirdparty_setting'))) return 'allow';
+    }
     return 'defer';
   }
   if (!(is('api_guard.tool_write') || is('api_guard.tool_edit') || is('api_guard.tool_multi'))) return 'allow';

@@ -170,6 +170,16 @@ impl State {
         )
     }
 
+    /// `rememberPre(state, id, v)`: store the pre-call verdict under `id`, replacing an earlier one, keeping the newest entries.
+    fn remember_pre(&mut self, id: &str, work: bool, blockable: bool) {
+        self.pre.retain(|e| e.id != id);
+        self.pre.push(Pre { id: id.to_string(), work, blockable });
+        let cap = defaults::num("coordinator_work.pre_cap") as usize;
+        if self.pre.len() > cap {
+            self.pre.drain(..self.pre.len() - cap);
+        }
+    }
+
     /// `takePre(state, id)`: remove and return the stored pre-call verdict `(work, blockable)`.
     fn take_pre(&mut self, id: &str) -> Option<(bool, bool)> {
         let k = self.pre.iter().position(|e| e.id == id)?;
@@ -514,6 +524,44 @@ fn is_coordinator(p: &Value, env: &RequestEnv) -> bool {
 /// Settings (the switch of command-guard that gates the window) and skip files, as the Node guard reads them.
 fn enabled(st: &Settings) -> bool {
     !is_skipped(st, defaults::text("coordinator_work.command_guard_name")) && get_bool(st, defaults::raw("coordinator_work.command_guard_setting"))
+}
+
+/// The PreToolUse decision, for the calls whose classification needs no classifier. `None`: nothing to say and nothing recorded
+/// (the guard is off or this is not the main thread); `Some(Allow)`: handled, silent (the verdict is stored under the call's
+/// `tool_use_id` for the Post pass); `Some(Defer)`: the Node hook must decide, nothing written. A command that is provably not
+/// work is never blocked and never nudges: the Node pass stores `{work: false, blockable: false}` and says nothing.
+///
+/// Mirrors `hooks/coordinator-work-guard.js` `main` (the PreToolUse branch).
+pub fn decide_pre(p: &Value, st: &Settings, env: &RequestEnv, plugin_root: &str) -> Option<Verdict> {
+    if !p.is_object() || p.get("tool_name").and_then(Value::as_str) != Some("Bash") {
+        return None;
+    }
+    let sid = p.get("session_id").and_then(Value::as_str).map(js_trim).filter(|s| !s.is_empty())?;
+    if !is_coordinator(p, env) || !enabled(st) {
+        return None;
+    }
+    if config(st).t_ms == 0.0 {
+        return None;
+    }
+    let command = p.get("tool_input").and_then(|t| t.get("command")).and_then(Value::as_str).unwrap_or("");
+    if st.home.is_empty() || plugin_root.is_empty() || !provably_not_work(command) {
+        return Some(Verdict::Defer);
+    }
+    let id = p.get("tool_use_id").and_then(Value::as_str).filter(|i| !i.is_empty()).unwrap_or("");
+    if id.is_empty() {
+        return Some(Verdict::Allow);
+    }
+    let path = session_path(&st.home, sid);
+    let Some(lock) = filelock::acquire(&format!("{path}{}", defaults::text("coordinator_work.lock_suffix")), lock_wait(env)) else {
+        return Some(Verdict::Defer);
+    };
+    let mut s = read_json(&path).and_then(|v| State::normalize(&v)).unwrap_or_else(|| State::empty(&plugin_version(plugin_root)));
+    s.remember_pre(id, false, false);
+    let written = write_atomic(&path, &s.dump());
+    filelock::release(lock);
+    // a write Node would have lost too (it swallows the error); the call is still handled
+    crate::discard::logged("coordinator_state_write", written);
+    Some(Verdict::Allow)
 }
 
 /// The PostToolUse decision. `None`: nothing to say and nothing recorded (the guard is off or this is not the main thread);
