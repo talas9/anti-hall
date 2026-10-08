@@ -316,8 +316,8 @@ fn block_reason(r: &Res) -> String {
 
 /// Several blocks: the host shows the model every reason, so the one answer carries them all, in order.
 /// `notes`: the plain stdout of the hooks that exited 0 without blocking, kept off the model channel.
-fn blocked(blockers: &[&Res], notes: &str) -> Res {
-    if let ([one], "") = (blockers, notes) {
+fn blocked(blockers: &[&Res], advisories: &[&Res], notes: &str) -> Res {
+    if let ([one], [], "") = (blockers, advisories, notes) {
         return (*one).clone();
     }
     let joined = blockers.iter().map(|r| block_reason(r)).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
@@ -333,17 +333,44 @@ fn blocked(blockers: &[&Res], notes: &str) -> Res {
     } else if let Some(Value::Object(h)) = top.get_mut("hookSpecificOutput") {
         h.insert("permissionDecisionReason".into(), json!(joined));
     }
-    let messages: Vec<String> =
-        blockers.iter().filter_map(|r| parse_object(&r.out)?.get("systemMessage")?.as_str().map(str::to_string)).filter(|m| !m.is_empty()).collect();
+    // Stop-style events: the advisories of the hooks that did not block ride along (message and context); on exit 2 a plain
+    // note joins the system message instead of the reason channel (stderr).
+    let say = |r: &&Res, key: &str| parse_object(&r.out).and_then(|o| o.get(key).and_then(Value::as_str).map(str::to_string));
+    let mut messages: Vec<String> = blockers.iter().filter_map(|r| say(r, "systemMessage")).filter(|m| !m.is_empty()).collect();
+    messages.extend(advisories.iter().filter_map(|r| say(r, "systemMessage")).filter(|m| !m.is_empty()));
+    if exit2 && !notes.trim().is_empty() {
+        messages.push(notes.trim_end_matches('\n').to_string());
+    }
     if !messages.is_empty() {
-        top.insert("systemMessage".into(), json!(messages.join("\n")));
+        top.insert("systemMessage".into(), json!(messages.join(defaults::text("dispatch.message_joiner"))));
+    }
+    let extra: Vec<(String, String)> = advisories
+        .iter()
+        .filter_map(|r| {
+            let h = parse_object(&r.out)?.get("hookSpecificOutput")?.as_object()?.clone();
+            let ev = h.get("hookEventName").and_then(Value::as_str).unwrap_or("").to_string();
+            Some((ev, h.get("additionalContext").and_then(Value::as_str).unwrap_or("").to_string()))
+        })
+        .filter(|(_, c)| !c.is_empty())
+        .collect();
+    if !extra.is_empty() {
+        let join = defaults::text("dispatch.context_joiner");
+        let adv = extra.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>().join(join);
+        if let Some(Value::Object(h)) = top.get_mut("hookSpecificOutput") {
+            let have = h.get("additionalContext").and_then(Value::as_str).unwrap_or("").to_string();
+            h.insert("additionalContext".into(), json!(if have.is_empty() { adv } else { format!("{have}{join}{adv}") }));
+        } else {
+            top.insert("hookSpecificOutput".into(), json!({"hookEventName": extra[0].0, "additionalContext": adv}));
+        }
     }
     let mut err = if exit2 { reasons_err } else { blockers.iter().map(|r| r.err.as_str()).collect::<String>() };
-    err.push_str(notes);
+    if !exit2 {
+        err.push_str(notes);
+    }
     Res { code: Some(if exit2 { 2 } else { 0 }), out: Value::Object(top).to_string() + "\n", err }
 }
 
-fn combine(results: &[Res]) -> Merged {
+fn combine(results: &[Res], keep_advisories: bool) -> Merged {
     let is_block = |r: &Res| r.code == Some(2) || (r.code.is_some() && json_blocks(&r.out));
     let blockers: Vec<&Res> = results.iter().filter(|r| is_block(r)).collect();
     if !blockers.is_empty() {
@@ -352,7 +379,8 @@ fn combine(results: &[Res]) -> Merged {
             .filter(|r| r.code == Some(0) && !is_block(r) && !r.out.trim().is_empty() && parse_object(&r.out).is_none())
             .map(|r| if r.out.ends_with('\n') { r.out.clone() } else { format!("{}\n", r.out) })
             .collect();
-        return Merged::Answer(blocked(&blockers, &notes));
+        let advisories: Vec<&Res> = results.iter().filter(|r| keep_advisories && r.code == Some(0) && !is_block(r) && parse_object(&r.out).is_some()).collect();
+        return Merged::Answer(blocked(&blockers, &advisories, &notes));
     }
     let active: Vec<&Res> = results.iter().filter(|r| r.code.is_some() && (r.code != Some(0) || !r.out.is_empty() || !r.err.is_empty())).collect();
     let answer = match active.len() {
@@ -540,7 +568,7 @@ impl Rig {
                 .collect();
             hs.into_iter().map(|h| h.join().unwrap()).collect()
         });
-        match combine(&results) {
+        match combine(&results, defaults::list("dispatch.stop_events").contains(&row.event.as_str())) {
             Merged::Answer(a) => a,
             Merged::Conflict => sequential(&results, &row.event),
         }

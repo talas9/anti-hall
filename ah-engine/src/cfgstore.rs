@@ -936,6 +936,7 @@ mod tests {
             "dispatch.in_process",
             "dispatch.max_timeout_s",
             "session.gitignore_probe_ms",
+            "script.", // the interpreter switch and deadline are process-wide, not per request
         ];
         let odd: Vec<&str> = defaults::all().iter().filter(|e| e.env.is_some() && !PROCESS.iter().any(|p| e.key.starts_with(p))).map(|e| e.key).collect();
         assert!(odd.is_empty(), "env-overridable settings that are not process tunables: {odd:?}");

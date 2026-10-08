@@ -245,7 +245,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         return Ok(Verdict::Allow);
     }
     let body = format!("{{\"hash\":{},\"blocks\":{}}}", quote(&msg_hash), js_number(blocks + 1.0));
-    if std::fs::create_dir_all(&state_dir).and_then(|()| std::fs::write(&state_file, body)).is_err() {
+    if std::fs::create_dir_all(&state_dir).and_then(|()| crate::atomic::write(&state_file, body)).is_err() {
         return Ok(Verdict::Allow);
     }
     let claim = sanitize_claim(d.get("claim").and_then(Value::as_str));

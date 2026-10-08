@@ -126,7 +126,7 @@ fn write_account(path: &str, user: &str, mtime: Option<f64>) {
         &[("user", &quote(user)), ("mtime", &mtime.map_or_else(|| defaults::text("ctxbudget.json_null").to_string(), js_number))],
     );
     let p = std::path::Path::new(path);
-    let ok = p.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(p, body).is_ok();
+    let ok = p.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok()) && crate::atomic::write(p, body).is_ok();
     if !ok {
         crate::discard::note("limit_conserve_account_write", "");
     }
