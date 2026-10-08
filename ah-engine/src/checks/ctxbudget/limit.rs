@@ -193,7 +193,8 @@ fn conserving(st: &Settings, hold: bool) -> Result<Option<Active>, ()> {
     let Some(d) = parsed.get("data").filter(|d| d.is_object() || d.is_array()) else { return Ok(None) };
     let ts = parsed.get("timestamp").and_then(Value::as_f64).unwrap_or(0.0);
     let now = now_ms();
-    let (pcts, resets, names) = (defaults::list("ctxbudget.lc_bucket_pct"), defaults::list("ctxbudget.lc_bucket_resets"), defaults::list("ctxbudget.lc_bucket_trip"));
+    let (pcts, resets, names) =
+        (defaults::list("ctxbudget.lc_bucket_pct"), defaults::list("ctxbudget.lc_bucket_resets"), defaults::list("ctxbudget.lc_bucket_trip"));
     let mut trips = Vec::new();
     let mut candidates: Vec<(f64, String)> = Vec::new();
     for ((pct, reset), name) in pcts.iter().zip(&resets).zip(&names) {
@@ -226,7 +227,11 @@ fn directive(a: &Active) -> String {
     };
     let what = msg::render("ctxbudget.lc_what", &[("reason", &a.reason)]);
     let instead = format!("{}{resets} {}", defaults::text("ctxbudget.lc_instead"), defaults::text("ctxbudget.lc_downshift"));
-    msg::message(Kind::Warn, defaults::text("ctxbudget.lc_guard"), &Parts { what: &what, why: defaults::text("ctxbudget.lc_why"), instead: &instead, ..Parts::default() })
+    msg::message(
+        Kind::Warn,
+        defaults::text("ctxbudget.lc_guard"),
+        &Parts { what: &what, why: defaults::text("ctxbudget.lc_why"), instead: &instead, ..Parts::default() },
+    )
 }
 
 /// The check's decision on one payload.

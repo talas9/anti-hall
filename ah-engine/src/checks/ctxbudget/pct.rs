@@ -252,7 +252,15 @@ pub fn context_pct(st: &Settings, session_id: Option<&Value>, transcript: Option
             (defaults::num("ctxbudget.default_window") as f64, false, Label::Default, false)
         }
     };
-    Pct::Reading(Reading { pct: (used / max * 100.0).clamp(0.0, 100.0), used: Some(used), max: Some(max), estimated: true, window_known: known, label, infer_write })
+    Pct::Reading(Reading {
+        pct: (used / max * 100.0).clamp(0.0, 100.0),
+        used: Some(used),
+        max: Some(max),
+        estimated: true,
+        window_known: known,
+        label,
+        infer_write,
+    })
 }
 
 /// `store.writeInferred1m(home, tag)`: `{"inferred":true,"ts":<now>}` through a temporary file and a rename. Best effort.

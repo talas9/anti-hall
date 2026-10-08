@@ -122,7 +122,8 @@ fn judge(p: &Value, st: &crate::checks::git::util::Settings, path: &str, lines: 
     let latch = super::handover::read_latch(st, &tag)?;
     let fired = latch.get("fired") == Some(&Js::Bool(true));
     let fired_at = latch.get("firedAt").and_then(Js::as_f64).filter(|f| f.is_finite());
-    let compact_after_fire = turn.turns_since_compact.is_some() && (turn.compact_at.is_none() || fired_at.is_none_or(|f| turn.compact_at.is_some_and(|c| c >= f)));
+    let compact_after_fire =
+        turn.turns_since_compact.is_some() && (turn.compact_at.is_none() || fired_at.is_none_or(|f| turn.compact_at.is_some_and(|c| c >= f)));
     let tokens_fired = fired && latch.get("firedVia").and_then(Js::as_str).is_some_and(|v| defaults::list("ctxbudget.ca_tokens_vias").contains(&v));
     if fired && (!low || tokens_fired) && !compact_after_fire {
         return done(Verdict::Allow);
@@ -166,7 +167,11 @@ fn judge(p: &Value, st: &crate::checks::git::util::Settings, path: &str, lines: 
         None => defaults::text("ctxbudget.ca_ctx_low").to_string(),
     };
     let instead = msg::render("ctxbudget.ca_instead", &[("ctx", &ctx)]);
-    let reason = msg::message(Kind::Block, defaults::text("ctxbudget.ca_guard"), &Parts { what: &what, why: defaults::text("ctxbudget.ca_why"), instead: &instead, ..Parts::default() });
+    let reason = msg::message(
+        Kind::Block,
+        defaults::text("ctxbudget.ca_guard"),
+        &Parts { what: &what, why: defaults::text("ctxbudget.ca_why"), instead: &instead, ..Parts::default() },
+    );
     Ok(Verdict::Exact(crate::checks::Exact { code: 0, out: msg::render("ctxbudget.stop_block_line", &[("reason", &quote(&reason))]), err: String::new() }))
 }
 

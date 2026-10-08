@@ -78,9 +78,9 @@ fn pre_expand(s: &str, now0: i64) -> String {
     }
     let today = s.contains("{{TODAY}}").then(|| local_day(0.0));
     let s = &today.map_or_else(|| s.to_string(), |d| s.replace("{{TODAY}}", &d));
-    let s = &Regex::new(r"\{\{MTIME([-+]\d+)?\}\}").unwrap().replace_all(s, |c: &regex::Captures| {
-        format!("{}", mtime_ms(now0) + c.get(1).map_or(0.0, |m| m.as_str().parse::<f64>().unwrap_or(0.0)))
-    });
+    let s = &Regex::new(r"\{\{MTIME([-+]\d+)?\}\}")
+        .unwrap()
+        .replace_all(s, |c: &regex::Captures| format!("{}", mtime_ms(now0) + c.get(1).map_or(0.0, |m| m.as_str().parse::<f64>().unwrap_or(0.0))));
     let a = Regex::new(r"\{\{NOW([-+]\d+)?\}\}")
         .unwrap()
         .replace_all(s, |c: &regex::Captures| (now0 + c.get(1).map_or(0, |m| m.as_str().parse::<i64>().unwrap_or(0))).to_string());
@@ -257,7 +257,9 @@ fn snap(dir: &Path) -> BTreeMap<String, String> {
                 let text = String::from_utf8_lossy(&std::fs::read(&f).unwrap_or_default()).to_string();
                 let v = match parse(&text) {
                     Some(j) if n.ends_with(".json") => super::jsjson::stringify(&norm(j, now)),
-                    _ if n.ends_with(".ndjson") => text.lines().map(|l| parse(l).map_or_else(|| l.to_string(), |j| super::jsjson::stringify(&norm(j, now)))).collect::<Vec<_>>().join("\n"),
+                    _ if n.ends_with(".ndjson") => {
+                        text.lines().map(|l| parse(l).map_or_else(|| l.to_string(), |j| super::jsjson::stringify(&norm(j, now)))).collect::<Vec<_>>().join("\n")
+                    }
                     _ => text,
                 };
                 // an ISO instant within ten minutes of now (a log row's time) reads as `<NOW>` too

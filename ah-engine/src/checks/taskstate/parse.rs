@@ -6,8 +6,8 @@
 //! the Guard variant parses every line. Both keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
 //! found", a TodoWrite) and drop a single id the harness reports as not found.
 use super::{
-    Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, norm_blocked_by, norm_owner,
-    norm_priority, number_of_digits, priority_field, truthy_status,
+    Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, norm_blocked_by,
+    norm_owner, norm_priority, number_of_digits, priority_field, truthy_status,
 };
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;

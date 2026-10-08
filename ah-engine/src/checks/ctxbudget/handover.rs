@@ -76,7 +76,12 @@ fn resolve(st: &Settings) -> Eff {
         return off;
     }
     let markers = match get(st, defaults::raw("ctxbudget.set_ah_markers")) {
-        Sv::Str(s) => s.split(|c: char| defaults::list("ctxbudget.ah_marker_seps").iter().any(|d| d.starts_with(c))).map(js_trim).filter(|m| !m.is_empty()).map(str::to_string).collect(),
+        Sv::Str(s) => s
+            .split(|c: char| defaults::list("ctxbudget.ah_marker_seps").iter().any(|d| d.starts_with(c)))
+            .map(js_trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .collect(),
         _ => Vec::new(),
     };
     Eff {
@@ -241,11 +246,19 @@ fn ups_text(text: &str) -> Verdict {
     if text.is_empty() {
         return ups_empty();
     }
-    Verdict::Exact(crate::checks::Exact { code: 0, out: crate::checks::guardkit::msg::render("ctxbudget.ups_line", &[("text", &quote(text))]), err: String::new() })
+    Verdict::Exact(crate::checks::Exact {
+        code: 0,
+        out: crate::checks::guardkit::msg::render("ctxbudget.ups_line", &[("text", &quote(text))]),
+        err: String::new(),
+    })
 }
 
 fn stop_block(reason: &str) -> Verdict {
-    Verdict::Exact(crate::checks::Exact { code: 0, out: crate::checks::guardkit::msg::render("ctxbudget.stop_block_line", &[("reason", &quote(reason))]), err: String::new() })
+    Verdict::Exact(crate::checks::Exact {
+        code: 0,
+        out: crate::checks::guardkit::msg::render("ctxbudget.stop_block_line", &[("reason", &quote(reason))]),
+        err: String::new(),
+    })
 }
 
 // ---- the post-handover gate (hooks/lib/auto-handover-gate.js) ----------------------------------------------------
@@ -476,7 +489,11 @@ fn has_open_tasks(lines: Option<&[String]>) -> Result<Option<bool>, ()> {
                 let todos = input.and_then(|i| i.get("todos")).and_then(Value::as_array);
                 let mut i = 0usize;
                 for t in todos.into_iter().flatten() {
-                    let named = if vtruthy(Some(t)) { t.get("id").filter(|v| vtruthy(Some(v))).or_else(|| t.get("content").filter(|v| vtruthy(Some(v)))) } else { None };
+                    let named = if vtruthy(Some(t)) {
+                        t.get("id").filter(|v| vtruthy(Some(v))).or_else(|| t.get("content").filter(|v| vtruthy(Some(v))))
+                    } else {
+                        None
+                    };
                     let id = match named {
                         Some(v) => js_string(v)?,
                         None => {

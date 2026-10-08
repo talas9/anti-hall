@@ -15,13 +15,13 @@
 //! gives it). The parallel cap needs the CPU count as libuv reads it: exact on macOS, on Linux only while no CPU quota is in
 //! play; otherwise, unless `guards.maxParallelDispatch` sets it, the Stop is deferred. Every value that can defer is computed
 //! before the first write, so a deferred Stop has changed no file.
-use crate::checks::git::util::Settings;
-use crate::checks::guardkit::settings::{get_bool, get_number, is_skipped};
-use crate::checks::taskkit::js_string;
 use crate::checks::agent_scan::{self, Opts};
+use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsval::Js;
 use crate::checks::guardkit::msg::{Kind, Parts, message, render};
+use crate::checks::guardkit::settings::{get_bool, get_number, is_skipped};
 use crate::checks::spawnctx::Home;
+use crate::checks::taskkit::js_string;
 use crate::checks::taskkit::jsval::{R, Unsure, get, truthy};
 use crate::checks::taskstate::parse::{Facts, reconstruct};
 use crate::checks::taskstate::tail::{lines_of, read_tail};
@@ -288,7 +288,13 @@ fn block_reason(p: &Value, st: &Settings, idle: bool, demand: &demand::Demand<'_
         let ds = if open::any_live_children(st)? { render("task_guard.idle_devswarm", &[("upd", upd)]) } else { String::new() };
         let what = render("task_guard.idle_what", &[("n", &n.to_string()), ("list", &labels.join(defaults::text("task_guard.label_sep"))), ("more", &more)]);
         let instead = render("task_guard.idle_instead", &[("cap", &cap), ("upd", upd), ("devswarm", &ds)]);
-        let parts = Parts { what: &what, why: defaults::text("task_guard.idle_why"), instead: &instead, allowed: defaults::text("task_guard.idle_allowed"), ..Parts::default() };
+        let parts = Parts {
+            what: &what,
+            why: defaults::text("task_guard.idle_why"),
+            instead: &instead,
+            allowed: defaults::text("task_guard.idle_allowed"),
+            ..Parts::default()
+        };
         return Ok(message(Kind::Block, guard, &parts));
     }
     let max = defaults::num("task_guard.list_max") as usize;

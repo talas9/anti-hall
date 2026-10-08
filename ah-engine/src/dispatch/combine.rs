@@ -363,7 +363,9 @@ fn blocked(blockers: &[&HookResult], advisories: &[&HookResult], notes: &str) ->
                 let have = ctx_of(h);
                 set(h, HSO_CTX, Ordered::Str(if have.is_empty() { adv } else { format!("{have}{join}{adv}") }));
             }
-            _ => set(&mut top, HSO_KEY, Ordered::Obj(vec![(HSO_EVENT.to_string(), Ordered::Str(extra[0].0.clone())), (HSO_CTX.to_string(), Ordered::Str(adv))])),
+            _ => {
+                set(&mut top, HSO_KEY, Ordered::Obj(vec![(HSO_EVENT.to_string(), Ordered::Str(extra[0].0.clone())), (HSO_CTX.to_string(), Ordered::Str(adv))]))
+            }
         }
     }
     let mut err = if exit2 { reasons_err } else { blockers.iter().map(|r| r.err.as_str()).collect() };

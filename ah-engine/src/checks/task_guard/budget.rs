@@ -36,13 +36,18 @@ fn prompt_key(p: &Value, transcript: &str) -> R<Option<String>> {
             Err(_) if maybe_valid_for_js(t) => return Err(Unsure),
             Err(_) => continue,
         };
-        if get(&e, "type").and_then(Value::as_str) != Some(user) || get(&e, "isMeta") == Some(&Value::Bool(true)) || get(&e, "isSidechain") == Some(&Value::Bool(true)) {
+        if get(&e, "type").and_then(Value::as_str) != Some(user)
+            || get(&e, "isMeta") == Some(&Value::Bool(true))
+            || get(&e, "isSidechain") == Some(&Value::Bool(true))
+        {
             continue;
         }
         let Some(Value::String(uuid)) = get(&e, "uuid").filter(|u| truthy(u)) else { continue };
         let real = match get(&e, "message").filter(|m| truthy(m)).and_then(|m| get(m, "content")) {
             Some(Value::String(s)) => !js_trim(s).is_empty(),
-            Some(Value::Array(a)) => a.iter().any(|b| truthy(b) && get(b, "type").and_then(Value::as_str) != Some(defaults::text("task_guard.tool_result_type"))),
+            Some(Value::Array(a)) => {
+                a.iter().any(|b| truthy(b) && get(b, "type").and_then(Value::as_str) != Some(defaults::text("task_guard.tool_result_type")))
+            }
             _ => false,
         };
         if real {
@@ -81,7 +86,8 @@ pub fn check(st: &Settings, home: Option<&str>, safe_session: &str, p: &Value, t
         Err(_) => Js::Obj(Vec::new()),
     };
     let bk = format!("{safe_session}|{}|{}", defaults::text("task_guard.guard_name"), defaults::text("task_guard.budget_bucket"));
-    let (k_key, k_count, k_at) = (defaults::text("task_guard.budget_key_field"), defaults::text("task_guard.budget_count_field"), defaults::text("task_guard.budget_at_field"));
+    let (k_key, k_count, k_at) =
+        (defaults::text("task_guard.budget_key_field"), defaults::text("task_guard.budget_count_field"), defaults::text("task_guard.budget_at_field"));
     let n = match buckets.get(&bk) {
         Some(b) if b.get(k_key).and_then(Js::as_str) == Some(key.as_str()) => b.get(k_count).and_then(Js::as_f64).filter(|c| c.is_finite()).unwrap_or(0.0),
         _ => 0.0,
