@@ -1318,3 +1318,219 @@ value = "no step plan for {id} — run `devswarm.js plan set {id} --steps \"1. �
 [mesh_write.hb_plan_no_plan]
 doc = "The `plan.reason` of a heartbeat --step for a workspace that has no plan."
 value = "no-plan"
+
+[mesh_write.hb_urgency_default]
+doc = "The urgency of a heartbeat --summary broadcast when --urgency is not given."
+value = "low"
+
+[mesh_write.dir_logs]
+doc = "Directory under the home's `.anti-hall` that holds the supervision event log."
+value = "logs"
+
+[mesh_write.supervision_log]
+doc = "The supervision event log (one JSON line per plan step event), under the logs directory."
+value = "devswarm-supervision.ndjson"
+
+[mesh_write.supervision_max_bytes]
+doc = "Size above which Node rotates the supervision log before appending; the engine defers a plan write while the log is above it (rotation stays Node's)."
+value = 1048576
+
+[mesh_write.plan_statuses]
+doc = "The step statuses `heartbeat --status` accepts (STEP_STATUSES)."
+value = ["doing", "done", "blocked"]
+
+[mesh_write.plan_status_default]
+doc = "The step status of `heartbeat --step` when --status is not given."
+value = "doing"
+
+[mesh_write.plan_status_sep]
+doc = "Joins the allowed statuses in the --status error text."
+value = "|"
+
+[mesh_write.plan_bad_step_text]
+doc = "The error of `heartbeat --step N` when N is not an integer within the plan; `{n}` is the number of steps."
+value = "--step must be an integer from 1 to {n}"
+
+[mesh_write.plan_bad_status_text]
+doc = "The error of `heartbeat --status S` when S is not an allowed status; `{list}` is the allowed statuses."
+value = "--status must be one of {list}"
+
+[mesh_write.plan_reason_bad_step]
+doc = "The `plan.reason` of a heartbeat whose --step or --status is invalid."
+value = "bad-step"
+
+[mesh_write.plan_reason_lock_busy]
+doc = "The `plan.reason` of a heartbeat whose plan file stayed locked by another writer."
+value = "lock-busy"
+
+[mesh_write.plan_lock_busy_hint]
+doc = "The `plan.hint` of a heartbeat whose plan file stayed locked."
+value = "the plan file is locked by another writer — the heartbeat itself was recorded; re-send the step"
+
+[mesh_write.plan_lock_wait_ms]
+doc = "How long a plan write waits for the plan's lock (PLAN_LOCK_WAIT_MS)."
+value = 5000
+
+[mesh_write.plan_lock_step_ms]
+doc = "The pause between attempts at the plan's lock (Node: 10 ms plus up to 10 ms of jitter)."
+value = 15
+
+[mesh_write.plan_lock_stale_ms]
+doc = "A plan lock older than this is taken over (PLAN_LOCK_STALE_MS)."
+value = 30000
+
+[mesh_write.plan_summary_keep]
+doc = "How many recent heartbeat summaries a plan keeps (SUMMARY_KEEP)."
+value = 3
+
+[mesh_write.plan_activity_keep]
+doc = "How many recent activity signatures a plan keeps (ACTIVITY_KEEP)."
+value = 5
+
+[mesh_write.plan_summary_text_max]
+doc = "Characters of a heartbeat summary kept in the plan (recordSummary)."
+value = 200
+
+[mesh_write.plan_sig_hex]
+doc = "Hex characters of an activity signature (the sha1 prefix)."
+value = 12
+
+[mesh_write.dur_ms_per_min]
+doc = "Milliseconds in the minute `dur()` counts in."
+value = 60000
+
+[mesh_write.dur_min_per_hour]
+doc = "Minutes in an hour, for `dur()`."
+value = 60
+
+[mesh_write.dur_hours_before_days]
+doc = "`dur()` shows hours below this many hours and days from it."
+value = 48
+
+[mesh_write.dur_hours_per_day]
+doc = "Hours in a day, for `dur()`."
+value = 24
+
+[mesh_write.dur_fmt_min]
+doc = "`dur()` in minutes; `{v}` is the count."
+value = "{v}m"
+
+[mesh_write.dur_fmt_hour]
+doc = "`dur()` in hours; `{v}` is the count."
+value = "{v}h"
+
+[mesh_write.dur_fmt_day]
+doc = "`dur()` in days; `{v}` is the count."
+value = "{v}d"
+
+[mesh_write.lbl_sep]
+doc = "Separator of the parts of a plan's finish label."
+value = " · "
+
+[mesh_write.lbl_all_done]
+doc = "The finish label head when every step is done; `{total}` is the step count, `{tail}` the progress part."
+value = "steps {total}/{total} done · {tail}"
+
+[mesh_write.lbl_done_reported_tail]
+doc = "The tail of the all-done label once the child reported done."
+value = "done-reported, awaiting Primary"
+
+[mesh_write.lbl_progress_ago]
+doc = "The progress part of a finish label; `{dur}` is the time since the last progress."
+value = "progress {dur} ago"
+
+[mesh_write.lbl_no_progress]
+doc = "The progress part of a finish label before any progress."
+value = "no progress yet"
+
+[mesh_write.lbl_done_of]
+doc = "The done count of a finish label."
+value = "{done}/{total} done"
+
+[mesh_write.lbl_plan_changed]
+doc = "Appended to the done count after the plan was replaced or a done step re-opened."
+value = " (plan changed)"
+
+[mesh_write.lbl_doing_one]
+doc = "A finish label part for exactly one step in progress; `{n}` is its number."
+value = "doing #{n}"
+
+[mesh_write.lbl_doing_many]
+doc = "A finish label part for several steps in progress."
+value = "{k} doing"
+
+[mesh_write.lbl_blocked_one]
+doc = "A finish label part for exactly one blocked step."
+value = "#{n} blocked"
+
+[mesh_write.lbl_blocked_many]
+doc = "A finish label part for several blocked steps."
+value = "{k} blocked"
+
+[mesh_write.lbl_inferred]
+doc = "A finish label part for an inferred step."
+value = "~#{n}"
+
+[mesh_write.lbl_done_reported_part]
+doc = "A finish label part once the child reported done; `{dur}` is the time since."
+value = "done-reported {dur} ago, awaiting Primary"
+
+[mesh_write.ev_step]
+doc = "Supervision event type: a child reported a step status change."
+value = "step"
+
+[mesh_write.ev_correction_followed]
+doc = "Supervision event type: step progress arrived within the stall window of a correction."
+value = "correction-followed"
+
+[mesh_write.ev_respawn_progress]
+doc = "Supervision event type: first step progress in a respawned workspace."
+value = "respawn-progress"
+
+[mesh_write.step_stall_env]
+doc = "The environment variable of the devswarm.stepStallMin setting."
+value = "ANTIHALL_DEVSWARM_STEP_STALL_MIN"
+
+[mesh_write.step_stall_key]
+doc = "The settings.json key (in the devswarm section) of the step stall window."
+value = "stepStallMin"
+
+[mesh_write.step_stall_option]
+doc = "The plugin option name of the step stall window."
+value = "devswarm_step_stall_min"
+
+[mesh_write.step_stall_default_min]
+doc = "Minutes of the step stall window when no setting is given (devswarm.stepStallMin)."
+value = 30
+
+[mesh_write.plan_status_doing]
+doc = "The step status word for a step in progress."
+value = "doing"
+
+[mesh_write.plan_status_done]
+doc = "The step status word for a finished step."
+value = "done"
+
+[mesh_write.plan_status_blocked]
+doc = "The step status word for a blocked step."
+value = "blocked"
+
+[mesh_write.flag_status]
+doc = "The heartbeat flag that names a step's status."
+value = "status"
+
+[mesh_write.verify_nonce_col]
+doc = "Index of the instance_nonce column in the row query of the background check (left out of the comparison)."
+value = 11
+
+[mesh_write.verify_row_name]
+doc = "The name the background check gives the appended mesh row when it differs."
+value = "row"
+
+[mesh_write.verify_window_before]
+doc = "Bytes before the first difference that the background check logs from a differing file."
+value = 60
+
+[mesh_write.verify_window_after]
+doc = "Bytes from the first difference on that the background check logs from a differing file."
+value = 100

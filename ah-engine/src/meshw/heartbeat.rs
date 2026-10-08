@@ -18,7 +18,7 @@
 //! Every read happens before the first write; after the heartbeat record is written, the verdict write is best effort,
 //! exactly as in Node (`try { writeVerdict } catch (_) {}`).
 use crate::checks::guardkit::ojson::OVal;
-use crate::checks::guardkit::text::js_number_of_str;
+use crate::checks::guardkit::text::{js_number_of_str, js_trim};
 use crate::defaults;
 use crate::mesh::MeshReader;
 use crate::meshw::appdb;
@@ -26,7 +26,9 @@ use crate::meshw::args::Args;
 use crate::meshw::common::{Inv, Obj, n, s};
 use crate::meshw::ident::{self, R, defer};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
+use crate::meshw::plan;
 use crate::meshw::send::{Answer, Effect};
+use crate::meshw::store::{self, MeshStore};
 use crate::meshw::union;
 use std::path::{Path, PathBuf};
 
@@ -158,6 +160,98 @@ fn write_atomic(dst: &Path, text: &str, tmp: PathBuf) -> std::io::Result<()> {
     })
 }
 
+/// A `--summary` broadcast the engine can write: the shared store, resolved and checked before anything is written.
+struct Broadcast {
+    st: MeshStore,
+    repo_key: String,
+    urgency: String,
+}
+
+/// `crossLinkedIdentity(a, b)` on registry rows.
+fn cross_linked(a: &ident::Row, b: &ident::Row) -> bool {
+    if a.id.is_empty() || b.id.is_empty() || a.id == b.id {
+        return false;
+    }
+    a.session_id.as_deref().is_some_and(|x| !x.is_empty() && x == b.id) || b.session_id.as_deref().is_some_and(|x| !x.is_empty() && x == a.id)
+}
+
+/// The ownership check of `cmdHeartbeat`'s broadcast: the caller is the id, or owns it by its registry row, or by the
+/// identity family (`broadcastFamilyOwns` legs a1, a2 and a3). Everything else is a refusal Node answers with a dropped
+/// summary and an attempt record, or a first claim that needs the app database: both are Node's, so they defer.
+#[allow(clippy::too_many_arguments)]
+fn owns(inv: &Inv, rows: &[ident::Row], caller: &str, id: &str, cwd: &str, session: &str, had_prior: bool) -> R<()> {
+    if caller == id {
+        return Ok(());
+    }
+    let own_entry = crate::meshw::send::resolve_mesh_target(rows, Some(caller))?;
+    if own_entry.as_ref().is_some_and(|e| e.id == id) {
+        return Ok(());
+    }
+    let Some(target) = rows.iter().find(|r| r.id == id) else { return defer("summary-first-claim") };
+    let Some(twp) = target.worktree_path.as_deref().filter(|p| !p.is_empty()) else { return defer("summary-first-claim") };
+    let Some(t_key) = ident::canonical_mesh_id(twp)? else { return defer("summary-ownership-refused") };
+    if own_entry.as_ref().is_some_and(|e| cross_linked(e, target)) {
+        return Ok(());
+    }
+    let mut same = ident::resolve_caller_worktree(cwd)?.map(|w| ident::canonical_mesh_id(&w)).transpose()?.flatten().as_deref() == Some(t_key.as_str());
+    if !same && let Some(wp) = own_entry.as_ref().and_then(|e| e.worktree_path.as_deref()).filter(|p| !p.is_empty()) {
+        same = ident::canonical_mesh_id(wp)?.as_deref() == Some(t_key.as_str());
+    }
+    if !same {
+        return defer("summary-ownership-refused");
+    }
+    // (a2) the target row's session is the caller's real session (`realSessionIdFrom`)
+    let raw =
+        if session.is_empty() { inv.env.get(defaults::text("mesh_write.env_session_id")).map(String::as_str).filter(|v| !v.is_empty()) } else { Some(session) };
+    let Some(raw) = raw else { return defer("summary-session-derive") };
+    let real = js_trim(raw);
+    let real = (!real.is_empty() && real != id && !real.starts_with(defaults::text("mesh_write.synthetic_session_prefix"))).then_some(real);
+    if let (Some(r), Some(ts)) = (real, target.session_id.as_deref())
+        && ts == r
+    {
+        return Ok(());
+    }
+    // (a3) a placeholder: no descriptor and no heartbeat of its own before this call
+    if ident::read_descriptor(&inv.home, id).is_none() && !had_prior {
+        return Ok(());
+    }
+    defer("summary-ownership-refused")
+}
+
+/// Everything the `--summary` broadcast needs, decided before the first write.
+fn prepare_broadcast(inv: &Inv, a: &Args, id: &str, session: &str, had_prior: bool) -> R<Broadcast> {
+    let cwd = ident::project_cwd_for(&inv.home, &inv.env, &inv.cwd)?;
+    let Some(repo_key) = ident::repo_key_for_worktree(&cwd)? else { return defer("summary-no-project") };
+    let urgency = a.one(defaults::text("mesh_write.flag_urgency")).unwrap_or(defaults::text("mesh_write.hb_urgency_default")).to_string();
+    if !defaults::list("mesh_write.allowed_urgency").contains(&urgency.as_str()) {
+        return defer("summary-urgency");
+    }
+    let st = crate::meshw::common::open_store(inv, &repo_key)?;
+    let rows = ident::rows_of(&st.reader().roster().map_err(|e| ident::Defer(format!("registry:{e}")))?);
+    let caller = ident::caller_identity_detailed(&inv.env, &cwd)?;
+    owns(inv, &rows, &caller.identity, id, &cwd, session, had_prior)?;
+    crate::meshw::summary::check(&st, inv, None)?;
+    Ok(Broadcast { st, repo_key, urgency })
+}
+
+/// `appendMeshMessage` of the heartbeat row plus the summary refresh; the result is `meshBroadcast`.
+fn broadcast(inv: &Inv, b: &Broadcast, id: &str, text: &str) -> R<OVal> {
+    let ts = inv.now.to_string();
+    let mtype = defaults::text("mesh_write.mtype_broadcast");
+    let hash = store::mesh_message_hash(Some(id), None, mtype, &b.urgency, text, &ts, false);
+    let nonce = ident::reader_nonce(&inv.home);
+    let mut row = store::mesh_message_row(Some(id), None, true, text, inv.now, &b.urgency, &hash, false, nonce.as_deref());
+    row.is_heartbeat = true;
+    let r = b.st.append_mesh_row(&row).map_err(|e| ident::Defer(format!("append:{e}")))?;
+    crate::meshw::note_row(&hash);
+    if let Some(why) = crate::meshw::summary::derive_after_write(&b.st, inv, &b.repo_key) {
+        crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_heartbeat"), &why);
+    }
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(true)).put("sent", OVal::Bool(r.inserted)).put("seq", r.seq.map_or(OVal::Null, |x| n(x as f64))).put("repoKey", s(&b.repo_key));
+    Ok(o.done())
+}
+
 /// Run `heartbeat`.
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if a.is_help() {
@@ -167,14 +261,8 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if is_primary_label(id) {
         return defer("primary-label");
     }
-    if a.one(defaults::text("mesh_write.flag_summary")).is_some() {
-        return defer("summary");
-    }
-    // `--step`: with no plan file Node answers `no-plan`; with one it updates the plan under a lock (not ported)
-    let step = a.one(defaults::text("mesh_write.flag_step")).is_some();
-    if step && crate::meshw::common::sender_has_plan(inv, id)? {
-        return defer("plan-present");
-    }
+    let summary = a.one(defaults::text("mesh_write.flag_summary"));
+    let step_raw = a.one(defaults::text("mesh_write.flag_step"));
     let Some(session) = a.one(defaults::text("mesh_write.flag_session")) else { return defer("no-session") };
     if id_mismatch_possible(inv, id) {
         return defer("id-mismatch");
@@ -183,6 +271,9 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         return defer("anchor-refresh");
     }
     // ---- reads: everything that can defer happens before the first write ----
+    let beat_file =
+        devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
+    let had_prior = beat_file.exists();
     let desc = ident::read_descriptor(&inv.home, id);
     let mut pending = Pending { pending: false, not_draining: false, oldest: None };
     // APP-DB ARCHIVE GUARD: a workspace the DevSwarm app reports archived must not have its verdict cleared to alive
@@ -195,11 +286,28 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         app_archived = verdict == Some(true);
         cache = owed;
     }
+    if summary.is_some() && app_archived {
+        return defer("summary-archived"); // a dropped summary is logged through the verb-outcome log
+    }
+    let bcast = match summary {
+        Some(_) => Some(prepare_broadcast(inv, a, id, session, had_prior)?),
+        None => None,
+    };
+    // the plan: the step, or the summary of a workspace that has one (the mutation is tried on the plan as read)
+    let status = a.one(defaults::text("mesh_write.flag_status")).unwrap_or(defaults::text("mesh_write.plan_status_default"));
+    let now = inv.now as f64;
+    let call = plan::Call { step_raw, status, summary, now };
+    let found = if step_raw.is_some() || summary.is_some() { plan::find(inv, id)? } else { None };
+    if let Some(f) = &found {
+        let tried = plan::compute(inv, &f.key, id, &call, Some(f.plan.clone()))?;
+        if !tried.events.is_empty() && plan::log_needs_rotation(inv) {
+            return defer("supervision-rotate");
+        }
+    }
     let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
     let progress = a.one(defaults::text("mesh_write.flag_progress")).map(js_number_of_str).filter(|x| x.is_finite()).map(clamp_percent);
     let text_or_null = |name: &str| a.one(name).map_or(OVal::Null, |t| OVal::Str(t.to_string()));
     let strings = |name: &str| OVal::Arr(a.many(name).into_iter().map(|t| OVal::Str(t.to_string())).collect());
-    let now = inv.now as f64;
     let mut beat = Obj::default();
     beat.put("id", s(id))
         .put("ts", n(now))
@@ -247,6 +355,11 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if !app_archived {
         crate::discard::harmless(write_verdict()); // keep: the verdict refresh is best-effort and never breaks a heartbeat (Node's catch)
     }
+    // the mesh broadcast of --summary (an unchanged result for a call without one)
+    let mesh_broadcast = match (&bcast, summary) {
+        (Some(b), Some(text)) => broadcast(inv, b, id, text)?,
+        _ => OVal::Null,
+    };
     let mut ident_obj = Obj::default();
     ident_obj.put("id", s(&caller.identity)).put("kind", s(&caller.kind));
     let mut out = Obj::default();
@@ -254,18 +367,54 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         .put("action", s(defaults::text("mesh_write.action_heartbeat")))
         .put("id", s(id))
         .put("heartbeat", beat)
-        .put("meshBroadcast", OVal::Null)
+        .put("meshBroadcast", mesh_broadcast)
         .put("identity", ident_obj.done())
         .put("idMismatch", OVal::Bool(false));
     if app_archived {
         out.put("appArchived", OVal::Bool(true));
     }
-    if step {
-        let mut plan = Obj::default();
-        plan.put("ok", OVal::Bool(false))
-            .put("reason", s(defaults::text("mesh_write.hb_plan_no_plan")))
-            .put("hint", s(&defaults::render("mesh_write.hb_plan_hint", &[("id", &id)])));
-        out.put("plan", plan.done());
+    // plan tracking: `--step`, or a summary for a workspace that has a plan
+    let mut ok = true;
+    let plan_out = match &found {
+        Some(f) => Some(apply_plan(inv, f, id, &call)?),
+        None if step_raw.is_some() => {
+            let mut plan = Obj::default();
+            plan.put("ok", OVal::Bool(false))
+                .put("reason", s(defaults::text("mesh_write.hb_plan_no_plan")))
+                .put("hint", s(&defaults::render("mesh_write.hb_plan_hint", &[("id", &id)])));
+            Some(plan.done())
+        }
+        None => None,
+    };
+    if let Some(p) = plan_out {
+        if matches!(p.get("reason"), Some(OVal::Str(r)) if r == defaults::text("mesh_write.plan_reason_bad_step")) {
+            ok = false;
+        }
+        out.put("plan", p);
     }
-    Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect: Effect::None })
+    if !ok {
+        out.put("ok", OVal::Bool(false));
+    }
+    Ok(Answer { code: if ok { 0 } else { 2 }, stdout: format!("{}\n", out.done().stringify()), effect: Effect::None })
+}
+
+/// `applyHeartbeatPlan` for a plan that exists: the locked update, then the supervision events.
+fn apply_plan(inv: &Inv, f: &plan::Found, id: &str, call: &plan::Call<'_>) -> R<OVal> {
+    let Some((c, written)) = plan::update(inv, &f.key, id, call)? else {
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(false))
+            .put("reason", s(defaults::text("mesh_write.plan_reason_lock_busy")))
+            .put("key", s(&f.key))
+            .put("hint", s(defaults::text("mesh_write.plan_lock_busy_hint")));
+        return Ok(o.done());
+    };
+    if let Some(text) = written {
+        crate::meshw::note_written(&plan::plan_rel(&f.key), text.as_bytes());
+    }
+    for (typ, fields) in &c.events {
+        if let Some(line) = plan::record(inv, typ, fields, call.now) {
+            crate::meshw::note_written(&plan::log_rel(), line.as_bytes());
+        }
+    }
+    Ok(c.out)
 }

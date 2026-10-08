@@ -28,8 +28,10 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Copy what a heartbeat touches into a scratch home; `None` when that fails (the call is then not verified).
-pub fn prepare(inv: &Inv) -> Option<PathBuf> {
+/// Copy what a heartbeat touches into a scratch home; `None` when that fails (the call is then not verified). A call that
+/// writes the store (`--summary`) gets a consistent COPY of it (SQLite's online backup), never a link: Node's write in the
+/// scratch home must not reach the real store.
+pub fn prepare(inv: &Inv, with_store: bool) -> Option<PathBuf> {
     let scratch = crate::paths::dir().join(defaults::text("mesh_write.verify_dir")).join(format!("{}-{}", std::process::id(), now_ms()));
     let root = devswarm_root(&inv.home);
     let sroot = devswarm_root(&scratch.join(defaults::text("mesh_write.shadow_home")));
@@ -54,7 +56,47 @@ pub fn prepare(inv: &Inv) -> Option<PathBuf> {
             }
         }
     }
+    // the sender-alias map the summary refresh attributes rows with
+    let alias = defaults::text("mesh_write.alias_file");
+    if root.join(alias).is_file() {
+        std::fs::copy(root.join(alias), sroot.join(alias)).ok()?;
+    }
+    // the settings and the Jev label cache the summary refresh reads, from the home
+    let (hh, sh) = (
+        inv.home.join(defaults::text("mesh_write.dir_anti_hall")),
+        scratch.join(defaults::text("mesh_write.shadow_home")).join(defaults::text("mesh_write.dir_anti_hall")),
+    );
+    for rel in [
+        PathBuf::from(defaults::text("guardkit.settings_file")),
+        PathBuf::from(defaults::text("mesh_write.dir_cache")).join(defaults::text("mesh_write.jev_cache_file")),
+    ] {
+        let src = if rel.starts_with(defaults::text("mesh_write.dir_cache")) { hh.join(&rel) } else { inv.home.join(&rel) };
+        let dst = if rel.starts_with(defaults::text("mesh_write.dir_cache")) {
+            sh.join(&rel)
+        } else {
+            scratch.join(defaults::text("mesh_write.shadow_home")).join(&rel)
+        };
+        if src.is_file() {
+            std::fs::create_dir_all(dst.parent()?).ok()?;
+            std::fs::copy(&src, &dst).ok()?;
+        }
+    }
+    if with_store {
+        let real = super::real_store(inv).ok()?;
+        let key = real.parent()?.file_name()?.to_string_lossy().to_string();
+        let dir = sroot.join(defaults::text("mesh_write.dir_store")).join(&key);
+        std::fs::create_dir_all(&dir).ok()?;
+        if let Ok(marker) = std::fs::read(real.parent()?.join(defaults::text("mesh.backend_marker"))) {
+            std::fs::write(dir.join(defaults::text("mesh.backend_marker")), marker).ok()?;
+        }
+        let max_id = super::snapshot(&real, &dir.join(defaults::text("mesh_write.store_file"))).ok()?;
+        std::fs::write(scratch.join("snap-max-id"), max_id.to_string()).ok()?;
+        std::fs::write(scratch.join("snap-key"), &key).ok()?;
+    }
     for d in defaults::list("mesh_write.verify_link_dirs") {
+        if with_store && d == defaults::text("mesh_write.dir_store") {
+            continue;
+        }
         if root.join(d).exists() {
             std::os::unix::fs::symlink(root.join(d), sroot.join(d)).ok()?;
         }
@@ -75,10 +117,35 @@ fn id_files(root: &Path, id: &str) -> [PathBuf; 3] {
 /// After the engine answered: save what it printed and wrote, and start the detached verifier.
 pub fn launch(scratch: &Path, inv: &Inv, id: &str, argv: &[String], stdout: &str) {
     let real = id_files(&devswarm_root(&inv.home), id);
+    let (mut written, row) = super::take_written();
+    // the summary file is refreshed by the same call; it is read back (the engine's refresh is not captured as it is written)
+    if let (Some(_), Ok(key)) = (&row, std::fs::read_to_string(scratch.join("snap-key"))) {
+        let rel = format!(
+            "{}/{}/{}/{key}{}",
+            defaults::text("mesh_write.dir_anti_hall"),
+            defaults::text("mesh_write.dir_devswarm"),
+            defaults::text("mesh_write.dir_summaries"),
+            defaults::text("mesh_write.json_suffix")
+        );
+        written.push((rel.clone(), std::fs::read(inv.home.join(&rel)).unwrap_or_default()));
+    }
     let save = || -> std::io::Result<()> {
         std::fs::write(scratch.join("expect-stdout"), stdout)?;
         for (i, f) in real.iter().enumerate() {
             std::fs::write(scratch.join(format!("expect-{i}")), std::fs::read(f).unwrap_or_default())?;
+        }
+        let mut manifest = Vec::new();
+        for (i, (rel, bytes)) in written.iter().enumerate() {
+            std::fs::write(scratch.join(format!("expect-w{i}")), bytes)?;
+            manifest.push(serde_json::json!([rel, format!("expect-w{i}")]));
+        }
+        std::fs::write(scratch.join("expect-manifest"), serde_json::Value::Array(manifest).to_string())?;
+        if let Some(h) = &row {
+            std::fs::write(scratch.join("expect-hash"), h)?;
+            if let Ok(key) = std::fs::read_to_string(scratch.join("snap-key")) {
+                let db = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
+                std::fs::write(scratch.join("expect-row"), row_text(&db, h).unwrap_or_default())?;
+            }
         }
         Ok(())
     };
@@ -91,6 +158,28 @@ pub fn launch(scratch: &Path, inv: &Inv, id: &str, argv: &[String], stdout: &str
     c.arg(defaults::text("mesh_write.verb_mesh")).arg(defaults::text("mesh_write.verify_flag")).arg(scratch).arg(inv.now.to_string()).args(argv);
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
     crate::discard::harmless(c.spawn()); // keep: a verifier that does not start only leaves this call unverified
+}
+
+/// The physical row with `hash`, every column but the rowid and the writing process's reader nonce (the detached checker
+/// does not share the engine's process ancestry).
+pub fn row_text(db: &Path, hash: &str) -> Option<String> {
+    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    c.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).ok()?;
+    let nonce_col = defaults::num("mesh_write.verify_nonce_col") as usize;
+    c.query_row(crate::sql::MESHW_ROW_BY_HASH, [hash], |r| {
+        let mut parts = Vec::new();
+        for i in (0..r.as_ref().column_count()).filter(|i| *i != nonce_col) {
+            parts.push(match r.get_ref(i)? {
+                rusqlite::types::ValueRef::Null => "null".to_string(),
+                rusqlite::types::ValueRef::Integer(x) => x.to_string(),
+                rusqlite::types::ValueRef::Real(x) => x.to_string(),
+                rusqlite::types::ValueRef::Text(t) => serde_json::to_string(&String::from_utf8_lossy(t)).unwrap_or_default(),
+                rusqlite::types::ValueRef::Blob(b) => format!("blob:{}", b.len()),
+            });
+        }
+        Ok(parts.join("|"))
+    })
+    .ok()
 }
 
 /// Both outputs equal.
@@ -145,12 +234,37 @@ pub fn run_verifier(args: &[String]) -> i32 {
             let got = [o.stdout.clone(), read(&files[0]), read(&files[1]), read(&files[2])];
             let expected =
                 [read(&scratch.join("expect-stdout")), read(&scratch.join("expect-0")), read(&scratch.join("expect-1")), read(&scratch.join("expect-2"))];
-            if same(&expected, &got) {
+            // what a --summary or a plan step wrote besides: each file the engine wrote, and the mesh row it appended
+            let mut diff: Vec<String> = Vec::new();
+            let mut detail = serde_json::Map::new();
+            let manifest: Vec<(String, String)> = serde_json::from_slice::<Vec<(String, String)>>(&read(&scratch.join("expect-manifest"))).unwrap_or_default();
+            for (rel, file) in &manifest {
+                let (want, node_has) = (read(&scratch.join(file)), read(&home.join(rel)));
+                if want != node_has {
+                    diff.push(rel.clone());
+                    let at = want.iter().zip(node_has.iter()).position(|(x, y)| x != y).unwrap_or(want.len().min(node_has.len()));
+                    let (before, after) = (defaults::num("mesh_write.verify_window_before") as usize, defaults::num("mesh_write.verify_window_after") as usize);
+                    let win = |b: &[u8]| cap(&b[at.saturating_sub(before).min(b.len())..(at + after).min(b.len())]);
+                    detail.insert(rel.clone(), serde_json::json!({"at": at, "engine": win(&want), "node": win(&node_has)}));
+                }
+            }
+            let mut concurrent = false;
+            if let Ok(hash) = std::fs::read_to_string(scratch.join("expect-hash")) {
+                let key = std::fs::read_to_string(scratch.join("snap-key")).unwrap_or_default();
+                let db = |h: &Path| devswarm_root(h).join(defaults::text("mesh_write.dir_store")).join(&key).join(defaults::text("mesh_write.store_file"));
+                if row_text(&db(&home), &hash).unwrap_or_default().as_bytes() != read(&scratch.join("expect-row")).as_slice() {
+                    diff.push(defaults::text("mesh_write.verify_row_name").to_string());
+                }
+                let max_id: i64 = std::fs::read_to_string(scratch.join("snap-max-id")).ok().and_then(|x| x.trim().parse().ok()).unwrap_or(0);
+                concurrent = super::count_after(&db(&real_home), max_id) > 1;
+            }
+            if same(&expected, &got) && diff.is_empty() {
                 log(defaults::text("mesh_write.verify_match"), serde_json::json!({}));
             } else {
+                let result = if concurrent { defaults::text("mesh_write.shadow_concurrent") } else { defaults::text("mesh_write.verify_mismatch") };
                 log(
-                    defaults::text("mesh_write.verify_mismatch"),
-                    serde_json::json!({"engine": cap(&expected[0]), "node": cap(&got[0]), "sameHeartbeat": expected[1] == got[1], "sameVerdict": expected[2] == got[2], "sameCache": expected[3] == got[3]}),
+                    result,
+                    serde_json::json!({"engine": cap(&expected[0]), "node": cap(&got[0]), "sameHeartbeat": expected[1] == got[1], "sameVerdict": expected[2] == got[2], "sameCache": expected[3] == got[3], "diff": diff, "detail": detail}),
                 );
             }
         }

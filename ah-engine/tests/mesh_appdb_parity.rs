@@ -249,10 +249,10 @@ fn cases(d: &Dirs, dbs: &Dbs) -> Vec<Case> {
         Case {
             more: vec!["--step", "1"],
             files: vec![(".anti-hall/devswarm/plans/child-1.json", "{\"steps\":[]}")],
-            ..c("step-with-a-plan-defers", "child-1", None, false, vec!["\"plan\""])
+            ..c("step-with-an-empty-plan", "child-1", None, true, vec!["\"reason\":\"bad-step\""])
         },
         Case { more: vec!["--step", "1"], ..c("step-and-archived-row", "arch-1", Some(main), true, vec!["\"appArchived\":true", "\"reason\":\"no-plan\""]) },
-        Case { more: vec!["--summary", "hello"], ..c("summary-defers", "child-1", None, false, vec!["\"meshBroadcast\""]) },
+        Case { more: vec!["--summary", "hello"], ..c("summary-is-a-native-broadcast", "child-1", None, true, vec!["\"sent\":true"]) },
         // ---- the cross-invocation cache ----
         Case {
             pre_ms: Some(1_000),
@@ -469,5 +469,5 @@ fn app_database_heartbeats_match_node_byte_for_byte_and_defer_without_writing() 
         "app database parity: {} cases, {native} answered by the engine and identical to Node ({verified} confirmed by the background Node check), {deferred} deferred with nothing written",
         list.len()
     );
-    assert!(native >= 28 && deferred >= 6, "{native} native, {deferred} deferred");
+    assert!(native >= 30 && deferred >= 4, "{native} native, {deferred} deferred");
 }
