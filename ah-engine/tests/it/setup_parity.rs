@@ -154,6 +154,9 @@ fn snapshot(root: &Path) -> R<BTreeMap<String, String>> {
             let e = e?;
             let p = e.path();
             let rel = mask_digits(&p.strip_prefix(root)?.to_string_lossy(), ".corrupt-");
+            if rel.starts_with(".anti-hall/ah-engine") {
+                continue; // the engine's own state (its telemetry records the command): Node has nothing to compare it with
+            }
             let meta = fs::symlink_metadata(&p)?;
             let mode = meta.permissions().mode() & 0o777;
             if meta.is_dir() {
@@ -169,7 +172,15 @@ fn snapshot(root: &Path) -> R<BTreeMap<String, String>> {
     }
     let mut out = BTreeMap::new();
     walk(root, root, &mut out)?;
+    drop_empty_state_parent(&mut out);
     Ok(out)
+}
+
+/// The engine's own state dir is skipped by the walk; the `.anti-hall/` directory that only it created goes with it.
+fn drop_empty_state_parent<V>(out: &mut BTreeMap<String, V>) {
+    if !out.keys().any(|k| k.starts_with(".anti-hall/") && k != ".anti-hall/") {
+        out.remove(".anti-hall/");
+    }
 }
 
 /// Assert that two tree snapshots are equal, naming the first path that differs.

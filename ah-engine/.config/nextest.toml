@@ -13,5 +13,5 @@ retries = 0
 # Known slow tests: the Node parity sweeps (api_guard alone runs ~244 s) and the memory soak exceed 180 s when the machine
 # is loaded. Only these get a longer budget (10 min); every other test keeps the 180 s default above.
 [[profile.default.overrides]]
-filter = 'test(api_guard_matches_node) | test(coordinator_post) | test(git_audit) | test(/^memory_soak::/)'
+filter = 'test(api_guard_matches_node) | test(the_sweep_selects_and_logs_exactly_what_node_does) | test(the_tracker_says_and_writes_exactly_what_node_does) | test(coordinator_post) | test(git_audit) | test(/^memory_soak::/)'
 slow-timeout = { period = "120s", terminate-after = 5 }

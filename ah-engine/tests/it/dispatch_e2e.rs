@@ -298,6 +298,17 @@ fn event_map(e: &Env, event: &str, first: &str, rest: &str) -> PathBuf {
     map
 }
 
+/// A map giving `command` to the entry `id` and `true` to every other entry.
+fn event_map_for(e: &Env, event: &str, id: &str, command: &str) -> PathBuf {
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", event).into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> = ids.iter().map(|i| (i.clone(), if i == id { command } else { "true" }.into())).collect();
+    let map = e.dir.join(format!("{event}-map.json"));
+    let mut events = serde_json::Map::new();
+    events.insert(event.to_string(), serde_json::Value::Object(m));
+    std::fs::write(&map, serde_json::Value::Object(events).to_string()).unwrap();
+    map
+}
+
 fn assert_no_stop_counters(e: &Env) {
     let dir = e.state().join(ah_engine::defaults::text("dispatch.stop_state_dir"));
     let count = std::fs::read_dir(&dir).into_iter().flatten().flatten().count();
@@ -1466,7 +1477,8 @@ fn two_exit_two_blocks_on_an_advisory_event_keep_both_stderr_texts() {
 fn a_reminder_the_gate_cuts_is_no_output_not_an_empty_context() {
     let e = Env::new("inject-gate-empty");
     let say = format!(r#"printf '{{"hookSpecificOutput":{{"hookEventName":"UserPromptSubmit","additionalContext":"{}"}}}}\n'"#, short_reminder());
-    let map = event_map(&e, "UserPromptSubmit", &say, "true");
+    // the task-tracker is a native check that defers to its Node command here (DevSwarm is active), so map that command by id
+    let map = event_map_for(&e, "UserPromptSubmit", "task-tracker", &say);
     let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
     let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
     warm(&e, &args, &on);

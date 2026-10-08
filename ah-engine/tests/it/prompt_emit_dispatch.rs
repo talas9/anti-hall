@@ -124,6 +124,9 @@ fn check_form(name: &str, check: &str, payload: &str, extra: &[(&str, &str)]) ->
     String::from_utf8_lossy(&ch.wait_with_output().unwrap().stdout).to_string()
 }
 
+/// The task-tracker check answers natively now and would add its directive to every first prompt; these tests are about the other line.
+const NO_TRACKER: (&str, &str) = ("CLAUDE_PLUGIN_OPTION_CONTEXT_TASK_TRACKER", "false");
+
 #[test]
 fn verify_first_through_the_dispatcher_picks_the_line_the_digest_of_the_raw_bytes_picks() {
     for in_process in [true, false] {
@@ -134,7 +137,7 @@ fn verify_first_through_the_dispatcher_picks_the_line_the_digest_of_the_raw_byte
         let mut seen = std::collections::BTreeSet::new();
         for i in 0..60 {
             let p = ups(&format!("s{i}"), &format!("prompt {i}"), None);
-            let (code, out, err) = if in_process { e.run(&args, true, &p, &[]) } else { e.until_daemon_answers(&args, &p, &[]) };
+            let (code, out, err) = if in_process { e.run(&args, true, &p, &[NO_TRACKER]) } else { e.until_daemon_answers(&args, &p, &[NO_TRACKER]) };
             assert_eq!((code, err.as_str()), (0, ""), "{out}");
             let want = check_form(&format!("vf-check-{in_process}-{i}"), "verify-first", &p, &[]);
             assert!(!want.is_empty() && want.contains("VERIFY-FIRST: "), "{want}");

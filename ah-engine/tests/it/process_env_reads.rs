@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 /// (file suffix, why the process environment is the right one there).
 const ALLOW: &[(&str, &str)] = &[
     ("src/client.rs", "the hook client process: its environment IS the host's; reads the Node path and the fallback command"),
+    (
+        "src/checks/mcp_reaper/sys.rs",
+        "compares the daemon's own TZ with the request's, so a process start time is read in local time only when both would read the same zone",
+    ),
     ("src/reqenv.rs", "`RequestEnv::capture`, run by the client (or an in-process check) to forward the host's environment"),
     ("src/dispatch/table.rs", "the dispatcher is the hook client process: the plugin-root variable the host exported to this hook"),
     (

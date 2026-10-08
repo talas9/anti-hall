@@ -136,6 +136,9 @@ fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
         for e in rd.flatten() {
             let p = e.path();
             let rel = p.strip_prefix(base).unwrap().to_string_lossy().into_owned();
+            if rel.starts_with(".anti-hall/ah-engine") {
+                continue; // the engine's own state (its telemetry records the command): Node has nothing to compare it with
+            }
             if p.is_dir() {
                 out.entry(format!("{rel}/")).or_default();
                 walk(base, &p, out);
@@ -166,7 +169,15 @@ fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
     }
     let mut out = BTreeMap::new();
     walk(root, root, &mut out);
+    drop_empty_state_parent(&mut out);
     out
+}
+
+/// The engine's own state dir is skipped by the walk; the `.anti-hall/` directory that only it created goes with it.
+fn drop_empty_state_parent<V>(out: &mut BTreeMap<String, V>) {
+    if !out.keys().any(|k| k.starts_with(".anti-hall/") && k != ".anti-hall/") {
+        out.remove(".anti-hall/");
+    }
 }
 
 fn show(m: &BTreeMap<String, Vec<u8>>, k: &str) -> String {
@@ -687,6 +698,7 @@ fn the_real_home_is_refused_in_a_test_run() {
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
         .env("ANTIHALL_TEST_ISOLATION", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin()) // else the real home's snapshot cache would name the installed plugin
         .output()
         .unwrap();
     // refused only when HOME is the passwd home; a CI runner with a different HOME is simply a fixture

@@ -690,6 +690,7 @@ Files:
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `mcp_reaper.toml` | the session-end MCP sweep: its patterns, init names, age floor, cap, grace period, commands and audit log texts |
 | `task_tracker.toml` | the task-tracker directive and reminder texts, window and growth thresholds, the open-tasks line, the Jev label question and the demand-metrics file |
+| `judge.toml` | the judge calls the engine makes itself: the local Claude CLI client, the speculation-judge prompts and evidence limits, the mesh-triage worker's prompts and budgets, and the Jev-first cascade (thresholds, prompts, telemetry words) |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
 | `inject_gate.toml` | the injection gate: its settings (`context.injectGate*`), what it recognises in the hooks' output, its state bounds and wire words |
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |

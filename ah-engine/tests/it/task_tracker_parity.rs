@@ -123,7 +123,7 @@ fn snapshot(home: &Path, now: u128) -> BTreeMap<String, String> {
         for e in rd.flatten() {
             let path = e.path();
             let rel = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
-            if rel == "engine-state" {
+            if rel == "engine-state" || rel.starts_with(".anti-hall/ah-engine") {
                 continue;
             }
             if e.file_type().unwrap().is_dir() {

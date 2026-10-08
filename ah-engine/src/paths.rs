@@ -14,6 +14,11 @@ pub fn dir() -> PathBuf {
     if let Some(d) = defaults::env_var("dir") {
         return PathBuf::from(d);
     }
+    // unit tests of this crate never touch the real home (the health log, the socket, the databases): without an explicit
+    // AH_ENGINE_DIR they use the same scratch dir as `bootstrap::state_dir`
+    if cfg!(test) {
+        return crate::bootstrap::state_dir().unwrap_or_else(|| PathBuf::from(defaults::text("paths.fallback_tmp")));
+    }
     let home = defaults::env_var("home").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(defaults::text("paths.fallback_tmp")));
     home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir"))
 }

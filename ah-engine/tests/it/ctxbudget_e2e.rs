@@ -80,7 +80,12 @@ fn a_quiet_prompt_is_answered_without_running_any_node_hook_and_adds_no_joiner()
     let map = e.map("UserPromptSubmit", &loud, "echo NODE-{id}");
     let tr = e.transcript(50_000);
     // with the verify-first reminder switched off the turn is no output at all
-    let (code, out, err) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW, ("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_TURN", "false")]);
+    let (code, out, err) = e.run(
+        "UserPromptSubmit",
+        &map,
+        &prompt(&tr),
+        &[WINDOW, ("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_TURN", "false"), ("CLAUDE_PLUGIN_OPTION_CONTEXT_TASK_TRACKER", "false")],
+    );
     assert_eq!((code, out.as_str(), err.as_str()), (0, QUIET_PROMPT, ""));
 }
 
@@ -96,7 +101,7 @@ fn a_quiet_prompt_has_no_stray_newlines_whichever_checks_answer_natively() {
     let mut lines = std::collections::BTreeSet::new();
     for i in 0..40 {
         let p = serde_json::json!({"session_id": format!("nl{i}"), "hook_event_name": "UserPromptSubmit", "prompt": format!("p{i}"), "cwd": "/tmp", "transcript_path": tr}).to_string();
-        let (code, out, err) = e.run("UserPromptSubmit", &map, &p, &[WINDOW]);
+        let (code, out, err) = e.run("UserPromptSubmit", &map, &p, &[WINDOW, ("CLAUDE_PLUGIN_OPTION_CONTEXT_TASK_TRACKER", "false")]);
         assert_eq!((code, err.as_str()), (0, ""), "{out:?}");
         let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap_or_else(|_| panic!("not JSON: {out:?}"));
         let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("no context: {out:?}"));
