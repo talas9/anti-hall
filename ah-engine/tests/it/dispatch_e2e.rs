@@ -204,7 +204,7 @@ fn node_only_bash(e: &Env) -> String {
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"mergeGate":true}}"#).unwrap();
     let tp = "hedged.jsonl";
-    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py"}, "transcript_path": tp})
+    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py # \u{e9}"}, "transcript_path": tp})
         .to_string()
 }
 
@@ -490,18 +490,19 @@ fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_n
 #[test]
 fn a_guard_node_module_resolution_exit_one_is_unrunnable_but_own_exit_one_is_not() {
     let e = Env::new("module-resolution");
+    // a non-ASCII command is one the engine's command-guard leaves to the Node hook, so the stand-in runs
     let script = e.dir.join("hook.js");
     std::fs::write(&script, "// exists for preflight").unwrap();
     let bin = e.fake_node("echo MODULE_NOT_FOUND fake >&2; exit 1");
     let cmd = format!("node \"{}\"", script.display());
     let map = pretool_map(&e, &[("command-guard", &cmd)], "true");
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run_with(&args, true, &bash("npm test", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
+    let (code, out, err) = e.run_with(&args, true, &bash("echo \u{e9}", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
     assert_eq!((code, out.as_str()), (2, ""), "{err}");
     assert!(err.contains("could not run the guards for PreToolUse"), "{err}");
 
     let bin = e.fake_node("echo OWN_REASON >&2; exit 1");
-    let (code, out, err) = e.run_with(&args, true, &bash("npm test", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
+    let (code, out, err) = e.run_with(&args, true, &bash("echo \u{e9}", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
     assert_eq!((code, out.as_str()), (1, ""), "{err}");
     assert_eq!(err, "OWN_REASON\n");
 }
