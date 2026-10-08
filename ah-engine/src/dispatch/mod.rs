@@ -389,15 +389,31 @@ pub fn defer(event: &str, why: &str) -> Outcome {
     Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{note}\n") }
 }
 
-/// Finish the hooks already started and return a genuine block among them (it still decides), else [`defer`].
-fn finish_then_defer(event: &str, started: Vec<(usize, node::Running)>, mut done: Vec<Option<combine::HookResult>>, shadow: &[bool], why: &str) -> Outcome {
+/// The answer when the event's budget passes before every entry could start. Exit `dispatch.defer_exit` makes the wrapper run
+/// EVERY Node hook again, so it is given only while nothing has happened that a rerun would repeat: no Node hook started and no
+/// built-in check answered (`native_answered`; an answer may already have stamped state). Otherwise the hooks already started
+/// are finished, a genuine block among them decides, and anything else fails closed ([`closed`], bounded on Stop): the entries
+/// that never ran may have blocked, so an allow would be weaker than Node (review P1-1).
+fn finish_then_defer(
+    event: &str,
+    payload: Option<&Value>,
+    started: Vec<(usize, node::Running)>,
+    mut done: Vec<Option<combine::HookResult>>,
+    shadow: &[bool],
+    native_answered: bool,
+    why: &str,
+) -> Outcome {
+    if !started.iter().any(|(_, r)| r.started()) && !native_answered {
+        node::finish(started.into_iter().map(|(_, r)| r).collect()); // only spawn failures: nothing to wait for
+        return defer(event, why);
+    }
     let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
     for (i, f) in slots.iter().zip(node::finish(running)) {
         if f.fate == node::Fate::Ran && !shadow[*i] {
             done[*i] = Some(f.result);
         }
     }
-    genuine_block(done).unwrap_or_else(|| defer(event, why))
+    genuine_block(done).unwrap_or_else(|| closed(event, payload, why))
 }
 
 /// The genuine blocks among the results that did run (exit 2, or a JSON block) as one answer: one block verbatim, several as
@@ -550,7 +566,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             if guard {
                 // a spent budget is a slow machine, not a verdict: the Node hooks decide (review finding 17)
                 let why = defaults::render("hooks.msg_budget", &[("id", &e.id)]);
-                return finish_then_defer(&args.event, started, vec![None; entries.len()], &shadow, &why);
+                return finish_then_defer(&args.event, parsed.as_ref(), started, vec![None; entries.len()], &shadow, false, &why);
             }
             tele.mark(&e.id, plan::Outcome::SkippedBudget);
             continue;
@@ -592,7 +608,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 // the event's budget has passed: start nothing further (a guard event fails closed, as for a hook that cannot run)
                 if guard {
                     let why = defaults::render("hooks.msg_budget", &[("id", &e.id)]);
-                    return finish_then_defer(&args.event, started, results.clone(), &shadow, &why);
+                    return finish_then_defer(&args.event, parsed.as_ref(), started, results.clone(), &shadow, !answers.is_empty(), &why);
                 }
                 tele.mark(&e.id, plan::Outcome::SkippedBudget);
             }
@@ -626,10 +642,15 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         // a hook that could not run says nothing, and on a guard event nothing must not read as an allow (a timeout is
         // the host's own discard, so it stays one; it is logged by `node`). A hook that DID finish and block still
         // decides: its block is handed back verbatim, and the fail-closed counter is not touched.
-        if let Some(bad) = finished.iter().find(|f| {
-            matches!(f.fate, node::Fate::Spawn | node::Fate::Died | node::Fate::Incomplete)
-                || (f.fate == node::Fate::Ran && node::module_resolution_error(&f.result))
-        }) {
+        // a hook that started and then failed outranks one that never started (a Died always fails closed)
+        if let Some(bad) = finished
+            .iter()
+            .filter(|f| {
+                matches!(f.fate, node::Fate::Spawn | node::Fate::Died | node::Fate::Incomplete)
+                    || (f.fate == node::Fate::Ran && node::module_resolution_error(&f.result))
+            })
+            .min_by_key(|f| f.fate == node::Fate::Spawn)
+        {
             let mut done: Vec<Option<combine::HookResult>> = results.clone();
             for (i, f) in slots.iter().zip(&finished) {
                 if f.fate == node::Fate::Ran && !shadow[*i] {
@@ -642,9 +663,11 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             if node::module_resolution_error(&bad.result) {
                 return closed(&args.event, parsed.as_ref(), &no_command(&bad.result.id));
             }
-            if bad.fate == node::Fate::Spawn {
-                // the OS would not start it (EAGAIN, EMFILE, ENOMEM: a transient fault, logged with its errno by `node`):
-                // the wrapper's Node hooks decide, never a block (review finding 2)
+            // the OS would not start it (EAGAIN, EMFILE, ENOMEM: a transient fault, logged with its errno by `node`): the
+            // wrapper's Node hooks decide, never a block (review finding 2), but only while nothing ran that the wrapper's rerun
+            // of every hook would repeat: no other hook started and no built-in check answered (review P1-1)
+            let nothing_ran = finished.iter().all(|f| f.fate == node::Fate::Spawn) && answers.is_empty();
+            if bad.fate == node::Fate::Spawn && nothing_ran {
                 return defer(&args.event, &defaults::render("dispatch.msg_why_spawn", &[("id", &bad.result.id)]));
             }
             // Fate::Died (a hook killed by a signal) still fails closed, by design (D74)
@@ -826,5 +849,34 @@ mod tests {
         assert_eq!(o.code, defaults::num("dispatch.defer_exit") as i32, "a guard-event panic must defer, not block: {o:?}");
         assert_ne!(o.code, 2);
         assert_eq!(on_panic("Notification", false).code, 0, "a non-guard event stays the neutral no-op");
+    }
+
+    fn entry(id: &str, command: &str) -> table::Entry {
+        table::Entry { id: id.into(), matcher: String::new(), command: command.into(), timeout_s: 10, check: None, when: None }
+    }
+
+    #[test]
+    fn a_spent_budget_defers_only_while_nothing_has_run() {
+        // review P1-1: exit 75 makes the wrapper rerun every Node hook, so it is only given when no hook started and no built-in
+        // check answered; otherwise what ran decides, or the event fails closed (never a second run of a hook's side effects)
+        let defer_exit = defaults::num("dispatch.defer_exit") as i32;
+        let none = vec![None, None];
+        let shadow = [false, false];
+        assert_eq!(finish_then_defer("PreToolUse", None, Vec::new(), none.clone(), &shadow, false, "slow").code, defer_exit, "nothing ran yet");
+        let o = finish_then_defer("PreToolUse", None, Vec::new(), none.clone(), &shadow, true, "slow");
+        assert_eq!(o.code, 2, "a built-in check already answered: no rerun, fail closed: {o:?}");
+        let dir = std::env::temp_dir().join(format!("ah-p1-1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mark = dir.join("ran");
+        let started = vec![(0, node::start(&entry("a", &format!("echo x >> '{}'", mark.display())), b"{}"))];
+        let o = finish_then_defer("PreToolUse", None, started, none.clone(), &shadow, false, "slow");
+        assert_eq!(o.code, 2, "a Node hook already ran: fail closed, never 75: {o:?}");
+        assert_eq!(std::fs::read_to_string(&mark).unwrap(), "x\n", "the hook ran exactly once");
+        let started = vec![(1, node::start(&entry("b", "echo node-says-no >&2; exit 2"), b"{}"))];
+        let o = finish_then_defer("PreToolUse", None, started, none.clone(), &shadow, false, "slow");
+        assert!(o.code == 2 && o.err.contains("node-says-no"), "a genuine block among the started hooks decides: {o:?}");
+        let started = vec![(0, node::start(&entry("c", "a\0b"), b"{}"))];
+        assert_eq!(finish_then_defer("PreToolUse", None, started, none, &shadow, false, "slow").code, defer_exit, "a spawn failure started nothing");
+        crate::discard::harmless(std::fs::remove_dir_all(&dir));
     }
 }

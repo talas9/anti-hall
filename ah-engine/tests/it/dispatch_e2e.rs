@@ -696,11 +696,22 @@ fn over_cap_stop_active_runs_node_and_unrunnable_failures_are_capped() {
 
     // a hook the OS will not start is an infrastructure fault (review finding 2): every Stop hands over to the Node hooks
     // (dispatch.defer_exit), never a block, so there is no loop for the cap to bound
-    let broken = event_map(&e, "Stop", "a\0b", "true");
+    let broken = event_map(&e, "Stop", "a\0b", "a\0b");
     let args = ["hook", "--event", "Stop", "--fallback-map", broken.to_str().unwrap()];
     let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
     let codes: Vec<i32> = (0..cap + 2).map(|_| e.run(&args, true, &payload, true).0).collect();
-    assert_eq!(codes, vec![ah_engine::defaults::num("dispatch.defer_exit") as i32; cap + 2], "a Stop whose Node hook cannot start defers");
+    assert_eq!(codes, vec![ah_engine::defaults::num("dispatch.defer_exit") as i32; cap + 2], "a Stop whose Node hooks cannot start defers");
+
+    // review P1-1: once another Node hook has run, exit 75 would make the wrapper run it a second time; the Stop fails closed
+    // (bounded by the stop-loop cap) and every hook that could start ran exactly once per call
+    let ran = e.dir.join("ran-once");
+    let mixed = event_map(&e, "Stop", "a\0b", &format!("echo x >> '{}'", ran.display()));
+    let args = ["hook", "--event", "Stop", "--fallback-map", mixed.to_str().unwrap()];
+    let (code, out, err) = e.run(&args, true, &payload, true);
+    assert_ne!(code, ah_engine::defaults::num("dispatch.defer_exit") as i32, "a partial run must not be handed back for a rerun: {out} {err}");
+    assert_eq!(code, 2, "fails closed: {err}");
+    let entries = ah_engine::dispatch::table::entries("claude", "Stop").len();
+    assert_eq!(std::fs::read_to_string(&ran).unwrap().lines().count(), entries - 1, "each startable hook ran once");
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
 }
 

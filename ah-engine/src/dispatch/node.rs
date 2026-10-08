@@ -131,6 +131,13 @@ enum Input {
     File(File),
 }
 
+impl Running {
+    /// Whether the command was actually started (a spawn failure never was, so it did nothing a rerun would repeat).
+    pub fn started(&self) -> bool {
+        self.child.is_some()
+    }
+}
+
 /// Start `entry`'s command with in-memory `payload` on stdin. A command that cannot start is a hook with no child (its
 /// fate is [`Fate::Spawn`]; the host's "could not run" is no decision either).
 pub fn start(entry: &Entry, payload: &[u8]) -> Running {

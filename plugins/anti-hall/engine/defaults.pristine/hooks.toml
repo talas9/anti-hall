@@ -42,7 +42,7 @@ max = 1000
 unit = "entries"
 
 [hooks.event_budget_ms]
-doc = "Default of `budget_ms` in `[events.<Event>]`: the wall budget of one occurrence of the event (0 = none). Once it has passed the engine starts no further entry, lets the ones already running finish within their own timeouts, and on a guard event (unless a hook that ran blocked) hands the event to the wrapper's Node hooks with dispatch.defer_exit: a spent budget is a slow machine, not a verdict."
+doc = "Default of `budget_ms` in `[events.<Event>]`: the wall budget of one occurrence of the event (0 = none). Once it has passed the engine starts no further entry, lets the ones already running finish within their own timeouts, and on a guard event (unless a hook that ran blocked) hands the event to the wrapper's Node hooks with dispatch.defer_exit while no Node hook has started and no built-in check has answered (a spent budget is a slow machine, not a verdict); once one has, the wrapper's rerun would repeat it, so the event fails closed instead."
 value = 0
 min = 0
 max = 600000
