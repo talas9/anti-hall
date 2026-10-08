@@ -175,7 +175,8 @@ test('no-plan rows are byte-identical: table normalizer and doneStateLabel uncha
     '| wsA | active | working (40%) | 0 | 3m |',
     '| wsB | stale | done, merge unverified | 2 | 1h |',
   ].join('\n');
-  const legacy = (t) => String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l) ? l.replace(/\|[^|]*\|\s*$/, '| |') : l)).join('\n');
+  // legacy = the age-only blanking plus the B5 unread-cell blanking (unread-only changes no longer re-send the table)
+  const legacy = (t) => String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l) ? l.replace(/\|[^|]*\|\s*$/, '| |').replace(/\|\s*\d+\s*\|\s*\|\s*$/, '| | |') : l)).join('\n');
   assert.strictEqual(inbox.normalizeTableAges(noPlan), legacy(noPlan));
   const a = '| wsP | active | 3/7 done · doing #4 · 42m · progress 18m ago | 0 | 3m |';
   const b = '| wsP | active | 3/7 done · doing #4 · 43m · progress 19m ago | 0 | 4m |';
