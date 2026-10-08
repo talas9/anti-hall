@@ -364,8 +364,7 @@ pub fn agents(path: &str) -> String {
         Err(_) => r#"{"unsure":true}"#.into(),
         Ok(None) => "null".into(),
         Ok(Some(rows)) => {
-            let rows: Vec<serde_json::Value> =
-                rows.iter().map(|r| serde_json::json!({"id": r.id, "description": r.description, "spawnInput": r.rec.spawn_input})).collect();
+            let rows: Vec<serde_json::Value> = rows.iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
             serde_json::json!({"rows": rows}).to_string()
         }
     }
@@ -750,6 +749,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("turnText", Function::new(c.clone(), |p: String, max: f64, hint: String| turn_text(&p, max.max(0.0) as u64, &hint))?)?;
     super::host_io::install(c, &h)?;
     super::host_b3::install(c, &h)?;
+    super::host_d::install(c, &h)?;
     c.globals().set("ahHost", h)?;
     Ok(())
 }
