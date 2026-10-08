@@ -679,6 +679,28 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
             append_file(&home, &rel, &text)
         })?,
     )?;
+    // documented in the table above but not installed by the host API commit
+    h.set(
+        "stateRead",
+        Function::new(c.clone(), |rel: String| -> rquickjs::Result<Option<String>> {
+            let home = with_settings(|st| st.home.clone())?;
+            state_read(&home, &rel)
+        })?,
+    )?;
+    h.set(
+        "stateRemove",
+        Function::new(c.clone(), |rel: String| -> rquickjs::Result<bool> {
+            let home = with_settings(|st| st.home.clone())?;
+            state_remove(&home, &rel)
+        })?,
+    )?;
+    h.set(
+        "stateSweep",
+        Function::new(c.clone(), |dir: String, prefix: String, age: f64, max: f64| -> rquickjs::Result<f64> {
+            let home = with_settings(|st| st.home.clone())?;
+            state_sweep(&home, &dir, &prefix, age, max)
+        })?,
+    )?;
     h.set(
         "lockAcquire",
         Function::new(c.clone(), |rel: String, group: String| -> rquickjs::Result<Option<f64>> {
