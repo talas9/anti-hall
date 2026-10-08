@@ -722,7 +722,7 @@ fn cases() -> Vec<Case> {
             argv: hb(&["--summary", "same text"]),
             extra: vec![],
             setup: plan_case(&["todo", "todo"], true, |v| {
-                v["activity_sigs"] = json!(["9d4a6bd0f2b8"]);
+                v["activity_sigs"] = json!(["27d5adbae660"]);
                 v["activity_ts"] = json!(CREATED);
             }),
             native: true,
