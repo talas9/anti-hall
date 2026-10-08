@@ -123,14 +123,31 @@ The synthetic corpus is 84 labelled cases (`eval/inference-bench.js`), written b
 
 ### Hook latency
 
+The numbers below are for the Node hooks. With the optional engine installed most calls skip the Node start-up; its pre-release replay numbers are in [AH-ENGINE.md](AH-ENGINE.md#measured-results-pre-release) and are not part of these tables.
+
 Hooks are small per call but not free. On a quiet machine a bare `node -e 0` costs about 16 to 18 ms of CPU and most hooks cost 22 to 35 ms. Claude Code runs a matcher's hooks in parallel, so a tool call costs about its slowest hook, while CPU adds up across hooks. The DevSwarm hooks exit before loading their libraries in a session that is not a DevSwarm Primary or child, which saves about 20 ms of CPU per Stop and about 25 ms per prompt. The measured tables, method and caveats are in [HOOK-LATENCY](HOOK-LATENCY.md).
+
+### The optional engine
+
+An optional small Rust program, `ah-engine`, can answer the hook calls without starting Node per call. The plugin's hooks are one
+thin trigger per event; when the engine binary is installed it decides natively what it can prove identical to the Node hook and
+defers the rest to Node (never weaker than Node), and with no binary the Node hooks run as before. The binary is downloaded once
+from the GitHub Release by a shell bootstrap and installed only if its sha256 equals the one pinned in the plugin's `ah-engine.lock`
+(`AH_ENGINE_BOOTSTRAP=0` skips it). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
+time with hot reload and fallbacks (edited, then last-known-good, then pristine, then Node), and `ah-engine config heal` restores a
+missing key. Still on Node: the DevSwarm mesh writes and daemons, every call that consults Jev, the semantic judge's model call and the
+statusline. macOS and Linux only; Windows is not supported yet.
+
+Full description (install, go-live, rollback, failover, telemetry, what runs on Node, pre-release measurements): [AH-ENGINE.md](AH-ENGINE.md).
 
 ## Network and data
 
 The short form is in the README; the full table is [PRIVACY.md](../PRIVACY.md). Nothing
-here goes beyond it: no telemetry; one default-on update check (a tag-list request to
+here goes beyond it: no analytics and nothing reported to anyone; one default-on update check (a tag-list request to
 `github.com/talas9/anti-hall`, no project data; off via `versionAlerts.antiHall` or
-`ANTIHALL_VERSION_ALERT=off`); the Jev classifier, the semantic judge
+`ANTIHALL_VERSION_ALERT=off`); a one-time download of the optional `ah-engine` binary from the GitHub Release
+(sha256-pinned in the plugin, nothing about you sent; off via `AH_ENGINE_BOOTSTRAP=0`); local-only engine usage counters
+(identifiers and counts, never content; `telemetry.enabled`; read with `ah-engine telemetry summary`); the Jev classifier, the semantic judge
 (`jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1`) and mesh message triage are off by default and send the
 text they judge only to the provider you configure. API keys come from sensitive plugin
 options; reading a key from the environment or a key file is opt-in
@@ -195,7 +212,7 @@ node install-devswarm-ingest.js --uninstall       # DevSwarm ingest daemon (com.
 ## Requirements
 
 **Node.js ≥ 22 on `PATH`.** Every hook and the statusline are pure Node (built-ins
-only), launched as `node <hook>.js`. No `node` on the hook shell's `PATH` means Claude
+only), launched as `node <hook>.js` (directly, or by the optional `ah-engine` for the cases it hands back to Node). No `node` on the hook shell's `PATH` means Claude
 Code silently skips every anti-hall hook — verify with `node --version`. No npm
 install, no native deps, no other config. There is intentionally no shell-based
 preflight. Install Node from <https://nodejs.org>.
@@ -595,9 +612,8 @@ false positives, but some misfires will occur — particularly on messages that 
 what code does based on reading it (which IS verified by inspection). If misfires are
 frequent in your workflow, turn the semantic judge off (`jev.semanticJudge` false, `ANTIHALL_SEMANTIC_JUDGE` unset) and rely on Tiers 1 + 2.
 
-**Cost and latency detail:** one `claude-haiku-4-5` call per Stop event when enabled
-(env-overridable via `ANTIHALL_JUDGE_MODEL`; the one hardcoded model id in this codebase,
-since it's a direct Anthropic API call with no alias-resolution support).
+**Cost and latency detail:** one `haiku`-family call per Stop event when enabled
+(`jev.judgeModel`, default the alias `haiku`; env-overridable via `ANTIHALL_JUDGE_MODEL`).
 At current Haiku pricing this is roughly $0.0001-0.001 per turn; latency is roughly
 1-3 s added to each Stop (an estimate: the API backend has not been timed or
 evaluated). The keyless `cli` backend is measured: precision 0.78-0.81, recall 1.0 on
@@ -1405,7 +1421,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.enabled` | `false` | `ANTIHALL_JEV` | Enable Jev (ANTIHALL_JEV=0 always force-disables regardless of this). |
 | `jev.transport` | `vercel` (vercel/typesafe) | — | Vercel AI Gateway passthrough (default) or a direct TypeSafe API call. |
 | `jev.fallbackTransport` | `none` (none/vercel/typesafe) | — | Automatic backup vendor: when the primary transport times out, has a network error, returns 5xx (incl. 529), 402 or 429 (or a 400/403 naming insufficient balance), ONE retry goes to this transport inside the same time budget; 401/403 and other 4xx never fall back (a bad primary key must surface). Equal to `jev.transport` = off. Needs its OWN vendor-bound key (plugin option `jev_vercel_api_key` / `jev_typesafe_api_key`, or that vendor's key file with `jev.allowLegacyKeyRead`; keys are never sent to another vendor) and a per-vendor circuit breaker skips a vendor for 5 min after 3 consecutive eligible failures (both open = Jev skipped, no double timeouts). NOT full redundancy: both routes very likely reach the same TypeSafe model (inferred from the model ids and identical answers on a 40-item test, unconfirmed), so it covers the direct account's balance/quota or an endpoint outage, probably not a model outage; the guards then use their built-in rules as when Jev is off. With a fallback on, decision text can reach the second vendor. Decision rows record `transport` and `fellBack`. Set with `jev-setup.js enable --fallback <vercel\|typesafe\|none>` or `settings.js set jev.fallbackTransport <value>`. |
-| `jev.judgeModel` | `claude-haiku-4-5` | `ANTIHALL_JUDGE_MODEL` | Model used for speculation-judge / jev-triage LLM calls. |
+| `jev.judgeModel` | `haiku` | `ANTIHALL_JUDGE_MODEL` | Model used for speculation-judge / jev-triage LLM calls. |
 | `jev.judgeBackend` adv | `api` (api/cli/auto) | `ANTIHALL_JUDGE_BACKEND` | How speculation-judge reaches the model. `api` = Anthropic API with the `anthropic_api_key` plugin option; `cli` = the local `claude -p` CLI on your own Claude login, no API key (no tools, no MCP servers, no settings files, all hooks disabled; about 5–6 s per turn end, measured); `auto` = `api` when a key is visible, else `cli`. Fail-open in every mode. |
 | `jev.semanticJudge` | `false` | `ANTIHALL_SEMANTIC_JUDGE` | Enable the semantic speculation-judge hook (off = hook no-ops). |
 | `jev.allowLegacyKeyRead` adv safety | `false` | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env or project override). Opt-in: read the Jev key from `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` env vars and the key file. Default off: only the `jev_api_key` plugin option is used. Needed for background tools and Codex (see "Where a stored key is visible"). |

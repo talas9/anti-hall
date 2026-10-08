@@ -211,7 +211,7 @@ Set `AH_PARITY_DUMP=<dir>` to write each lane's corpus and summary there, `AH_PA
 
 ## Run the plugin against a local engine
 
-The plugin does not start or call the engine today: the engine is off by default, and the plugin runs its Node hooks. The configuration key and environment variable that point the plugin at a locally built binary are **planned (D71)**. Until then, exercise the engine directly, in a throwaway state directory (keep its path short, because the daemon's socket lives there):
+The plugin's hooks call the engine whenever a binary is installed at `~/.anti-hall/ah-engine/bin/ah-engine` (the bootstrap installs the release pinned by `ah-engine.lock` and never overwrites a binary it did not install, so a local build copied there stays). To keep a test run off your real home, exercise the engine directly, in a throwaway state directory (keep its path short, because the daemon's socket lives there):
 
 ```sh
 E="$PWD/ah-engine/target/release/ah-engine"
@@ -283,7 +283,7 @@ The workflow is the one in D31 and D57: port check by check, each through parity
 2. **Implement `Check`** in its own module under `ah-engine/src/checks/`, and list it in the registry. Put every table, limit and message in `plugins/anti-hall/engine/defaults/*.toml` (the `no_hardcoded_tunables` test fails otherwise) and cite the Node function each Rust function mirrors. Where the engine cannot decide exactly, return a deferral so Node decides; never guess.
 3. **Parity.** Add `ah-engine/parity/run-<name>.js`, modelled on `run-git.js`. Its corpus is the guard's own Node test cases, real recorded commands and adversarial and fuzz cases. It must reach 100 percent in oneshot and daemon mode, and `run-git.js` must stay at 100 percent.
 4. **Gates.** Format, clippy, docs and `./test.sh` green, then regenerate `REFERENCE.md` ([Run the tests](#run-the-tests)).
-5. **Shadow** period (the engine runs beside Node and the two are compared on live traffic, before cutover): **planned**, see D31 and D41. The engine stays off by default (`engine.enabled`) until parity and the shadow period pass.
+5. **Shadow** period (the engine runs beside Node and the two are compared on live traffic, before cutover): per entry with `mode = "shadow"` (the check runs beside the Node hook, which still decides, and `dispatch_shadow` logs whether they agree); before a release the whole dispatcher is also replayed against Node on a frozen payload sample. See "Install, go-live and rollback" in [AH-ENGINE.md](AH-ENGINE.md).
 6. **Review**, then cutover per guard, then the Node guard is deleted (D31).
 
 New capability goes into the engine, not into new Node code in the plugin (D80). Details of the extension points are in "How to extend it" in [AH-ENGINE.md](AH-ENGINE.md).

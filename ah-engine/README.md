@@ -3,8 +3,10 @@
 A small resident Rust program that anti-hall's hooks can ask instead of starting a Node process per tool call.
 Unix only (macOS and Linux, including WSL); Windows is not supported.
 
-**Off by default.** Nothing in the plugin starts or calls this binary unless an owner turns it on. This branch
-(`engine-proto`) is the prototype; it does not change the plugin's behaviour.
+**Used when installed, Node otherwise.** The plugin's hooks are one thin trigger per event. If this binary is installed at
+`~/.anti-hall/ah-engine/bin/ah-engine` (the plugin's bootstrap downloads it, sha256-checked against `ah-engine.lock`), the trigger asks it;
+the engine answers what it can prove identical to the Node hook and defers the rest to Node. With no binary the Node hooks run as before.
+Install, go-live, rollback and what still runs on Node: [`docs/AH-ENGINE.md`](../docs/AH-ENGINE.md).
 
 - What it is, what works today and what is **planned (D-n)**: [`docs/AH-ENGINE.md`](../docs/AH-ENGINE.md)
 - Every command, setting, metric, impact kind, check and error code (generated, cannot drift): [REFERENCE.md](REFERENCE.md)
@@ -65,17 +67,17 @@ The toolchain (the latest stable Rust, with rustfmt and clippy) is pinned by `ah
 cargo build --release --locked      # binary: target/release/ah-engine
 ```
 
-An offline build from the vendored source tarball published with each release (planned (D67)) uses
-`cargo build --release --offline --frozen`. Release steps are in `ah-engine/RELEASING.md` (added by the release-CI change).
+An offline build from the vendored source tarball published with each release uses
+`cargo build --release --offline --frozen`. Release steps are in `ah-engine/RELEASING.md`.
 
 ## Using a locally built binary
 
-A configuration key and environment variable that point the plugin at a locally built binary are planned (D71); they will
-be defined in `defaults/*.toml` like every other setting. Until then the plugin does not start the engine at all.
+Copy your build to `~/.anti-hall/ah-engine/bin/ah-engine`. The bootstrap never overwrites a binary it did not install, so a local
+build stays until you delete it.
 
 ## Verifying release artifacts
 
-Planned (D67), once the release workflow exists:
+Each release publishes the archives, a `.sha256` per archive and `SHA256SUMS`, with build provenance:
 
 ```
 shasum -a 256 -c SHA256SUMS --ignore-missing
@@ -529,8 +531,8 @@ wave (D75, wave 4).
 
 ## Background process disclosure
 
-When enabled, the first hook call starts `ah-engine serve` as a detached background process (no launchd or systemd unit).
-It runs per user, listens only on a Unix socket in a private (0700) directory, makes no network connections, runs at
+When the binary is installed, the first hook call starts `ah-engine serve` as a detached background process (no launchd or systemd unit).
+It runs per user, listens only on a Unix socket in a private (0700) directory, makes no network connections (only the opt-in `jev` commands do), runs at
 lowered priority, and exits cleanly when it exceeds its memory cap, stalls, is stopped (`ah-engine stop`, SIGTERM) or is
 replaced by a newer build. It stays up when idle unless `daemon.idle_exit_s` is set. It deletes nothing outside its own
 state directory. If it keeps failing it stops respawning (crash-loop stop) and hooks run on the Node implementation.

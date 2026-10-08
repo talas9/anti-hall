@@ -13,8 +13,8 @@ right and this document gets a fix.
 | Settings keys | 273 in 14 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
 | `devswarm.js` verbs | 47 | `plugins/anti-hall/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
-| Hook scripts | 62 (72 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.json` |
-| Codex hook scripts | 44 (49 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
+| Hook scripts | 62 (72 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
+| Codex hook scripts | 44 (49 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
 | Skills | 18 Claude, 21 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys
@@ -252,7 +252,7 @@ Hooks marked "none (not toggleable)" are listed in `NOT_TOGGLEABLE`
   `compact-advice-guard`) also honour `stop_hook_active`.
 - **No network unless documented.** Hooks make no network calls except those listed in
   [`PRIVACY.md`](../PRIVACY.md): the update check (`git ls-remote --tags`, on by default),
-  and the opt-in Jev, semantic-judge and triage calls. A new outbound call is a MINOR
+  the one-time download of the optional `ah-engine` binary from the GitHub Release (sha256-pinned in `ah-engine.lock`; `AH_ENGINE_BOOTSTRAP=0` skips it), and the opt-in Jev, semantic-judge and triage calls. A new outbound call is a MINOR
   change that must land in `PRIVACY.md` in the same release; a new default-on one is MAJOR.
 - **No automated deletion.** Automatic paths (hooks, `update.js`, `doctor --repair`,
   the supervisor) never delete messages, user files or repo content. Deletion-class
@@ -281,7 +281,7 @@ Frozen per hook: its script name, event, matcher, the setting and skip name, and
 | `<repo>/.anti-hall/handovers/` | `INDEX.md` + `<date>/<session>/<name>` | `hooks/lib/auto-handover-text.js`, `hooks/lib/handover-find.js` |
 | `<repo>/.anti-hall/command-allow.json`, `edit-allow.json` | per-project allowlists (used only once trusted) | `hooks/lib/command-allow.js` |
 
-Everything else under `~/.anti-hall/` (`cache/`, `state/`, `agents/`, `bin/`, every
+Everything else under `~/.anti-hall/` (`cache/`, `state/`, `agents/`, `bin/`, `ah-engine/` (the optional engine's binary, state databases, local telemetry and last-known-good copies), every
 `*-state.json`, lock and marker files, the SQLite schema inside `devswarm.db`) is internal:
 its location and format may change in any release.
 

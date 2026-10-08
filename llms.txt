@@ -8,8 +8,9 @@
 > LLM judge), task-list discipline, and a TTL'd user-override escape hatch
 > (`~/.anti-hall/skip.json`). Optional parts: a two-line statusline, an MCP-orphan reaper,
 > the Jev classifier, and DevSwarm multi-workspace coordination (dormant unless DevSwarm is
-> in use). Pure Node built-ins, macOS + Linux, Node >= 22 on PATH (hooks silently no-op
-> without it). Windows is not supported.
+> in use). Hooks are Node built-ins, macOS + Linux, Node >= 22 on PATH (hooks silently no-op
+> without it); an optional Rust engine (`ah-engine`, downloaded once, sha256-pinned) answers most
+> hook calls without starting Node and defers the rest. Windows is not supported yet.
 
 anti-hall targets four failure modes of coding agents: eagerness (acting before
 investigating), hallucination (unverified facts stated as truth), fix-before-diagnosis, and
@@ -46,6 +47,8 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [plugins/anti-hall/codex/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/codex/README.md): the Codex port, hook subset, skills, OMX mapping.
 - [docs/README.md](https://github.com/talas9/anti-hall/blob/main/docs/README.md): the documentation start page, a grouped index of every doc.
 - [docs/CONTRACT-1.0.md](https://github.com/talas9/anti-hall/blob/main/docs/CONTRACT-1.0.md): the 1.0 compatibility contract (stable CLIs, hooks, settings, paths).
+- [docs/AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md): the optional ah-engine: install (pinned sha256), go-live and rollback, failover and self-heal, telemetry, what still runs on Node, pre-release measurements.
+- [docs/DEVELOPMENT.md](https://github.com/talas9/anti-hall/blob/main/docs/DEVELOPMENT.md): build, test and release the plugin and the engine.
 - [docs/HOOK-LATENCY.md](https://github.com/talas9/anti-hall/blob/main/docs/HOOK-LATENCY.md): measured hook latency (wall p50/p95, CPU).
 - [docs/E2E-TESTING.md](https://github.com/talas9/anti-hall/blob/main/docs/E2E-TESTING.md): end-to-end testing guide.
 - [docs/TASK-WORK.md](https://github.com/talas9/anti-hall/blob/main/docs/TASK-WORK.md): the task dedup/relate ladder.
@@ -261,7 +264,7 @@ Codex: no `/config`, use the skill.
 | versionAlerts.antiHall / claudeCli / devswarm | true | `ANTIHALL_VERSION_ALERT`, `ANTIHALL_CLAUDE_CLI_VERSION_ALERT`, `ANTIHALL_DEVSWARM_VERSION_ALERT` |
 | updates.quiet | false | `ANTIHALL_UPDATE_QUIET` |
 | limitConserve.mode / threshold | auto / 85 | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |
-| jev.enabled / transport / judgeModel / semanticJudge | false / vercel / claude-haiku-4-5 / false | `ANTIHALL_JEV`, `ANTIHALL_JUDGE_MODEL`, `ANTIHALL_SEMANTIC_JUDGE` |
+| jev.enabled / transport / judgeModel / semanticJudge | false / vercel / haiku / false | `ANTIHALL_JEV`, `ANTIHALL_JUDGE_MODEL`, `ANTIHALL_SEMANTIC_JUDGE` |
 | jev.budget.mode / usdPerDay / usdPerWeek / minCreditUsd | unlimited / — / — / — | — (watch only warns; never disables Jev) |
 | jev.audit.snippets, jev.prices (advanced) | false, — | `ANTIHALL_JEV_AUDIT_SNIPPETS` |
 | jev.logRotatedFiles / rollupRetentionDays (advanced) | 10 / 0 (keep all) | — |
@@ -290,6 +293,7 @@ sub-guards.
 | Path | Written by / for |
 |---|---|
 | settings.json | the settings store |
+| ah-engine/ | the optional engine: `bin/ah-engine` (installed from the pinned release, `ah-engine.prev` kept), `bootstrap.log`, `defaults.lkg/` (last-known-good engine files), `hot.db`/`archive.db` (state and local-only telemetry), socket and health files |
 | skip.json | per-guard TTL'd user override (git-guard must be named explicitly) |
 | jev.json | legacy Jev config (still read as a fallback; never deleted) |
 | update-sweep-state.json | per-migration repair markers (update, doctor, repair-on-reload) |

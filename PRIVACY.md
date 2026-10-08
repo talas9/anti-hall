@@ -1,16 +1,17 @@
 # Privacy
 
-Last updated: 2026-10-02.
+Last updated: 2026-10-08.
 
 ## Summary
 
-anti-hall has no telemetry, analytics or usage reporting. It makes one network request by default: an update check. Optional AI-assisted features send text to the provider you configure, and only after you turn them on.
+anti-hall has no analytics and reports nothing to anyone. It makes two network requests by default: an update check, and a one-time download of the optional `ah-engine` binary. The engine keeps local-only usage counters (see below). Optional AI-assisted features send text to the provider you configure, and only after you turn them on.
 
 ## What leaves your machine
 
 | Feature | Default | Destination | What is sent | Turn off |
 |---|---|---|---|---|
 | Update check | On | `github.com/talas9/anti-hall` (via `git ls-remote --tags`) | A tag-list request; no project data. Re-checked at most every 2 hours | `/anti-hall:settings` `versionAlerts.antiHall`, or `ANTIHALL_VERSION_ALERT=off` |
+| Engine binary download | On, once per pinned release (needs a release that pins `ah-engine.lock`) | `github.com/talas9/anti-hall` Releases (HTTPS) | The release archive for your platform; no data about you or your project is sent. Installed only if its sha256 equals the one pinned in the plugin; a mismatch installs nothing. Off: `AH_ENGINE_BOOTSTRAP=0` (the Node hooks then do everything) |
 | Jev classifier | Off | `ai-gateway.vercel.sh` or `api.typesafe.ai`, per your setting | Text the feature judges, with your Jev key. May include your prompts, the assistant's last message (up to 8000 characters), test output, commit or PR text, subagent briefs, file paths and DevSwarm message text; most calls send at most 4000 characters. Secrets matching known token shapes are redacted before sending (best-effort; short or unlabelled secrets may not be caught); DevSwarm supervision text is also redacted | `jev.enabled` off, or `ANTIHALL_JEV=0` |
 | Jev credit balance | Off | `ai-gateway.vercel.sh` | Your key only, when you run the Jev status or report commands | Same |
 | Semantic judge | Off | `api.anthropic.com` (directly with your Anthropic key, or through your own `claude` CLI login when `jev.judgeBackend` is `cli`/`auto`) | The assistant's last message (up to 8000 characters), your latest prompt (up to 2000 characters) and the newest tool calls and tool output from the session (up to about 6000 characters); secrets matching known token shapes are redacted before sending (best-effort) | Off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL_SEMANTIC_JUDGE=1`. To stop it: `jev.semanticJudge` false and `ANTIHALL_SEMANTIC_JUDGE` unset |
@@ -24,6 +25,10 @@ Other `git` requests happen only when you run them: `/anti-hall:update` pulls fr
 - `<repo>/.anti-hall/`: progress notes, history ledgers and handovers, which can quote your session.
 - Your account email: the optional statusline reads it from Claude Code's own `~/.claude.json` to show it in the status bar. It is displayed only, never sent anywhere. Hide it with `statusline.noEmail` (`ANTIHALL_STATUSLINE_NO_EMAIL=1`).
 
+## Local telemetry (engine)
+
+The optional `ah-engine` counts what it and the hooks did: per hook or check, the event, the outcome (allow, block, advise, defer, error, skip), a latency histogram and the bytes injected into the model's context. A line with text where an identifier belongs is rejected, so no prompt, transcript or file text is stored. It lives in `~/.anti-hall/ah-engine/` (SQLite), is never uploaded, is kept `telemetry.retention_days` (default 30) and is read with `ah-engine telemetry summary`. Turn it off with `telemetry.enabled`.
+
 ## What it runs and writes
 
 These are the notable things anti-hall runs and writes outside the project. Hook state lives under `~/.anti-hall/` and `<project>/.anti-hall/`.
@@ -34,6 +39,7 @@ These are the notable things anti-hall runs and writes outside the project. Hook
 | `claude plugin update anti-hall@anti-hall` | When you run `/anti-hall:update` and the harness registration is older than the latest release | the `claude` CLI |
 | `claude -p --resume <session> --dangerously-skip-permissions` | Only when you run the on-demand `devswarm-recover` CLI for one workspace | the `claude` CLI |
 | statusLine entry in `~/.claude/settings.json` | Only when you install the statusline (`/anti-hall:install-statusline`) | `~/.claude/settings.json` |
+| `ah-engine serve`, a detached per-user background process with a Unix socket in a private directory (no network); `bootstrap.log` | Started by the first hook call once the engine binary is installed; exits on its memory cap, `ah-engine stop` or a newer build | `~/.anti-hall/ah-engine/` |
 | Launcher scripts that find the current plugin version | Written by the DevSwarm hooks in DevSwarm sessions | `~/.anti-hall/bin/` |
 | Local reads of `~/.claude.json` (`userID`, Fable availability) and the OMC usage cache | By the limit-conservation and model-availability hooks; never sent anywhere | `~/.claude.json`, `~/.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |
 

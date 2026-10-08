@@ -35,6 +35,20 @@ anti-hall writes per-project session notes under `.anti-hall/`. Add `.anti-hall/
 
 **Supported systems:** macOS and Linux, including WSL on Windows (it runs the Linux build). Native Windows is not supported yet.
 
+## How the hooks run (the engine)
+
+Same as on Claude Code: `codex/hooks/hooks.json` (and what `install-codex.js` writes) holds one thin trigger per Codex event,
+`sh ".../hooks/ah-hook.sh" <Event> --host codex`, for all ten events. When the optional `ah-engine` binary is installed
+(`~/.anti-hall/ah-engine/bin/ah-engine`, downloaded once by the shared bootstrap and checked against the sha256 pinned in
+`ah-engine.lock`), the trigger asks it: the engine answers natively what it can prove identical to the Node hook and hands
+every other case to that Node hook, so it is never weaker than Node. With no binary, or when the engine cannot answer, the Node
+hooks run exactly as before. The Codex hook table, its rules, settings and texts are the plugin's `engine/` files (shared with
+Claude, hot-reloaded, with last-known-good and pristine fallbacks). `PermissionRequest`, `PostCompact` and `SubagentStart` have a
+thin trigger but no hook entries yet, so they answer with the neutral no-op. Opt out of the download with
+`AH_ENGINE_BOOTSTRAP=0`. Full description, rollback and the list of what still runs on Node:
+[AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md). Telemetry is local only and read with
+`ah-engine telemetry summary`.
+
 ## Parity Notes
 
 Codex hooks are not a 1:1 Claude Code hook runtime. Current official Codex docs
@@ -61,7 +75,7 @@ UNVERIFIED against a real Codex payload):
 Documented-but-not-yet-adapted anti-hall hard-hook parity:
 
 - subagent lifecycle hooks: Codex fires `SubagentStart` (a captured codex-cli 0.160.0 payload carries `hook_event_name: "SubagentStart"`, `agent_id` and `agent_type`; handled in `codex-rs/hooks/src/events/session_start.rs`, rust-v0.160.0) and documents `SubagentStop`, but anti-hall registers neither on Codex yet: `verify-first-subagent` has no Codex payload tests
-- `PostCompact`: Codex documents it; anti-hall registers nothing there (`PreCompact` is now registered — see above)
+- `PostCompact`: Codex documents it; anti-hall has a thin trigger there but no hook entry (`PreCompact` is now registered — see above)
 - `TaskCreated`/`TaskCompleted` and Claude Workflow JS files: no direct Codex equivalent documented; use skills, native subagents, OMX, or scripts instead
 - `hooks/task-lifecycle-log.js` (`TaskCreated`/`TaskCompleted` history ledger logging): Claude-only — confirmed by diffing this port's own `codex/hooks/hooks.json` (six events only: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `Stop`, `PreCompact`, `PostToolUse`) and `install-codex.js`'s `ANTI_HALL_HOOKS` map against the same set; no Codex task-lifecycle event exists to register it under
 - `hooks/orch-on-spawn.js` (PreToolUse `Agent|Task|Workflow`, delivers the full orchestration rules on the coordinator's first spawn; experimental, opt-in): **Claude-only, no Codex hook entry**: Codex has no Agent-tool matcher. On Codex `verify-first-orch.js` sends the full orchestration text at SessionStart (the `--host=claude` argv flag that enables the spawn-time delivery is deliberately absent from every Codex command and from the installer output; `tests/hooks/verify-first-compact.test.js` pins that). The compact verify-first core points at `PROTOCOL.md`, which ships at the plugin root next to `hooks/`.

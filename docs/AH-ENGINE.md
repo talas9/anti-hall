@@ -7,8 +7,12 @@ in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
 The exact list of commands, settings, metrics and error codes is generated from the engine itself and lives in
 [`ah-engine/REFERENCE.md`](../ah-engine/REFERENCE.md).
 
-**Status: off by default.** Nothing in the plugin starts or calls the engine unless it is turned on, and the plugin still
-runs its Node hooks. Supported platforms: macOS and Linux (including WSL). Windows is not supported.
+**Status: ready for release; the plugin installs it itself once a release pins it.** The plugin's hooks are one thin trigger
+per event (`hooks/ah-hook.sh <Event>`). When the engine binary is installed, the trigger asks the engine, which decides
+natively what it can prove identical to the Node hook and hands every other case to that Node hook, so it is never weaker
+than Node. When the binary is absent or cannot answer, the trigger runs the Node hooks, exactly as before. The binary is
+fetched by a shell bootstrap, checked against a sha256 pinned in the plugin ([Install, go-live and rollback](#install-go-live-and-rollback)).
+Supported platforms: macOS and Linux (including WSL, which runs the Linux build). Windows is not supported yet.
 
 ## Why it exists
 
@@ -163,7 +167,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Never wedged: hard client budget, watchdog, breaker, crash-loop stop, bounded queue, per-request CPU budget | implemented | D9-D15 |
 | Node fallback on every failure, never a silent allow | implemented | D11 |
 | Failure classification, once-per-session advisory, secret-scrubbed diagnostics | implemented | D14 |
-| Socket 0600, private directory, peer uid check, no network | implemented | D16 |
+| Socket 0600, private directory, peer uid check, no network in the daemon | implemented | D16 |
 | Shipped defaults for every tunable, table, message, path, env-var name, limit and timeout | implemented | D17 |
 | Built-in `git` check with exact parity to git-guard | implemented | D29-D31 |
 | Built-in `merge-side-pick` check (advisory on a push after a one-sided conflict resolution; its PostToolUse pass records into `~/.anti-hall/merge-side-pick-<session>.json`, the Node file) with exact parity | implemented | D29-D31, D75 |
@@ -242,7 +246,79 @@ labelled with how it was measured in the README of `ah-engine/`.
 | One dispatcher call per hook event: `ah-engine hook --event`, built-in checks in the engine, the other hooks as Node, combined in table order; the plugin's `hooks.json` is one thin trigger per event, generated from the table (`ah-engine gen-hooks`) | implemented on the `engine-proto` branch (the installed plugin changes when it merges) | D58, D75, D87 |
 | Per-event and per-entry hook configuration (`[events.<Event>]`, `[entries.<id>]`: mode, max_rules, budget_ms, order) and the `when` predicate | implemented | D87 |
 | Porting the other guards | planned (D57) | D57 |
-| Prebuilt binaries for every Unix target, release automation | planned (D56, D64, D67, D68) | D56, D64, D67, D68 |
+| Prebuilt binaries for every Unix target, release automation (prepare, publish, sha256 and attestation), the plugin-side bootstrap with a pinned lock | implemented (see Install, go-live and rollback) | D56, D64, D67, D68 |
+
+## Install, go-live and rollback
+
+**Install.** The plugin ships `ah-engine.lock` (schema, engine version, tag and the sha256 of every release asset). On every
+SessionStart, `hooks/ah-hook.sh` starts `hooks/ah-engine-bootstrap.sh` detached. The script (POSIX sh, never fails a session):
+
+1. detects the target (macOS arm64 or x86_64, Linux x86_64 or arm64 on glibc or musl, WSL as Linux; anything else, such as
+   native Windows, is reported as unsupported and skipped);
+2. downloads `ah-engine-vX.Y.Z-<triple>.tar.gz` from the GitHub Release over HTTPS;
+3. installs it to `~/.anti-hall/ah-engine/bin/ah-engine` **only if its sha256 equals the lock's entry**. There is no trust on
+   first use: a mismatch is refused and nothing is installed;
+4. does it atomically and keeps the previous binary as `bin/ah-engine.prev`.
+
+It is idempotent (the same lock does nothing), rate limited (a failed attempt for a lock is retried after 6 hours), and it never
+overwrites a binary it did not install (a local build is left alone). Every outcome is written to
+`~/.anti-hall/ah-engine/bootstrap.log`. A plugin tree without `ah-engine.lock` installs nothing and stays on Node. Opt out with
+an environment variable named in [RELEASING.md](../ah-engine/RELEASING.md) and the plugin README. This download is the only network request the engine's install makes; see [PRIVACY.md](../PRIVACY.md).
+
+**Go-live.** An engine check is trusted only after it has agreed with the Node hook it replaces. Before release the whole
+dispatcher was replayed against Node (see [Measured results](#measured-results-pre-release)); per entry the engine can also run
+beside Node on live traffic: `mode = "shadow"` on a guard entry that has a built-in check runs the check next to the Node hook,
+which still decides, and logs `dispatch_shadow` with whether the two agree ([Dispatcher](#dispatcher), configuration of events and
+entries). A check that cannot reproduce Node exactly defers (exit 75 from the engine, the wrapper then runs the Node hooks).
+
+**Rollback.** In order of how much you want to undo:
+
+| To undo | Do |
+|---|---|
+| one check | set `mode = "off"` on its `[entries."<id>"]` in the engine's `config.toml`: only the engine's check is skipped, its Node hook decides (hot reload, no restart) |
+| the engine, for now | `ah-engine stop`, then remove `~/.anti-hall/ah-engine/bin/ah-engine`; the wrapper finds no binary and runs the Node hooks |
+| the engine, for good | also set the opt-out variable (see Install above), or the next SessionStart reinstalls the pinned binary |
+| a bad engine build | copy `bin/ah-engine.prev` back over `bin/ah-engine` |
+| a bad plugin edit of the engine files | nothing to do: the layered failover below falls back by itself |
+
+Whatever the engine cannot do, the Node hooks do; Node is the permanent floor.
+
+## What still runs on Node
+
+The engine does not replace Node yet; it answers what it can prove identical and leaves the rest. Honest list of what stays
+on Node today (each is a deferral, so Node's answer is the one the host sees):
+
+| Stays on Node | Why |
+|---|---|
+| DevSwarm mesh writes (mailbox, roster, cursors, archive) and the DevSwarm daemons (ingest, liveness supervisor, reaper) | the engine only reads the per-repo store in place (`ah-engine mesh`, read-only); engine-owned mesh writes are planned (D45) |
+| Every call that would consult Jev (the Jev integrations: speculation, claim ledger, output verify, git self-credit, model routing, tasklist, codex nudge, merge-gate hedge, parent-gate question, and the rest of the `jevIntegrations` table) | the engine has the Jev lane as a library and `ah-engine jev`, but the dispatcher does not call it yet (planned, D58, D38); with Jev off the engine answers, with Jev on Node keeps its exact behavior |
+| The semantic judge (`speculation-judge`'s model call to Haiku, directly or through your `claude` CLI) | a model call with its own backends; the engine answers only the judge-off path |
+| The statusline | a separate Node process the host runs for the status bar; not a hook |
+| The blocking branch of several guards | `edit-guard` on the main thread, `api-guard`'s interpreter probes, `merge-gate`'s hedge, `task-guard` and `tasklist-guard` Stops that would block, `silent-agent-nudge`, `devswarm-parent-gate`, and the command check's non-trivial verbs: the engine answers the quiet cases and defers any case that could block |
+| SessionStart context over the 10,000 character host cap, and cases with a stale cache or a date, JSON or regex construct the engine cannot read exactly like JavaScript | the whole hook defers before anything is written, so Node sees the state it would have seen |
+| `task-tracker`, the doctor's DevSwarm migrations, the statusline render, supervisor and OMC/Codex detection | see "What works today" for the planned items (D81) |
+
+Platforms: macOS and Linux (including WSL). Windows is not supported yet, and neither the bootstrap nor the engine runs there.
+
+## Measured results (pre-release)
+
+These are pre-release measurements from one replay, not a guarantee and not a field result. Setup: a frozen sample of 2113 real
+hook payloads, replayed once through the exact go-live bundle (engine binary plus plugin tree) and once through the Node hooks of
+the same plugin tree, each side in its own pristine sandbox and isolated home, concurrently, paced at 0.15 s per payload.
+
+| Measure | Result |
+|---|---|
+| Blocks Node made that the engine did not (ENGINE-WEAKER) | 0 of 68 (the engine blocked all 68) |
+| Output identical to Node | 2059 of 2113 payloads |
+| Differences | 30 text-only, 7 advisory dropped by the injection gate on purpose, 2 stricter, 15 SessionStart deferrals (over the context cap, so Node runs in production) |
+| Hook rows answered natively by the engine | 87.0 percent (8748 of 10051); 54.1 percent of calls needed no Node fallback at all |
+| CPU per call, engine (client plus daemon) | about 35.5 ms (client 28.2 ms including the Node hooks it launched, daemon 7.4 ms) |
+| CPU per call, the Node hooks alone | 158.2 ms |
+
+Known gap found by the same replay and not yet fixed: when two hooks block and one of them was deferred to Node, the engine's
+output can keep only one block reason (5 payloads), and `task-guard`'s informational "deferring Stop block" notice is not printed
+(6 payloads). The decision (block) is the same in every one of them. The figures depend on the sample, the machine and the load; the
+full report and the per-event table are kept with the release notes of the engine.
 
 ## Commands
 
@@ -256,7 +332,7 @@ arguments, is in the generated reference.
 | `ah-engine status` | yes | State, uptime, memory, counters, breaker, rules and a headline summary. |
 | `ah-engine metrics` | yes | Metric series; `--check <name>` narrows to one check; `--rollup minute\|hour [--since <s>]` shows stored rollups. |
 | `ah-engine impact` | yes | What the engine affected; `--kind`, `--project` filter, `--window <7d>` for the NET section. |
-| `ah-engine telemetry` | no | `summary`, `events`, `rollup`: see Telemetry below. `summary` and `events` only read; `rollup` writes, idempotently. |
+| `ah-engine telemetry` | no | `summary`, `events`, `rollup`: see Telemetry below. `ah-engine telemetry summary [--window 7d]` is the one to run first: per hook and check, invocations, outcomes, latency and injected bytes. `summary` and `events` only read; `rollup` writes, idempotently. |
 | `ah-engine docs` | yes | The generated reference (`--format md`, or `--json`). |
 | `ah-engine gen-hooks --host claude\|codex [--kind hooks\|registry\|list\|map]` | yes | Print a file generated from the dispatch table: the thin `hooks.json` (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map (D87). |
 | `ah-engine check <name>` | yes | Run one check on a payload from stdin (parity harness). |
@@ -277,6 +353,7 @@ arguments, is in the generated reference.
 | `ah-engine restore <snapshot-dir>` | no | Keep the current state as a pre-restore snapshot, stop the daemon, swap in the snapshot. |
 | `ah-engine config [--json]` | yes | The effective config with the source of every value (`default`, `config_toml`, `settings`, `env`), the files read, the active version, any rejected edit and settings pending a restart. Asks the running daemon, else reads the files. |
 | `ah-engine config validate <file>` | yes | Check an engine TOML file against the schema: exit 0 when valid, 1 with the reason when not. |
+| `ah-engine config heal` | no | Add the settings the edited engine files lack, taken from the pristine copy (existing text kept, the file backed up first, idempotent). The automatic heal skips a version-controlled checkout; this command does not. |
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
 | `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 | `ah-engine mesh <roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | Read a repo's DevSwarm store in place, read-only (D45 stage S0): the registered workspaces, the per-workspace counts, a workspace's messages (capped, with a resume position), and the full canonical dump the parity harness compares with Node's reader. Refuses a journal-backed store; never creates or writes one. |
@@ -561,7 +638,7 @@ judgement calls do.
 - **Resource caps.** Bounded worker pool and queue (overflow answers busy, which means fallback), a per-request CPU budget,
   an RSS cap that restarts the daemon cleanly, `nice`, and per-session and per-project rate limits.
 - **Security.** The socket is mode 0600 in a private 0700 directory the daemon owner-checks; the peer's uid is checked;
-  there is no network code; payload text is never executed; state is partitioned per project.
+  the daemon opens no network connection (only the opt-in `ah-engine jev ask` and `jev-setup status` commands do, and only when Jev is on); payload text is never executed; state is partitioned per project.
 - **No deletion.** The engine deletes nothing outside its own state directory.
 
 ## Configuration and data files
@@ -579,7 +656,8 @@ How it is loaded:
 | a defaults file changes | the daemon polls the files (`config.watch_ms`, settled for `config.debounce_ms`), validates the whole set, and swaps in the new snapshot atomically: no restart, in-flight requests finish on the old one. An invalid edit keeps the last good snapshot and logs `defaults_invalid` with the reason code (`parse`, `doc`, `missing_key`, ...); `status` shows it as `config.last_error` |
 | the plugin is updated | a new directory at the same path shows as a changed file set; a new path arrives with the next request (`AH_ENGINE_PLUGIN_ROOT`, set by the wrapper from its own location, or the host's plugin-root variable) and is adopted when its index is newer than the active one, so two plugin versions in use at once cannot flip the daemon |
 | the thin hook client | reads the snapshot cache (one file, only the keys a call asks for) instead of parsing 28 files; it parses the plugin files itself only when the cache is missing or belongs to another plugin root |
-| nothing loadable | no plugin root, unreadable or invalid files and no cache: the engine answers "unavailable" (exit code 75, which the wrapper turns into the Node hooks), logs why (`defaults.error` in the state directory and stderr) and never falls back to built-in values |
+| an edited file is invalid | that file (or that setting) falls back to the last-known-good copy, then to the pristine copy ([Layered failover and self-heal](#layered-failover-and-self-heal)) |
+| nothing loadable | no plugin root, or the edited, last-known-good and pristine copies all fail: the engine answers "unavailable" (exit code 75, which the wrapper turns into the Node hooks), logs why (`defaults.error` in the state directory and stderr) and never falls back to values compiled into the binary, because there are none |
 
 The plugin root is the first of: `AH_ENGINE_PLUGIN_ROOT` (an explicit choice: if it has no `engine/defaults/index.toml` the load
 fails), `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, the root recorded in the snapshot cache, a development checkout found by walking up
@@ -633,6 +711,26 @@ Each setting is a table with `value`, `doc` and optionally `env` (an environment
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or
 message is written in Rust instead (`no_hardcoded_tunables`), and another if code and defaults disagree. User-level
 overrides are layered on at start and on every change (below); persisting each version in storage is planned (D18).
+
+### Layered failover and self-heal
+
+The engine files in `plugins/anti-hall/engine/defaults/` are meant to be edited, so a bad edit must not take the guards down.
+Every load, per file and per setting, tries these layers in order and each layer passes the same validation:
+
+1. **edited**: the plugin's `engine/defaults/` (what you or an update changed);
+2. **last-known-good**: `<state dir>/defaults.lkg/<stamp>/`, a copy of every edited file that last validated in full, stamped with
+   the engine version, plugin root and plugin version (older stamps beyond `defaults_load.lkg_keep` are removed);
+3. **pristine**: the plugin's read-only `engine/defaults.pristine/`, byte-identical to the shipped defaults;
+4. **Node**: if all three fail the engine answers "unavailable" (exit 75) and the wrapper runs the Node hooks.
+
+Each fallback is logged (`defaults_fallback` with a reason code) and marks the engine degraded; the state is shown by
+`ah-engine status` and advised once per session.
+
+**Self-heal.** A setting the edited files lack (an older file after an engine update, or a deleted table) is taken from the pristine
+copy for that run and reported. The automatic heal then appends the missing table to the edited file, keeping the existing text
+byte for byte, after backing the file up once beside it; the new text must parse and read back as the pristine value or nothing
+is written, and a second run finds nothing to add. The automatic heal never writes into a version-controlled checkout;
+`ah-engine config heal` does it on request, including there.
 
 ### Config layering and hot-swap (D18)
 
@@ -814,17 +912,18 @@ The toolchain (the latest stable Rust, with rustfmt and clippy) is pinned by `ah
 cargo build --release --locked      # binary: target/release/ah-engine
 ```
 
-An offline build from the vendored source tarball published with each release (planned (D67)) uses
-`cargo build --release --offline --frozen`. Release steps are in `ah-engine/RELEASING.md` (added by the release-CI change).
+An offline build from the vendored source tarball published with each release uses
+`cargo build --release --offline --frozen`. Release steps are in `ah-engine/RELEASING.md`.
 
 ## Using a locally built binary
 
-A configuration key and environment variable that point the plugin at a locally built binary are planned (D71); they will
-be defined in the plugin's `engine/defaults/*.toml` like every other setting. Until then the plugin does not start the engine at all.
+Copy your build to `~/.anti-hall/ah-engine/bin/ah-engine`. The wrapper uses the binary at that path, and the bootstrap never
+overwrites a binary it did not install (it checks the marker `bootstrap.installed` and the recorded binary sha256), so a local
+build stays until you delete it. A binary-path override exists for the test suite only and is ignored otherwise.
 
 ## Verifying release artifacts
 
-Planned (D67), once the release workflow exists:
+Each release publishes the archives, a `.sha256` per archive and `SHA256SUMS`, with build provenance:
 
 ```
 shasum -a 256 -c SHA256SUMS --ignore-missing
@@ -839,17 +938,19 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | An advisory says the engine stopped after repeated failures | It is already running on the Node hooks. `ah-engine reset` clears the stop; file an issue with the diagnostic block it printed. |
 | "state directory is not writable" | Fix ownership and mode 700 of `~/.anti-hall/ah-engine`, or point `AH_ENGINE_DIR` at a directory you own. |
 | "socket path is too long" | Set `AH_ENGINE_DIR` to a shorter path. |
-| Stop it | `ah-engine stop`. It starts again on the next hook call unless the engine is turned off. |
+| Stop it | `ah-engine stop`. It starts again on the next hook call while the binary is installed; to turn it off, see Rollback. |
 | Undo a bad restore | Every restore keeps the state before it in `backups/pre-restore-<ms>/`; restore that directory. |
 | `hot.db` keeps growing | Run `ah-engine maintain` (it reports what it moved and the sizes before and after); see the `retention.*` settings. |
 | `proj` printed `spooled <id>` | The engine was down or busy; the write is safe in `spool.log` and is applied when the engine runs. |
 | `spool.quarantine` has entries | Records that were damaged or refused for good (for example a full mailbox), each with its reason; nothing was dropped. |
+| The engine says it is degraded | An engine file fell back to the last-known-good or pristine copy. `ah-engine config --json` shows `last_error`; fix the edit, or `ah-engine config heal` for a missing setting. |
 | A check misbehaves | Run `ah-engine check git` with the payload on stdin to see its verdict without a daemon. |
 
 ## FAQ
 
-**Does it send anything off my machine?** No. The engine has no network code. Any upload of diagnostics would be opt-in
-and disclosed first (D28, planned).
+**Does it send anything off my machine?** No. Telemetry is local only. The one network request the install makes is the one-time
+binary download from the GitHub Release (sha256-checked against the plugin's lock; the opt-out variable named in Install skips it). The daemon
+opens no connection; only the opt-in Jev commands do. Any upload of diagnostics would be opt-in and disclosed first (D28, planned).
 
 **What if the engine crashes or disagrees with the Node hook?** A crash or a bad answer falls back to the Node hook. A
 disagreement is a bug in the engine: the parity harness compares exit code, stdout and stderr with the Node guard, and a
@@ -858,4 +959,6 @@ mismatch is fixed in Rust, never by changing the guard (D31).
 **Why Rust?** The client uses about 2 MB against 44 MB for a Node process and answers in about 2 ms against about 20 ms
 (D2). Numbers and how they were measured are in the README of `ah-engine/`.
 
-**Is it on?** No. It stays off until parity and a shadow period pass (D31, D41).
+**Is it on?** It is used whenever its binary is installed at `~/.anti-hall/ah-engine/bin/ah-engine`, which the plugin's bootstrap does
+once a release pins one in `ah-engine.lock`. With no binary, or after opting out of the bootstrap and removing it, the Node hooks run as before
+([Rollback](#install-go-live-and-rollback)). `ah-engine status --json` and `ah-engine telemetry summary` show what it is doing.
