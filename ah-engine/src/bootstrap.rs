@@ -123,4 +123,15 @@ mod tests {
     fn the_dev_checkout_is_found_from_the_test_binary() {
         assert!(dev_checkout().is_some(), "the cargo target tree sits inside the repository");
     }
+
+    #[test]
+    fn tests_read_this_checkout_and_a_scratch_state_dir_never_the_real_home() {
+        // `.cargo/config.toml` pins both for every test; without it the snapshot cache in the real home names the installed plugin
+        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall").canonicalize().unwrap();
+        crate::defaults::init().expect("defaults load in a test");
+        let root = crate::defaults::root().expect("a loaded root");
+        assert_eq!(root.canonicalize().unwrap(), plugin, "a test loaded the plugin at {}", root.display());
+        let state = state_dir().expect("a state dir");
+        assert!(state.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("target")), "state dir {} is outside target/", state.display());
+    }
 }

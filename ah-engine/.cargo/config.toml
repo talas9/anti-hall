@@ -1,0 +1,8 @@
+# Every cargo-run test (unit, integration, doc) reads THIS checkout's plugin and writes a scratch state dir under target/, never
+# the real home. Without this, `bootstrap::locate_root` falls to the snapshot cache in `$HOME/.anti-hall/ah-engine/defaults.cache`
+# (step 3 of its lookup order), which names the INSTALLED plugin, so lib tests read whatever version is installed. `force`
+# also overrides a CLAUDE_PLUGIN_ROOT / AH_ENGINE_* the developer's shell or agent session exports. Tests that spawn the
+# binary set their own environment explicitly.
+[env]
+AH_ENGINE_PLUGIN_ROOT = { value = "../plugins/anti-hall", relative = true, force = true }
+AH_ENGINE_DIR = { value = "target/test-state", relative = true, force = true }

@@ -2,7 +2,6 @@
 //! Rust (not a `Scripted` entry answered by a plugin script). It may only go down: `compiled_logic_ceiling.txt` holds the
 //! number reached so far, and lowering it is part of every batch that migrates a check. At 0 every check's logic is an
 //! editable plugin script, which is the gate.
-#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::path::Path;
 

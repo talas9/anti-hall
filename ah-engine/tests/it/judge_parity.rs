@@ -6,7 +6,6 @@
 //! Node worker's Anthropic API call is answered by a `node -r` stub of `https.request`. Each case runs the real Node hook
 //! and the engine binary with their own isolated homes and compares what they print, the state they leave and every byte
 //! they send to the model.
-#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

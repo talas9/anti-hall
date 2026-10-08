@@ -2,7 +2,6 @@
 //! server plays Jev, a FAKE `claude` first on PATH records its argv and stdin and prints a canned answer. Covers what the unit
 //! tests cannot: the real CLI argv (model alias `haiku`, isolated flags), the prompt bytes the model is given, the telemetry
 //! row and the switches (per-integration, global kill switch, show-Jev-answer).
-#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use serde_json::{Value, json};
 use std::io::{Read, Write};

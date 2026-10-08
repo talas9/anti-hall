@@ -2089,8 +2089,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.line_terminators` | `\n
-  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
+| `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
@@ -3609,6 +3608,133 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.write_why_link` | `symbolic link below the write root` |  |  | Refusal reason of a scripted write that would pass through a symbolic link below the write root. |
 | `script.write_why_path` | `path outside the allowed shape` |  |  | Refusal reason of a scripted write whose path is absolute, outside the write root, too long, or has an empty, `.` or `..` part. |
 | `script.write_why_size` | `text over the size cap` |  |  | Refusal reason of a scripted write whose text is over script.write_max_bytes. |
+
+### mcp_reaper.toml / mcp_reaper
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mcp_reaper.act_reasons` | `prompt_input_exit, other` |  |  | The SessionEnd reasons on which the sweep runs at all; any other reason (clear, resume, logout) does nothing and runs no process listing. |
+| `mcp_reaper.action_kill` | `kill` |  |  | The audit log action of the forced signal. |
+| `mcp_reaper.action_skip` | `skip` |  |  | The audit log action of a candidate that was skipped. |
+| `mcp_reaper.action_term` | `term` |  |  | The audit log action of the polite signal. |
+| `mcp_reaper.cgroup_marker` | `.service` |  |  | The text in a control-group file that marks a systemd service. |
+| `mcp_reaper.cgroup_path` | `/proc/{pid}/cgroup` |  |  | The control-group file of a process; `{pid}` is the process id. |
+| `mcp_reaper.etimes_command` | `ps, -o, pid=,etimes=, -p` |  |  | The age probe that reports elapsed seconds (Linux); the pid list is appended as the last argument. |
+| `mcp_reaper.etimes_line_re` | `^\s*(\d+)\s+(\d+)\s*$` |  |  | JavaScript regex source (case-sensitive) of one elapsed-seconds line: pid, seconds. |
+| `mcp_reaper.event_scan` | `scan` |  |  | The audit log event name of a completed scan. |
+| `mcp_reaper.event_skip` | `skip` |  |  | The audit log event name of a sweep that did not run. |
+| `mcp_reaper.exclude_setting` | `4 entries` |  |  | Where the user's exclusion pattern is read from (guards.reaperExclude, a JavaScript regular expression, empty = none): a process it matches is never reaped. |
+| `mcp_reaper.grace_ms` | `500` |  | ms | How long the sweep waits between the polite signal and the re-check that decides who gets the forced one. |
+| `mcp_reaper.init_names` | `launchd, systemd, init` |  |  | The program names PID 1 must carry for the sweep to run at all: in a container PID 1 is the entrypoint and every child of it is normal, not a leaked orphan. |
+| `mcp_reaper.launchctl_command` | `launchctl, list` |  |  | The command that lists the processes the macOS service manager owns. |
+| `mcp_reaper.launchctl_header_re` | `^PID\s` |  |  | JavaScript regex source (case-insensitive) of the header line of the service-manager listing. |
+| `mcp_reaper.log_dir` | `logs` |  |  | The audit log directory under the base directory. |
+| `mcp_reaper.log_file` | `session-end-reaper.log` |  |  | The audit log file name. |
+| `mcp_reaper.log_max_bytes` | `5242880` |  | bytes | The audit log stops growing past this size. |
+| `mcp_reaper.lstart_command` | `ps, -o, pid=,lstart=, -p` |  |  | The age probe that reports the start time (macOS and BSD, which have no elapsed-seconds column); the pid list is appended as the last argument. |
+| `mcp_reaper.lstart_form_re` | `^(Mon\|Tue\|Wed\|Thu\|Fri\|Sat\|Sun) (Jan\|Feb\|Mar\|Apr\|May\|Jun\|Jul\|Aug\|Sep\|Oct\|Nov\|D...` |  |  | JavaScript regex source (case-sensitive) of the one start-time text the engine reads itself, the form `ps -o lstart=` prints: weekday, month, day of month, time, year. Any other text is handed to Node, whose date parser the engine does not reproduce. |
+| `mcp_reaper.lstart_line_re` | `^\s*(\d+)\s+(.+?)\s*$` |  |  | JavaScript regex source (case-sensitive) of one start-time line: pid, start time. |
+| `mcp_reaper.match_setting` | `4 entries` |  |  | Where the user's extra MCP process pattern is read from (guards.reaperMatch, a JavaScript regular expression, empty = none). |
+| `mcp_reaper.max_default` | `16` |  |  | The cap on processes reaped per sweep. |
+| `mcp_reaper.max_env` | `ANTI_HALL_SESSION_END_REAPER_MAX` |  |  | The environment variable that sets the cap on processes reaped per sweep (read like the age floor). |
+| `mcp_reaper.max_exact_id` | `9007199254740992` |  |  | Process ids at or above this are handed to Node: the engine holds an id exactly as JavaScript prints it only below 2^53. |
+| `mcp_reaper.max_hour` | `23` |  |  | The largest hour of a start time the engine reads itself (the form allows 24 to 29, which JavaScript carries into the next day). |
+| `mcp_reaper.mcp_self_re` | `mcp-reaper` |  |  | JavaScript regex source (case-insensitive) of a command line that is never an MCP server: the reaper tooling itself. |
+| `mcp_reaper.min_age_default_s` | `60` |  | s | The age floor in seconds: a process younger than this is never reaped. |
+| `mcp_reaper.min_age_env` | `ANTI_HALL_SESSION_END_REAPER_MIN_AGE_S` |  |  | The environment variable that sets the age floor in seconds (a number, read the way JavaScript's Number reads it; anything not a finite number of at least zero falls back to the default). |
+| `mcp_reaper.min_year` | `1970` |  |  | The earliest year of a start time the engine reads itself. |
+| `mcp_reaper.modelctx_re` | `@?modelcontextprotocol\b` |  |  | JavaScript regex source (case-insensitive) of the @modelcontextprotocol package scope, always a match. |
+| `mcp_reaper.months` | `12 items` |  |  | The month abbreviations of the start-time form, January first. |
+| `mcp_reaper.node_module` | `companion/mcp-reaper.js` |  |  | The Node companion module the hook reuses for its signature test, relative to the plugin root. The Node hook does nothing when it cannot load it, so the engine acts only where it is present. |
+| `mcp_reaper.orphan_ppid` | `1` |  |  | The parent pid that marks an orphan: the kernel reparents a process whose parent died to PID 1. |
+| `mcp_reaper.platform_launchd` | `macos` |  |  | The Rust operating-system name on which the service-manager listing is consulted (Node's darwin). |
+| `mcp_reaper.platform_systemd` | `linux` |  |  | The Rust operating-system name on which the control-group file is consulted (Node's linux). |
+| `mcp_reaper.poll_ms` | `2` |  | ms | How often a running command is checked for completion. |
+| `mcp_reaper.probe_max_bytes` | `1048576` |  | bytes | The largest age-probe or service-manager output the sweep reads; a bigger one is handed to Node. |
+| `mcp_reaper.probe_timeout_ms` | `2000` |  | ms | How long an age probe or the service-manager listing may take (an age probe that times out leaves the age unknown, so the process is not reaped; a service-manager listing that times out skips every candidate). |
+| `mcp_reaper.ps_command` | `ps, -axo, pid=,ppid=,command=` |  |  | The process listing command and its arguments: pid, parent pid and command line of every process. |
+| `mcp_reaper.ps_line_re` | `^\s*(\d+)\s+(\d+)\s+(.*)$` |  |  | JavaScript regex source (case-sensitive) of one process listing line: pid, parent pid, command line. |
+| `mcp_reaper.ps_max_bytes` | `33554432` |  | bytes | The largest process listing accepted; a bigger one is treated as a failed listing and the sweep does nothing. |
+| `mcp_reaper.ps_timeout_ms` | `3000` |  | ms | How long the process listing may take before the sweep gives up and does nothing. |
+| `mcp_reaper.read_ms` | `1000` |  | ms | How long to wait for a finished command's output after it exits. |
+| `mcp_reaper.reason_fields` | `reason, end_reason` |  |  | The payload fields that carry the reason, in order: the measured wire field first, the documented one as a fallback. |
+| `mcp_reaper.reason_launchd` | `launchd-managed` |  |  | The audit log reason for a candidate the macOS service manager owns. |
+| `mcp_reaper.reason_launchd_unverifiable` | `launchd-unverifiable` |  |  | The audit log reason for every candidate when the service-manager listing failed. |
+| `mcp_reaper.reason_pid1` | `pid1-not-init` |  |  | The audit log reason when PID 1 is not an init process. |
+| `mcp_reaper.reason_systemd` | `systemd-service` |  |  | The audit log reason for a candidate that is a systemd service. |
+| `mcp_reaper.runner_exclude_res` | `7 items` |  |  | JavaScript regex sources (case-insensitive) of test runners and dev servers that are never reaped, even when a file name merely looks like an MCP server. |
+| `mcp_reaper.runtime_re` | `^(node\|nodejs\|npx\|npm\|pnpm\|yarn\|deno\|bun\|python\|python3\|uvx\|uv)$` |  |  | JavaScript regex source (case-sensitive) of the program names (argv0 basename) that legitimately launch MCP servers. |
+| `mcp_reaper.scoped_re` | `(^\|\s)@[a-z0-9][a-z0-9._-]*/mcp([\s/]\|$)` |  |  | JavaScript regex source (case-insensitive) of an `@scope/mcp` package token (right bound consumed, as for the suffix pattern). |
+| `mcp_reaper.setting` | `6 entries` |  |  | Where the reaper's on/off switch is read from (maintenance.sessionEndReaper, default on; the deprecated environment alias is read too). |
+| `mcp_reaper.start_program` | `mcp` |  |  | The program name that may itself be the `mcp start` command. |
+| `mcp_reaper.start_re` | `(^\|\s)mcp\s+start(\s\|$)` |  |  | JavaScript regex source (case-insensitive) of `mcp start` as a discrete command token. |
+| `mcp_reaper.suffix_argv0_re` | `-mcp$` |  |  | JavaScript regex source (case-insensitive) of a program name that is itself a `<name>-mcp` binary. |
+| `mcp_reaper.suffix_re` | `(^\|[\s/])([a-z0-9][a-z0-9._-]*-mcp)([\s/]\|$)` |  |  | JavaScript regex source (case-insensitive) of a `<name>-mcp` package token, bounded on the left by the start, white space or a slash and on the right by white space, a slash or the end (the right bound is consumed here; see the header). |
+| `mcp_reaper.summary` | `SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command ...` |  |  | One-line description of the session-end-mcp-reaper check in the generated reference. |
+| `mcp_reaper.token_argv0_re` | `^(mcp[-_]server\|server-sequential-thinking)` |  |  | JavaScript regex source (case-insensitive) of a program name that is itself such a token. |
+| `mcp_reaper.token_re` | `(^\|[\s/])(mcp[-_]server\|server-sequential-thinking)` |  |  | JavaScript regex source (case-insensitive) of a boundary-anchored mcp-server or server-sequential-thinking token. |
+| `mcp_reaper.tz_env` | `TZ` |  |  | The environment variable that moves the time zone Node would read a start time in; when a request sets it the start time is handed to Node. |
+
+### task_tracker.toml / task_tracker
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `task_tracker.blocked_tail` | ` (+{n} blocked: {why})` |  |  | The tail naming tasks that wait on someone else; `{n}` is how many and `{why}` who. |
+| `task_tracker.codex_from` | `as a task (TaskCreate) ` |  |  | The words of the directive that name the Claude-only task tool; the Codex text swaps the first occurrence. |
+| `task_tracker.codex_to` | `as an item in your task/plan list ` |  |  | What the Codex text says in their place. |
+| `task_tracker.control_re` | `[\x00-\x1F\x7F-\x9F]` |  |  | JavaScript regex source (case-sensitive) of the control characters a quoted subject replaces with a space. |
+| `task_tracker.dd_setting` | `6 entries` |  |  | Where the per-turn dispatch demand switch is read from (guards.dispatchDemand, default on): while it is on, a session with a task the demand line would name is left to Node. |
+| `task_tracker.dedupe_key` | `task-tracker` |  |  | The emit-dedupe key of the directive and the combined text. |
+| `task_tracker.dedupe_short_key` | `task-tracker-short` |  |  | The emit-dedupe key of the short reminder, kept apart so the keepalive can ration it. |
+| `task_tracker.done_statuses` | `completed, done, cancelled, canceled` |  |  | Statuses (lowercase) that mean a task no longer blocks the ones waiting on it. |
+| `task_tracker.ellipsis` | `…` |  |  | What ends a subject that was cut. |
+| `task_tracker.event` | `UserPromptSubmit` |  |  | The hook event name in the output. |
+| `task_tracker.full_level` | `full` |  |  | The protocol level at which the directive keeps the non-blocking clause (any other level drops it). |
+| `task_tracker.future_tolerance_ms` | `300000` |  | ms | How far ahead of now a stored timestamp may be (clock skew) before it counts as corrupt and the window is treated as expired. |
+| `task_tracker.growth_bytes` | `245760` |  | bytes | How much the transcript may grow after a full directive before the next prompt injects it again (about 60 thousand tokens, where adherence to an instruction starts to decay). |
+| `task_tracker.guard_name` | `task-tracker` |  |  | The guard name in the message header and in the skip file. |
+| `task_tracker.in_progress_re` | `in[-_]?progress` |  |  | JavaScript regex source (case-insensitive) of a status that means in progress. |
+| `task_tracker.instead_head` | `give each task a priority (metadata.priority: P0/P1/P2) and keep the list sor...` |  |  | The start of the full directive's 'Do instead' line. |
+| `task_tracker.instead_tail` | `report progress; never finish a turn with a silently dropped request.` |  |  | The end of the full directive's 'Do instead' line. |
+| `task_tracker.jev_id` | `newRequest` |  |  | The Jev integration that labels each prompt. |
+| `task_tracker.jev_instructions` | `Classify the user's message below.` |  |  | The instruction Jev gets with the prompt. |
+| `task_tracker.jev_label_texts` | `a new, previously-unstated request or task, continuing or elaborating on work...` |  |  | What each label means, in the order of the labels. |
+| `task_tracker.jev_labels` | `new-request, follow-up, correction, question` |  |  | The labels Jev may answer with, in order. |
+| `task_tracker.jev_state_limit` | `4000` |  |  | How much of the prompt Jev sees, in UTF-16 units. |
+| `task_tracker.json_max_depth` | `64` |  |  | How deeply nested a state file may be before the engine hands the read to Node. |
+| `task_tracker.main_owner_re` | `^(main\|orchestrator\|coordinator)$` |  |  | JavaScript regex source (case-insensitive) of an owner that still counts as unowned (the coordinator itself). |
+| `task_tracker.metrics_counters` | `demandsShown, demandsFollowed, demandsIgnored, idleNeglectBlocks` |  |  | The counters of the metrics file, in the order a fresh file lists them. |
+| `task_tracker.metrics_file` | `dispatch-demand-metrics.json` |  |  | The file that counts the dispatch demands shown, followed and ignored. |
+| `task_tracker.metrics_followed` | `demandsFollowed` |  |  | The counter of demands a spawn followed. |
+| `task_tracker.metrics_ignored` | `demandsIgnored` |  |  | The counter of demands no spawn followed. |
+| `task_tracker.metrics_pending` | `pending` |  |  | The key of the metrics file that holds the demands still to be scored, per session. |
+| `task_tracker.metrics_pending_ttl_ms` | `86400000` |  | ms | How long a demand waits to be scored before it is dropped. |
+| `task_tracker.non_blocking` | `keep the MAIN thread non-blocking by delegating heavy/long work to background...` |  |  | The clause the compact protocol level leaves out of the directive (the session core already carries it). |
+| `task_tracker.note_joiner` | ` ` |  |  | What joins the directive or the reminder and the open-tasks line inside one text. |
+| `task_tracker.open_some` | `open tasks: {n}{blocked}{tail} — update or close them.` |  |  | The open-tasks line when tasks are open; `{n}` the count, `{blocked}` the blocked-tasks tail, `{tail}` the oldest in-progress subject. |
+| `task_tracker.open_zero` | `open tasks: 0{blocked}.` |  |  | The open-tasks line when no countable task is open; `{blocked}` is the blocked-tasks tail. |
+| `task_tracker.owner_word` | `owner` |  |  | Who a blocked task waits on when it names nobody. |
+| `task_tracker.pending_status` | `pending` |  |  | The status (lowercase) of a task nobody has started. |
+| `task_tracker.prune_prefix` | `task-tracker` |  |  | The prefix the sweep of stale per-session state files is stamped under. |
+| `task_tracker.segment_joiner` | `\n\n` |  |  | What joins the short reminder and the open-tasks line in the output (a separate segment, so the dedupe store sees it consumed). |
+| `task_tracker.session_hash_len` | `16` |  |  | How many hexadecimal digits of the working directory's hash name a session that has no id. |
+| `task_tracker.session_key_max` | `80` |  |  | How many characters of a session id name its metrics entry. |
+| `task_tracker.setting` | `6 entries` |  |  | Where the check's on/off switch is read from (context.taskTracker, default on). |
+| `task_tracker.spawn_marker` | `"tool_use"` |  |  | The text a transcript line must hold to be looked at as a possible spawn. |
+| `task_tracker.spawn_name_re` | `"name":\s*"(Agent\|Task\|Workflow)"` |  |  | JavaScript regex source (case-sensitive) of the tool name field of a spawn line. |
+| `task_tracker.spawn_names` | `Agent, Task, Workflow` |  |  | The tools that spawn an agent. |
+| `task_tracker.state_prefix` | `task-tracker-` |  |  | Prefix of the per-session state file that remembers when the full directive was last injected. |
+| `task_tracker.state_suffix` | `.json` |  |  | Suffix of the per-session state file. |
+| `task_tracker.subject_max` | `50` |  |  | The longest subject the open-tasks line quotes, in UTF-16 units. |
+| `task_tracker.subject_tail` | ` (oldest in_progress subject: {subject})` |  |  | The tail naming the oldest in-progress task; `{subject}` is its quoted subject. |
+| `task_tracker.subject_unknown` | `(subject unknown)` |  |  | What stands for a subject that was never learned. |
+| `task_tracker.summary` | `UserPromptSubmit task-list discipline: the full directive or the short remind...` |  |  | One-line description of the task-tracker check in the generated reference. |
+| `task_tracker.unknown_session` | `unknown` |  |  | The session name used when a request has none. |
+| `task_tracker.unknown_tag` | `tracker` |  |  | The tag the unknown-state note is throttled under. |
+| `task_tracker.what_full` | `capture EVERY user request as a task (TaskCreate) before starting work, so no...` |  |  | The first line of the full directive. |
+| `task_tracker.what_short` | `capture every request as a priority-sorted task; keep statuses current; deleg...` |  |  | The short per-turn reminder. |
+| `task_tracker.why_joiner` | `/` |  |  | What joins the distinct reasons tasks are blocked. |
+| `task_tracker.window_ms` | `21600000` |  | ms | How long the full directive stays fresh before it is injected again. |
 
 ## Messages
 

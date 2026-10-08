@@ -8,7 +8,6 @@
 //! reaches nothing; the one test that does signal real processes (`the_engine_really_signals_what_it_selects`) signals only
 //! children it spawned itself. A case marked `defer` is one the engine must hand to Node (`AHFALLBACK`), leaving the home as
 //! seeded.
-#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};

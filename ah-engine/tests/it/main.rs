@@ -64,3 +64,8 @@ mod task_checks_e2e;
 mod telemetry;
 mod transcript_index;
 mod transcript_parity;
+mod cascade_judge;
+mod judge_parity;
+mod mcp_reaper_parity;
+mod task_tracker_parity;
+mod compiled_logic_gate;

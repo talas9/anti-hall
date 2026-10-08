@@ -5,7 +5,6 @@
 //! output and, after the last step, the whole home: the directive's state file, the dedupe store, the unknown-state note
 //! files, the demand metrics and the Jev decision log (clock fields removed; the detached asks are given time to land). A
 //! case marked `defer` must be handed to Node (`AHFALLBACK`) with the home left as seeded.
-#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
