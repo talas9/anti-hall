@@ -524,9 +524,9 @@ the run marker (or never reaped on a panic), and with `daemon.idle_exit_s` = 0 n
 
 - **Footing check:** every `daemon.orphan_check_ms` a daemon checks that its state dir, its lock file (same inode) and its
   executable still exist; once one is gone it drains and exits (`exit/orphaned` in the log).
-- **Idle exit on by default:** `daemon.idle_exit_s` = 21600 (6 h without a request). This amends D7 (resident with no
-  session open): a normal pause keeps the scheduler and mailbox running; after that the next hook starts a fresh daemon
-  and the scheduler catches up its missed jobs. 0 still keeps a daemon resident.
+- **Idle exit stays off (D7):** `daemon.idle_exit_s` = 0, the daemon is always resident. The lane briefly shipped 21600
+  (6 h) as an amendment to D7; that was reverted on review (owner design D7, always-resident): the footing check above is
+  what ends a daemon left behind by a test or a removed install, and a config can still set an idle exit.
 - **Teardown:** `tests/common::reap` falls back to the pid in the lock file when the run marker is gone (and only signals
   a pid that is an `ah-engine serve`); every test env that can start a daemon reaps it in its `Drop` before removing its
   dir. `reliability::no_daemon_of_this_build_outlives_its_test_run` fails on a leak from an earlier run.

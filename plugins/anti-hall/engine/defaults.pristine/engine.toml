@@ -336,8 +336,8 @@ value = 100
 unit = "ms"
 
 [daemon.idle_exit_s]
-doc = "Seconds without any request after which the daemon exits (the next hook call starts a fresh one, and the scheduler catches up its missed jobs); 0 keeps it resident. Long by default so the scheduler and mailbox keep running through a normal pause (D7), but never forever: a daemon a test or a crashed client left behind ends on its own."
-value = 21600
+doc = "Seconds without any request after which the daemon exits (the next hook call starts a fresh one, and the scheduler catches up its missed jobs); 0 keeps it resident. 0 by default: the daemon is always resident so the scheduler and mailbox keep running after every session closes (D7). A daemon whose state dir, lock file or executable is gone still exits on its own (daemon.orphan_check_ms)."
+value = 0
 env = "AH_ENGINE_IDLE_EXIT_S"
 unit = "s"
 
