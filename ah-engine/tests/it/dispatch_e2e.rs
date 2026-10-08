@@ -389,8 +389,21 @@ fn the_agent_controls_are_answered_by_the_dispatcher() {
     let stop_args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
     let stop_payload = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop"}).to_string();
     let (code, out, err) = e.run(&stop_args, true, &stop_payload, true);
-    e.stop();
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "silent-agent-nudge is answered by the check, not run as Node");
+    // Stop with a background agent silent for 90 minutes: the check nudges itself (the dispatcher hands it the plugin root)
+    let ts =
+        ah_engine::checks::agent_scan::iso_utc((std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() - 5_400_000) as f64);
+    let launch = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "tu_1", "type": "tool_result", "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a1b2c3d4e5f601 (x)\noutput_file: /nonexistent/out.txt\n"}]}]}, "timestamp": ts});
+    let transcript = e.dir.join("silent.jsonl");
+    std::fs::write(&transcript, format!("{launch}\n")).unwrap();
+    let silent = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "transcript_path": transcript}).to_string();
+    let (code, out, err) = e.run(&stop_args, true, &silent, true);
+    e.stop();
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert!(
+        out.starts_with("{\"decision\":\"block\",\"reason\":\"") && out.contains("silent-agent-nudge: 1 of your own") && !err.contains("NODE-RAN"),
+        "{out:?} {err:?}"
+    );
 }
 
 #[test]
