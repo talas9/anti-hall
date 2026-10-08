@@ -257,7 +257,6 @@ pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
                 .collect();
             json!({"v": "routed", "verdict": verdict_json(&Some((**inner).clone()), l), "meta": m})
         }
-        Some(other) => json!({"v": format!("{other:?}")}),
     }
 }
 
