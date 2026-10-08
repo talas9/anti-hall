@@ -236,6 +236,19 @@ value = "logging"
 doc = "CLIs whose whole-command read-only form (version query or gcloud read piped to a closed sink) is light (command-guard.js isWholeCommandReadOnlyForm and VERSION_CLI_RE)."
 value = ["firebase", "gcloud", "aws", "az", "kubectl", "helm", "terraform", "pulumi", "vercel", "netlify", "heroku", "serverless"]
 
+[command.plain_read_git_segments]
+doc = "Exact shapes of one plain read-only git segment inside a chain, after a trailing `2>&1` is stripped (command-guard.js PLAIN_LOG_SEGMENT_RE, PLAIN_STATUS_SEGMENT_RE, PLAIN_SHOW_SEGMENT_RE, PLAIN_REVPARSE_SEGMENT_RE; the JavaScript negative lookahead on the first character is the equivalent first-character class)."
+value = [
+  '^git\s+log\s+--oneline(?:\s+-\d+)?\s*$',
+  '^git\s+status(?:\s+(?:--short|-s))?\s*$',
+  '^git\s+show\s+--stat(?:\s+(?:-\d+|HEAD))?\s*$',
+  '^git\s+rev-parse(?:\s+--short)?\s+[A-Za-z0-9_./][A-Za-z0-9_./-]*\s*$',
+]
+
+[command.trailing_stderr_merge]
+doc = "A trailing `2>&1` stripped before a plain git chain segment is classified (command-guard.js TRAILING_STDERR_MERGE_RE)."
+value = '\s+2>&1\s*$'
+
 # ---- gh -----------------------------------------------------------------------------------------------------------
 
 [command.gh_mutating_subcommands]

@@ -246,7 +246,35 @@ doc = "Commands a data heredoc may be fed to without being treated as a shell sc
 value = [
   "cat", "tee", "git", "gh", "echo", "printf", "cd", "pushd", "popd", "mkdir", "wc", "head", "tail", "ls",
   "pwd", "true", ":", "date", "stat", "test", "[",
+  "cut", "tr", "nl", "tac", "rev", "fold", "sed",
 ]
+
+[git.hd_sed_range]
+doc = "The only sed shape that may sit beside a data heredoc: a fixed print range `sed -n <N>[,<M>]p <files>` with plain-word operands (git-guard.js HD_SED_RANGE_RE; the JavaScript negative lookahead on an operand's first character is the equivalent first-character class)."
+value = '^sed[ \t]+-n[ \t]+[0-9]+(?:,[0-9]+)?p(?:[ \t]+[A-Za-z0-9_./~$+@%:,=][A-Za-z0-9_./~$+@%:,=-]*)*[ \t]*$'
+
+[git.hd_sed_script]
+doc = "The fixed print-range script word of a neighbouring sed (git-guard.js hdSedOk)."
+value = '^[0-9]+(?:,[0-9]+)?p$'
+
+[git.hd_sed_operand]
+doc = "A plain-word operand of a neighbouring sed: no leading dash, no flag (git-guard.js hdSedOk)."
+value = '^[A-Za-z0-9_./~$+@%:,=][A-Za-z0-9_./~$+@%:,=-]*$'
+
+[git.hd_assign]
+doc = "A standalone literal assignment `NAME=value` beside a data heredoc (git-guard.js HD_ASSIGN_RE); group 1 is the name, group 2 the value."
+value = '^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./~+@%:,=-]+)$'
+
+[git.hd_var_deny]
+doc = "Variable names (case-insensitive) a standalone assignment beside a data heredoc must not set: ones the shell or the allowed tools read implicitly (git-guard.js HD_VAR_DENY)."
+value = [
+  "PATH", "IFS", "HOME", "SHELL", "ENV", "CDPATH", "GLOBIGNORE", "SHELLOPTS", "BASHOPTS", "PS1", "PS2", "PS4",
+  "PROMPT_COMMAND", "PAGER", "MANPAGER", "EDITOR", "VISUAL", "BROWSER", "TMPDIR", "LANG",
+]
+
+[git.hd_var_deny_prefix]
+doc = "Variable-name prefixes (case-insensitive) a standalone assignment beside a data heredoc must not set: loader, git/gh config, ssh, locale and language-runtime hooks (git-guard.js HD_VAR_DENY_PREFIX)."
+value = ["LD_", "DYLD_", "GIT_", "GH_", "BASH_", "SSH_", "LESS", "LC_", "PYTHON", "NODE_", "NPM_", "RUBY", "PERL"]
 
 [git.heredoc_git_msg_subs]
 doc = "git subcommands that take a message from a heredoc."
@@ -560,6 +588,15 @@ value = { what = "a commit whose message is taken from {origin} and carries an A
 doc = "Block: a gh pr, issue or release body or title carries an AI self-credit."
 value = { what = "a gh pr/issue/release body or title carries AI/assistant self-credit (\"Generated with\" footer, Co-Authored-By, a claude.com/claude-code link) is blocked.", why = "PRs and issues carry no AI attribution.", instead = "remove it and re-run." }
 
+[git.credit_label_gh_words]
+doc = "How many non-flag words of a gh command name it in a credit-elsewhere block message (git-guard.js creditElsewhereLabel: `gh pr create`)."
+value = 2
+min = 1
+
+[git.msg_gh_credit_elsewhere]
+doc = "Block: a gh pr, issue or release command is chained with another git/gh command that carries the AI self-credit. Placeholder: {elsewhere} (the carrying command, e.g. `git commit`)."
+value = { what = "a gh pr/issue/release command is chained with `{elsewhere}`, which carries AI/assistant self-credit; blocked.", why = "The self-credit text is in the `{elsewhere}` part of this command, not in the gh body or title. Commits, PRs and issues carry no AI attribution.", instead = "remove the self-credit line from the `{elsewhere}` text and re-run." }
+
 [git.msg_runner_placeholder]
 doc = "Block: a runner placeholder stands for the command or subcommand beside a force or delete flag."
 value = { what = "a command whose name or git subcommand is an xargs / find / parallel placeholder, with a force or delete flag, is blocked.", why = "The placeholder is filled from input at run time, so the command may be `git push`.", instead = "run the git command directly with an explicit subcommand and arguments." }
@@ -666,6 +703,9 @@ min = 1
 doc = "Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}."
 value = { what = "a command that creates a commit (git {sub}) and carries an AI/assistant self-credit trailer line is blocked.", why = "Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).", instead = "remove the trailer line and re-run." }
 
+[git.msg_creating_credit_elsewhere]
+doc = "Block: a commit-creating command is chained with another git/gh command that carries the AI self-credit. Placeholders: {sub}, {elsewhere} (the carrying command, e.g. `gh pr create`)."
+value = { what = "a command that creates a commit (git {sub}) is chained with `{elsewhere}`, which carries AI/assistant self-credit; blocked.", why = "The self-credit text is in the `{elsewhere}` part of this command, not in the commit message. Commits, PRs and issues carry no AI attribution.", instead = "remove the self-credit line from the `{elsewhere}` text and re-run." }
 
 # ---- PostToolUse audit (git-guard.js --audit) --------------------------------------------------------------------
 

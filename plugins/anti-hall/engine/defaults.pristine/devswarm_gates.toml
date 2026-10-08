@@ -12,7 +12,7 @@ value = "DevSwarm Primary reply tracker: allows every Bash call that is not a de
 
 [devswarm_gates.child_drain_summary]
 doc = "One-line description of the devswarm-child-drain check in the generated reference."
-value = "DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child); a child workspace defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js)."
+value = "DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child) and when it would stay silent before counting any mail (not a Bash call, a subagent's call, an `inbox read-primary` command, no usable workspace id, no descriptor naming an inbox); anything that needs the unread count defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js)."
 
 [devswarm_gates.child_gate_setting]
 doc = "Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)."
@@ -65,3 +65,47 @@ value = ["devswarm", "send"]
 [devswarm_gates.bash_tool]
 doc = "The tool name the reply tracker and the drain nudge observe."
 value = "Bash"
+
+[devswarm_gates.readside_builder_env]
+doc = "Environment variable that holds a child workspace's own id (the name of its descriptor file)."
+value = "DEVSWARM_BUILDER_ID"
+
+[devswarm_gates.readside_id_extra]
+doc = "Characters besides ASCII letters and digits that a workspace id may contain (an id with `..` is never safe)."
+value = "._-"
+
+[devswarm_gates.readside_descriptor_dir]
+doc = "Directory of the workspace descriptors, relative to the home directory."
+value = ".anti-hall/devswarm/workspaces"
+
+[devswarm_gates.readside_descriptor_ext]
+doc = "File extension of a workspace descriptor."
+value = ".json"
+
+[devswarm_gates.readside_inbox_field]
+doc = "Descriptor field naming the workspace's durable inbox file; without it the drain nudge has nothing to count and stays silent."
+value = "inboxPath"
+
+[devswarm_gates.readside_tool_field]
+doc = "Hook payload field that names the tool of a PostToolUse call."
+value = "tool_name"
+
+[devswarm_gates.readside_input_field]
+doc = "Hook payload field that holds the tool's input."
+value = "tool_input"
+
+[devswarm_gates.readside_command_field]
+doc = "Field of the tool input that holds the Bash command."
+value = "command"
+
+[devswarm_gates.readside_subagent_fields]
+doc = "Payload fields the host stamps only on a subagent's own calls; either one present and not null marks the call as a subagent's, which the drain nudge never addresses."
+value = ["agent_id", "agent_type"]
+
+[devswarm_gates.readside_read_primary_re]
+doc = "JavaScript regex source (case-insensitive) for a Bash command that reads the Primary-originated channel (`inbox ... read-primary`); the drain nudge skips that one call so it does not contradict the read's own follow-up instruction."
+value = '\binbox\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*read-primary\b'
+
+[devswarm_gates.readside_stop_field]
+doc = "Stop payload field that is exactly `true` when the model is already continuing because of an earlier Stop block; the Primary Stop gate then allows without reading anything."
+value = "stop_hook_active"
