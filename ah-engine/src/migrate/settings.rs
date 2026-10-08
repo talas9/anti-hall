@@ -85,12 +85,12 @@ pub(crate) fn find(section: &str, key: &str) -> Option<&'static Entry> {
 
 // ---- reading ----------------------------------------------------------------------------------------------------------
 
-fn settings_path(ctx: &Ctx) -> PathBuf {
+pub(crate) fn settings_path(ctx: &Ctx) -> PathBuf {
     ctx.base().join(defaults::text("migrate.settings_file"))
 }
 
 /// `load()`: the settings object, `{}` when the file is missing, unreadable or not an object.
-fn load(ctx: &Ctx) -> J {
+pub(crate) fn load(ctx: &Ctx) -> J {
     match read_json_note(ctx, &settings_path(ctx)) {
         Some(j @ J::Obj(_)) => j,
         _ => J::Obj(Vec::new()),
@@ -192,7 +192,7 @@ fn env_str(ctx: &Ctx, name: &str) -> Option<J> {
 }
 
 /// `readEnvOverride`.
-fn read_env_override(ctx: &Ctx, entry: &Entry) -> Option<J> {
+pub(crate) fn read_env_override(ctx: &Ctx, entry: &Entry) -> Option<J> {
     let name = entry.env.as_deref().filter(|_| !entry.home_only)?;
     let mut v = coerce_value(entry, env_str(ctx, name).as_ref());
     if v.is_none() {
@@ -244,7 +244,7 @@ fn manifest_default(ctx: &Ctx, entry: &Entry, plugin_root: Option<&str>) -> Opti
 
 /// `readPluginOption`: the value of the entry's plugin option unless it equals the entry's default, which the host exports even
 /// when the person never touched it and which must not mask a lower tier.
-fn read_plugin_option(ctx: &Ctx, entry: &Entry) -> Option<J> {
+pub(crate) fn read_plugin_option(ctx: &Ctx, entry: &Entry) -> Option<J> {
     let option = entry.plugin_option.as_deref().filter(|_| !entry.home_only)?;
     let env_name = format!("{}{}", defaults::text("migrate.plugin_option_env_prefix"), option.to_uppercase());
     let manifest_default =
@@ -260,7 +260,7 @@ fn read_plugin_option(ctx: &Ctx, entry: &Entry) -> Option<J> {
 }
 
 /// `readLegacy`: the entry's value in its legacy file (`~/.anti-hall/jev.json` and the like).
-fn read_legacy(ctx: &Ctx, entry: &Entry) -> Option<J> {
+pub(crate) fn read_legacy(ctx: &Ctx, entry: &Entry) -> Option<J> {
     let file = entry.legacy_file.as_deref().filter(|_| !entry.home_only)?;
     let raw = read_json_note(ctx, &ctx.base().join(file))?;
     if !matches!(raw, J::Obj(_) | J::Arr(_)) {
@@ -270,7 +270,7 @@ fn read_legacy(ctx: &Ctx, entry: &Entry) -> Option<J> {
 }
 
 /// `settingsMigrationStamped`: the settings forward-migration is marked complete for the running plugin version.
-fn migration_stamped(ctx: &Ctx) -> bool {
+pub(crate) fn migration_stamped(ctx: &Ctx) -> bool {
     super::is_applied(&read_markers(ctx), defaults::text("migrate.settings_marker_key"), ctx.version.as_deref())
 }
 
@@ -284,6 +284,11 @@ pub(crate) fn get(ctx: &Ctx, entry: &Entry, dflt: Option<&J>) -> Option<J> {
     if let Some(v) = coerce_value(entry, lookup(store.get(&entry.section), &entry.key)) {
         return Some(v);
     }
+    below_file(ctx, entry, dflt)
+}
+
+/// `resolveBelowFile(entry, dflt)`: what the tiers below `settings.json` (plugin option, legacy file, default) resolve to.
+pub(crate) fn below_file(ctx: &Ctx, entry: &Entry, dflt: Option<&J>) -> Option<J> {
     let fallback = || dflt.cloned().or_else(|| entry.default.clone());
     if entry.home_only {
         return fallback();
@@ -368,7 +373,7 @@ pub(crate) struct Set {
 }
 
 /// `backupCorruptIfNeeded`: a settings file that exists but does not parse to an object is renamed aside (never deleted).
-fn backup_corrupt(ctx: &Ctx) {
+pub(crate) fn backup_corrupt(ctx: &Ctx) {
     let file = settings_path(ctx);
     let Some(raw) = read_text_note(ctx, &file) else { return };
     if parse_json(&raw).is_some_and(|j| is_object(&j)) {
@@ -381,12 +386,12 @@ fn backup_corrupt(ctx: &Ctx) {
     }
 }
 
-fn csv_tokens(v: &str) -> Vec<String> {
+pub(crate) fn csv_tokens(v: &str) -> Vec<String> {
     v.split([',', ':']).map(|s| js_trim(s).to_string()).filter(|s| !s.is_empty()).collect()
 }
 
 /// `isRiskyChange(entry, value, current)`: the change that weakens a safety guard.
-fn is_risky(entry: &Entry, value: &J, current: Option<&J>) -> bool {
+pub(crate) fn is_risky(entry: &Entry, value: &J, current: Option<&J>) -> bool {
     match entry.safety_direction.as_deref().unwrap_or("off") {
         "on" => matches!(value, J::Bool(true)),
         "change" => !j_strict_eq(Some(value), current),
@@ -458,6 +463,213 @@ pub(crate) fn set(ctx: &Ctx, section: &str, key: &str, value: &J, guard: Option<
 
 fn fail_set() -> Set {
     Set { ok: false, skipped: false }
+}
+
+// ---- the operator command (`ah-engine settings`) ----------------------------------------------------------------------------
+
+/// `source(section, key)`: the tier the effective value comes from (`env`, `file`, `plugin-option`, `legacy`, `default`).
+pub(crate) fn source(ctx: &Ctx, entry: &Entry) -> &'static str {
+    if read_env_override(ctx, entry).is_some() {
+        return "env";
+    }
+    let store = load(ctx);
+    if coerce_value(entry, lookup(store.get(&entry.section), &entry.key)).is_some() {
+        return "file";
+    }
+    let legacy_first = entry.legacy_file.is_some() && !migration_stamped(ctx);
+    if legacy_first && read_legacy(ctx, entry).is_some() {
+        return "legacy";
+    }
+    if read_plugin_option(ctx, entry).is_some() {
+        return "plugin-option";
+    }
+    if !legacy_first && read_legacy(ctx, entry).is_some() {
+        return "legacy";
+    }
+    "default"
+}
+
+/// `validate(entry, value)` with the reason spelled as the CLI prints it.
+pub(crate) fn validate_msg(entry: &Entry, value: &J) -> Result<J, String> {
+    let got = || json::quote(&j_string(value));
+    match entry.ty.as_str() {
+        "object" => Err(defaults::text("ops.set_err_object").to_string()),
+        "boolean" => match value {
+            J::Bool(b) => Ok(J::Bool(*b)),
+            other => bool_token(&j_string(other)).filter(|_| !matches!(other, J::Null)).map(J::Bool).ok_or_else(|| defaults::render("ops.set_err_bool", &[("got", &got())])),
+        },
+        "number" => {
+            let n = j_number(value);
+            if !n.is_finite() {
+                return Err(defaults::render("ops.set_err_number", &[("got", &got())]));
+            }
+            if let Some(m) = entry.min.filter(|m| n < *m) {
+                return Err(defaults::render("ops.set_err_min", &[("bound", &num::to_js_string(m))]));
+            }
+            if let Some(m) = entry.max.filter(|m| n > *m) {
+                return Err(defaults::render("ops.set_err_max", &[("bound", &num::to_js_string(m))]));
+            }
+            if let Some(m) = entry.exclusive_min.filter(|m| n <= *m) {
+                return Err(defaults::render("ops.set_err_exclusive_min", &[("bound", &num::to_js_string(m))]));
+            }
+            Ok(J::Num(n))
+        }
+        "enum" => {
+            let v = j_string(value);
+            if entry.values.contains(&v) {
+                Ok(J::Str(v))
+            } else {
+                Err(defaults::render("ops.set_err_enum", &[("values", &entry.values.join(defaults::text("ops.list_sep")))]))
+            }
+        }
+        _ => Ok(J::Str(j_string(value))),
+    }
+}
+
+/// `safetyWarning(entry, value, currentValue)`; `note` is the schema's `safetyNote` (empty when it has none).
+pub(crate) fn safety_warning(entry: &Entry, note: &str, value: &J, current: Option<&J>) -> String {
+    let note = if note.is_empty() { defaults::text("ops.safety_note_default") } else { note };
+    let dir = entry.safety_direction.as_deref().unwrap_or("off");
+    let guard = {
+        let mut o = String::new();
+        for c in entry.key.chars() {
+            if c.is_ascii_uppercase() {
+                o.push('-');
+            }
+            o.push(c);
+        }
+        o.to_lowercase()
+    };
+    if dir == "add" {
+        let cur: Vec<String> = csv_tokens(&current.map(truthy_string).unwrap_or_default());
+        let added: Vec<String> = csv_tokens(&truthy_string(value)).into_iter().filter(|t| !cur.contains(t)).collect();
+        let list = if added.is_empty() { j_string(value) } else { added.join(defaults::text("ops.list_sep")) };
+        return defaults::render("ops.safety_add", &[("list", &list), ("note", &note)]);
+    }
+    if dir == "change" {
+        return defaults::render("ops.safety_change", &[("guard", &guard), ("note", &note)]);
+    }
+    let verb = if dir == "on" { defaults::text("ops.safety_verb_on") } else { defaults::text("ops.safety_verb_off") };
+    defaults::render("ops.safety_turn", &[("verb", &verb), ("guard", &guard), ("note", &note)])
+}
+
+/// `String(v || '')`.
+fn truthy_string(v: &J) -> String {
+    let falsy = match v {
+        J::Null => true,
+        J::Bool(b) => !b,
+        J::Num(n) => *n == 0.0 || n.is_nan(),
+        J::Str(s) => s.is_empty(),
+        _ => false,
+    };
+    if falsy { String::new() } else { j_string(v) }
+}
+
+/// What a `set` or `reset` of the operator command came to.
+pub(crate) enum Outcome {
+    /// Written (or nothing to write).
+    Done,
+    /// A safety key needs `--confirmed`; the warning to show.
+    Needs(String),
+    /// Refused, with the reason.
+    Fail(String),
+    /// The settings lock is held by a live writer past the wait budget: the Node command reports the holder's pid, which the
+    /// engine cannot reproduce, so the caller defers.
+    LockBusy,
+}
+
+fn with_lock(ctx: &Ctx, f: impl FnOnce() -> Outcome) -> Outcome {
+    let file = settings_path(ctx);
+    let mut lock_path = file.as_os_str().to_os_string();
+    lock_path.push(defaults::text("migrate.settings_lock_suffix"));
+    let params = nodelock::Params {
+        stale_ms: defaults::num("migrate.settings_lock_stale_ms"),
+        wait_ms: defaults::num("migrate.settings_lock_wait_ms"),
+        step_ms: defaults::num("migrate.settings_lock_step_ms"),
+        ..nodelock::Params::swarm()
+    };
+    let Some(held) = nodelock::acquire(&lock_path.to_string_lossy(), params) else { return Outcome::LockBusy };
+    let r = f();
+    held.release();
+    r
+}
+
+fn write_store(ctx: &Ctx, next: &J) -> Outcome {
+    let file = settings_path(ctx);
+    if let Some(dir) = file.parent()
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        return Outcome::Fail(js_message(&e, "mkdir", dir));
+    }
+    match write_atomic(&file, &(pretty(next) + "\n")) {
+        Ok(()) => Outcome::Done,
+        Err(e) => Outcome::Fail(js_message(&e, "open", &file)),
+    }
+}
+
+/// `e.message` of the Node error for a failed file call.
+fn js_message(e: &std::io::Error, syscall: &str, path: &Path) -> String {
+    super::node_err(e, syscall, path)
+}
+
+/// `settings.set(section, key, rawValue, {confirmed})` as the command runs it.
+pub(crate) fn set_cli(ctx: &Ctx, entry: &Entry, note: &str, raw: &str, confirmed: bool) -> Outcome {
+    let v = match validate_msg(entry, &J::Str(raw.to_string())) {
+        Ok(v) => v,
+        Err(m) => return Outcome::Fail(m),
+    };
+    with_lock(ctx, || {
+        backup_corrupt(ctx);
+        let store = load(ctx);
+        if entry.locked {
+            let current = get(ctx, entry, None);
+            if is_risky(entry, &v, current.as_ref()) && !confirmed {
+                return Outcome::Needs(safety_warning(entry, note, &v, current.as_ref()));
+            }
+        }
+        let mut next = store.clone();
+        let mut sec = match store.get(&entry.section) {
+            Some(s @ J::Obj(_)) => s.clone(),
+            _ => J::Obj(Vec::new()),
+        };
+        sec.set(&entry.key, v);
+        next.set(&entry.section, sec);
+        write_store(ctx, &next)
+    })
+}
+
+/// `settings.reset(section, key, {confirmed})`: drop the `settings.json` override of one key.
+pub(crate) fn reset_cli(ctx: &Ctx, entry: &Entry, note: &str, confirmed: bool) -> Outcome {
+    with_lock(ctx, || {
+        backup_corrupt(ctx);
+        let store = load(ctx);
+        let has = store.get(&entry.section).is_some_and(|s| s.get(&entry.key).is_some());
+        if entry.locked && !confirmed && has {
+            let current = get(ctx, entry, None);
+            let after = read_env_override(ctx, entry).or_else(|| below_file(ctx, entry, None));
+            let changes = entry.safety_direction.as_deref() == Some("add") || !j_strict_eq(after.as_ref(), current.as_ref());
+            let after_v = after.clone().unwrap_or(J::Null);
+            if changes && is_risky(entry, &after_v, current.as_ref()) {
+                return Outcome::Needs(safety_warning(entry, note, &after_v, current.as_ref()));
+            }
+        }
+        if !has {
+            return Outcome::Done;
+        }
+        let mut next = store.clone();
+        let mut sec = match store.get(&entry.section) {
+            Some(J::Obj(members)) => members.iter().filter(|(k, _)| *k != entry.key).cloned().collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        if sec.is_empty() {
+            if let J::Obj(m) = &mut next {
+                m.retain(|(k, _)| *k != entry.section);
+            }
+        } else {
+            next.set(&entry.section, J::Obj(std::mem::take(&mut sec)));
+        }
+        write_store(ctx, &next)
+    })
 }
 
 // ---- the forward migrations -------------------------------------------------------------------------------------------

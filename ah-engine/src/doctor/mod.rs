@@ -294,7 +294,7 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     let f = flags(p);
     let do_repair = (f.repair || f.dry_run) && !f.check;
     if f.migrations_only && do_repair {
-        let forwarded = Parsed { command: "migrate".into(), json: true, rest: p.rest.clone() };
+        let forwarded = Parsed { command: "migrate".into(), json: true, rest: p.rest.clone(), raw: p.rest.clone() };
         return migrate::cli::run_migrate(&forwarded);
     }
     let (ctx, _) = match migrate::cli::context(p) {

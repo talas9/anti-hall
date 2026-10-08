@@ -96,6 +96,10 @@ value = { args = "[--dir <path>] [--stale-days <n>]", read_only = true, status =
 doc = "A derived inventory of a plugin tree (D81, the port of scripts/briefing.js): every registered hook by event with the purpose from its own header comment, the skills, the DevSwarm substrate and the docs map."
 value = { args = "[--root <plugin dir>]", read_only = true, status = "implemented" }
 
+[cmd.settings]
+doc = "Show or change any anti-hall setting (L9a, the port of scripts/settings.js): `show [--section <key>] [--all]`, `get <section.key>`, `set <section.key> <value> [--confirmed]`, `reset <section.key> [--confirmed]`, `judge on|off|status`, and `trust-command-allow` / `trust-edit-allow [<repo>] [--confirmed]`; the settings.json file and the registry are the plugin's own."
+value = { args = "<show|get|set|reset|judge|trust-command-allow|trust-edit-allow> [args] [--json]", read_only = false, status = "implemented" }
+
 [cmd.schedule]
 doc = "The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json."
 value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, status = "implemented" }

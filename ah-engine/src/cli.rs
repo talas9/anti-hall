@@ -16,6 +16,8 @@ pub struct Parsed {
     pub json: bool,
     /// Everything after the command except `--json`.
     pub rest: Vec<String>,
+    /// Everything after the command exactly as typed, `--json` included and in place (the operator commands read their own flag grammar).
+    pub raw: Vec<String>,
 }
 
 /// A command's shipped metadata.
@@ -66,6 +68,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("harvest", crate::setup::cmd_harvest),
         ("briefing", crate::setup::cmd_briefing),
         ("mesh", crate::mesh::run_cmd),
+        ("settings", crate::ops::cmd_settings),
     ]
 }
 
@@ -88,7 +91,8 @@ pub fn parse(args: &[String]) -> Parsed {
     let json = args.iter().any(|a| a == "--json");
     let mut rest: Vec<String> = args.iter().filter(|a| *a != "--json").cloned().collect();
     let command = if rest.is_empty() { String::new() } else { rest.remove(0) };
-    Parsed { command, json, rest }
+    let raw = args.iter().position(|a| a != "--json").map(|i| args[i + 1..].to_vec()).unwrap_or_default();
+    Parsed { command, json, rest, raw }
 }
 
 /// Print `text`, or `value` as one JSON line when `--json` was given.
