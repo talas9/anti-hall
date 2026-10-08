@@ -222,8 +222,10 @@ PAYLOAD='{"session_id":"dev","cwd":"/tmp","hook_event_name":"PreToolUse","tool_n
 # one check, in-process, no daemon: exit 2 and the reason on stderr is a block
 echo "$PAYLOAD" | "$E" check git || test $? -eq 2
 
-# the hook path: the client starts a daemon if none runs and prints the host's JSON answer
-echo "$PAYLOAD" | "$E" hook
+# the hook path: the client starts a daemon if none runs and prints the host's JSON answer (a block is exit 2); a check the
+# engine defers runs the hook's Node command from the fallback map, found through the plugin root
+export CLAUDE_PLUGIN_ROOT="$PWD/plugins/anti-hall" AH_ENGINE_PLUGIN_ROOT="$PWD/plugins/anti-hall"
+echo "$PAYLOAD" | "$E" hook --event PreToolUse --tool Bash --host claude --fallback-map "$CLAUDE_PLUGIN_ROOT/hooks/ah-fallback.map.json" || test $? -eq 2
 "$E" ctl ping
 "$E" stop
 ```
