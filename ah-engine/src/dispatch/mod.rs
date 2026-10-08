@@ -663,7 +663,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold
     }
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
-    match combine::combine(&results) {
+    let keep_advisories = defaults::list("dispatch.stop_events").iter().any(|e| *e == args.event);
+    match combine::combine_for(&results, keep_advisories) {
         combine::Combined::Answer(mut o) => {
             o.err = format!("{}{}", pre_err, o.err);
             // Only a plain answer can be handed back: an exit code, a block or a decision cannot be re-run by a wrapper
