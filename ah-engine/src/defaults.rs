@@ -139,6 +139,25 @@ pub struct Entry {
     pub unit: Option<&'static str>,
 }
 
+/// The value type a source read of a setting expects (collected by `build.rs`, see `build_support/keyscan.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Any type: the key must exist.
+    Any,
+    /// An integer.
+    Int,
+    /// A string.
+    Str,
+    /// A list.
+    List,
+}
+
+/// The keys this build reads, with the type each read expects: a plugin whose defaults lack one, or give it another
+/// type, is rejected at load.
+pub fn required() -> &'static [(&'static str, Kind)] {
+    generated::REQUIRED
+}
+
 mod generated {
     //! The keys this build reads (collected from the source by `build.rs`): a plugin whose defaults lack one is rejected at load.
     include!(concat!(env!("OUT_DIR"), "/required_keys.rs"));

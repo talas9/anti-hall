@@ -186,7 +186,7 @@ pub fn load(root: &Path, prev: Option<&Data>) -> Result<Data, DefaultsError> {
     }
     let mut index: Vec<(&'static str, &'static Entry)> = entries.iter().map(|e| (e.key, *e)).collect();
     index.sort_by(|a, b| a.0.cmp(b.0));
-    for k in super::generated::REQUIRED {
+    for (k, _) in super::generated::REQUIRED {
         if index.binary_search_by(|(x, _)| (*x).cmp(k)).is_err() {
             return Err(DefaultsError::new(
                 "missing_key",
@@ -458,5 +458,18 @@ mod tests {
         let e = load(&root, None).err().expect("a row that is not a list of entries is rejected");
         assert_eq!(e.code, "dispatch", "{e}");
         crate::discard::harmless(std::fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn a_key_read_through_a_helper_cannot_go_missing() {
+        // review P1 #3: `defaults::env_var("done_file")` reads `env.done_file`; the first key scanner did not see it, so a
+        // plugin without it loaded and the dispatcher panicked on first use
+        for (file, name) in [("engine.toml", "env.done_file"), ("sibling_sweep.toml", "sibling_sweep.text_max_bytes")] {
+            let root = plugin_copy("helperkey");
+            replace_table(&root, file, name, "");
+            let e = load(&root, None).err().unwrap_or_else(|| panic!("a plugin without {name} must be rejected"));
+            assert_eq!((e.code, e.key.as_str()), ("missing_key", name), "{e}");
+            crate::discard::harmless(std::fs::remove_dir_all(&root));
+        }
     }
 }
