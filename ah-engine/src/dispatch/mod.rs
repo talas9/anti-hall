@@ -389,6 +389,12 @@ pub fn defer(event: &str, why: &str) -> Outcome {
     Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{note}\n") }
 }
 
+/// Whether the wrapper's Node rerun (a deferral) can still finish inside the host's timeout for this event: what is left of
+/// `host_timeout_s` after `elapsed` must cover `dispatch.rerun_reserve_ms`.
+fn rerun_fits(elapsed: std::time::Duration, host_timeout_s: u64) -> bool {
+    std::time::Duration::from_secs(host_timeout_s).saturating_sub(elapsed) >= defaults::millis("dispatch.rerun_reserve_ms")
+}
+
 /// The answer when the event's budget passes before every entry could start. Exit `dispatch.defer_exit` makes the wrapper run
 /// EVERY Node hook again, so it is given only while nothing has happened that a rerun would repeat: no Node hook started and no
 /// built-in check answered (`native_answered`; an answer may already have stamped state). Otherwise the hooks already started
@@ -401,11 +407,17 @@ fn finish_then_defer(
     mut done: Vec<Option<combine::HookResult>>,
     shadow: &[bool],
     native_answered: bool,
+    rerun_fits: bool,
     why: &str,
 ) -> Outcome {
     if !started.iter().any(|(_, r)| r.started()) && !native_answered {
         node::finish(started.into_iter().map(|(_, r)| r).collect()); // only spawn failures: nothing to wait for
-        return defer(event, why);
+        if rerun_fits {
+            return defer(event, why);
+        }
+        // the wrapper's rerun of every Node hook would not fit in what is left of the host's timeout, and the host treats a
+        // timed-out hook as an allow: fail closed instead of a deferral that cannot finish (P2-9)
+        return closed(event, payload, why);
     }
     let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
     for (i, f) in slots.iter().zip(node::finish(running)) {
@@ -561,12 +573,14 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     // the Node hooks start first, so they run while the built-in checks are answered; once the event's budget has passed no
     // further entry starts (a guard event then fails closed after the ones already running have finished)
     let mut started: Vec<(usize, node::Running)> = Vec::new();
+    // the host's timeout for this event's thin trigger is the longest of its entries' (hooks.json), counted from the dispatcher's start
+    let host_s = entries.iter().map(|e| e.timeout_s).max().unwrap_or(0);
     for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.check.is_none()) {
         if budget.exceeded() {
             if guard {
                 // a spent budget is a slow machine, not a verdict: the Node hooks decide (review finding 17)
                 let why = defaults::render("hooks.msg_budget", &[("id", &e.id)]);
-                return finish_then_defer(&args.event, parsed.as_ref(), started, vec![None; entries.len()], &shadow, false, &why);
+                return finish_then_defer(&args.event, parsed.as_ref(), started, vec![None; entries.len()], &shadow, false, rerun_fits(budget.elapsed(), host_s), &why);
             }
             tele.mark(&e.id, plan::Outcome::SkippedBudget);
             continue;
@@ -608,7 +622,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 // the event's budget has passed: start nothing further (a guard event fails closed, as for a hook that cannot run)
                 if guard {
                     let why = defaults::render("hooks.msg_budget", &[("id", &e.id)]);
-                    return finish_then_defer(&args.event, parsed.as_ref(), started, results.clone(), &shadow, !answers.is_empty(), &why);
+                    return finish_then_defer(&args.event, parsed.as_ref(), started, results.clone(), &shadow, !answers.is_empty(), rerun_fits(budget.elapsed(), host_s), &why);
                 }
                 tele.mark(&e.id, plan::Outcome::SkippedBudget);
             }
@@ -862,21 +876,37 @@ mod tests {
         let defer_exit = defaults::num("dispatch.defer_exit") as i32;
         let none = vec![None, None];
         let shadow = [false, false];
-        assert_eq!(finish_then_defer("PreToolUse", None, Vec::new(), none.clone(), &shadow, false, "slow").code, defer_exit, "nothing ran yet");
-        let o = finish_then_defer("PreToolUse", None, Vec::new(), none.clone(), &shadow, true, "slow");
+        assert_eq!(finish_then_defer("PreToolUse", None, Vec::new(), none.clone(), &shadow, false, true, "slow").code, defer_exit, "nothing ran yet");
+        let o = finish_then_defer("PreToolUse", None, Vec::new(), none.clone(), &shadow, true, true, "slow");
         assert_eq!(o.code, 2, "a built-in check already answered: no rerun, fail closed: {o:?}");
         let dir = std::env::temp_dir().join(format!("ah-p1-1-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mark = dir.join("ran");
         let started = vec![(0, node::start(&entry("a", &format!("echo x >> '{}'", mark.display())), b"{}"))];
-        let o = finish_then_defer("PreToolUse", None, started, none.clone(), &shadow, false, "slow");
+        let o = finish_then_defer("PreToolUse", None, started, none.clone(), &shadow, false, true, "slow");
         assert_eq!(o.code, 2, "a Node hook already ran: fail closed, never 75: {o:?}");
         assert_eq!(std::fs::read_to_string(&mark).unwrap(), "x\n", "the hook ran exactly once");
         let started = vec![(1, node::start(&entry("b", "echo node-says-no >&2; exit 2"), b"{}"))];
-        let o = finish_then_defer("PreToolUse", None, started, none.clone(), &shadow, false, "slow");
+        let o = finish_then_defer("PreToolUse", None, started, none.clone(), &shadow, false, true, "slow");
         assert!(o.code == 2 && o.err.contains("node-says-no"), "a genuine block among the started hooks decides: {o:?}");
         let started = vec![(0, node::start(&entry("c", "a\0b"), b"{}"))];
-        assert_eq!(finish_then_defer("PreToolUse", None, started, none, &shadow, false, "slow").code, defer_exit, "a spawn failure started nothing");
+        assert_eq!(finish_then_defer("PreToolUse", None, started, none, &shadow, false, true, "slow").code, defer_exit, "a spawn failure started nothing");
         crate::discard::harmless(std::fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn a_deferral_that_cannot_finish_inside_the_host_timeout_fails_closed() {
+        // P2-9: exit 75 reruns every Node hook; with little host time left the host kills the run and treats that as an allow
+        let reserve = std::time::Duration::from_millis(defaults::num("dispatch.rerun_reserve_ms"));
+        assert!(rerun_fits(std::time::Duration::ZERO, 45));
+        assert!(rerun_fits(std::time::Duration::from_secs(45) - reserve, 45), "exactly the reserve left still fits");
+        assert!(!rerun_fits(std::time::Duration::from_secs(45) - reserve + std::time::Duration::from_millis(1), 45));
+        assert!(!rerun_fits(std::time::Duration::from_secs(60), 45), "already past the host timeout");
+        let none = vec![None, None];
+        let shadow = [false, false];
+        let o = finish_then_defer("PreToolUse", None, Vec::new(), none.clone(), &shadow, false, false, "slow");
+        assert_eq!(o.code, 2, "no time for the rerun: fail closed: {o:?}");
+        let o = finish_then_defer("PreToolUse", None, Vec::new(), none, &shadow, false, true, "slow");
+        assert_eq!(o.code, defaults::num("dispatch.defer_exit") as i32);
     }
 }

@@ -38,6 +38,11 @@ value = { claude = ["CLAUDE_PLUGIN_ROOT"], codex = ["PLUGIN_ROOT", "CLAUDE_PLUGI
 doc = "The shell a Node hook command runs under, with its command flag (hooks.json commands are shell-form strings)."
 value = ["/bin/sh", "-c"]
 
+[dispatch.rerun_reserve_ms]
+doc = "The least host time that must be left (the event's longest hooks.json timeout minus the time the dispatcher has used) for a spent budget to defer to the wrapper's Node rerun (dispatch.defer_exit). With less left the rerun would be killed by the host, which treats a timed-out hook as an allow, so a guard event fails closed instead."
+value = 5000
+unit = "ms"
+
 [dispatch.default_timeout_s]
 doc = "The timeout of a Node hook whose hooks.json entry has none (0 in the table): the host's own default for a command hook (600 s on Claude per docs/KB-claude-code-hooks.md; Codex's default is not verified here, so the same bound is used). Never zero: a zero timeout would kill the hook at its first poll."
 value = 600
