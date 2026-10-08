@@ -20,7 +20,6 @@ pub mod coordinator_work;
 pub mod ctxbudget;
 pub mod devswarm_comms;
 pub mod devswarm_gates;
-pub mod devswarm_prompt;
 pub mod devswarm_role;
 pub mod dispatch_tier;
 pub mod emit_dedupe;
@@ -193,7 +192,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::SHIP_IT_GUARD,
         &scan_throttle::ScanThrottle,
         &coordinator_work::CoordinatorWorkGuard,
-        &compact_decl::CompactDeclarationGuard,
+        &scripted::COMPACT_DECLARATION_GUARD,
         &command::CommandGuard,
         &model_routing::ModelRouting,
         &failure_nudge::FailureRootCauseNudge,
@@ -243,8 +242,8 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &dispatch_tier::DispatchTier,
         &task_guard::TaskGuard,
         &tasklist_guard::TasklistGuard,
-        &devswarm_prompt::DevswarmParentInbox,
-        &devswarm_prompt::DevswarmChildTurn,
+        &scripted::DEVSWARM_PARENT_INBOX,
+        &scripted::DEVSWARM_CHILD_TURN,
         &devswarm_role::DevswarmChildRole,
         &devswarm_role::DevswarmParentGate,
         &devswarm_gates::DevswarmChildGate,

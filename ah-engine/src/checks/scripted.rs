@@ -63,8 +63,17 @@ pub static FABLE_AVAILABILITY: Scripted = Scripted::new("fable-availability", "f
 /// `edit-guard` (PreToolUse on Edit, Write, MultiEdit, NotebookEdit; apply_patch for Codex).
 pub static EDIT_GUARD: Scripted = Scripted::new("edit-guard", "edit_guard.summary");
 
-/// `ship-it-guard` (PreToolUse on Edit, Write, MultiEdit; Bash and apply_patch defer to Node).
+/// `ship-it-guard` (PreToolUse on Write, Edit, MultiEdit, NotebookEdit; Bash and apply_patch defer to Node).
 pub static SHIP_IT_GUARD: Scripted = Scripted::new("ship-it-guard", "ship_it.summary");
+
+/// `compact-declaration-guard` (PreToolUse).
+pub static COMPACT_DECLARATION_GUARD: Scripted = Scripted::new("compact-declaration-guard", "compact_decl.summary");
+
+/// `devswarm-parent-inbox` (UserPromptSubmit).
+pub static DEVSWARM_PARENT_INBOX: Scripted = Scripted::new("devswarm-parent-inbox", "devswarm_prompt.parent_summary");
+
+/// `devswarm-child-turn` (UserPromptSubmit).
+pub static DEVSWARM_CHILD_TURN: Scripted = Scripted::new("devswarm-child-turn", "devswarm_prompt.child_summary");
 
 /// `swarm-guard` (PreToolUse on Agent and Task; the anti fork bomb).
 pub static SWARM_GUARD: Scripted = Scripted::new("swarm-guard", "swarm_guard.summary");

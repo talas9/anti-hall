@@ -1,46 +1,22 @@
-//! Built-in `check = "compact-declaration-guard"`: a port of the Node compact-declaration-guard (PreToolUse).
+//! The transcript-turn helpers behind the `compact-declaration-guard` script (D88) and the context-budget checks: the tail
+//! reader, the current turn's assistant text, the JSON depth test. The decision itself (is this call new work, may the turn
+//! hold a declaration) is `engine/logic/compact-declaration-guard.js`; this module keeps only the generic primitives the
+//! script host exposes (`ah.transcript.turnText`).
 //!
-//! The Node guard blocks new work (an agent spawn, a file edit, a state-changing shell command) in a turn whose
-//! assistant text holds an active "SAFE TO COMPACT" declaration. Almost no turn does, so the engine answers the common
-//! case itself: it finds out whether the call is new work, reads the tail of the transcript the same way Node does
-//! (the last 1.5 MB, first partial line dropped), rebuilds the current turn's assistant text with Node's turn rules,
-//! and allows when that text cannot hold a declaration (it has no "safe" in it, which both declaration phrasings need).
-//! When it might, the verdict is deferred to the Node guard, which owns the phrase analysis (negation, quotes, retraction)
-//! and the block, whose shape (a JSON decision on stdout and the reason on stderr) the engine's reply cannot carry yet.
-//!
-//! Differences from the Node guard (deliberate): a transcript line the engine's JSON parser rejects and Node's might
-//! accept (a lone surrogate escape, nesting beyond the configured depth, an exponent beyond the number range) defers; a
-//! relative `transcript_path` or a relative file path without a working directory defers (Node would use its own process
-//! directory). The shared transcript index is a separate lane, so this check reads the tail itself.
-//!
-//! Mirrors `hooks/compact-declaration-guard.js`, `hooks/lib/transcript-tail.js` and `hooks/lib/compact-advice.js`
-//! (`classify`, `readTurn`), and `hooks/lib/work-detect.js` (`BASH_WORK_RE`, `neutralizeQuotedContents`).
+//! Mirrors `hooks/lib/transcript-tail.js` and `hooks/lib/compact-advice.js` (`classify`, `readTurn`).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 
-use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
-use crate::checks::guardkit::paths;
-use crate::checks::guardkit::settings::{get_bool, is_skipped};
 use crate::checks::guardkit::text::{is_js_space, js_trim};
-use crate::checks::{Check, Verdict};
 use crate::defaults;
-use crate::reqenv::RequestEnv;
-use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 
-#[cfg(test)]
-mod tests;
-
 /// The compiled patterns, built once from the defaults.
 struct Pats {
-    handover: Regex,
-    work_always: Vec<Regex>,
-    work_cmd_pos: Regex,
-    work_extra: Regex,
     not_typed: Regex,
     notify: Regex,
     compact_cmd: Regex,
@@ -49,118 +25,10 @@ struct Pats {
 fn pats() -> &'static Pats {
     static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| Pats {
-        handover: crate::checks::lit_re(defaults::text("compact_decl.handover_file")),
-        work_always: defaults::list("compact_decl.bash_work_always").into_iter().map(|s| jsre::compile(s, true)).collect(),
-        work_cmd_pos: jsre::compile(defaults::text("compact_decl.bash_work_command_position"), true),
-        work_extra: jsre::compile(defaults::text("compact_decl.bash_work_extra"), true),
         not_typed: jsre::compile(defaults::text("compact_decl.not_typed"), false),
         notify: jsre::compile(defaults::text("compact_decl.notify"), false),
         compact_cmd: jsre::compile(defaults::text("compact_decl.compact_command"), false),
     })
-}
-
-/// Blank the contents of single- and double-quoted spans (delimiters included) so text that is only quoted data cannot
-/// match a work pattern.
-///
-/// Mirrors `lib/work-detect.js` `neutralizeQuotedContents`.
-fn neutralize_quoted(cmd: &str) -> String {
-    let cs: Vec<char> = cmd.chars().collect();
-    let mut out = String::with_capacity(cmd.len());
-    let (mut in_single, mut in_double) = (false, false);
-    let mut i = 0usize;
-    while i < cs.len() {
-        let c = cs[i];
-        let c2 = cs.get(i + 1);
-        if in_single {
-            out.push(' ');
-            if c == '\'' {
-                in_single = false;
-            }
-            i += 1;
-            continue;
-        }
-        if in_double {
-            if c == '\\' && c2.is_some() {
-                out.push_str("  ");
-                i += 2;
-                continue;
-            }
-            out.push(' ');
-            if c == '"' {
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-        if c == '\'' {
-            in_single = true;
-            out.push(' ');
-        } else if c == '"' {
-            in_double = true;
-            out.push(' ');
-        } else {
-            out.push(c);
-        }
-        i += 1;
-    }
-    out
-}
-
-/// A `>` or `>>` file redirect that is not a descriptor duplicate: `(?<![0-9&])>{1,2}(?!&)`, which the regex crate cannot
-/// express (it has no lookaround). A match exists at any `>` not preceded by a digit or `&` and not followed by `&`.
-fn has_file_redirect(s: &str) -> bool {
-    let cs: Vec<char> = s.chars().collect();
-    cs.iter().enumerate().any(|(i, &c)| c == '>' && !(i > 0 && (cs[i - 1].is_ascii_digit() || cs[i - 1] == '&')) && cs.get(i + 1) != Some(&'&'))
-}
-
-/// Whether a shell command changes state: the shared work list, or this guard's pushes and tags.
-///
-/// Mirrors `compact-declaration-guard.js` `isNewWork` (the Bash branch) with `work-detect.js` `BASH_WORK_RE`.
-fn bash_is_work(cmd: &str) -> bool {
-    let n = neutralize_quoted(cmd);
-    let p = pats();
-    p.work_always.iter().any(|re| re.is_match(&n)) || p.work_cmd_pos.is_match(&n) || has_file_redirect(&n) || p.work_extra.is_match(&n)
-}
-
-/// What deciding whether a call is new work came to.
-enum Work {
-    Yes,
-    No,
-    /// Node would use its own process directory; the engine cannot know it.
-    Defer,
-}
-
-/// A file inside the handovers directory, resolved against the working directory. `None` when that needs a directory the
-/// payload does not give.
-///
-/// Mirrors `compact-declaration-guard.js` `isHandoverEdit`.
-fn is_handover_edit(p: &Value) -> Option<bool> {
-    let ti = p.get("tool_input").filter(|t| !t.is_null());
-    let field = |k: &str| ti.and_then(|t| t.get(k)).and_then(Value::as_str);
-    let Some(fp) = field("file_path").or_else(|| field("notebook_path")).filter(|f| !f.is_empty()) else { return Some(false) };
-    let abs = if paths::is_absolute(fp) {
-        paths::resolve_abs(fp)
-    } else {
-        let cwd = p.get("cwd").and_then(Value::as_str).filter(|c| paths::is_absolute(c))?;
-        paths::resolve_abs(&format!("{cwd}/{fp}"))
-    };
-    Some(pats().handover.is_match(&abs))
-}
-
-/// Mirrors `compact-declaration-guard.js` `isNewWork`.
-fn is_new_work(p: &Value) -> Work {
-    let name = p.get("tool_name").and_then(Value::as_str).unwrap_or("");
-    if defaults::list("compact_decl.work_tools").contains(&name) {
-        return match is_handover_edit(p) {
-            Some(true) => Work::No,
-            Some(false) => Work::Yes,
-            None => Work::Defer,
-        };
-    }
-    match p.get("tool_input").and_then(|t| t.get("command")).and_then(Value::as_str) {
-        Some(cmd) if bash_is_work(cmd) => Work::Yes,
-        _ => Work::No,
-    }
 }
 
 /// The last `max` bytes of the file as lines, the possibly partial first line dropped when the file is larger. `None`
@@ -376,70 +244,4 @@ pub(crate) fn turn_texts(lines: &[String]) -> Option<Vec<String>> {
         }
     }
     Some(parts)
-}
-
-/// Whether the current turn's assistant text may hold a declaration. `None` when a line could not be handled exactly.
-///
-/// Mirrors `compact-advice.js` `readTurn` (the turn text only), reduced to "does it contain the safe word".
-fn turn_may_declare(lines: &[String]) -> Option<bool> {
-    let word = defaults::text("compact_decl.safe_word").as_bytes();
-    Some(turn_texts(lines)?.iter().any(|t| contains_ci(t.as_bytes(), word)))
-}
-
-/// The check's decision on one payload. `None`: allow.
-///
-/// Mirrors `hooks/compact-declaration-guard.js` `decide`.
-pub fn decide(p: &Value, st: &Settings) -> Option<Verdict> {
-    if !get_bool(st, defaults::raw("compact_decl.setting")) || !p.is_object() {
-        return None;
-    }
-    let markers = defaults::list("compact_decl.agent_markers");
-    if markers.iter().any(|k| p.get(k).is_some_and(|v| !v.is_null())) || is_skipped(st, defaults::text("compact_decl.guard_name")) {
-        return None;
-    }
-    // Without a transcript path Node allows whatever the call is, so that is settled first (it also spares a deferral for a
-    // relative file path that would need the working directory).
-    let path = p.get("transcript_path").and_then(Value::as_str).filter(|s| !s.is_empty())?;
-    match is_new_work(p) {
-        Work::No => return None,
-        Work::Defer => return Some(Verdict::Defer),
-        Work::Yes => {}
-    }
-    if !paths::is_absolute(path) {
-        return Some(Verdict::Defer);
-    }
-    let max = defaults::num("compact_decl.tail_bytes");
-    let lines = read_tail(path, max)?;
-    // Quick exact test: if the tail holds neither the safe word nor any `\u` escape, no string in it can decode to text
-    // that contains the word, so the turn cannot hold a declaration whatever the turn boundaries are.
-    let word = defaults::text("compact_decl.safe_word").as_bytes();
-    if !lines.iter().any(|l| contains_ci(l.as_bytes(), word) || l.contains("\\u")) {
-        return None;
-    }
-    match turn_may_declare(&lines) {
-        Some(false) => None,
-        Some(true) | None => Some(Verdict::Defer),
-    }
-}
-
-/// The registered `compact-declaration-guard` check.
-pub struct CompactDeclarationGuard;
-
-impl Check for CompactDeclarationGuard {
-    fn name(&self) -> &'static str {
-        "compact-declaration-guard"
-    }
-
-    fn summary(&self) -> &'static str {
-        defaults::text("compact_decl.summary")
-    }
-
-    fn run(&self, s: &Subject<'_>, _opts: &Value) -> Option<Verdict> {
-        // Needs the transcript path and agent markers from the payload; without them, let Node decide.
-        (s.event == "PreToolUse" && s.tool.is_some()).then_some(Verdict::Defer)
-    }
-
-    fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        Some(decide(payload, &Settings::from_env(env)).unwrap_or(Verdict::Allow))
-    }
 }
