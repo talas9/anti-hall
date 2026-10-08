@@ -7,7 +7,8 @@
 //! 1. **A block wins.** One blocking entry (exit 2, or JSON that blocks per `dispatch.blocking_decisions`) is the answer,
 //!    byte for byte. Several blocking entries are one block that carries every one of their reasons, in table order, as the
 //!    host shows the model each of them ([`blocked`]); the JSON advisories of the entries that did not block ride along (their
-//!    messages and contexts join the block's), and their plain stdout is kept where the host would not show it to the model.
+//!    messages and contexts join the block's) only when the block exits 0: on exit 2 the host ignores stdout JSON and reads
+//!    stderr alone, so there the advisories (and notes) are carried in the JSON for parity but the host does not read them.
 //! 2. **One answer passes through.** When exactly one entry printed anything or exited non-zero, its output, stderr
 //!    and exit code are the answer, byte for byte.
 //! 3. **Several answers merge.** Each stdout must be a JSON object. Their fields are merged in order of first
@@ -300,9 +301,9 @@ fn set(obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) {
 /// stderr even on exit 2), else the stderr of the exit 2.
 ///
 /// - When a block is JSON, the first such object is the answer, its reason field set to the joined reasons and its
-///   `systemMessage` to the joined messages of every block; the exit code is 2 when any block exited 2. On exit 2 stderr is
-///   the joined reasons too (the host reads stderr when the JSON's block is a `permissionDecision`), else the blocks' own
-///   stderr. The plain stdout of an exit-2 block cannot share stdout with the JSON; the host does not show it to the model.
+///   `systemMessage` to the joined messages of every block; the exit code is 2 when any block exited 2. On exit 2 the host
+///   ignores stdout JSON and reads stderr alone, which is the joined reasons; so the advisories and notes that ride in the JSON
+///   take effect only when the block exits 0 (then stderr is the blocks' own stderr). The plain stdout of an exit-2 block cannot share stdout with the JSON; the host does not show it to the model.
 /// - Otherwise the answer is exit 2 with the joined reasons on stderr, and the plain stdout of the blocks, in order, on
 ///   stdout (the host does not read it on exit 2, as for one hook).
 ///
