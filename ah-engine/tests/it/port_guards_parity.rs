@@ -428,7 +428,7 @@ fn comms_cases() -> Vec<Case> {
 #[test]
 fn devswarm_comms_guard_matches_node() {
     let rows = comms_cases();
-    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("devswarm-comms-guard.js", "devswarm-comms-guard", rows);
     assert!(same >= 30 && deferred >= 1);
 }
@@ -795,7 +795,7 @@ fn weekly_cases() -> Vec<Case> {
 #[test]
 fn jev_weekly_scorecard_matches_node() {
     let rows = weekly_cases();
-    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("jev-weekly-scorecard.js", "jev-weekly-scorecard", rows);
     assert!(same >= 40 && deferred >= 5);
 }
@@ -924,7 +924,7 @@ fn review_cases() -> Vec<Case> {
 #[test]
 fn jev_review_reminder_matches_node() {
     let rows = review_cases();
-    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("jev-review-reminder.js", "jev-review-reminder", rows);
     assert!(same >= 55 && deferred >= 7);
 }
@@ -1065,7 +1065,7 @@ fn repair_cases() -> Vec<Case> {
 #[test]
 fn repair_on_reload_matches_node() {
     let rows = repair_cases();
-    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    assert!(rows.len() >= 80, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("repair-on-reload.js", "repair-on-reload", rows);
     assert!(same >= 15 && deferred >= 12);
 }
