@@ -935,6 +935,48 @@ State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.d
 `failure.json`, the breaker and crash-loop markers, the run marker, the start counter and the per-session advisory stamps. The rules file is
 `rules.json` there, or the path in `AH_ENGINE_RULES`.
 
+## Scripted check logic and the host API (D88)
+
+A check whose decision logic is a rule, a pattern or a text does not live in the binary. It ships as an editable plugin script
+(`engine/logic/<check>.js`, helpers in `engine/logic/lib/*.js`, owner override `~/.anti-hall/logic/`, a file of the same name
+wins) and runs in an embedded QuickJS-NG interpreter, one runtime per worker thread. The engine keeps only the generic,
+bounded primitives a script calls through `ah.*` (the raw functions are `ahHost`, shaped by `lib/00-ah.js`). Patterns, limits,
+tables and texts are `defaults/*.toml` entries the script reads with `ah.cfg(key)`; a file edit, a plugin update or an owner
+override applies on the next call. A script that cannot answer (an exception, a stack overflow, the time or heap limit, a
+missing file) follows one rule: a check with a Node twin defers to it, an engine-only check blocks on a guard event and allows
+quietly elsewhere. Time a primitive spends blocked (a child process, a lock wait, a Jev consult) is not script time.
+
+Checks that decide in a script today: `api-guard`, `inbox-read-guard`, `orch-on-spawn`, `verify-first-subagent`,
+`verify-first-full`, `fable-availability`, `edit-guard`, `git` (the git guard), `git-audit` (its PostToolUse audit, built on `git.js` through `script.includes`), `swarm-guard` and `sibling-sweep`. Each has a
+golden corpus (`tests/golden/<check>.jsonl`, frozen from its compiled port before the port was removed) that the script must
+reproduce byte for byte, and `parity/run-golden.js` replays the same corpus against the Node hook.
+
+The host API (every primitive is read-only except the scoped writes, bounded, and returns `null` instead of throwing for an
+ordinary failure):
+
+| `ah.` call | What it does | Bounds |
+|---|---|---|
+| `cfg(key)`, `cfgNum(key)`, `cfgLive(key)` | a shipped defaults entry; a numeric one with its clamps; the value through the owner's editable layers (`settings.json`, `config.toml`, shipped) | `cfgLive` is cached per file stamp and defaults generation |
+| `env.get(name)`, `env.passwdHome()` | a variable of the hook's own environment (never the daemon's) | |
+| `settings.bool/enum/num(key)`, `settings.skipped(guard)` | the effective value of a setting entry through the settings chain; an unexpired skip | |
+| `fs.isFile/isDir/size/readText/realpath/realpathEx` | file tests and reads (`realpathEx` tells a missing path from one that could not be examined) | reads capped by `script.read_max_bytes` |
+| `fs.lstat(path)`, `fs.kind(path)`, `fs.mtimeMs(path)` | `{kind: file / dir / link / other, size, mtimeMs, mode}` of the path itself (links not followed), `null` when absent, `{kind: "error", code}` when it exists but cannot be examined; the kind alone; the modification time | |
+| `fs.readdir(path)`, `fs.listDir(path)`, `fs.readlink(path)`, `fs.readTail(path, window)` | sorted entry names (`readdir` is capped, `listDir` is not and sorts by bytes); a link's target text; the last `window` bytes as text with the partial first line dropped | `script.readdir_max` entries, else `null`; `script.read_max_bytes` |
+| `path.*`, `re.test/find/findAll` | Node `path` functions; linear-time regular expressions (flags `i`, `m`, `r`) | `script.regex_cache_max` compiled patterns per thread |
+| `exec(prog, args, {cwd, env, timeoutMs})` | one allow-listed program (`script.exec_programs`, today `git`) in its own process group with the request's environment plus `env` on top, no stdin | `script.exec_timeout_max_ms`, `script.exec_max_calls` per call, `script.exec_output_max_bytes` per stream; `null` on a timeout or a start failure |
+| `state.writeAtomic/appendFile/op(root, op, rel, text)` | the scoped writes: `rel` is relative to the home directory (or an absolute `root` named by `op`) and must start with `script.write_root`; `op` is `write`, `after_reply` (atomic, landing only once the reply was delivered), `append`, `mkdir` or `remove` | no absolute path, no `..`, no link below the root, `script.write_max_bytes`, `script.write_path_max` |
+| `state.readText(rel)`, `state.remove(rel)`, `state.sweep(dirRel, prefix, ageMs, max)` | the scoped read; delete one regular file (an absent file is the goal state; a link or directory is refused or left); delete the old regular files of a state sub-directory whose name starts with a non-empty prefix, oldest first | reads capped by `script.read_max_bytes`; `script.sweep_max_remove` deletions per call |
+| `state.lock(rel, group)`, `state.unlock(handle)` | the cross-process lock file (Node's lock protocol) under the same root, timings from the defaults group `<group>.lock_*` | one lock per call; one still held when the call ends is released by the engine |
+| `state.prune(prefix, keep)`, `sessionState.get/probe/update(ns, key, fn)` | the state-file retention sweep of one writer prefix; the per-session state files the Node guards share, with an atomic locked read-modify-write | only that prefix, older than the TTL, throttled |
+| `transcript.tailLines/agents/turnText` | the last lines of a file with byte offsets; the agents a transcript shows as running; the current turn's assistant text | `script.tail_max_bytes`; a line JavaScript might read differently answers `unsure` |
+| `jev.ask(spec)`, `jev.mode(id)`, `jev.deadlineLeftMs()` | one question to the Jev lane, detached or (with `sync`) answered, with its trust, cache key, judge label and project; the mode of an integration; the time left of the request | the budget is clamped to the time left; time spent waiting is not script time; the caller owns the policy (count, total time) |
+| `clock.now()`, `clock.local(ms)`, `home()`, `pid()` | the engine's one clock (injectable for tests); the local calendar fields and zone offset of an instant; the request's home directory; the engine's process id | |
+| `sys.memory()`, `platform()`, `repo.context(dir)`, `sha1(text)`, `fnv(text)`, `contentHash(parts)`, `log(kind, text)` | machine memory figures; the operating system; the checkout around a directory; hashes (SHA-1, 64-bit FNV, the Jev content hash); a line in the event log | |
+| `settings.get(key, dflt, root)`, `text.maskQuoted(text)`, `shell.heredocAt(cmd, i)` | the settings chain with the caller's fallback; the speculation guard's quoted-text masking; the heredoc opener parser | |
+
+A scripted check's latency is held to `script.p95_budget_us` added over its compiled port at the 95th percentile
+(`cargo test --release --test script_latency -- --nocapture`).
+
 ## Dispatcher
 
 `ah-engine hook --event <Event> [--tool <Tool>] [--host claude|codex] [--fallback-map <file>]` stands in for every hook
