@@ -54,6 +54,10 @@ pub fn state_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os(STATE_ENV).filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(d));
     }
+    // unit tests of this crate never touch the real home: without an explicit AH_ENGINE_DIR they use a scratch dir in target/
+    if cfg!(test) {
+        return Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("test-state"));
+    }
     let home = std::env::var_os(HOME_ENV).filter(|h| !h.is_empty())?;
     Some(STATE_REL.iter().fold(PathBuf::from(home), |p, s| p.join(s)))
 }
@@ -122,5 +126,35 @@ mod tests {
     #[test]
     fn the_dev_checkout_is_found_from_the_test_binary() {
         assert!(dev_checkout().is_some(), "the cargo target tree sits inside the repository");
+    }
+
+    #[test]
+    fn no_unit_test_resolves_the_engine_dir_to_the_real_home() {
+        let real = dirs_home();
+        for (what, dir) in [("bootstrap::state_dir", state_dir().unwrap()), ("paths::dir", crate::paths::dir())] {
+            assert!(
+                dir.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("target")) || std::env::var_os(STATE_ENV).is_some(),
+                "{what} = {} is not a scratch dir",
+                dir.display()
+            );
+            if let Some(h) = &real {
+                assert!(!dir.starts_with(STATE_REL.iter().fold(h.clone(), |p, s| p.join(s))), "{what} = {} is inside the real home's state", dir.display());
+            }
+        }
+    }
+
+    fn dirs_home() -> Option<PathBuf> {
+        std::env::var_os(HOME_ENV).map(PathBuf::from).filter(|h| !h.as_os_str().is_empty())
+    }
+
+    #[test]
+    fn tests_read_this_checkout_and_a_scratch_state_dir_never_the_real_home() {
+        // `.cargo/config.toml` pins both for every test; without it the snapshot cache in the real home names the installed plugin
+        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall").canonicalize().unwrap();
+        crate::defaults::init().expect("defaults load in a test");
+        let root = crate::defaults::root().expect("a loaded root");
+        assert_eq!(root.canonicalize().unwrap(), plugin, "a test loaded the plugin at {}", root.display());
+        let state = state_dir().expect("a state dir");
+        assert!(state.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("target")), "state dir {} is outside target/", state.display());
     }
 }
