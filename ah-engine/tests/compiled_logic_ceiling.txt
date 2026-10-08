@@ -8,5 +8,5 @@
 # Lane d88fc moved ask-guard, phase-tracker, failure-root-cause-nudge, output-verify-guard, the six session checks, emit-dedupe-reset,
 # precompact-snapshot, handover-resume, limit-conserve-inject and auto-handover to scripts.
 # Lane d88fd moved command (command-guard, which is also the shared command classifier) and coordinator-work-guard to scripts.
-# The dswire lane added devswarm-rt-advisory as compiled Rust (a read of the live DevSwarm state, no decision script); its next commit makes it a script.
-20
+# The dswire lane's devswarm-rt-advisory decides in a script (no net change).
+19
