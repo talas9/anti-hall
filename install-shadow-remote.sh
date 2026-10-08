@@ -273,7 +273,7 @@ bounded() { s=$1; i=$2; o=$3; e=$4; shift 4
 smoke() { dir=$1; bin=$dir/ah-engine
   [ -x "$bin" ] || { echo "no executable at $bin"; return 1; }
   [ -f "$dir/noop-map.json" ] && [ -d "$dir/plugin" ] || { echo "stage lacks noop-map.json or plugin/"; return 1; }
-  v=$("$bin" version 2>&1) || { echo "version failed: $v"; return 1; }
+  v=$(env AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" version 2>&1) || { echo "version failed: $v"; return 1; }
   case "$v" in [0-9]*) ;; *) echo "unexpected version output: $v"; return 1 ;; esac
   mkdir -p "$dir/home" "$dir/state"
   st=0
@@ -290,7 +290,7 @@ smoke() { dir=$1; bin=$dir/ah-engine
     if [ "$rc" != 0 ]; then echo "smoke $ev: exit $rc"; st=1; continue; fi
     if grep -qE '"decision"[[:space:]]*:[[:space:]]*"block"|permissionDecision"[[:space:]]*:[[:space:]]*"deny' "$dir/out.txt"; then echo "smoke $ev: unexpected block verdict"; st=1; fi
   done
-  env HOME="$dir/home" AH_ENGINE_DIR="$dir/state" "$bin" stop >/dev/null 2>&1
+  env HOME="$dir/home" AH_ENGINE_DIR="$dir/state" AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" stop >/dev/null 2>&1
   return $st
 }
 
@@ -379,14 +379,14 @@ rm -rf "$D/plugin.prev"; [ -d "$D/plugin" ] && mv "$D/plugin" "$D/plugin.prev"; 
 cp "$STAGE/noop-map.json" "$D/noop-map.json.new" && mv -f "$D/noop-map.json.new" "$D/noop-map.json"
 [ -n "$cur" ] && printf '%s\n' "$cur" > "$D/commit.prev"; printf '%s\n' "$new" > "$D/commit"
 restart_daemon
-if ! "$D/bin/ah-engine" version >/dev/null 2>&1; then # live binary unusable: restore the previous one
+if ! env AH_ENGINE_PLUGIN_ROOT="$D/plugin" CLAUDE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version >/dev/null 2>&1; then # live binary unusable: restore the previous one
   cp -p "$D/bin.prev/ah-engine" "$D/bin/ah-engine"; printf '%s\n' "$cur" > "$D/commit"; fail "swapped binary failed to run; restored previous"
 fi
 sset fails 0; sset next_try 0; sset last_ok "$(now)"; sset last_check "$(now)"; sset skip_commit ""
 sset last_result "updated ${cur:-none} -> $new"
 # pick up new helper scripts (update.sh, shadow2.sh, sync.sh) shipped on the branch; each is syntax-checked before an atomic rename
 [ -f "$D/src/install-shadow-remote.sh" ] && AH_SHADOW_D="$D" sh "$D/src/install-shadow-remote.sh" --refresh-scripts >>"$LOG" 2>&1
-log "UPDATED ${cur:-none} -> $new (fetch+build+smoke $(( $(now) - b0 ))s, version $("$D/bin/ah-engine" version 2>/dev/null)); daemon restarted"
+log "UPDATED ${cur:-none} -> $new (fetch+build+smoke $(( $(now) - b0 ))s, version $(env AH_ENGINE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version 2>/dev/null)); daemon restarted"
 exit 0
 UPEOF
 
@@ -493,7 +493,7 @@ L="$D/log-calls.ndjson"
 cnt() { c=$(grep "$@" 2>/dev/null); echo "${c:-0}"; }
 jstr() { printf '%s' "$1" | tr -d '\n\r\\"' | head -c 200; }
 printf '{"host":"%s","ts":"%s","commit":"%s","branch":"%s","binary_version":"%s","platform":"%s","calls_total":%s,"calls_blocked":%s,"calls_advised":%s,"odd_exit_codes":%s,"delta_log_lines":%s,"delta_payload_lines":%s,"spool_bytes":%s,"last_update_result":"%s","sync_fails_before":%s}\n' \
-  "$host" "$ts" "$(jstr "$(cat "$D/commit" 2>/dev/null)")" "$(jstr "$(cat "$D/branch" 2>/dev/null)")" "$(jstr "$("$D/bin/ah-engine" version 2>/dev/null)")" \
+  "$host" "$ts" "$(jstr "$(cat "$D/commit" 2>/dev/null)")" "$(jstr "$(cat "$D/branch" 2>/dev/null)")" "$(jstr "$(env AH_ENGINE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version 2>/dev/null)")" \
   "$(jstr "$(sed -n 's/^platform=//p' "$D/.shadow2-installed" 2>/dev/null)")" \
   "$(wc -l < "$L" 2>/dev/null | tr -d ' ' || echo 0)" "$(cnt -c '"blocked":true' "$L")" "$(cnt -c '"advised":true' "$L")" \
   "$(cnt -vcE '"rc":(0|2|75),' "$L")" "$lines_log" "$lines_pl" "$(cat "$D"/spool/payloads.*.ndjson 2>/dev/null | wc -c | tr -d ' ')" \
@@ -541,7 +541,7 @@ cmd_status() {
   say "platform:     $PLATFORM"
   say "install dir:  $D"
   say "commit:       $(cat "$D/commit" 2>/dev/null || echo unknown)   (branch $(cat "$D/branch" 2>/dev/null))"
-  say "binary:       $("$D/bin/ah-engine" version 2>/dev/null || echo MISSING)"
+  say "binary:       $(env AH_ENGINE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version 2>/dev/null || echo MISSING)"
   st="$D/update.state"
   g() { sed -n "s/^$1=//p" "$st" 2>/dev/null | tail -1; }
   lo=$(g last_ok); lt=$(g last_try); nt=$(g next_try)
@@ -712,7 +712,7 @@ printf 'installed-by=install-shadow-remote.sh\nplatform=%s\nsettings=%s\n' "$PLA
 ROLLBACK_D=0
 
 say "installed: $nev hook triggers in $SETTINGS (backup: $D/settings.json.bak)"
-say "commit $commit, binary $("$D/bin/ah-engine" version 2>/dev/null)"
+say "commit $commit, binary $(env AH_ENGINE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version 2>/dev/null)"
 say "telemetry: payloads spooled to $D/spool; hourly push to $(awk -F= '$1=="sync.repo"{print $2}' "$D/config") (enabled=$(awk -F= '$1=="sync.enabled"{print $2}' "$D/config"); --no-sync to disable, --sync-now to push now)"
 say "log: $D/log-calls.ndjson   status: sh $0 --status   undo: sh $0 --uninstall"
 say "restart Claude Code sessions (or open /hooks) for the new triggers to load"
