@@ -25,6 +25,7 @@ pub mod idlock;
 pub mod read;
 pub mod send;
 pub mod store;
+pub mod summary;
 
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
@@ -35,6 +36,24 @@ use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// Set at a verb's commit point (its first store write succeeded): from then on Node must never run the same verb in
+/// this process, since that would write twice.
+pub static COMMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark the commit point (see [`COMMITTED`]).
+pub fn mark_committed() {
+    COMMITTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn committed() -> bool {
+    COMMITTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Log a summary refresh the engine could not do after its write (Node's next derive refreshes it).
+pub fn log_summary_failure(verb: &str, reason: &str) {
+    shadow_log(&serde_json::json!({"ts": common::now_ms(), "verb": verb, "result": defaults::text("mesh_write.summary_failed"), "reason": reason}));
+}
 
 /// The three positions of `mesh.engine_writes`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +221,11 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                 Ok(Ok(ans)) => {
                     emit(ans.stdout.as_bytes());
                     ans.code
+                }
+                // past the commit point a rerun in Node would write a second time: report instead
+                _ if committed() => {
+                    eprintln!("{}", defaults::text("mesh_write.msg_committed_failure"));
+                    defaults::num("mesh_write.exit_committed_failure") as i32
                 }
                 _ => node_with(&argv, stdin.as_deref()),
             }

@@ -6,8 +6,8 @@
 //! redirect, a re-home, Jev triage, plan activity, the first sender-alias write, the self-heal installer), is a
 //! [`Defer`]: Node runs the verb instead, before the engine wrote anything. So a deferred verb never runs twice.
 //!
-//! Not reproduced on the engine path (Node keeps them; see DECISIONS D45 stage 2): the summary refresh
-//! (`deriveSummary`), which the ingest daemon and the parent-inbox hook also run.
+//! The summary refresh (`deriveSummary`) runs right after the append, as in Node (`meshw::summary`); a store whose
+//! summary the engine cannot reproduce defers before anything is written.
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::meshw::args::Args;
@@ -272,8 +272,10 @@ fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
     if common::sender_has_plan(inv, &from)? {
         return defer("plan-activity");
     }
-    // ---- commit: everything below writes, nothing below defers ----
     let partition = target.as_ref().map(|t| t.id.clone());
+    // the summary refresh after the write must be one the engine can do (else Node runs the whole verb)
+    crate::meshw::summary::check(&st, inv, partition.as_deref())?;
+    // ---- commit: everything below writes, nothing below defers ----
     let to_out: Option<String> = if broadcast {
         None
     } else if to_primary {
@@ -381,6 +383,11 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
         Ok(r) => (r.inserted, r.seq),
         Err(e) => return Err(Defer(format!("append:{e}"))),
     };
+    crate::meshw::mark_committed();
+    // deriveSummary(s, {home, env, now}), in the same call as the append (the wake watcher reads it)
+    if let Some(why) = crate::meshw::summary::derive_after_write(c.st, c.inv, c.repo_key) {
+        crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_send"), &why);
+    }
     let verify_partition = if c.broadcast { defaults::text("mesh_write.broadcast_partition").to_string() } else { c.partition.unwrap_or_default().to_string() };
     let mut verified = false;
     let mut verify_error: Option<String> = None;

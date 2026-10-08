@@ -31,8 +31,29 @@ put(primaryId, null, 'broadcast', 'hello all');
 put('child-1', null, 'broadcast', 'child news\nline two');
 put(primaryId, null, 'broadcast', 'third broadcast');
 put(childMeshId, null, 'broadcast', 'sent under the child worktree label', { urgency: 'high' });
+// summary inputs: questions under the child's meshId (attributed to child-1, collapsed per sender), consecutive identical
+// heartbeats (working_on + a collapsed recent[] run), gates with HEAD setters, mail to a row whose worktree is gone
+// (staleRegistryPartitions), an archived registry row, a heartbeat file with push state, a Jev-labelled question
+put(childMeshId, primaryId, 'direct', 'mesh-id question one', { needsReply: true });
+put(childMeshId, primaryId, 'direct', 'mesh-id question two', { needsReply: true, urgency: 'urgent' });
+put('child-1', null, 'broadcast', 'working on it', { isHeartbeat: true, urgency: 'low' });
+put('child-1', null, 'broadcast', 'working on it', { isHeartbeat: true, urgency: 'low' });
+put(primaryId, 'child-2', 'direct', 'to the gone worktree');
+put(primaryId, 'child-1', 'direct', 'is the build green?');
+s.setGate({ workspaceId: 'child-1', name: 'done', value: true, setBy: 'devswarm-done@abc123', setAt: t0 });
+s.setGate({ workspaceId: 'child-1', name: 'merged_verified', value: false, setBy: 'devswarm-merged@def456', setAt: t0 });
+s.setGate({ workspaceId: 'child-1', name: 'tests_passed', value: true, setBy: 'x', setAt: t0 });
+s.upsertRegistry({ id: 'child-3', worktreePath: path.join(home, 'archived-wt'), sessionId: 'sess-3', inboxPath: null, cursorPath: null, nudgeCommand: null });
 s.setBroadcastCursor('child-1', 1);
 s.close();
+const dsr = path.join(home, '.anti-hall', 'devswarm');
+fs.mkdirSync(path.join(dsr, 'archived'), { recursive: true });
+fs.writeFileSync(path.join(dsr, 'archived', 'child-3.json'), JSON.stringify({ id: 'child-3' }));
+fs.mkdirSync(path.join(dsr, 'heartbeats'), { recursive: true });
+fs.writeFileSync(path.join(dsr, 'heartbeats', 'child-1.json'), JSON.stringify({ id: 'child-1', noUpstream: false, unpushed: 2 }));
+const jevHash = require('crypto').createHash('sha256').update('is the build green?').digest('hex').slice(0, 32);
+fs.mkdirSync(path.join(home, '.anti-hall', 'cache'), { recursive: true });
+fs.writeFileSync(path.join(home, '.anti-hall', 'cache', 'jev-triage.json'), JSON.stringify({ [jevHash]: { kind: 'question-needs-answer' } }));
 // the child worktree's label already maps to its registered id (so a child send needs no alias write)
 const aliasFile = path.join(home, '.anti-hall', 'devswarm', 'sender-aliases.json');
 fs.mkdirSync(path.dirname(aliasFile), { recursive: true });

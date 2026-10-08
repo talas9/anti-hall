@@ -296,6 +296,10 @@ pub const MESH_BROADCAST_CURSOR: &str = "SELECT value FROM broadcast_cursors WHE
 pub const MESH_GATES: &str = "SELECT gate_name, value FROM gates WHERE workspace_id = ?1 ORDER BY id ASC";
 /// A workspace's gate setters, oldest row first.
 pub const MESH_GATE_SET_BY: &str = "SELECT gate_name, set_by FROM gates WHERE workspace_id = ?1 ORDER BY id ASC";
+/// A workspace's gate rows (name, value, setter), oldest first: what `currentGates` and `currentGateSetBy` fold.
+pub const MESH_GATE_ROWS: &str = "SELECT gate_name, value, set_by FROM gates WHERE workspace_id = ?1 ORDER BY id ASC";
+/// Every registry row's id and raw nudge command, in id order (the summary keeps the nudge's JSON key order).
+pub const MESH_REGISTRY_NUDGES: &str = "SELECT id, nudge_command FROM registry ORDER BY id ASC";
 /// The direct rows of a workspace that need a reply, in insertion order.
 pub const MESH_NEEDS_REPLY: &str = "SELECT sender, ts, seq FROM messages WHERE workspace_id = ?1 AND needs_reply = 1 AND mtype = 'direct' ORDER BY id ASC";
 /// The first `?3` characters of one needs-reply row's body.
