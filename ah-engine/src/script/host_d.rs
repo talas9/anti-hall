@@ -252,6 +252,28 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
             jev_record_outcome(&id, &hash, &outcome, source, project)
         })?,
     )?;
+    // documented with the batch-5 host API (ah.state.readText / remove / sweep) but never installed
+    h.set(
+        "stateRead",
+        Function::new(c.clone(), |rel: String| -> rquickjs::Result<Option<String>> {
+            let home = with_settings(|st| st.home.clone())?;
+            super::host::state_read(&home, &rel)
+        })?,
+    )?;
+    h.set(
+        "stateRemove",
+        Function::new(c.clone(), |rel: String| -> rquickjs::Result<bool> {
+            let home = with_settings(|st| st.home.clone())?;
+            super::host::state_remove(&home, &rel)
+        })?,
+    )?;
+    h.set(
+        "stateSweep",
+        Function::new(c.clone(), |dir: String, prefix: String, age: f64, max: f64| -> rquickjs::Result<f64> {
+            let home = with_settings(|st| st.home.clone())?;
+            super::host::state_sweep(&home, &dir, &prefix, age, max)
+        })?,
+    )?;
     h.set("jevEnabled", Function::new(c.clone(), jev_enabled)?)?;
     h.set("jevCacheHas", Function::new(c.clone(), |hash: String| jev_cache_has(&hash))?)?;
     h.set("pluginVersions", Function::new(c.clone(), |root: String| plugin_versions(&root))?)?;

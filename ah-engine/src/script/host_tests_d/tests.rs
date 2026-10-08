@@ -189,3 +189,61 @@ fn ah_clock_now_reads_the_engine_clock_and_follows_an_injected_one() {
     assert_eq!(run("zz-clock", &json!({}), &env(&h)), Some(Some(Verdict::Allow)));
     host::set_clock(None);
 }
+
+#[test]
+fn ah_state_readtext_remove_and_sweep_are_installed_and_scoped() {
+    let h = home("state");
+    std::fs::create_dir_all(format!("{h}/.anti-hall/d")).unwrap();
+    std::fs::write(format!("{h}/.anti-hall/d/a.txt"), "hello").unwrap();
+    std::fs::write(format!("{h}/.anti-hall/d/pre-1.json"), "{}").unwrap();
+    put_override(
+        &h,
+        "zz-state",
+        "function decide(p){ var t = ah.state.readText('.anti-hall/d/a.txt'); var none = ah.state.readText('.anti-hall/d/none'); \
+         var swept = ah.state.sweep('.anti-hall/d', 'pre-', 0, 5); var gone = ah.state.remove('.anti-hall/d/a.txt'); \
+         return t === 'hello' && none === null && swept === 1 && gone === true && ah.state.readText('.anti-hall/d/a.txt') === null ? 'allow' : 'defer'; }",
+    );
+    // a freshly written file is not older than 0 ms only when the clock has moved on: age the sweep by backdating through the clock
+    host::set_clock(Some(host::now_ms() + 10_000.0));
+    assert_eq!(run("zz-state", &json!({}), &env(&h)), Some(Some(Verdict::Allow)));
+    host::set_clock(None);
+    assert!(!std::path::Path::new(&format!("{h}/.anti-hall/d/pre-1.json")).exists());
+}
+
+/// Every `ahHost.<name>` the shipped API scripts call is registered by the engine: a primitive documented but never installed throws
+/// "not a function" in the first script that uses it (`ahHost.now` and `ahHost.stateRead` once were).
+#[test]
+fn every_ahhost_function_the_api_scripts_call_is_registered() {
+    use std::collections::BTreeSet;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut used = BTreeSet::new();
+    let logic = root.join("../plugins/anti-hall/engine/logic");
+    let mut files: Vec<_> = std::fs::read_dir(logic.join("lib")).unwrap().flatten().map(|e| e.path()).collect();
+    files.extend(std::fs::read_dir(&logic).unwrap().flatten().map(|e| e.path()));
+    for f in files.iter().filter(|f| f.extension().is_some_and(|x| x == "js")) {
+        let text = std::fs::read_to_string(f).unwrap();
+        let mut rest = text.as_str();
+        while let Some(i) = rest.find("ahHost.") {
+            rest = &rest[i + 7..];
+            let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            used.insert(name);
+        }
+    }
+    let mut registered = BTreeSet::new();
+    for e in std::fs::read_dir(root.join("src/script")).unwrap().flatten() {
+        if e.path().extension().is_some_and(|x| x == "rs") {
+            let text = std::fs::read_to_string(e.path()).unwrap();
+            let mut rest = text.as_str();
+            while let Some(i) = rest.find("h.set(") {
+                rest = &rest[i + 6..];
+                let tail = rest.trim_start();
+                if let Some(q) = tail.strip_prefix('"') {
+                    registered.insert(q.chars().take_while(|c| *c != '"').collect::<String>());
+                }
+            }
+        }
+    }
+    let missing: Vec<_> = used.difference(&registered).collect();
+    assert!(missing.is_empty(), "ahHost functions the API scripts call but the engine never registers: {missing:?}");
+    assert!(used.len() > 40, "the scan found the API ({} names)", used.len());
+}
