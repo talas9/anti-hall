@@ -567,7 +567,7 @@ fn write_state(state_path: &str, text: String) {
             if let Some(d) = std::path::Path::new(state_path).parent() {
                 std::fs::create_dir_all(d)?;
             }
-            crate::atomic::write(state_path, text)
+            crate::atomic::write_after_reply(state_path, text, crate::atomic::Style::default())
         })(),
     );
 }
