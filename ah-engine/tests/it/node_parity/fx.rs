@@ -202,6 +202,9 @@ fn snapshot(w: &Path, skip: Option<fn(&str) -> bool>, async_effects: bool) -> BT
         for n in names {
             let p = d.join(&n);
             let r = if rel.is_empty() { n.clone() } else { format!("{rel}/{n}") };
+            if r.ends_with(".anti-hall/ah-engine") {
+                continue; // the engine's own state dir (its telemetry): Node has nothing to compare it with
+            }
             if skip.is_some_and(|f| f(&r)) || (asynchronous && r.ends_with("logs/jev-assist.ndjson")) {
                 continue;
             }

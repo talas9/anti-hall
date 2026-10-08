@@ -77,7 +77,8 @@ pub(crate) struct Report {
 }
 
 fn volatile_key(rel: &str) -> bool {
-    rel.ends_with(".tmp") || rel == "logs/jev-assist.ndjson" || rel.ends_with("/logs/jev-assist.ndjson")
+    // the engine's own state dir (its telemetry) has no Node counterpart
+    rel.ends_with(".tmp") || rel == "logs/jev-assist.ndjson" || rel.ends_with("/logs/jev-assist.ndjson") || rel.contains(".anti-hall/ah-engine")
 }
 
 struct Side {
@@ -243,6 +244,10 @@ pub(crate) fn dump_lane(name: &str, scenarios: &[Sc]) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                // the engine's own state dir (its telemetry): Node has nothing to compare it with
+                if r.ends_with(".anti-hall/ah-engine") {
+                    continue;
+                }
                 if name == ".git" {
                     out.insert(format!("{r}/"), "<git>".into());
                     continue;

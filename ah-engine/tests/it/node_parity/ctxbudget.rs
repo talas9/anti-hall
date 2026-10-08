@@ -200,6 +200,9 @@ fn snap(dir: &Path) -> BTreeMap<String, String> {
         for n in names {
             let f = d.join(&n);
             let r = if rel.is_empty() { n.clone() } else { format!("{rel}/{n}") };
+            if r.ends_with(".anti-hall/ah-engine") {
+                continue; // the engine's own state dir (its telemetry): Node has nothing to compare it with
+            }
             let Ok(md) = std::fs::symlink_metadata(&f) else { continue };
             if md.is_dir() {
                 out.insert(format!("{r}/"), "D".into());
