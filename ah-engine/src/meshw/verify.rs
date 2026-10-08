@@ -28,17 +28,59 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What a verified verb is: they differ in what Node reads and writes, so in what is copied and compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// `heartbeat`.
+    Heartbeat,
+    /// `inbox tick`.
+    Tick,
+}
+
+/// The kind of a verb argv (`inbox tick <id> ...` or `heartbeat <id> ...`).
+pub fn kind_of(argv: &[String]) -> Kind {
+    if argv.first().map(String::as_str) == Some(defaults::text("mesh_write.verb_inbox"))
+        && argv.get(1).map(String::as_str) == Some(defaults::text("mesh_write.verb_tick"))
+    {
+        Kind::Tick
+    } else {
+        Kind::Heartbeat
+    }
+}
+
+/// The workspace id of a verb argv.
+pub fn id_of(argv: &[String]) -> String {
+    argv.get(if kind_of(argv) == Kind::Tick { 2 } else { 1 }).cloned().unwrap_or_default()
+}
+
 /// Copy what a heartbeat touches into a scratch home; `None` when that fails (the call is then not verified). A call that
 /// writes the store (`--summary`) gets a consistent COPY of it (SQLite's online backup), never a link: Node's write in the
 /// scratch home must not reach the real store.
 pub fn prepare(inv: &Inv, with_store: bool) -> Option<PathBuf> {
+    prepare_for(inv, Kind::Heartbeat, with_store)
+}
+
+/// Copy what a tick touches into a scratch home; `None` when that fails (the call is then not verified).
+pub fn prepare_tick(inv: &Inv) -> Option<PathBuf> {
+    prepare_for(inv, Kind::Tick, false)
+}
+
+fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
     let scratch = crate::paths::dir().join(defaults::text("mesh_write.verify_dir")).join(format!("{}-{}", std::process::id(), now_ms()));
     let root = devswarm_root(&inv.home);
     let sroot = devswarm_root(&scratch.join(defaults::text("mesh_write.shadow_home")));
     std::fs::create_dir_all(&sroot).ok()?;
-    for d in defaults::list("mesh_write.verify_copy_dirs") {
+    let dirs = if kind == Kind::Tick { "mesh_write.verify_tick_copy_dirs" } else { "mesh_write.verify_copy_dirs" };
+    for d in defaults::list(dirs) {
         if root.join(d).is_dir() {
             copy_tree(&root.join(d), &sroot.join(d)).ok()?;
+        }
+    }
+    if kind == Kind::Tick {
+        for f in defaults::list("mesh_write.verify_tick_copy_files") {
+            if root.join(f).is_file() {
+                std::fs::copy(root.join(f), sroot.join(f)).ok()?;
+            }
         }
     }
     // a descriptor that names a file of the copied `cursors` directory must name the copy (Node compares that path with the
@@ -104,19 +146,29 @@ pub fn prepare(inv: &Inv, with_store: bool) -> Option<PathBuf> {
     Some(scratch)
 }
 
-/// The files a heartbeat writes: its record, the liveness verdict and the app-state cache.
-fn id_files(root: &Path, id: &str) -> [PathBuf; 3] {
+/// The files a verb writes: for a heartbeat its record, the liveness verdict and the app-state cache; for a tick the
+/// refreshed heartbeat record, the wake-tick marker and the cron-found-mail file.
+fn id_files(root: &Path, argv: &[String]) -> [PathBuf; 3] {
+    let id = id_of(argv);
     let j = defaults::text("mesh_write.json_suffix");
+    let heartbeat = root.join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{j}"));
+    if kind_of(argv) == Kind::Tick {
+        return [
+            heartbeat,
+            root.join(defaults::text("mesh_write.dir_wake_tick")).join(format!("{id}{j}")),
+            root.join(defaults::text("mesh_write.file_cron_found_mail")),
+        ];
+    }
     [
-        root.join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{j}")),
+        heartbeat,
         root.join(defaults::text("mesh_write.dir_liveness")).join(format!("{id}{j}")),
         root.join(defaults::text("mesh_write.app_cache_dir")).join(defaults::text("mesh_write.app_cache_file")),
     ]
 }
 
 /// After the engine answered: save what it printed and wrote, and start the detached verifier.
-pub fn launch(scratch: &Path, inv: &Inv, id: &str, argv: &[String], stdout: &str) {
-    let real = id_files(&devswarm_root(&inv.home), id);
+pub fn launch(scratch: &Path, inv: &Inv, argv: &[String], stdout: &str) {
+    let real = id_files(&devswarm_root(&inv.home), argv);
     let (mut written, row) = super::take_written();
     // the summary file is refreshed by the same call; it is read back (the engine's refresh is not captured as it is written)
     if let (Some(_), Ok(key)) = (&row, std::fs::read_to_string(scratch.join("snap-key"))) {
@@ -156,6 +208,11 @@ pub fn launch(scratch: &Path, inv: &Inv, id: &str, argv: &[String], stdout: &str
     let Ok(exe) = std::env::current_exe() else { return };
     let mut c = Command::new(exe);
     c.arg(defaults::text("mesh_write.verb_mesh")).arg(defaults::text("mesh_write.verify_flag")).arg(scratch).arg(inv.now.to_string()).args(argv);
+    if kind_of(argv) == Kind::Tick
+        && let Some(nonce) = crate::meshw::tick::reader_nonce_cached(&inv.home)
+    {
+        c.env(defaults::text("mesh_write.env_verify_nonce"), nonce);
+    }
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
     crate::discard::harmless(c.spawn()); // keep: a verifier that does not start only leaves this call unverified
 }
@@ -196,7 +253,7 @@ pub fn run_verifier(args: &[String]) -> i32 {
     let t0 = now_ms();
     let (Some(scratch), Some(now)) = (args.first().map(PathBuf::from), args.get(1)) else { return 1 };
     let argv = &args[2..];
-    let id = argv.get(1).cloned().unwrap_or_default();
+    let tick = kind_of(argv) == Kind::Tick;
     let verb = argv.first().cloned().unwrap_or_default();
     let log = |result: &str, extra: serde_json::Value| {
         let mut rec = serde_json::json!({"ts": t0, "verb": verb, "result": result, "ms": now_ms() - t0});
@@ -219,7 +276,8 @@ pub fn run_verifier(args: &[String]) -> i32 {
         node.env(defaults::text("mesh_write.env_app_db"), db);
     }
     let out = node
-        .args(["-e", defaults::text("mesh_write.verify_node_snippet")])
+        .arg("-e")
+        .arg(defaults::text(if tick { "mesh_write.verify_tick_node_snippet" } else { "mesh_write.verify_node_snippet" }))
         .arg(root.join(defaults::text("mesh_write.node_cli")))
         .arg(now)
         .args(argv)
@@ -230,7 +288,7 @@ pub fn run_verifier(args: &[String]) -> i32 {
     match out {
         Ok(o) if o.status.success() => {
             let read = |p: &Path| std::fs::read(p).unwrap_or_default();
-            let files = id_files(&devswarm_root(&home), &id);
+            let files = id_files(&devswarm_root(&home), argv);
             let got = [o.stdout.clone(), read(&files[0]), read(&files[1]), read(&files[2])];
             let expected =
                 [read(&scratch.join("expect-stdout")), read(&scratch.join("expect-0")), read(&scratch.join("expect-1")), read(&scratch.join("expect-2"))];
@@ -261,11 +319,13 @@ pub fn run_verifier(args: &[String]) -> i32 {
             if same(&expected, &got) && diff.is_empty() {
                 log(defaults::text("mesh_write.verify_match"), serde_json::json!({}));
             } else {
+                let names = defaults::list(if tick { "mesh_write.verify_names_tick" } else { "mesh_write.verify_names_heartbeat" });
+                let mut rec = serde_json::json!({"engine": cap(&expected[0]), "node": cap(&got[0]), "diff": diff, "detail": detail});
+                for (i, name) in names.iter().enumerate() {
+                    rec[*name] = serde_json::json!(expected[i + 1] == got[i + 1]);
+                }
                 let result = if concurrent { defaults::text("mesh_write.shadow_concurrent") } else { defaults::text("mesh_write.verify_mismatch") };
-                log(
-                    result,
-                    serde_json::json!({"engine": cap(&expected[0]), "node": cap(&got[0]), "sameHeartbeat": expected[1] == got[1], "sameVerdict": expected[2] == got[2], "sameCache": expected[3] == got[3], "diff": diff, "detail": detail}),
-                );
+                log(result, rec);
             }
         }
         _ => log(defaults::text("mesh_write.verify_error"), serde_json::json!({"reason": "node"})),

@@ -13,7 +13,7 @@
 //! * `on`: the engine runs the verb; wherever it cannot reproduce Node exactly (an [`ident::Defer`]) Node runs it.
 //!
 //! Ported verbs: `send` (direct, `--to-primary`, `--broadcast`), `mesh read` (consuming and `--peek`), `mesh history`,
-//! `roster --ack` and `inbox ack-primary`. Every other verb runs in Node whatever the switch says.
+//! `roster --ack`, `inbox ack-primary`, the plain `heartbeat` and `inbox tick <id> --quiet`. Every other verb runs in Node whatever the switch says.
 //!
 //! The exit-code contract (`mesh_write.exit_defer`, `mesh_write.exit_committed_failure`):
 //!
@@ -41,6 +41,7 @@ pub mod read;
 pub mod send;
 pub mod store;
 pub mod summary;
+pub mod tick;
 pub mod union;
 pub mod verify;
 
@@ -143,6 +144,8 @@ pub enum Verb {
     InboxAckPrimary,
     /// `heartbeat` (the plain form).
     Heartbeat,
+    /// `inbox tick <id> --quiet`.
+    InboxTick,
 }
 
 /// The verb's name as the telemetry log spells it (`Send`, `MeshRead`, `MeshHistory`, `InboxAckPrimary`).
@@ -172,6 +175,9 @@ pub fn verb_of(a: &args::Args) -> Option<Verb> {
     if p0 == defaults::text("mesh_write.verb_heartbeat") {
         return Some(Verb::Heartbeat);
     }
+    if p0 == defaults::text("mesh_write.verb_inbox") && p1 == Some(defaults::text("mesh_write.verb_tick")) {
+        return Some(Verb::InboxTick);
+    }
     None
 }
 
@@ -183,6 +189,7 @@ pub fn run_native(inv: &Inv, a: &args::Args) -> R<Answer> {
         Some(Verb::MeshHistory) => read::run(inv, a, true),
         Some(Verb::InboxAckPrimary) => inbox::run(inv, a),
         Some(Verb::Heartbeat) => heartbeat::run(inv, a),
+        Some(Verb::InboxTick) => tick::run(inv, a),
         None => ident::defer("not-ported"),
     }
 }
@@ -280,8 +287,11 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                 return node_with(&argv, stdin.as_deref());
             };
             // a writing verb keeps Node as a background check on a scratch copy (never a second write on the real home)
-            let scratch =
-                (verb_of(&a) == Some(Verb::Heartbeat)).then(|| verify::prepare(&inv, a.one(defaults::text("mesh_write.flag_summary")).is_some())).flatten();
+            let scratch = match verb_of(&a) {
+                Some(Verb::Heartbeat) => verify::prepare(&inv, a.one(defaults::text("mesh_write.flag_summary")).is_some()),
+                Some(Verb::InboxTick) => verify::prepare_tick(&inv),
+                _ => None,
+            };
             let r = std::panic::catch_unwind(|| run_native(&inv, &a));
             let (step, result, reason) = next_step(r, committed());
             shadow_log(
@@ -290,7 +300,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
             match step {
                 Next::Print(ans) => {
                     if let Some(sc) = &scratch {
-                        verify::launch(sc, &inv, a.positionals.get(1).map_or("", String::as_str), &argv, &ans.stdout);
+                        verify::launch(sc, &inv, &argv, &ans.stdout);
                     }
                     emit(ans.stdout.as_bytes());
                     ans.code
@@ -312,7 +322,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
         }
         // the write verbs replay on a copy of the store; a verb whose inputs are files outside it (a read receipt that
         // Node consumes while it runs) cannot be replayed, so it only runs in Node and is counted
-        _ if matches!(verb_of(&a), Some(Verb::InboxAckPrimary | Verb::Heartbeat)) => {
+        _ if matches!(verb_of(&a), Some(Verb::InboxAckPrimary | Verb::Heartbeat | Verb::InboxTick)) => {
             // logged BEFORE Node runs: with no stdin to forward the engine replaces itself with Node and never returns
             shadow_log(
                 &serde_json::json!({"ts": common::now_ms(), "verb": verb_label(&a), "mode": defaults::text("mesh_write.mode_shadow"), "result": defaults::text("mesh_write.shadow_skipped"), "reason": "", "ms": 0}),

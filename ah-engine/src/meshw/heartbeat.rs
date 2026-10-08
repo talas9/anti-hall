@@ -47,7 +47,7 @@ fn is_primary_label(id: &str) -> bool {
 }
 
 /// `warnIdMismatch` can only speak for a child workspace whose builder id differs from the heartbeat's id: defer that.
-fn id_mismatch_possible(inv: &Inv, id: &str) -> bool {
+pub(crate) fn id_mismatch_possible(inv: &Inv, id: &str) -> bool {
     let child = inv.env.get(defaults::text("mesh_write.env_source_branch")).is_some_and(|v| !crate::checks::guardkit::text::js_trim(v).is_empty());
     let Some(env_id) = inv.env.get(defaults::text("mesh_write.env_builder_id")).filter(|b| is_safe_id(b)) else { return false };
     child && env_id != id
@@ -55,7 +55,7 @@ fn id_mismatch_possible(inv: &Inv, id: &str) -> bool {
 
 /// `refreshAnchorSession(ctx)` is a no-op unless the caller is a Primary checkout whose anchor descriptor records another
 /// session; that case (the one that writes) defers.
-fn anchor_refresh_possible(inv: &Inv) -> R<bool> {
+pub(crate) fn anchor_refresh_possible(inv: &Inv) -> R<bool> {
     let Some(sid) = inv.env.get(defaults::text("mesh_write.env_session_id")).filter(|v| !v.is_empty()) else { return Ok(false) };
     let c = ident::resolve_context(&inv.cwd, true)?;
     let Some(wt) = c.worktree_root.clone() else { return Ok(false) };
@@ -73,7 +73,7 @@ fn anchor_refresh_possible(inv: &Inv) -> R<bool> {
 }
 
 /// `runningAntiHallVersion()`: the `version` of this plugin's manifest, `null` when unreadable.
-fn running_version() -> OVal {
+pub(crate) fn running_version() -> OVal {
     let Some(root) = defaults::root() else { return OVal::Null };
     let p = root.join(defaults::text("mesh_write.plugin_manifest_dir")).join(defaults::text("mesh_write.plugin_manifest_file"));
     let Ok(bytes) = std::fs::read(p) else { return OVal::Null };
