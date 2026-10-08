@@ -29,6 +29,8 @@ pub struct CommandInfo {
     pub args: String,
     /// True when the command never changes state.
     pub read_only: bool,
+    /// For a command that changes state only in some forms: the first arguments (`""` = none) whose runs are read-only.
+    pub read_only_args: Vec<String>,
     /// `implemented` or `planned (D-n)`.
     pub status: String,
     /// What it does.
@@ -89,6 +91,7 @@ pub fn commands() -> Vec<CommandInfo> {
             name: e.key["cmd.".len()..].to_string(),
             args: e.value.str_field("args").to_string(),
             read_only: e.value.get("read_only").and_then(defaults::V::as_bool).unwrap_or(false),
+            read_only_args: e.value.get("read_only_args").map(|v| v.strings().into_iter().map(str::to_string).collect()).unwrap_or_default(),
             status: e.value.str_field("status").to_string(),
             doc: e.doc.to_string(),
         })
@@ -213,6 +216,11 @@ pub fn run(args: &[String]) -> i32 {
         let msg = defaults::render("msg.cli_planned", &[("command", &p.command), ("decision", &decision)]);
         emit(&p, msg.clone(), json!({"error": msg, "status": info.status}));
         return 64;
+    }
+    // a read-only command (or form) writes nothing, not even the telemetry its in-process checks would leave in the state directory
+    let first = p.rest.iter().find(|a| !a.starts_with("--")).map_or("", String::as_str);
+    if info.read_only || info.read_only_args.iter().any(|a| a == first) {
+        crate::telemetry::emit::set_read_only();
     }
     match handlers().iter().find(|(n, _)| *n == p.command) {
         Some((_, h)) => run_recorded(&p, *h),
