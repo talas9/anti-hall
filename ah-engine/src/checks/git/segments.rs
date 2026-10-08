@@ -648,6 +648,9 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
         }
     }
     if tables().commit_creating.has(&sub) && raw_has_credit(ctx) {
+        if let Some(label) = credit_elsewhere_label(ctx, "git") {
+            return Some(block("msg_creating_credit_elsewhere", &[("sub", &sub), ("elsewhere", &label)]));
+        }
         return Some(block("msg_creating_credit", &[("sub", &sub)]));
     }
     None

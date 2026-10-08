@@ -356,6 +356,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.credit_coauthor_alts` | `7 items` |  |  | Text after a Co-Authored-By trailer that names an AI tool (case-insensitive prefix match). |
 | `git.credit_generated_alts` | `claude code, claude, chatgpt, codex, copilot` |  |  | Names after a "Generated with" footer that count as an AI tool. |
 | `git.credit_gpt` | `2 entries` |  |  | A gpt- model name in a trailer: the prefix and the version digits that count. |
+| `git.credit_label_gh_words` | `2` |  |  | How many non-flag words of a gh command name it in a credit-elsewhere block message (git-guard.js creditElsewhereLabel: `gh pr create`). |
 | `git.file_write_tip` | `\nTip: this file's content was scanned as shell. Write the file with the Writ...` |  |  | Added to a block when the command writes a file with shell text: the file was scanned as shell. |
 | `git.find_exec_flags` | `-exec, -execdir, -ok, -okdir` |  |  | find actions that run a command. |
 | `git.forward_config_indexed` | `KEY_, VALUE_` |  |  | GIT_CONFIG_<prefix><n> variable families that are forwarded. |
@@ -377,6 +378,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.handover_dir_prefix` | `.anti-hall/handovers/` |  |  | Directory under which handovers live (never committed). |
 | `git.handover_git_timeout_ms` | `3000` |  | ms | Timeout for each git query of the handover check. |
 | `git.handover_skipped_advisory` | `anti-hall git-guard: the handover-commit check was skipped for {n} commit(s) ...` |  |  | Advisory when the handover check ran out of budget. Placeholder: {n}. |
+| `git.hd_assign` | `^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./~+@%:,=-]+)$` |  |  | A standalone literal assignment `NAME=value` beside a data heredoc (git-guard.js HD_ASSIGN_RE); group 1 is the name, group 2 the value. |
 | `git.hd_bad_dirs` | `10 items` |  |  | Directory names whose files a heredoc must not be written into (hooks, config, credentials). |
 | `git.hd_data_ext` | `12 items` |  |  | File extensions a heredoc may be written to as plain data. |
 | `git.hd_deny_first` | `59 items` |  |  | First words that make a heredoc consumer a script runner, so the heredoc is not data. |
@@ -387,11 +389,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.hd_read_long` | `35 items` |  |  | Read-only long options accepted for log, diff and show in a heredoc-fed command. |
 | `git.hd_read_opt` | `10 items` |  |  | Read-only long options with an optional value. |
 | `git.hd_read_val` | `11 items` |  |  | Read-only long options with a required value. |
+| `git.hd_sed_operand` | `^[A-Za-z0-9_./~$+@%:,=][A-Za-z0-9_./~$+@%:,=-]*$` |  |  | A plain-word operand of a neighbouring sed: no leading dash, no flag (git-guard.js hdSedOk). |
+| `git.hd_sed_range` | `^sed[ \t]+-n[ \t]+[0-9]+(?:,[0-9]+)?p(?:[ \t]+[A-Za-z0-9_./~$+@%:,=][A-Za-z0-...` |  |  | The only sed shape that may sit beside a data heredoc: a fixed print range `sed -n <N>[,<M>]p <files>` with plain-word operands (git-guard.js HD_SED_RANGE_RE; the JavaScript negative lookahead on an operand's first character is the equivalent first-character class). |
+| `git.hd_sed_script` | `^[0-9]+(?:,[0-9]+)?p$` |  |  | The fixed print-range script word of a neighbouring sed (git-guard.js hdSedOk). |
 | `git.hd_sinks_basic` | `/dev/null, /dev/stdout, /dev/stderr` |  |  | Device paths a heredoc may be written to. |
 | `git.hd_sinks_fd` | `/dev/fd/1, /dev/fd/2` |  |  | Extra descriptor paths accepted as data sinks in redirects. |
 | `git.hd_specs` | `10 entries` |  |  | Option grammar per git subcommand for heredoc-fed commands: s = short flags, v = short flags with a value, o = short flags with an optional value, l / big_l / big_o = long flags (none / required value / optional value), num = numeric -<n> allowed, strict = unknown options are not data, read = also accept the shared read-only option sets, l_extra = more long flags. |
+| `git.hd_var_deny` | `20 items` |  |  | Variable names (case-insensitive) a standalone assignment beside a data heredoc must not set: ones the shell or the allowed tools read implicitly (git-guard.js HD_VAR_DENY). |
+| `git.hd_var_deny_prefix` | `13 items` |  |  | Variable-name prefixes (case-insensitive) a standalone assignment beside a data heredoc must not set: loader, git/gh config, ssh, locale and language-runtime hooks (git-guard.js HD_VAR_DENY_PREFIX). |
 | `git.heredoc_git_msg_subs` | `commit, tag, notes, merge` |  |  | git subcommands that take a message from a heredoc. |
-| `git.heredoc_safe_verbs` | `21 items` |  |  | Commands a data heredoc may be fed to without being treated as a shell script. |
+| `git.heredoc_safe_verbs` | `28 items` |  |  | Commands a data heredoc may be fed to without being treated as a shell script. |
 | `git.jev_backstop_ms` | `500` |  | ms | Extra time Node's synchronous worker is allowed beyond the budget; counted in the total-time guard (Node: the +500 in the guard). |
 | `git.jev_budget_ms` | `1500` |  | ms | Time budget of one self-credit consult (Node: CONSULT_BUDGET_MS). |
 | `git.jev_consult_cap` | `8` |  |  | Most distinct texts one command may consult Jev about (Node: JEV_CONSULT_CAP). |
@@ -508,6 +515,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.node_fs_read_allowlist` | `readFileSync, readdirSync, statSync, existsSync, lstatSync` |  |  | fs methods a safe `node -e` payload may call (command-guard.js NODE_FS_READ_ALLOWLIST). |
 | `command.node_script_ext` | `(?i)\.(?:js\|mjs\|cjs)$` |  |  | Script file extensions of node for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
 | `command.pattern_first_verbs` | `grep, sed, awk` |  |  | Verbs whose first operand is a pattern, blanked before the heavy patterns run (command-guard.js PATTERN_FIRST_VERBS). |
+| `command.plain_read_git_segments` | `^git\s+log\s+--oneline(?:\s+-\d+)?\s*$, ^git\s+status(?:\s+(?:--short\\|-s))?\...` |  |  | Exact shapes of one plain read-only git segment inside a chain, after a trailing `2>&1` is stripped (command-guard.js PLAIN_LOG_SEGMENT_RE, PLAIN_STATUS_SEGMENT_RE, PLAIN_SHOW_SEGMENT_RE, PLAIN_REVPARSE_SEGMENT_RE; the JavaScript negative lookahead on the first character is the equivalent first-character class). |
 | `command.python_script_ext` | `(?i)\.py$` |  |  | Script file extension of the other interpreters for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
 | `command.script_check_interpreter` | `^(?:python[0-9.]*\|node\|ruby\|perl\|php)$` |  |  | Interpreters whose flagged script runs are heavy (command-guard.js SCRIPT_CHECK_INTERPRETER_RE). |
 | `command.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument or heredoc body is itself a script (lib/shell-scan.js SHELL_VERBS). |
@@ -517,6 +525,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.test_keywords` | `7 items` |  |  | Words after which a `[[` or `((` is at command position, so its `<`/`>` are comparisons, not redirects (command-guard.js TEST_KEYWORDS). |
 | `command.timeout_prefix` | `^\s*timeout\s+(?:-[ks]\s+\S+\s+\|-\S+\s+)*\d+[smhd]?\s+` |  |  | A leading `timeout [opts] N` stripped for the light-exception test (command-guard.js TIMEOUT_PREFIX_RE). |
 | `command.timeout_value_flags` | `-s, --signal, -k, --kill-after` |  |  | timeout options that take a value (command-guard.js effectiveVerb). |
+| `command.trailing_stderr_merge` | `\s+2>&1\s*$` |  |  | A trailing `2>&1` stripped before a plain git chain segment is classified (command-guard.js TRAILING_STDERR_MERGE_RE). |
 | `command.whole_command_clis` | `12 items` |  |  | CLIs whose whole-command read-only form (version query or gcloud read piped to a closed sink) is light (command-guard.js isWholeCommandReadOnlyForm and VERSION_CLI_RE). |
 | `command.wrappers` | `18 items` |  |  | Words skipped when finding a segment's effective verb (command-guard.js WRAPPERS). |
 | `command.write_target_unknowable` | `$`*?[]{}` |  |  | A write target containing one of these characters cannot be resolved and is skipped (command-guard.js resolveWriteTarget). |
@@ -3534,10 +3543,12 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_commit_file_jev` | Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased). |
 | `git.msg_commit_jev` | Block: Jev judged an inline commit message to credit an AI assistant (paraphrased). |
 | `git.msg_creating_credit` | Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}. |
+| `git.msg_creating_credit_elsewhere` | Block: a commit-creating command is chained with another git/gh command that carries the AI self-credit. Placeholders: {sub}, {elsewhere} (the carrying command, e.g. `gh pr create`). |
 | `git.msg_delete_ref` | Block: remote ref deletion. Placeholder: {skip}. |
 | `git.msg_find_push` | Block: a push through find -exec. |
 | `git.msg_force_push` | Block: a force push. |
 | `git.msg_gh_credit` | Block: a gh pr, issue or release body or title carries an AI self-credit. |
+| `git.msg_gh_credit_elsewhere` | Block: a gh pr, issue or release command is chained with another git/gh command that carries the AI self-credit. Placeholder: {elsewhere} (the carrying command, e.g. `git commit`). |
 | `git.msg_gh_jev` | Block: Jev judged a gh body or title to credit an AI assistant (paraphrased). |
 | `git.msg_handover` | Block: a commit that includes a session handover. Placeholders: {shown}, {skip}. |
 | `git.msg_launcher` | Block: a write into the launcher directory. |

@@ -9,6 +9,7 @@
 
 use crate::defaults;
 use crate::defaults::V;
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
 /// An ordered list of words with constant-time membership tests.
@@ -85,7 +86,7 @@ pub struct Switch {
 }
 
 /// Every table, limit and name of the git check.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Tables {
     /// Words looked through when finding the real command.
     pub wrappers: Words,
@@ -173,6 +174,18 @@ pub struct Tables {
     pub hd_gh_actions: Words,
     /// First words of script runners.
     pub hd_deny_first: Words,
+    /// The print-range sed allowed beside a heredoc.
+    pub hd_sed_range: Regex,
+    /// The print-range script word of such a sed.
+    pub hd_sed_script: Regex,
+    /// A plain operand of such a sed.
+    pub hd_sed_operand: Regex,
+    /// A standalone literal assignment.
+    pub hd_assign: Regex,
+    /// Names an assignment beside a heredoc must not set.
+    pub hd_var_deny: Words,
+    /// Name prefixes an assignment beside a heredoc must not set.
+    pub hd_var_deny_prefix: Vec<String>,
     /// Directories a heredoc must not be written into.
     pub hd_bad_dirs: Words,
     /// git hook file names.
@@ -397,6 +410,12 @@ fn build() -> Tables {
         hd_gh_subs: words("hd_gh_subs"),
         hd_gh_actions: words("hd_gh_actions"),
         hd_deny_first: words("hd_deny_first"),
+        hd_sed_range: crate::checks::lit_re(&text("hd_sed_range")),
+        hd_sed_script: crate::checks::lit_re(&text("hd_sed_script")),
+        hd_sed_operand: crate::checks::lit_re(&text("hd_sed_operand")),
+        hd_assign: crate::checks::lit_re(&text("hd_assign")),
+        hd_var_deny: words("hd_var_deny"),
+        hd_var_deny_prefix: strings("hd_var_deny_prefix"),
         hd_bad_dirs: words("hd_bad_dirs"),
         git_hook_names: words("git_hook_names"),
         hd_data_ext: words("hd_data_ext"),

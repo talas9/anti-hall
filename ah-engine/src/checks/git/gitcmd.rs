@@ -487,6 +487,47 @@ pub fn read_file_lossy(path: &str) -> Option<String> {
     std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).to_string())
 }
 
+/// Which COMMAND of the chain carries the whole-command self-credit text? `"<verb> <words>"` (e.g. `gh pr create`) when every
+/// segment that carries the credit is a git/gh command other than `own_verb`, else `None` (the credit is in the rule's own
+/// command, in a body no segment shows, or in a wrapper that is not named). The label is built only from lowercase
+/// subcommand words, never from raw command text.
+///
+/// Mirrors `git-guard.js` `creditElsewhereLabel`.
+pub fn credit_elsewhere_label(ctx: &mut Ctx, own_verb: &str) -> Option<String> {
+    let raw = ctx.raw_cmd.clone();
+    let mut label: Option<String> = None;
+    for seg in split_segments(&raw) {
+        if !has_self_credit(ctx, &seg) {
+            continue;
+        }
+        let ev = effective_verb(&tokenize(&seg))?;
+        if ev.verb != "git" && ev.verb != "gh" {
+            return None;
+        }
+        if ev.verb == own_verb {
+            return None;
+        }
+        if label.is_some() {
+            continue;
+        }
+        let words: Vec<String> = if ev.verb == "git" {
+            git_subcommand(&ev.args).0.into_iter().collect()
+        } else {
+            ev.args.iter().map(|t| t.text.clone()).filter(|w| !w.starts_with('-')).take(crate::defaults::num("git.credit_label_gh_words") as usize).collect()
+        };
+        let mut parts = vec![ev.verb.clone()];
+        parts.extend(words.into_iter().filter(|w| lowercase_word(w)));
+        label = Some(parts.join(" "));
+    }
+    label
+}
+
+/// `/^[a-z][a-z-]*$/`.
+fn lowercase_word(w: &str) -> bool {
+    let mut it = w.chars();
+    it.next().is_some_and(|c| c.is_ascii_lowercase()) && it.all(|c| c.is_ascii_lowercase() || c == '-')
+}
+
 /// For `gh pr|issue|release ... --body/--title`, the message text that credits an AI tool, if any.
 ///
 /// Mirrors `git-guard.js` `ghSelfCreditMessage`.
@@ -555,6 +596,10 @@ pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
         let n = norm_escapes(v);
         for text in [v.as_str(), n.as_str()] {
             if credit_regexes(text) || gh_body_marker(text) {
+                let elsewhere = if *v == ctx.raw_cmd { credit_elsewhere_label(ctx, "gh") } else { None };
+                if let Some(label) = elsewhere {
+                    return Some(block("msg_gh_credit_elsewhere", &[("elsewhere", &label)]));
+                }
                 return Some(block("msg_gh_credit", &[]));
             }
         }

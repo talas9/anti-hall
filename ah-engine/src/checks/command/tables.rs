@@ -104,6 +104,10 @@ pub struct Tables {
     pub gcloud_logging: String,
     /// CLIs of the whole-command read-only form.
     pub whole_clis: Vec<String>,
+    /// Plain read-only git chain segment shapes.
+    pub plain_read_git: Vec<Regex>,
+    /// A trailing `2>&1`.
+    pub trailing_stderr_merge: Regex,
     /// gh heavy group -> subcommands.
     pub gh_mutating: HashMap<String, HashSet<String>>,
     /// gh api heavy methods.
@@ -198,6 +202,8 @@ fn build() -> Tables {
         gcloud_value: set("command.gcloud_value_flags"),
         gcloud_logging: text("command.gcloud_logging_group"),
         whole_clis: strings("command.whole_command_clis"),
+        plain_read_git: strings("command.plain_read_git_segments").iter().map(|s| re(s)).collect(),
+        trailing_stderr_merge: re(&text("command.trailing_stderr_merge")),
         gh_mutating: gh,
         gh_api_methods: set("command.gh_api_mutating_methods"),
         gh_field_flags: set("command.gh_api_field_flags"),

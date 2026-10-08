@@ -622,7 +622,7 @@ pub fn has_unquoted_redirect_char(segment: &str) -> bool {
 /// True when the segment has a command substitution outside single quotes.
 ///
 /// Mirrors `command-guard.js` `hasSubstitutionOutsideSingleQuotes`.
-fn has_substitution_outside_single_quotes(segment: &str) -> bool {
+pub fn has_substitution_outside_single_quotes(segment: &str) -> bool {
     let b = segment.as_bytes();
     let (mut in_single, mut in_double) = (false, false);
     let mut i = 0;

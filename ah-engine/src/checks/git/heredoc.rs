@@ -164,12 +164,79 @@ fn hd_gh_words(args: &[Tok]) -> Option<Vec<String>> {
     Some(words)
 }
 
+/// A neighbouring `sed` is safe only as the fixed print-range shape.
+///
+/// Mirrors `git-guard.js` `hdSedOk`.
+fn hd_sed_ok(args: &[Tok]) -> bool {
+    if args.len() < 2 || args[0].text != "-n" || !tables().hd_sed_script.is_match(&args[1].text) {
+        return false;
+    }
+    args[2..].iter().all(|a| tables().hd_sed_operand.is_match(&a.text) && !a.text.contains("__AH"))
+}
+
+/// True when a standalone assignment may set `name` (not a name the shell or the allowed tools read implicitly).
+///
+/// Mirrors `git-guard.js` `hdVarAllowed`.
+fn hd_var_allowed(name: &str) -> bool {
+    let up = name.to_uppercase();
+    !tables().hd_var_deny.has(&up) && !tables().hd_var_deny_prefix.iter().any(|p| up.starts_with(p.as_str()))
+}
+
+/// A standalone line of literal assignments: record each into `vars`; false when any token is not a plain safe `NAME=literal`.
+///
+/// Mirrors `git-guard.js` `hdRecordAssignments`.
+fn hd_record_assignments(tokens: &[Tok], vars: &mut HashMap<String, String>) -> bool {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for t in tokens {
+        if t.quoted_only {
+            return false;
+        }
+        let Some(m) = tables().hd_assign.captures(&t.text) else { return false };
+        if !hd_var_allowed(&m[1]) || m[2].contains("__AH") {
+            return false;
+        }
+        found.push((m[1].to_string(), m[2].to_string()));
+    }
+    let any = !found.is_empty();
+    vars.extend(found);
+    any
+}
+
+/// A leading `$NAME` of a write target, expanded from a recorded literal assignment; anything else is returned unchanged.
+///
+/// Mirrors `git-guard.js` `hdExpandVar`.
+fn hd_expand_var(t: &str, vars: &HashMap<String, String>) -> String {
+    let Some(rest) = t.strip_prefix('$') else { return t.to_string() };
+    let mut chars = rest.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
+        return t.to_string();
+    }
+    let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+    let after = &rest[end..];
+    if !(after.is_empty() || after.starts_with('/')) {
+        return t.to_string();
+    }
+    match vars.get(&rest[..end]) {
+        Some(v) => format!("{v}{after}"),
+        None => t.to_string(),
+    }
+}
+
 /// Mirrors `git-guard.js` `hdDeniedFirstWord`.
 fn hd_denied_first_word(skel: &str) -> bool {
     for piece in backstop_pieces(skel) {
         let t = piece.trim_start_matches(|c: char| is_js_space(c) || matches!(c, '{' | '}' | '!' | '"' | '\'' | '('));
         let w = t.split(|c: char| is_js_space(c) || c == '"' || c == '\'').next().unwrap_or("");
         if w.is_empty() {
+            continue;
+        }
+        // A piece that is nothing but one safe `NAME=literal` is an assignment, not a command (hd_record_assignments vets
+        // the name); the exact print-range sed shape reads a file.
+        let pt = piece.trim_matches(is_js_space);
+        if tables().hd_assign.is_match(pt) && hd_var_allowed(pt.split('=').next().unwrap_or("")) {
+            continue;
+        }
+        if tables().hd_sed_range.is_match(pt) {
             continue;
         }
         if w.chars().any(|c| matches!(c, '/' | '$' | '~' | '`')) {
@@ -795,6 +862,7 @@ fn mask_inner(ctx: &mut Ctx, cmd: &str, base_cwd: Option<&str>) -> Option<String
     if hd_bad_path(&dirs[0]) {
         return None;
     }
+    let mut vars: HashMap<String, String> = HashMap::new(); // top-level `NAME=literal` lines, for `$NAME/...` write targets
     let mut outer_of: HashMap<usize, Ev> = HashMap::new();
     let mut consumers: Vec<Consumer> = Vec::new();
     let mut seen_docs: HashSet<usize> = HashSet::new();
@@ -809,10 +877,18 @@ fn mask_inner(ctx: &mut Ctx, cmd: &str, base_cwd: Option<&str>) -> Option<String
                 continue;
             }
             if !tokens[0].quoted_only && is_assign(&tokens[0].text) {
-                return None;
+                // Only a standalone top-level line of literal assignments is understood; an assignment in front of a command
+                // or inside a substitution keeps every body scanned.
+                if lvl.id.is_some() || !hd_record_assignments(&tokens, &mut vars) {
+                    return None;
+                }
+                continue;
             }
             let ev = effective_verb(&tokens)?;
             if !tables().heredoc_safe_verbs.has(&ev.verb) || tokens[0].quoted_only || tokens[0].text != ev.verb {
+                return None;
+            }
+            if ev.verb == "sed" && !hd_sed_ok(&ev.args) {
                 return None;
             }
             if ev.verb == "gh" && hd_gh_words(&ev.args).is_none() {
@@ -835,7 +911,12 @@ fn mask_inner(ctx: &mut Ctx, cmd: &str, base_cwd: Option<&str>) -> Option<String
                 }
                 dirs.push(next);
             }
-            let targets = hd_write_targets(&tokens, &ev)?;
+            let mut targets = hd_write_targets(&tokens, &ev)?;
+            if lvl.id.is_none() {
+                for w in &mut targets {
+                    w.t = hd_expand_var(&w.t, &vars);
+                }
+            }
             for w in &targets {
                 if !hd_target_ok(ctx, &w.t, &dirs) {
                     return None;

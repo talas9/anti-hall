@@ -101,3 +101,27 @@ fn non_ascii_is_answered_only_for_a_proven_subagent_and_only_without_a_trigger()
     }
     assert_eq!(decide_in("ls", Some("/tmp/\u{130}"), true), Verdict::Defer);
 }
+
+#[test]
+fn a_read_only_chain_keeps_the_separated_gcloud_read_flags() {
+    for c in [
+        "git fetch -q origin main && git rev-parse origin/main && gcloud run services describe svc --project p --region r 2>&1 | head -2",
+        "git rev-parse HEAD && gcloud functions describe fn --project foo --region us-central1",
+        "gcloud functions list --project foo | head -3; git rev-parse HEAD",
+        "git status -s && git log --oneline -5 && gcloud functions list --project foo",
+    ] {
+        allow(c);
+    }
+    // the chained form never widens the read grammar
+    for c in [
+        "git rev-parse HEAD && gcloud functions deploy x --project foo --region r",
+        "git rev-parse HEAD && gcloud functions describe x --project",
+        "git rev-parse HEAD && gcloud functions describe x --project foo > out.txt",
+        "git rev-parse HEAD && gcloud functions describe x --project foo $(id)",
+        "git rev-parse HEAD || gcloud functions list --project foo",
+        "git rev-parse HEAD && rm -rf x && gcloud functions list --project foo",
+        "python3 -I probe.py > probe.out 2>&1",
+    ] {
+        defer(c);
+    }
+}

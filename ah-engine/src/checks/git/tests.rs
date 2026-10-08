@@ -117,6 +117,43 @@ fn heredoc_data_is_not_scanned_but_executed_bodies_are() {
 }
 
 #[test]
+fn credit_block_names_the_command_that_carries_it() {
+    let footer = "\u{1f916} Generated with [Claude Code](https://claude.com/claude-code)";
+    let m = blocked(&format!("git commit -m 'fix: clean' && gh pr create --title t --body 'body\n\n{footer}'"));
+    assert!(m.contains("chained with `gh pr create`") && m.contains("not in the commit message"), "{m}");
+    let m = blocked(&format!("gh pr create --title t --body 'clean' && git commit -m 'x\n\n{CO}: Claude <n@a.com>'"));
+    assert!(m.contains("chained with `git commit`") && m.contains("not in the gh body or title"), "{m}");
+    // credit in the rule's own command, or reaching git through a pipe: the plain message stands
+    assert!(!blocked(&format!("git commit -m 'x\n\n{CO}: Claude <n@a.com>'")).contains("chained with"));
+    assert!(!blocked(&format!("echo '{CO}: Claude <n@a.com>' | git commit -F -")).contains("chained with"));
+    assert!(!blocked(&format!("git commit -m 'x\n\n{CO}: C <n@a.com>' && gh pr create --body '{footer}'")).contains("chained with"));
+    allowed("git commit -m 'fix: clean' && gh pr create --title t --body 'a clean body'");
+}
+
+#[test]
+fn heredoc_data_survives_read_only_neighbours_and_literal_variables() {
+    let note = format!("Notes:\ngit {P} {F} origin main\n");
+    let sp = "/tmp/ah-unit-sp";
+    allowed(&format!("S={sp}; sed -n 200,211p $S/d.log | cut -c1-200\ncat > $S/r/d.md <<'E'\n{note}E"));
+    allowed(&format!("A={sp}; B=sub; cat > $A/n.md <<'EOF'\n{note}EOF"));
+    allowed(&format!("ls | tr a b | nl | tac | rev | fold -w 40\ncat > n.md <<'EOF'\n{note}EOF"));
+    allowed(&format!("sed -n 5p log.txt\ncat > n.md <<'EOF'\n{note}EOF"));
+    for c in [
+        format!("S={sp}; cat > $S/d.sh <<'EOF'\n{note}EOF"),
+        format!("cat > $S/n.md <<'EOF'\n{note}EOF"),
+        format!("S=$(echo {sp}); cat > $S/n.md <<'EOF'\n{note}EOF"),
+        format!("S={sp} cat > $S/n.md <<'EOF'\n{note}EOF"),
+        format!("PATH={sp}; cat > n.md <<'EOF'\n{note}EOF"),
+        format!("GIT_PAGER={sp}/x; cat > n.md <<'EOF'\n{note}EOF"),
+        format!("sed -i s/a/b/ x\ncat > n.md <<'EOF'\n{note}EOF"),
+        format!("sed -n '1w x' a\ncat > n.md <<'EOF'\n{note}EOF"),
+        format!("grep -c x a.log\ncat > n.md <<'EOF'\n{note}EOF"),
+    ] {
+        blocked(&c);
+    }
+}
+
+#[test]
 fn launcher_directory_writes_block() {
     for c in [
         "cp x ~/.anti-hall/bin/devswarm.js",
