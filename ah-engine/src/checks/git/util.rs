@@ -1,84 +1,11 @@
-//! Small helpers: message builder, ASCII case-insensitive matching, Node-compatible path functions,
-//! bounded child processes, and the settings / skip.json reads the Node guard performs.
+//! Small helpers other compiled checks share: Node-compatible POSIX path functions and the request's environment snapshot
+//! (`Settings`: the home directory and the variables of the hook's own environment). The git guard's block-message builder,
+//! child-process runner and settings switches moved into the plugin script (`engine/logic/git.js`) and the host API (D88).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
-// - a missing binary is the same as an absent tool; the caller defers
-// - a panicked or timed-out helper yields no output; the caller treats that as no answer
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
-use super::tables::{Switch, tables};
-use super::tokenize::js_trim;
-use crate::defaults;
 use std::collections::HashMap;
-use std::process::Command;
-use std::time::Duration;
-
-/// lib/block-message.js `blockMessage({guard:'git-guard', ...})`.
-pub struct Msg<'a> {
-    /// What was blocked.
-    pub what: &'a str,
-    /// Why it is blocked.
-    pub why: &'a str,
-    /// What to do instead.
-    pub instead: &'a str,
-    /// What is allowed here, if any.
-    pub allowed: &'a str,
-    /// The override command, if the guard has one.
-    pub override_: &'a str,
-}
-
-/// Mirrors `lib/block-message.js` `clean`.
-fn clean(s: &str) -> String {
-    s.split(super::tokenize::is_js_space).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ")
-}
-
-/// Render a block message in the guard's fixed layout (what, why, do instead, allowed, override).
-///
-/// Mirrors `git-guard.js` `gm`.
-pub fn gm(m: Msg) -> String {
-    let t = tables();
-    let mut lines = vec![format!("{}{}{}", t.block_emoji, t.block_mark, clean(m.what))];
-    if !m.why.is_empty() {
-        lines.push(format!("{}{}", t.label_why, clean(m.why)));
-    }
-    if !m.instead.is_empty() {
-        lines.push(format!("{}{}", t.label_instead, clean(m.instead)));
-    }
-    if !m.allowed.is_empty() {
-        lines.push(format!("{}{}", t.label_allowed, clean(m.allowed)));
-    }
-    if !m.override_.is_empty() {
-        lines.push(format!("{}{}", t.label_override, clean(m.override_)));
-    }
-    lines.join("\n")
-}
-
-/// A block message with no override line.
-pub fn msg(what: &str, why: &str, instead: &str) -> String {
-    gm(Msg { what, why, instead, allowed: "", override_: "" })
-}
-
-/// A block message with an override line.
-pub fn msg_o(what: &str, why: &str, instead: &str, override_: &str) -> String {
-    gm(Msg { what, why, instead, allowed: "", override_ })
-}
-
-/// Case-insensitive (ASCII only, like the JS /i flag on these patterns) substring test.
-pub fn ci_contains(hay: &str, needle: &str) -> bool {
-    hay.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
-}
-
-/// ASCII case-insensitive prefix test on a char slice at an offset.
-pub fn ci_starts_with(hay: &[char], at: usize, needle: &str) -> bool {
-    let nd: Vec<char> = needle.chars().collect();
-    if at + nd.len() > hay.len() {
-        return false;
-    }
-    nd.iter().enumerate().all(|(k, &c)| hay[at + k].eq_ignore_ascii_case(&c))
-}
-
-// ---------------------------------------------------------------------------------------------------
-// Node `path` (posix) functions
 
 /// Lexical normalization like Node `path.posix.normalize`.
 pub fn posix_normalize(p: &str) -> String {
@@ -187,37 +114,6 @@ pub fn path_join(a: &str, b: &str) -> String {
     posix_normalize(&j)
 }
 
-// ---------------------------------------------------------------------------------------------------
-// bounded child process
-
-/// Run `prog args` with a wall-clock timeout; `Some(stdout)` only on exit status 0.
-///
-/// The child's environment is `base` (the request's environment, D76) with `env` (the command's own assignments) on top;
-/// the process's own environment (the daemon's) is never inherited, so its `GIT_*` variables and `HOME` cannot change an
-/// answer meant for another session.
-pub fn run_capture(
-    prog: &str,
-    args: &[String],
-    cwd: Option<&str>,
-    base: &HashMap<String, String>,
-    env: &HashMap<String, String>,
-    timeout: Duration,
-) -> Option<String> {
-    let mut cmd = Command::new(prog);
-    cmd.args(args).env_clear();
-    if let Some(c) = cwd {
-        cmd.current_dir(c);
-    }
-    for (k, v) in base.iter().chain(env) {
-        cmd.env(k, v);
-    }
-    // bounded, its own process group killed on timeout, output drained while it runs (review findings 7 and 8)
-    let o = crate::proc::run(cmd, prog, timeout, tables().child_poll).ok()?;
-    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).to_string())
-}
-
-// ---------------------------------------------------------------------------------------------------
-// settings + skip.json (read per call; tiny files)
 
 /// Process environment plus home, read once per request; every switch the Node guard consults resolves through it.
 pub struct Settings {
@@ -227,74 +123,11 @@ pub struct Settings {
     pub env: HashMap<String, String>,
 }
 
-fn bool_token(s: &str) -> Option<bool> {
-    match s.trim().to_lowercase().as_str() {
-        "1" | "on" | "true" | "yes" => Some(true),
-        "0" | "off" | "false" | "no" => Some(false),
-        _ => None,
-    }
-}
-
 impl Settings {
     /// The environment of one request (D76): never the daemon's own.
     pub fn from_env(request_env: &crate::reqenv::RequestEnv) -> Settings {
         let env: HashMap<String, String> = request_env.to_map();
-        let home = env.get(defaults::env_name("home")).cloned().or_else(|| env.get(defaults::env_name("home_alt")).cloned()).unwrap_or_default();
+        let home = env.get(crate::defaults::env_name("home")).cloned().or_else(|| env.get(crate::defaults::env_name("home_alt")).cloned()).unwrap_or_default();
         Settings { home, env }
-    }
-
-    /// `settings.enabled(section, key)`: false only when the switch resolves to exactly `false`.
-    /// Chain: env var, settings.json, `CLAUDE_PLUGIN_OPTION_<name>` env, default (on).
-    pub fn enabled(&self, sw: &Switch) -> bool {
-        if let Some(v) = self.env.get(&sw.env)
-            && let Some(b) = bool_token(v)
-        {
-            return b;
-        }
-        if !self.home.is_empty() {
-            let p = format!("{}/{}", self.home, tables().settings_file);
-            if let Ok(txt) = std::fs::read_to_string(&p)
-                && let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(&txt)
-            {
-                let v = o.get(&sw.section).and_then(|s| s.as_object()).and_then(|s| s.get(&sw.key));
-                match v {
-                    Some(serde_json::Value::Bool(b)) => return *b,
-                    Some(serde_json::Value::String(s)) => {
-                        if let Some(b) = bool_token(s) {
-                            return b;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if !sw.option.is_empty()
-            && let Some(v) = self.env.get(&format!("{}{}", tables().plugin_option_prefix, sw.option.to_uppercase()))
-            && let Some(b) = bool_token(v)
-        {
-            return b;
-        }
-        true
-    }
-
-    /// skip-guard.js `isSkipped('git-guard')`.
-    pub fn is_skipped(&self, name: &str) -> bool {
-        if self.home.is_empty() {
-            return false;
-        }
-        let Ok(txt) = std::fs::read_to_string(format!("{}/{}", self.home, tables().skip_file)) else { return false };
-        let txt = js_trim(&txt);
-        if txt.is_empty() {
-            return false;
-        }
-        let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(txt) else { return false };
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
-        if let Some(v) = o.get(name).and_then(|v| v.as_f64())
-            && v > now
-        {
-            return true;
-        }
-        // git-guard is a destructive guard: a broad "all" skip does not cover it
-        false
     }
 }

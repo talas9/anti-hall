@@ -62,3 +62,15 @@ pub static FABLE_AVAILABILITY: Scripted = Scripted::new("fable-availability", "f
 
 /// `edit-guard` (PreToolUse on Edit, Write, MultiEdit, NotebookEdit; apply_patch for Codex).
 pub static EDIT_GUARD: Scripted = Scripted::new("edit-guard", "edit_guard.summary");
+
+/// `swarm-guard` (PreToolUse on Agent and Task; the anti fork bomb).
+pub static SWARM_GUARD: Scripted = Scripted::new("swarm-guard", "swarm_guard.summary");
+
+/// `git` (PreToolUse on Bash): the git guard.
+pub static GIT_GUARD: Scripted = Scripted::new("git", "git.check_summary");
+
+/// `git-audit` (PostToolUse on Bash): the audit pass of the git guard.
+pub static GIT_AUDIT: Scripted = Scripted::new("git-audit", "git_audit.summary");
+
+/// `sibling-sweep` (Stop, SubagentStop; engine-only).
+pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");

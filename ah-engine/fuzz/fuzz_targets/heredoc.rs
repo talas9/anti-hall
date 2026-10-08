@@ -8,9 +8,6 @@ fuzz_target!(|data: &[u8]| {
     let s = String::from_utf8_lossy(data);
     // `<<-` strips leading tabs from the body, so compare tab-free.
     let flat = s.replace('\t', "");
-    for b in tk::extract_heredoc_bodies(&s) {
-        assert!(flat.contains(&b.body.replace('\t', "")));
-    }
     if s.is_ascii() {
         for b in shell::heredoc_bodies_in(&s) {
             assert!(flat.contains(&b.replace('\t', "")));

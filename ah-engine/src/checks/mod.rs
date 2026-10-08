@@ -42,13 +42,11 @@ pub mod scripted;
 pub mod session;
 pub mod session_gates;
 pub mod ship_it;
-pub mod sibling_sweep;
 pub mod silent_agent_nudge;
 pub mod spawnctx;
 pub mod speculation_guard;
 pub mod speculation_judge;
 pub mod stale_agent_stop_note;
-pub mod swarm_guard;
 pub mod task_guard;
 pub mod task_lifecycle_log;
 pub mod task_tracker;
@@ -191,7 +189,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
     static ALL: [&dyn Check; 65] = [
-        &git::GitGuard,
+        &scripted::GIT_GUARD,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
         &scan_throttle::ScanThrottle,
@@ -200,7 +198,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &command::CommandGuard,
         &model_routing::ModelRouting,
         &failure_nudge::FailureRootCauseNudge,
-        &git::audit::GitAudit,
+        &scripted::GIT_AUDIT,
         &scripted::VERIFY_FIRST_SUBAGENT,
         &scripted::VERIFY_FIRST_FULL,
         &scripted::FABLE_AVAILABILITY,
@@ -233,7 +231,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::API_GUARD,
         &scripted::EDIT_GUARD,
         &devswarm_comms::DevswarmCommsGuard,
-        &swarm_guard::SwarmGuard,
+        &scripted::SWARM_GUARD,
         &session_gates::JevWeeklyScorecard,
         &session_gates::JevReviewReminder,
         &session_gates::RepairOnReload,
@@ -253,7 +251,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &devswarm_gates::DevswarmChildGate,
         &devswarm_gates::DevswarmParentReplyTracker,
         &devswarm_gates::DevswarmChildDrain,
-        &sibling_sweep::SiblingSweep,
+        &scripted::SIBLING_SWEEP,
         &mcp_reaper::SessionEndMcpReaper,
         &task_tracker::TaskTracker,
     ];

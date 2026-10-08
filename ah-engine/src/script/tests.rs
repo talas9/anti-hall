@@ -477,3 +477,510 @@ fn a_config_over_the_read_cap_defers_instead_of_being_read_truncated() {
     assert_eq!(run_forced("fable-availability", &json!({}), &env(&h)), Some(Some(Verdict::Defer)));
     assert!(!std::path::Path::new(&format!("{h}/.anti-hall/fable-availability.json")).exists(), "nothing written before the deferral");
 }
+
+/// Every case of a golden corpus through the script; mismatches are listed (up to `limit`) before the test fails.
+fn golden_report(check: &str, limit: usize) {
+    let cases = golden::load(check);
+    let (mut bad, mut shown) = (0usize, 0usize);
+    for c in &cases {
+        let l = golden::lay(c);
+        let got = super::run_forced(check, &l.payload, &l.opts, &l.event, &l.env).unwrap_or_else(|| panic!("{check}: no shipped script"));
+        let got = golden::verdict_json(&got, &l);
+        let mut ok = got == c["expect"];
+        if ok && c.get("watch").is_some() {
+            ok = golden::watched_all_pub(c, &l) == c["writes"];
+        }
+        if !ok {
+            bad += 1;
+            if shown < limit {
+                shown += 1;
+                let mut p = c["payload"].to_string();
+                p.truncate(300);
+                eprintln!("MISMATCH {check} n={}\n  payload={p}\n  expect={}\n  got   ={}\n  errors={:?}", c["n"], c["expect"].to_string().chars().take(500).collect::<String>(), got.to_string().chars().take(500).collect::<String>(), crate::discard::captured());
+            }
+        }
+        crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
+    }
+    eprintln!("GOLDEN {check}: {} cases, {bad} mismatches", cases.len());
+    assert_eq!(bad, 0, "{check}: {bad} of {} cases differ from the compiled port", cases.len());
+}
+
+#[test]
+fn git_script_matches_the_compiled_port() {
+    golden_report("git", 12);
+}
+
+#[test]
+fn sibling_sweep_script_matches_the_compiled_port() {
+    golden_report("sibling-sweep", 12);
+}
+
+// ---- swarm-guard (ported from the compiled check's unit tests; the memory figures and the clock are replaced by an owner-style
+// override of the lib helper, exactly the editable-script mechanism a user has) ----
+
+mod swarm {
+    use super::*;
+
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const T0: u64 = 1_700_000_000_000;
+
+    fn swarm_home(tag: &str) -> String {
+        let h = home(tag);
+        std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+        h
+    }
+
+    fn call(h: &str, p: &Value, now: u64, avail: Option<f64>, total: f64) -> Option<Option<Verdict>> {
+        let a = avail.map_or("null".to_string(), |v| format!("{v}"));
+        std::fs::create_dir_all(format!("{h}/.anti-hall/logic/lib")).unwrap();
+        std::fs::write(
+            format!("{h}/.anti-hall/logic/lib/99-test.js"),
+            format!("ah.sys.memory = function(){{ return {{available: {a}, total: {total}}}; }}; Date.now = function(){{ return {now}; }};"),
+        )
+        .unwrap();
+        run_forced("swarm-guard", p, &env(h))
+    }
+
+    fn spawn() -> Value {
+        json!({"tool_name": "Agent", "tool_input": {"subagent_type": "Explore", "prompt": "x"}, "session_id": "s"})
+    }
+
+    fn text_of(v: &Option<Option<Verdict>>) -> String {
+        match v {
+            Some(Some(Verdict::Exact(x))) => x.out.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn memory_below_the_floor_blocks_and_the_numbers_are_rounded_like_javascript() {
+        let h = swarm_home("sw-mem");
+        let v = call(&h, &spawn(), T0, Some(0.04 * 16.0 * GB - 1.0), 16.0 * GB);
+        let Some(Some(Verdict::Exact(x))) = &v else { panic!("expected a block, got {v:?}") };
+        assert_eq!(x.code, 2);
+        assert!(x.out.contains("memory pressure critical (655 MB available of 16384 MB total, < 4%)"), "{}", x.out);
+        assert_eq!(call(&h, &spawn(), T0, Some(0.04 * 16.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "exactly at the floor is allowed");
+        assert_eq!(call(&h, &spawn(), T0 + 1, None, 16.0 * GB), Some(Some(Verdict::Allow)), "an unreadable figure skips the gate");
+    }
+
+    #[test]
+    fn the_cap_blocks_the_next_spawn_and_a_block_is_not_recorded() {
+        let h = swarm_home("sw-cap");
+        for i in 0..20 {
+            assert_eq!(call(&h, &spawn(), T0 + i, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "spawn {i}");
+        }
+        let log = format!("{h}/.anti-hall/swarm-spawns.log");
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 20);
+        let v = call(&h, &spawn(), T0 + 21, Some(8.0 * GB), 16.0 * GB);
+        assert!(text_of(&v).contains("agent spawn-rate ceiling reached (20 spawns in the last 60s, cap is 20)."), "{v:?}");
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 20, "a block must not extend the window");
+        let trips = std::fs::read_to_string(format!("{h}/.anti-hall/swarm-trips.log")).unwrap();
+        assert!(trips.ends_with("Z\t20\tAgent:Explore\n") && trips.starts_with("2023-11-14T22:13:20.021Z\t"), "{trips}");
+        assert_eq!(call(&h, &spawn(), T0 + 60_100, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "a minute later the window has moved on");
+    }
+
+    fn transcript(h: &str, input: Value) -> String {
+        let path = format!("{h}/t.jsonl");
+        let launch = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Agent", "input": input}]}});
+        let result = json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1",
+            "content": "Async agent launched successfully.\nagentId: a1b2c3d4e5f60718 (internal ID - do not mention to user)\noutput_file: /tmp/x/a1b2c3d4e5f60718.output"}]}});
+        std::fs::write(&path, format!("{launch}\n{result}\n")).unwrap();
+        path
+    }
+
+    fn advisory(v: Option<Option<Verdict>>) -> Option<String> {
+        match v {
+            Some(Some(Verdict::Advisory(a))) => Some(a),
+            Some(Some(Verdict::Allow)) => None,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_write_capable_spawn_beside_a_running_writer_gets_the_advisory_and_is_recorded() {
+        let h = swarm_home("sw-adv");
+        let t = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let writer = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose"}, "transcript_path": t, "cwd": h});
+        let a = advisory(call(&h, &writer, T0, Some(8.0 * GB), 16.0 * GB)).expect("advisory");
+        assert!(a.contains("anti-hall \u{b7} shared-tree: another write-capable agent") && a.contains("pass isolation:\\\"worktree\\\""), "{a}");
+        assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/swarm-spawns.log")).unwrap().lines().count(), 1, "an advisory spawn is recorded once");
+        std::fs::write(format!("{h}/CLAUDE.md"), "Rules: no worktrees here.\n").unwrap();
+        let a = advisory(call(&h, &writer, T0 + 1, Some(8.0 * GB), 16.0 * GB)).expect("advisory");
+        assert!(a.contains("serialize them or give each its own scratch clone.") && !a.contains("isolation"), "{a}");
+    }
+
+    #[test]
+    fn the_advisory_is_silent_whenever_node_is_silent() {
+        let h = swarm_home("sw-quiet");
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose"}));
+        let mut n = 0u64;
+        let mut silent = |input: Value, t: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": input, "transcript_path": t, "cwd": h});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB)).is_none()
+        };
+        assert!(silent(json!({"subagent_type": "Explore"}), &busy), "a read-only type");
+        assert!(silent(json!({"isolation": "worktree"}), &busy), "an isolated spawn");
+        assert!(silent(json!({"prompt": "work in a scratch clone under /tmp/x"}), &busy), "a scratch spawn");
+        assert!(!silent(json!({"prompt": "work in a scratch clone under /tmp/x, in the repo"}), &busy), "an in-place statement cancels scratch");
+        assert!(!silent(json!({"prompt": "not in scratch /tmp/x"}), &busy), "a negation cancels scratch");
+        assert!(silent(json!({}), "/missing/transcript.jsonl"), "an unreadable transcript");
+        assert!(silent(json!({}), &transcript(&h, json!({"subagent_type": "Explore"}))), "the other agent is read-only");
+        assert!(silent(json!({}), &transcript(&h, json!({"isolation": "remote"}))), "the other agent is isolated");
+        assert!(silent(json!({}), &transcript(&h, json!({"prompt": "cd /private/tmp/x and work"}))), "the other agent works in scratch");
+        let no_transcript = json!({"tool_name": "Agent", "tool_input": {}});
+        assert!(advisory(call(&h, &no_transcript, T0 + 100_000, Some(8.0 * GB), 16.0 * GB)).is_none());
+    }
+
+    #[test]
+    fn what_the_script_cannot_reproduce_defers_before_the_spawn_is_recorded() {
+        let h = swarm_home("sw-defer");
+        let t = transcript(&h, json!({"subagent_type": "general-purpose"}));
+        let log = format!("{h}/.anti-hall/swarm-spawns.log");
+        let no_cwd = json!({"tool_name": "Agent", "tool_input": {}, "transcript_path": t});
+        assert_eq!(call(&h, &no_cwd, T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Defer)), "no cwd: Node would use the hook's own directory");
+        let rel = json!({"tool_name": "Agent", "tool_input": {}, "transcript_path": "t.jsonl", "cwd": h});
+        assert_eq!(call(&h, &rel, T0 + 1, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Defer)), "a relative transcript path");
+        let odd = json!({"tool_name": "Agent", "tool_input": {}, "transcript_path": t, "cwd": format!("{h}/../x")});
+        assert_eq!(call(&h, &odd, T0 + 2, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Defer)), "a cwd that is not in normal form");
+        assert!(!std::path::Path::new(&log).exists(), "a deferral must not record the spawn");
+    }
+
+    #[test]
+    fn the_log_is_read_like_parse_int_and_a_huge_entry_defers() {
+        let h = swarm_home("sw-huge");
+        std::fs::write(format!("{h}/.anti-hall/swarm-spawns.log"), "99999999999999999999\n").unwrap();
+        assert_eq!(call(&h, &spawn(), T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Defer)));
+        // a log with junk lines, a CR and a sign: only the positive finite numbers count
+        let h2 = swarm_home("sw-parse");
+        std::fs::write(format!("{h2}/.anti-hall/swarm-spawns.log"), format!("abc\r\n{}\n-5\n+{}abc\n0x10\n\n", T0 - 10, T0 - 20)).unwrap();
+        assert_eq!(call(&h2, &spawn(), T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)));
+        let log = std::fs::read_to_string(format!("{h2}/.anti-hall/swarm-spawns.log")).unwrap();
+        assert_eq!(log.lines().map(str::to_string).collect::<Vec<_>>(), vec![(T0 - 10).to_string(), (T0 - 20).to_string(), T0.to_string()]);
+    }
+
+    #[test]
+    fn the_write_capability_test_follows_the_node_helper() {
+        let h = swarm_home("sw-cap2");
+        // every spawn shares the tree unless the type or the tool list says it cannot write: probed through the advisory
+        let t = transcript(&h, json!({"subagent_type": "general-purpose"}));
+        let probe = |input: Value, n: u64| {
+            let p = json!({"tool_name": "Agent", "tool_input": input, "transcript_path": t, "cwd": h});
+            advisory(call(&h, &p, T0 + 200_000 + n * 70_000, Some(8.0 * GB), 16.0 * GB)).is_some()
+        };
+        assert!(!probe(json!({"subagent_type": "  EXPLORE "}), 1));
+        assert!(probe(json!({"subagent_type": "general-purpose"}), 2));
+        assert!(!probe(json!({"tools": ["Read", "Grep"]}), 3));
+        assert!(probe(json!({"tools": ["Read", "Edit"]}), 4));
+        assert!(!probe(json!({"tools": []}), 5));
+        assert!(!probe(json!({"tools": "Read, Grep"}), 6));
+        assert!(probe(json!({"tools": 5}), 7));
+        assert!(!probe(json!({"disallowedTools": ["Edit", "Write", "MultiEdit"]}), 8));
+        assert!(probe(json!({"disallowedTools": ["Edit", "Write"]}), 9));
+        assert!(probe(json!({"tools": [["Edit"]]}), 10));
+    }
+}
+
+// ---- sibling-sweep (the decision tests of the compiled check, driven through the script; the golden corpus covers the
+// matcher over its message corpus and the single-call outcomes) ----
+
+mod sibling {
+    use super::*;
+
+    const CAUSE: &str = "Root cause: `read_window` holds the file twice, so memory doubles. Fixed by streaming the lines.";
+
+    fn h(tag: &str) -> String {
+        let d = home(&format!("sib-{tag}"));
+        std::fs::create_dir_all(format!("{d}/.anti-hall")).unwrap();
+        d
+    }
+
+    fn assistant(blocks: Value) -> String {
+        json!({"type": "assistant", "message": {"role": "assistant", "content": blocks}}).to_string()
+    }
+
+    fn say(t: &str) -> String {
+        assistant(json!([{"type": "text", "text": t}]))
+    }
+
+    fn tool(name: &str, input: Value) -> String {
+        assistant(json!([{"type": "tool_use", "id": "t1", "name": name, "input": input}]))
+    }
+
+    fn result() -> String {
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}).to_string()
+    }
+
+    fn write(home: &str, name: &str, lines: &[String]) -> String {
+        let p = format!("{home}/{name}");
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        p
+    }
+
+    fn append(path: &str, lines: &[String]) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        writeln!(f, "{}", lines.join("\n")).unwrap();
+    }
+
+    fn stop(home: &str, transcript: &str, reply: &str) -> Value {
+        json!({"hook_event_name": "Stop", "session_id": "s1", "transcript_path": transcript, "last_assistant_message": reply, "cwd": home})
+    }
+
+    fn continuation(home: &str, transcript: &str, reply: &str) -> Value {
+        let mut v = stop(home, transcript, reply);
+        v["stop_hook_active"] = json!(true);
+        v
+    }
+
+    fn go(h: &str, p: &Value) -> Verdict {
+        let event = p.get("hook_event_name").and_then(Value::as_str).unwrap_or("Stop");
+        crate::script::run_forced("sibling-sweep", p, &Value::Null, event, &env(h)).expect("a shipped script").expect("a verdict")
+    }
+
+    fn is_adv(v: &Verdict) -> bool {
+        matches!(v, Verdict::Advisory(_))
+    }
+
+    fn rows(h: &str) -> Vec<Value> {
+        let p = format!("{h}/.anti-hall/{}", defaults::text("sibling_sweep.log"));
+        std::fs::read_to_string(p).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    }
+
+    fn results(h: &str, event: &str, key: &str) -> Vec<String> {
+        rows(h).iter().filter(|r| r["event"] == event).map(|r| r[key].as_str().unwrap().to_string()).collect()
+    }
+
+    fn fire(h: &str, tag: &str) -> String {
+        let p = write(h, &format!("{tag}.jsonl"), &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        assert!(is_adv(&go(h, &stop(h, &p, CAUSE))));
+        p
+    }
+
+    fn configure(h: &str, section: Value) {
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"sibling_sweep": section}).to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_cause_in_a_fix_context_with_no_search_gets_one_reminder_naming_the_pattern() {
+        let d = h("sw-fire");
+        let p = write(&d, "t.jsonl", &[user("fix the memory bug"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let v = go(&d, &stop(&d, &p, CAUSE));
+        let Verdict::Advisory(j) = &v else { panic!("{v:?}") };
+        let j: Value = serde_json::from_str(j).unwrap();
+        assert_eq!(j["decision"], "block", "the reminder IS a Stop block");
+        let t = j["reason"].as_str().unwrap();
+        assert!(t.contains("read_window") && t.contains("search the codebase"), "{t}");
+        assert_eq!(results(&d, "cause", "result"), ["reminded"]);
+    }
+
+    #[test]
+    fn once_per_cause_per_turn_then_again_in_a_new_turn() {
+        let d = h("sw-once");
+        let p = write(&d, "t.jsonl", &[user("fix it"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        assert!(is_adv(&go(&d, &stop(&d, &p, CAUSE))));
+        assert_eq!(go(&d, &stop(&d, &p, CAUSE)), Verdict::Allow);
+        assert_eq!(results(&d, "cause", "result"), ["reminded", "duplicate"]);
+        append(&p, &[user("now fix the other one"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        assert!(is_adv(&go(&d, &stop(&d, &p, CAUSE))), "a new turn re-arms the cause");
+    }
+
+    #[test]
+    fn a_search_after_the_cause_statement_means_no_reminder_a_search_before_it_does_not() {
+        let d = h("sw-search");
+        let after = write(
+            &d,
+            "a.jsonl",
+            &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE), tool("Grep", json!({"pattern": "read_window"})), result(), say("Fixed.")],
+        );
+        assert_eq!(go(&d, &stop(&d, &after, CAUSE)), Verdict::Allow);
+        assert_eq!(results(&d, "cause", "result"), ["swept"]);
+        let before = write(&d, "b.jsonl", &[user("fix"), tool("Grep", json!({"pattern": "read_window"})), result(), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let mut p = stop(&d, &before, CAUSE);
+        p["session_id"] = json!("s2");
+        assert!(is_adv(&go(&d, &p)), "the investigation grep came before the statement");
+    }
+
+    #[test]
+    fn an_explicit_statement_no_fix_context_a_quiet_reply_and_a_continuation_never_remind() {
+        let d = h("sw-quiet");
+        let msg = format!("{CAUSE} Searched for other occurrences with rg: none.");
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&msg)]);
+        assert_eq!(go(&d, &stop(&d, &p, &msg)), Verdict::Allow);
+        let d2 = h("sw-nofix");
+        let m2 = "The cause is the cache key, which omits the tenant.";
+        let p2 = write(&d2, "t.jsonl", &[user("why is it slow"), say(m2)]);
+        assert_eq!(go(&d2, &stop(&d2, &p2, m2)), Verdict::Allow);
+        assert_eq!(results(&d2, "cause", "result"), ["no_fix_context"]);
+        let d3 = h("sw-gone");
+        assert_eq!(go(&d3, &stop(&d3, &format!("{d3}/missing.jsonl"), "Done, tests pass.")), Verdict::Allow);
+        assert!(rows(&d3).is_empty(), "a reply without a cause never reads the transcript");
+        let d4 = h("sw-cont");
+        let p4 = write(&d4, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let mut payload = stop(&d4, &p4, CAUSE);
+        payload["stop_hook_active"] = json!(true);
+        assert_eq!(go(&d4, &payload), Verdict::Allow);
+        assert_eq!(results(&d4, "cause", "result"), ["continuation"]);
+    }
+
+    #[test]
+    fn the_per_scope_cap_bounds_reminders() {
+        let d = h("sw-cap");
+        let cap = defaults::num("sibling_sweep.max_per_scope");
+        let mut fired = 0;
+        for i in 0..cap + 3 {
+            let msg = format!("Root cause: `site_{i}` drops the guard, so it fails. Fixed.");
+            let p = write(&d, "t.jsonl", &[user(&format!("fix {i}")), tool("Edit", json!({})), result(), say(&msg)]);
+            if is_adv(&go(&d, &stop(&d, &p, &msg))) {
+                fired += 1;
+            }
+        }
+        assert_eq!(fired, cap);
+        assert_eq!(results(&d, "cause", "result").iter().filter(|r| *r == "capped").count(), 3, "{:?}", rows(&d));
+    }
+
+    #[test]
+    fn the_switch_the_skip_file_a_judge_child_other_events_and_missing_inputs_silence_it() {
+        let d = h("sw-off");
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let payload = stop(&d, &p, CAUSE);
+        std::fs::write(format!("{d}/.anti-hall/settings.json"), r#"{"guards":{"siblingSweep":false}}"#).unwrap();
+        assert_eq!(go(&d, &payload), Verdict::Allow);
+        std::fs::write(format!("{d}/.anti-hall/settings.json"), r#"{"guards":{"siblingSweep":true}}"#).unwrap();
+        assert!(is_adv(&go(&d, &payload)), "on is the default and an explicit on");
+        let d2 = h("sw-child");
+        let p2 = write(&d2, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let e = RequestEnv::from_pairs([("HOME", d2.as_str()), ("ANTIHALL_JUDGE_CHILD", "1")]);
+        assert_eq!(run_forced("sibling-sweep", &stop(&d2, &p2, CAUSE), &e), Some(Some(Verdict::Allow)));
+        let d3 = h("sw-skip");
+        let p3 = write(&d3, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let far = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() + 600_000) as u64;
+        std::fs::write(format!("{d3}/.anti-hall/skip.json"), format!("{{\"sibling-sweep\":{far}}}")).unwrap();
+        assert_eq!(go(&d3, &stop(&d3, &p3, CAUSE)), Verdict::Allow);
+        let d4 = h("sw-misc");
+        let p4 = write(&d4, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let mut other = stop(&d4, &p4, CAUSE);
+        other["hook_event_name"] = json!("PostToolUse");
+        assert_eq!(go(&d4, &other), Verdict::Allow);
+        let mut nosession = stop(&d4, &p4, CAUSE);
+        nosession["session_id"] = json!("");
+        assert_eq!(go(&d4, &nosession), Verdict::Allow);
+        let mut notranscript = stop(&d4, &p4, CAUSE);
+        notranscript["transcript_path"] = json!("");
+        assert_eq!(go(&d4, &notranscript), Verdict::Allow);
+        assert_eq!(run_forced("sibling-sweep", &stop("", &p4, CAUSE), &RequestEnv::from_pairs([("HOME", "")])), Some(Some(Verdict::Allow)));
+    }
+
+    #[test]
+    fn a_subagent_stop_reads_its_own_transcript_and_has_its_own_scope() {
+        let d = h("sw-sub");
+        let own = write(&d, "agent.jsonl", &[user("task"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let parent = write(&d, "parent.jsonl", &[user("p"), say("working")]);
+        let payload = json!({"hook_event_name": "SubagentStop", "session_id": "s1", "agent_id": "a9", "transcript_path": parent, "agent_transcript_path": own, "last_assistant_message": CAUSE});
+        assert!(is_adv(&go(&d, &payload)));
+        assert_eq!(rows(&d)[0]["scope"], "subagent");
+        assert!(std::path::Path::new(&format!("{d}/.anti-hall/sibling-sweep-s1-a9.json")).exists());
+    }
+
+    #[test]
+    fn follow_through_is_counted_within_the_window_and_resolved_once() {
+        let d = h("sw-ft1");
+        let p = fire(&d, "t");
+        append(&p, &[tool("Read", json!({})), result(), tool("Grep", json!({"pattern": "read_window"})), result(), say("Searched: no other occurrences. Done.")]);
+        go(&d, &continuation(&d, &p, "Searched: no other occurrences. Done."));
+        assert_eq!(results(&d, "followthrough", "outcome"), ["followed"]);
+        assert_eq!(rows(&d).iter().find(|x| x["event"] == "followthrough").unwrap()["tool_calls"], 2);
+        let d2 = h("sw-ft2");
+        let p2 = fire(&d2, "t");
+        append(&p2, &[tool("Bash", json!({"command": "cargo test"})), result(), say("All green.")]);
+        go(&d2, &continuation(&d2, &p2, "All green."));
+        assert_eq!(results(&d2, "followthrough", "outcome"), ["ignored"]);
+        let d3 = h("sw-ft3");
+        let p3 = fire(&d3, "t");
+        let mut more: Vec<String> = Vec::new();
+        for _ in 0..defaults::num("sibling_sweep.follow_window") {
+            more.push(tool("Read", json!({})));
+            more.push(result());
+        }
+        more.push(tool("Grep", json!({"pattern": "x"})));
+        more.push(result());
+        append(&p3, &more);
+        go(&d3, &continuation(&d3, &p3, "ok"));
+        assert_eq!(results(&d3, "followthrough", "outcome"), ["ignored"], "a search beyond the window does not count");
+        let d4 = h("sw-ft4");
+        let p4 = fire(&d4, "t");
+        append(&p4, &[user("something else"), say("sure")]);
+        go(&d4, &stop(&d4, &p4, "sure"));
+        assert_eq!(results(&d4, "followthrough", "outcome"), ["unknown"]);
+        go(&d4, &stop(&d4, &p4, "sure"));
+        assert_eq!(results(&d4, "followthrough", "outcome").len(), 1, "a resolved reminder is not resolved twice");
+    }
+
+    #[test]
+    fn the_telemetry_log_is_bounded_and_a_bad_state_file_reads_as_empty() {
+        let d = h("sw-log");
+        let path = format!("{d}/.anti-hall/{}", defaults::text("sibling_sweep.log"));
+        std::fs::create_dir_all(std::path::Path::new(&path).parent().unwrap()).unwrap();
+        std::fs::write(&path, "x".repeat(defaults::num("sibling_sweep.log_max_bytes") as usize + 1)).unwrap();
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        assert!(is_adv(&go(&d, &stop(&d, &p, CAUSE))));
+        assert!(std::fs::metadata(&path).unwrap().len() < 600, "the log is emptied once over its cap, then holds the new rows only");
+        let d2 = h("sw-state");
+        std::fs::write(format!("{d2}/.anti-hall/sibling-sweep-s1.json"), "{not json").unwrap();
+        let p2 = write(&d2, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        assert!(is_adv(&go(&d2, &stop(&d2, &p2, CAUSE))), "an unreadable state is an empty one");
+        let s: Value = serde_json::from_str(&std::fs::read_to_string(format!("{d2}/.anti-hall/sibling-sweep-s1.json")).unwrap()).unwrap();
+        assert_eq!(s["fired"], 1);
+        assert!(s["pending"]["cause"].is_string());
+    }
+
+    #[test]
+    fn phrases_text_limits_and_a_bad_pattern_are_settings_file_edits() {
+        let d = h("sw-cfg");
+        let msg = "Zorp located: `site_a` loses the lock. Fixed.";
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+        assert_eq!(go(&d, &stop(&d, &p, msg)), Verdict::Allow, "not a cause statement by the shipped phrases");
+        configure(&d, json!({"cause_cues": ["\\bzorp located\\b"]}));
+        assert!(is_adv(&go(&d, &stop(&d, &p, msg))), "the edited phrase list is read on the next call");
+        let old = "Root cause: `site_b` loses the lock, so it fails. Fixed.";
+        let p2 = write(&d, "u.jsonl", &[user("fix again"), tool("Edit", json!({})), result(), say(old)]);
+        assert_eq!(go(&d, &stop(&d, &p2, old)), Verdict::Allow, "the shipped phrases are replaced by the file's list");
+        let d2 = h("sw-cfg2");
+        configure(&d2, json!({"msg_instead": "grep the tree for the twin of this bug and report the hit count", "max_per_scope": 1, "follow_window": 1}));
+        let p3 = write(&d2, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let Verdict::Advisory(j) = go(&d2, &stop(&d2, &p3, CAUSE)) else { panic!("expected a reminder") };
+        assert!(j.contains("grep the tree for the twin of this bug"), "{j}");
+        append(&p3, &[tool("Read", json!({})), result(), tool("Grep", json!({"pattern": "x"})), result(), say("done")]);
+        go(&d2, &continuation(&d2, &p3, "done"));
+        assert_eq!(results(&d2, "followthrough", "outcome"), ["ignored"]);
+        let other = "Root cause: `site_z` drops the guard, so it fails. Fixed.";
+        let p4 = write(&d2, "u.jsonl", &[user("again"), tool("Edit", json!({})), result(), say(other)]);
+        assert_eq!(go(&d2, &stop(&d2, &p4, other)), Verdict::Allow);
+        assert_eq!(results(&d2, "cause", "result").last().map(String::as_str), Some("capped"));
+        let d3 = h("sw-cfg3");
+        configure(&d3, json!({"hedge_any_re": "(unclosed", "cause_cues": ["(also unclosed"]}));
+        let p5 = write(&d3, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
+        assert!(is_adv(&go(&d3, &stop(&d3, &p5, CAUSE))), "the shipped patterns keep the check working");
+    }
+
+    #[test]
+    fn the_matcher_keeps_its_precision_and_recall_over_the_message_corpus() {
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/sibling-sweep-corpus.ndjson")).expect("the corpus file is readable");
+        let d = h("sw-corpus");
+        let (mut n, mut wrong) = (0, Vec::new());
+        for l in text.lines() {
+            let v: Value = serde_json::from_str(l).unwrap();
+            let (msg, expect) = (v["msg"].as_str().unwrap(), v["cause"].as_bool().unwrap());
+            // a fresh scope per message so the once-per-cause memory never hides a verdict
+            let p = write(&d, "t.jsonl", &[user("fix the crash"), tool("Edit", json!({})), result(), say(msg)]);
+            let mut payload = stop(&d, &p, msg);
+            payload["session_id"] = json!(format!("c{n}"));
+            n += 1;
+            if is_adv(&go(&d, &payload)) != expect {
+                wrong.push(msg.to_string());
+            }
+        }
+        assert!(n >= 60, "the corpus must hold at least 60 messages");
+        assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
+    }
+}

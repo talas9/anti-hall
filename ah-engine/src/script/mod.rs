@@ -274,4 +274,5 @@ mod golden;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+#[path = "host_tests/tests.rs"]
 mod tests_host;

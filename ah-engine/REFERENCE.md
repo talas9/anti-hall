@@ -102,7 +102,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
-| `swarm-guard` | Blocks an agent spawn past the spawn-rate cap or under critical memory pressure; defers when a shared-tree advisory may be due (port of swarm-guard.js). |
+| `swarm-guard` | Blocks an agent spawn past the spawn-rate cap or under critical memory pressure, and adds the shared-tree advisory to an allowed write-capable spawn that shares a working tree with a running write-capable agent (port of swarm-guard.js and lib/shared-tree-note.js). |
 | `jev-weekly-scorecard` | Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); when the check is due and the Jev decision log holds no rows it stamps the weekly latch itself; otherwise defers to the Node hook, which builds the report (port of jev-weekly-scorecard.js). |
 | `jev-review-reminder` | Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn, a non-interactive run); shows the recommend-Jev notice and stamps its latch itself when that is the only notice due; otherwise defers to the Node hook (port of jev-review-reminder.js). |
 | `repair-on-reload` | Stays silent when no repair can start (switch off, subagent turn, skipped, nothing pending at the running version, cooldown); otherwise defers to the Node hook, which takes the lock and starts the detached repair (port of the gates of repair-on-reload.js). |
@@ -362,7 +362,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.cd_max_segments` | `64` |  |  | A tracked cd directory with more path segments than this is dropped. |
 | `git.chain_joiner` | `` -> `` |  |  | Separator between the aliases of a chain in a note. |
 | `git.check_summary` | `Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self...` |  |  | One-line description of the check for the generated reference. |
-| `git.child_poll_ms` | `1` |  | ms | Poll interval while a git child process runs. |
 | `git.commit_cluster_value_flags` | `mFCct` |  |  | Short commit flags that take a value inside a cluster (-m, -F, -C, -c, -t). |
 | `git.commit_creating` | `9 items` |  |  | Subcommands that create a commit, where self-credit and handover checks apply. |
 | `git.commit_hash_len` | `40` |  |  | Length of a full commit hash, used to shorten it in messages. |
@@ -432,7 +431,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.launcher_dir_pattern` | `(?i)\.anti-hall[\\/]+bin(?:[\\/]\|$)` |  |  | Pattern (case-insensitive) that recognises a path inside the plugin launcher directory. |
 | `git.launcher_hops` | `10` |  |  | Most symlink hops followed when resolving a dangling launcher link. |
 | `git.max_chain` | `10` |  |  | Longest git alias chain followed before giving up. |
-| `git.max_nest` | `1500` |  |  | Nesting limit for the substitution scanners (JS overflows its stack far deeper and its caller then scans the raw text, which is what a bail-out means here). |
 | `git.more_marker` | `, ...` |  |  | Appended to a list that was cut short. |
 | `git.noop_editors` | `true, :, cat` |  |  | Commit editors that leave the message untouched, so a reused message is used verbatim. |
 | `git.note_env_alias_def` | `defining a git alias via `{name}` to run a blocked command:` |  |  | Note on a block found inside an alias defined through GIT_CONFIG_VALUE_<n>. Placeholder: {name}. |
@@ -445,21 +443,20 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.origin_commit` | `commit `{ref}`` |  |  | Where a reused message came from: a named commit. Placeholder: {ref}. |
 | `git.origin_template` | `the commit template` |  |  | Where a reused message came from: the commit template. |
 | `git.parallel_separators` | `:::, ::::, :::+, ::::+` |  |  | GNU parallel argument-source separators. |
-| `git.plugin_option_prefix` | `CLAUDE_PLUGIN_OPTION_` |  |  | Prefix of the environment variables the host sets from plugin options. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
 | `git.push_long_opts` | `27 items` |  |  | Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w. |
-| `git.redirect_words` | `11 items` |  |  | Shell redirection operators, which are not command words. |
-| `git.setting_alias_resolve` | `4 entries` |  |  | Switch for git alias and shell definition resolution. |
-| `git.setting_git_guard` | `4 entries` |  |  | Master switch of the check: settings.json section and key, environment variable and plugin-option name. |
-| `git.setting_handover_guard` | `4 entries` |  |  | Switch for the handover-commit guard. |
-| `git.setting_heredoc_data` | `4 entries` |  |  | Switch for data-heredoc masking. |
-| `git.setting_reused_message` | `4 entries` |  |  | Switch for the reused-commit-message check. |
-| `git.settings_file` | `.anti-hall/settings.json` |  |  | Settings file, relative to the home directory. |
+| `git.re_file_write_echo` | `\b(?:echo\|printf)\b` |  |  | JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc. |
+| `git.re_file_write_heredoc` | `<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?` |  |  | JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip. |
+| `git.re_file_write_redirect` | `(?:^\|[\s;&\|(])>{1,2}\s*[^\s&;\|<>()0-9][^\s&;\|<>()]*` |  |  | JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape. |
+| `git.re_file_write_tee` | `\btee\b\s+(?:-a\s+)?[^\s&;\|<>()-][^\s&;\|<>()]*` |  |  | JavaScript regex source: a tee into a file, which counts as a redirect for the file-write shape. |
+| `git.setting_alias_resolve` | `6 entries` |  |  | Switch for git alias and shell definition resolution. |
+| `git.setting_git_guard` | `6 entries` |  |  | Master switch of the check: settings.json section and key, environment variable and plugin-option name. |
+| `git.setting_handover_guard` | `6 entries` |  |  | Switch for the handover-commit guard. |
+| `git.setting_heredoc_data` | `6 entries` |  |  | Switch for data-heredoc masking. |
+| `git.setting_reused_message` | `6 entries` |  |  | Switch for the reused-commit-message check. |
 | `git.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument is itself a script to scan. |
 | `git.skip_command` | `node '{script}' skip {key}` |  |  | Command that records a skip for a guard; {script} is the quoted script path and {key} the guard id. |
-| `git.skip_file` | `.anti-hall/skip.json` |  |  | Skip file, relative to the home directory (a skipped guard is allowed until its expiry time). |
 | `git.skip_script` | `scripts/devswarm.js` |  |  | Script, relative to the plugin directory, that records a skip for a guard. |
-| `git.stack_mb` | `64` |  | MB | Stack size of the thread the check runs on: the parsers recurse on nested input, so a pathological command must not overflow a daemon worker. |
 | `git.word_alias` | `alias` |  |  | The word for a shell alias in notes. |
 | `git.word_function` | `function` |  |  | The word for a shell function in notes. |
 | `git.wrapper_value_opts` | `3 entries` |  |  | Options of the sudo, timeout and nice wrappers that take a value, so the word after them is not the wrapped command (git-guard.js SUDO_VAL and the timeout and nice branches). |
@@ -2590,10 +2587,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.msg_rate_instead` | `pause new agents and let running ones finish, then launch the next wave; resp...` |  |  | What to do instead of spawning past the cap. |
 | `swarm_guard.msg_rate_what` | `agent spawn-rate ceiling reached ({count} spawns in the last 60s, cap is {cap}).` |  |  | What the rate block says; {count} is the spawns in the window and {cap} the cap. |
 | `swarm_guard.msg_rate_why` | `A runaway swarm can make the OS unusable.` |  |  | Why the rate block applies. |
+| `swarm_guard.msg_shared_instead` | `pass isolation:"worktree", serialize them, or give each its own scratch clone.` |  |  | What to do instead, when the repo does not forbid worktrees. |
+| `swarm_guard.msg_shared_instead_no_worktrees` | `serialize them or give each its own scratch clone.` |  |  | What to do instead, when the repo forbids worktrees. |
+| `swarm_guard.msg_shared_what` | `another write-capable agent is still running in this working tree, and this s...` |  |  | What the shared-tree advisory says. |
+| `swarm_guard.msg_shared_why` | `Two such agents can stage and commit each other's uncommitted changes.` |  |  | Why the shared-tree advisory applies. |
 | `swarm_guard.proc_pidns` | `/proc/self/ns/pid` |  |  | The Linux link that names this process's pid namespace. |
 | `swarm_guard.proc_uptime` | `/proc/uptime` |  |  | The Linux file that holds the uptime in seconds. |
+| `swarm_guard.re_in_place` | `\bin\s+place\b\|\bin\s+(?:the\s+)?(?:session\s+)?repo\b\|\brepo\s+files\b\|\b(?:...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading. |
+| `swarm_guard.re_no_worktrees` | `\bno\s+(?:git\s+)?worktrees?\b` |  |  | JavaScript regex source (case-insensitive) matched against the CLAUDE.md / AGENTS.md files of the repo: a rule that forbids worktrees, which drops the isolation hint from the advisory. |
+| `swarm_guard.re_scratch_negated` | `\b(?:not\|no\|without\|instead\s+of)\s+(?:in\s+\|a\s+\|the\s+\|any\s+)?scratch\b` |  |  | JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading. |
 | `swarm_guard.read_only_types` | `13 items` |  |  | Agent types that cannot edit files (their definitions exclude the editing tools), lower-case. |
+| `swarm_guard.repo_docs` | `CLAUDE.md, AGENTS.md` |  |  | The files read at each directory level when looking for the no-worktrees rule. |
+| `swarm_guard.repo_docs_levels` | `8` |  |  | How many directory levels up from the spawn's working directory the rule search climbs at most. |
+| `swarm_guard.scratch_alternatives` | `\bwork(?:ing)?\s+(?:in\\|inside)\s+(?:a\\|an\\|the\\|your)?\s*scratch\s+(?:clone\...` |  |  | JavaScript regex sources, joined with \| and matched case-insensitively against the spawn's prompt and description: the statements that establish a scratch working location outside the session's git tree. |
+| `swarm_guard.scratch_path` | `[\x60'"]?(?:\/private\/tmp\/\|\/tmp\/\|\/var\/folders\/\|[^\s\x60'"]*scratchpad\b)` |  |  | JavaScript regex source for a scratch location in a spawn prompt (a /tmp, /private/tmp, /var/folders or scratchpad path); {path} in the scratch alternatives is replaced by it. |
 | `swarm_guard.setting` | `6 entries` |  |  | The switch safety.swarmGuard (on by default); off makes the guard a no-op. |
+| `swarm_guard.shared_tree_label` | `shared-tree` |  |  | Guard name in the shared-tree advisory. |
 | `swarm_guard.shared_tree_setting` | `6 entries` |  |  | The switch guards.sharedTreeAgentNote (on by default): the advisory for a write-capable spawn that shares a working tree with a running write-capable agent. |
 | `swarm_guard.spawn_cap` | `20` |  |  | How many agent spawns are allowed inside the window before the next one is blocked. |
 | `swarm_guard.state_dir` | `.anti-hall` |  |  | The directory of the spawn log, lock and trip log, relative to the home directory. |
@@ -3853,7 +3862,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `sibling_sweep.msg_why` | `a bug cause is rarely unique: fixing one site and calling it done leaves its ...` |  |  | Why it matters, in the reminder. |
 | `sibling_sweep.question_terminator` | `?` |  |  | The terminator that makes a sentence a question; a question is never a cause statement. |
 | `sibling_sweep.quote_line_re` | `(?m)^[ \t]*>.*$` |  |  | Regex source of a quoted line (a Markdown quote), removed before matching. |
-| `sibling_sweep.read_buf_bytes` | `65536` |  | bytes | The size of the buffer the transcript window is read through. |
 | `sibling_sweep.search_agent_types` | `Explore, explore, oh-my-claudecode:explore` |  |  | Subagent types that are search agents. |
 | `sibling_sweep.search_tool_re` | `(?:^\|__)(?:ast_grep_search\|lsp_find_references\|rip_grep_packages\|grep\|find_re...` |  |  | Regex source of tool names that are searches by their name (MCP structural search, find-references, ripgrep servers). |
 | `sibling_sweep.search_tools` | `Grep, Glob` |  |  | Tool names whose use is a codebase search (matched exactly). |
@@ -3909,7 +3917,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.handover_adds_max` | `50` |  |  | Most `git add` commands the git check remembers in one command line when it looks for a staged handover file. |
 | `git.max_recursion` | `1500` |  |  | Deepest nesting of wrapper commands (`xargs xargs ...`) the git check follows before it defers to Node, whose own stack overflows at about this depth. |
 | `git.path_arg_max_chars` | `4096` |  |  | Longest directory argument (in characters) the git check tracks through a `cd`; a longer one is left to Node. |
-| `git.path_arg_max_segments` | `64` |  |  | Most path segments in a directory argument the git check tracks through a `cd`; a deeper one is left to Node. |
 | `git.self_credit_coauthor_key` | `co-authored-by` |  |  | The trailer key (lowercase) that credits a co-author; an AI tool named after it is a self-credit. |
 | `git.self_credit_generated_prefix` | `generated with ` |  |  | The footer prefix (lowercase, with its trailing space) after which an AI tool name is a self-credit. |
 | `git.self_credit_trailer_keys` | `co-authored-by, generated-with, generated with` |  |  | The trailer keys (lowercase) that a `-c trailer.<key>.key=` remap must not write a credit under. |
@@ -3969,7 +3976,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
 | `script.engine_only_checks` | `sibling-sweep` |  |  | Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
+| `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
+| `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
+| `script.exec_poll_ms` | `2` |  | ms | How often the bounded runner checks whether an `ah.exec` child has finished. |
+| `script.exec_programs` | `git` |  |  | Program names `ah.exec` may run (bare names, resolved through the request's PATH). Anything else answers null. |
+| `script.exec_timeout_max_ms` | `5000` |  | ms | Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit. |
 | `script.ext` | `.js` |  |  | File extension of a check script and of a lib file. |
+| `script.includes` | `1 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
 | `script.lib_dir` | `lib` |  |  | Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script. |
 | `script.logic_dir` | `engine/logic` |  |  | Directory of the shipped check scripts, relative to the plugin root. |
 | `script.msg_bad_verdict` | `unexpected verdict {value}` |  |  | Logged reason (then the call defers) when a script returns a value that is not a verdict. |
@@ -3981,12 +3994,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_not_number` | `{key} is not a number` |  |  | Error a script sees when it asks `ah.cfgNum` for a key whose value is not a number. |
 | `script.msg_settings_unreadable` | `settings file readable only by JavaScript` |  |  | Reason logged (then the failure policy applies) when the settings file holds something only JavaScript can parse. |
 | `script.msg_unknown_key` | `unknown defaults key {key}` |  |  | Error a script sees when it asks `ah.cfg` for a key that is not shipped. |
+| `script.msg_unknown_op` | `unknown file operation {op}` |  |  | Error a script sees when it asks a file operation the host does not have. Placeholder: {op}. |
 | `script.msg_write_refused` | `write refused: {why}` |  |  | Error a script sees when its write was refused. Placeholder: {why}. |
 | `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
 | `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
 | `script.read_max_bytes` | `4194304` |  | bytes | Upper bound of one `ah.fs.readText` read, whatever the script asks for. |
+| `script.readdir_max` | `10000` |  |  | Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole). |
 | `script.regex_cache_max` | `256` |  |  | Compiled regular expressions kept per worker thread for `ah.re.*`; the cache is cleared when it is full. |
 | `script.stack_bytes` | `262144` |  | bytes | Largest interpreter stack one script call may use. |
+| `script.sweep_max_remove` | `200` |  |  | Most files one `ah.state.sweep` call may delete, whatever the script asks for. |
+| `script.tail_buf_bytes` | `65536` |  | bytes | Size of the buffer `ah.transcript.tailLines` reads a file through. |
+| `script.tail_max_bytes` | `16777216` |  | bytes | Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for. |
 | `script.time_limit_ms` | `50` | `AH_ENGINE_SCRIPT_TIME_MS` | ms | Wall-clock limit of one script call; past it the interpreter is interrupted and the call defers to Node (never a silent allow). |
 | `script.write_max_bytes` | `1048576` |  | bytes | Largest text one `ah.state.writeAtomic` call may write; a larger text is refused. |
 | `script.write_path_max` | `240` |  |  | Longest relative path one `ah.state.writeAtomic` call may name. |
@@ -4200,7 +4218,6 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_accept_recovered` | Event-log detail when the daemon accepts a connection again after accept failures (logged then, because a full descriptor table can keep the failure's own log line from being written). Placeholders: {n}, {code} (os<n> of the last failure). |
 | `msg.log_bind_fail` | Start-failure detail when binding the socket fails. Placeholders: {path}, {err}. |
 | `msg.log_budget` | Log detail when a rule evaluation exceeded its CPU budget. |
-| `msg.log_check_spawn` | Log detail when a built-in check's thread cannot start, so every command is deferred to Node. Placeholder: {err}. |
 | `msg.log_crash` | Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}. |
 | `msg.log_daemon_killed` | Log detail when the daemon was killed by a signal while starting. |
 | `msg.log_daemon_spawn_failed` | Event-log detail (kind spawn_fail, code os<n>) when the client could not start the daemon (fork or exec failed: EAGAIN, ENOMEM, a missing executable). Placeholder: {err}. |

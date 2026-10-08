@@ -144,10 +144,6 @@ value = "{path} exists and is not a socket"
 doc = "Start-failure detail when binding the socket fails. Placeholders: {path}, {err}."
 value = "bind {path}: {err}"
 
-[msg.log_check_spawn]
-doc = "Log detail when a built-in check's thread cannot start, so every command is deferred to Node. Placeholder: {err}."
-value = "a check thread could not start ({err}); the data-segment limit daemon.mem_mb may be smaller than git.stack_mb times the workers"
-
 [msg.log_accept_error]
 doc = "Event-log detail (rate-limited) when the daemon's accept failed for a reason other than nothing pending. Placeholders: {code} (os<n>), {err}."
 value = "accept failed ({code}: {err}); backing off before the next poll"
