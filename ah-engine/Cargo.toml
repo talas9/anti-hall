@@ -25,6 +25,9 @@ dhat = { version = "0.3.3", optional = true }
 # Scripted check logic (D88): an embedded QuickJS-NG interpreter runs the plugin's editable check scripts. Default features
 # off: no module loader, no async, no Rust allocator hook (so `set_memory_limit` stays enforced), pre-generated bindings.
 rquickjs = { version = "0.14.0", default-features = false }
+# Process watch (orphans, resource use): the cross-platform process table (parent, start time, CPU %, memory, environ, exe) and memory/swap
+# without parsing ps/vm_stat. Exact pin; only the `system` feature (no network, user, component or disk code); disk free is libc::statvfs.
+sysinfo = { version = "=0.39.6", default-features = false, features = ["system"] }
 
 # Allocator that returns freed pages (the system allocators keep them, so RSS stayed at the largest transient). Only on the targets
 # the crate supports (see src/main.rs).

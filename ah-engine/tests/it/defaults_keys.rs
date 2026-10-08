@@ -118,6 +118,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("ctxbudget.ca_advice_") // regex sources named by the ctxbudget.ca_advice list
             || k.starts_with("dispatch.hooks_") // the dispatch table, read by host and event (dispatch::table::key)
             || k == "script.p95_budget_by_check" // read by tests/script_latency.rs, the go/no-go gate of the scripted checks
+            || k.starts_with("procwatch.mode_") // each orphan class names its mode setting by key (procwatch.classes mode_key)
     };
     let read = |k: &String| {
         let (section, name) = k.split_once('.').unwrap_or(("", k));

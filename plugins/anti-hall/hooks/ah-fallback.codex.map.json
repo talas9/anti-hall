@@ -17,6 +17,7 @@
     "merge-gate": "node \"${PLUGIN_ROOT}/hooks/merge-gate.js\"",
     "merge-side-pick": "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\"",
     "orch-on-spawn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/orch-on-spawn.js\"",
+    "procwatch-advisory": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "ship-it-guard": "node \"${PLUGIN_ROOT}/hooks/ship-it-guard.js\""
   },
   "SessionStart": {
@@ -30,6 +31,7 @@
     "handover-resume": "node \"${PLUGIN_ROOT}/hooks/handover-resume.js\"",
     "jev-review-reminder": "node \"${PLUGIN_ROOT}/hooks/jev-review-reminder.js\"",
     "jev-weekly-scorecard": "node \"${PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"",
+    "procwatch-advisory": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "progress-prune": "node \"${PLUGIN_ROOT}/hooks/progress-prune.js\"",
     "repair-on-reload": "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
     "repo-self-drift": "node \"${PLUGIN_ROOT}/hooks/repo-self-drift.js\"",
@@ -59,6 +61,7 @@
     "devswarm-parent-inbox": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"",
     "idle-agent-sweep": "node \"${PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"",
     "limit-conserve-inject": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"",
+    "procwatch-advisory": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "repair-on-reload": "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
     "task-tracker": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-tracker.js\"",
     "verify-first": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/verify-first.js\""

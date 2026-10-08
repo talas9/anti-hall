@@ -700,6 +700,57 @@ error and is never remembered; an exit status other than 0 is remembered as "git
 compares every fact with a fresh `git` invocation on a plain repository, a linked worktree and a submodule, before and
 after commits, amends, resets, branch switches, detached HEAD, `pack-refs`, config changes, fetches and stashes.
 
+## Process watch (orphans, stuck agents, resource and disk warnings)
+
+One scheduled job (`procwatch`, `schedule.procwatch_ms`, default 30 s) and one engine-only advisory check
+(`procwatch-advisory`: SessionStart, UserPromptSubmit, PreToolUse) that look after the machine a Claude session runs on. All of
+it is configuration (`procwatch.toml`, `resource_watch.toml`, `disk_watch.toml`, with settings keys in `/anti-hall:settings`
+under Process watch, Resource watch and Disk watch). It is for every user: nothing in it names a project or a path outside the
+plugin's own directories. It warns; the only thing that can stop a process is a per-class opt-in, and nothing is ever deleted.
+
+| Part | Does | Default |
+|---|---|---|
+| Orphan sweep | lists (and, per class, stops) processes an ended Claude session left behind | every class `report` |
+| Stuck agents | names background agents of this session with no output for `procwatch.stuckMinutes` (reuses the silent-agent-nudge detection); warn only | 20 min, cooldown 15 min |
+| Resource watch | names a process under a live session using >= `resourceWatch.cpuPercent` for `cpuWindowSeconds`, or `memoryMb`; system swap and memory pressure | 90 % for 120 s, 4096 MB, 8192 MB swap |
+| Disk watch | free space of the project, HOME and temp volumes against a warn and a critical floor (GB and percent); names the biggest build/cache directories as a suggestion; before heavy commands at critical | warn 20 GB / 10 %, critical 5 GB / 3 %, block off |
+
+**What is an orphan.** Claude Code puts `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PID` (the session process) into the
+environment of everything it starts. A process is a candidate only when it carries the marker, it is reparented (its parent is
+init or gone), its owner `CLAUDE_PID` is not a live Claude session command that started before it (a recycled pid counts as
+gone), no ancestor is a live session, it matches a class and the class's minimum age, and it is not protected (the live engine
+under `~/.anti-hall/ah-engine*`, the plugin's hooks and companions, any Claude plugin cache). A process whose environment the
+system will not show is not marked and is never touched. Classes: `dev_server`, `test_runner`, `build_daemon`, `mcp_server`,
+`shell_task`, `other` (first match wins); `children = true` classes also list the descendants of a root. The owner's own classes go in
+`procwatch-classes.toml` in the engine state directory (example: `plugins/anti-hall/engine/examples/procwatch-dev.toml`).
+A kill is polite signal, `procwatch.grace_ms`, a fresh re-read of that one pid (same start time and command), then the forced
+signal; one pid at a time, never by pattern, at most `procwatch.max_kills_per_run` a sweep. The MCP class reports what the
+SessionEnd MCP reaper (a separate switch) would select, plus more; a test keeps it a superset.
+
+**Telemetry.** Impact kinds `orphan_candidate`, `orphan_kill`, `resource_warning`, `stuck_agent_warning`, `disk_warning` and the
+counter `procwatch_events` (labels kind and class). The sweep writes `procwatch-report.json` in the state directory (`cost_ms`, process
+count, candidates, kills, recent warnings) which the advisory reads; the sweep's own cost on this Mac is about 50 ms for 990
+processes with an orphan scan (release), and the resource-only sweep between scans reads the process table once.
+
+**Crate.** `sysinfo` 0.39.6 (exact pin, released 2026-07-09), feature `system` only: the process table with parent, start time,
+CPU, memory and environment, plus swap. It adds `sysinfo`, `objc2-core-foundation` and `objc2-io-kit` to the macOS graph (60 to 63 crates)
+and nothing on Linux beyond itself. Disk free space is `libc::statvfs` (no extra crate); the macOS footprint
+(`proc_pid_rusage`) and pressure level (`sysctlbyname`) are `libc` calls. `ps` is not parsed anywhere.
+
+**Per-platform differences handled (one interface, `cfg(target_os)` behind it, fixtures for both):**
+
+| Concern | macOS (arm64 and x86_64) | Linux (x86_64 and aarch64) |
+|---|---|---|
+| CPU % | per-core percent (100 = one core busy, above 100 for threads). The first reading of a process is 0 and is ignored; a warning needs every sample of the window. Apple Silicon: the percent is of one core's time whatever the core kind (performance or efficiency), so the same percent is less work on an efficiency core; the thresholds are per-core percent, not work | same semantics |
+| Memory | physical footprint (`proc_pid_rusage`, compressed pages included, matches Activity Monitor); the resident size is the fallback | resident set |
+| Swap and pressure | swap from sysinfo; `kern.memorystatus_vm_pressure_level` (1/2/4) | swap from sysinfo; `/proc/pressure/memory` `some avg10` (PSI), absent on kernels without it (then no pressure reading) |
+| Environment of another process | `KERN_PROCARGS2`, own user only; system (SIP) binaries show none. No environment means not marked, so never touched. Lineage fallback (parent chain to a `claude` command) is used for the resource watch, where the process is still attached | `/proc/<pid>/environ`, own user (or root), NUL separated |
+| Start time and age | seconds since the epoch from the system, no `ps` time formats | same |
+| Reparenting | to `launchd` (pid 1) | to init/systemd, or a subreaper; WSL2 init is pid 1 or a relay: "parent is pid 1 or gone" covers both |
+| Rosetta | an x86_64 process under Rosetta is listed and sampled like any other | n/a |
+| Disk | `statvfs`; several APFS volumes share one container's free space, so volumes are told apart by device id and each is reported with its own path | `statvfs`; tmpfs reports its own limit |
+| Signals and nice | `kill`, `setpriority` (its `which` argument is `int` on macOS, `unsigned` on glibc: the libc constant has the right type on each) | same calls |
+
 ## Scheduler
 
 The engine runs its own jobs on an internal ticker; nothing outside it (cron, a hook, a session) has to trigger them
@@ -715,6 +766,7 @@ so setting it in `config.toml`, `settings.json` or the environment takes effect 
 | `backup` | a scrubbed backup (D27) | off (`schedule.backup_ms` = 0) | a subprocess |
 | `metrics_snapshot` | metrics snapshot and rollups (D51) | a minute (`telemetry.snapshot_ms`) | in the daemon |
 | `spool_drain` | applies spooled writes (D24) | a second (`spool.drain_ms`) | in the daemon |
+| `procwatch` | process watch: orphans, resource use, report (see Process watch) | 30 s (`schedule.procwatch_ms`) | in the daemon |
 
 - **Timing.** The ticker sleeps until the next job is due (at most `schedule.tick_ms`). Each next run is one interval
   after the current one starts, plus up to `jitter_ms`, so jobs do not run in step.

@@ -54,5 +54,8 @@ files = [
     "slcfg.toml",
     "update_cli.toml",
     "handovers.toml",
+    "procwatch.toml",
+    "resource_watch.toml",
+    "disk_watch.toml",
 ]
 extra_dir = "hooks.d"

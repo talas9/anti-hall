@@ -234,6 +234,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::SIBLING_SWEEP,
         &scripted::HANDOVER_HYGIENE,
         &mcp_reaper::SessionEndMcpReaper,
+        &scripted::PROCWATCH_ADVISORY,
         &task_tracker::TaskTracker,
     ];
     &ALL
