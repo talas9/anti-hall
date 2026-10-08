@@ -582,6 +582,21 @@ fn cmd_judge(run: &mut Run, a: &Args) {
     out(&(lines.join("\n") + "\n"));
 }
 
+/// The effective value of one setting as text (`String(settings.get(section, key, dflt) || '')`); `None` for a key the registry
+/// does not list.
+pub(crate) fn effective_text(section: &str, key: &str, dflt: &str) -> Option<String> {
+    let run = Run::new();
+    let entry = store::find(section, key)?;
+    let d = J::Str(dflt.to_string());
+    let v = store::get(&run.ctx, entry, Some(&d))?;
+    Some(match &v {
+        J::Null => String::new(),
+        J::Bool(false) => String::new(),
+        J::Num(n) if *n == 0.0 || n.is_nan() => String::new(),
+        other => j_string(other),
+    })
+}
+
 // ---- entry ------------------------------------------------------------------------------------------------------------
 
 /// `settings <verb> [args] [--json]`

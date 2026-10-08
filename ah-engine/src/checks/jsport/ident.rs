@@ -112,6 +112,12 @@ fn gitdir_of(t: &str, unsure: &mut bool) -> Option<Info> {
     Some(Info { g, is_file, common, has_commondir })
 }
 
+/// The common git directory (`commonDir`) of the checkout rooted at `root`, as `resolveContext` reports it for that root.
+pub fn common_dir(root: &str) -> Option<String> {
+    let mut unsure = false;
+    gitdir_of(root, &mut unsure).map(|i| i.common)
+}
+
 /// `resolveContext(cwd)` (or with `missingPath: 'ancestor'`).
 pub fn resolve_context(cwd: &str, ancestor: bool, env: &RequestEnv) -> Ctx {
     let mut ctx = Ctx::default();

@@ -100,6 +100,10 @@ value = { args = "[--root <plugin dir>]", read_only = true, status = "implemente
 doc = "Show or change any anti-hall setting (L9a, the port of scripts/settings.js): `show [--section <key>] [--all]`, `get <section.key>`, `set <section.key> <value> [--confirmed]`, `reset <section.key> [--confirmed]`, `judge on|off|status`, and `trust-command-allow` / `trust-edit-allow [<repo>] [--confirmed]`; the settings.json file and the registry are the plugin's own."
 value = { args = "<show|get|set|reset|judge|trust-command-allow|trust-edit-allow> [args] [--json]", read_only = false, status = "implemented" }
 
+[cmd.defect]
+doc = "File, list, show and rule anti-hall defect reports and query the bug history (L9a, the port of scripts/defect.js): `report`, `list [--mine|--open|--unfinished]`, `show <fp>`, `rule <fp> --status ...`, `archive`, and the history verbs `backfill`, `recurring` and `similar`; the store is ~/.anti-hall/defects/."
+value = { args = "<report|list|show|rule|archive|backfill|recurring|similar> [flags] [--json]", read_only = false, status = "implemented" }
+
 [cmd.schedule]
 doc = "The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json."
 value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, status = "implemented" }
