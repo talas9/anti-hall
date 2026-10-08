@@ -36,6 +36,7 @@ pub mod mesh;
 pub mod metrics;
 pub mod migrate;
 pub mod paths;
+pub mod proc;
 pub mod reqenv;
 pub mod rules;
 pub mod schedule;

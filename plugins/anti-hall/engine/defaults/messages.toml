@@ -156,6 +156,18 @@ value = "accept failed ({code}: {err}); backing off before the next poll"
 doc = "Event-log detail when the daemon accepts a connection again after accept failures (logged then, because a full descriptor table can keep the failure's own log line from being written). Placeholders: {n}, {code} (os<n> of the last failure)."
 value = "accept works again after {n} failed accepts (last {code})"
 
+[msg.log_proc_spawn]
+doc = "Event-log detail (rate-limited, code proc_spawn_failed) when a helper process could not be started. Placeholders: {what} (the program), {code} (os<n>), {err}."
+value = "could not start {what} ({code}: {err})"
+
+[msg.log_proc_timeout]
+doc = "Event-log detail (rate-limited, code proc_timeout) when a helper process ran past its timeout and its process group was killed. Placeholders: {what}, {ms}."
+value = "{what} ran past {ms} ms; its process group was killed"
+
+[msg.log_proc_unread]
+doc = "Event-log detail (rate-limited, code proc_unread) when a helper exited but its output did not reach end of file within proc.read_grace_ms (a process it left behind held a pipe); its group was killed. Placeholder: {what}."
+value = "{what} exited but its output was not complete; its process group was killed"
+
 [msg.log_lock_no_daemon]
 doc = "Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty)."
 value = "lock {path} held (pid {pid}) but no daemon answers; this start gives up and the call falls back to Node"
