@@ -1844,3 +1844,7 @@ value = 60000
 [mesh_write.verify_node_poll_ms]
 doc = "How often the background Node check looks at the running Node."
 value = 20
+
+[mesh_write.hivecontrol_read_chunk]
+doc = "How many bytes the engine reads from a hivecontrol pipe at a time."
+value = 8192

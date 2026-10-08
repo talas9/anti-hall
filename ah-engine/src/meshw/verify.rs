@@ -400,7 +400,7 @@ fn bounded_output(c: &mut Command) -> std::io::Result<std::process::Output> {
                 unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
                 crate::discard::harmless(child.wait()); // keep: reaping
                 crate::discard::harmless(reader.join()); // keep: the pipe closed with the group
-                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "node timed out"));
+                return Err(std::io::Error::from(std::io::ErrorKind::TimedOut));
             }
             None => std::thread::sleep(poll),
         }
