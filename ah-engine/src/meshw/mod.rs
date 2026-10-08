@@ -12,16 +12,28 @@
 //!   A panic or an error in the engine path is caught and logged; it never touches Node's result;
 //! * `on`: the engine runs the verb; wherever it cannot reproduce Node exactly (an [`ident::Defer`]) Node runs it.
 //!
-//! Ported verbs: `send` (direct, `--to-primary`, `--broadcast`), `mesh read` (consuming and `--peek`), `mesh history`
-//! and `roster --ack`. Every other verb runs in Node whatever the switch says.
+//! Ported verbs: `send` (direct, `--to-primary`, `--broadcast`), `mesh read` (consuming and `--peek`), `mesh history`,
+//! `roster --ack` and `inbox ack-primary`. Every other verb runs in Node whatever the switch says.
+//!
+//! The exit-code contract (`mesh_write.exit_defer`, `mesh_write.exit_committed_failure`):
+//!
+//! * a verb the engine does not answer is DEFERRED, always before its first write; `ah-engine mesh` then runs Node
+//!   itself and exits with Node's code. Exit 75 (`exit_defer`, sysexits EX_TEMPFAIL) is reserved for "deferred, nothing
+//!   written, and the engine could not run Node itself": the caller runs Node. It is never used after a write.
+//! * a failure AFTER the first store write (a panic, or a deferral decided late by a bug) exits `exit_committed_failure`
+//!   (70) and never runs Node: running the verb again would write twice. It is deliberately not 75, the one code a
+//!   caller may answer by running Node.
+//! * every other code is the verb's own result and passes through.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - the shadow is advisory: a failure to copy, compare or log never changes what Node did (it is logged when it can be)
 // - text that does not parse or decode is the absent value (Node JSON.parse catch parity)
 // A failure that must be seen goes through `crate::discard` instead.
 pub mod args;
 pub mod common;
+pub mod cursors;
 pub mod ident;
 pub mod idlock;
+pub mod inbox;
 pub mod read;
 pub mod send;
 pub mod store;
@@ -88,6 +100,13 @@ pub enum Verb {
     MeshRead,
     /// `mesh history`.
     MeshHistory,
+    /// `inbox ack-primary`.
+    InboxAckPrimary,
+}
+
+/// The verb's name as the telemetry log spells it (`Send`, `MeshRead`, `MeshHistory`, `InboxAckPrimary`).
+pub fn verb_label(a: &args::Args) -> String {
+    verb_of(a).map(|v| format!("{v:?}")).unwrap_or_default()
 }
 
 /// The ported verb of a parsed argv.
@@ -106,6 +125,9 @@ pub fn verb_of(a: &args::Args) -> Option<Verb> {
     if p0 == defaults::text("mesh_write.verb_roster") && a.has(defaults::text("mesh_write.flag_ack")) {
         return Some(Verb::MeshRead);
     }
+    if p0 == defaults::text("mesh_write.verb_inbox") && p1 == Some(defaults::text("mesh_write.verb_ack_primary")) {
+        return Some(Verb::InboxAckPrimary);
+    }
     None
 }
 
@@ -115,6 +137,7 @@ pub fn run_native(inv: &Inv, a: &args::Args) -> R<Answer> {
         Some(Verb::Send) => send::run(inv, a),
         Some(Verb::MeshRead) => read::run(inv, a, false),
         Some(Verb::MeshHistory) => read::run(inv, a, true),
+        Some(Verb::InboxAckPrimary) => inbox::run(inv, a),
         None => ident::defer("not-ported"),
     }
 }
@@ -144,11 +167,11 @@ fn node_cmd(argv: &[String]) -> Option<Command> {
 fn exec_node(argv: &[String]) -> i32 {
     let Some(mut c) = node_cmd(argv) else {
         eprintln!("{}", defaults::text("mesh_write.msg_no_node_cli"));
-        return defaults::num("mesh_write.exit_no_node") as i32;
+        return defaults::num("mesh_write.exit_defer") as i32;
     };
     let e = c.exec();
     eprintln!("{}", defaults::render("mesh_write.msg_node_exec_failed", &[("err", &e)]));
-    defaults::num("mesh_write.exit_no_node") as i32
+    defaults::num("mesh_write.exit_defer") as i32
 }
 
 /// Run Node as a child, feeding `stdin` when given, passing its stderr through; returns (exit code, stdout bytes).
@@ -200,7 +223,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
     match m {
         Mode::On => {
             let t0 = common::now_ms();
-            let verb = format!("{:?}", verb_of(&a));
+            let verb = verb_label(&a);
             let w = |k: &str| defaults::text(k).to_string();
             let Some(inv) = inv_from_process(stdin.clone()) else {
                 shadow_log(
@@ -209,28 +232,53 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                 return node_with(&argv, stdin.as_deref());
             };
             let r = std::panic::catch_unwind(|| run_native(&inv, &a));
-            let (result, reason) = match &r {
-                Ok(Ok(_)) => (w("mesh_write.on_native"), String::new()),
-                Ok(Err(Defer(d))) => (w("mesh_write.shadow_defer"), d.clone()),
-                Err(_) => (w("mesh_write.shadow_panic"), String::new()),
-            };
-            shadow_log(
-                &serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": result, "reason": reason, "ms": common::now_ms() - t0}),
-            );
-            match r {
-                Ok(Ok(ans)) => {
+            let (step, result, reason) = next_step(r, committed());
+            shadow_log(&serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": result, "reason": reason, "ms": common::now_ms() - t0}));
+            match step {
+                Next::Print(ans) => {
                     emit(ans.stdout.as_bytes());
                     ans.code
                 }
-                // past the commit point a rerun in Node would write a second time: report instead
-                _ if committed() => {
+                Next::CommittedFailure => {
                     eprintln!("{}", defaults::text("mesh_write.msg_committed_failure"));
                     defaults::num("mesh_write.exit_committed_failure") as i32
                 }
-                _ => node_with(&argv, stdin.as_deref()),
+                Next::RunNode => node_with(&argv, stdin.as_deref()),
             }
         }
+        // the write verbs replay on a copy of the store; a verb whose inputs are files outside it (a read receipt that
+        // Node consumes while it runs) cannot be replayed, so it only runs in Node and is counted
+        _ if verb_of(&a) == Some(Verb::InboxAckPrimary) => {
+            // logged BEFORE Node runs: with no stdin to forward the engine replaces itself with Node and never returns
+            shadow_log(
+                &serde_json::json!({"ts": common::now_ms(), "verb": verb_label(&a), "mode": defaults::text("mesh_write.mode_shadow"), "result": defaults::text("mesh_write.shadow_skipped"), "reason": "", "ms": 0}),
+            );
+            node_with(&argv, stdin.as_deref())
+        }
         _ => shadow(&argv, &a, stdin),
+    }
+}
+
+/// What `run_front` does after the engine's attempt in `on` mode.
+pub enum Next {
+    /// The engine answered: print this and exit with its code.
+    Print(Answer),
+    /// It did not act and wrote nothing: run the verb in Node.
+    RunNode,
+    /// It wrote and then failed: report, never run Node (that would write twice).
+    CommittedFailure,
+}
+
+/// The one decision that keeps a write from happening twice: an answer is printed; a deferral or a panic BEFORE the
+/// first write runs Node; ANY failure after it is a committed failure. Returns the step plus the log result and reason.
+pub fn next_step(r: std::thread::Result<R<Answer>>, committed: bool) -> (Next, String, String) {
+    let w = |k: &str| defaults::text(k).to_string();
+    match r {
+        Ok(Ok(ans)) => (Next::Print(ans), w("mesh_write.on_native"), String::new()),
+        Ok(Err(Defer(d))) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), d),
+        Ok(Err(Defer(d))) => (Next::RunNode, w("mesh_write.shadow_defer"), d),
+        Err(_) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), String::new()),
+        Err(_) => (Next::RunNode, w("mesh_write.shadow_panic"), String::new()),
     }
 }
 
@@ -244,7 +292,7 @@ fn node_with(argv: &[String], stdin: Option<&str>) -> i32 {
             }
             None => {
                 eprintln!("{}", defaults::text("mesh_write.msg_no_node_cli"));
-                defaults::num("mesh_write.exit_no_node") as i32
+                defaults::num("mesh_write.exit_defer") as i32
             }
         },
     }
@@ -344,7 +392,7 @@ fn shadow_log(rec: &serde_json::Value) {
 fn shadow(argv: &[String], a: &args::Args, stdin: Option<String>) -> i32 {
     let t0 = common::now_ms();
     let inv0 = inv_from_process(stdin.clone());
-    let verb = format!("{:?}", verb_of(a));
+    let verb = verb_label(a);
     // 1. snapshot the store before Node writes
     let scratch_dir = crate::paths::dir().join(defaults::text("mesh_write.shadow_dir")).join(format!("{}-{}", std::process::id(), t0));
     let scratch = Scratch { dir: scratch_dir.clone() };
@@ -363,7 +411,7 @@ fn shadow(argv: &[String], a: &args::Args, stdin: Option<String>) -> i32 {
     // 2. Node acts, its output passes through unchanged
     let Some((node_code, node_out)) = spawn_node(argv, stdin.as_deref()) else {
         eprintln!("{}", defaults::text("mesh_write.msg_no_node_cli"));
-        return defaults::num("mesh_write.exit_no_node") as i32;
+        return defaults::num("mesh_write.exit_defer") as i32;
     };
     emit(&node_out);
     // 3. the engine replays on the copy; nothing below can change what Node did
@@ -428,6 +476,59 @@ fn compare(inv0: Option<Inv>, a: &args::Args, pre: Result<(PathBuf, i64), String
                 rec["engine"] = serde_json::json!(cap(&ans.stdout));
             }
             rec
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn answer() -> Answer {
+        Answer { code: 0, stdout: "{}\n".into(), effect: send::Effect::None }
+    }
+
+    fn panicked() -> std::thread::Result<R<Answer>> {
+        Err(Box::new("boom"))
+    }
+
+    fn is_node(n: &Next) -> bool {
+        matches!(n, Next::RunNode)
+    }
+
+    #[test]
+    fn exit_75_and_the_committed_failure_code_are_different_codes() {
+        assert_eq!(defaults::num("mesh_write.exit_defer"), 75, "75 is sysexits EX_TEMPFAIL, the engine-wide 'deferred, nothing written'");
+        assert_ne!(defaults::num("mesh_write.exit_committed_failure"), defaults::num("mesh_write.exit_defer"));
+        assert_ne!(defaults::num("mesh_write.exit_committed_failure"), 0);
+    }
+
+    #[test]
+    fn a_deferral_or_panic_before_any_write_runs_node() {
+        let (n, result, reason) = next_step(Ok(ident::defer("some-case")), false);
+        assert!(is_node(&n));
+        assert_eq!((result.as_str(), reason.as_str()), (defaults::text("mesh_write.shadow_defer"), "some-case"));
+        let (n, result, _) = next_step(panicked(), false);
+        assert!(is_node(&n));
+        assert_eq!(result, defaults::text("mesh_write.shadow_panic"));
+    }
+
+    #[test]
+    fn nothing_that_follows_a_write_ever_runs_node() {
+        // a panic after the first write, and a deferral decided after it (a bug): both are committed failures
+        for r in [panicked(), Ok(ident::defer("late"))] {
+            let (n, result, _) = next_step(r, true);
+            assert!(matches!(n, Next::CommittedFailure), "running Node after a write would write twice");
+            assert_eq!(result, defaults::text("mesh_write.result_committed"));
+        }
+    }
+
+    #[test]
+    fn an_answer_is_printed_whether_or_not_it_wrote() {
+        for committed in [false, true] {
+            let (n, result, _) = next_step(Ok(Ok(answer())), committed);
+            assert!(matches!(n, Next::Print(_)));
+            assert_eq!(result, defaults::text("mesh_write.on_native"));
         }
     }
 }

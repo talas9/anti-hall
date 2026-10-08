@@ -669,12 +669,6 @@ value = "node"
 doc = "Node's mesh CLI, relative to the plugin root."
 value = "scripts/devswarm.js"
 
-[mesh_write.exit_no_node]
-doc = "Exit code when Node's CLI cannot be found or started."
-value = 127
-min = 1
-max = 255
-
 [mesh_write.exit_signal_base]
 doc = "A Node child killed by signal N exits as this plus N (the shell convention)."
 value = 128
@@ -922,7 +916,13 @@ min = 1
 max = 64
 
 [mesh_write.exit_committed_failure]
-doc = "Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (EX_TEMPFAIL)."
+doc = "Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (sysexits EX_SOFTWARE, 70). Deliberately NOT 75: exit 75 (EX_TEMPFAIL) means 'deferred, nothing written' everywhere in the engine (dispatch.defer_exit), and a caller that sees 75 may run Node."
+value = 70
+min = 1
+max = 255
+
+[mesh_write.exit_defer]
+doc = "Exit code meaning: the engine did not act and wrote nothing, so the caller should run the verb in Node (sysexits EX_TEMPFAIL, 75). `ah-engine mesh` runs a deferred verb in Node itself, so it exits with this only when it cannot start Node (it replaces the former 127 for that case). Never used after a write: see exit_committed_failure."
 value = 75
 min = 1
 max = 255
@@ -934,3 +934,161 @@ value = "ah-engine mesh: the write was committed but the engine failed before pr
 [mesh_write.summary_failed]
 doc = "Log result of a summary refresh the engine could not do after its write (Node's next derive refreshes the file)."
 value = "summary-failed"
+
+# ---- inbox ack-primary (scripts/devswarm-lib/inbox-cmd.js cmdInboxAckPrimary, cursors.js, companion/lib/reader-cursors.js) ----
+
+[mesh_write.verb_inbox]
+doc = "The inbox verb."
+value = "inbox"
+
+[mesh_write.verb_ack_primary]
+doc = "The inbox sub-verb that applies a read receipt's cursor moves."
+value = "ack-primary"
+
+[mesh_write.action_ack_primary]
+doc = "The `action` of an ack-primary result."
+value = "ack-primary"
+
+[mesh_write.flag_receipt]
+doc = "The ack-primary flag naming the read receipt."
+value = "receipt"
+
+[mesh_write.flag_ack_as_owner]
+doc = "The flag that skips the ownership check of ack-primary."
+value = "ack-as-owner"
+
+[mesh_write.flag_tail]
+doc = "A window flag the acking inbox verbs refuse (INBOX_WINDOW_FLAGS); with --since it sends the call to Node."
+value = "tail"
+
+[mesh_write.dir_read_receipts]
+doc = "Directory of read receipts under the DevSwarm root (readReceiptDir)."
+value = "read-receipts"
+
+[mesh_write.dir_drain]
+doc = "Directory of the drain markers under the DevSwarm root (devswarm-drain-marker.js)."
+value = "drain"
+
+[mesh_write.dir_cursor_log]
+doc = "Directory of the cursor-write journals under the DevSwarm root (cursors.js cursorLogPath)."
+value = "cursor-log"
+
+[mesh_write.receipt_id_prefix]
+doc = "A read receipt id is this letter followed by lowercase letters and digits (readReadReceipt's /^r[a-z0-9]+$/)."
+value = "r"
+
+[mesh_write.receipt_ttl_ms]
+doc = "Age past which a read receipt can no longer be acked (READ_RECEIPT_TTL_MS, 24 hours)."
+value = 86400000
+min = 1
+max = 31536000000
+
+[mesh_write.cursor_log_cap]
+doc = "Records a cursor-write journal keeps (CURSOR_LOG_CAP); older ones move to the `.1` file."
+value = 2000
+min = 1
+max = 1000000
+
+[mesh_write.cursor_log_unknown_key]
+doc = "Journal file name used when the project key is missing or unsafe."
+value = "unknown"
+
+[mesh_write.cursor_log_old_suffix]
+doc = "Suffix of the file that receives the records rotated out of a journal."
+value = ".1"
+
+[mesh_write.ndjson_suffix]
+doc = "Suffix of a journal file."
+value = ".ndjson"
+
+[mesh_write.ns_store]
+doc = "The store cursor namespace of `reader_cursors` (the position in the store's messages)."
+value = "store"
+
+[mesh_write.floor_reader]
+doc = "The reader name of the floor row in `reader_cursors` (FLOOR)."
+value = "#floor"
+
+[mesh_write.cursor_namespaces]
+doc = "The two cursor namespaces of `reader_cursors`, in Node's order (NAMESPACES): the store and the NDJSON inbox."
+value = ["store", "nd"]
+
+[mesh_write.retire_pin_age_ms]
+doc = "A foreign reader row must be this old before an ack looks for proof that its process ended (RETIRE_PIN_AGE_MS)."
+value = 60000
+min = 0
+max = 86400000
+
+[mesh_write.pid_reuse_margin_ms]
+doc = "A process whose start time is later than the recorded one by more than this is a reused pid (PID_REUSE_MARGIN_MS)."
+value = 1000
+min = 0
+max = 3600000
+
+[mesh_write.min_plausible_start_ms]
+doc = "A recorded reader start time below this is not an epoch-milliseconds value, so no pid-reuse conclusion is drawn from it."
+value = 1000000000000
+min = 0
+max = 100000000000000
+
+[mesh_write.ps_snapshot_args]
+doc = "Arguments of the one `ps` call that snapshots every process with its start time (psSnapshot)."
+value = ["-A", "-o", "pid=,lstart="]
+
+[mesh_write.ps_snapshot_timeout_ms]
+doc = "Time limit of that call (psSnapshot's 5000)."
+value = 5000
+min = 100
+max = 600000
+
+[mesh_write.gate_owner]
+doc = "The journal `gate` of a cursor move of the caller's own partition."
+value = "owner"
+
+[mesh_write.log_ns_store]
+doc = "The journal `ns` of a store-namespace reader cursor move."
+value = "reader_cursors:store"
+
+[mesh_write.err_cursor_import_needed]
+doc = "Failure text when a partition has no floor row and the engine will not import the legacy cursors itself (Node's reader-cursors import)."
+value = "reader_cursors floor row missing (legacy import needed)"
+
+[mesh_write.channel_store_cursor]
+doc = "The `channel` of a failed own-partition cursor move in an ack result."
+value = "store-cursor"
+
+[mesh_write.result_committed]
+doc = "Log result of a call that failed after its write was committed."
+value = "committed-failure"
+
+[mesh_write.field_repo_key]
+doc = "A descriptor's persisted project key."
+value = "repoKey"
+
+[mesh_write.op_own]
+doc = "The `k` of a read-receipt op that moves the caller's own partition cursor."
+value = "own"
+
+[mesh_write.op_sibling]
+doc = "The `k` of a read-receipt op that moves a sibling partition's cursor (Node's)."
+value = "sibling"
+
+[mesh_write.op_nd]
+doc = "The `k` of a read-receipt op that moves the NDJSON inbox cursor (Node's)."
+value = "nd"
+
+[mesh_write.shadow_skipped]
+doc = "Log result of a shadow-mode call for a verb that cannot be replayed on a store copy: Node ran it, the engine only counted it."
+value = "skipped"
+
+[mesh_write.ps_poll_ms]
+doc = "How often the process snapshot checks whether `ps` has finished."
+value = 5
+min = 1
+max = 1000
+
+[mesh_write.short_nonce_len]
+doc = "Hex characters of the short form of a reader key in the cursor journal (shortInstanceNonce: sha1, first 6)."
+value = 6
+min = 1
+max = 40

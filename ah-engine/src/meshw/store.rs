@@ -266,28 +266,81 @@ impl MeshStore {
 
     /// `readerCursorTxn`: write every record in ONE `BEGIN IMMEDIATE` transaction (retried whole on SQLITE_BUSY).
     pub fn reader_cursor_txn(&self, puts: &[CursorPut]) -> Res<()> {
+        self.cursor_txn(|tx| {
+            for p in puts {
+                tx.put(p)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// `readerCursorTxn(fn)`: run `f` inside ONE `BEGIN IMMEDIATE` transaction that reads and writes `reader_cursors`
+    /// (rolled back when `f` fails, the whole of it retried on SQLITE_BUSY, so `f` must be repeatable).
+    pub fn cursor_txn<T>(&self, mut f: impl FnMut(&CursorTx<'_>) -> rusqlite::Result<T>) -> Res<T> {
         let c = self.conn();
-        retry_busy(|| {
+        let out = retry_busy(|| {
             c.execute_batch(sql::MESHW_BEGIN_IMMEDIATE)?;
-            let r = (|| -> rusqlite::Result<()> {
-                let mut st = c.prepare_cached(sql::MESHW_READER_CURSOR_PUT)?;
-                for p in puts {
-                    let (set, rl) = match p.retired_line {
-                        Some(v) => (1i64, v.map(|x| x.max(0))),
-                        None => (0, None),
-                    };
-                    st.execute(params![p.partition, p.ns, p.reader, p.value.max(0), rl, p.updated_at, set])?;
+            let tx = CursorTx { conn: c };
+            match f(&tx) {
+                Ok(v) => {
+                    c.execute_batch(sql::MESHW_COMMIT)?;
+                    Ok(v)
                 }
-                Ok(())
-            })();
-            match r {
-                Ok(()) => c.execute_batch(sql::MESHW_COMMIT),
                 Err(e) => {
                     crate::discard::harmless(c.execute_batch(sql::MESHW_ROLLBACK)); // keep: Node's own `try { ROLLBACK } catch {}`
                     Err(e)
                 }
             }
         })?;
+        Ok(out)
+    }
+}
+
+/// One `reader_cursors` row as `readerCursorRowsOn` returns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CursorRow {
+    /// `store` or `nd`.
+    pub ns: String,
+    /// Reader key, or the floor's name.
+    pub reader: String,
+    /// Read position.
+    pub value: i64,
+    /// Set when the reader was retired at this line.
+    pub retired_line: Option<i64>,
+    /// When it was last written (ms).
+    pub updated_at: i64,
+}
+
+/// The reads and writes of one open `reader_cursors` transaction (`readerCursorTxn`'s `tx`).
+pub struct CursorTx<'a> {
+    conn: &'a Connection,
+}
+
+impl CursorTx<'_> {
+    /// `tx.rows(partition)`.
+    pub fn rows(&self, partition: &str) -> rusqlite::Result<Vec<CursorRow>> {
+        let mut st = self.conn.prepare_cached(sql::MESH_READER_CURSORS)?;
+        let mut rows = st.query(params![partition])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            out.push(CursorRow {
+                ns: r.get(1)?,
+                reader: r.get(2)?,
+                value: r.get::<_, f64>(3)? as i64,
+                retired_line: r.get::<_, Option<f64>>(4)?.map(|x| x as i64),
+                updated_at: r.get::<_, f64>(5)? as i64,
+            });
+        }
+        Ok(out)
+    }
+
+    /// `tx.put(rec)`: the value never lowers; `retired_line` changes only when the record carries it.
+    pub fn put(&self, p: &CursorPut) -> rusqlite::Result<()> {
+        let (set, rl) = match p.retired_line {
+            Some(v) => (1i64, v.map(|x| x.max(0))),
+            None => (0, None),
+        };
+        self.conn.prepare_cached(sql::MESHW_READER_CURSOR_PUT)?.execute(params![p.partition, p.ns, p.reader, p.value.max(0), rl, p.updated_at, set])?;
         Ok(())
     }
 }
