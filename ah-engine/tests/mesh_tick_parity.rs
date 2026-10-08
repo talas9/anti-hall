@@ -462,6 +462,73 @@ fn cases(fx: &Fx) -> Vec<Case> {
             native: true,
             expect: vec!["watcherArmed true"],
         },
+        Case {
+            name: "json-form-with-unread-and-both-channels",
+            cwd: "child",
+            argv: tick_argv("child-1", &[]),
+            extra: vec![],
+            ack: ack(floors("child-1", 1, 1), d_inbox.clone()),
+            union: inbox(text3.clone()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["\"action\":\"tick\"", "\"unreadNdjson\":2"],
+        },
+        Case {
+            name: "json-flag-alone",
+            cwd: "child",
+            argv: tick_argv("child-1", &["--json"]),
+            extra: vec![],
+            ack: ack(floors("child-1", 0, 0), d_inbox.clone()),
+            union: inbox(text3.clone()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["\"unreadTotal\":5"],
+        },
+        Case {
+            name: "json-form-with-the-own-reader-row",
+            cwd: "child",
+            argv: tick_argv("child-1", &["--quiet", "--json"]),
+            extra: vec![],
+            ack: {
+                let own = own_reader.clone();
+                let session = session.clone();
+                let d = d_inbox.clone();
+                let mut rows = floors("child-1", 2, 0);
+                rows.push(row("child-1", "store", &own, 0));
+                rows.push(row("child-1", "nd", &own, 1));
+                Box::new(move |h| {
+                    let mut v = json!({"rows": rows.clone(), "descriptors": d(h)});
+                    v["sessions"] = session["sessions"].clone();
+                    v
+                })
+            },
+            union: inbox(text3.clone()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["\"unreadTotal\":4"],
+        },
+        Case {
+            name: "unknown-count-cursor-file-missing",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 0, 0), d_inbox.clone()),
+            union: Box::new(|_| json!({"files": [{"rel": "inbox/child-1.ndjson", "text": "a\nb\n"}]})),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["unread 2, known false"],
+        },
+        Case {
+            name: "unknown-count-writes-the-cron-found-mail-line",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 0, 0), d_inbox.clone()),
+            union: none(),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["known false"],
+        },
         // ---- deferrals: nothing may be written ----
         Case {
             name: "child-flag",
@@ -482,7 +549,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["\"action\":\"tick\""],
         },
         Case {
@@ -493,7 +560,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["\"action\":\"tick\""],
         },
         Case {
@@ -641,7 +708,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: none(),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["known false"],
         },
         Case {
@@ -693,6 +760,28 @@ fn cases(fx: &Fx) -> Vec<Case> {
             expect: vec!["tick child-1"],
         },
         Case {
+            name: "unknown-count-in-the-json-form",
+            cwd: "child",
+            argv: tick_argv("child-1", &[]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: none(),
+            fixup: live_lock(),
+            native: false,
+            expect: vec!["\"known\":false"],
+        },
+        Case {
+            name: "json-form-with-a-valued-json-flag",
+            cwd: "child",
+            argv: tick_argv("child-1", &["--json", "x"]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: false,
+            expect: vec!["\"action\":\"tick\""],
+        },
+        Case {
             name: "heartbeat-record-is-an-array",
             cwd: "child",
             argv: quiet("child-1"),
@@ -736,7 +825,9 @@ fn tick_matches_node_byte_for_byte_and_defers_without_writing() {
         if c.native {
             native += 1;
             assert_eq!(log["verb"], "InboxTick", "{}: telemetry names the verb", c.name);
-            assert_eq!((e.code, &e.stdout), (n.code, &n.stdout), "{}: stdout/exit differ", c.name);
+            // the JSON form names the home (storePath): the two scratch homes differ
+            let (se, sn) = (String::from_utf8_lossy(&normalized(&he, e.stdout.as_bytes())).into_owned(), String::from_utf8_lossy(&normalized(&hn, n.stdout.as_bytes())).into_owned());
+            assert_eq!((e.code, &se), (n.code, &sn), "{}: stdout/exit differ", c.name);
             assert_same_home(c.name, &hn, &he, &fx.repo_key, "node vs engine");
             let v = verify_line(&he.join("state"));
             assert_eq!(v["result"], "match", "{}: the background Node shadow disagrees: {v}", c.name);
@@ -755,5 +846,5 @@ fn tick_matches_node_byte_for_byte_and_defers_without_writing() {
         }
     }
     eprintln!("tick parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", list.len());
-    assert!(native >= 21 && deferred >= 21, "{native} native, {deferred} deferred");
+    assert!(native >= 29 && deferred >= 20, "{native} native, {deferred} deferred");
 }

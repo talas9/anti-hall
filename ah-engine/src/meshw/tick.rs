@@ -33,9 +33,27 @@ use crate::meshw::send::{Answer, Effect, mesh_candidates, rehome_is_noop};
 use crate::meshw::union;
 use std::path::{Path, PathBuf};
 
-/// `--quiet` and nothing else: the one flag set the engine answers.
-fn only_quiet(a: &Args) -> bool {
-    a.flags.len() == 1 && a.flags.get(defaults::text("mesh_write.flag_quiet")).is_some_and(|v| v.len() == 1 && v[0] == FlagVal::True)
+/// The one-line form (`--quiet`) or the JSON form (no flag, or `--json`): the flag sets the engine answers. Every other
+/// flag (`--child` first imports the native queue) is Node's.
+struct Form {
+    /// `main()` prints the one-line rendering (`--quiet` without `--json`).
+    line: bool,
+}
+
+fn tick_form(a: &Args) -> R<Form> {
+    let bare = |name: &str| -> R<bool> {
+        match a.flags.get(name) {
+            None => Ok(false),
+            Some(v) if v.iter().all(|x| *x == FlagVal::True) => Ok(true),
+            Some(_) => defer("flag-value"),
+        }
+    };
+    let (quiet, json) = (bare(defaults::text("mesh_write.flag_quiet"))?, bare(defaults::text("mesh_write.flag_json"))?);
+    let known = [defaults::text("mesh_write.flag_quiet"), defaults::text("mesh_write.flag_json")];
+    if a.flags.keys().any(|k| !known.contains(&k.as_str())) {
+        return defer("flags");
+    }
+    Ok(Form { line: quiet && !json })
 }
 
 /// The `devswarm.tickRosterEvery` setting might be set anywhere Node reads it (the environment, `~/.anti-hall/settings.json`,
@@ -190,8 +208,29 @@ pub(crate) fn read_bases(inv: &Inv, reader: &MeshReader, id: &str, cursor_file: 
     Ok((store_base, nd_base))
 }
 
-/// What `count` reports that a quiet tick uses: the unread total of a single, known partition.
-fn unread_total(inv: &Inv, id: &str, desc: &OVal) -> R<usize> {
+/// What `count` reports for a single partition that a tick uses.
+pub(crate) struct Counted {
+    /// The caller's project key.
+    pub repo_key: String,
+    /// `known`: the inbox and its cursor file both read.
+    pub known: bool,
+    /// `unreadTotal`.
+    pub unread: usize,
+    /// `unreadNdjson`.
+    pub nd_unread: usize,
+    /// `unreadStore`.
+    pub store_unread: usize,
+    /// `cursorNdjson`.
+    pub nd_cursor: f64,
+    /// `cursorStore`.
+    pub store_cursor: f64,
+    /// `total` (only a known count reports a merged total).
+    pub total: Option<usize>,
+}
+
+/// `count` for a single, registered partition. An unknown count (the inbox or its cursor file does not read) is the store
+/// alone, exactly as Node's union reports it; only the line form can print that, since its JSON carries more.
+fn count_mail(inv: &Inv, id: &str, desc: &OVal, line_form: bool) -> R<Counted> {
     if !matches!(desc.get(defaults::text("mesh_write.field_id")), Some(OVal::Str(d)) if d == id) {
         return defer("descriptor-id");
     }
@@ -201,19 +240,23 @@ fn unread_total(inv: &Inv, id: &str, desc: &OVal) -> R<usize> {
     single_partition(&o.rows, desc, id)?;
     let (store_base, nd_base) = read_bases(inv, &o.reader, id, Some(cursor_file.as_str()))?;
     // known: the inbox and its cursor file both read (otherwise Node prints a warning and the count is unknown)
-    if union::non_empty_lines(&inbox).is_none() || union::cursor_position(&cursor_file)?.is_none() {
+    let known = union::non_empty_lines(&inbox).is_some() && union::cursor_position(&cursor_file)?.is_some();
+    if !known && !line_form {
         return defer("unknown-count");
     }
-    let u = union::union_unread(&union::UnionIn {
-        inbox: Some(inbox.as_str()),
-        cursor_file: Some(cursor_file.as_str()),
+    let input = union::UnionIn {
+        inbox: known.then_some(inbox.as_str()),
+        cursor_file: known.then_some(cursor_file.as_str()),
         id,
         store: Some(&o.reader),
         store_base,
         nd_base,
         now: inv.now,
-    })?;
-    Ok(u.unread)
+    };
+    let u = union::union_unread(&input)?;
+    let total = if known { Some(union::merged_total(&input)?) } else { None };
+    let nd_cursor = if nd_base.is_finite() && nd_base > 0.0 { nd_base.floor() } else { 0.0 };
+    Ok(Counted { repo_key: o.repo_key, known, unread: u.unread, nd_unread: u.nd_unread_lines.len(), store_unread: u.store_only_unread.len(), nd_cursor, store_cursor: store_base, total })
 }
 
 /// `pidIsAlive(pid)` without a start-time check: `Some(false)` only when the process is gone.
@@ -290,10 +333,10 @@ fn write_staged(dst: &Path, text: &str, now: i64) -> std::io::Result<()> {
 }
 
 /// Effect 1: the wake-tick marker.
-fn write_marker(inv: &Inv, id: &str, unread: usize, seq: f64) {
+fn write_marker(inv: &Inv, id: &str, unread: usize, known: bool, seq: f64) {
     let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_wake_tick"));
     let mut m = Obj::default();
-    m.put("ts", n(inv.now as f64)).put("unreadTotal", n(unread as f64)).put("meshGapWithheld", OVal::Bool(false)).put("known", OVal::Bool(true));
+    m.put("ts", n(inv.now as f64)).put("unreadTotal", n(unread as f64)).put("meshGapWithheld", OVal::Bool(false)).put("known", OVal::Bool(known));
     if seq != 0.0 {
         m.put("seq", n(seq));
     }
@@ -367,7 +410,42 @@ fn write_cron_found_mail(inv: &Inv, id: &str, unread: usize) {
     crate::discard::harmless(go()); // keep: a measurement only, never breaks the tick (Node's catch)
 }
 
-/// Run `inbox tick <id> --quiet`.
+/// The JSON form of a tick: `count`'s result with `action` renamed in place, then `idMismatch` and `watcherArmed`.
+fn count_json(inv: &Inv, id: &str, c: &Counted) -> R<String> {
+    let Some(total) = c.total else { return defer("unknown-count-json") };
+    if c.store_unread > defaults::num("mesh_write.inbox_read_limit") as usize {
+        return defer("read-cap");
+    }
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(true))
+        .put("action", s(defaults::text("mesh_write.verb_tick")))
+        .put("id", s(id))
+        .put("repoKey", s(&c.repo_key))
+        .put("storePath", OVal::Str(union::store_dir(&inv.home, &c.repo_key).to_string_lossy().into_owned()))
+        .put("cwd", s(&inv.cwd))
+        .put("meshPartitionIds", OVal::Arr(vec![s(id)]))
+        .put("unreadTotal", n(c.unread as f64))
+        .put("unreadNdjson", n(c.nd_unread as f64))
+        .put("unreadStore", n(c.store_unread as f64))
+        .put("cursorNdjson", n(c.nd_cursor))
+        .put("cursorStore", n(c.store_cursor))
+        .put("total", n(total as f64))
+        .put("known", OVal::Bool(c.known))
+        .put("storeUnavailable", OVal::Bool(false))
+        .put("storeUnavailableReason", OVal::Null)
+        .put("meshGroupUnresolved", OVal::Bool(false))
+        .put("meshGroupError", OVal::Null)
+        .put("totalsPartial", OVal::Bool(false))
+        .put("unread", n(c.unread as f64))
+        .put("cursor", n(c.nd_cursor))
+        .put("storeCursor", n(c.store_cursor))
+        .put("storeUnread", n(c.store_unread as f64))
+        .put("idMismatch", OVal::Bool(false))
+        .put("watcherArmed", OVal::Bool(true));
+    Ok(o.done().stringify())
+}
+
+/// Run `inbox tick <id>` in its line form (`--quiet`) or its JSON form.
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if a.is_help() {
         return defer("help");
@@ -376,9 +454,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         return defer("argv-shape");
     }
     let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else { return defer("bad-id") };
-    if !only_quiet(a) {
-        return defer("flags");
-    }
+    let form = tick_form(a)?;
     if id_mismatch_possible(inv, id) {
         return defer("id-mismatch");
     }
@@ -390,7 +466,8 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     // ---- reads: everything that can defer happens before the first write ----
     let Some(desc) = ident::read_descriptor(&inv.home, id) else { return defer("no-descriptor") };
-    let unread = unread_total(inv, id, &desc)?;
+    let counted = count_mail(inv, id, &desc, form.line)?;
+    let unread = counted.unread;
     wal_is_quiet(inv)?;
     let marker_file =
         devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_wake_tick")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
@@ -403,17 +480,27 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     // ---- writes ----
     crate::meshw::mark_committed();
-    write_marker(inv, id, unread, seq);
+    write_marker(inv, id, unread, counted.known, seq);
     write_heartbeat(inv, id, &beat);
     if unread > 0 && lock_file.exists() {
         write_cron_found_mail(inv, id, unread);
+    }
+    if !counted.known {
+        // `emitKnownWarning`: the count is not known and the caller is told on stderr
+        eprintln!(
+            "{}",
+            defaults::render("mesh_write.known_warning", &[("label", &format!("{} {} {}", defaults::text("mesh_write.verb_inbox"), defaults::text("mesh_write.verb_tick"), OVal::Str(id.to_string()).stringify())), ("reasons", &defaults::text("mesh_write.known_unknown"))])
+        );
+    }
+    if !form.line {
+        return Ok(Answer { code: 0, stdout: format!("{}\n", count_json(inv, id, &counted)?), effect: Effect::None });
     }
     let line = defaults::render(
         "mesh_write.tick_line",
         &[
             ("id", &id),
             ("unread", &unread),
-            ("known", &defaults::text("mesh_write.js_true")),
+            ("known", &if counted.known { defaults::text("mesh_write.js_true") } else { defaults::text("mesh_write.js_false") }),
             ("gap", &defaults::text("mesh_write.js_false")),
             ("armed", &defaults::text("mesh_write.js_true")),
         ],

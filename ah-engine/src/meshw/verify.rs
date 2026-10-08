@@ -397,6 +397,10 @@ pub fn run_verifier(args: &[String]) -> i32 {
                 node_stdout = out;
                 node_files = found;
             }
+            if kind == Kind::Tick {
+                // the JSON form of a tick names the home (storePath): the witness ran in the scratch one
+                node_stdout = String::from_utf8_lossy(&node_stdout).replace(&home.to_string_lossy().into_owned(), &real_home.to_string_lossy()).into_bytes();
+            }
             let mut got = vec![node_stdout];
             got.extend(files.iter().map(|f| read(f)));
             let mut expected = vec![read(&scratch.join("expect-stdout"))];
