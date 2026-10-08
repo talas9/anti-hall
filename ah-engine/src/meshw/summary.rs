@@ -513,11 +513,42 @@ fn max_urgency<'a>(rows: impl Iterator<Item = &'a Msg>) -> OVal {
     best.map_or(OVal::Null, |(_, u)| s(u))
 }
 
+/// The shipped names of one csv setting (its variable, settings key, plugin option and defaults), each a literal key so the
+/// key scanner sees every one of them.
+struct CsvKeys {
+    env: &'static str,
+    key: &'static str,
+    option: &'static str,
+    option_default: &'static str,
+    default: &'static str,
+}
+
+/// `requiredGatesFrom`'s setting.
+fn required_gates_keys() -> CsvKeys {
+    CsvKeys {
+        env: defaults::text("mesh_write.required_gates_env"),
+        key: defaults::text("mesh_write.required_gates_key"),
+        option: defaults::text("mesh_write.required_gates_option"),
+        option_default: defaults::text("mesh_write.required_gates_option_default"),
+        default: defaults::text("mesh_write.required_gates_default"),
+    }
+}
+
+/// `heldPartitionIdsFrom`'s setting.
+fn held_partitions_keys() -> CsvKeys {
+    CsvKeys {
+        env: defaults::text("mesh_write.held_partitions_env"),
+        key: defaults::text("mesh_write.held_partitions_key"),
+        option: defaults::text("mesh_write.held_partitions_option"),
+        option_default: defaults::text("mesh_write.held_partitions_option_default"),
+        default: defaults::text("mesh_write.held_partitions_default"),
+    }
+}
+
 /// A `csv`/`string` setting as `hooks/lib/settings.js` `getWithEnv(section, key, undefined, env)` resolves it: the
 /// environment variable, then `settings.json`, then the plugin option (ignored when it equals `option_default`), then the
 /// schema default. A settings file the engine cannot read the way JavaScript would defers.
-fn csv_setting(inv: &Inv, key: &str) -> R<String> {
-    let k = |x: &str| defaults::text(&format!("mesh_write.{key}_{x}"));
+fn csv_setting(inv: &Inv, k: &CsvKeys) -> R<String> {
     // coerceValue for csv/string: a string, number or boolean, trimmed; empty is undefined
     let coerce = |v: &Value| -> Option<String> {
         let t = match v {
@@ -527,7 +558,7 @@ fn csv_setting(inv: &Inv, key: &str) -> R<String> {
         };
         (!t.is_empty()).then_some(t)
     };
-    if let Some(v) = inv.env.get(k("env")).and_then(|x| coerce(&Value::String(x.clone()))) {
+    if let Some(v) = inv.env.get(k.env).and_then(|x| coerce(&Value::String(x.clone()))) {
         return Ok(v);
     }
     let home = inv.home.to_string_lossy().to_string();
@@ -537,13 +568,13 @@ fn csv_setting(inv: &Inv, key: &str) -> R<String> {
     let st = Settings { home: home.clone(), env: inv.env.clone() };
     let section = defaults::text("mesh_write.settings_devswarm_section");
     if let Some(v) = crate::checks::guardkit::settings::read_object(&st, defaults::text("guardkit.settings_file"))
-        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|sct| sct.get(k("key"))).and_then(coerce))
+        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|sct| sct.get(k.key)).and_then(coerce))
     {
         return Ok(v);
     }
-    let option = k("option");
+    let option = k.option;
     if !option.is_empty() {
-        let dflt = k("option_default");
+        let dflt = k.option_default;
         let env_name = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), option.to_ascii_uppercase());
         if let Some(raw) = inv.env.get(&env_name) {
             if raw != dflt
@@ -559,7 +590,7 @@ fn csv_setting(inv: &Inv, key: &str) -> R<String> {
             return Ok(v);
         }
     }
-    Ok(k("default").to_string())
+    Ok(k.default.to_string())
 }
 
 /// Split a csv setting the way `requiredGatesFrom` / `heldPartitionIdsFrom` do.
@@ -581,11 +612,11 @@ fn jev_hash(text: &str) -> String {
 pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
     let home = inv.home.as_path();
     let now = inv.now as f64;
-    let mut required = csv_parts(&csv_setting(inv, "required_gates")?);
+    let mut required = csv_parts(&csv_setting(inv, &required_gates_keys())?);
     if required.is_empty() {
         required = defaults::list("mesh_write.required_gates_fallback").iter().map(|x| x.to_string()).collect();
     }
-    let held: HashSet<String> = csv_parts(&csv_setting(inv, "held_partitions")?).into_iter().collect();
+    let held: HashSet<String> = csv_parts(&csv_setting(inv, &held_partitions_keys())?).into_iter().collect();
     let recent_cap = defaults::num("mesh_write.summary_recent_cap") as usize;
     let pq_cap = defaults::num("mesh_write.summary_pending_questions_cap") as usize;
     let bpart = defaults::text("mesh_write.broadcast_partition");
