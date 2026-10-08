@@ -92,7 +92,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
 /// Everything `gh status` shows, from the state file alone (no network).
 pub fn status_json(cfg: &Cfg, now: u64) -> Value {
     let st = poll::load(cfg);
-    let cap = (if st.rate.limit > 0 { st.rate.limit } else { cfg.int("github_rt.assumed_limit") }) * cfg.int("github_rt.budget_pct") / 100;
+    let cap = poll::budget_cap(cfg, st.rate.limit);
     let window_left = (st.window_start_ms + cfg.int("github_rt.window_ms")).saturating_sub(now);
     let measure: serde_json::Map<String, Value> = st
         .measure
@@ -110,7 +110,7 @@ pub fn status_json(cfg: &Cfg, now: u64) -> Value {
             })
         })
         .collect();
-    let recent_edges: Vec<Value> = poll::edges(cfg).into_iter().rev().take(10).collect();
+    let recent_edges: Vec<Value> = poll::edges(cfg).into_iter().rev().take(cfg.int("github_rt.status_edges") as usize).collect();
     json!({
         "enabled": cfg.flag("github_rt.enabled"), "gh": if st.gh.is_empty() { "unknown" } else { st.gh.as_str() },
         "hold": {"reason": st.hold_reason, "for_ms": st.hold_until_ms.saturating_sub(now)},
