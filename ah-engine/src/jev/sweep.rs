@@ -313,7 +313,7 @@ impl Child {
     }
 
     fn on_hold(&self) -> bool {
-        self.held.iter().any(|h| *h == self.id)
+        self.held.contains(&self.id)
     }
 }
 

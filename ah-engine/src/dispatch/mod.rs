@@ -400,6 +400,7 @@ fn rerun_fits(elapsed: std::time::Duration, host_timeout_s: u64) -> bool {
 /// built-in check answered (`native_answered`; an answer may already have stamped state). Otherwise the hooks already started
 /// are finished, a genuine block among them decides, and anything else fails closed ([`closed`], bounded on Stop): the entries
 /// that never ran may have blocked, so an allow would be weaker than Node (review P1-1).
+#[allow(clippy::too_many_arguments)] // one decision point; grouping the six flags into a struct would only rename them
 fn finish_then_defer(
     event: &str,
     payload: Option<&Value>,
