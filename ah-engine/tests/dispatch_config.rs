@@ -279,14 +279,15 @@ fn shadowing_a_guard_check_never_changes_the_outcome_and_logs_the_disagreement()
 }
 
 #[test]
-fn a_guard_events_budget_fails_closed_when_the_hooks_cannot_start_in_time() {
+fn a_guard_events_budget_defers_to_node_when_the_hooks_cannot_start_in_time() {
+    // review finding 17: a spent budget (a slow machine) blocked the call; it is no verdict, so the Node hooks decide
     let e = Env::new("guard-budget");
     e.config("[events.PreToolUse]\nbudget_ms = 1\n");
     let map = e.map("PreToolUse", &PRE_BASH, |_| "sleep 0.3".into());
     let payload = pre("ls", &e.dir);
     let (code, _, err) = e.run_native("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]);
-    assert_eq!(code, 2, "{err}");
-    assert!(err.contains("budget"), "fails closed with the budget reason: {err}");
+    assert_eq!(code, ah_engine::defaults::num("dispatch.defer_exit") as i32, "{err}");
+    assert!(err.contains("budget") && err.contains("the Node hooks decide"), "defers with the budget reason: {err}");
     // a budget that is not reached changes nothing
     e.config("[events.PreToolUse]\nbudget_ms = 600000\n");
     assert_eq!(e.run_native("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]).0, 0);

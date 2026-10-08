@@ -3,7 +3,8 @@
 //! The invariant, for every combination: the call EITHER exits 2 with a non-empty message on stderr (the engine could
 //! not run the guards, or a hook really blocked), OR ends the way Node's separate hooks would (a real block stays a
 //! block with its exit code and message, a real decision stays a decision), OR hands the event to the wrapper's Node
-//! fallback with `dispatch.defer_exit` (no table row for it). It is never exit 0 with empty stdout and
+//! fallback with `dispatch.defer_exit` (no table row for it, or an infrastructure fault: a hook the OS would not start,
+//! stdin that cannot be read, a usage error, an unreadable fallback map, which must neither block nor allow). It is never exit 0 with empty stdout and
 //! stderr unless a hook that actually ran allowed: every injected hook touches a marker file first, so "a hook ran" is
 //! proved, not assumed.
 //!
@@ -86,6 +87,9 @@ enum Want {
     Open,
     /// Exit 0 and every hook ran: the host's own reading of a hook that said nothing, timed out or only printed text.
     Allow,
+    /// Exit `dispatch.defer_exit` with the engine's infrastructure-fault note: a fault that is no verdict (review findings 2,
+    /// 3, 16) is handed to the wrapper's Node hooks, never a block (a lockout) and never an allow.
+    InfraDefer,
     /// Exit `dispatch.defer_exit` and no hook ran: the engine has no table row for the event and the wrapper's fallback list
     /// does not mark it as a thin trigger, so the wrapper's Node fallback answers exactly as the separate hooks would.
     Defer,
@@ -118,6 +122,8 @@ struct Row {
     daemon: Daemon,
     /// Only these events (empty: every guard event).
     events: &'static [&'static str],
+    /// `--fallback-map` names a file that does not exist.
+    map_unreadable: bool,
 }
 
 const STOPS: &[&str] = &["Stop", "SubagentStop"];
@@ -133,6 +139,7 @@ const BASE: Row = Row {
     event_arg: None,
     daemon: Daemon::InProcess,
     events: &[],
+    map_unreadable: false,
 };
 
 const MARK: &str = r#"touch "$AH_TEST_MARK""#;
@@ -170,15 +177,16 @@ fn rows() -> Vec<Row> {
             events: STOPS,
             ..BASE
         },
-        Row { name: "stdin read error, tool given", stdin: Stdin::ReadError, ..BASE },
-        Row { name: "stdin read error, no --tool", stdin: Stdin::ReadError, tool: Tool::Omitted, ..BASE },
+        Row { name: "stdin read error, tool given", stdin: Stdin::ReadError, want: Want::InfraDefer, ..BASE },
+        Row { name: "stdin read error, no --tool", stdin: Stdin::ReadError, tool: Tool::Omitted, want: Want::InfraDefer, ..BASE },
         Row { name: "no --tool, valid payload", tool: Tool::Omitted, ..BASE },
         Row { name: "no --tool, payload without tool_name", stdin: Stdin::NoToolName, tool: Tool::Omitted, ..BASE },
         // ---- unknown tool: nothing applies, so a quiet exit 0 is right; unknown event: the Node fallback answers ----
         Row { name: "unknown tool", tool: Tool::Unknown, hook: Hook::Cmd { first: MARK, second: MARK2 }, want: Want::Quiet, events: PRE, ..BASE },
         Row { name: "unknown event", event_arg: Some("NoSuchEvent"), hook: Hook::Cmd { first: MARK, second: MARK2 }, want: Want::Defer, ..BASE },
         // ---- wiring ----
-        Row { name: "bad host", host_arg: Some("nope"), want: Want::Closed, ..BASE },
+        Row { name: "bad host", host_arg: Some("nope"), want: Want::InfraDefer, ..BASE },
+        Row { name: "unreadable fallback map", map_unreadable: true, want: Want::InfraDefer, ..BASE },
         Row { name: "unset plugin root", runnable: false, want: Want::Closed, ..BASE },
         // a Stop that exits 2 keeps the agent running, so on a state it cannot repair the flag fails it open
         Row {
@@ -194,7 +202,7 @@ fn rows() -> Vec<Row> {
             name: "hook cannot spawn, stop_hook_active",
             stdin: Stdin::StopActive,
             hook: Hook::Cmd { first: "a\0b", second: "true" },
-            want: Want::Open,
+            want: Want::InfraDefer,
             events: STOPS,
             ..BASE
         },
@@ -207,7 +215,7 @@ fn rows() -> Vec<Row> {
             ..BASE
         },
         // ---- hook side ----
-        Row { name: "hook cannot spawn", hook: Hook::Cmd { first: "a\0b", second: "true" }, want: Want::Closed, ..BASE },
+        Row { name: "hook cannot spawn", hook: Hook::Cmd { first: "a\0b", second: "true" }, want: Want::InfraDefer, ..BASE },
         Row { name: "hook killed by a signal", hook: Hook::Cmd { first: "touch \"$AH_TEST_MARK\"; kill -9 $$", second: "true" }, want: Want::Closed, ..BASE },
         Row {
             name: "exit 2 while a grandchild holds stdout and stderr",
@@ -479,7 +487,9 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
         Tool::Unknown => args.extend(["--tool".into(), "NoSuchTool".into()]),
         _ => {}
     }
-    if row.runnable {
+    if row.map_unreadable {
+        args.extend(["--fallback-map".into(), case.dir.join("no-such-map.json").to_string_lossy().to_string()]);
+    } else if row.runnable {
         args.extend(["--fallback-map".into(), map.to_string_lossy().to_string()]);
     }
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
@@ -604,7 +614,7 @@ fn check(what: &str, row: &Row, want: Want, r: &Run) {
     }
     let closed = r.code == 2 && r.err.contains("could not run the guards");
     // every hook the dispatcher starts runs, whatever another one says: a skipped second guard is not an allow
-    if !closed && !matches!(want, Want::Quiet | Want::Open | Want::Closed | Want::Defer) && r.second_expected {
+    if !closed && !matches!(want, Want::Quiet | Want::Open | Want::Closed | Want::Defer | Want::InfraDefer) && r.second_expected {
         assert!(r.marked2, "the second hook never ran: {ctx}");
     }
     match want {
@@ -619,6 +629,10 @@ fn check(what: &str, row: &Row, want: Want, r: &Run) {
         Want::ClosedOrAllow => assert!(closed || (r.code == 0 && r.marked), "expected closed or a real allow: {ctx}"),
         Want::Allow => assert!(r.code == 0 && r.marked && !closed, "expected an allow from hooks that ran: {ctx}"),
         Want::Open => assert!(r.code == 0 && r.out.is_empty() && r.err.contains("could not run the guards"), "expected a fail-open note: {ctx}"),
+        Want::InfraDefer => assert!(
+            r.code == ah_engine::defaults::num("dispatch.defer_exit") as i32 && r.out.is_empty() && r.err.contains("the Node hooks decide"),
+            "expected an infrastructure deferral to the Node hooks: {ctx}"
+        ),
         Want::Defer => assert!(r.code == 75 && !r.marked && r.out.is_empty(), "expected a deferral to the Node fallback: {ctx}"),
     }
     let _ = row;
@@ -665,9 +679,9 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
             let row = Row { daemon: effective_daemon(case, &row), ..row };
             let label = |v: &str| format!("[{}/{}] {} ({v})", case.host, case.event, row.name);
             let attempts: Vec<(String, Run, Want)> = match row.hook {
-                Hook::Crossed if matches!(row.want, Want::Closed) => vec![
-                    (label("allowing hook"), run(case, &row, MARK, MARK2), Want::Closed),
-                    (label("blocking hook"), run(case, &row, BLOCK, MARK2), Want::Closed),
+                Hook::Crossed if matches!(row.want, Want::Closed | Want::InfraDefer) => vec![
+                    (label("allowing hook"), run(case, &row, MARK, MARK2), row.want),
+                    (label("blocking hook"), run(case, &row, BLOCK, MARK2), row.want),
                 ],
                 // A complete in-cap payload, and an over-cap UTF-8 payload whose full bytes are available to Node,
                 // run every hook. The outcome is exact: the hook's own allow or block, never the engine's prefix-based
