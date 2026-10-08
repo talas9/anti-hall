@@ -293,3 +293,16 @@ mod jev_self_credit {
         assert!(m.contains("a gh pr/issue/release body or title appears to credit an AI assistant"), "{m}");
     }
 }
+
+#[test]
+fn a_jev_consult_the_clients_deadline_cannot_hold_defers_the_whole_verdict() {
+    // review finding 4: git.jev_total_budget_ms (4 s) outlasted the 2 s client deadline, so the regex verdict was taken
+    // without Jev and the reply was lost anyway; now the verdict goes to Node, which consults Jev with its full budget
+    let h = home();
+    let mut ctx = Ctx::new(Settings { home: h.to_string_lossy().to_string(), env: HashMap::new() }, "/tmp", "/plugin");
+    crate::deadline::begin(std::time::Instant::now());
+    crate::deadline::client_deadline(0);
+    assert!(!ctx.jev_consult("co-authored by an assistant"));
+    crate::deadline::end();
+    assert!(ctx.overflow, "the verdict is deferred, not taken without Jev");
+}

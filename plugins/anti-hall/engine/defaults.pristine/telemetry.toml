@@ -168,6 +168,10 @@ value = { kind = "counter", unit = "panics", labels = [] }
 doc = "Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms."
 value = { kind = "counter", unit = "errors", labels = ["code"] }
 
+[metric.slow_replies]
+doc = "Replies finished after their client's deadline had passed: slow but healthy (the client fell back to Node), counted apart from errors."
+value = { kind = "counter", unit = "replies", labels = [] }
+
 [metric.rejected_peers]
 doc = "Connections dropped because the peer uid was not ours."
 value = { kind = "counter", unit = "connections", labels = [] }

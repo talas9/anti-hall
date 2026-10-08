@@ -356,6 +356,7 @@ impl Shared {
             "panics": self.stats.panics.load(SeqCst),
             "reply_write_errors": REPLY_WRITE_ERRORS.load(SeqCst),
             "accept_errors": ACCEPT_ERRORS.load(SeqCst),
+            "slow_replies": SLOW_REPLIES.load(SeqCst),
             "rejected_peers": self.stats.rejected.load(SeqCst),
             "starts": self.starts,
             "restarts": self.starts.saturating_sub(1),
@@ -592,6 +593,9 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     if let Some(root) = meta.root.as_deref() {
         sh.config.offer_root(root);
     }
+    if let Some(ms) = meta.deadline_ms {
+        crate::deadline::client_deadline(ms);
+    }
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
     crate::load::note_request(&meta.event, p.get("session_id").and_then(|v| v.as_str()));
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
@@ -759,7 +763,8 @@ fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static st
     }
 }
 
-fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) {
+/// Write the reply; false when it could not be written (the client is gone or stopped reading).
+fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) -> bool {
     if let Err(e) = s.set_write_timeout(Some(cfg.write_deadline)) {
         health::log_event("reply", "set_timeout", &e.to_string());
     }
@@ -768,8 +773,13 @@ fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) {
     if let Err(e) = s.write_all(&r.frame()) {
         REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
         health::log_event("reply", "write_failed", &e.to_string());
+        return false;
     }
+    true
 }
+
+/// Replies finished after their client's deadline had passed (slow but healthy; counted apart from failures).
+pub static SLOW_REPLIES: AtomicU64 = AtomicU64::new(0);
 
 /// Replies the daemon could not write to their client (the client then falls back to Node).
 pub static REPLY_WRITE_ERRORS: AtomicU64 = AtomicU64::new(0);
@@ -780,15 +790,19 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     crate::load::take_scan();
     crate::load::take_request();
     let cfg = sh.cfg();
+    // the client stops waiting `client.deadline_ms` after it sent the request, which is about when it was accepted
+    crate::deadline::begin(started.checked_sub(wait).unwrap_or(started));
     let req = match read_request(&mut s, &cfg) {
         Ok(r) => r,
         Err(why) => {
             sh.stats.errors.fetch_add(1, SeqCst);
             sh.telemetry.with_metrics(|m| m.inc("errors", &[]));
             write_reply(&mut s, &Reply::Err(why.into()), &cfg);
+            crate::deadline::end();
             return After::Continue;
         }
     };
+    telemetry::stage_begin();
     let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
         Ok(r) => r,
         Err(_) => {
@@ -799,7 +813,19 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             (Reply::Err(defaults::text("msg.reply_internal").into()), After::Continue)
         }
     };
-    write_reply(&mut s, &reply, &cfg);
+    let late = crate::deadline::remaining() == Some(Duration::ZERO);
+    if write_reply(&mut s, &reply, &cfg) {
+        sh.telemetry.stage_commit();
+    } else {
+        // the client never read it: what the request recorded is not a decision anyone saw (review finding 4)
+        telemetry::stage_discard();
+    }
+    if late {
+        // answered after the client's deadline: slow but healthy, which is not a failure of the engine
+        SLOW_REPLIES.fetch_add(1, SeqCst);
+        sh.telemetry.with_metrics(|m| m.inc("slow_replies", &[]));
+    }
+    crate::deadline::end();
     let (event, session) = crate::load::take_request();
     sh.load.record(&crate::load::Sample {
         at_ms: health::now_ms(),
@@ -1288,6 +1314,7 @@ mod tests {
                     plan: vec![],
                     cfg: String::new(),
                     payload_sha1: None,
+                    deadline_ms: None,
                 };
                 let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
                 let rows: Vec<serde_json::Value> = serde_json::from_str(ok(&handle_request(d.as_bytes(), &sh).0)).unwrap();

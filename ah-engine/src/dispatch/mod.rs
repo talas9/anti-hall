@@ -564,6 +564,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             let wants = defaults::list("dispatch.payload_hash_checks");
             entries.iter().any(|e| e.check.as_deref().is_some_and(|c| wants.contains(&c))).then(|| crate::checks::emit_dedupe::sha1_hex(raw.as_bytes()))
         },
+        // the daemon clamps its inner budgets (git, Jev) to what this client still waits (review finding 4)
+        deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
     };
     let answers = match (&parsed, complete) {
         // A payload serde_json cannot read falls back to Node (JS may still parse it, e.g. a lone surrogate escape): the

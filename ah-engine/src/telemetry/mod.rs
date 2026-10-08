@@ -47,6 +47,40 @@ fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// What a request recorded while it was being served, held until its reply is written (review finding 4: a reply the
+/// client never read must not count as a decision the user saw).
+enum Staged {
+    Record(Kind, String, String, Outcome, u64, u64),
+    Event(Event),
+    Impact(ImpactEvent),
+}
+
+thread_local! {
+    /// `Some` while a daemon worker stages what its request records.
+    static STAGE: std::cell::RefCell<Option<Vec<Staged>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Hold what this thread records from now on until [`Telemetry::stage_commit`] or [`stage_discard`].
+pub fn stage_begin() {
+    STAGE.with(|s| *s.borrow_mut() = Some(Vec::new()));
+}
+
+/// Drop what this thread staged: its request's reply could not be written.
+pub fn stage_discard() {
+    STAGE.with(|s| *s.borrow_mut() = None);
+}
+
+/// Stage `item` when staging is on for this thread; otherwise hand it back to be recorded now.
+fn staged(item: Staged) -> Option<Staged> {
+    STAGE.with(|s| match s.borrow_mut().as_mut() {
+        Some(v) => {
+            v.push(item);
+            None
+        }
+        None => Some(item),
+    })
+}
+
 /// Hashed project key for impact events: the path is never stored, only a short stable hash of it.
 pub fn project_hash(project_key: &str) -> String {
     let h = format!("{:016x}", crate::health::fnv(project_key));
@@ -74,6 +108,30 @@ pub fn decision_name(v: &Verdict) -> &'static str {
 }
 
 impl Telemetry {
+    fn sink(&self, item: Staged) {
+        match staged(item) {
+            None => {}
+            Some(Staged::Record(k, h, e, o, us, ib)) => self.rec.record(k, &h, &e, o, us, ib),
+            Some(Staged::Event(ev)) => self.rec.event(ev),
+            Some(Staged::Impact(ev)) => self.store.record_impact(ev),
+        }
+    }
+
+    fn record(&self, kind: Kind, h: &str, e: &str, o: Outcome, micros: u64, ib: u64) {
+        if STAGE.with(|s| s.borrow().is_none()) {
+            return self.rec.record(kind, h, e, o, micros, ib); // not staging: the lock-free path, no allocation
+        }
+        self.sink(Staged::Record(kind, h.to_string(), e.to_string(), o, micros, ib));
+    }
+
+    /// Record everything this thread staged since [`stage_begin`] (its request's reply was written), and stop staging.
+    pub fn stage_commit(&self) {
+        let held = STAGE.with(|s| s.borrow_mut().take()).unwrap_or_default();
+        for item in held {
+            self.sink(item);
+        }
+    }
+
     /// A telemetry handle with the in-memory store sized from the defaults.
     pub fn new() -> Telemetry {
         let store = MemStore::new(
@@ -103,7 +161,7 @@ impl Telemetry {
     /// Record one rich event (a routing decision, a spawn result, a Jev call, a spill): counted like an invocation and
     /// kept in the ring for the next flush.
     pub fn event(&self, ev: Event) {
-        self.rec.event(ev);
+        self.sink(Staged::Event(ev));
     }
 
     /// Record a model-routing decision (D77): the event, plus an impact event of kind `route` whose reason is what the
@@ -114,12 +172,12 @@ impl Telemetry {
         {
             self.impact("route", ev.h.as_str(), r.outcome.name(), project);
         }
-        self.rec.event(ev);
+        self.sink(Staged::Event(ev));
     }
 
     /// Record one hook request: its event, how it ended, how long it took and how many bytes it injected.
     pub fn record_hook(&self, event: &str, outcome: Outcome, micros: u64, injected: u64) {
-        self.rec.record(Kind::Hook, defaults::text("telemetry.hook_label"), event, outcome, micros, injected);
+        self.record(Kind::Hook, defaults::text("telemetry.hook_label"), event, outcome, micros, injected);
     }
 
     /// Store what the recorder holds (counters and events since the last flush) in hot.db. Called every
@@ -176,7 +234,7 @@ impl Telemetry {
 
     /// Record one impact event.
     pub fn impact(&self, kind: &str, check: &str, reason: &str, project: &str) {
-        self.store.record_impact(ImpactEvent { ts_ms: now_ms(), kind: kind.into(), check: check.into(), reason: reason.into(), project: project.into() });
+        self.sink(Staged::Impact(ImpactEvent { ts_ms: now_ms(), kind: kind.into(), check: check.into(), reason: reason.into(), project: project.into() }));
     }
 
     /// A built-in check finished (outside a hook event): see [`Telemetry::observe_check_in`].
@@ -207,7 +265,7 @@ impl Telemetry {
             Verdict::Defer => (Outcome::Defer, 0),
             Verdict::Routed(_, _) => (Outcome::Allow, 0),
         };
-        self.rec.record(Kind::Check, check, event, outcome, micros, injected);
+        self.record(Kind::Check, check, event, outcome, micros, injected);
         {
             let mut m = lk(&self.metrics);
             m.inc("check_calls", &[("check", check)]);
@@ -230,7 +288,7 @@ impl Telemetry {
 
     /// A regex rule matched while serving hook event `event`.
     pub fn observe_rule_in(&self, event: &str, rule_id: &str, action: Action, project: &str) {
-        self.rec.record(
+        self.record(
             Kind::Check,
             defaults::text("telemetry.rule_label"),
             event,
@@ -346,6 +404,23 @@ impl Default for Telemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_a_request_records_counts_only_once_its_reply_is_written() {
+        // review finding 4: a reply the client never read was still counted as a block and an impact event
+        let t = Telemetry::new();
+        stage_begin();
+        t.observe_check("git", "git-guard", &Verdict::Block("x".into()), 400, "abc");
+        stage_discard();
+        assert_eq!(t.impact_json(&ImpactFilter::default(), 10)["total"], 0, "an unwritten reply records nothing");
+        assert!(t.recorder().pending_deltas().is_empty());
+        stage_begin();
+        t.observe_check("git", "git-guard", &Verdict::Block("x".into()), 400, "abc");
+        assert_eq!(t.impact_json(&ImpactFilter::default(), 10)["total"], 0, "held until the reply is written");
+        t.stage_commit();
+        assert_eq!(t.impact_json(&ImpactFilter::default(), 10)["total"], 1);
+        assert_eq!(t.recorder().pending_deltas().iter().map(|d| d.n).sum::<u64>(), 1);
+    }
 
     #[test]
     fn a_blocking_check_run_is_counted_timed_and_recorded() {
