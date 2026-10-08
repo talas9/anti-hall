@@ -146,6 +146,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "the loader's validation diagnostics and the snapshot-cache format identifiers (magic and trailer): they describe the files that would supply every other text, and the cache layout is a file format versioned with the binary",
     ),
     (
+        "src/doctor/mod.rs",
+        "defaults unavailable",
+        "the one line `doctor` prints when the defaults cannot load: by definition no text can come from the defaults then; the diagnosis itself is the shell doctor's (its texts are plugin files)",
+    ),
+    (
         "src/cli.rs",
         "[\"version\", \"status\"",
         "the commands that start with the daemon's snapshot cache instead of parsing the files: decided before any defaults are loaded, so it cannot be a shipped setting",

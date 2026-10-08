@@ -15,15 +15,21 @@
 //! context-footprint measurement, the DevSwarm supervisor, the OMC and Codex detection, the ingest daemon units, the foreign
 //! plugin conflict scan, the leaked-store reports) and its explicit opt-in flags (`--prune-cache`, `--reclaim-ingest-lock`,
 //! `--repair-*`, `--logs`). Each such flag is reported when given; the Node doctor stays in place for them.
+mod facts;
+mod install;
+mod plugin;
+mod runtime;
 mod selftest;
+mod system;
 
-use crate::checks::guardkit::text::js_trim;
 use crate::checks::jsport::json::{self, J};
 use crate::checks::jsport::text::slice16_lossy;
 use crate::cli::Parsed;
 use crate::defaults;
 use crate::migrate;
 use std::path::{Path, PathBuf};
+
+pub use facts::Host;
 
 /// How serious a finding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +42,21 @@ pub enum Level {
     Warn,
     /// A neutral note that touches no count.
     Info,
+}
+
+/// A safe, idempotent repair (never a delete) that `--repair` may apply for a finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fix {
+    /// Set the owner execute bit on the engine binary.
+    MakeExecutable(PathBuf),
+    /// Remove the macOS quarantine attribute from the verified engine binary.
+    Unquarantine(PathBuf),
+    /// Create the engine state directory (private).
+    Mkdir(PathBuf),
+    /// Make the state directory private (mode 0700).
+    Private(PathBuf),
+    /// Add the settings the edited defaults files lack (from the pristine copy, with a backup).
+    Heal,
 }
 
 /// The findings of a run, in report order.
@@ -262,20 +283,70 @@ fn workflows_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) {
     }
 }
 
-fn engine_section(doc: &mut Doc) {
-    doc.head(defaults::text("doctor_msg.head_engine"));
-    doc.ok(defaults::render("doctor_msg.engine_version", &[("version", &crate::version())]));
-    match crate::client::ctl("ping") {
-        Some(reply) => doc.ok(defaults::render("doctor_msg.daemon_up", &[("reply", &js_trim(&reply))])),
-        None => doc.infol(defaults::text("doctor_msg.daemon_down").to_string()),
+/// Apply (or, in a dry run, only describe) one safe repair; the row says what was done.
+fn apply_fix(fix: &Fix, dry: bool, root: Option<&Path>) -> (&'static str, Result<String, String>) {
+    use std::os::unix::fs::PermissionsExt;
+    let add_mode = |p: &Path, add: u32| -> std::io::Result<()> {
+        let cur = std::fs::metadata(p)?.permissions().mode();
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(cur | add))
+    };
+    match fix {
+        Fix::MakeExecutable(p) => {
+            let id = "engine-binary-exec";
+            let msg = defaults::render("doctor_msg.fix_exec", &[("path", &p.display())]);
+            (id, if dry { Ok(msg) } else { add_mode(p, defaults::num("doctor.owner_exec_bit") as u32).map(|()| msg).map_err(|e| e.to_string()) })
+        }
+        Fix::Unquarantine(p) => {
+            let msg = defaults::render("doctor_msg.fix_quarantine", &[("path", &p.display())]);
+            ("engine-binary-quarantine", if dry { Ok(msg) } else { facts::clear_quarantine(p).map(|()| msg).map_err(|e| e.to_string()) })
+        }
+        Fix::Mkdir(p) => {
+            let msg = defaults::render("doctor_msg.fix_mkdir", &[("dir", &p.display())]);
+            ("state-dir-create", if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
+        }
+        Fix::Private(p) => {
+            let msg = defaults::render("doctor_msg.fix_private", &[("dir", &p.display())]);
+            ("state-dir-private", if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
+        }
+        Fix::Heal => {
+            let id = "config-heal";
+            let (Some(r), Some(report)) = (root.map(Path::to_path_buf).or_else(defaults::root), defaults::load_report()) else {
+                return (id, Err(defaults::text("doctor_msg.fix_heal_nothing").to_string()));
+            };
+            if dry {
+                return (id, Ok(defaults::render("doctor_msg.fix_heal_dry", &[("n", &report.missing.len())])));
+            }
+            let done = defaults::heal(&r, &report, false);
+            let lines: Vec<String> = done.iter().map(|h| defaults::heal_line(h).2).collect();
+            let failed = done.iter().any(|h| matches!(h, defaults::Healed::Failed { .. }));
+            (id, if failed { Err(lines.join("; ")) } else { Ok(lines.join("; ")) })
+        }
     }
 }
 
-fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags) {
+fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], root: Option<&Path>) {
     doc.head(defaults::text(if f.dry_run { "doctor_msg.repair_heading_dry" } else { "doctor_msg.repair_heading" }));
     let rows = migrate::run(ctx);
     crate::telemetry::emit::add_items(rows.iter().filter(|r| r.status == "fixed").count() as u64);
-    if rows.is_empty() && doc.fail == 0 {
+    let mut done = 0u64;
+    let mut seen: Vec<&Fix> = Vec::new();
+    for fix in fixes {
+        if seen.contains(&fix) {
+            continue;
+        }
+        seen.push(fix);
+        let (id, outcome) = apply_fix(fix, f.dry_run, root);
+        match outcome {
+            Ok(msg) if f.dry_run => doc.infol(defaults::render("doctor_msg.repair_would", &[("id", &id), ("msg", &msg)])),
+            Ok(msg) => {
+                done += 1;
+                doc.ok(defaults::render("doctor_msg.repair_fixed", &[("id", &id), ("msg", &msg)]));
+            }
+            Err(e) => doc.bad(defaults::render("doctor_msg.repair_failed", &[("id", &id), ("msg", &e)])),
+        }
+    }
+    crate::telemetry::emit::add_items(done);
+    if rows.is_empty() && fixes.is_empty() && doc.fail == 0 {
         doc.infol(defaults::text("doctor_msg.repair_none").to_string());
     }
     for r in &rows {
@@ -299,18 +370,15 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     }
     let (ctx, _) = match migrate::cli::context(p) {
         Ok(c) => c,
-        Err(e) => {
-            if p.json {
-                println!("{}", json::stringify(&J::Obj(vec![("error".into(), J::Str(e))])));
-            } else {
-                eprintln!("{e}");
-            }
-            return 1;
-        }
+        Err(e) => return no_context(p, &e),
     };
     let root = plugin_root(p, &ctx.env);
+    let root_path = root.as_deref().map(Path::new);
     let version = ctx.version.clone().unwrap_or_else(|| defaults::text("doctor_msg.unknown_version").to_string());
     let mut doc = Doc::default();
+    let mut fixes: Vec<Fix> = Vec::new();
+    let host = Host::detect();
+    let uid = crate::limits::uid();
 
     doc.head(defaults::text("doctor_msg.head_environment"));
     let (platform, arch) = node_platform();
@@ -320,7 +388,11 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     } else {
         doc.warnl(defaults::text("doctor_msg.no_plugin_root").to_string());
     }
-    engine_section(&mut doc);
+    runtime::daemon_section(&mut doc);
+    let engine_usable = install::section(&mut doc, &mut fixes, &ctx, root_path, &host);
+    runtime::state_section(&mut doc, &mut fixes, uid);
+    plugin::config_section(&mut doc, &mut fixes, &ctx);
+    plugin::registry_section(&mut doc, &ctx, root_path, &version);
     for flag in defaults::list("doctor.unhandled_flags") {
         if p.rest.iter().any(|a| a == flag) {
             if doc.sections.last().is_none_or(|s| s.0 != defaults::text("doctor_msg.head_unhandled")) {
@@ -329,15 +401,20 @@ pub fn run_doctor(p: &Parsed) -> i32 {
             doc.warnl(defaults::render("doctor_msg.unhandled_flag", &[("flag", &flag)]));
         }
     }
-    if let Some(r) = root.as_deref() {
-        hooks_section(&mut doc, Path::new(r));
+    if let Some(r) = root_path {
+        hooks_section(&mut doc, r);
+        plugin::thin_section(&mut doc, r);
     }
+    system::environment_section(&mut doc, &ctx, engine_usable, uid);
+    system::claude_section(&mut doc, &ctx);
+    system::logs_section(&mut doc);
+    system::witness_section(&mut doc, &ctx);
     doc.head(defaults::text("doctor_msg.head_guards"));
     selftest::run(&mut doc, &ctx, root.as_deref(), &version);
     statusline_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
     workflows_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
     if do_repair {
-        repair_section(&mut doc, &ctx, &f);
+        repair_section(&mut doc, &ctx, &f, &fixes, root_path);
     } else if !f.check {
         doc.head(defaults::text("doctor_msg.repair_heading"));
         doc.infol(defaults::text("doctor_msg.repair_read_only").to_string());
@@ -357,4 +434,39 @@ pub fn run_doctor(p: &Parsed) -> i32 {
         println!("{verdict}");
     }
     i32::from(doc.fail != 0)
+}
+
+/// The run cannot even build its context (HOME unset, no working directory): report that as a diagnosis, not a bare error.
+fn no_context(p: &Parsed, why: &str) -> i32 {
+    let mut doc = Doc::default();
+    doc.head(defaults::text("doctor_msg.head_environment"));
+    doc.bad(if why == defaults::text("migrate_msg.no_home") { defaults::text("doctor_msg.home_unset").to_string() } else { why.to_string() });
+    if p.json {
+        println!("{}", json::stringify(&doc.to_json(&crate::version())));
+    } else {
+        println!("{}", defaults::render("doctor_msg.title", &[("version", &crate::version())]));
+        println!("{}\n", doc.body());
+        println!("{}", doc.verdict());
+    }
+    1
+}
+
+/// `doctor` when the engine's defaults cannot be loaded at all: nothing the engine can say comes from settings, so the shell
+/// doctor next to the hook wrapper (its own texts, POSIX sh only) gives the diagnosis. `err` is why the load failed.
+pub fn degraded(p: &Parsed, err: &str) -> i32 {
+    let root = p
+        .rest
+        .iter()
+        .position(|a| a == "--plugin-root")
+        .and_then(|i| p.rest.get(i + 1))
+        .map(PathBuf::from)
+        .or_else(crate::bootstrap::env_root);
+    let wrapper = root.as_deref().map(|r| r.join(crate::bootstrap::WRAPPER_REL)).filter(|w| w.is_file());
+    eprintln!("ah-engine: defaults unavailable: {err}");
+    let Some(w) = wrapper else { return 70 };
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg(&w).arg(crate::bootstrap::SHELL_DOCTOR_ARG).args(p.rest.iter().filter(|a| a.starts_with("--")));
+    cmd.env(crate::bootstrap::ROOT_ENVS[0], root.unwrap_or_default());
+    cmd.env(crate::bootstrap::DEFAULTS_ERROR_ENV, err.split_whitespace().collect::<Vec<_>>().join(" "));
+    cmd.status().map_or(70, |s| s.code().unwrap_or(70))
 }

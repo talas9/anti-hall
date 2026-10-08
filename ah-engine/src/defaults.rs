@@ -332,6 +332,15 @@ pub fn root() -> Option<PathBuf> {
     }
 }
 
+/// What the active (full) snapshot's load did besides producing values: the fallbacks it took and the settings it could heal.
+/// `None` for the thin client's cache snapshot, which keeps no report.
+pub fn load_report() -> Option<Report> {
+    match current()?.as_ref() {
+        Backend::Full(d) => Some(d.report.clone()),
+        Backend::Lazy(_) => None,
+    }
+}
+
 /// Note a failed load where it can be found (see `load::report_unavailable`).
 pub fn report_unavailable(e: &DefaultsError) {
     load::report_unavailable(e);

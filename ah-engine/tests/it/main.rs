@@ -27,6 +27,7 @@ mod dispatch_e2e;
 mod dispatch_table;
 mod docs_coverage;
 mod doctor_parity;
+mod doctor_scenarios;
 mod durability;
 mod e2e;
 mod fail_closed_matrix;

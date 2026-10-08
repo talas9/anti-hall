@@ -121,12 +121,14 @@ fn compare(name: &str, node: &str, rust: &str, fx: (&Fx, &Fx)) {
     // the statusline configuration finding is the first line of Node's section (the render checks follow it)
     let (n, r) = (section(&ns, "Statusline").unwrap(), section(&rs, "Statusline").unwrap());
     assert_eq!(n.first(), r.first(), "{name}: statusline configuration finding");
-    // every repair row of the engine is a row of Node's, with the same status and text
+    // every repair row of the engine that Node also has is a row of Node's, with the same status and text
     let heading = |s: &[(String, Vec<String>)]| s.iter().find(|(t, _)| t.starts_with("Repair")).cloned();
     let (nr, rr) = (heading(&ns).expect("node repair section"), heading(&rs).expect("rust repair section"));
     assert_eq!(nr.0, rr.0, "{name}: repair heading");
     assert!(!rr.1.is_empty());
-    for line in &rr.1 {
+    // except the install-health repairs only the engine doctor has (the Node doctor has no such check): they are covered in doctor_scenarios.rs
+    let engine_only = ["state-dir-create", "state-dir-private", "engine-binary-exec", "engine-binary-quarantine", "config-heal"];
+    for line in rr.1.iter().filter(|l| !engine_only.iter().any(|id| l.contains(&format!(" {id}:")))) {
         assert!(nr.1.contains(line), "{name}: the engine's repair row is not a Node row: {line}\nnode rows: {:#?}", nr.1);
     }
     // the engine's report is complete for what it claims
