@@ -229,13 +229,13 @@ pub fn node_dump(home: &Path, key: &str) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// Every file under `home` with its bytes, except the store files, summaries and the given state dir.
+/// Every file under `home` with its bytes, except the store files and the engine state dir (summaries ARE compared).
 pub fn home_files(home: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(base: &Path, d: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
         for e in fs::read_dir(d).unwrap().flatten() {
             let p = e.path();
             let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
-            if rel.contains("/store/") || rel.contains("/summaries") || rel.starts_with("state") {
+            if rel.contains("/store/") || rel.starts_with("state") {
                 continue;
             }
             if e.file_type().unwrap().is_dir() {

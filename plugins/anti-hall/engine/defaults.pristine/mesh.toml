@@ -56,7 +56,7 @@ value = 9007199254740991
 # ---- D45 stage 2: the switch that decides who writes (see mesh_write.toml) ----------------------------------------
 
 [mesh.engine_writes]
-doc = "Who runs the mesh verbs that write the store (`ah-engine mesh send|mesh read|mesh history|roster --ack`): off (Node, the engine only forwards), shadow (Node acts; the engine replays each call on a scratch copy and logs whether it would have done the same, in mesh_write.shadow_log) or on (the engine acts where it reproduces Node exactly, Node elsewhere). Set it in settings.json (`mesh.engine_writes`) or the engine's config.toml."
+doc = "Who runs the mesh verbs that write the store (`ah-engine mesh send|mesh read|mesh history|roster --ack`): off (Node, the engine only forwards), shadow (Node acts; the engine replays each call on a scratch copy and logs whether it would have done the same, in mesh_write.shadow_log) or on (the engine acts where it reproduces Node exactly, Node elsewhere; after the engine's own write it never reruns the verb in Node). Set it in settings.json (`mesh.engine_writes`) or the engine's config.toml. To turn it off: `{\"mesh\":{\"engine_writes\":\"off\"}}` in ~/.anti-hall/settings.json (or delete the key; off is the default)."
 value = "off"
 
 [mesh.engine_writes_modes]
