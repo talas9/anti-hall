@@ -76,7 +76,10 @@ function tlScanWork(path, progressAbs, cx) {
   var lines = rp.lines(path, tlN('window_bytes'));
   if (lines === null) return out;
   for (var i = 0; i < lines.length; i++) {
-    var t = lines[i].trim();
+    // only an entry that holds a tool use (or an escape that could spell one), and a bare `null`, can matter to the work count
+    var raw = lines[i];
+    if (raw.indexOf('tool_use') < 0 && raw.indexOf('\\u') < 0 && raw.indexOf('null') < 0) continue;
+    var t = raw.trim();
     if (!t) continue;
     var r = jx.parse(t);
     if (r.unsure) return 'defer';

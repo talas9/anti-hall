@@ -34,7 +34,10 @@ var rp = {
   lastAssistant: function (lines, map) {
     var last = null;
     for (var i = 0; i < lines.length; i++) {
-      var t = lines[i].trim();
+      var raw = lines[i];
+      // an entry whose role is `assistant` names it in the text (or spells it with an escape): the rest need no parse
+      if (raw.indexOf('assistant') < 0 && raw.indexOf('\\u') < 0) continue;
+      var t = raw.trim();
       if (!t) continue;
       var r = jx.parse(t);
       if (r.unsure) return { unsure: true };
