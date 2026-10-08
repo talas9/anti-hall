@@ -101,6 +101,28 @@ sh "$K/status.sh" >"$F/st3.out" 2>&1; rc=$?; [ "$rc" -ne 0 ] && grep -q 'DRIFT' 
 sh "$K/rollback.sh" >"$F/rb2.out" 2>&1; chk $? "rollback exit 0"
 orig_ok && [ "$(shaof "$HOME/.claude/settings.json")" = "$SET0" ]; chk $? "original enabled, settings.json byte-identical"
 
+echo "== 12. owner edits made AFTER go-live survive a rollback (the theme was reset to light-ansi on 2026-10-08)"
+mkkit
+node -e 'const fs=require("fs"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f,"utf8"));s.theme="auto";s.hooks.PreToolUse=[{hooks:[{type:"command",command:"sh $HOME/.anti-hall/ah-engine-shadow/shadow-all.sh PreToolUse"}]}];fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n")' "$HOME/.claude/settings.json"
+SETA=$(shaof "$HOME/.claude/settings.json")
+sh "$K/go-live.sh" >"$F/gl12.out" 2>&1; chk $? "go-live exit 0 (settings.json had a shadow trigger and theme=auto)"
+! grep -q 'shadow-all.sh' "$HOME/.claude/settings.json" && grep -q 'ah-node-shadow/node-shadow.sh' "$HOME/.claude/settings.json"; chk $? "go-live removed the shadow trigger and added the witness"
+node -e 'const fs=require("fs"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f,"utf8"));s.theme="light-ansi";s.model="opus";s.hooks.Stop=[{hooks:[{type:"command",command:"echo owner-stop"}]}];fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n")' "$HOME/.claude/settings.json"
+sh "$K/rollback.sh" >"$F/rb12.out" 2>&1; chk $? "rollback exit 0 without --force over the owner edits"
+orig_ok; chk $? "original plugin enabled again, live plugin gone"
+node -e '
+  const s=require(process.argv[1]),bad=[];
+  if(s.theme!=="light-ansi")bad.push("theme="+s.theme); if(s.model!=="opus")bad.push("model"); if(!s.hooks.Stop)bad.push("Stop hook");
+  if(s.env.A!=="1")bad.push("env");
+  if(!JSON.stringify(s.hooks.PreToolUse||[]).includes("shadow-all.sh"))bad.push("shadow trigger not back");
+  if(JSON.stringify(s).includes("node-shadow.sh"))bad.push("witness left");
+  if("anti-hall@anti-hall-engine-live" in s.enabledPlugins||(s.extraKnownMarketplaces&&"anti-hall-engine-live" in s.extraKnownMarketplaces))bad.push("live keys left");
+  if(bad.length){console.error(bad.join("; "));process.exit(1)}' "$HOME/.claude/settings.json"; chk $? "owner theme/model/Stop hook kept; shadow trigger back; witness and live keys gone"
+echo "-- no owner edit: still byte-identical to the pre-go-live file"
+mkkit
+sh "$K/go-live.sh" >/dev/null 2>&1; sh "$K/rollback.sh" >/dev/null 2>&1
+[ "$(shaof "$HOME/.claude/settings.json")" = "$SET0" ]; chk $? "settings.json byte-identical when nothing else changed"
+
 echo "== full disk part-way through go-live: abort cleanly, original stays enabled, never half-installed"
 # ENOSPC stub: after $limit successful cp/mkdir calls the next $burst calls fail (a disk that fills while go-live runs, then maybe frees up).
 # mv is a rename on the same filesystem and needs no space, so it is not stubbed.

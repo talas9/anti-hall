@@ -2,6 +2,7 @@
 # rollback.sh                 full rollback: every file go-live touched goes back byte-identical; Node decides everything again.
 # rollback.sh --check <ids>   per-check revert: those GUARD entries go back to Node as their decider; the rest stays live.
 # Flags: --force (restore even if a file changed after go-live), --quiet.
+# settings.json is NOT restored as a snapshot: only the keys/entries the kit changed are reverted, later owner edits stay.
 # Nothing is deleted: files go-live created are moved to state/rolled-back-<time>/.
 . "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/lib.sh"
 need_node
@@ -42,15 +43,11 @@ lim 30 sh "$KIT/reload-notice.sh" --uninstall >/dev/null 2>&1 || klog E_NOTICE_U
 conf=$(node -e '
   const fs=require("fs"),crypto=require("crypto"),j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
   const sha=f=>fs.existsSync(f)?crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex"):"absent";
-  // settings.json: the CLI edits enabledPlugins/extraKnownMarketplaces and this kit edits its own hook entries; none of that is a user edit.
-  const strip=f=>{ try { const s=JSON.parse(fs.readFileSync(f,"utf8")); delete s.enabledPlugins; delete s.extraKnownMarketplaces;
-    const marks=process.argv[2].split(" ").concat(["ah-node-shadow/node-shadow.sh","ah-live-notice/notice.sh"]);
-    for (const ev of Object.keys(s.hooks||{})) { s.hooks[ev]=s.hooks[ev].map(g=>({...g,hooks:(g.hooks||[]).filter(h=>!marks.some(m=>String(h.command||"").includes(m)))})).filter(g=>g.hooks.length); if(!s.hooks[ev].length) delete s.hooks[ev]; }
-    if (s.hooks && !Object.keys(s.hooks).length) delete s.hooks; return JSON.stringify(s); } catch(e) { return null; } };
+  // settings.json is never a conflict: rollback reverts only the keys/entries this kit changed (restore_settings) and keeps every other edit.
   for (const [k,v] of Object.entries(j.files)) { const cur=sha(v.path);
     if (cur!==v.sha_before && v.sha_after!==null && cur!==v.sha_after) {
-      if (k==="settings" && v.backup) { const a=strip(v.path), b=strip(require("path").join(process.argv[3],v.backup)); if (a!==null && a===b) continue; }
-      console.log(k+": "+v.path+" changed after go-live"); } }' "$LIVE_JSON" "$SHADOW_MARKS" "$STATE")
+      if (k==="settings") continue;
+      console.log(k+": "+v.path+" changed after go-live"); } }' "$LIVE_JSON")
 if [ -n "$conf" ] && [ "$force" != 1 ]; then printf '%s\n' "$conf" >&2; die "refusing: restoring would overwrite later edits. Re-run with --force to restore anyway (your edits are kept in the backup dir listed below)"; fi
 TS=$(date +%Y%m%d-%H%M%S); RB=$STATE/rolled-back-$TS
 DIE_CODE=E_STATE_UNWRITABLE mkdir -p "$RB" 2>/dev/null && [ -w "$RB" ] || { DIE_CODE=E_STATE_UNWRITABLE; die "cannot write under $STATE (disk full or read-only?); nothing was changed. Free space / fix permissions, then re-run"; }
@@ -66,6 +63,47 @@ restore() { # key  (files the kit wrote itself: byte-identical from backup, or m
     else
       [ "$cur" = absent ] || { mkdir -p "$RB/$1" && mv "$path" "$RB/$1/"; }
     fi; }
+}
+# settings.json is user-owned and may have been edited since go-live (theme, permissions, other hooks): never put the whole snapshot back.
+# Revert ONLY what this kit changed: enabledPlugins for the live + original anti-hall plugins, extraKnownMarketplaces[live marketplace], and the
+# hooks entries (the old shadow triggers go-live removed come back; the witness + notice entries are removed). Everything else stays as it is now.
+# When nothing but those kit keys differs from the snapshot (no owner edit), the snapshot is copied back byte-identical.
+restore_settings() {
+  node -e '
+    const fs=require("fs"),[f,bak,liveK,liveM,origs,marks,rb]=process.argv.slice(1);
+    const rd=p=>{try{return JSON.parse(fs.readFileSync(p,"utf8"))}catch(e){return null}};
+    const b=rd(bak); if(!b){console.error("settings snapshot unreadable: settings.json left as it is");process.exit(3)}
+    const cur=rd(f);
+    const canon=v=>Array.isArray(v)?v.map(canon):(v&&typeof v==="object"?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v);
+    const put=(txt)=>{fs.writeFileSync(f+".ah-tmp",txt);fs.renameSync(f+".ah-tmp",f)};
+    if(!cur){fs.copyFileSync(bak,f);process.exit(0)}   // current file is not valid JSON: nothing to preserve
+    try{fs.copyFileSync(f,rb+"/settings.json.pre-rollback")}catch(e){}
+    const shadow=marks.split(" ").filter(Boolean), kit=shadow.concat(["ah-node-shadow/node-shadow.sh","ah-live-notice/notice.sh"]);
+    const has=(h,ms)=>ms.some(m=>String(h&&h.command||"").includes(m));
+    // enabledPlugins: the live plugin and the originals go back to their snapshot value (or are removed if the snapshot had none)
+    const keys=[liveK].concat(origs.split("\n").map(l=>l.split("\t")[0]).filter(Boolean));
+    for(const k of keys){ const bv=b.enabledPlugins&&Object.prototype.hasOwnProperty.call(b.enabledPlugins,k)?b.enabledPlugins[k]:undefined;
+      if(bv!==undefined){cur.enabledPlugins=cur.enabledPlugins||{};cur.enabledPlugins[k]=bv} else if(cur.enabledPlugins)delete cur.enabledPlugins[k]; }
+    if(cur.enabledPlugins&&!Object.keys(cur.enabledPlugins).length&&!(b.enabledPlugins))delete cur.enabledPlugins;
+    // extraKnownMarketplaces: only the live marketplace entry
+    if(b.extraKnownMarketplaces&&b.extraKnownMarketplaces[liveM]!==undefined){cur.extraKnownMarketplaces=cur.extraKnownMarketplaces||{};cur.extraKnownMarketplaces[liveM]=b.extraKnownMarketplaces[liveM]}
+    else if(cur.extraKnownMarketplaces){delete cur.extraKnownMarketplaces[liveM]; if(!Object.keys(cur.extraKnownMarketplaces).length&&!b.extraKnownMarketplaces)delete cur.extraKnownMarketplaces}
+    // hooks: drop the witness + notice entries, put back the shadow triggers from the snapshot that are missing now
+    if(cur.hooks){ for(const ev of Object.keys(cur.hooks)){ const had=cur.hooks[ev].length;
+        cur.hooks[ev]=cur.hooks[ev].map(g=>{const n=(g.hooks||[]).filter(h=>!has(h,kit));return n.length===(g.hooks||[]).length?g:{...g,hooks:n}}).filter(g=>!(g.hooks&&g.hooks.length===0));
+        if(!cur.hooks[ev].length&&!(b.hooks&&b.hooks[ev]))delete cur.hooks[ev]; } }
+    for(const ev of Object.keys(b.hooks||{})) (b.hooks[ev]||[]).forEach((g,gi)=>{
+      const mh=(g.hooks||[]).filter(h=>has(h,shadow)); if(!mh.length)return;
+      cur.hooks=cur.hooks||{}; const arr=cur.hooks[ev]=cur.hooks[ev]||[];
+      const present=new Set(arr.flatMap(x=>(x.hooks||[]).map(h=>h.command)));
+      const miss=mh.filter(h=>!present.has(h.command)); if(!miss.length)return;
+      const rest=(g.hooks||[]).filter(h=>!has(h,shadow)).map(h=>h.command);
+      const host=rest.length?arr.find(x=>x.matcher===g.matcher&&rest.every(c=>(x.hooks||[]).some(h=>h.command===c))):null;
+      if(host){ for(const h of miss){ const idx=(g.hooks||[]).indexOf(h); host.hooks.splice(Math.min(idx,host.hooks.length),0,h) } }
+      else arr.splice(Math.min(gi,arr.length),0,{...g,hooks:miss}); });
+    if(cur.hooks&&!Object.keys(cur.hooks).length&&!b.hooks)delete cur.hooks;
+    if(JSON.stringify(canon(cur))===JSON.stringify(canon(b)))fs.copyFileSync(bak,f);   // no owner edit: byte-identical snapshot
+    else put(JSON.stringify(cur,null,2)+"\n");' "$SETTINGS" "$STATE/$(node -p 'require(process.argv[1]).files.settings.backup' "$LIVE_JSON")" "$LIVE_K" "$LIVE_MKT" "$ORIG_LIST" "$SHADOW_MARKS" "$RB"
 }
 # 1 stop the daemon, 2 plugin switch back through the CLI (idempotent: each step checks the CLI's own state), 3 files the kit wrote
 [ -x "$LIVE_ENGINE_BIN" ] && eng "$LIVE_ENGINE_BIN" stop >/dev/null 2>&1   # stage 5: eng names the plugin root (the binary holds no defaults)
@@ -87,7 +125,7 @@ if [ "$rc_cli" -ne 0 ]; then
     fs.writeFileSync(f+".ah-tmp",JSON.stringify(s,null,2)+"\n"); fs.renameSync(f+".ah-tmp",f);' "$SETTINGS" "$LIVE_K" "$LIVE_MKT" "$ORIG_LIST" \
     && { klog W_SETTINGS_FALLBACK "enabledPlugins edited directly"; rc_cli=0; fb=1; } || klog E_SETTINGS_FALLBACK "direct enabledPlugins edit failed"
 fi
-restore settings          # byte-identical user settings (undoes the CLI's enabledPlugins/extraKnownMarketplaces edits and puts the shadow triggers back)
+restore_settings || { klog E_SETTINGS_RESTORE "restore_settings failed (rc=$?)"; rc_cli=1; echo "WARNING: settings.json was not reverted (see $STATE/kit.log); no edit of yours was touched" >&2; }   # kit keys only; owner edits kept
 restore config; restore bin
 node -e 'process.exit(require(process.argv[1]).files.shadowall?0:1)' "$LIVE_JSON" && restore shadowall   # the old Mac shadow trigger go-live neutralised
 [ -d "$MKT_DIR" ] && { mkdir -p "$RB" && mv "$MKT_DIR" "$RB/marketplace"; }

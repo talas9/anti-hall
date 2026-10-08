@@ -84,10 +84,11 @@ grep -q 'refusing' "$F/rb2.out"; [ $? -ne 0 ]; chk $? "no refusal message"
 mkkit
 node -e 'const fs=require("fs"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f,"utf8"));s.theme="user-edit";fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n")' "$HOME/.claude/settings.json"
 FAKE_MODE=ok sh "$K/rollback.sh" >"$F/rb3.out" 2>&1; rc=$?
-[ "$rc" -ne 0 ] && grep -q 'refusing' "$F/rb3.out"; chk $? "a real user edit is still refused without --force"
+[ "$rc" -eq 0 ] && ! grep -q 'refusing' "$F/rb3.out"; chk $? "a user edit of settings.json no longer refuses the rollback (rc=$rc)"
+node -e 'const s=require(process.argv[1]);process.exit(s.theme==="user-edit"&&s.enabledPlugins["anti-hall@anti-hall"]===true&&!("anti-hall@anti-hall-engine-live" in s.enabledPlugins)?0:1)' "$HOME/.claude/settings.json"; chk $? "...the edit is kept and the kit keys are reverted"
 
 echo "== 3. install-shadow-remote.sh --rollback-live --force forwards --force to the kit"
-mkdir -p "$HOME/.anti-hall/ah-engine-live/state"
+mkkit   # the previous section now completes its rollback (a settings.json edit no longer refuses it), so the ledger is rebuilt
 cat >"$K/rollback.sh" <<'EOF2'
 #!/bin/sh
 printf '%s\n' "$*" >"$FAKE_RB_ARGS"
@@ -132,6 +133,41 @@ echo "== sha helper works with only openssl/node (no sha256sum, no shasum)"
 echo hello >"$F/h.txt"; want=$(shaof "$F/h.txt")
 NS=$F/nosha; mkdir -p "$NS"; for b in sh cut sed node cat openssl; do p=$(command -v $b) && ln -sf "$p" "$NS/$b"; done
 got=$(PATH=$NS; . "$KITSRC/lib.sh" 2>/dev/null; sha "$F/h.txt"); [ "$got" = "$want" ]; chk $? "sha fallback"
+
+echo "== 7. rollback reverts only the kit's own settings.json keys; owner edits made after go-live survive (theme lost on 2026-10-08)"
+mkkit
+# the snapshot had an old shadow trigger and a user hook; go-live removed the trigger; then the owner edited settings.json
+node -e '
+  const fs=require("fs"),[f,b]=process.argv.slice(1),ST="sh $HOME/.anti-hall/ah-engine-shadow2/shadow2.sh PreToolUse";
+  const sb=JSON.parse(fs.readFileSync(b,"utf8")); sb.theme="auto"; sb.extraKnownMarketplaces={other:{source:{path:"/x"}}};
+  sb.hooks.PreToolUse=[{matcher:"Bash",hooks:[{type:"command",command:"echo user-pre"}]},{hooks:[{type:"command",command:ST}]}];
+  fs.writeFileSync(b,JSON.stringify(sb,null,2)+"\n");
+  const s=JSON.parse(fs.readFileSync(f,"utf8")); s.theme="auto"; s.extraKnownMarketplaces={other:{source:{path:"/x"}},"anti-hall-engine-live":{source:{path:"/m"}}};
+  s.hooks.PreToolUse=[{matcher:"Bash",hooks:[{type:"command",command:"echo user-pre"}]}];
+  s.theme="light-ansi"; s.permissions={allow:["Bash(ls:*)"]}; s.hooks.PostToolUse=[{hooks:[{type:"command",command:"echo owner-added-later"}]}]; s.enabledPlugins["third@x"]=true;
+  fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n");' "$HOME/.claude/settings.json" "$K/state/backup/settings.json"
+FAKE_MODE=ok sh "$K/rollback.sh" >"$F/rb7.out" 2>&1; rc=$?
+chk $rc "rollback exit 0 over an owner-edited settings.json"
+node -e '
+  const s=require(process.argv[1]),c=x=>JSON.stringify(x);
+  const bad=[];
+  if(s.theme!=="light-ansi")bad.push("theme "+s.theme);
+  if(c(s.permissions)!==c({allow:["Bash(ls:*)"]}))bad.push("permissions");
+  if(!s.hooks.PostToolUse||s.hooks.PostToolUse[0].hooks[0].command!=="echo owner-added-later")bad.push("owner hook");
+  if(s.enabledPlugins["third@x"]!==true)bad.push("third plugin");
+  if(s.enabledPlugins["anti-hall@anti-hall"]!==true)bad.push("original not re-enabled");
+  if("anti-hall@anti-hall-engine-live" in s.enabledPlugins)bad.push("live plugin key left");
+  if("anti-hall-engine-live" in s.extraKnownMarketplaces||!s.extraKnownMarketplaces.other)bad.push("marketplaces "+c(s.extraKnownMarketplaces));
+  const pre=s.hooks.PreToolUse.map(g=>g.hooks[0].command);
+  if(c(pre)!==c(["echo user-pre","sh $HOME/.anti-hall/ah-engine-shadow2/shadow2.sh PreToolUse"]))bad.push("PreToolUse "+c(pre));
+  if(/node-shadow.sh|notice.sh/.test(c(s.hooks)))bad.push("kit hook entries left");
+  if(bad.length){console.error(bad.join("; "));process.exit(1)}' "$HOME/.claude/settings.json"; chk $? "owner edits kept; kit keys, shadow trigger and witness/notice entries reverted"
+ls "$K/state/rolled-back-"*/settings.json.pre-rollback >/dev/null 2>&1; chk $? "the pre-rollback settings.json is kept under rolled-back-*/"
+echo "-- rolling back twice (re-run after an interrupt) changes nothing more"
+mkkit
+node -e 'const fs=require("fs"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f,"utf8"));s.theme="light-ansi";fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n")' "$HOME/.claude/settings.json"
+FAKE_MODE=ok sh "$K/rollback.sh" >/dev/null 2>&1; A=$(shaof "$HOME/.claude/settings.json"); mkdir -p "$K/state/backup"; cp "$K"/state/rolled-back-*/backup/settings.json "$K/state/backup/settings.json"; cp "$K"/state/rolled-back-*/live.json "$K/state/live.json"
+FAKE_MODE=ok sh "$K/rollback.sh" >/dev/null 2>&1; [ "$A" = "$(shaof "$HOME/.claude/settings.json")" ]; chk $? "second rollback leaves settings.json as it is"
 
 echo; echo "hardening: $fails failed"
 [ "$fails" -eq 0 ]
