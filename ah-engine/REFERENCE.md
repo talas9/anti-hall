@@ -3569,6 +3569,42 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `taskstate.no_tasks_marker` | `No tasks found` |  |  | The text in a task tool result that says the list is empty. |
 
+### script.toml / script
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `script.call_memory_bytes` | `16777216` |  | bytes | Heap a single script call may allocate above the runtime's size after its scripts were loaded; past it the call fails and defers. |
+| `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
+| `script.engine_only_checks` | `sibling-sweep` |  |  | Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision. |
+| `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
+| `script.ext` | `.js` |  |  | File extension of a check script and of a lib file. |
+| `script.lib_dir` | `lib` |  |  | Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script. |
+| `script.logic_dir` | `engine/logic` |  |  | Directory of the shipped check scripts, relative to the plugin root. |
+| `script.msg_bad_verdict` | `unexpected verdict {value}` |  |  | Logged reason (then the call defers) when a script returns a value that is not a verdict. |
+| `script.msg_env_incomplete` | `request environment incomplete` |  |  | Reason logged (then the failure policy applies) when the request's environment is incomplete, so no check can be evaluated. |
+| `script.msg_fail_closed` | `anti-hall {check}: BLOCKED. Its check script failed ({why}) and this guard ha...` |  |  | Block reason of an engine-only check on a guard event whose script could not answer. Placeholders: {check}, {why}. |
+| `script.msg_invalid_pattern` | `invalid pattern {src}` |  |  | Error a script sees when it hands `ah.re.*` a pattern that does not compile. |
+| `script.msg_no_request` | `no request state` |  |  | Error a host function raises when it is called outside a check call (no request state). |
+| `script.msg_no_script` | `no script file` |  |  | Reason logged (then the failure policy applies) when a check whose logic is a script has no script file. |
+| `script.msg_not_number` | `{key} is not a number` |  |  | Error a script sees when it asks `ah.cfgNum` for a key whose value is not a number. |
+| `script.msg_settings_unreadable` | `settings file readable only by JavaScript` |  |  | Reason logged (then the failure policy applies) when the settings file holds something only JavaScript can parse. |
+| `script.msg_unknown_key` | `unknown defaults key {key}` |  |  | Error a script sees when it asks `ah.cfg` for a key that is not shipped. |
+| `script.msg_write_refused` | `write refused: {why}` |  |  | Error a script sees when its write was refused. Placeholder: {why}. |
+| `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
+| `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
+| `script.read_max_bytes` | `4194304` |  | bytes | Upper bound of one `ah.fs.readText` read, whatever the script asks for. |
+| `script.regex_cache_max` | `256` |  |  | Compiled regular expressions kept per worker thread for `ah.re.*`; the cache is cleared when it is full. |
+| `script.stack_bytes` | `262144` |  | bytes | Largest interpreter stack one script call may use. |
+| `script.time_limit_ms` | `50` | `AH_ENGINE_SCRIPT_TIME_MS` | ms | Wall-clock limit of one script call; past it the interpreter is interrupted and the call defers to Node (never a silent allow). |
+| `script.write_max_bytes` | `1048576` |  | bytes | Largest text one `ah.state.writeAtomic` call may write; a larger text is refused. |
+| `script.write_path_max` | `240` |  |  | Longest relative path one `ah.state.writeAtomic` call may name. |
+| `script.write_root` | `.anti-hall` |  |  | The one directory under the home directory that a script may write to through `ah.state.writeAtomic` (a path must start with it; nothing outside it, no link below it). |
+| `script.write_sync` | `0` |  |  | 1: a scripted write fsyncs the file before the atomic rename (survives a power cut, costs several milliseconds per write); 0: it does not (a reader still never sees a half-written file, and the state a script keeps is advisory and rebuilt at the next run). |
+| `script.write_why_home` | `no absolute home directory` |  |  | Refusal reason of a scripted write when the request has no absolute home directory. |
+| `script.write_why_link` | `symbolic link below the write root` |  |  | Refusal reason of a scripted write that would pass through a symbolic link below the write root. |
+| `script.write_why_path` | `path outside the allowed shape` |  |  | Refusal reason of a scripted write whose path is absolute, outside the write root, too long, or has an empty, `.` or `..` part. |
+| `script.write_why_size` | `text over the size cap` |  |  | Refusal reason of a scripted write whose text is over script.write_max_bytes. |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
