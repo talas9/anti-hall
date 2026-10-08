@@ -22,12 +22,10 @@ use std::sync::Arc;
 /// One write the telemetry layer asks the writer thread to apply.
 #[derive(Debug, Clone)]
 pub enum TelOp {
-    /// A flush: add `deltas` to day `day`'s counters and keep `events`.
+    /// A flush: add each delta to the counters of the day it was recorded on, and keep `events`.
     Flush {
-        /// The UTC day the deltas are added to.
-        day: i64,
-        /// Counter deltas since the previous flush.
-        deltas: Vec<Delta>,
+        /// Counter deltas since the previous flush, each with its UTC day (review finding 15: stamped when recorded).
+        deltas: Vec<(i64, Delta)>,
         /// Events since the previous flush.
         events: Vec<Event>,
     },
@@ -120,8 +118,8 @@ fn insert_event(c: &Connection, e: &Event) -> Result<usize, DbError> {
 /// the write stored (events inserted for a flush).
 pub fn apply(c: &Connection, op: &TelOp) -> Result<String, DbError> {
     match op {
-        TelOp::Flush { day, deltas, events } => {
-            for d in deltas {
+        TelOp::Flush { deltas, events } => {
+            for (day, d) in deltas {
                 add_count(c, *day, d)?;
             }
             for e in events {
@@ -174,9 +172,14 @@ impl TelDb {
         &self.db
     }
 
-    /// Store a flush and wait for its commit.
+    /// Store a flush whose deltas all belong to `day` and wait for its commit.
     pub fn flush(&self, day: i64, deltas: Vec<Delta>, events: Vec<Event>) -> Flushed {
-        match self.db.write(Op::Telemetry(TelOp::Flush { day, deltas, events })) {
+        self.flush_days(deltas.into_iter().map(|d| (day, d)).collect(), events)
+    }
+
+    /// Store a flush, each delta on its own day, and wait for its commit.
+    pub fn flush_days(&self, deltas: Vec<(i64, Delta)>, events: Vec<Event>) -> Flushed {
+        match self.db.write(Op::Telemetry(TelOp::Flush { deltas, events })) {
             Ok(_) => Flushed::Stored,
             Err(DbError::Timeout) => Flushed::Unknown,
             Err(_) => Flushed::Failed,
