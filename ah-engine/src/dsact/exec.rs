@@ -330,6 +330,12 @@ impl<'a> Act<'a> {
 
     /// Poke or escalate every stale workspace, as Node's `pokeOrEscalate` does.
     pub fn poke_sweep(&self) -> Vec<Report> {
+        self.poke_sweep_for(&|_| true)
+    }
+
+    /// [`Act::poke_sweep`] restricted to the kinds `allow` accepts (`poke`, `escalate`): a kind it refuses is left alone, so the
+    /// per-action executor switch can give one of the two to another actor.
+    pub fn poke_sweep_for(&self, allow: &dyn Fn(&str) -> bool) -> Vec<Report> {
         let mut out = Vec::new();
         if !self.live.present() {
             return out;
@@ -351,6 +357,9 @@ impl<'a> Act<'a> {
                 continue;
             };
             let kind = d["kind"].as_str().unwrap_or_default().to_string();
+            if !allow(&kind) {
+                continue;
+            }
             if let Err(r) = self.permit(Origin::Automatic, &kind) {
                 out.push(r);
                 continue;

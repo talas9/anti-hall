@@ -23,7 +23,7 @@ fn cfg() -> Cfg {
 type B = (&'static str, i64, i64, Vec<(&'static str, i64)>, Option<&'static str>);
 
 fn make_db(path: &Path, builders: &[B], prs: &[(&str, i64, &str, &str, &str)]) {
-    let _ = std::fs::remove_file(path);
+    std::fs::remove_file(path).ok(); // absent is the goal state
     let c = Connection::open(path).unwrap();
     c.execute_batch(
         "CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, worktreePath TEXT, label TEXT, isHidden INTEGER, pullRequestId TEXT, builderType TEXT, isActive INTEGER);
@@ -263,7 +263,7 @@ fn restart_diff_flags_while_down_and_holds_the_notify() {
     assert!(rt3.current().generation >= 1);
     dbh.barrier().unwrap();
     let n: i64 = dbh.read(|c| c.query_row("SELECT COUNT(*) FROM rt_edges", [], |r| r.get(0))).unwrap();
-    assert_eq!(n, 3 + 0, "the edge log holds the three start-up changes");
+    assert_eq!(n, 3, "the edge log holds the three start-up changes");
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn edge_log_is_capped() {
     make_db(&db, &[("a", 1, 0, vec![], None)], &[]);
     rt.run(Cause::Startup, &Inputs { app: Some(&read(&db)), probe: &p, gh: None, now: NOW }, Some(&dbh));
     for i in 0..12 {
-        make_db(&db, &[("a", (i % 2) as i64, 0, vec![], None)], &[]);
+        make_db(&db, &[("a", i % 2, 0, vec![], None)], &[]);
         rt.run(Cause::Event, &Inputs { app: Some(&read(&db)), probe: &p, gh: None, now: NOW + i }, Some(&dbh));
     }
     dbh.barrier().unwrap();
@@ -362,7 +362,9 @@ fn shadow_compares_with_the_witness_tree_and_logs_mismatches() {
 
 // ---- property tests: the invariants hold for any sources ------------------------------------------------------------
 
-fn arb_builder() -> impl Strategy<Value = (i64, i64, Vec<(usize, i64)>, bool, Option<i64>, Option<usize>)> {
+type Spec = (i64, i64, Vec<(usize, i64)>, bool, Option<i64>, Option<usize>);
+
+fn arb_builder() -> impl Strategy<Value = Spec> {
     (
         0i64..=1,
         0i64..=1,
@@ -373,10 +375,10 @@ fn arb_builder() -> impl Strategy<Value = (i64, i64, Vec<(usize, i64)>, bool, Op
     )
 }
 
-fn build(specs: &[(i64, i64, Vec<(usize, i64)>, bool, Option<i64>, Option<usize>)], path: &Path) -> (Stub, ()) {
+fn build(specs: &[Spec], path: &Path) -> (Stub, ()) {
     const PANELS: [&str; 3] = ["new", "pending", "resumable"];
     let c = {
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(path).ok(); // absent is the goal state
         Connection::open(path).unwrap()
     };
     c.execute_batch(

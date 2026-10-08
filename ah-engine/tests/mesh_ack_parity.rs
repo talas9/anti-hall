@@ -100,7 +100,7 @@ fn no_node_path(root: &Path) -> String {
     for t in ["git", "ps"] {
         let out = Command::new("sh").args(["-c", &format!("command -v {t}")]).output().unwrap();
         let src = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        let _ = std::os::unix::fs::symlink(&src, bin.join(t));
+        std::os::unix::fs::symlink(&src, bin.join(t)).ok(); // a repeat run finds the link
     }
     bin.to_string_lossy().to_string()
 }

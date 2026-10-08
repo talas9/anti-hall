@@ -66,6 +66,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("harvest", crate::setup::cmd_harvest),
         ("briefing", crate::setup::cmd_briefing),
         ("mesh", crate::mesh::run_cmd),
+        ("devswarm", crate::dswire::cli::run),
     ]
 }
 

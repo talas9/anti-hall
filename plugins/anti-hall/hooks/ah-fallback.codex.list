@@ -52,6 +52,7 @@ apply_patch	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${P
 *	10	node "${PLUGIN_ROOT}/hooks/idle-agent-sweep.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/limit-conserve-inject.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js"
+*	10	sh "${PLUGIN_ROOT}/hooks/devswarm-rt-advisory"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/devswarm-child-turn.js"
 *	10	node "${PLUGIN_ROOT}/hooks/repair-on-reload.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/auto-handover.js"

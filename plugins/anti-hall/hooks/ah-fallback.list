@@ -80,6 +80,7 @@ TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAU
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-rt-advisory"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js"
