@@ -551,7 +551,7 @@ fn spec_cases() -> Vec<Case> {
             .file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz","source":"jev"}}"#)
             .same(msg("All fine.")),
     );
-    v.push(c("seeded-unsure-state-defers").file(".anti-hall/speculation-guard-state-s1.json", r#"{"7":1}"#).defer(msg("It is probably the cache.")));
+    v.push(c("seeded-index-key-state-answered").file(".anti-hall/speculation-guard-state-s1.json", r#"{"7":1}"#).same(msg("It is probably the cache.")));
     v.push(c("prune-stale-files").file(".anti-hall/speculation-guard-state-old.json", "{}").same(msg("It is probably the cache.")));
     v.push(
         c("prune-removes-aged")
