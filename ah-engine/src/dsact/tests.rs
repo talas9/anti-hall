@@ -643,8 +643,8 @@ fn versions_parse_and_compare() {
 fn the_comparison_counts_calls_only_one_side_made() {
     let a = vec!["workspace".to_string(), "archive".into(), "x".into()];
     let b = vec!["workspace".to_string(), "archive".into(), "y".into()];
-    assert_eq!(super::shadow::compare("t", &[a.clone()], &[a.clone()])["match"], true);
-    let c = super::shadow::compare("t", &[a.clone()], &[b.clone()]);
+    assert_eq!(super::shadow::compare("t", std::slice::from_ref(&a), std::slice::from_ref(&a))["match"], true);
+    let c = super::shadow::compare("t", std::slice::from_ref(&a), std::slice::from_ref(&b));
     assert_eq!((c["match"].clone(), c["onlyEngine"][0][2].clone(), c["onlyNode"][0][2].clone()), (json!(false), json!("x"), json!("y")));
-    assert_eq!(super::shadow::compare("t", &[a.clone(), a.clone()], &[a.clone()])["onlyEngine"].as_array().unwrap().len(), 1);
+    assert_eq!(super::shadow::compare("t", &[a.clone(), a.clone()], std::slice::from_ref(&a))["onlyEngine"].as_array().unwrap().len(), 1);
 }

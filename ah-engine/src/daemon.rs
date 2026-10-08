@@ -446,6 +446,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         Some("metrics") => (Reply::Ok(sh.metrics_json(args).to_string()), After::Continue),
         Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
         Some("schedule") => (Reply::Ok(schedule_ctl(sh, args).to_string()), After::Continue),
+        Some("devswarm") => (Reply::Ok(crate::dswire::cli::ctl(args)), After::Continue),
         Some("gate") => (Reply::Ok(crate::gate::global().report().to_string()), After::Continue),
         Some("telemetry") => (Reply::Ok(sh.telemetry_json(args).to_string()), After::Continue),
         Some("ping") => (Reply::Ok(format!("pong {} {}", sh.own, std::process::id())), After::Continue),
@@ -1181,6 +1182,7 @@ pub fn serve() {
         std::thread::spawn(move || footing_watch(s, footing));
     }
     start_scheduler(&sh);
+    start_devswarm(&sh);
     {
         let s = sh.clone();
         std::thread::spawn(move || telemetry_flusher(s));
@@ -1198,6 +1200,20 @@ pub fn serve() {
     health::log_event("exit", "clean", "drained");
     // The socket was unlinked when the drain began (a successor may already own that path); the lock
     // file is never removed (that would let two daemons hold different inodes) and is released on exit.
+}
+
+/// Start the DevSwarm wiring (lane dswire): nothing at all unless DevSwarm is detected and `devswarm_rt.mode` is not `off`.
+fn start_devswarm(sh: &Arc<Shared>) {
+    let Some(home) = defaults::env_var("home").map(std::path::PathBuf::from) else { return };
+    let weak = Arc::downgrade(sh);
+    let sink: crate::dswire::Sink = Arc::new(move |f| {
+        if let Some(sh) = weak.upgrade() {
+            sh.telemetry.with_metrics(|m| f(m));
+        }
+    });
+    let s = sh.clone();
+    let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || s.draining.load(SeqCst));
+    crate::dswire::Wire::start(&home, &paths::dir(), sh.db.clone(), sink, stop); // None is the inert case: nothing was started
 }
 
 /// Start the scheduler's ticker (D33). Its engine-side jobs (maintain, backup, the metrics snapshot, the spool drain)
@@ -1224,6 +1240,7 @@ fn start_scheduler(sh: &Arc<Shared>) {
                 };
                 crate::procwatch::run_job(&crate::paths::dir(), &home, &rec)
             }
+            "devswarm_reconcile" => Ok(crate::dswire::scheduled()),
             "noop" => Ok(String::new()),
             other => Err(defaults::render("msg.schedule_unknown_action", &[("job", &"-"), ("action", &other)])),
         }

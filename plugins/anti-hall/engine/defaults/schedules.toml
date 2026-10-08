@@ -42,6 +42,9 @@ value = { kind = "engine", action = "handovers", every_key = "schedule.handovers
 [job.procwatch]
 doc = "Process watch: sample the processes of live Claude sessions (CPU, memory), look for processes left by ended sessions every procwatch.scan_every_s, stop the ones whose class is in kill mode, and write the report the advisory reads. Reporting is the default; it never stops an agent."
 value = { kind = "engine", action = "procwatch", every_key = "schedule.procwatch_ms", jitter_ms = 2000, timeout_ms = 120000, retries = 1, backoff_ms = 10000, backoff_max_ms = 120000, cooldown_ms = 300000, catch_up = "skip", persist = false }
+[job.devswarm_reconcile]
+doc = "The safety net under the DevSwarm file-event layer: re-read every DevSwarm source, diff against the live state and run the action sweeps. Does nothing (and starts nothing) where DevSwarm is absent."
+value = { kind = "engine", action = "devswarm_reconcile", every_key = "devswarm_rt.reconcile_ms", jitter_ms = 0, timeout_ms = 120000, retries = 1, backoff_ms = 5000, backoff_max_ms = 60000, cooldown_ms = 60000, catch_up = "skip", persist = false }
 
 # ---- scheduler ------------------------------------------------------------------------------------------
 
@@ -90,8 +93,7 @@ unit = "ms"
 
 [schedule.actions]
 doc = "Actions a job may name; anything else in a user override is refused and logged."
-value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "handovers", "procwatch", "agent_tick", "gh_poll", "noop"]
-
+value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "handovers", "procwatch", "agent_tick", "gh_poll", "devswarm_reconcile", "noop"]
 [schedule.subprocess_actions]
 doc = "Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started."
 value = ["maintain", "backup", "jev_sweep", "handovers", "agent_tick", "gh_poll"]
