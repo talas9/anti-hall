@@ -1,0 +1,30 @@
+# Event/check pairs the engine answers identically to Node (replayed: engine vs same-version Node). go-live.sh all-agreeing turns exactly these
+# engine checks ON (30 guard entries); everything else on a guard event stays decided by Node (git-guard, swarm-guard x2, Stop/sibling-sweep).
+PreToolUse/api-guard
+PreToolUse/ask-guard
+PreToolUse/command
+PreToolUse/compact-declaration-guard
+PreToolUse/coordinator-work-guard
+PreToolUse/devswarm-comms-guard
+PreToolUse/edit-guard
+PreToolUse/inbox-read-guard
+PreToolUse/merge-gate
+PreToolUse/merge-side-pick
+PreToolUse/model-routing
+PreToolUse/orch-on-spawn
+PreToolUse/phase-tracker
+PreToolUse/scan-throttle
+PreToolUse/ship-it-guard
+PreToolUse/stale-agent-stop-note
+Stop/auto-handover-pause-nag
+Stop/claim-ledger
+Stop/codex-nudge
+Stop/compact-advice-guard
+Stop/devswarm-child-gate
+Stop/devswarm-parent-gate
+Stop/silent-agent-nudge
+Stop/speculation-guard
+Stop/speculation-judge
+Stop/task-guard
+Stop/tasklist-guard
+SubagentStop/sibling-sweep

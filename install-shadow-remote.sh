@@ -17,6 +17,10 @@
 #   sh install-shadow-remote.sh --sync-now         push the telemetry deltas to the private telemetry repo now (ignores the hourly gate)
 #   sh install-shadow-remote.sh --uninstall [--force]   restore the settings backup, remove the trigger and the binaries (keeps logs)
 #   sh install-shadow-remote.sh --detect           print the detected platform and exit
+#   sh install-shadow-remote.sh --live             go LIVE: build engine-proto, install it as the anti-hall plugin (engine decides, Node falls
+#                                                  back), remove the shadow triggers, add the Node witness (live/node-shadow.sh), keep telemetry sync
+#   sh install-shadow-remote.sh --rollback-live    undo --live byte-identically (settings.json, plugin state); the shadow works again
+#   (--status shows MODE: LIVE or SHADOW)   --live options: --live-select all-agreeing|none|id,id  --live-branch NAME (engine-proto)  --live-repo URL
 # Telemetry: every hook payload is spooled (50 MB cap) and, at most once per hour, the updater pushes the deltas plus the engine's
 # own telemetry export to a PRIVATE repo (config $D/config: sync.enabled=true, sync.repo=git@github.com:talas9/ah-shadow-telemetry.git,
 # sync.interval_s=3600). --no-sync (install or re-run) sets sync.enabled=false. Uninstall leaves the telemetry clone and the spool.
@@ -60,13 +64,19 @@ case "${1:-}" in
 esac
 
 # ---------------------------------------------------------------- args
-MODE=install; BIN=; FORCE=0; REPO=; NOSYNC=0
+MODE=install; BIN=; FORCE=0; REPO=; NOSYNC=0; LIVE_SELECT=all-agreeing; LIVE_BRANCH=engine-proto; LIVE_REPO=
+LIVE_MIN_VERSION=0.202.0     # engine-proto 8c9a332 builds plugin 0.202.0; anything older lacks the thin triggers / defaults layout
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bin) [ "$#" -ge 2 ] || die "--bin needs a path"; BIN=$2; shift ;;
     --repo) [ "$#" -ge 2 ] || die "--repo needs a URL"; REPO=$2; shift ;;
     --branch) [ "$#" -ge 2 ] || die "--branch needs a name"; BRANCH=$2; shift ;;
     --status) MODE=status ;;
+    --live) MODE=live ;;
+    --rollback-live) MODE=rollbacklive ;;
+    --live-select) [ "$#" -ge 2 ] || die "--live-select needs a value"; LIVE_SELECT=$2; shift ;;
+    --live-branch) [ "$#" -ge 2 ] || die "--live-branch needs a name"; LIVE_BRANCH=$2; shift ;;
+    --live-repo) [ "$#" -ge 2 ] || die "--live-repo needs a URL"; LIVE_REPO=$2; shift ;;
     --update-now) MODE=update ;;
     --rollback) MODE=rollback ;;
     --uninstall) MODE=uninstall ;;
@@ -74,7 +84,7 @@ while [ "$#" -gt 0 ]; do
     --no-sync) NOSYNC=1 ;;
     --refresh-scripts) MODE=refresh ;;
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
   shift
@@ -297,6 +307,7 @@ smoke() { dir=$1; bin=$dir/ah-engine
 if [ "$MODE" = --smoke ]; then smoke "$2"; exit $?; fi
 
 [ -f "$D/.shadow2-installed" ] || exit 0
+[ -f "$D/live.conf" ] && exit 0   # live: the shadow updater is retired (update = --rollback-live, git pull, --live)
 [ "$MODE" = --auto ] || [ "$MODE" = --now ] || [ "$MODE" = --rollback ] || exit 2
 
 # telemetry sync: its own enabled flag, hourly gate, lock and backoff; a failure here never affects the update below
@@ -412,6 +423,8 @@ num() { case "$1" in ''|*[!0-9]*) echo 0;; *) echo "$1";; esac; }
 cfg() { awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");v=$0} END{print v}' "$CFGF" 2>/dev/null; }
 TMO=; if command -v timeout >/dev/null 2>&1; then TMO="timeout"; fi
 g() { git -C "$TR" "$@"; }
+[ -f "$D/live.conf" ] && . "$D/live.conf"   # live mode: LIVE_HOME LIVE_BIN LIVE_STATE LIVE_ROOT LIVE_COMMIT (telemetry comes from the live engine)
+NSLOG="$HOME/.anti-hall/ah-node-shadow/node-shadow.ndjson"
 
 [ -f "$D/.shadow2-installed" ] || exit 0
 case "$MODE" in --auto|--now) ;; *) exit 2 ;; esac
@@ -477,31 +490,37 @@ if [ -d "$D/spool" ]; then
     r=$(delta "$D/spool/$f" "$(sget "poff_$n")" "$dir/payloads.ndjson"); set -- $r; printf 'poff_%s=%s\n' "$n" "$1" >> "$W/pending"; lines_pl=$((lines_pl+$2))
   done
 fi
-if [ "$((lines_log+lines_pl))" = 0 ]; then
+r=$(delta "$NSLOG" "$(sget ns_off)" "$dir/node-shadow.ndjson"); set -- $r; printf 'ns_off=%s\n' "$1" >> "$W/pending"; lines_ns=$2
+if [ "$((lines_log+lines_pl+lines_ns))" = 0 ]; then
   sset next_sync "$(( $(now) + iv ))"; sset last_result "nothing new"; log "nothing new to ship"; out "nothing new to ship"
   g reset -q --hard >/dev/null 2>&1; g clean -fdq >/dev/null 2>&1; exit 0
 fi
 
 # ---- the engine's own telemetry export (documented: `ah-engine telemetry summary|events`), plus update.log and status.json
-eng() { env HOME="$D/home" AH_ENGINE_DIR="$D/state" AH_ENGINE_PLUGIN_ROOT="$D/plugin" CLAUDE_PLUGIN_ROOT="$D/plugin" $TMO ${TMO:+60} "$D/bin/ah-engine" "$@"; }
+eng() {
+  if [ -n "${LIVE_BIN:-}" ]; then env HOME="$LIVE_HOME" AH_ENGINE_DIR="$LIVE_STATE" AH_ENGINE_PLUGIN_ROOT="$LIVE_ROOT" CLAUDE_PLUGIN_ROOT="$LIVE_ROOT" $TMO ${TMO:+60} "$LIVE_BIN" "$@"
+  else env HOME="$D/home" AH_ENGINE_DIR="$D/state" AH_ENGINE_PLUGIN_ROOT="$D/plugin" CLAUDE_PLUGIN_ROOT="$D/plugin" $TMO ${TMO:+60} "$D/bin/ah-engine" "$@"; fi; }
 for spec in 'summary:--window 7d' 'events:--window 7d --limit 2000'; do
   k=${spec%%:*}; a=${spec#*:}
   eng telemetry $k $a --json >"$dir/telemetry-$k.json" 2>"$W/err" </dev/null || printf '{"error":"telemetry %s export failed","detail":"%s"}\n' "$k" "$(head -c 160 "$W/err" | tr -d '\n\\"')" > "$dir/telemetry-$k.json"
 done
 cp "$D/update.log" "$dir/update.log" 2>/dev/null || : > "$dir/update.log"
+if [ -n "${LIVE_BIN:-}" ] && [ -f "$HOME/.anti-hall/ah-node-shadow/node-shadow.sh" ]; then   # Node-vs-engine disagreements, engine-weaker first
+  AH_ENGINE_BIN="$LIVE_BIN" $TMO ${TMO:+120} sh "$HOME/.anti-hall/ah-node-shadow/node-shadow.sh" --compare --window 7d --json >"$dir/node-vs-engine.json" 2>/dev/null </dev/null || rm -f "$dir/node-vs-engine.json"
+fi
 L="$D/log-calls.ndjson"
 cnt() { c=$(grep "$@" 2>/dev/null); echo "${c:-0}"; }
 jstr() { printf '%s' "$1" | tr -d '\n\r\\"' | head -c 200; }
-printf '{"host":"%s","ts":"%s","commit":"%s","branch":"%s","binary_version":"%s","platform":"%s","calls_total":%s,"calls_blocked":%s,"calls_advised":%s,"odd_exit_codes":%s,"delta_log_lines":%s,"delta_payload_lines":%s,"spool_bytes":%s,"last_update_result":"%s","sync_fails_before":%s}\n' \
-  "$host" "$ts" "$(jstr "$(cat "$D/commit" 2>/dev/null)")" "$(jstr "$(cat "$D/branch" 2>/dev/null)")" "$(jstr "$(env AH_ENGINE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version 2>/dev/null)")" \
+printf '{"host":"%s","ts":"%s","commit":"%s","branch":"%s","binary_version":"%s","platform":"%s","calls_total":%s,"calls_blocked":%s,"calls_advised":%s,"odd_exit_codes":%s,"delta_log_lines":%s,"delta_payload_lines":%s,"delta_node_shadow_lines":%s,"spool_bytes":%s,"last_update_result":"%s","sync_fails_before":%s}\n' \
+  "$host" "$ts" "$(jstr "${LIVE_COMMIT:-$(cat "$D/commit" 2>/dev/null)}")" "$(jstr "$([ -n "${LIVE_BIN:-}" ] && echo LIVE:engine-proto || cat "$D/branch" 2>/dev/null)")" "$(jstr "$(eng version 2>/dev/null </dev/null)")" \
   "$(jstr "$(sed -n 's/^platform=//p' "$D/.shadow2-installed" 2>/dev/null)")" \
   "$(wc -l < "$L" 2>/dev/null | tr -d ' ' || echo 0)" "$(cnt -c '"blocked":true' "$L")" "$(cnt -c '"advised":true' "$L")" \
-  "$(cnt -vcE '"rc":(0|2|75),' "$L")" "$lines_log" "$lines_pl" "$(cat "$D"/spool/payloads.*.ndjson 2>/dev/null | wc -c | tr -d ' ')" \
+  "$(cnt -vcE '"rc":(0|2|75),' "$L")" "$lines_log" "$lines_pl" "$lines_ns" "$(cat "$D"/spool/payloads.*.ndjson 2>/dev/null | wc -c | tr -d ' ')" \
   "$(jstr "$(sed -n 's/^last_result=//p' "$D/update.state" 2>/dev/null | tail -1)")" "$(num "$(sget fails)")" > "$dir/status.json"
 
 # ---- commit + push (plain push, never forced; one pull --rebase retry if the remote moved)
 g add -A -- "$host/$day" >/dev/null 2>&1
-g commit -q -m "sync $host $ts (+$lines_log calls, +$lines_pl payloads)" >"$D/sync-git.log" 2>&1 || fail "commit failed ($(head -c 200 "$D/sync-git.log" | tr '\n' ' '))"
+g commit -q -m "sync $host $ts (+$lines_log calls, +$lines_pl payloads, +$lines_ns node-shadow)" >"$D/sync-git.log" 2>&1 || fail "commit failed ($(head -c 200 "$D/sync-git.log" | tr '\n' ' '))"
 push() { $TMO ${TMO:+120} git -C "$TR" push -q origin HEAD:refs/heads/main >"$D/sync-git.log" 2>&1; }
 if ! push; then
   if $TMO ${TMO:+120} git -C "$TR" fetch -q origin >/dev/null 2>&1 && g rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1 \
@@ -536,8 +555,16 @@ init_config() { # defaults are written only when a key is absent; --no-sync forc
 # ---------------------------------------------------------------- commands
 need_python() { command -v python3 >/dev/null 2>&1 || die "python3 is required for the settings.json merge"; }
 
+LIVEKIT="$HOME/.anti-hall/ah-engine-live"
 cmd_status() {
+  if [ -f "$LIVEKIT/state/live.json" ]; then
+    say "MODE: LIVE (engine decides, Node falls back; --rollback-live to return to the shadow)"
+    sh "$LIVEKIT/status.sh"; st=$?
+    [ -f "$MARK" ] && say "shadow2 install kept for telemetry sync only: sync $(awk -F= '$1=="sync.enabled"{print $2}' "$D/config" 2>/dev/null), last result: $(sed -n 's/^last_result=//p' "$D/sync.state" 2>/dev/null | tail -1)"
+    exit $st
+  fi
   [ -f "$MARK" ] || { say "not installed ($D has no install marker)"; exit 0; }
+  say "MODE: SHADOW (log-only; --live switches to the engine)"
   say "platform:     $PLATFORM"
   say "install dir:  $D"
   say "commit:       $(cat "$D/commit" 2>/dev/null || echo unknown)   (branch $(cat "$D/branch" 2>/dev/null))"
@@ -563,6 +590,68 @@ cmd_status() {
   exit 0
 }
 
+# ---------------------------------------------------------------- live mode
+cmd_live() {
+  SRC_KIT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)/live
+  for t in git node; do command -v "$t" >/dev/null 2>&1 || die "$t not found (--live needs git and node)"; done
+  command -v "${AH_LIVE_CLAUDE:-claude}" >/dev/null 2>&1 || die "claude CLI not found on PATH (the plugin is installed through it); set AH_LIVE_CLAUDE if it lives elsewhere"
+  [ -f "$SRC_KIT/go-live.sh" ] && [ -f "$SRC_KIT/node-shadow.sh" ] || die "$SRC_KIT is missing: git pull the $BRANCH branch next to this script"
+  [ ! -f "$LIVEKIT/state/live.json" ] || die "already live ($LIVEKIT/state/live.json). To update: sh $0 --rollback-live, git pull, sh $0 --live"
+  if [ -d "$D/update.lock" ]; then op=$(cat "$D/update.lock/pid" 2>/dev/null); if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then die "a shadow update is running (pid $op); retry in a minute"; fi; fi
+  if [ -f "$MARK" ]; then emit_helpers; install_scripts || die "could not refresh the shadow helper scripts"; init_config; fi   # sync.sh learns live.conf
+  mkdir -p "$LIVEKIT/state" || die "cannot create $LIVEKIT"
+  for f in lib.sh go-live.sh rollback.sh status.sh node-shadow.sh agreed-checks.txt; do cp "$SRC_KIT/$f" "$LIVEKIT/$f.new" && mv -f "$LIVEKIT/$f.new" "$LIVEKIT/$f" || die "cannot install $f"; done
+  chmod +x "$LIVEKIT"/*.sh
+  # 1 the source: engine-proto (newer or equal to 8c9a332), cloned over SSH then HTTPS like the shadow
+  LS="$LIVEKIT/src"; urls=$REPO_SSH; https=$REPO_HTTPS; [ -n "$LIVE_REPO" ] && { urls=$LIVE_REPO; https=; }
+  ok=0
+  if [ -d "$LS/.git" ]; then
+    for u in $urls $https; do
+      say "fetching $u ($LIVE_BRANCH)"
+      if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" git -C "$LS" fetch -q --depth 1 "$u" "$LIVE_BRANCH" 2>"$TMPD/clone.err" && git -C "$LS" reset -q --hard FETCH_HEAD; then ok=1; break; fi
+    done
+  else
+    rm -rf "$LS"
+    for u in $urls $https; do
+      say "cloning $u ($LIVE_BRANCH)"
+      if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" git clone -q --depth 1 --branch "$LIVE_BRANCH" "$u" "$LS" 2>"$TMPD/clone.err"; then ok=1; break; fi
+      say "  failed: $(head -c 200 "$TMPD/clone.err" | tr '\n' ' ')"; rm -rf "$LS"
+    done
+  fi
+  [ "$ok" = 1 ] || die "could not get branch $LIVE_BRANCH from $urls $https"
+  lc=$(git -C "$LS" rev-parse HEAD)
+  PR="$LS/plugins/anti-hall"
+  [ -f "$LS/ah-engine/Cargo.toml" ] && [ -f "$PR/hooks/ah-fallback.map.json" ] && [ -f "$PR/engine/defaults/index.toml" ] || die "branch $LIVE_BRANCH ($lc) has no ah-engine/ and a plugin with hooks/ah-fallback.map.json + engine/defaults"
+  [ ! -e "$PR/ah-engine.lock" ] || die "plugin ships ah-engine.lock (its bootstrap would replace the installed engine)"
+  pv=$(node -p 'require(process.argv[1]).version' "$PR/.claude-plugin/plugin.json") || die "cannot read the plugin version"
+  node -e 'const a=process.argv[1].split(".").map(Number),b=process.argv[2].split(".").map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))process.exit((a[i]||0)>(b[i]||0)?0:1)}' "$pv" "$LIVE_MIN_VERSION" || die "plugin $pv on $LIVE_BRANCH is older than $LIVE_MIN_VERSION (engine-proto 8c9a332)"
+  say "source: $LIVE_BRANCH $lc (plugin $pv)"
+  # 2 the engine binary: --bin, else build (the shadow's cargo cache is reused when present)
+  STB="$TMPD/live-bin"
+  if [ -n "$BIN" ]; then cp "$BIN" "$STB" || die "cannot copy --bin"; say "using prebuilt binary $BIN (assumed to match $lc)"
+  else
+    PATH="$HOME/.cargo/bin:$PATH"; export PATH
+    command -v cargo >/dev/null 2>&1 || die "cargo not found. Install rustup (https://rustup.rs) or pass --bin PATH"
+    TD="$LIVEKIT/target"; [ -d "$D/target" ] && TD="$D/target"
+    say "building ah-engine at $lc (nice, 2 jobs; minutes on a cold cache; log $LIVEKIT/build.log)"
+    ( cd "$LS/ah-engine" && CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$TD" nice -n 19 cargo build --release --locked ) >"$LIVEKIT/build.log" 2>&1 || { tail -5 "$LIVEKIT/build.log" >&2; die "cargo build failed"; }
+    cp "$TD/release/ah-engine" "$STB" || die "built binary missing"
+  fi
+  chmod +x "$STB"
+  bv=$(env AH_ENGINE_PLUGIN_ROOT="$PR" CLAUDE_PLUGIN_ROOT="$PR" "$STB" version 2>&1) || die "the engine binary does not run here: $bv"
+  case "$bv" in [0-9]*) ;; *) die "unexpected engine version output: $bv" ;; esac
+  # 3 the bundle the kit installs from (an existing one is moved aside, never overwritten)
+  B="$LIVEKIT/bundle"; [ -e "$B" ] && mv "$B" "$B.$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$B" && cp "$STB" "$B/ah-engine" && cp -R "$PR" "$B/plugin" || die "cannot assemble the bundle"
+  printf 'source: branch %s HEAD %s, plugin %s\nengine version: %s\n%s  bundle/ah-engine\nbuilt: %s on %s\n' "$LIVE_BRANCH" "$lc" "$pv" "$bv" "$(sha "$B/ah-engine")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PLATFORM" > "$B/PROVENANCE.txt"
+  # 4 switch (go-live.sh validates first, backs settings.json up, rolls itself back on any failure)
+  say "going live (select: $LIVE_SELECT)"
+  sh "$LIVEKIT/go-live.sh" "$LIVE_SELECT" || die "go-live failed (rolled back; nothing changed)"
+  [ -f "$D/live.conf" ] && printf 'LIVE_COMMIT=%s\n' "$lc" >> "$D/live.conf"
+  say "LIVE. Restart Claude Code sessions (or /reload-plugins). Check: sh $0 --status   Compare Node vs engine: sh $HOME/.anti-hall/ah-node-shadow/node-shadow.sh --compare   Undo: sh $0 --rollback-live"
+  return 0
+}
+
 case "$MODE" in
   status) cmd_status ;;
   refresh)
@@ -582,7 +671,14 @@ case "$MODE" in
     exit $rc ;;
 esac
 
+if [ "$MODE" = rollbacklive ]; then
+  [ -f "$LIVEKIT/state/live.json" ] || die "not live (no $LIVEKIT/state/live.json)"
+  sh "$LIVEKIT/rollback.sh" "$@" || exit 1
+  say "back to MODE: SHADOW (settings.json restored byte-identical). Restart Claude Code sessions."; exit 0
+fi
+if [ "$MODE" = live ]; then cmd_live; exit $?; fi
 if [ "$MODE" = uninstall ]; then
+  [ ! -f "$LIVEKIT/state/live.json" ] || die "live mode is on: run --rollback-live first"
   [ -f "$MARK" ] || { say "nothing to uninstall (no install marker at $MARK)"; exit 0; }
   need_python; emit_helpers
   if [ -d "$D/update.lock" ]; then
@@ -611,6 +707,7 @@ if [ "$MODE" = uninstall ]; then
 fi
 
 # ================================================================ install
+[ "$MODE" = install ] || die "internal: unhandled mode $MODE"
 say "platform: $PLATFORM"
 case "$(uname -s)" in Darwin|Linux) ;; *) die "unsupported OS $(uname -s) (macOS, Linux and WSL2 only)" ;; esac
 case "$HOME" in /mnt/*) die "HOME ($HOME) is on a Windows drive (DrvFs): Unix sockets and file locks are unreliable there; use a HOME on the Linux filesystem" ;; esac
