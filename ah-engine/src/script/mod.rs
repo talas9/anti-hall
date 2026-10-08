@@ -279,6 +279,12 @@ pub fn p95_budget_us() -> u64 {
     defaults::num("script.p95_budget_us")
 }
 
+/// The latency budget of one scripted check: its own entry in `script.p95_budget_by_check` (a check that waits on a child
+/// process or a disk sync has that wait in its p95, as the compiled port did), else `script.p95_budget_us`.
+pub fn p95_budget_for(check: &str) -> u64 {
+    defaults::raw("script.p95_budget_by_check").get(check).and_then(defaults::V::as_integer).map_or_else(p95_budget_us, |b| b.max(0) as u64)
+}
+
 #[cfg(test)]
 mod golden;
 #[cfg(test)]
