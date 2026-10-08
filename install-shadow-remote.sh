@@ -270,20 +270,38 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/
 sget() { sed -n "s/^$1=//p" "$ST" 2>/dev/null | tail -1; }
 sset() { { grep -v "^$1=" "$ST" 2>/dev/null; printf '%s=%s\n' "$1" "$2"; } > "$ST.tmp.$$" && mv -f "$ST.tmp.$$" "$ST"; }
 num() { case "$1" in ''|*[!0-9]*) echo 0;; *) echo "$1";; esac; }
-TMO=; if command -v timeout >/dev/null 2>&1; then TMO="timeout"; fi
+TMO=; TMOK=; if command -v timeout >/dev/null 2>&1; then TMO="timeout"; timeout -k 1 5 true >/dev/null 2>&1 && TMOK="-k 10"; fi
 
-# run an engine binary with a root dir's own HOME/state/plugin
+# ---- time limits (seconds). The values live in $D/config (update.*_s keys, written by the installer); the numbers below are only
+# the fallback when a key is absent or not a number. update.timeout_s is the hard limit for one whole run; update.warn_s is when --status starts to warn.
+cfgn() { v=$(awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");v=$0} END{print v}' "$D/config" 2>/dev/null); case "$v" in ''|*[!0-9]*) echo "$2";; *) echo "$v";; esac; }
+T_RUN=$(cfgn update.timeout_s 5400); T_WARN=$(cfgn update.warn_s 1800); T_FETCH=$(cfgn update.fetch_timeout_s 120)
+T_BUILD=$(cfgn update.build_timeout_s 3600); T_STEP=$(cfgn update.step_timeout_s 120); T_SMOKE=$(cfgn update.smoke_timeout_s 20); T_SYNC=$(cfgn update.sync_timeout_s 600)
+
+# process helpers (POSIX: ps -A -o pid= -o ppid= works on Linux, macOS, busybox)
+killtree() { for kc in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$1" '$2==p{print $1}'); do killtree "$kc" "$2"; done; kill -"$2" "$1" 2>/dev/null; return 0; }
+is_updater() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null && ps -p "$1" -o args= 2>/dev/null | grep -q 'update\.sh'; }   # alive AND really an update.sh (a reused pid is not)
+proc_age() { ps -p "$1" -o etime= 2>/dev/null | awk '{n=split($0,a,/[-:]/); s=0; if(index($0,"-")){d=a[1]; sub(/^[^-]*-/,"",$0); n=split($0,a,":"); s=d*86400} m=1; for(i=n;i>=1;i--){s+=a[i]*m; m*=60} print s}'; }
+# step SECS CMD...: run one external command with a hard time limit (timeout where present, else a watchdog that kills the process tree).
+# Always backgrounded + waited, so a TERM/USR1 aimed at this script is handled at once instead of after the child finishes.
+step() { st_s=$1; shift
+  if [ -n "$TMO" ]; then $TMO $TMOK "$st_s" "$@" & st_p=$!; wait "$st_p"; return $?; fi
+  "$@" & st_p=$!
+  ( sleep "$st_s"; killtree "$st_p" TERM; sleep 5; killtree "$st_p" KILL ) >/dev/null 2>&1 & st_w=$!
+  wait "$st_p"; st_r=$?; killtree "$st_w" KILL; wait "$st_w" 2>/dev/null; return $st_r; }
+
+# run an engine binary with a root dir's own HOME/state/plugin (bounded: a daemon that does not answer must not hang the updater)
 eng() { bin=$1; r=$2; shift 2
-  env HOME="$r/home" AH_ENGINE_DIR="$r/state" AH_ENGINE_PLUGIN_ROOT="$r/plugin" CLAUDE_PLUGIN_ROOT="$r/plugin" "$bin" "$@"; }
+  step "$T_STEP" env HOME="$r/home" AH_ENGINE_DIR="$r/state" AH_ENGINE_PLUGIN_ROOT="$r/plugin" CLAUDE_PLUGIN_ROOT="$r/plugin" "$bin" "$@"; }
 bounded() { s=$1; i=$2; o=$3; e=$4; shift 4
   "$@" <"$i" >"$o" 2>"$e" & p=$!
   ( sleep "$s"; kill "$p" ) >/dev/null 2>&1 & w=$!
-  wait "$p"; r=$?; { kill "$w"; wait "$w"; } >/dev/null 2>&1; return $r; }
+  wait "$p"; r=$?; killtree "$w" KILL; wait "$w" 2>/dev/null; return $r; }
 
 smoke() { dir=$1; bin=$dir/ah-engine
   [ -x "$bin" ] || { echo "no executable at $bin"; return 1; }
   [ -f "$dir/noop-map.json" ] && [ -d "$dir/plugin" ] || { echo "stage lacks noop-map.json or plugin/"; return 1; }
-  v=$(env AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" version 2>&1) || { echo "version failed: $v"; return 1; }
+  v=$(step "$T_STEP" env AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" version 2>&1) || { echo "version failed: $v"; return 1; }
   case "$v" in [0-9]*) ;; *) echo "unexpected version output: $v"; return 1 ;; esac
   mkdir -p "$dir/home" "$dir/state"
   st=0
@@ -291,45 +309,87 @@ smoke() { dir=$1; bin=$dir/ah-engine
     ev=${spec%%|*}; tl=${spec#*|}
     if [ -n "$tl" ]; then
       printf '{"session_id":"smoke","cwd":"/tmp","hook_event_name":"%s","tool_name":"%s","tool_input":{"command":"echo hi"}}' "$ev" "$tl" > "$dir/in.json"
-      bounded 20 "$dir/in.json" "$dir/out.txt" "$dir/err.txt" env HOME="$dir/home" AH_ENGINE_DIR="$dir/state" AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" hook --event "$ev" --tool "$tl" --fallback-map "$dir/noop-map.json"
+      bounded "$T_SMOKE" "$dir/in.json" "$dir/out.txt" "$dir/err.txt" env HOME="$dir/home" AH_ENGINE_DIR="$dir/state" AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" hook --event "$ev" --tool "$tl" --fallback-map "$dir/noop-map.json"
     else
       printf '{"session_id":"smoke","cwd":"/tmp","hook_event_name":"%s","source":"startup","prompt":"hello"}' "$ev" > "$dir/in.json"
-      bounded 20 "$dir/in.json" "$dir/out.txt" "$dir/err.txt" env HOME="$dir/home" AH_ENGINE_DIR="$dir/state" AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" hook --event "$ev" --fallback-map "$dir/noop-map.json"
+      bounded "$T_SMOKE" "$dir/in.json" "$dir/out.txt" "$dir/err.txt" env HOME="$dir/home" AH_ENGINE_DIR="$dir/state" AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" hook --event "$ev" --fallback-map "$dir/noop-map.json"
     fi
     rc=$?
     if [ "$rc" != 0 ]; then echo "smoke $ev: exit $rc"; st=1; continue; fi
     if grep -qE '"decision"[[:space:]]*:[[:space:]]*"block"|permissionDecision"[[:space:]]*:[[:space:]]*"deny' "$dir/out.txt"; then echo "smoke $ev: unexpected block verdict"; st=1; fi
   done
-  env HOME="$dir/home" AH_ENGINE_DIR="$dir/state" AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" stop >/dev/null 2>&1
+  step "$T_STEP" env HOME="$dir/home" AH_ENGINE_DIR="$dir/state" AH_ENGINE_PLUGIN_ROOT="$dir/plugin" CLAUDE_PLUGIN_ROOT="$dir/plugin" "$bin" stop >/dev/null 2>&1
   return $st
 }
 
 if [ "$MODE" = --smoke ]; then smoke "$2"; exit $?; fi
+
+# --info: describe a running updater (nothing printed when none runs). --stop: stop it safely (the installed version is kept).
+if [ "$MODE" = --info ]; then
+  op=$(cat "$LOCKD/pid" 2>/dev/null); is_updater "$op" || exit 0
+  age=$(proc_age "$op"); age=$(num "$age"); stp=$(sget cur_step)
+  if [ "$age" -gt "$T_RUN" ]; then echo "WARNING: an update (pid $op, step ${stp:-?}) has run ${age}s, over the ${T_RUN}s limit: it is stuck. --update-now, --live or --rollback-live will stop it (the current version is kept)"
+  elif [ "$age" -gt "$T_WARN" ]; then echo "WARNING: an update (pid $op, step ${stp:-?}) has run ${age}s, longer than expected (${T_WARN}s); it is killed at ${T_RUN}s"
+  else echo "update running: pid $op for ${age}s (step ${stp:-?})"; fi
+  exit 0
+fi
+stop_running() { # stop the updater that holds the lock; never mid-swap (waits for the swap, which takes well under a second)
+  op=$(cat "$LOCKD/pid" 2>/dev/null)
+  if is_updater "$op"; then
+    n=0; while [ "$(sget cur_step)" = swap ] && is_updater "$op" && [ "$n" -lt 30 ]; do sleep 1; n=$((n+1)); done
+    killtree "$op" TERM; n=0; while is_updater "$op" && [ "$n" -lt 10 ]; do sleep 1; n=$((n+1)); done
+    if is_updater "$op"; then killtree "$op" KILL; sleep 1; fi
+    log "STOPPED update pid $op by request (was in step $(sget cur_step); the installed version is unchanged)"; echo "stopped the running update (pid $op)"
+  fi
+  [ -n "$op" ] && rm -rf "$D/stage.$op"
+  [ "$(cat "$LOCKD/pid" 2>/dev/null)" = "$op" ] && rm -rf "$LOCKD"
+  return 0
+}
+if [ "$MODE" = --stop ]; then stop_running; exit 0; fi
 
 [ -f "$D/.shadow2-installed" ] || exit 0
 [ -f "$D/live.conf" ] && exit 0   # live: the shadow updater is retired (update = --rollback-live, git pull, --live)
 [ "$MODE" = --auto ] || [ "$MODE" = --now ] || [ "$MODE" = --rollback ] || exit 2
 
 # telemetry sync: its own enabled flag, hourly gate, lock and backoff; a failure here never affects the update below
-if [ "$MODE" = --auto ] && [ -f "$D/sync.sh" ]; then AH_SHADOW_D="$D" sh "$D/sync.sh" --auto </dev/null >/dev/null 2>&1; fi
+if [ "$MODE" = --auto ] && [ -f "$D/sync.sh" ]; then step "$T_SYNC" env AH_SHADOW_D="$D" sh "$D/sync.sh" --auto </dev/null >/dev/null 2>&1; fi
 
-# lock (mkdir is atomic); a stale lock (dead pid) is taken over once
+# lock (mkdir is atomic). Takeover: the holder is dead (or its pid now belongs to another program), or it has run longer than the
+# hard limit (update.timeout_s): then it is killed and the lock taken over, with a log line either way.
 acquire() {
   if mkdir "$LOCKD" 2>/dev/null; then echo $$ > "$LOCKD/pid"; return 0; fi
-  op=$(cat "$LOCKD/pid" 2>/dev/null)
-  if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then return 1; fi
+  op=$(cat "$LOCKD/pid" 2>/dev/null); [ -n "$op" ] || { sleep 1; op=$(cat "$LOCKD/pid" 2>/dev/null); }
+  if is_updater "$op"; then
+    age=$(num "$(proc_age "$op")")
+    [ "$age" -gt "$T_RUN" ] || return 1
+    log "stale lock: update pid $op has run ${age}s (limit ${T_RUN}s, step $(sget cur_step)); killing it and taking over"
+    killtree "$op" TERM; sleep 2; killtree "$op" KILL; rm -rf "$D/stage.$op"
+  else
+    log "stale lock: holder pid ${op:-none} is not running; taking over"
+  fi
   rm -rf "$LOCKD"; mkdir "$LOCKD" 2>/dev/null && echo $$ > "$LOCKD/pid" && return 0
   return 1
 }
-STAGE="$D/stage.$$"
-finish() { rm -rf "$STAGE" "$LOCKD"; }
+# a failure keeps the current version, backs off (5 min doubling, max 1 h) and exits 0
+fail() { n=$(num "$(sget fails)"); n=$((n+1)); d=300; i=1; while [ "$i" -lt "$n" ] && [ "$d" -lt 3600 ]; do d=$((d*2)); i=$((i+1)); done; [ "$d" -gt 3600 ] && d=3600
+  sset fails "$n"; sset next_try "$(( $(now) + d ))"; sset last_result "failed: $1"; sset last_try "$(now)"
+  log "FAILED (kept $(cat "$D/commit" 2>/dev/null)): $1; backoff ${d}s (fail #$n)"; exit 0; }
+STAGE="$D/stage.$$"; T_START=$(now); STEP=start; WD=
+stepmark() { STEP=$1; sset cur_step "$1"; }
+finish() { [ -n "$WD" ] && killtree "$WD" KILL; rm -rf "$STAGE"; [ "$(cat "$LOCKD/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCKD"; }
+kids() { ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$$" '$2==p{print $1}'; }
+reap() { trap '' TERM HUP INT USR1; ks=$(kids); for k in $ks; do killtree "$k" TERM; done; sleep 2; for k in $ks; do killtree "$k" KILL; done; }
+on_term() { reap; exit 143; }
+on_timeout() { reap; fail "update exceeded ${T_RUN}s and was killed (stuck in step: ${STEP})"; }
 acquire || { [ "$MODE" = --auto ] || echo "another update is running" >&2; exit 0; }
-trap finish 0; trap 'exit 143' TERM HUP INT
+trap finish 0; trap on_term TERM HUP INT; trap on_timeout USR1
+sset started "$T_START"; sset cur_step start
+( sleep "$T_RUN"; kill -USR1 "$$" ) >/dev/null 2>&1 & WD=$!   # per-run hard limit
 
 restart_daemon() { # stop only OUR daemon (its own state dir); the next hook starts it on demand
   [ -x "$D/bin/ah-engine" ] || return 0
   eng "$D/bin/ah-engine" "$D" stop >/dev/null 2>&1
-  pid=$(eng "$D/bin/ah-engine" "$D" status 2>/dev/null | sed -n 's/^pid: *//p' | head -1)
+  pid=$(eng "$D/bin/ah-engine" "$D" status 2>/dev/null </dev/null | sed -n 's/^pid: *//p' | head -1)
   if [ -n "$pid" ] && ps -p "$pid" -o args= 2>/dev/null | grep -q "$D"; then kill "$pid" 2>/dev/null; fi
 }
 swap_pair() { a=$1; b=$2 # exchange two paths
@@ -343,7 +403,7 @@ if [ "$MODE" = --rollback ]; then
   [ -d "$D/plugin.prev" ] && swap_pair "$D/plugin" "$D/plugin.prev"
   [ -f "$D/noop-map.prev.json" ] && swap_pair "$D/noop-map.json" "$D/noop-map.prev.json"
   [ -f "$D/commit.prev" ] && swap_pair "$D/commit" "$D/commit.prev"
-  sset skip_commit "$cur"; restart_daemon
+  sset skip_commit "$cur"; stepmark restart; restart_daemon
   log "ROLLBACK $cur -> $(cat "$D/commit" 2>/dev/null) (updates skip $cur until the branch moves on)"
   echo "rolled back to $(cat "$D/commit" 2>/dev/null); will not re-apply $cur"; exit 0
 fi
@@ -352,15 +412,13 @@ fi
 t=$(now)
 if [ "$MODE" = --auto ] && [ "$t" -lt "$(num "$(sget next_try)")" ]; then exit 0; fi
 [ -d "$D/src/.git" ] || { log "ERROR no src clone at $D/src"; exit 0; }
-fail() { n=$(num "$(sget fails)"); n=$((n+1)); d=300; i=1; while [ "$i" -lt "$n" ] && [ "$d" -lt 3600 ]; do d=$((d*2)); i=$((i+1)); done; [ "$d" -gt 3600 ] && d=3600
-  sset fails "$n"; sset next_try "$(( $(now) + d ))"; sset last_result "failed: $1"; sset last_try "$(now)"
-  log "FAILED (kept $(cat "$D/commit" 2>/dev/null)): $1; backoff ${d}s (fail #$n)"; exit 0; }
 
 branch=$(cat "$D/branch" 2>/dev/null); [ -n "$branch" ] || branch=engine-shadow
+stepmark fetch
 fetched=0
 for u in "$(cat "$D/repo.url" 2>/dev/null)" "$(cat "$D/repo.https" 2>/dev/null)"; do
   [ -n "$u" ] || continue
-  if $TMO ${TMO:+120} git -C "$D/src" fetch -q --depth 1 "$u" "$branch" >"$D/fetch.log" 2>&1; then fetched=1; break; fi
+  if step "$T_FETCH" git -C "$D/src" fetch -q --depth 1 "$u" "$branch" >"$D/fetch.log" 2>&1; then fetched=1; break; fi
 done
 [ "$fetched" = 1 ] || fail "git fetch of $branch failed ($(head -c 200 "$D/fetch.log" | tr '\n' ' '))"
 new=$(git -C "$D/src" rev-parse FETCH_HEAD 2>/dev/null) || fail "cannot resolve FETCH_HEAD"
@@ -372,16 +430,22 @@ if [ "$new" = "$(sget skip_commit)" ]; then sset last_check "$(now)"; exit 0; fi
 command -v cargo >/dev/null 2>&1 || fail "cargo not found in PATH (install rustup)"
 log "update available: ${cur:-none} -> $new; building"
 b0=$(now)
-git -C "$D/src" reset -q --hard "$new" || fail "git reset to $new failed"
-( cd "$D/src/ah-engine" && CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$D/target" nice -n 19 $TMO ${TMO:+3600} cargo build --release --locked ) >"$D/build.log" 2>&1 \
+stepmark reset
+step "$T_STEP" git -C "$D/src" reset -q --hard "$new" || fail "git reset to $new failed"
+stepmark build
+( cd "$D/src/ah-engine" && step "$T_BUILD" nice -n 19 env CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$D/target" cargo build --release --locked ) >"$D/build.log" 2>&1 &
+bp=$!; wait "$bp" \
   || fail "build of $new failed (see $D/build.log: $(grep -m1 -E '^error' "$D/build.log" | head -c 160))"
+stepmark stage
 mkdir -p "$STAGE" || fail "cannot create stage"
-cp "$D/target/release/ah-engine" "$STAGE/ah-engine" || fail "built binary missing"
-cp -R "$D/src/plugins/anti-hall" "$STAGE/plugin" || fail "plugin tree missing in $new"
-python3 "$D/jsonedit.py" noopmap "$STAGE/plugin/hooks/ah-fallback.map.json" "$STAGE/noop-map.json" || fail "cannot derive noop map"
+step "$T_STEP" cp "$D/target/release/ah-engine" "$STAGE/ah-engine" || fail "built binary missing"
+step "$T_STEP" cp -R "$D/src/plugins/anti-hall" "$STAGE/plugin" || fail "plugin tree missing in $new"
+step "$T_STEP" python3 "$D/jsonedit.py" noopmap "$STAGE/plugin/hooks/ah-fallback.map.json" "$STAGE/noop-map.json" || fail "cannot derive noop map"
+stepmark smoke
 sm=$(smoke "$STAGE") || fail "smoke test failed for $new: $(printf '%s' "$sm" | tr '\n' ' ' | head -c 200)"
 
-# swap: keep the previous generation in *.prev; each file is replaced by an atomic rename
+# swap: keep the previous generation in *.prev; each file is replaced by an atomic rename (--stop waits for this step to finish)
+stepmark swap
 mkdir -p "$D/bin" "$D/bin.prev"
 [ -x "$D/bin/ah-engine" ] && cp -p "$D/bin/ah-engine" "$D/bin.prev/ah-engine"
 cp "$STAGE/ah-engine" "$D/bin/ah-engine.new" && chmod +x "$D/bin/ah-engine.new" && mv -f "$D/bin/ah-engine.new" "$D/bin/ah-engine" || fail "binary swap failed"
@@ -389,15 +453,17 @@ rm -rf "$D/plugin.prev"; [ -d "$D/plugin" ] && mv "$D/plugin" "$D/plugin.prev"; 
 [ -f "$D/noop-map.json" ] && cp -p "$D/noop-map.json" "$D/noop-map.prev.json"
 cp "$STAGE/noop-map.json" "$D/noop-map.json.new" && mv -f "$D/noop-map.json.new" "$D/noop-map.json"
 [ -n "$cur" ] && printf '%s\n' "$cur" > "$D/commit.prev"; printf '%s\n' "$new" > "$D/commit"
+stepmark restart
 restart_daemon
-if ! env AH_ENGINE_PLUGIN_ROOT="$D/plugin" CLAUDE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version >/dev/null 2>&1; then # live binary unusable: restore the previous one
+if ! step "$T_STEP" env AH_ENGINE_PLUGIN_ROOT="$D/plugin" CLAUDE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version >/dev/null 2>&1; then # live binary unusable: restore the previous one
   cp -p "$D/bin.prev/ah-engine" "$D/bin/ah-engine"; printf '%s\n' "$cur" > "$D/commit"; fail "swapped binary failed to run; restored previous"
 fi
 sset fails 0; sset next_try 0; sset last_ok "$(now)"; sset last_check "$(now)"; sset skip_commit ""
-sset last_result "updated ${cur:-none} -> $new"
+sset last_result "updated ${cur:-none} -> $new"; sset cur_step done
 # pick up new helper scripts (update.sh, shadow2.sh, sync.sh) shipped on the branch; each is syntax-checked before an atomic rename
-[ -f "$D/src/install-shadow-remote.sh" ] && AH_SHADOW_D="$D" sh "$D/src/install-shadow-remote.sh" --refresh-scripts >>"$LOG" 2>&1
-log "UPDATED ${cur:-none} -> $new (fetch+build+smoke $(( $(now) - b0 ))s, version $(env AH_ENGINE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version 2>/dev/null)); daemon restarted"
+stepmark refresh
+[ -f "$D/src/install-shadow-remote.sh" ] && step "$T_STEP" env AH_SHADOW_D="$D" sh "$D/src/install-shadow-remote.sh" --refresh-scripts >>"$LOG" 2>&1
+log "UPDATED ${cur:-none} -> $new (fetch+build+smoke $(( $(now) - b0 ))s, version $(step "$T_STEP" env AH_ENGINE_PLUGIN_ROOT="$D/plugin" "$D/bin/ah-engine" version 2>/dev/null)); daemon restarted"
 exit 0
 UPEOF
 
@@ -547,6 +613,10 @@ init_config() { # defaults are written only when a key is absent; --no-sync forc
   grep -q '^sync\.enabled=' "$D/config" 2>/dev/null || cfgset sync.enabled true
   grep -q '^sync\.repo=' "$D/config" 2>/dev/null || cfgset sync.repo "$REPO_TELEMETRY"
   grep -q '^sync\.interval_s=' "$D/config" 2>/dev/null || cfgset sync.interval_s 3600
+  # updater time limits, seconds (update.sh reads them on every run): whole run, --status warning, fetch, build, one short step, smoke hook, telemetry sync
+  for kv in update.timeout_s=5400 update.warn_s=1800 update.fetch_timeout_s=120 update.build_timeout_s=3600 update.step_timeout_s=120 update.smoke_timeout_s=20 update.sync_timeout_s=600; do
+    grep -q "^${kv%%=*}=" "$D/config" 2>/dev/null || cfgset "${kv%%=*}" "${kv#*=}"
+  done
   [ "$NOSYNC" = 1 ] && cfgset sync.enabled false
   mkdir -p "$D/spool"; chmod 700 "$D/spool" 2>/dev/null
   return 0
@@ -556,10 +626,14 @@ init_config() { # defaults are written only when a key is absent; --no-sync forc
 need_python() { command -v python3 >/dev/null 2>&1 || die "python3 is required for the settings.json merge"; }
 
 LIVEKIT="$HOME/.anti-hall/ah-engine-live"
+updater() { # updater --info|--stop: the embedded update.sh (works before/without a refreshed $D/update.sh; reads $D/config)
+  [ -d "$D" ] || return 0
+  emit_helpers; AH_SHADOW_D="$D" sh "$TMPD/update.sh" "$1"; }
 cmd_status() {
   if [ -f "$LIVEKIT/state/live.json" ]; then
     say "MODE: LIVE (engine decides, Node falls back; --rollback-live to return to the shadow)"
     sh "$LIVEKIT/status.sh"; st=$?
+    updater --info
     [ -f "$MARK" ] && say "shadow2 install kept for telemetry sync only: sync $(awk -F= '$1=="sync.enabled"{print $2}' "$D/config" 2>/dev/null), last result: $(sed -n 's/^last_result=//p' "$D/sync.state" 2>/dev/null | tail -1)"
     exit $st
   fi
@@ -575,6 +649,7 @@ cmd_status() {
   fmt() { case "$1" in ''|0) echo never;; *) date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$1";; esac; }
   say "last update:  $(fmt "$lo")   last try: $(fmt "$lt")   result: $(g last_result)"
   say "backoff:      fails=$(g fails) next_try=$(fmt "$nt")   skip_commit=$(g skip_commit)"
+  updater --info
   L="$D/log-calls.ndjson"
   if [ -f "$L" ]; then
     say "calls:        $(wc -l < "$L" | tr -d ' ') total, $(grep -c '"blocked":true' "$L") blocked, $(grep -c '"advised":true' "$L") advised, $(grep -c '"deferred":true' "$L") deferred, $(grep -vcE '"rc":(0|2|75),' "$L") odd exit codes"
@@ -597,7 +672,7 @@ cmd_live() {
   command -v "${AH_LIVE_CLAUDE:-claude}" >/dev/null 2>&1 || die "claude CLI not found on PATH (the plugin is installed through it); set AH_LIVE_CLAUDE if it lives elsewhere"
   [ -f "$SRC_KIT/go-live.sh" ] && [ -f "$SRC_KIT/node-shadow.sh" ] && [ -f "$SRC_KIT/node-shadow.skip" ] || die "$SRC_KIT is missing: git pull the $BRANCH branch next to this script"
   [ ! -f "$LIVEKIT/state/live.json" ] || die "already live ($LIVEKIT/state/live.json). To update: sh $0 --rollback-live, git pull, sh $0 --live"
-  if [ -d "$D/update.lock" ]; then op=$(cat "$D/update.lock/pid" 2>/dev/null); if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then die "a shadow update is running (pid $op); retry in a minute"; fi; fi
+  [ -d "$D/update.lock" ] && { updater --stop || die "could not stop the running shadow update"; }   # a running/stuck updater is stopped (it keeps the installed version), never a reason to refuse
   if [ -f "$MARK" ]; then emit_helpers; install_scripts || die "could not refresh the shadow helper scripts"; init_config; fi   # sync.sh learns live.conf
   mkdir -p "$LIVEKIT/state" || die "cannot create $LIVEKIT"
   for f in lib.sh go-live.sh rollback.sh status.sh node-shadow.sh node-shadow.skip agreed-checks.txt; do cp "$SRC_KIT/$f" "$LIVEKIT/$f.new" && mv -f "$LIVEKIT/$f.new" "$LIVEKIT/$f" || die "cannot install $f"; done
@@ -673,6 +748,7 @@ esac
 
 if [ "$MODE" = rollbacklive ]; then
   [ -f "$LIVEKIT/state/live.json" ] || die "not live (no $LIVEKIT/state/live.json)"
+  [ -d "$D/update.lock" ] && updater --stop
   sh "$LIVEKIT/rollback.sh" "$@" || exit 1
   say "back to MODE: SHADOW (settings.json restored byte-identical). Restart Claude Code sessions."; exit 0
 fi
