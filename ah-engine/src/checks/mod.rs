@@ -36,7 +36,6 @@ pub mod scripted;
 pub mod session;
 pub mod spawnctx;
 pub mod stale_agent_stop_note;
-pub mod task_guard;
 pub mod task_tracker;
 pub mod taskkit;
 pub mod tasklist_guard;
@@ -230,7 +229,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &handover::resume::HandoverResume,
         &scripted::TASK_LIFECYCLE_LOG,
         &scripted::DISPATCH_TIER,
-        &task_guard::TaskGuard,
+        &scripted::TASK_GUARD,
         &tasklist_guard::TasklistGuard,
         &scripted::DEVSWARM_PARENT_INBOX,
         &scripted::DEVSWARM_CHILD_TURN,

@@ -494,10 +494,6 @@ value = "Dispatchable work is sitting idle."
 doc = "The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing)."
 value = "dispatch them now in parallel (one background agent each, cap {cap}), or stop only if a task truly needs the user (say which and why). A task waiting on an in-flight task: set its blockedBy ({upd} addBlockedBy). A running agent already covers a task: set the task owner to it ({upd} owner) and it counts as attended.{devswarm}"
 
-[task_guard.idle_devswarm]
-doc = "The sentence the idle-neglect block adds while a DevSwarm workspace is live; `{upd}` is the task update tool."
-value = " Delegated to a DevSwarm workspace: set the task owner ({upd} owner) to the workspace id, branch or title."
-
 [task_guard.idle_allowed]
 doc = "The allowed-here line of the idle-neglect block."
 value = "a task blocked on the OWNER (hardware, a human decision): mark it metadata.blockedOn:'owner' (or 'user'/'human'/'external'), or give it an \"OWNER:\" / \"OWNER DECISION\" subject prefix. Never a fake blockedBy dependency."
@@ -645,10 +641,6 @@ unit = "ms"
 [task_guard.omc_session_key]
 doc = "The state field that ties a loop to one session."
 value = "session_id"
-
-[task_guard.js_object_text]
-doc = "JavaScript's `String()` of a plain object."
-value = "[object Object]"
 
 # -- task-guard: the per-prompt budget (hooks/lib/stop-policy.js budgetSpent)
 

@@ -62,3 +62,8 @@ fn speculation_guard_script_matches_the_compiled_port() {
 fn silent_agent_nudge_script_matches_the_compiled_port() {
     golden_report("silent-agent-nudge", 12);
 }
+
+#[test]
+fn task_guard_script_matches_the_compiled_port() {
+    golden_report("task-guard", 12);
+}

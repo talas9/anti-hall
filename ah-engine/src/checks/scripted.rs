@@ -99,6 +99,9 @@ pub static SPECULATION_GUARD: Scripted = Scripted::new("speculation-guard", "spe
 /// `silent-agent-nudge`.
 pub static SILENT_AGENT_NUDGE: Scripted = Scripted::new("silent-agent-nudge", "silent_nudge.summary");
 
+/// `task-guard`.
+pub static TASK_GUARD: Scripted = Scripted::new("task-guard", "task_guard.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 
