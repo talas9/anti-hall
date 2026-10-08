@@ -139,7 +139,7 @@ pub fn run(args: &[&str], env: &Env) -> Option<String> {
     if let Some(mut o) = child.stdout.take() {
         let (buf, done, too_much) = (Arc::clone(&out), Arc::clone(&out_done), Arc::clone(&over));
         std::thread::spawn(move || {
-            let mut chunk = [0u8; 8192];
+            let mut chunk = vec![0u8; defaults::num("mesh_write.hivecontrol_read_chunk") as usize];
             loop {
                 match o.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
@@ -161,7 +161,7 @@ pub fn run(args: &[&str], env: &Env) -> Option<String> {
     }
     if let Some(mut e) = child.stderr.take() {
         std::thread::spawn(move || {
-            let mut sink = [0u8; 8192];
+            let mut sink = vec![0u8; defaults::num("mesh_write.hivecontrol_read_chunk") as usize];
             while matches!(e.read(&mut sink), Ok(n) if n > 0) {}
         });
     }
