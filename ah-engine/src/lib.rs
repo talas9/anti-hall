@@ -36,6 +36,7 @@ pub mod memstat;
 pub mod mesh;
 pub mod metrics;
 pub mod migrate;
+pub mod operator;
 pub mod paths;
 pub mod proc;
 pub mod reqenv;

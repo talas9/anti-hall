@@ -249,6 +249,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Jev lane: Vercel and TypeSafe transports with fallback and breaker, Noul and Choice calls, off/shadow/on modes, add-block and advisory trust, cache, async queue with budgets, the `jev-assist.ndjson` rows, `ah-engine jev` | implemented, one-shot only | D34-D38 |
 | Jev wired into the dispatcher and the daemon, spend budget watch, audit snippets, daily rollups, persisted breaker and cache | planned (D58, D38) | D38, D58 |
 | Operator helpers: `ah-engine jev-setup` (status, enable, disable, set-key, bind-generic-key, mode), `capability-scan`, `harvest`, `briefing`, byte-for-byte with the Node scripts | implemented | D81 |
+| Operator commands `ah-engine update` (pull, cache sync, harness re-registration, changelog) and `ah-engine install-codex` (the Codex port installer), with the Node scripts' output and file effects; the DevSwarm store sweeps of `update` still run by the plugin's own `update.js --post-pull-only` | implemented | D81 |
 | Backups and restore: online snapshot of both databases, scrubbed; restore keeps the current state first | implemented | D27 |
 | Health check and repair: `ah-engine doctor` (platform and versions, hook scripts on disk, live self-tests of the built-in guards, statusline, Workflow templates, the repair pass) and `ah-engine migrate` (the persisted-state migrations and sweeps) | implemented for the plain-file steps; the DevSwarm-store steps and the spawn-based checks stay with the Node doctor | D81 |
 | The DevSwarm store migrations, the statusline render, context footprint, supervisor, OMC and Codex detection, ingest units and the opt-in doctor flags in the engine doctor | planned (D81) | D81 |
@@ -359,6 +360,8 @@ arguments, is in the generated reference.
 | `ah-engine jev-setup <status\|enable\|disable\|set-key\|bind-generic-key\|mode>` | no | The port of `scripts/jev-setup.js` (D81): `status` prints the resolved settings, key presence yes or no, every integration's mode, the calls of the last 24 hours and the Vercel credit balance; `enable`, `disable`, `bind-generic-key` and `mode <integration> on\|shadow\|off` write `settings.json` and `jev.json` the way the script does (read-modify-write, key order kept, a corrupt file moved aside); `set-key` reads the key from stdin only and writes the key file with mode 0600. `test` and the review verbs stay in the Node script. |
 | `ah-engine jev_sweep` | no | The scheduled `jev_sweep` job (`jev::sweep`): one evidence sweep of the supervisor's Jev questions; it gathers the WaitKind, Loop and StepMap facts (plan, transcript, git, CI, mesh), runs them through the evidence gate (`jev_evidence.toml`) and records the telemetry; Node no longer asks those three questions. Takes no arguments; the home directory comes from the environment. |
 | `ah-engine capability-scan [--root <plugin dir>]` | yes | The port of `scripts/capability-scan.js` (D81): which opt-in capabilities of a plugin tree are shipped and active on this machine, and how to enable the ones that are not; prints the JSON report, then one line per capability. |
+| `ah-engine update [--check] [--post-pull-only]` | no | The port of `skills/update/scripts/update.js` (D81): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP with exit 1; an offline failure fails open), a copy of the plugin into a new version-pinned cache directory (never over or beside an existing one), `claude plugin update anti-hall@anti-hall` when the harness registry is behind (20 s bound, never answers a confirmation, `installed_plugins.json` is only read), the changelog delta, then one JSON status line and the human summary. `--check` compares versions only. The DevSwarm store sweeps and the settings migration are run by the freshly pulled plugin's own `update.js --post-pull-only` and merged into the status like the Node re-exec does. |
+| `ah-engine install-codex [--global] [--dry-run] [--root <plugin dir>]` | no | The port of `codex/install-codex.js` (D81): merges the generated Codex hook registration into `.codex/hooks.json` (project, or the home directory with `--global`), replacing only anti-hall's own groups, and enables the hooks feature in `config.toml`. A file that changes is copied to `<file>.bak-<time>` first; `--dry-run` writes nothing; a second run changes nothing. |
 | `ah-engine harvest [--dir <path>] [--stale-days <n>]` | yes | The port of `scripts/harvest-debt.js` (D81): the `anti-hall: <ceiling>, <when>` debt markers of a code tree, flagged when they have no payback trigger or sit in files git says are old. |
 | `ah-engine briefing [--root <plugin dir>]` | yes | The port of `scripts/briefing.js` (D81): a derived inventory of a plugin tree, the registered hooks by event with the purpose from each hook's header comment, the skills, the DevSwarm substrate and the docs map. |
 | `ah-engine settings <show\|get\|set\|reset\|judge\|trust-command-allow\|trust-edit-allow> [args] [--json]` | no | The port of `scripts/settings.js` (L9a), byte-for-byte; replaces `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" ...` in `skills/settings/SKILL.md` at the cutover. A run is also replayed by the Node script in a scratch home in the background (`ops.shadow_rate_settings`), a mismatch is a `shadow` telemetry event. |
@@ -376,6 +379,25 @@ arguments, is in the generated reference.
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
 | `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 | `ah-engine mesh <roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | Read a repo's DevSwarm store in place, read-only (D45 stage S0): the registered workspaces, the per-workspace counts, a workspace's messages (capped, with a resume position), and the full canonical dump the parity harness compares with Node's reader. Refuses a journal-backed store; never creates or writes one. |
+
+### Replacing the Node operator scripts (cutover notes)
+
+These are the notes for the cutover lane; no SKILL.md or script text has been changed yet.
+
+| Node today | Engine command | Notes for the cutover |
+|---|---|---|
+| `node skills/update/scripts/update.js [--check]` | `ah-engine update [--check]` | Same JSON status line, human summary and exit codes (1 only for the two STOPs). Progress lines on stderr are printed for the stages the engine runs itself (the harness registration). The DevSwarm sweeps and the settings migration still need `update.js` in the pulled plugin tree and `node` on the PATH; until they are ported, deleting that script drops those status keys. |
+| `node hooks/doctor.js [--repair]` | `ah-engine doctor [--repair]` | Ported earlier; see the doctor row above for the flags still on Node. |
+| `node scripts/migrate-state.js` | `ah-engine migrate` | Ported earlier. |
+| `node scripts/capability-scan.js` | `ah-engine capability-scan` | Ported earlier. |
+| `node codex/install-codex.js [--global] [--dry-run]` | `ah-engine install-codex [--global] [--dry-run] [--root <plugin dir>]` | Same output and files. The plugin directory comes from `--root` or the plugin-root variable (Node derives it from its own location). The test-only refusal to write outside a temp dir is not carried over (the engine does not run under `node --test`). |
+
+Shadow: both commands keep their Node script as a read-only witness (`operator.shadow`, on by default). `update --check` and `update` run `update.js --check` (for a full `update`, after it, comparing the latest version) and `install-codex` runs `install-codex.js --dry-run` before it writes; the engine's result is the real one, and a difference in the reported versions or files is logged to the event log (`update_check_shadow_mismatch`, `update_shadow_mismatch`, `install_codex_shadow_mismatch`). The full `update` itself is never run twice. The Node scripts stay in the plugin until the decommission gate.
+
+Two documented differences from `update.js`: when an update moves the version, Node runs its post-pull stages twice (the old
+copy, then the new copy) and prints the second pass, which reports the one-time migrations as already completed; the engine
+runs them once and prints that run. And the text of an operating-system error inside a status line (for example a failed
+cache copy) is Rust's, not Node's.
 
 ## Metrics and the impact ledger
 
@@ -753,6 +775,7 @@ Files:
 | `setup.toml` | the operator helper commands (`jev-setup`, `capability-scan`, `harvest`, `briefing`): the shared limits, the marker grammar and table widths, the briefing's scan limits, the settings lock timing, and the message texts, which are the Node scripts' own |
 | `settings_cli.toml`, `operator.toml` | the operator tools `settings`, `defect` and `statusline`: the generated settings registry (`parity/gen-settings-cli.js`), the caps, enums, texts and colors, and the shadow sampling rates |
 | `slcfg.toml` | the status line helper commands `phase`, `install-statusline` and `uninstall-statusline`: their message texts (the Node scripts' own), file names, test-guard markers and the installer shadow's copy lists |
+| `update_cli.toml` | the `update` and `install-codex` commands: marketplace, cache and registry paths, git and harness arguments and timeouts, the offline-failure patterns, every status and summary text, the Codex file names and the merge patterns |
 | `dispatch.toml` | the dispatcher's settings and the hand-maintained per-event table of hook entries (the table of record: the plugin's `hooks.json` files are generated from it) |
 | `hooks.toml` | the hook configuration: defaults of `[events.<Event>]` and `[entries.<id>]`, the `when` predicate vocabulary, the plan outcomes and their messages |
 | `hooks.d/*.toml` | optional: per-batch `[events.<Event>]` / `[entries."<id>"]` defaults (one file per batch of ported hooks, so parallel lanes do not edit a shared file) |

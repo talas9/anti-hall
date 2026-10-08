@@ -143,3 +143,11 @@ value = { args = "<snapshot-dir>", read_only = false, status = "implemented" }
 [cmd.mesh]
 doc = "Read a repo's DevSwarm store (D45 stage S0), read-only: `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node. The store is opened read-only and never created; a journal-backed store is refused (Node owns it)."
 value = { args = "<roster|unread|read|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]", read_only = true, status = "implemented" }
+
+[cmd.update]
+doc = "Update anti-hall (D81, lane L9b, the port of skills/update/scripts/update.js): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP, offline fails open), a copy of the plugin into a new version-pinned cache directory, the harness's own `claude plugin update` when its registry is behind (bounded, never answering a confirmation; installed_plugins.json is only read), the changelog delta, then one JSON status line and a human summary. `--check` only compares versions. The DevSwarm store sweeps and the settings migration still run by the plugin's own update.js --post-pull-only and are merged into the status."
+value = { args = "[--check] [--post-pull-only]", read_only = false, status = "implemented" }
+
+[cmd.install-codex]
+doc = "Install the anti-hall hooks for Codex (D81, lane L9b, the port of codex/install-codex.js): merge the generated hook registration into .codex/hooks.json (project, or --global for the home directory), replacing only anti-hall's own groups, and enable the hooks feature in config.toml. A changed file is copied to <file>.bak-<time> first; --dry-run writes nothing."
+value = { args = "[--global] [--dry-run] [--root <plugin dir>]", read_only = false, status = "implemented" }
