@@ -84,7 +84,7 @@ pub fn prune_stale(dir: &Path, keep: &Path) {
             return;
         }
     }
-    crate::discard::harmless(std::fs::write(&stamp, format!("{{\"lastSweep\":{}}}", now as u64))); // keep: a lost sweep stamp only repeats the sweep
+    crate::discard::harmless(crate::atomic::write(&stamp, format!("{{\"lastSweep\":{}}}", now as u64))); // keep: a lost sweep stamp only repeats the sweep
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let keep_name = keep.file_name().and_then(|n| n.to_str()).map(str::to_string);
     let full_prefix = format!("{prefix}-");

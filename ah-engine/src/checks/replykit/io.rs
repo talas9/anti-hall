@@ -107,7 +107,7 @@ pub fn prune_stale(dir: &Path, prefix: &str, keep: Option<&str>) {
             return;
         }
     }
-    crate::discard::harmless(std::fs::write(&stamp, format!("{{\"lastSweep\":{}}}", super::json::js_number(now)))); // keep: a lost sweep stamp only repeats the sweep
+    crate::discard::harmless(crate::atomic::write(&stamp, format!("{{\"lastSweep\":{}}}", super::json::js_number(now)))); // keep: a lost sweep stamp only repeats the sweep
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let full_prefix = format!("{prefix}-");
     for e in entries.flatten() {

@@ -239,7 +239,7 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
         let dir = format!("{home}/{}", defaults::text("codex_handover.state_dir"));
         if fsx::mkdir_p(&dir) {
             let body = json::stringify(&J::Obj(vec![("handoverFile".into(), J::Str(cand.file_path.clone())), ("ts".into(), J::Num(date::now_ms()))]));
-            crate::discard::logged("handover_resume_write", std::fs::write(format!("{dir}/{name}"), body));
+            crate::discard::logged("handover_resume_write", crate::atomic::write(format!("{dir}/{name}"), body));
         }
     }
     Ok(Some(Verdict::Advisory(msg::advisory_json(event, &ctx))))
