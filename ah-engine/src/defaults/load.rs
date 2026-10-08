@@ -61,6 +61,8 @@ pub struct Data {
     canon: HashMap<&'static str, String>,
     /// What the load fell back on, what to heal and what to keep as last-known-good.
     pub(super) report: Report,
+    /// [`files_print`] of the root, taken before the files were read (a change during the load makes the cache stale, not wrong).
+    print: String,
 }
 
 impl Data {
@@ -502,7 +504,7 @@ fn finish(root: &Path, picks: Vec<Pick>, prev: Option<&Data>) -> Result<Data, De
     }
     crate::hookcfg::check_shipped(&entries).map_err(|e| DefaultsError::new("hooks", "", "", e))?;
     check_rows(root, &entries).map_err(|e| DefaultsError::new("dispatch", "", "", e))?;
-    Ok(Data { root: root.to_path_buf(), entries: Box::leak(entries.into_boxed_slice()), index, canon, report: Report::default() })
+    Ok(Data { root: root.to_path_buf(), entries: Box::leak(entries.into_boxed_slice()), index, canon, report: Report::default(), print: String::new() })
 }
 
 /// Read and validate the defaults of the plugin at `root`, falling back per file and per setting to the last-known-good
@@ -513,6 +515,7 @@ pub fn load(root: &Path, prev: Option<&Data>) -> Result<Data, DefaultsError> {
 
 /// [`load`] with the last-known-good base directory given (`None`: no last-known-good layer).
 pub fn load_from(root: &Path, lkg_base: Option<&Path>, prev: Option<&Data>) -> Result<Data, DefaultsError> {
+    let print = files_print(root);
     let d = Dirs::new(root, lkg_base);
     let kinds: HashMap<&str, Kind> = super::generated::REQUIRED.iter().copied().collect();
     let mut first: Option<DefaultsError> = None;
@@ -530,6 +533,7 @@ pub fn load_from(root: &Path, lkg_base: Option<&Path>, prev: Option<&Data>) -> R
                     report.clean.clear();
                 }
                 data.report = report;
+                data.print = print;
                 return Ok(data);
             }
             Err(e) => {
@@ -825,12 +829,12 @@ pub fn fingerprint(root: &Path) -> Fingerprint {
 
 // ---- the snapshot cache ---------------------------------------------------------------------------------------------
 
-const MAGIC: &str = "AHDC1";
+const MAGIC: &str = "AHDC2";
 const END: &str = "AHDC-END";
 
 /// Write `data` to `path` atomically (a temporary file in the same directory, then a rename). Entries are sorted by key.
 pub fn write_cache(data: &Data, path: &Path) -> std::io::Result<()> {
-    let mut out = format!("{MAGIC}\t{}\t{}\n", env!("CARGO_PKG_VERSION"), data.root.display());
+    let mut out = format!("{MAGIC}\t{}\t{}\t{}\n", env!("CARGO_PKG_VERSION"), data.print, data.root.display());
     for (key, e) in &data.index {
         let mut o = serde_json::Map::new();
         o.insert("v".into(), e.value.to_json());
@@ -858,12 +862,32 @@ pub fn write_cache(data: &Data, path: &Path) -> std::io::Result<()> {
     })
 }
 
+/// The fingerprint of the files a snapshot of `root` is built from (the edited and the pristine defaults: path, size,
+/// modification time and inode of each, see [`fingerprint`]), as a short hex string. A cache whose fingerprint differs
+/// is stale: the files changed while no load rewrote it (an edit with the daemon down). Stat-based rather than a hash of
+/// the contents: it costs the thin client a few dozen `stat`s per call instead of reading every file, which is what the
+/// cache exists to avoid; an atomic replace changes the inode and an in-place edit the size or modification time.
+pub fn files_print(root: &Path) -> String {
+    let mut fp = fingerprint(root);
+    fp.push((root.join(bootstrap::PRISTINE_DIR), None));
+    if let Ok(rd) = std::fs::read_dir(root.join(bootstrap::PRISTINE_DIR)) {
+        let mut items: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        items.sort();
+        for p in items {
+            let m = std::fs::metadata(&p).ok().and_then(|m| Some((m.modified().ok()?, m.len(), m.ino())));
+            fp.push((p, m));
+        }
+    }
+    let d = ring::digest::digest(&ring::digest::SHA256, format!("{fp:?}").as_bytes());
+    d.as_ref()[..12].iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// The root a cache file records, without reading the rest of it.
 pub fn cache_root(path: &Path) -> Option<PathBuf> {
     let mut head = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(std::fs::File::open(path).ok()?), &mut head).ok()?;
-    let mut f = head.trim_end_matches('\n').splitn(3, '\t');
-    (f.next()? == MAGIC && f.next()? == env!("CARGO_PKG_VERSION")).then(|| PathBuf::from(f.next().unwrap_or("")))
+    let mut f = head.trim_end_matches('\n').splitn(4, '\t');
+    (f.next()? == MAGIC && f.next()? == env!("CARGO_PKG_VERSION")).then(|| f.nth(1).map(PathBuf::from).unwrap_or_default())
 }
 
 /// The client's view of the defaults: the cache file, with a line index, parsed one key at a time.
@@ -876,16 +900,28 @@ pub struct Lazy {
 }
 
 impl Lazy {
-    /// Read the cache at `path`. `None` unless it is complete, written by this engine version and (when `root` is given) for that root.
+    /// Read the cache at `path`. `None` unless it is complete, written by this engine version (when `root` is given) for that
+    /// root, and from files that have not changed since ([`files_print`]).
     pub fn open(path: &Path, root: Option<&Path>) -> Option<Lazy> {
+        Lazy::read(path, root, true)
+    }
+
+    /// [`Lazy::open`] without the freshness checks (root and file fingerprint): the last validated values, for the few
+    /// that must be known when the files no longer load (where the event log is).
+    pub fn open_stale(path: &Path) -> Option<Lazy> {
+        Lazy::read(path, None, false)
+    }
+
+    fn read(path: &Path, root: Option<&Path>, fresh: bool) -> Option<Lazy> {
         let text = std::fs::read_to_string(path).ok()?;
         let (head, rest) = text.split_once('\n')?;
-        let mut f = head.splitn(3, '\t');
+        let mut f = head.splitn(4, '\t');
         if f.next()? != MAGIC || f.next()? != env!("CARGO_PKG_VERSION") {
             return None;
         }
+        let print = f.next()?;
         let cached_root = PathBuf::from(f.next()?);
-        if root.is_some_and(|r| r != cached_root) || !rest.ends_with(&format!("\n{END}\n")) {
+        if !rest.ends_with(&format!("\n{END}\n")) || (fresh && (root.is_some_and(|r| r != cached_root) || print != files_print(&cached_root))) {
             return None;
         }
         let base = head.len() + 1;
@@ -945,6 +981,28 @@ impl Lazy {
     pub(super) fn all(&self) -> &'static [&'static Entry] {
         let all: Vec<&'static Entry> = (0..self.lines.len()).filter_map(|i| self.find(&self.text[self.lines[i].0..self.lines[i].1])).collect();
         Box::leak(all.into_boxed_slice())
+    }
+}
+
+/// A daemon that cannot start because no defaults load is a crash the crash-loop breaker and the health signal must count,
+/// but where the event log lives is itself a setting. The last validated snapshot cache still has it: write a `start_fail`
+/// event (a `health.crashy_kinds` kind) and the failure record through those values. Without a cache, `defaults.error`
+/// ([`report_unavailable`]) is all there is.
+pub fn log_start_failure(e: &DefaultsError) {
+    let (Some(state), Some(cache)) = (bootstrap::state_dir(), bootstrap::cache_path()) else { return };
+    let Some(snap) = Lazy::open_stale(&cache) else { return };
+    let text = |k: &str| snap.find(k).and_then(|e| e.value.as_str());
+    let clean = |s: &str| s.chars().map(|c| if c == '\n' || c == '\t' || c == '\r' { ' ' } else { c }).collect::<String>();
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let (code, detail) = (format!("defaults_{}", e.code), clean(&e.to_string()));
+    if let Some(log) = text("files.log")
+        && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(state.join(log))
+    {
+        crate::discard::harmless(f.write_all(format!("{now}\tstart_fail\t{code}\t{detail}\n").as_bytes())); // keep: defaults.error and stderr still say it
+    }
+    if let Some(failure) = text("files.failure") {
+        let v = serde_json::json!({"ts": now as u64, "class": "permanent", "kind": "start_fail", "code": code, "hint": "", "reason": detail});
+        crate::discard::harmless(std::fs::write(state.join(failure), v.to_string())); // keep: the event line above is the record that counts
     }
 }
 
@@ -1210,5 +1268,23 @@ mod tests {
         let d = load_from(&root, None, None).unwrap();
         assert_eq!((d.report.notes.len(), d.report.notes[0].key.as_str(), d.report.notes[0].code), (1, "daemon.workers", "type"), "still falls back, named");
         crate::discard::harmless(std::fs::remove_dir_all(&root));
+    }
+
+    // ---- the snapshot cache -----------------------------------------------------------------------------------------------
+
+    #[test]
+    fn the_client_cache_is_stale_once_a_defaults_file_changes() {
+        // review P2 #5: the cache was keyed on version and root only, so an edit made while no load rewrote it (the daemon
+        // down) kept being served
+        let root = plugin_with_pristine("cachefp");
+        let d = load_from(&root, None, None).unwrap();
+        let cache = root.with_extension("state").join("defaults.cache");
+        write_cache(&d, &cache).unwrap();
+        assert!(Lazy::open(&cache, Some(&root)).is_some(), "a fresh cache is used");
+        set_int(&root, "engine.toml", "daemon.queue", 17); // same size as 16: an edit the length alone does not show
+        assert!(Lazy::open(&cache, Some(&root)).is_none(), "a cache older than the files is not used");
+        assert!(Lazy::open(&cache, None).is_none());
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
+        crate::discard::harmless(std::fs::remove_dir_all(cache.parent().unwrap()));
     }
 }

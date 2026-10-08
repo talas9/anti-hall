@@ -160,6 +160,9 @@ pub fn run(args: &[String]) -> i32 {
     }
     if let Err(e) = defaults::init() {
         defaults::report_unavailable(&e);
+        if p.command == "serve" {
+            defaults::log_start_failure(&e);
+        }
         // nothing can be answered without settings: a hook defers to Node through the wrapper, anything else is a plain failure
         return if hook { crate::bootstrap::UNAVAILABLE_EXIT } else { 70 };
     }

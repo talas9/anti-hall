@@ -337,6 +337,11 @@ pub fn report_unavailable(e: &DefaultsError) {
     load::report_unavailable(e);
 }
 
+/// Log a daemon that could not start for want of defaults as a crash (see `load::log_start_failure`).
+pub fn log_start_failure(e: &DefaultsError) {
+    load::log_start_failure(e);
+}
+
 /// The snapshot, loading it on first use. Panics (a bug) when nothing can be loaded: entry points call [`init`] first and
 /// answer "unavailable" instead of getting here.
 fn backend() -> Arc<Backend> {

@@ -166,3 +166,30 @@ fn config_heal_writes_missing_settings_into_a_checkout_the_automatic_heal_leaves
     assert!(String::from_utf8_lossy(&o.stdout).contains("daemon.queue"));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&e.dir));
 }
+
+/// Review P2 #5: a daemon that cannot start because no defaults layer loads is logged as a crash (`start_fail`), through the
+/// last validated snapshot cache, so the crash-loop breaker and the health signal count it.
+#[test]
+fn a_daemon_that_cannot_load_defaults_logs_a_crash_event() {
+    let e = Env::new("startfail");
+    let (code, err) = e.hook(); // a good load leaves the snapshot cache
+    assert_eq!(code, 0, "{err}");
+    for p in ["engine/defaults/engine.toml", "engine/defaults.pristine/engine.toml"] {
+        e.corrupt(&e.plugin().join(p));
+    }
+    for c in std::fs::read_dir(e.state().join("defaults.lkg")).unwrap().flatten() {
+        e.corrupt(&c.path().join("engine.toml"));
+    }
+    let o = Command::new(BIN)
+        .arg("serve")
+        .env("HOME", e.dir.join("home"))
+        .env("AH_ENGINE_DIR", e.state())
+        .env("AH_ENGINE_PLUGIN_ROOT", e.plugin())
+        .output()
+        .unwrap();
+    assert_ne!(o.status.code(), Some(0), "no defaults: the daemon does not start");
+    let log = e.events();
+    assert!(log.contains("\tstart_fail\tdefaults_parse\t"), "a crash event the breaker counts: {log}");
+    assert!(std::fs::read_to_string(e.state().join("failure.json")).unwrap().contains("start_fail"));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&e.dir));
+}
