@@ -1,0 +1,14 @@
+'use strict';
+// Runs ONE devswarm.js verb the way `node scripts/devswarm.js <argv>` does (same run(), same main() rendering), with
+// Date.now() pinned by AH_ENGINE_MESH_NOW_MS (ctx.now), and prints {"code", "stdout"} as JSON on fd 1.
+// usage: AH_ENGINE_MESH_NOW_MS=<ms> node verb.js <argv...>   (HOME and cwd are the caller's: run it in a scratch home)
+const path = require('path');
+const os = require('os');
+const cli = require(path.join(__dirname, '..', '..', '..', 'plugins', 'anti-hall', 'scripts', 'devswarm.js'));
+if (os.homedir() === require('os').userInfo().homedir) { process.stderr.write('refusing: HOME is the real home\n'); process.exit(2); }
+const argv = process.argv.slice(2);
+const now = Number(process.env.AH_ENGINE_MESH_NOW_MS);
+const { code, result } = cli.run(argv, Number.isFinite(now) ? { now } : {});
+const isSendQuiet = argv[0] === 'send' && argv.includes('--quiet');
+const out = isSendQuiet && !argv.includes('--json') ? cli.sendQuietLine(result) : JSON.stringify(result);
+process.stdout.write(JSON.stringify({ code, stdout: out + '\n' }) + '\n');

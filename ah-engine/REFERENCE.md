@@ -27,7 +27,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|mode> [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` | no | implemented | Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, and `mode <integration> on\|shadow\|off`; `test` and the review verbs stay in the Node script. |
 | `jev_sweep` | `` | no | implemented | The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions (plan, transcript, git, CI, mesh) and runs them through the evidence gate, writing its telemetry; takes no arguments and reads the home directory from the environment. |
 | `maintain` | `` | no | implemented | Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report. |
-| `mesh` | `<roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | implemented | Read a repo's DevSwarm store (D45 stage S0), read-only: `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node. The store is opened read-only and never created; a journal-backed store is refused (Node owns it). |
+| `mesh` | `<roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>] \| <devswarm.js argv>` | no | implemented | DevSwarm mesh store (D45). With `--db`: the read-only S0 reader (stage S0): `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node; the store is opened read-only and never created, and a journal-backed store is refused. Without `--db` (stage 2): the words after `mesh` are a `scripts/devswarm.js` argv, run per the `mesh.engine_writes` switch: off (default) hands it to Node; shadow lets Node act and replays it on a scratch copy of the store, logging the comparison (mesh_write.shadow_log); on answers `send`, `mesh read`, `mesh history` and `roster --ack` in the engine (same output, exit code, store rows and locks as Node) and hands everything it cannot reproduce exactly, and every other verb, to Node. |
 | `metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` | yes | implemented | Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one resolution (minute, hour), optionally for the last --since seconds. |
 | `migrate` | `[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state, gate-intent and auto-archive state forward-migrations, the settings.json migration from the legacy jev.json and the stored plugin options, the Jev triage cache repair, the lock scratch sweep and the retention sweeps, with Node's report; `--dry-run` previews and writes nothing. Steps that need the DevSwarm stores are left to the Node doctor while DevSwarm state is present. |
 | `phase` | `<set\|advance\|step\|agents\|update\|clear> [args]` | no | implemented | Write or update the phase state the status line's phase bar shows (L9a, the port of statusline/phase.js): `set <code> <desc> <done> <total>`, `advance [n]`, `step <text>`, `agents <n>`, `update key=value ...`, `clear`; the state is ~/.anti-hall/phase-state.json. Fails open. |
@@ -4035,12 +4035,198 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh.backend_sqlite` | `sqlite` |  |  | The marker text of a SQLite-backed store. Any other marker (the journal backend) means Node owns the store and the reader refuses it. |
 | `mesh.busy_timeout_ms` | `3000` |  |  | How long a read waits for a SQLite lock held by a Node writer, in milliseconds; the same 3 s Node's store uses. |
 | `mesh.cache_kib` | `256` |  |  | SQLite page cache for one open store, in KiB. Keeps one open reader to well under a megabyte of resident memory (D45 section 7). |
+| `mesh.db_flag` | `--db` |  |  | The flag that selects the read-only S0 reader (`ah-engine mesh <roster\|unread\|read\|dump> --db <file>`); without it the words after `mesh` are a devswarm.js argv. |
+| `mesh.engine_writes` | `off` |  |  | Who runs the mesh verbs that write the store (`ah-engine mesh send\|mesh read\|mesh history\|roster --ack`): off (Node, the engine only forwards), shadow (Node acts; the engine replays each call on a scratch copy and logs whether it would have done the same, in mesh_write.shadow_log) or on (the engine acts where it reproduces Node exactly, Node elsewhere). Set it in settings.json (`mesh.engine_writes`) or the engine's config.toml. |
+| `mesh.engine_writes_modes` | `off, shadow, on` |  |  | The words of mesh.engine_writes, in this order: off, shadow, on. Anything else reads as off. |
 | `mesh.js_safe_int` | `9007199254740991` |  |  | The largest integer JavaScript represents exactly (2^53 - 1). Node's sqlite binding throws on a larger value, so the reader fails the same way instead of rounding, which keeps the two readers byte-equal. |
 | `mesh.last_default` | `5` |  |  | How many of a workspace's newest messages `mesh read --last` returns when no count is given. |
 | `mesh.last_max` | `100` |  |  | The most messages `mesh read --last` returns whatever count is asked for; the reader never holds more message bodies than this at once. |
 | `mesh.missing_table_error` | `no such table` |  |  | Lower-cased text of the SQLite error for a table the store does not have yet (an older Node schema); a reader that meets it answers with no rows, as Node does. |
 | `mesh.preview_chars` | `120` |  |  | Characters of a pending question's body the reader returns as its preview; the same 120 Node's PREVIEW_MAX keeps. |
 | `mesh.read_byte_cap` | `4194304` |  |  | Most message-body bytes one `mesh read` call prints before it stops and reports where to resume (D45 section 7: bodies are never cached and a batch is capped). |
+
+### mesh_write.toml / env
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `env.mesh_now` | `AH_ENGINE_MESH_NOW_MS` |  |  | Pins `Date.now()` of an `ah-engine mesh` verb, in epoch milliseconds (the parity tests pin Node's `ctx.now` the same way). Never set in production. |
+
+### mesh_write.toml / mesh_write
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mesh_write.action_mesh_history` | `mesh-history` |  |  | `action` of a mesh history result. |
+| `mesh_write.action_mesh_read` | `mesh-read` |  |  | `action` of a mesh read result. |
+| `mesh_write.action_send` | `send` |  |  | `action` of a send result. |
+| `mesh_write.alias_file` | `sender-aliases.json` |  |  | The sender alias map under the DevSwarm state directory (devswarm-sender-alias.js). |
+| `mesh_write.alias_key` | `aliases` |  |  | The object of that file holding the aliases. |
+| `mesh_write.allowed_urgency` | `low, normal, high, urgent` |  |  | send's urgency words (Node's ALLOWED_URGENCY). |
+| `mesh_write.app_col_builder_type` | `builderType` |  |  | The `builders` type column. |
+| `mesh_write.app_col_worktree` | `worktreePath` |  |  | The `builders` worktree column. |
+| `mesh_write.app_core_columns` | `id, isActive` |  |  | The `builders` columns without which Node's app snapshot is null. |
+| `mesh_write.app_db_linux` | `DevSwarm/devswarm.db` |  |  | The DevSwarm app database under the config directory on Linux. |
+| `mesh_write.app_db_macos` | `Library/Application Support/DevSwarm/devswarm.db` |  |  | The DevSwarm app database under the home directory on macOS. |
+| `mesh_write.app_db_off` | `off` |  |  | Its disabling value. |
+| `mesh_write.backend_journal` | `journal` |  |  | The marker text of Node's journal backend; a store pinned to it is Node's alone. |
+| `mesh_write.boolean_only_flags` | `9 items` |  |  | Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS). |
+| `mesh_write.broadcast_partition` | `*mesh-broadcast*` |  |  | The shared partition every broadcast and heartbeat row lands in (Node's BROADCAST_PARTITION_ID). |
+| `mesh_write.builder_type_primary` | `primary` |  |  | The builder type of a Primary checkout. |
+| `mesh_write.busy_retries` | `5` |  |  | Attempts of a write that meets SQLITE_BUSY after the busy timeout (Node's SQLITE_BUSY_MAX_RETRIES). |
+| `mesh_write.busy_retry_base_ms` | `20` |  |  | Fixed part of the sleep between those attempts, in milliseconds (Node: 20). |
+| `mesh_write.busy_retry_jitter_ms` | `40` |  |  | Random part of that sleep, in milliseconds (Node: up to 40). |
+| `mesh_write.busy_text` | `database is locked` |  |  | Lower-cased text of a SQLite busy error (Node's isSqliteBusyError also matches it). |
+| `mesh_write.claude_dir` | `.claude` |  |  | The harness's directory under the home directory. |
+| `mesh_write.commondir_file` | `commondir` |  |  | The file of a linked worktree's git directory naming the common directory. |
+| `mesh_write.dir_anti_hall` | `.anti-hall` |  |  | anti-hall's directory under the home directory. |
+| `mesh_write.dir_devswarm` | `devswarm` |  |  | The DevSwarm state directory under it. |
+| `mesh_write.dir_heartbeats` | `heartbeats` |  |  | The heartbeats directory under the DevSwarm state directory. |
+| `mesh_write.dir_locks` | `locks` |  |  | The locks directory under the DevSwarm state directory. |
+| `mesh_write.dir_plans` | `plans` |  |  | The plans directory under the DevSwarm state directory (devswarm-plan.js). |
+| `mesh_write.dir_send_receipts` | `send-receipts` |  |  | The send receipts directory under the DevSwarm state directory (one JSON file per send, by UTC day). |
+| `mesh_write.dir_state` | `state` |  |  | anti-hall's state directory under its home directory. |
+| `mesh_write.dir_store` | `store` |  |  | The per-repo stores directory under the DevSwarm state directory. |
+| `mesh_write.dir_workspaces` | `workspaces` |  |  | The workspace descriptors directory under the DevSwarm state directory. |
+| `mesh_write.dot_git` | `.git` |  |  | A checkout's git entry. |
+| `mesh_write.env_app_db` | `ANTIHALL_DEVSWARM_APP_DB` |  |  | The variable that points at (or, with `off`, disables) the DevSwarm app database. |
+| `mesh_write.env_builder_id` | `DEVSWARM_BUILDER_ID` |  |  | The variable DevSwarm sets to a workspace's builder id. |
+| `mesh_write.env_home` | `HOME` |  |  | The home directory variable (os.homedir() on POSIX). |
+| `mesh_write.env_jev` | `ANTIHALL_JEV` |  |  | The variable that forces Jev on (1) or off (0). |
+| `mesh_write.env_off_value` | `0` |  |  | Its off value. |
+| `mesh_write.env_on_value` | `1` |  |  | Its on value. |
+| `mesh_write.env_project_dir` | `CLAUDE_PROJECT_DIR` |  |  | The harness's project directory variable (projectCwdFor's last fallback). |
+| `mesh_write.env_session_id` | `CLAUDE_CODE_SESSION_ID` |  |  | The variable naming the caller's session (the Primary seat guard reads it). |
+| `mesh_write.env_store_backend` | `ANTIHALL_DEVSWARM_STORE_BACKEND` |  |  | The variable that forces Node's store backend (ANTIHALL_DEVSWARM_STORE_BACKEND). |
+| `mesh_write.env_xdg_config` | `XDG_CONFIG_HOME` |  |  | The XDG config directory variable (Linux). |
+| `mesh_write.exit_no_node` | `127` |  |  | Exit code when Node's CLI cannot be found or started. |
+| `mesh_write.exit_signal_base` | `128` |  |  | A Node child killed by signal N exits as this plus N (the shell convention). |
+| `mesh_write.field_enabled` | `enabled` |  |  | Jev's on/off field. |
+| `mesh_write.field_owner_key` | `ownerKey` |  |  | A descriptor's owner store key (a re-home candidate when it is the legacy hash bucket). |
+| `mesh_write.field_session_id` | `sessionId` |  |  | A descriptor's session field. |
+| `mesh_write.field_worktree_path` | `worktreePath` |  |  | A descriptor's worktree field. |
+| `mesh_write.flag_ack` | `ack` |  |  | roster's consume flag. |
+| `mesh_write.flag_answers` | `answers` |  |  | send's reply-correlation flag. |
+| `mesh_write.flag_broadcast` | `broadcast` |  |  | send's broadcast flag. |
+| `mesh_write.flag_cc_primary` | `cc-primary` |  |  | send's copy-the-Primary flag (Node only). |
+| `mesh_write.flag_dash_h` | `-h` |  |  | The `-h` word. |
+| `mesh_write.flag_from` | `from` |  |  | send's redundant sender declaration. |
+| `mesh_write.flag_h` | `h` |  |  | Short help flag name (`--h`). |
+| `mesh_write.flag_help` | `help` |  |  | Help flag name. |
+| `mesh_write.flag_json` | `json` |  |  | Raw JSON output flag. |
+| `mesh_write.flag_last` | `last` |  |  | mesh read's newest-N flag. |
+| `mesh_write.flag_message` | `message` |  |  | send's body flag. |
+| `mesh_write.flag_message_file` | `message-file` |  |  | send's body-from-file flag. |
+| `mesh_write.flag_message_stdin` | `message-stdin` |  |  | send's body-from-stdin flag. |
+| `mesh_write.flag_peek` | `peek` |  |  | mesh read's non-consuming flag. |
+| `mesh_write.flag_question` | `question` |  |  | send's needs-reply flag. |
+| `mesh_write.flag_quiet` | `quiet` |  |  | send's one-line output flag. |
+| `mesh_write.flag_seq` | `seq` |  |  | mesh read's explicit baseline flag. |
+| `mesh_write.flag_since` | `since` |  |  | mesh read's time filter (Node only). |
+| `mesh_write.flag_to` | `to` |  |  | send's recipient flag. |
+| `mesh_write.flag_to_primary` | `to-primary` |  |  | send's Primary flag. |
+| `mesh_write.flag_type` | `type` |  |  | send's type flag (`--type broadcast`). |
+| `mesh_write.flag_urgency` | `urgency` |  |  | send's urgency flag. |
+| `mesh_write.git_config_file` | `config` |  |  | A git directory's config file. |
+| `mesh_write.git_core_section` | `[core]` |  |  | The config section holding `worktree`. |
+| `mesh_write.git_modules_dir` | `modules` |  |  | Where a superproject keeps absorbed submodule git directories. |
+| `mesh_write.git_worktree_key` | `worktree` |  |  | The `core.worktree` key (an absorbed submodule's git directory carries it; the engine then defers to Node). |
+| `mesh_write.gitdir_key` | `gitdir:` |  |  | The key of a `.git` file pointing at its git directory. |
+| `mesh_write.heal_healthy` | `daemonHealthy` |  |  | The self-heal field of a healthy daemon. |
+| `mesh_write.heal_no_worktree` | `no-worktree` |  |  | daemonWarning when the cwd is not in a checkout. |
+| `mesh_write.heal_stale` | `stale` |  |  | daemonWarning when the ingest daemon looks stale or missing. |
+| `mesh_write.heal_warning` | `daemonWarning` |  |  | The self-heal field naming a daemon problem. |
+| `mesh_write.history_seq` | `0` |  |  | The baseline `mesh history` reads from. |
+| `mesh_write.id_lock_boot_slop_s` | `5` |  |  | Two boot times this close are one boot (lock.js BOOT_SLOP_S). |
+| `mesh_write.id_lock_budget_ms` | `2000` |  |  | How long one acquire keeps retrying a lock held by a live, fresh holder before the verb reports lockBusy (Node: 2000). |
+| `mesh_write.id_lock_reclaim_stale_ms` | `5000` |  |  | A takeover marker (`<lock>.reclaim`) older than this is abandoned (lock.js RECLAIM_STALE_MS). |
+| `mesh_write.id_lock_release_step_ms` | `10` |  |  | Pause between those attempts (lock.js RELEASE_SIDECAR_STEP_MS). |
+| `mesh_write.id_lock_release_tries` | `5` |  |  | Attempts a release makes to take the takeover marker (lock.js RELEASE_SIDECAR_TRIES). |
+| `mesh_write.id_lock_stale_ms` | `900000` |  |  | A lock older than this is taken over whoever holds it (Node's LOCK_STALE_MS, 15 minutes). |
+| `mesh_write.id_lock_step_ms` | `25` |  |  | Pause between those retries, in milliseconds (Node: 25). |
+| `mesh_write.ingest_beat_prefix` | `ingest-` |  |  | File-name prefix of a project's ingest-daemon heartbeat (ingest-health.js ingestHeartbeatPath). |
+| `mesh_write.ingest_beat_stale_ms` | `180000` |  |  | An ingest heartbeat older than this is not fresh (ingest-health.js HEARTBEAT_STALE_MS, 3 minutes). |
+| `mesh_write.ingest_lock_prefix` | `ingest-project-` |  |  | File-name prefix of a project's ingest-daemon lock (ingest-health.js ingestProjectLockPath). |
+| `mesh_write.jev_file` | `jev.json` |  |  | Jev's own config file under anti-hall's directory (jev-triage.js jevConfigPath). |
+| `mesh_write.jev_pending_file` | `jev-triage-pending.json` |  |  | Jev triage's pending labeled messages under anti-hall's state directory (jev-triage.js pendingPath). |
+| `mesh_write.js_null` | `null` |  |  | `String(null)`. |
+| `mesh_write.js_undefined` | `undefined` |  |  | `String(undefined)`. |
+| `mesh_write.json_suffix` | `.json` |  |  | File-name suffix of a JSON record. |
+| `mesh_write.kind_child` | `child` |  |  | Sender identity kind: a child workspace's registered id. |
+| `mesh_write.kind_declared` | `declared` |  |  | Caller identity kind: DEVSWARM_BUILDER_ID was trusted. |
+| `mesh_write.kind_deleted` | `deleted` |  |  | Context kind of a path that does not exist. |
+| `mesh_write.kind_linked` | `linked-worktree` |  |  | Context kind of a linked worktree. |
+| `mesh_write.kind_main` | `main` |  |  | Context kind of a main checkout. |
+| `mesh_write.kind_non_git` | `non-git` |  |  | Context kind of a path outside any checkout. |
+| `mesh_write.kind_resolved` | `resolved` |  |  | Caller identity kind: the cwd is a checkout. |
+| `mesh_write.kind_submodule_prefix` | `submodule-in-` |  |  | Prefix of a submodule context kind. |
+| `mesh_write.kind_unresolvable` | `unresolvable` |  |  | Caller identity kind: neither (a hash of the raw cwd). |
+| `mesh_write.lock_suffix` | `.lock` |  |  | File-name suffix of a lock file. |
+| `mesh_write.max_ppid_hops` | `6` |  |  | Parent hops the reader-nonce walk takes looking for a harness session record (reader-identity.js MAX_PPID_HOPS). |
+| `mesh_write.max_submodule_hops` | `32` |  |  | Superproject hops a resolution takes (identity.js MAX_SUBMODULE_HOPS). |
+| `mesh_write.mesh_hash_prefix` | `mesh:` |  |  | Prefix of a store-direct mesh message's dedupe hash (Node's meshMessageHash namespace). |
+| `mesh_write.mesh_id_hex` | `8` |  |  | Hex characters of the worktree hash in a meshId (and of hashFromWorkspaceId). |
+| `mesh_write.messages_added_columns` | `9 items` |  |  | The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`. |
+| `mesh_write.mode_on` | `on` |  |  | The `mode` of an on-mode record in the shadow log. |
+| `mesh_write.mode_shadow` | `shadow` |  |  | The `mode` of a shadow record in the shadow log. |
+| `mesh_write.monitor_failure_threshold` | `3` |  |  | Consecutive monitor failures that make a live ingest daemon FAILING (doctor-repair.js MONITOR_FAILURE_FAIL_THRESHOLD). |
+| `mesh_write.month_names` | `12 items` |  |  | Month abbreviations of that start time, January first (what Date.parse reads). |
+| `mesh_write.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (the unit conversion of that setting). |
+| `mesh_write.msg_mesh_read_hint` | `consumed broadcasts stay re-readable without moving any cursor: `mesh history...` |  |  | `hint` of a consuming mesh read. |
+| `mesh_write.msg_no_node_cli` | `ah-engine mesh: cannot find scripts/devswarm.js (no plugin root); run the ver...` |  |  | stderr line when the plugin root (and so Node's CLI) is unknown. |
+| `mesh_write.msg_node_exec_failed` | `ah-engine mesh: could not start node: {err}` |  |  | stderr line when starting Node failed. Placeholder: {err}. |
+| `mesh_write.msg_not_verified` | `send appended a row (hash {hash}) but the readback against partition {partiti...` |  |  | `error` of that send. Placeholders: {hash}, {partition} (JSON-quoted). |
+| `mesh_write.msg_registry_collision` | `[devswarm-store] upsertRegistry: id {id} already maps to worktree_path {exist...` |  |  | stderr line of a registry upsert refused by the id-collision guard. Placeholders: {id}, {existing}, {incoming} (JSON-quoted). |
+| `mesh_write.mtype_broadcast` | `broadcast` |  |  | The `mtype` of a broadcast (also `send --type broadcast`). |
+| `mesh_write.mtype_direct` | `direct` |  |  | The `mtype` of a direct message. |
+| `mesh_write.node_bin` | `node` |  |  | The Node binary the engine hands a verb to. |
+| `mesh_write.node_cli` | `scripts/devswarm.js` |  |  | Node's mesh CLI, relative to the plugin root. |
+| `mesh_write.nonce_prefix` | `h:` |  |  | Prefix of a reader nonce (`h:<pid>:<startMs>`). |
+| `mesh_write.on_native` | `native` |  |  | On-mode result: the engine answered the call itself. |
+| `mesh_write.primary_prefix` | `primary-` |  |  | Prefix of a worktree meshId (`primary-<hash>`). |
+| `mesh_write.ps_bin` | `ps` |  |  | The process-table tool the nonce walk runs, as Node does. |
+| `mesh_write.ps_lstart_args` | `-o, lstart=, -p` |  |  | Its arguments for one process's start time, followed by the pid (liveness.js processStartMs). |
+| `mesh_write.ps_ppid_args` | `-A, -o, pid=,ppid=` |  |  | Its arguments for the pid/parent table (reader-identity.js defaultPpidTable). |
+| `mesh_write.quiet_broadcast` | `(broadcast)` |  |  | The {to} of a broadcast in the quiet line. |
+| `mesh_write.quiet_fail` | `ok:false {why}` |  |  | `send --quiet` line of a failed send. Placeholder: {why}. |
+| `mesh_write.quiet_failed` | `send failed` |  |  | The {why} of a failed send with neither error nor reason. |
+| `mesh_write.quiet_ok` | `sent seq {seq} -> {to}, {bytes} bytes, ok` |  |  | `send --quiet` line of a delivered send. Placeholders: {seq}, {to}, {bytes}. |
+| `mesh_write.quiet_unknown` | `(unknown)` |  |  | The {to} of a send with no recipient in the quiet line. |
+| `mesh_write.reason_not_verified` | `send-not-verified` |  |  | `reason` of a send whose readback did not find the row. |
+| `mesh_write.repo_key_hex` | `6` |  |  | Hex characters of the common-dir hash in a repoKey. |
+| `mesh_write.repo_name_fallback` | `repo` |  |  | A repo name that sanitizes to nothing. |
+| `mesh_write.repo_name_max` | `40` |  |  | Length cap of a repo name in a repoKey (identity.js MAX_NAME_LEN). |
+| `mesh_write.send_lock_attempts` | `3` |  |  | Whole lock acquisitions a direct send tries before reporting lockBusy (Node's SEND_LOCK_RETRY_ATTEMPTS). |
+| `mesh_write.send_lock_max_shift` | `8` |  |  | Cap on the backoff exponent (a guard; Node's 3 attempts never reach it). |
+| `mesh_write.send_lock_retry_base_ms` | `150` |  |  | Backoff base between those attempts: base * 2^attempt plus up to base of jitter (Node's SEND_LOCK_RETRY_BASE_MS). |
+| `mesh_write.sessions_dir` | `sessions` |  |  | The harness's per-process session records under it (`<pid>.json`). |
+| `mesh_write.setting_monitor_no_ok_fail_min` | `4 entries` |  |  | Where devswarm.monitorNoOkFailMin is read from (minutes without a successful monitor poll before the daemon reads FAILING). |
+| `mesh_write.settings_file` | `settings.json` |  |  | anti-hall's settings file under its directory. |
+| `mesh_write.settings_jev_section` | `jev` |  |  | The settings section Jev reads. |
+| `mesh_write.shadow_backup_pages` | `1000000` |  |  | Pages per step of the store snapshot (SQLite online backup); large means one step. |
+| `mesh_write.shadow_backup_pause_ms` | `0` |  |  | Pause between snapshot steps, in milliseconds. |
+| `mesh_write.shadow_concurrent` | `concurrent` |  |  | Shadow result: something differs, but another writer added rows between the snapshot and Node's write (the seq can differ). |
+| `mesh_write.shadow_defer` | `defer` |  |  | Shadow result: the engine would have handed this call to Node (the reason says why). |
+| `mesh_write.shadow_dir` | `mesh-shadow` |  |  | Scratch directory (under the engine state directory) of one shadow replay; removed when it ends. |
+| `mesh_write.shadow_home` | `home` |  |  | The scratch home the replay writes its side files into (receipts), under that directory. |
+| `mesh_write.shadow_log` | `mesh-shadow.jsonl` |  |  | The shadow log, one JSON line per replayed call, under the engine state directory. |
+| `mesh_write.shadow_log_cap` | `2000` |  |  | Most characters of each side's stdout a mismatch record keeps. |
+| `mesh_write.shadow_match` | `match` |  |  | Shadow result: stdout, exit code and the written row all equal Node's. |
+| `mesh_write.shadow_mismatch` | `mismatch` |  |  | Shadow result: something differs and no other writer touched the store meanwhile. |
+| `mesh_write.shadow_no_store` | `no-store` |  |  | Defer reason when the project has no store file yet. |
+| `mesh_write.shadow_panic` | `panic` |  |  | Shadow result: the engine path panicked (caught; Node's result was unaffected). |
+| `mesh_write.store_file` | `devswarm.db` |  |  | File name of a per-repo store (`devswarm.db`). |
+| `mesh_write.synthetic_session_prefix` | `unclaimed:` |  |  | The same prefix as the routing code names it (SYNTHETIC_SESSION_PREFIX). |
+| `mesh_write.tmp_suffix` | `.tmp` |  |  | Suffix of a staged file before its rename. |
+| `mesh_write.unclaimed_prefix` | `unclaimed:` |  |  | Prefix of a session id that no real session claimed yet (the seat ignores it). |
+| `mesh_write.urgency_default` | `normal` |  |  | send's urgency when none is given. |
+| `mesh_write.value_required_flags` | `message, message-file` |  |  | Flags that always take the next word as their value (Node's VALUE_REQUIRED_FLAGS). |
+| `mesh_write.verb_help` | `help` |  |  | The help verb. |
+| `mesh_write.verb_history` | `history` |  |  | Its history subcommand. |
+| `mesh_write.verb_mesh` | `mesh` |  |  | The mesh verb. |
+| `mesh_write.verb_read` | `read` |  |  | Its read subcommand. |
+| `mesh_write.verb_roster` | `roster` |  |  | The roster verb (`roster --ack` is `mesh read`). |
+| `mesh_write.verb_send` | `send` |  |  | The send verb. |
+| `mesh_write.write_seq_column` | `write_seq` |  |  | The registry's per-row write counter column (Node's ensureRegistryWriteSeqColumn). |
+| `mesh_write.xdg_default` | `.config` |  |  | Its default under the home directory. |
 
 ### sibling_sweep.toml / sibling_sweep
 
