@@ -259,7 +259,7 @@ value = 2
 unit = "ms"
 
 [mcp_reaper.read_ms]
-doc = "How long to wait for a finished command's output after it exits."
+doc = "The least time to wait for a finished command's output after it exits; it may also use what is left of the command's timeout. Output that never arrives fails the command (never an empty listing)."
 value = 1000
 unit = "ms"
 

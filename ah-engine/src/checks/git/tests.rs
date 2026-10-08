@@ -293,3 +293,15 @@ mod jev_self_credit {
         assert!(m.contains("a gh pr/issue/release body or title appears to credit an AI assistant"), "{m}");
     }
 }
+
+/// A command that has exited keeps its output while a helper of it still holds the pipe past `git.child_read_ms`: Node's
+/// spawnSync collects until the pipe closes within its timeout, so an engine that gave up at `child_read_ms` read an empty
+/// output and dropped the git-audit advisory Node printed (the full gate's git_audit parity mismatches).
+#[test]
+fn a_finished_commands_output_survives_a_pipe_that_closes_after_child_read() {
+    let read = super::tables::tables().child_read;
+    let script = format!("printf out; sleep {} &", (read * 2).as_secs_f64());
+    let t = std::time::Instant::now();
+    let got = super::util::run_capture("/bin/sh", &["-c".to_string(), script], None, &HashMap::new(), &HashMap::new(), read * 20);
+    assert_eq!(got.as_deref(), Some("out"), "after {:?}", t.elapsed());
+}

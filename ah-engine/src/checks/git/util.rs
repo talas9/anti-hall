@@ -232,7 +232,12 @@ pub fn run_capture(
             }
         }
     };
-    let bytes = rx.recv_timeout(tables().child_read).unwrap_or_default();
+    // The output is collected until the pipe closes, within what is left of the command's own timeout (never less than
+    // `child_read`), as Node's spawnSync bounds the whole run by its timeout: a pipe that closes late after the exit (a
+    // helper of the command holds it, or a loaded machine delays the reader) must not turn a finished command's output
+    // into an empty one.
+    let left = timeout.saturating_sub(start.elapsed()).max(tables().child_read);
+    let bytes = rx.recv_timeout(left).unwrap_or_default();
     if !status.success() {
         return None;
     }

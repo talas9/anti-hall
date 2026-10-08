@@ -467,3 +467,24 @@ fn the_audit_log_stops_growing_past_its_bound() {
     assert_eq!(decide(&ended("other"), &st, &root, &sys), Verdict::Allow);
     assert_eq!(std::fs::metadata(dir.join("session-end-reaper.log")).unwrap().len(), big.len() as u64);
 }
+
+fn sh(script: &str, timeout_ms: u64) -> Run {
+    let sys = super::sys::RealSys::new(&crate::reqenv::RequestEnv::from_pairs(Vec::<(String, String)>::new()));
+    sys.run(&["/bin/sh".to_string(), "-c".to_string(), script.to_string()], timeout_ms, defaults::num("mcp_reaper.probe_max_bytes"))
+}
+
+/// A probe that has exited keeps its output while a helper of it still holds the pipe past `mcp_reaper.read_ms` (it is read
+/// within what is left of the timeout, as Node's spawnSync reads until the pipe closes).
+#[test]
+fn a_finished_probe_keeps_output_that_arrives_after_read_ms() {
+    let read = defaults::num("mcp_reaper.read_ms");
+    assert_eq!(sh(&format!("printf out; sleep {} &", read as f64 * 2.0 / 1000.0), read * 20), Run::Ok("out".into()));
+}
+
+/// Output that has not arrived by the deadline fails the probe; it is never an empty answer. An empty service-manager listing
+/// would mark no candidate as managed, so every one of them would be signalled.
+#[test]
+fn a_probe_whose_output_never_arrives_fails_instead_of_answering_empty() {
+    let read = defaults::num("mcp_reaper.read_ms");
+    assert_eq!(sh(&format!("sleep {} &", read as f64 * 3.0 / 1000.0), read), Run::Failed);
+}

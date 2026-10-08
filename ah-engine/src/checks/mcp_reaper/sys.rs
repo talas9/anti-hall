@@ -68,7 +68,11 @@ impl Sys for RealSys {
                 }
             }
         };
-        let bytes = rx.recv_timeout(defaults::millis("mcp_reaper.read_ms")).unwrap_or_default();
+        // The output is collected until the pipe closes, within what is left of the timeout (never less than `read_ms`). An
+        // output that did not arrive is a failed run, never an empty listing: an empty service-manager listing would leave
+        // every candidate unprotected.
+        let left = timeout.saturating_sub(start.elapsed()).max(defaults::millis("mcp_reaper.read_ms"));
+        let Ok(bytes) = rx.recv_timeout(left) else { return Run::Failed };
         if !status.success() {
             return Run::Failed;
         }

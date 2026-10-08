@@ -349,7 +349,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.chain_joiner` | `` -> `` |  |  | Separator between the aliases of a chain in a note. |
 | `git.check_summary` | `Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self...` |  |  | One-line description of the check for the generated reference. |
 | `git.child_poll_ms` | `1` |  | ms | Poll interval while a git child process runs. |
-| `git.child_read_ms` | `500` |  | ms | Time allowed to collect the output of a child process after it exits. |
+| `git.child_read_ms` | `500` |  | ms | The least time allowed to collect the output of a git child process after it exits; it may also use what is left of the command's own timeout (as Node's spawnSync does), so a late-closing pipe never empties a finished command's output. |
 | `git.commit_cluster_value_flags` | `mFCct` |  |  | Short commit flags that take a value inside a cluster (-m, -F, -C, -c, -t). |
 | `git.commit_creating` | `9 items` |  |  | Subcommands that create a commit, where self-credit and handover checks apply. |
 | `git.commit_hash_len` | `40` |  |  | Length of a full commit hash, used to shorten it in messages. |
@@ -3656,7 +3656,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.ps_line_re` | `^\s*(\d+)\s+(\d+)\s+(.*)$` |  |  | JavaScript regex source (case-sensitive) of one process listing line: pid, parent pid, command line. |
 | `mcp_reaper.ps_max_bytes` | `33554432` |  | bytes | The largest process listing accepted; a bigger one is treated as a failed listing and the sweep does nothing. |
 | `mcp_reaper.ps_timeout_ms` | `3000` |  | ms | How long the process listing may take before the sweep gives up and does nothing. |
-| `mcp_reaper.read_ms` | `1000` |  | ms | How long to wait for a finished command's output after it exits. |
+| `mcp_reaper.read_ms` | `1000` |  | ms | The least time to wait for a finished command's output after it exits; it may also use what is left of the command's timeout. Output that never arrives fails the command (never an empty listing). |
 | `mcp_reaper.reason_fields` | `reason, end_reason` |  |  | The payload fields that carry the reason, in order: the measured wire field first, the documented one as a fallback. |
 | `mcp_reaper.reason_launchd` | `launchd-managed` |  |  | The audit log reason for a candidate the macOS service manager owns. |
 | `mcp_reaper.reason_launchd_unverifiable` | `launchd-unverifiable` |  |  | The audit log reason for every candidate when the service-manager listing failed. |

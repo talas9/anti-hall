@@ -427,7 +427,7 @@ value = 1
 unit = "ms"
 
 [git.child_read_ms]
-doc = "Time allowed to collect the output of a child process after it exits."
+doc = "The least time allowed to collect the output of a git child process after it exits; it may also use what is left of the command's own timeout (as Node's spawnSync does), so a late-closing pipe never empties a finished command's output."
 value = 500
 unit = "ms"
 
