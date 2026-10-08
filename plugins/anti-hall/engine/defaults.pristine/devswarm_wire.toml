@@ -4,7 +4,7 @@
 # overridden in the `devswarm_wire` / `devswarm_rt` sections of settings.json.
 
 # ---- cutover: who runs each action ------------------------------------------------------------------------------------------
-# `engine` (default for the three automatic actions, owner 2026-10-08: the engine is always live) runs the action in the daemon.
+# `engine` (the default for auto-archive, owner 2026-10-08: the engine is always live) runs the action in the daemon; poke and escalate default to `node`.
 # `node` leaves it to the Node supervisor (the engine stands down and counts it). `off` runs it nowhere. When the engine owns an
 # action, the kit's go-live must stop the Node supervisor from also acting (see docs/AH-ENGINE.md, "DevSwarm cutover").
 
@@ -13,12 +13,12 @@ doc = "Who runs the automatic archive of finished workspaces: engine | node | of
 value = "engine"
 
 [devswarm_rt."act.poke.executor"]
-doc = "Who pokes a stale workspace (its descriptor's nudgeCommand): engine | node | off. Node has no per-action switch for this; with `engine` the Node supervisor must be off for the machine (ANTIHALL_DEVSWARM_SUPERVISOR=off) or run only as the non-acting witness in its scratch HOME."
-value = "engine"
+doc = "Who pokes a stale workspace (its descriptor's nudgeCommand): engine | node | off. Default node: Node has no per-action switch for this, and turning the whole supervisor off (ANTIHALL_DEVSWARM_SUPERVISOR=off) would also stop its retention and housekeeping, which the engine has not ported. It moves to engine once those duties are ported and the kit turns the supervisor off as a whole."
+value = "node"
 
 [devswarm_rt."act.escalate.executor"]
-doc = "Who escalates a stale workspace once its pokes are used up (its descriptor's escalateCommand, once): engine | node | off. Same Node-side switch as poke."
-value = "engine"
+doc = "Who escalates a stale workspace once its pokes are used up (its descriptor's escalateCommand, once): engine | node | off. Same reasoning and default as poke."
+value = "node"
 
 [devswarm_wire.executor_words]
 doc = "The words of the executor settings, in the order engine, node, off. Anything else reads as node (the engine stands down)."
@@ -308,3 +308,7 @@ doc = "How many characters of a workspace id stand in for a missing label in an 
 value = 8
 min = 1
 max = 64
+
+[devswarm_wire.check_script]
+doc = "The name of the plugin script (engine/logic/<name>.js) that decides the advisory."
+value = "devswarm-rt-advisory"
