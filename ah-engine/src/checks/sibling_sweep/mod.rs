@@ -128,6 +128,7 @@ fn log_row(t: &Tune, st: &Settings, row: &Value) {
             std::fs::create_dir_all(d)?;
         }
         if std::fs::metadata(&path).is_ok_and(|m| m.len() > t.num("sibling_sweep.log_max_bytes")) {
+            // an append-only log cut at its cap, as Node does (DECISIONS, atomic-write exceptions)
             std::fs::write(&path, "")?;
         }
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;

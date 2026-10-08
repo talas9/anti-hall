@@ -88,7 +88,7 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
     merged.set("available", J::Bool(available));
     merged.set("checkedAt", J::Num(date::now_ms()));
     merged.set("source", J::Str(defaults::text("codex_handover.avail_source").to_string()));
-    if std::fs::write(&path, crate::checks::jsport::json::stringify(&merged)).is_err() {
+    if crate::atomic::write(&path, crate::checks::jsport::json::stringify(&merged)).is_err() {
         return Ok(None);
     }
     let st = super::settings_of(env);

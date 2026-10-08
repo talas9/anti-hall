@@ -137,7 +137,7 @@ pub fn decide(st: &Settings) -> Option<Verdict> {
     let state = format!("{}/{}", st.home, defaults::text("fable_availability.state_file"));
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let wrote =
-        std::path::Path::new(&state).parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&state, state_json(found, now)).is_ok();
+        std::path::Path::new(&state).parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && crate::atomic::write(&state, state_json(found, now)).is_ok();
     if !wrote || found.available != Some(true) {
         return Some(Verdict::Allow);
     }

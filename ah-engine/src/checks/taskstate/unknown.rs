@@ -53,7 +53,7 @@ pub fn prune_stale(state_dir: &Path, prefix: &str, keep_file: &Path) {
     {
         return;
     }
-    crate::discard::harmless(std::fs::write(&stamp, format!("{{\"lastSweep\":{}}}", now as i64))); // keep: a lost sweep stamp only repeats the sweep
+    crate::discard::harmless(crate::atomic::write(&stamp, format!("{{\"lastSweep\":{}}}", now as i64))); // keep: a lost sweep stamp only repeats the sweep
     let Ok(entries) = std::fs::read_dir(state_dir) else { return };
     let full_prefix = format!("{prefix}-");
     for e in entries.flatten() {
@@ -111,7 +111,7 @@ pub fn unknown_note(tasks: &TaskMap, home: &str, session_id: &str, tag: &str) ->
     if last_hash == hash || last_n >= defaults::num("taskstate.unknown_max_notes") as f64 {
         return Ok(String::new());
     }
-    if std::fs::create_dir_all(&dir).is_err() || std::fs::write(&file, format!("{{\"hash\":\"{hash}\",\"n\":{}}}", last_n + 1.0)).is_err() {
+    if std::fs::create_dir_all(&dir).is_err() || crate::atomic::write(&file, format!("{{\"hash\":\"{hash}\",\"n\":{}}}", last_n + 1.0)).is_err() {
         return Ok(String::new());
     }
     prune_stale(&dir, prefix, &file);

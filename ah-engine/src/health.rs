@@ -57,29 +57,69 @@ fn event_line(kind: &str, code: &str, detail: &str) -> String {
     format!("{}\t{}\t{}\t{}\n", now_ms(), clean(kind), clean(code), clean(detail))
 }
 
-fn append_event_line(line: &str) -> bool {
-    let p = file(log_name());
-    if std::fs::metadata(&p).map(|m| m.len() > defaults::num("health.log_cap")).unwrap_or(false)
-        && let Ok(t) = std::fs::read_to_string(&p)
+/// The event log's lock file: appends hold it shared, the trim holds it exclusive, so a trim never drops a line another
+/// process appended between its read and its replace (review finding 9).
+fn log_lock(log: &std::path::Path) -> Option<std::fs::File> {
+    std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(crate::paths::lock_for(log)).ok()
+}
+
+fn flock(f: &std::fs::File, op: libc::c_int) -> bool {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `f` is an open file owned by the caller, so its descriptor is valid; flock takes only it and a flag.
+    unsafe { libc::flock(f.as_raw_fd(), op) == 0 }
+}
+
+/// Keep the last `health.log_keep_lines` lines once the log passes `health.log_cap`: written to a temporary file and renamed
+/// over the log under the exclusive lock (a crash leaves the old log or the new one, never a cut one). A trim already in
+/// progress elsewhere is left to finish.
+fn trim_log(p: &std::path::Path) {
+    if !std::fs::metadata(p).is_ok_and(|m| m.len() > defaults::num("health.log_cap")) {
+        return;
+    }
+    let Some(lock) = log_lock(p) else { return };
+    if !flock(&lock, libc::LOCK_EX | libc::LOCK_NB) {
+        return;
+    }
+    if let Ok(t) = std::fs::read_to_string(p)
+        && t.len() as u64 > defaults::num("health.log_cap")
     {
         let keep: Vec<&str> = t.lines().rev().take(defaults::num("health.log_keep_lines") as usize).collect::<Vec<_>>().into_iter().rev().collect();
-        crate::discard::harmless(std::fs::write(&p, keep.join("\n") + "\n")); // keep: best effort, fail-open
+        if let Err(e) = crate::atomic::write(p, keep.join("\n") + "\n") {
+            crate::discard::harmless(std::io::stderr().write_all(event_line("health", "log_trim_failed", &e.to_string()).as_bytes())); // keep: a closed pipe leaves nobody to tell
+        }
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        return f.write_all(line.as_bytes()).is_ok();
-    }
-    false
 }
 
-/// Append `ts<TAB>kind<TAB>code<TAB>detail`. The log is trimmed to its last half when it passes 64 KiB.
+fn append_event_line(line: &str) -> std::io::Result<()> {
+    append_to(&file(log_name()), line)
+}
+
+fn append_to(p: &std::path::Path, line: &str) -> std::io::Result<()> {
+    trim_log(p);
+    let lock = log_lock(p);
+    // an unlockable log is still appended to, only unordered against a trim
+    let _shared = lock.as_ref().is_some_and(|l| flock(l, libc::LOCK_SH));
+    std::fs::OpenOptions::new().create(true).append(true).open(p)?.write_all(line.as_bytes())
+}
+
+/// Append `ts<TAB>kind<TAB>code<TAB>detail`. The log is trimmed to its last `health.log_keep_lines` lines once it passes
+/// `health.log_cap`. When the log exists in principle but cannot be written (a full disk, a permission or path error) the line
+/// goes to stderr instead, never nowhere (review finding 9). A state directory that does not exist (no engine ever ran for
+/// this home, as in a hook answered in-process) is not an error: the line is dropped, so a hook's stderr stays what the Node
+/// hook prints.
 pub fn log_event(kind: &str, code: &str, detail: &str) {
-    let _ = append_event_line(&event_line(kind, code, detail));
+    let line = event_line(kind, code, detail);
+    if let Err(e) = append_event_line(&line)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        crate::discard::harmless(std::io::stderr().write_all(line.as_bytes())); // keep: a closed pipe leaves nobody to tell
+    }
 }
 
-/// Append an event, or write the exact sanitized event line to stderr when the state-dir log is unavailable.
+/// Append an event, or write the exact sanitized event line to stderr when the state-dir log is unavailable for any reason.
 pub fn log_event_or_stderr(kind: &str, code: &str, detail: &str) {
     let line = event_line(kind, code, detail);
-    if !append_event_line(&line) {
+    if append_event_line(&line).is_err() {
         crate::discard::harmless(std::io::stderr().write_all(line.as_bytes())); // keep: a closed pipe leaves nobody to tell
     }
 }
@@ -138,7 +178,7 @@ pub fn hint_text(key: &str) -> String {
 pub fn record_failure(kind: &str, code: &str, reason: &str) {
     let (class, hint) = classify(code);
     let v = json!({"ts": now_ms(), "class": if class == Class::Env {"env"} else {"permanent"}, "kind": kind, "code": code, "hint": hint, "reason": reason});
-    if let Err(e) = std::fs::write(state_file("failure"), v.to_string()) {
+    if let Err(e) = crate::atomic::write(state_file("failure"), v.to_string()) {
         // without the record no advisory is ever shown; the log still has the failure itself
         log_event_or_stderr("health", "failure_record_write_failed", &format!("{kind}/{code}: {e}"));
     }
@@ -203,7 +243,7 @@ pub fn pid_is_engine(pid: u32) -> bool {
 
 /// Record that a daemon is running, so a later start can tell a crash from a clean exit.
 pub fn write_marker() {
-    crate::discard::harmless(std::fs::write(state_file("run_marker"), std::process::id().to_string())); // keep: best effort, fail-open
+    crate::discard::logged("run_marker_write", crate::atomic::write(state_file("run_marker"), std::process::id().to_string()));
 }
 
 /// Remove the run marker on a clean exit.
@@ -236,7 +276,7 @@ fn halted(key: &str) -> Option<Duration> {
 }
 
 fn halt(key: &str, cooldown: Duration) {
-    if let Err(e) = std::fs::write(state_file(key), (now_ms() + cooldown.as_millis() as u64).to_string()) {
+    if let Err(e) = crate::atomic::write(state_file(key), (now_ms() + cooldown.as_millis() as u64).to_string()) {
         // a cooldown that was not written does not hold: the loop it was meant to stop would go on
         log_event_or_stderr("health", "halt_write_failed", &format!("{key}: {e}"));
     }
@@ -470,6 +510,48 @@ pub fn merge_advisory(event: &str, existing: &str, text: &str) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_log_trim_keeps_the_tail_atomically_and_waits_for_no_one() {
+        // review finding 9: the trim truncated the log in place with no lock, racing every other appender
+        let d = std::env::temp_dir().join(format!("ah-health-trim-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let log = d.join("e.log");
+        let cap = defaults::num("health.log_cap") as usize;
+        let line = "1\tk\tc\tdetail\n";
+        std::fs::write(&log, line.repeat(cap / line.len() + 10)).unwrap();
+        // another process trimming (the exclusive lock held): this append neither trims nor blocks
+        let held = log_lock(&log).unwrap();
+        assert!(flock(&held, libc::LOCK_EX | libc::LOCK_NB));
+        let t = std::thread::spawn({
+            let log = log.clone();
+            move || append_to(&log, "1\tk\tc\tlast\n").is_ok()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!t.is_finished() || std::fs::metadata(&log).unwrap().len() as usize > cap, "the append waits for the trim to finish, then appends");
+        drop(held);
+        assert!(t.join().unwrap());
+        assert!(std::fs::read_to_string(&log).unwrap().ends_with("last\n"));
+        // free: the next append trims to the last health.log_keep_lines lines (renamed over the log, no temp left)
+        append_to(&log, "1\tk\tc\tafter\n").unwrap();
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(text.lines().count(), defaults::num("health.log_keep_lines") as usize + 1, "trimmed, then appended");
+        assert!(text.ends_with("\tlast\n1\tk\tc\tafter\n"), "{:?}", &text[text.len().saturating_sub(80)..]);
+        let left: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 2, "the log and its lock file only: {left:?}");
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
+    }
+
+    #[test]
+    fn an_unwritable_log_is_an_error_not_a_silent_drop() {
+        // review finding 9: log_event dropped every append error; only a missing state dir is silent now
+        let d = std::env::temp_dir().join(format!("ah-health-unwritable-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("e.log")).unwrap(); // the log path is a directory: EISDIR
+        let e = append_to(&d.join("e.log"), "x\n").unwrap_err();
+        assert_ne!(e.kind(), std::io::ErrorKind::NotFound, "goes to stderr");
+        assert_eq!(append_to(&d.join("missing/e.log"), "x\n").unwrap_err().kind(), std::io::ErrorKind::NotFound, "no state dir: dropped");
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
+    }
 
     #[test]
     #[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation; the single-thread audit is the FIXME beside each call

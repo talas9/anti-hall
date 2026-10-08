@@ -1160,7 +1160,7 @@ fn telemetry_flusher(sh: Arc<Shared>) {
 fn next_start_count() -> u64 {
     let p = paths::dir().join("starts");
     let n = std::fs::read_to_string(&p).ok().and_then(|t| t.trim().parse::<u64>().ok()).unwrap_or(0) + 1;
-    if let Err(e) = std::fs::write(&p, n.to_string()) {
+    if let Err(e) = crate::atomic::write(&p, n.to_string()) {
         // the restart count would stall, and `restarts` in `status` with it
         health::log_event("start", "count_write_failed", &e.to_string());
     }

@@ -19,6 +19,11 @@ pub struct Style {
     pub keep_json_ext: bool,
     /// Leave the temporary file in place when the final rename fails, as Node's `writeFileSync` + `renameSync` do.
     pub leave_temp_on_rename_failure: bool,
+    /// Create the file with this mode (e.g. `0o600` for a private cache) instead of the process default.
+    pub mode: Option<u32>,
+    /// Name the temporary file with [`crate::bootstrap::TMP_SUFFIX`] instead of `atomic.tmp_suffix`: for the writes made
+    /// when no defaults could be loaded (the failure record, `defaults.error`), where reading a setting is impossible.
+    pub bootstrap: bool,
 }
 
 /// The temporary sibling of `path`. Unique per process and per call (pid + counter), so two threads, or two daemons, never
@@ -26,7 +31,8 @@ pub struct Style {
 fn tmp_path(path: &Path, style: Style) -> PathBuf {
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let mut name = path.as_os_str().to_os_string();
-    let tag = format!(".{}.{n}{}", std::process::id(), defaults::text("atomic.tmp_suffix"));
+    let suffix = if style.bootstrap { crate::bootstrap::TMP_SUFFIX } else { defaults::text("atomic.tmp_suffix") };
+    let tag = format!(".{}.{n}{suffix}", std::process::id());
     if let Some(ext) = path.extension().filter(|e| style.keep_json_ext && *e == "json") {
         let mut s = name.to_string_lossy().into_owned();
         s.truncate(s.len() - ext.len() - 1);
@@ -53,19 +59,39 @@ pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result
 pub fn write_styled(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Style) -> std::io::Result<()> {
     let path = path.as_ref();
     let tmp = tmp_path(path, style);
-    let staged = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes.as_ref())?;
-        f.sync_all()
-    })();
-    if let Err(e) = staged {
+    if let Err(e) = stage(&tmp, bytes, style) {
         // Best effort: the original error is the one worth returning; a leftover temp file is swept later.
         crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
         return Err(e);
     }
-    let renamed = std::fs::rename(&tmp, path);
+    replace(&tmp, path, style)
+}
+
+/// The first half of an atomic write, for a caller that must name the temporary file itself (a temp name the Node hooks
+/// share, see DECISIONS "atomic-write exceptions"): create `tmp` (with `style.mode`), write `bytes`, sync it to disk.
+///
+/// # Errors
+/// Any I/O error from creating, writing or syncing; `tmp` is then left for the caller to remove or report.
+pub fn stage(tmp: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Style) -> std::io::Result<()> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    if let Some(m) = style.mode {
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, m);
+    }
+    let mut f = o.open(tmp.as_ref())?;
+    f.write_all(bytes.as_ref())?;
+    f.sync_all()
+}
+
+/// The second half: rename `tmp` over `path`. On failure the temporary file is removed, unless
+/// `style.leave_temp_on_rename_failure`.
+///
+/// # Errors
+/// The rename's I/O error.
+pub fn replace(tmp: impl AsRef<Path>, path: impl AsRef<Path>, style: Style) -> std::io::Result<()> {
+    let renamed = std::fs::rename(tmp.as_ref(), path.as_ref());
     if renamed.is_err() && !style.leave_temp_on_rename_failure {
-        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
+        crate::discard::harmless(std::fs::remove_file(tmp.as_ref())); // keep: cleanup that raced; an absent file is the goal state
     }
     renamed
 }
@@ -85,6 +111,19 @@ mod tests {
         let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn a_private_write_is_created_0600_and_a_bootstrap_write_reads_no_setting() {
+        // review finding 22: the defaults snapshot cache keeps its 0600 mode through the shared atomic write
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("mode");
+        let f = d.join("defaults.cache");
+        write_styled(&f, "x", Style { mode: Some(0o600), bootstrap: true, ..Style::default() }).unwrap();
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(entries(&d), vec!["defaults.cache"]);
+        assert!(tmp_path(&f, Style { bootstrap: true, ..Style::default() }).to_string_lossy().ends_with(crate::bootstrap::TMP_SUFFIX));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]

@@ -508,6 +508,15 @@ Each D-item gets a status (`done` / `partial` / `not started` / `superseded`) wi
 |---|---|---|
 | D1–D69 | not started | — |
 
+## Atomic-write exceptions (lane errfix, 2026-10-08)
+
+Whole-file state goes through `crate::atomic` (temporary file beside the target, synced, renamed; `Style.mode` for a private file, `Style.bootstrap` when no defaults are loaded). `tests/durability.rs` (`whole_file_state_is_written_atomically_outside_the_listed_exceptions`) fails on a new plain `std::fs::write`. The exceptions, each for a reason:
+
+- **Node's temporary names are kept** where the Node hooks share the file and the parity tests compare trees byte for byte, including the temporary file Node leaves after a failed rename. These still write through `crate::atomic::stage` (synced) and `crate::atomic::replace`, only with the caller's temp name: `session/drift.rs` (`<file>.tmp.<pid>`, left on a failed rename), `migrate/state.rs` (`.<name><migrate.tmp_ext>-<pid>-<ms>` and `<file>.migrate.<suffix>.<rand>`), `migrate/sweeps.rs` (`<inst><migrate.tmp_ext>`, left on a failed rename), `setup/jev_setup.rs` (`setup.tmp_fmt`, left on a failed rename).
+- **In place on purpose:** the phase log (`phase_tracker`), so a symlinked log is written through as Node's `writeFileSync` does; the append-only judge and sweep logs (`speculation_guard`, `sibling_sweep`) cut at their cap as Node does.
+- **Not state:** lock files (`guardkit/nodelock.rs`, `guardkit/filelock.rs`, unchanged), the dispatcher's empty done marker, the backup manifest written before the backup is published, the one-time backup copy of an edited defaults file, the doctor self-test's scratch fixtures, the developer generators under `src/bin`.
+- **The event log** is appended under a shared lock on `<log>.lock` and trimmed under the exclusive one, the trim replacing the log through `crate::atomic` (review finding 9); the stop-loop counter is read and rewritten under an exclusive lock on `<counter>.lock` (finding 11).
+
 ## Revision log
 
 - **1.0** (2026-10-04): initial record, D1–D43.
