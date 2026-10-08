@@ -268,16 +268,25 @@ mod tests {
         assert_eq!(ship(&evaluate(&m, &p, &|_, _, _| {})), Answer::Defer, "an environment dropped over the cap defers too");
     }
 
-    /// Replay payload L3 (a force push): Node's command-guard blocks it as a state-changing remote command. The
-    /// engine's `command` check cannot prove Node allows it, so it defers (the Node hook still runs and blocks); it must
-    /// never answer allow for it (D74). The git check blocks it natively.
+    /// Replay payload L3 (a force push): Node's command-guard blocks it as a state-changing remote command in the main
+    /// thread. The `command` check makes that decision from the request environment (the main thread is the CLI entry
+    /// point), so with a cwd it blocks natively; it must never answer allow for it (D74). The git check (a plugin script,
+    /// which defers a Bash payload without a cwd) blocks it natively too.
     #[test]
     fn a_force_push_is_never_a_native_allow_for_the_command_guard() {
         let cmd = ["git push", "--force", "origin main"].join(" ");
-        let p = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}});
-        let got = evaluate(&meta(), &p, &|_, _, _| {});
-        assert_eq!(got.iter().find(|(id, _)| id == "command-guard").unwrap().1, Answer::Defer);
-        assert!(matches!(&got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Decided(r, _) if r.code == Some(2)));
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let p = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd});
+        let mut m = meta();
+        m.env = crate::reqenv::RequestEnv::from_pairs([(
+            crate::defaults::text("command.entrypoint_env").to_string(),
+            crate::defaults::text("command.cli_entrypoint").to_string(),
+        )]);
+        let got = evaluate(&m, &p, &|_, _, _| {});
+        let answer = |id: &str| got.iter().find(|(i, _)| i == id).unwrap().1.clone();
+        let (cg, gg) = (answer("command-guard"), answer("git-guard"));
+        assert!(matches!(&cg, Answer::Decided(r, _) if r.code == Some(2)) || cg == Answer::Defer, "{cg:?}");
+        assert!(matches!(&gg, Answer::Decided(r, _) if r.code == Some(2)), "{gg:?}");
     }
 
     #[test]

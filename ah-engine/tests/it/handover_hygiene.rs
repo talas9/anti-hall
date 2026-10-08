@@ -396,7 +396,7 @@ fn precompact_snapshots_attach_to_the_handover_they_name_else_to_the_newest_of_t
     w.write(&format!("2026-10-07/{SID}/HANDOVER-2.md"), &good("two", "s", "n"));
     w.write(
         &format!("2026-10-07/{SID}/PRECOMPACT-1.md"),
-        &format!("# PRECOMPACT snapshot — {SID} · #1 · 2026-10-07T18:38:27.951Z\n\nMechanical dump.\n\n## Newest handover\n{}/.anti-hall/handovers/2026-10-07/{SID}/HANDOVER.md (modified now)\n", w.proj().display()),
+        &format!("# PRECOMPACT snapshot — {SID} · #1 · 2026-10-07T18:38:27.951Z\n\nMechanical dump.\n\n## Newest handover\n{}/.anti-hall/handovers/2026-10-07/{SID}/HANDOVER.md (modified now)\n", w.proj().canonicalize().unwrap().display()),
     );
     w.write(&format!("2026-10-07/{SID}/PRECOMPACT-2.md"), &format!("# PRECOMPACT snapshot — {SID} · #2 · 2026-10-07T19:00:00.000Z\n\nNo handover named.\n"));
     w.write(&format!("2026-10-07/{SID}/state.md"), "# state\n");

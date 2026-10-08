@@ -230,6 +230,9 @@ fn whole_file_state_is_written_atomically_outside_the_listed_exceptions() {
         ("src/dispatch/mod.rs", "the empty done marker the wrapper tests for existence"),
         ("src/doctor/selftest.rs", "fixtures in the self-test's scratch home"),
         ("src/defaults/load.rs", "the one-time backup copy of an edited defaults file (a new file)"),
+        ("src/meshw/", "the mesh verbs write the very files and bytes Node's devswarm code writes (a staged tmp file then rename, an in-place cut, the background checker's scratch fixtures), and the parity tests compare them byte for byte"),
+        ("src/ops/", "the operator command-line tools (settings, defect, statusline, phase, install-statusline) write the very files Node's scripts write, in place or via their own tmp+rename, and the shadow scratch files; the parity tests compare the bytes"),
+        ("src/operator/install_codex.rs", "writes .codex/hooks.json exactly as install-codex.js does; the parity test compares the file"),
         ("src/bin/", "developer generators, not the engine"),
     ];
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {

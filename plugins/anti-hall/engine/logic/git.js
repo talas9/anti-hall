@@ -547,8 +547,7 @@ function fileCommitMessages(rest) {
 
 function consultJev(text) {
   const key = String(text);
-  // a Jev integration that is off never asks anything (and never waits)
-  if (ah.jev.mode(ah.cfg('git.jev_id')) === 'off') return false;
+  // a Jev integration that is off never waits: the lane answers at once and logs its `off` row, as Node's consult does
   if (S.jevMemo.has(key)) return S.jevMemo.get(key);
   if (S.jevMemo.size >= ah.cfg('git.jev_consult_cap')) return false;
   const budget = ah.cfg('git.jev_budget_ms');
