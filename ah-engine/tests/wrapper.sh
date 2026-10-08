@@ -13,9 +13,46 @@ export HOME
 unset XDG_RUNTIME_DIR
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
+# AH_STAT_SHIM=gnu runs the whole suite with a GNU-semantics `stat` first on PATH (real gstat when installed, else a mimic
+# whose -f prints filesystem info for its operands and fails, which is what GNU coreutils does).
+make_gnu_stat_shim() {
+  d=$1
+  mkdir -p "$d"
+  if command -v gstat >/dev/null 2>&1; then
+    printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v gstat)" >"$d/stat"
+  else
+    cat >"$d/stat" <<'SHIM'
+#!/bin/sh
+fmt=; mode=
+case "$1" in
+  -c) mode=c; fmt=$2; shift 2 ;;
+  -f) mode=f; shift 2>/dev/null; fmt=$1 ;;
+esac
+if [ "$mode" = f ]; then
+  for a in "$@"; do printf '  File: "%s"\n    ID: 0 Namelen: 255 Type: ext2/ext3\n' "$a"; done
+  echo "stat: cannot read file system information for '$1': No such file or directory" >&2
+  exit 1
+fi
+[ "$mode" = c ] || exit 1
+f=$1
+u=$(/usr/bin/stat -f %u "$f") || exit 1
+a=$(/usr/bin/stat -f %Lp "$f") || exit 1
+m=$(/usr/bin/stat -f %m "$f") || exit 1
+out=$(printf '%s' "$fmt" | sed "s/%u/$u/g; s/%a/$a/g; s/%Y/$m/g")
+printf '%s\n' "$out"
+SHIM
+  fi
+  chmod +x "$d/stat"
+}
+
 pass=0
 fail=0
 filter=${1:-}
+if [ "${AH_STAT_SHIM:-}" = gnu ]; then
+  make_gnu_stat_shim "$tmp/gnu-bin"
+  PATH=$tmp/gnu-bin:$PATH
+  export PATH
+fi
 large_timeout=10
 short_timeout=3
 long_sleep=30
@@ -59,17 +96,17 @@ make_engine() {
 }
 
 stat_mode() {
-  if stat -f '%Lp' "$1" 2>/dev/null; then
+  if stat -c '%a' "$1" 2>/dev/null; then
     return 0
   fi
-  stat -c '%a' "$1" 2>/dev/null
+  stat -f '%Lp' "$1" 2>/dev/null
 }
 
 stat_uid() {
-  if stat -f '%u' "$1" 2>/dev/null; then
+  if stat -c '%u' "$1" 2>/dev/null; then
     return 0
   fi
-  stat -c '%u' "$1" 2>/dev/null
+  stat -f '%u' "$1" 2>/dev/null
 }
 
 hook_script() {
@@ -541,7 +578,7 @@ test_fallback_timeout_discard_allows_other_hook() {
 test_temp_modes_and_owner() {
   parent=$tmp/private-parent
   mkdir "$parent"
-  h=$(hook_script tempmodes 'mode(){ stat -f "%Lp" "$1" 2>/dev/null || stat -c "%a" "$1"; }; owner(){ stat -f "%u" "$1" 2>/dev/null || stat -c "%u" "$1"; }; root="$TMPDIR/ah-hook-$(id -u)"; set -- "$root"/ah-wrapper-run.*/payload; payload=$1; d=$(dirname "$payload"); [ "$(mode "$root")" = 700 ] && [ "$(mode "$d")" = 700 ] && [ "$(mode "$payload")" = 600 ] && [ "$(owner "$root")" = "$(id -u)" ] && printf ok')
+  h=$(hook_script tempmodes 'mode(){ stat -c "%a" "$1" 2>/dev/null || stat -f "%Lp" "$1"; }; owner(){ stat -c "%u" "$1" 2>/dev/null || stat -f "%u" "$1"; }; root="$TMPDIR/ah-hook-$(id -u)"; set -- "$root"/ah-wrapper-run.*/payload; payload=$1; d=$(dirname "$payload"); [ "$(mode "$root")" = 700 ] && [ "$(mode "$d")" = 700 ] && [ "$(mode "$payload")" = 600 ] && [ "$(owner "$root")" = "$(id -u)" ] && printf ok')
   printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/tempmodes.list"
   e=$(make_engine tempmodes-engine seventyfive)
   out=$tmp/tempmodes.out
@@ -589,7 +626,11 @@ test_temp_refuses_bad_base_and_symlink_parent() {
   set -e
   # bad base mode refused; symlinked parent is canonicalised and works; symlinked final component refused;
   # world-writable parent without sticky refused; with sticky accepted
-  [ "$rc1" -eq 2 ] && [ "$rc2" -eq 0 ] && [ "$(cat "$tmp/symlink.out")" = badbase ] && [ "$rc3" -eq 2 ] && [ "$rc4" -eq 2 ] && [ "$rc5" -eq 0 ]
+  # (a refused private base no longer locks the user out: the wrapper warns and uses a verified mktemp -d dir instead, so the
+  # hook still runs; the refused base itself is never used)
+  [ "$rc1" -eq 0 ] && grep -q 'no private temp dir' "$err" && [ "$rc2" -eq 0 ] && [ "$(cat "$tmp/symlink.out")" = badbase ] \
+    && [ "$rc3" -eq 0 ] && grep -q 'no private temp dir' "$tmp/hostile.err" && [ "$rc4" -eq 0 ] && grep -q 'no private temp dir' "$tmp/open.err" \
+    && [ "$rc5" -eq 0 ] && ! grep -q 'no private temp dir' "$tmp/sticky.err"
 }
 
 test_temp_sweep_old_keeps_fresh() {
@@ -650,7 +691,8 @@ test_temp_unusable_guard_blocks() {
   rc=$?
   set -e
   chmod 700 "$root"
-  [ "$rc" -eq 2 ] && [ ! -s "$out" ] && grep -q 'cannot create private payload temp file' "$err"
+  # degraded: the unusable private base is skipped with a warning and the guard hook still runs
+  [ "$rc" -eq 0 ] && [ "$(cat "$out")" = bad ] && grep -q 'no private temp dir' "$err"
 }
 
 test_env_timeout_validation_guard_blocks() {
@@ -922,7 +964,7 @@ test_temp_base_prefers_home_then_xdg() {
   xdg=$tmp/prefer-xdg
   mkdir -p "$home" "$xdg"
   chmod 700 "$xdg"
-  h=$(hook_script preferhome 'mode(){ stat -f "%Lp" "$1" 2>/dev/null || stat -c "%a" "$1"; }; d="$HOME/.anti-hall/tmp"; set -- "$d"/ah-wrapper-run.*/payload; [ -f "$1" ] && [ "$(mode "$d")" = 700 ] && printf home-ok')
+  h=$(hook_script preferhome 'mode(){ stat -c "%a" "$1" 2>/dev/null || stat -f "%Lp" "$1"; }; d="$HOME/.anti-hall/tmp"; set -- "$d"/ah-wrapper-run.*/payload; [ -f "$1" ] && [ "$(mode "$d")" = 700 ] && printf home-ok')
   printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/preferhome.list"
   e=$(make_engine preferhome-engine seventyfive)
   HOME="$home" TMPDIR="$tmp/never-used" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/preferhome.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/preferhome.out" 2>"$tmp/preferhome.err" || return 1
@@ -931,6 +973,53 @@ test_temp_base_prefers_home_then_xdg() {
   printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h2" >"$tmp/preferxdg.list"
   HOME="$home" XDG_RUNTIME_DIR="$xdg" TMPDIR="$tmp/never-used" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/preferxdg.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/preferxdg.out" 2>"$tmp/preferxdg.err" || return 1
   [ "$(cat "$tmp/preferxdg.out")" = xdg-ok ]
+}
+
+# Regression: GNU stat treats `-f` as --file-system. The wrapper must pick the flavour once and never emit the other form's
+# output, so the private temp dir is still made and the hooks run under GNU semantics.
+test_gnu_stat_flavour_still_makes_private_tmp() {
+  shim=$tmp/regr-gnu-bin
+  make_gnu_stat_shim "$shim"
+  h=$(hook_script gnuregr 'cat >/dev/null; printf gnu-ok')
+  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/gnuregr.list"
+  e=$(make_engine gnuregr-engine seventyfive)
+  PATH=$shim:$PATH AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/gnuregr.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/gnuregr.out" 2>"$tmp/gnuregr.err" || return 1
+  [ "$(cat "$tmp/gnuregr.out")" = gnu-ok ] && ! grep -q 'cannot create private\|no private temp' "$tmp/gnuregr.err"
+}
+
+# Degraded path: the private base cannot be made (unwritable TMPDIR, no usable HOME). The guard hook still runs and decides.
+test_unwritable_temp_base_guards_still_run() {
+  ro=$tmp/ro-base
+  mkdir -p "$ro"
+  chmod 500 "$ro"
+  h=$(hook_script degblock 'cat >/dev/null; printf "degraded-block\n" >&2; exit 2')
+  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/degblock.list"
+  set +e
+  TMPDIR="$ro" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/degblock.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/degblock.out" 2>"$tmp/degblock.err"
+  rc=$?
+  set -e
+  chmod 700 "$ro"
+  [ "$rc" -eq 2 ] && grep -q 'degraded-block' "$tmp/degblock.err" && grep -q 'no private temp dir' "$tmp/degblock.err"
+}
+
+# Last resort: no temp dir can be made anywhere (mktemp shimmed to fail). Payload goes to each hook through a pipe.
+test_no_temp_anywhere_in_memory_guard_still_blocks() {
+  nb=$tmp/nomktemp-bin
+  mkdir -p "$nb"
+  printf '#!/bin/sh\nexit 1\n' >"$nb/mktemp"
+  chmod +x "$nb/mktemp"
+  ro=$tmp/ro-base2
+  mkdir -p "$ro"
+  chmod 500 "$ro"
+  h=$(hook_script memblock 'grep -q Bash && { printf "mem-block\n" >&2; exit 2; }; exit 0')
+  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/memblock.list"
+  printf '{"tool_name":"Bash","tool_input":{"command":"x"}}' >"$tmp/memblock.payload"
+  set +e
+  PATH=$nb:$PATH TMPDIR="$ro" HOME=/nonexistent AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/memblock.list" sh "$wrapper" PreToolUse --tool-from-payload <"$tmp/memblock.payload" >"$tmp/memblock.out" 2>"$tmp/memblock.err"
+  rc=$?
+  set -e
+  chmod 700 "$ro"
+  [ "$rc" -eq 2 ] && grep -q 'mem-block' "$tmp/memblock.err" && grep -q 'in-memory payload' "$tmp/memblock.err"
 }
 
 now_ms() {
@@ -1229,6 +1318,9 @@ check block_stderr_is_exactly_the_hooks_text_every_shell test_block_stderr_is_ex
 check unmatched_tool_runs_nothing_but_unparseable_selects_all test_unmatched_tool_runs_nothing_but_unparseable_selects_all
 check killed_wrapper_orphans_are_reaped test_killed_wrapper_orphans_are_reaped
 check sweep_removes_dead_owner_dirs_keeps_live_owner test_sweep_removes_dead_owner_dirs_keeps_live_owner
+check gnu_stat_flavour_still_makes_private_tmp test_gnu_stat_flavour_still_makes_private_tmp
+check unwritable_temp_base_guards_still_run test_unwritable_temp_base_guards_still_run
+check no_temp_anywhere_in_memory_guard_still_blocks test_no_temp_anywhere_in_memory_guard_still_blocks
 check temp_removed_on_normal_exit test_temp_removed_on_normal_exit
 check temp_removed_on_hup test_temp_removed_on_hup
 check temp_removed_on_int test_temp_removed_on_int

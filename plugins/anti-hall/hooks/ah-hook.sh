@@ -137,20 +137,29 @@ validate_positive_int "$timeout_env" AH_HOOK_TIMEOUT_S
 sweep_age=${AH_HOOK_SWEEP_AGE_S:-1800}
 validate_positive_int "$sweep_age" AH_HOOK_SWEEP_AGE_S
 
+# Detect the stat flavour ONCE and use only that form. GNU/busybox stat accepts `-c`; BSD/macOS stat does not. Never try the
+# BSD form first: on GNU `stat -f` means --file-system, takes the format string as a FILE operand and prints filesystem info
+# for the real path to stdout before failing, which corrupts the captured output.
+if stat -c %u / >/dev/null 2>&1; then
+  stat_gnu=1
+else
+  stat_gnu=0
+fi
+
 stat_pair() {
-  p=$1
-  if stat -f '%u %Mp%Lp' "$p" 2>/dev/null; then
-    return 0
+  if [ "$stat_gnu" -eq 1 ]; then
+    stat -c '%u %a' "$1" 2>/dev/null
+  else
+    stat -f '%u %Mp%Lp' "$1" 2>/dev/null
   fi
-  stat -c '%u %a' "$p" 2>/dev/null
 }
 
 stat_mtime() {
-  p=$1
-  if stat -f '%m' "$p" 2>/dev/null; then
-    return 0
+  if [ "$stat_gnu" -eq 1 ]; then
+    stat -c '%Y' "$1" 2>/dev/null
+  else
+    stat -f '%m' "$1" 2>/dev/null
   fi
-  stat -c '%Y' "$p" 2>/dev/null
 }
 
 # Verify and create a private directory: final component not a symlink, owned by us, mode 700.
@@ -275,14 +284,97 @@ make_payload_file() {
   return 0
 }
 
+# Degraded path: the private base is unavailable. mktemp -d makes an unpredictable name, O_EXCL, mode 700, so it is safe even in
+# a shared sticky dir; owner and mode are still verified.
+make_payload_file_degraded() {
+  for dbase in "${TMPDIR:-}" /tmp /var/tmp /dev/shm "${HOME:-}"; do
+    [ -n "$dbase" ] && [ -d "$dbase" ] && [ -w "$dbase" ] || continue
+    old_umask=$(umask)
+    umask 077
+    tmp=$(mktemp -d "$dbase/ah-wrapper-run.$self_pid.XXXXXXXXXX" 2>/dev/null) || {
+      umask "$old_umask"
+      tmp=
+      continue
+    }
+    set -- $(stat_pair "$tmp")
+    if [ "${1:-}" = "$uid" ] && { [ "${2:-}" = 700 ] || [ "${2:-}" = 0700 ]; }; then
+      payload=$tmp/payload
+      if : >"$payload" 2>/dev/null && cat >"$payload"; then
+        umask "$old_umask"
+        return 0
+      fi
+    fi
+    umask "$old_umask"
+    rm -rf "$tmp" 2>/dev/null
+    tmp=
+    payload=
+  done
+  return 1
+}
+
+payload_mem=
+mem_mode=0
+
 if ! make_payload_file; then
-  if [ "$guard_event" -eq 1 ]; then
-    printf 'anti-hall: cannot create private payload temp file for %s; blocking rather than allowing unguarded\n' "$event" >&2
-    exit 2
+  printf 'anti-hall: no private temp dir for %s; trying a degraded temp dir\n' "$event" >&2
+  if ! make_payload_file_degraded; then
+    # Last resort: no file can be made anywhere. Hold the payload in memory and pipe it to each hook. The guards still decide.
+    printf 'anti-hall: no temp dir at all for %s; running hooks with an in-memory payload\n' "$event" >&2
+    payload_mem=$(cat; printf x) || payload_mem=x
+    payload_mem=${payload_mem%x}
+    mem_mode=1
+    tool_from_payload=0
+    tool_match_all=1
   fi
-  printf 'anti-hall: cannot create private payload temp file for %s; skipping non-guard hook\n' "$event" >&2
-  exit 0
 fi
+
+run_memory_mode() {
+  if [ -n "$engine" ]; then
+    mm_out=$(printf '%s' "$payload_mem" | "$engine" hook --event "$event" --host "$host" --fallback-map "$fallback_map"; echo "rc=$?")
+    mm_rc=${mm_out##*rc=}
+    mm_out=${mm_out%rc=*}
+    case "$mm_rc" in
+      0|2) printf '%s' "$mm_out"; exit "$mm_rc" ;;
+    esac
+  fi
+  if [ ! -r "$list" ] || [ ! -s "$list" ]; then
+    [ "$guard_event" -eq 1 ] && fail_closed "no fallback list"
+    exit 0
+  fi
+  mm_hard=0; mm_in=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ""|"#"*) continue ;;
+      @*) header=${line#@}; ev=${header%%	*}; if [ "$ev" = "$event" ]; then mm_in=1; else mm_in=0; fi; continue ;;
+    esac
+    [ "$mm_in" -eq 1 ] || continue
+    rest=${line#*	}
+    [ "$rest" != "$line" ] || continue
+    field2=${rest%%	*}
+    if [ "$field2" = "$rest" ]; then hook_timeout=$timeout_env; cmd=$field2; else hook_timeout=$field2; cmd=${rest#*	}; fi
+    case "$hook_timeout" in ""|*[!0-9]*|0) hook_timeout=$timeout_env ;; esac
+    if command -v timeout >/dev/null 2>&1; then
+      mm_out=$(printf '%s' "$payload_mem" | timeout "$hook_timeout" sh -c "$cmd"; echo "rc=$?")
+    else
+      mm_out=$(printf '%s' "$payload_mem" | sh -c "$cmd"; echo "rc=$?")
+    fi
+    mm_rc=${mm_out##*rc=}
+    mm_out=${mm_out%rc=*}
+    case "$mm_rc" in
+      2) printf '%s' "$mm_out"; exit 2 ;;
+      124) continue ;;
+      125|12[6-9]|1[3-9][0-9]|2[0-9][0-9]) mm_hard=1; continue ;;
+    esac
+    printf '%s' "$mm_out"
+    if printf '%s' "$mm_out" | grep -q '"decision"[[:space:]]*:[[:space:]]*"block"\|"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
+      exit 0
+    fi
+  done <"$list"
+  if [ "$mm_hard" -eq 1 ] && [ "$guard_event" -eq 1 ]; then
+    fail_closed "fallback hook failed before producing a complete answer"
+  fi
+  exit 0
+}
 
 json_tool_name() {
   awk '
@@ -825,6 +917,10 @@ run_engine() {
       run_fallback "engine failed with exit $rc" ;;
   esac
 }
+
+if [ "$mem_mode" -eq 1 ]; then
+  run_memory_mode
+fi
 
 if [ -n "$engine" ]; then
   run_engine
