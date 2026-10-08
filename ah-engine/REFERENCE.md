@@ -96,7 +96,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js). |
 | `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js). |
 | `ask-guard` | Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js). |
-| `silent-agent-nudge` | Stop: keeps the nudge state of silent background agents and answers every Stop that would not nudge; a Stop that would nudge defers to the Node hook, which words and records it (port of silent-agent-nudge.js). |
+| `silent-agent-nudge` | Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge (port of silent-agent-nudge.js). |
 | `stale-agent-stop-note` | Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js). |
 | `merge-gate` | Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js). |
 | `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
@@ -2298,7 +2298,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `silent_nudge.ack_dir` | `.anti-hall/stop-ack` |  |  | Directory of the per-session stop-ack files, relative to the home directory. |
+| `silent_nudge.ack_file_ext` | `.json` |  |  | Extension of a stop-ack file. |
+| `silent_nudge.ack_file_prefix` | `stop-ack-` |  |  | Prefix of a stop-ack file name, before the sanitized session id. |
+| `silent_nudge.ack_hint` | `Override (only if the user explicitly confirmed this exact condition is fine)...` |  |  | The override sentence appended to the nudge (stop-ack.js ackHint); {key} is hook:signature, {now} the time, {path} the ack file. |
+| `silent_nudge.ack_no_session` | `nosession` |  |  | Session part of a stop-ack file name when there is no session id. |
+| `silent_nudge.ack_sep` | `:` |  |  | Separator between the hook name and the signature in a stop-ack key. |
+| `silent_nudge.ack_session_max` | `128` |  |  | Longest sanitized session id in a stop-ack file name, in characters. |
+| `silent_nudge.ack_setting` | `6 entries` |  |  | Where the stop-ack switch is read from (guards.stopAck, default on; hooks/lib/stop-ack.js). |
+| `silent_nudge.ack_subject_sep` | `,` |  |  | Separator between the sorted agent ids the stop-ack signature is computed over. |
 | `silent_nudge.agents_dir` | `.anti-hall/agents` |  |  | Directory of subagent heartbeat files, relative to the home directory. |
+| `silent_nudge.control_re` | `[\x00-\x1f\x7f-\u{9f}]` |  |  | Rust regex source of the control characters turned into spaces in a name the nudge shows. |
+| `silent_nudge.ellipsis` | `…` |  |  | Text appended to a name that was cut. |
 | `silent_nudge.ever_key` | `everNudged` |  |  | Field of the state file that holds the once-per-agent records. |
 | `silent_nudge.ever_nudged_ttl_ms` | `2592000000` |  | ms | How long a once-per-agent nudge record is kept (30 days). |
 | `silent_nudge.ever_sep` | `::` |  |  | Separator between session id and agent id in a once-per-agent key. |
@@ -2312,16 +2323,29 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.judge_child_value` | `1` |  |  | Value of the judge-child variable that disables the hook. |
 | `silent_nudge.key_heartbeat` | `h:` |  |  | Prefix of a heartbeat-sourced nudge key. |
 | `silent_nudge.key_transcript` | `t:` |  |  | Prefix of a transcript-sourced nudge key. |
+| `silent_nudge.label_max` | `60` |  |  | Longest agent description, id or heartbeat step, in UTF-16 units, the nudge names (oneLine's max). |
+| `silent_nudge.max_named` | `3` |  |  | How many silent agents the nudge names before it says how many more there are (MAX_NAMED). |
 | `silent_nudge.min_default` | `20` |  |  | Minutes of silence used when the setting is not a number of at least 1 (DEFAULT_MIN of the hook). |
 | `silent_nudge.min_setting` | `7 entries` |  |  | Where the silence threshold in minutes is read from (guards.silentAgentNudgeMin, default 20, at least 1). |
 | `silent_nudge.missing` | `missing` |  |  | Snapshot of an agent whose output file is missing. |
+| `silent_nudge.msg_allowed` | `set ANTIHALL_SILENT_AGENT_NUDGE=off to silence this nudge` |  |  | Allowed-here line of the nudge. |
+| `silent_nudge.msg_instead` | `check on {them} (TaskOutput), or re-dispatch with tighter scope if dead (Task...` |  |  | Do-instead line of the nudge; {them} is the pronoun for one agent or several. |
+| `silent_nudge.msg_item` | `{label} — silent {mins}m` |  |  | One named silent agent in the nudge. |
+| `silent_nudge.msg_item_sep` | `; ` |  |  | Text between two named silent agents. |
+| `silent_nudge.msg_more` | `, +{n} more` |  |  | Tail of the list when more agents are silent than are named. |
+| `silent_nudge.msg_what` | `{count} of your own background subagent(s) have gone silent past the {min}m t...` |  |  | Headline of the nudge. |
+| `silent_nudge.msg_why` | `Advisory only; nothing was auto-killed.` |  |  | Why line of the nudge. |
 | `silent_nudge.nudged_key` | `nudged` |  |  | Field of the state file that holds the per-snapshot records. |
+| `silent_nudge.pronoun_many` | `them` |  |  | The pronoun for several silent agents. |
+| `silent_nudge.pronoun_one` | `it` |  |  | The pronoun for one silent agent. |
 | `silent_nudge.resume_mark` | `@r` |  |  | Marker between an agent id or snapshot and the resume time. |
 | `silent_nudge.scan_bytes` | `67108864` |  | bytes | Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES). |
 | `silent_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.silentAgentNudge, default on). |
 | `silent_nudge.sidechain_file_prefix` | `agent-` |  |  | Prefix of an agent's own sidechain transcript file name. |
+| `silent_nudge.signature_len` | `16` |  |  | Hex characters of the SHA-1 a stop-ack signature keeps. |
 | `silent_nudge.state_file` | `.anti-hall/silent-agent-nudge-state.json` |  |  | Nudge state file, relative to the home directory. |
-| `silent_nudge.summary` | `Stop: keeps the nudge state of silent background agents and answers every Sto...` |  |  | One-line description of the silent-agent-nudge check in the generated reference. |
+| `silent_nudge.summary` | `Stop: nudges once per silent background agent (the block text, the nudge stat...` |  |  | One-line description of the silent-agent-nudge check in the generated reference. |
+| `silent_nudge.version_gate_setting` | `6 entries` |  |  | Where the stale-build downgrade switch is read from (guards.stopHookVersionDowngrade, default on; hooks/lib/stop-version-gate.js). |
 
 ### agent_controls.toml / stale_note
 

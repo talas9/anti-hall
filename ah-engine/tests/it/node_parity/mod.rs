@@ -31,6 +31,7 @@ mod guard;
 mod lab;
 mod merge_gate;
 mod session;
+mod silent_nudge;
 mod support;
 mod verify_first;
 
@@ -160,6 +161,22 @@ fn tasklist_guard_matches_node() {
     let Some(hooks) = hooks_dir() else { return };
     let (scenarios, _shared) = fx_tasklist_guard::corpus();
     fx::require(&fx_tasklist_guard::opts(), &hooks, scenarios, 400);
+}
+
+#[test]
+fn silent_agent_nudge_matches_node() {
+    let _s = serial();
+    let Some(hooks) = hooks_dir() else { return };
+    silent_nudge::require(&hooks);
+}
+
+#[test]
+fn the_silent_agent_nudge_comparison_notices_a_changed_node_answer() {
+    let _s = serial();
+    let Some(hooks) = hooks_dir() else { return };
+    let subset: Vec<silent_nudge::Sc> = silent_nudge::scenarios().into_iter().take(10).collect();
+    let rep = silent_nudge::run_lane(&hooks, &subset, true);
+    assert!(!rep.mismatches.is_empty(), "silent-agent-nudge: altered Node answers were not noticed");
 }
 
 #[test]

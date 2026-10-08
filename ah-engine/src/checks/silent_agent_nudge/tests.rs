@@ -64,6 +64,32 @@ fn number_coercion_is_javascripts() {
 #[test]
 fn the_judge_child_and_a_missing_home_are_decided_first() {
     let p = serde_json::json!({"hook_event_name": "Stop", "session_id": "s"});
-    assert_eq!(decide(&p, &RequestEnv::from_pairs([("ANTIHALL_JUDGE_CHILD", "1")])), Verdict::Allow);
-    assert_eq!(decide(&p, &RequestEnv::from_pairs([("ANTIHALL_X", "1")])), Verdict::Defer);
+    assert_eq!(decide(&p, &Value::Null, &RequestEnv::from_pairs([("ANTIHALL_JUDGE_CHILD", "1")])), Verdict::Allow);
+    assert_eq!(decide(&p, &Value::Null, &RequestEnv::from_pairs([("ANTIHALL_X", "1")])), Verdict::Defer);
+}
+
+#[test]
+fn versions_compare_as_update_js_compares_them() {
+    // expected values printed by update.js compareVersions under Node
+    for (a, b, want) in
+        [("1.2.3", "1.2.4", -1), ("v1.10.0", "1.9.9", 1), ("1.2.3-beta", "1.2.3", 0), ("1.2", "1.2.0", 0), ("x", "0", 0), ("1..2", "1", 0), ("1.2.", "1.2", 0)]
+    {
+        assert_eq!(stopgate::compare_versions(a, b), want, "{a} vs {b}");
+    }
+}
+
+#[test]
+fn stop_ack_names_and_signatures_are_node_s() {
+    // expected values printed by hooks/lib/stop-ack.js under Node
+    assert_eq!(stopgate::signature_for("a,b"), "5d8b1241b0484dd2");
+    assert_eq!(stopgate::ack_path("/h", "s/é😀"), "/h/.anti-hall/stop-ack/stop-ack-s____.json");
+    assert_eq!(stopgate::ack_path("/h/", &"x".repeat(200)).len(), 165);
+    assert_eq!(stopgate::ack_path("/h", ""), "/h/.anti-hall/stop-ack/stop-ack-nosession.json");
+}
+
+#[test]
+fn one_line_cuts_on_utf16_units() {
+    assert_eq!(one_line(" a\u{1}\tb \n", 60).unwrap(), "a b");
+    assert_eq!(one_line(&format!("{}  tail", "x".repeat(59)), 60).unwrap(), format!("{}…", "x".repeat(59)));
+    assert_eq!(one_line(&format!("{}😀", "x".repeat(59)), 60), Err(Unsupported));
 }
