@@ -1203,7 +1203,7 @@ value = "mesh-verify"
 
 [mesh_write.verify_copy_dirs]
 doc = "Directories of the DevSwarm root copied into the scratch home before the engine writes (what Node reads or writes for a heartbeat)."
-value = ["workspaces", "heartbeats", "liveness", "cursors", "archived"]
+value = ["workspaces", "heartbeats", "liveness", "cursors", "archived", "cache", "plans"]
 
 [mesh_write.verify_link_dirs]
 doc = "Directories of the DevSwarm root linked, not copied, into the scratch home (read only for a heartbeat)."
@@ -1236,3 +1236,85 @@ doc = "Longest all-digit NDJSON cursor file the engine reads (parseInt of a long
 value = 15
 min = 1
 max = 308
+
+# ---- the DevSwarm app database reader (companion/lib/devswarm-app-db.js): read only, bounded, fail-open ----
+
+[mesh_write.app_col_id]
+doc = "The `builders` id column."
+value = "id"
+
+[mesh_write.app_col_active]
+doc = "The `builders` open flag column."
+value = "isActive"
+
+[mesh_write.app_col_hidden]
+doc = "The `builders` hidden flag column (archived = hidden and not active)."
+value = "isHidden"
+
+[mesh_write.app_table_builders]
+doc = "The app's builder (workspace) table."
+value = "builders"
+
+[mesh_write.app_table_terminals]
+doc = "The app's terminal table, read by the snapshot besides `builders`."
+value = "builder_terminals"
+
+[mesh_write.app_table_pull_requests]
+doc = "The app's pull-request table, read by the snapshot."
+value = "pull_requests"
+
+[mesh_write.app_table_repositories]
+doc = "The app's repository table, read by the snapshot (a failed read of any of the three makes the snapshot null, as in Node)."
+value = "repositories"
+
+[mesh_write.app_cols_builders]
+doc = "Every `builders` column the snapshot reads (SCHEMA.builders)."
+value = ["id", "repositoryId", "sourceBranch", "branchName", "worktreePath", "terminalId", "label", "createdAt", "lastAccessed", "rank", "isHidden", "pullRequestId", "builderType", "isPinned", "isActive", "lastSelectedAt"]
+
+[mesh_write.app_cols_builder_terminals]
+doc = "Every `builder_terminals` column the snapshot reads (SCHEMA.builder_terminals)."
+value = ["id", "builderId", "terminalId", "terminalType", "aiAgent", "ai_session_config", "isActive", "panelStatus", "createdAt", "lastViewedAt", "initialPrompt", "initialPromptDeliveredAt", "initialPromptWithheldAt"]
+
+[mesh_write.app_cols_pull_requests]
+doc = "Every `pull_requests` column the snapshot reads (SCHEMA.pull_requests)."
+value = ["id", "repositoryId", "branchName", "number", "state", "isDraft", "url", "checkStatus", "reviewStatus", "lastSyncedAt"]
+
+[mesh_write.app_cols_repositories]
+doc = "Every `repositories` column the snapshot reads (SCHEMA.repositories)."
+value = ["id", "path", "name", "defaultBaseBranch"]
+
+[mesh_write.app_prompt_column]
+doc = "The terminal column read as its length only (never its text)."
+value = "initialPrompt"
+
+[mesh_write.app_cache_dir]
+doc = "Directory under the DevSwarm root of the cross-invocation archived-verdict cache."
+value = "cache"
+
+[mesh_write.app_cache_file]
+doc = "The cache file."
+value = "app-archived.json"
+
+[mesh_write.app_cache_ttl_ms]
+doc = "How long a cached verdict map is trusted (CROSS_CACHE_TTL_MS)."
+value = 30000
+
+[mesh_write.app_wal_suffix]
+doc = "Suffix of the app database's write-ahead log, part of the cache signature."
+value = "-wal"
+
+[mesh_write.app_busy_timeout_ms]
+doc = "How long a locked app database is waited for: Node's node:sqlite waits not at all, so a locked database reads as unavailable."
+value = 0
+
+[mesh_write.app_max_exact_int]
+doc = "Integers beyond this magnitude are not exact JavaScript numbers; a database holding one in a column the verdict reads defers."
+value = 9007199254740991
+
+[mesh_write.hb_plan_hint]
+doc = "The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id."
+value = "no step plan for {id} — run `devswarm.js plan set {id} --steps \"1. …\\n2. …\"` first; the heartbeat itself was recorded"
+
+[mesh_write.hb_plan_no_plan]
+doc = "The `plan.reason` of a heartbeat --step for a workspace that has no plan."
+value = "no-plan"

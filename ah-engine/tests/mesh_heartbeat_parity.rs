@@ -621,14 +621,14 @@ fn cases(fx: &Fx) -> Vec<Case> {
             expect: vec!["\"meshBroadcast\""],
         },
         Case {
-            name: "step",
+            name: "step-without-a-plan",
             cwd: "child",
             argv: hb("child-1", &["--step", "1"]),
             extra: vec![],
             ack: none(),
             union: none(),
-            native: false,
-            expect: vec!["\"plan\""],
+            native: true,
+            expect: vec!["\"plan\":{\"ok\":false,\"reason\":\"no-plan\""],
         },
         Case {
             name: "primary-label-id-plain",
@@ -673,13 +673,13 @@ fn cases(fx: &Fx) -> Vec<Case> {
             expect: vec!["\"ok\":true"],
         },
         Case {
-            name: "app-database-present-with-descriptor",
+            name: "app-database-present-but-empty-with-descriptor",
             cwd: "child",
             argv: hb("child-1", &[]),
             extra: vec![("ANTIHALL_DEVSWARM_APP_DB", app_db.clone())],
             ack: ack(floors("child-1", 0, 0), d_plain.clone(), vec![]),
             union: none(),
-            native: false,
+            native: true,
             expect: vec!["\"ok\":true"],
         },
         Case {
@@ -792,7 +792,7 @@ fn heartbeat_matches_node_byte_for_byte_and_defers_without_writing() {
         }
     }
     eprintln!("heartbeat parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", list.len());
-    assert!(native >= 25 && deferred >= 11, "{native} native, {deferred} deferred");
+    assert!(native >= 33 && deferred >= 11, "{native} native, {deferred} deferred");
 }
 
 /// Input faults: whatever the engine cannot read exactly like Node, it must leave untouched for Node.
