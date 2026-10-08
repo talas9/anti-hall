@@ -7,6 +7,7 @@
 //! credit-balance request points both sides at a loopback server through the loopback-only test endpoint override.
 //!
 //! Clock fields are masked (`fetchedAt`, `ms`, the `.corrupt-<ms>` suffix), because the two runs cannot share a clock.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;

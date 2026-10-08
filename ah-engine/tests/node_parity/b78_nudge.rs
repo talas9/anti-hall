@@ -852,7 +852,7 @@ pub(crate) fn scenarios() -> Vec<Sc> {
                 .collect()
         })
         .before(|_, _, b| {
-            let _ = std::os::unix::fs::symlink("/tmp", b.repo.join("lnk3"));
+            std::os::unix::fs::symlink("/tmp", b.repo.join("lnk3")).ok();
         });
         if let Some(v) = env_min {
             m = m.env("ANTIHALL_CODEX_NUDGE_MIN", Some(&v));

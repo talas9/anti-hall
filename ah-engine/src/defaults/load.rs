@@ -255,13 +255,13 @@ pub fn write_cache(data: &Data, path: &Path) -> std::io::Result<()> {
     out.push_str(END);
     out.push('\n');
     let dir = path.parent().unwrap_or(Path::new("."));
-    let _ = crate::limits::ensure_private_dir(dir);
+    crate::discard::harmless(crate::limits::ensure_private_dir(dir)); // keep: a failure surfaces at the create that follows
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
     f.write_all(out.as_bytes())?;
     drop(f);
     std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
+        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
     })
 }
 
@@ -359,10 +359,10 @@ impl Lazy {
 /// missing, so this is one line in `defaults.error` in the state directory (overwritten each time) and the same on stderr.
 pub fn report_unavailable(e: &DefaultsError) {
     let line = format!("ah-engine: defaults unavailable: {e}");
-    let _ = writeln!(std::io::stderr(), "{line}");
+    crate::discard::harmless(writeln!(std::io::stderr(), "{line}")); // keep: a closed stderr leaves nobody to tell
     if let Some(p) = bootstrap::state_dir().map(|d| d.join(bootstrap::ERROR_FILE)) {
-        let _ = crate::limits::ensure_private_dir(p.parent().unwrap_or(Path::new(".")));
+        crate::discard::harmless(crate::limits::ensure_private_dir(p.parent().unwrap_or(Path::new(".")))); // keep: the write that follows fails too and the stderr line stands
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let _ = std::fs::write(p, format!("{now} {line}\n"));
+        crate::discard::harmless(std::fs::write(p, format!("{now} {line}\n"))); // keep: the same line already went to stderr
     }
 }

@@ -5,6 +5,7 @@
 //!
 //! Set `AH_PARITY_DUMP=<dir>` to write each lane's corpus and summary there; `AH_PARITY_REAL_CMDS`, `AH_PARITY_REAL_EDITS`
 //! and `AH_PARITY_REAL` add real commands and edits from local data to the guard corpora that took them.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 #[macro_use]
 mod jsjson;

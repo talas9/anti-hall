@@ -555,19 +555,20 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     let result: Res<()> = (|| match verb {
         "roster" => {
             let v = Value::Array(reader.roster()?);
-            let _ = if p.json { writeln!(out, "{v}") } else { writeln!(out, "{}", crate::cli::human(&json!({"roster": v}))) };
+            crate::discard::harmless(if p.json { writeln!(out, "{v}") } else { writeln!(out, "{}", crate::cli::human(&json!({"roster": v}))) }); // keep: a closed stdout leaves nobody to tell
             Ok(())
         }
         "unread" => {
             let rows: Res<Vec<Value>> = reader.workspace_ids().iter().map(|id| reader.unread(id).map(|u| u.to_json())).collect();
             let v = Value::Array(rows?);
-            let _ = if p.json { writeln!(out, "{v}") } else { writeln!(out, "{}", crate::cli::human(&json!({"unread": v}))) };
+            crate::discard::harmless(if p.json { writeln!(out, "{v}") } else { writeln!(out, "{}", crate::cli::human(&json!({"unread": v}))) }); // keep: a closed stdout leaves nobody to tell
             Ok(())
         }
         "read" => {
             let id = flag(p, "id").unwrap_or_default();
             let emit = |m: &Value, out: &mut dyn Write| {
-                let _ = if p.json {
+                // keep: a closed stdout leaves nobody to tell
+                crate::discard::harmless(if p.json {
                     writeln!(out, "{m}")
                 } else {
                     writeln!(
@@ -578,7 +579,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
                         m["mtype"].as_str().unwrap_or("-"),
                         m["body"].as_str().unwrap_or("").replace('\n', " ")
                     )
-                };
+                });
             };
             if let Some(n) = flag(p, "last") {
                 // bounded: a caller cannot make the reader hold more than `mesh.last_max` bodies at once
@@ -589,7 +590,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
             } else {
                 let since = flag(p, "since").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
                 if let Some(next) = read_capped(&reader, &id, since, defaults::num("mesh.read_byte_cap"), |m| emit(m, &mut out))? {
-                    let _ = writeln!(out, "{}", json!({"truncated": true, "nextSince": next}));
+                    crate::discard::harmless(writeln!(out, "{}", json!({"truncated": true, "nextSince": next}))); // keep: a closed stdout leaves nobody to tell
                 }
             }
             Ok(())
@@ -597,7 +598,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
         "dump" => dump(&reader, &mut out).map_err(|e| MeshError::Sql(e.to_string())),
         _ => Err(MeshError::Sql(String::new())),
     })();
-    let _ = out.flush();
+    crate::discard::harmless(out.flush()); // keep: a closed stdout leaves nobody to tell
     match result {
         Ok(()) => 0,
         Err(MeshError::Sql(s)) if s.is_empty() => usage(p),
@@ -612,7 +613,7 @@ mod tests {
     /// A store in Node's schema with `n` messages of workspace `w`, each body `len` bytes.
     fn store(n: usize, len: usize) -> (PathBuf, MeshReader) {
         let dir = std::env::temp_dir().join(format!("ah-mesh-unit-{}-{n}-{len}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("devswarm.db");
         let c = Connection::open(&db).unwrap();
@@ -642,7 +643,7 @@ mod tests {
         let mut one = Vec::new();
         let next = read_capped(&r, "w", 0, 1, |m| one.push(m["index"].as_u64().unwrap())).unwrap();
         assert_eq!((one, next), (vec![1], Some(1)), "a body larger than the cap still goes out alone");
-        let _ = std::fs::remove_dir_all(dir);
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 
     #[test]
@@ -652,7 +653,7 @@ mod tests {
         assert_eq!(last, vec![5, 6, 7]);
         assert_eq!(r.message_count("w").unwrap(), 7);
         assert_eq!(r.message_count("nobody").unwrap(), 0);
-        let _ = std::fs::remove_dir_all(dir);
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 
     #[test]
@@ -660,6 +661,6 @@ mod tests {
         let (dir, r) = store(1, 1);
         assert!(r.conn.execute("DELETE FROM messages", []).is_err(), "the connection is read-only");
         assert_eq!(r.message_count("w").unwrap(), 1);
-        let _ = std::fs::remove_dir_all(dir);
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 }

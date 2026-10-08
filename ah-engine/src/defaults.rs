@@ -174,7 +174,7 @@ fn cache_best_effort(d: &load::Data) {
     if CACHE_WRITES.load(Ordering::SeqCst)
         && let Some(p) = crate::bootstrap::cache_path()
     {
-        let _ = load::write_cache(d, &p);
+        crate::discard::harmless(load::write_cache(d, &p)); // keep: the cache only speeds up the thin client; the next load rewrites it
     }
 }
 
@@ -311,7 +311,7 @@ fn backend() -> Arc<Backend> {
     if let Err(e) = init() {
         panic!("shipped defaults unavailable: {e}");
     }
-    current().expect("init() installed a snapshot")
+    current().unwrap_or_else(|| panic!("init() installed a snapshot"))
 }
 
 /// The entry for `key`, if shipped.

@@ -88,18 +88,18 @@ pub fn run(cmd: &str, args: &[String], input: &[u8], env: &Env, cwd: &str) -> Ou
     let mut stdin = child.stdin.take().unwrap();
     let data = input.to_vec();
     let w = std::thread::spawn(move || {
-        let _ = stdin.write_all(&data);
+        stdin.write_all(&data).ok();
     });
     let mut so = child.stdout.take().unwrap();
     let mut se = child.stderr.take().unwrap();
     let ro = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = so.read_to_end(&mut b);
+        so.read_to_end(&mut b).ok();
         b
     });
     let re = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = se.read_to_end(&mut b);
+        se.read_to_end(&mut b).ok();
         b
     });
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -113,12 +113,12 @@ pub fn run(cmd: &str, args: &[String], input: &[u8], env: &Env, cwd: &str) -> Ou
             // SAFETY: `pid` is the id of a child this function spawned and has not yet reaped, so it names no other process
             unsafe { libc::kill(pid, libc::SIGKILL) };
             // the child is being killed; its exit status is not needed
-            let _ = child.wait();
+            child.wait().ok();
             break None;
         }
         std::thread::sleep(Duration::from_millis(2));
     };
-    let _ = w.join();
+    w.join().ok();
     let out = String::from_utf8_lossy(&ro.join().unwrap_or_default()).to_string();
     let err = String::from_utf8_lossy(&re.join().unwrap_or_default()).to_string();
     let code = match status {
@@ -260,7 +260,7 @@ pub fn set_mtime(path: &Path, secs: f64) {
     let t = UNIX_EPOCH + Duration::from_secs_f64(secs.max(0.0));
     let f = std::fs::OpenOptions::new().write(true).open(path).or_else(|_| std::fs::File::open(path));
     if let Ok(f) = f {
-        let _ = f.set_times(std::fs::FileTimes::new().set_accessed(t).set_modified(t));
+        f.set_times(std::fs::FileTimes::new().set_accessed(t).set_modified(t)).ok();
     }
 }
 
@@ -281,7 +281,7 @@ impl Scratch {
         // a short base: a daemon's Unix socket path must stay under the platform limit
         let base = if Path::new("/tmp").is_dir() { PathBuf::from("/tmp") } else { std::env::temp_dir() };
         let d = base.join(format!("ah-par-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
-        let _ = std::fs::remove_dir_all(&d);
+        std::fs::remove_dir_all(&d).ok();
         std::fs::create_dir_all(&d).unwrap();
         Scratch(d)
     }
@@ -309,18 +309,18 @@ pub fn wipe(dir: &Path) {
             return;
         }
         if md.is_dir() {
-            let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755));
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755)).ok();
             if let Ok(rd) = std::fs::read_dir(d) {
                 for e in rd.flatten() {
                     unlock(&e.path());
                 }
             }
         } else {
-            let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o644));
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o644)).ok();
         }
     }
     unlock(dir);
-    let _ = std::fs::remove_dir_all(dir);
+    std::fs::remove_dir_all(dir).ok();
 }
 
 /// One serialised test lane at a time inside this binary: each lane spawns many processes of its own.

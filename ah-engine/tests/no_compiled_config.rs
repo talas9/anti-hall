@@ -3,6 +3,7 @@
 //! Everything is read at run time from the plugin's `engine/` files. This test takes the text of the shipped defaults (every
 //! `doc` and every string value long enough to be a sentinel, from every file the index names) and of `rules.json`, and fails
 //! if any of it can be found in the built binary. It also fails if the source embeds a defaults or rules file.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use std::path::{Path, PathBuf};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");

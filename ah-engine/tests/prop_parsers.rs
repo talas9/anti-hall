@@ -2,6 +2,7 @@
 //! invariant the Node code also holds: no panic on any input, bounded time, and the structural guarantees the doc
 //! comments state (segments are never blank, a body is a substring of the command, JSON round-trips, glob = regex).
 //! The case count follows `PROPTEST_CASES` (default below), so a soak run can raise it without editing the file.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use ah_engine::checks::command::shell;
 use ah_engine::checks::git::tokenize as tk;
 use ah_engine::checks::guardkit::jsval::{self, Js};

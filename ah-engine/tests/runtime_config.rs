@@ -5,6 +5,7 @@
 //! in order: a defaults edit is live without a restart, an invalid edit keeps the last good snapshot and is logged with a
 //! reason code, a plugin update (a directory swap) is picked up. Then the cold-start case, where nothing can be loaded: the
 //! engine answers "unavailable" (the exit code the wrapper turns into the Node fallback), never a built-in default.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 mod common;
 use ah_engine::client;
 use serde_json::Value;
@@ -85,7 +86,7 @@ fn run_hook(root: &Path, plugin_root: &Path, state: &Path) -> (i32, String, Stri
 #[test]
 fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
     let root: PathBuf = PathBuf::from("/tmp").join(format!("ah-rtcfg-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    std::fs::remove_dir_all(&root).ok();
     let (eng, plugin) = (root.join("eng"), root.join("plugin"));
     std::fs::create_dir_all(root.join("home")).unwrap();
     std::fs::create_dir_all(&eng).unwrap();
@@ -99,7 +100,7 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
         ("AH_ENGINE_CONFIG_DEBOUNCE_MS", "100".into()),
         ("AH_ENGINE_NOSPAWN", "1".into()),
     ] {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: this test crate holds a single test, so no other thread of this process reads or writes the environment.
         unsafe { std::env::set_var(k, v) };
     }
     let daemon = Command::new(BIN).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
@@ -177,9 +178,9 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
             .stderr(Stdio::null());
         let mut ch = c.spawn().unwrap();
         let mut stdin = ch.stdin.take().unwrap();
-        let _ = std::io::Write::write_all(&mut stdin, br#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"Stop"}"#);
+        std::io::Write::write_all(&mut stdin, br#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"Stop"}"#).ok();
         drop(stdin);
-        let _ = ch.wait();
+        ch.wait().ok();
     };
     hook(&moved);
     wait_for("a request naming the newer plugin root", || queue_cap() == Some(q4));
@@ -219,5 +220,5 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
     let (code, _, err) = run_hook(&root, &plugin, &root.join("fresh-state-4"));
     assert_ne!(code, 75, "good defaults are loadable: {err}");
     assert!(root.join("fresh-state-4").join("defaults.cache").is_file(), "a client that had to parse the files leaves the cache for the next call");
-    let _ = std::fs::remove_dir_all(&root);
+    std::fs::remove_dir_all(&root).ok();
 }

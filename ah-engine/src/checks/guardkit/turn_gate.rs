@@ -177,7 +177,7 @@ mod js_only_tests {
     #[test]
     fn a_user_line_only_javascript_can_parse_is_not_skipped() {
         let dir = std::env::temp_dir().join(format!("ah-turngate-js-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let tp = dir.join("t.jsonl");
         let old = r#"{"type":"user","uuid":"u1","message":{"content":"first"}}"#;
@@ -190,6 +190,6 @@ mod js_only_tests {
         }
         std::fs::write(&tp, format!("{old}\n{{\"type\":\"user\",oops\n")).unwrap();
         assert_eq!(current_turn_id(Some(&Value::String(tp.to_string_lossy().into()))), Ok(Some("u1".to_string())), "skipped");
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
     }
 }

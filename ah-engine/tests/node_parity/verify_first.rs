@@ -362,7 +362,7 @@ fn mk_home(tmp: &Path, n: usize, ctx: &Home) -> std::path::PathBuf {
         std::fs::create_dir_all(home.join(".anti-hall")).expect("state dir");
     }
     if ctx.dot_anti_hall_file {
-        let _ = std::fs::remove_dir_all(home.join(".anti-hall"));
+        std::fs::remove_dir_all(home.join(".anti-hall")).ok();
         write_file(&home.join(".anti-hall"), b"x");
     }
     if ctx.state_is_dir {
@@ -446,7 +446,7 @@ pub(crate) fn run_lane(hooks: &Path, mutate: Option<usize>) -> String {
             s.push_str(&json!({"check": c.check, "id": c.id, "ctx": {"env": env, "settings": doc(&c.ctx.settings), "skip": doc(&c.ctx.skip), "claude": doc(&c.ctx.claude), "claudeJson": cj, "files": files, "dot": c.ctx.dot_anti_hall_file, "stateIsDir": c.ctx.state_is_dir, "noDot": c.ctx.no_dot_dir}, "stdin": c.stdin}).to_string());
             s.push('\n');
         }
-        let _ = std::fs::create_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
         std::fs::write(Path::new(&dir).join("verify-first.scenarios.jsonl"), s).expect("dump");
         if std::env::var_os("AH_PARITY_DUMP_ONLY").is_some() {
             return String::new();

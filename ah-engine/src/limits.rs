@@ -10,6 +10,7 @@ use std::time::Instant;
 
 /// Real uid of this process.
 pub fn uid() -> u32 {
+    // SAFETY: `getuid` has no preconditions and cannot fail.
     unsafe { libc::getuid() }
 }
 
@@ -71,6 +72,7 @@ impl Buckets {
 /// CPU time consumed by the calling thread, in microseconds.
 pub fn thread_cpu_us() -> u64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: `ts` is a live, writable `timespec`.
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
     if rc != 0 {
         return 0;
@@ -80,7 +82,9 @@ pub fn thread_cpu_us() -> u64 {
 
 /// User+system CPU seconds of this process.
 pub fn process_cpu_secs() -> f64 {
+    // SAFETY: an all-zero `rusage` is a valid value (integers and timevals); `getrusage` fills it below.
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: `ru` is a live, writable `rusage`.
     if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) } != 0 {
         return 0.0;
     }
@@ -101,6 +105,7 @@ pub fn rss_kb() -> u64 {
     #[cfg(target_os = "macos")]
     {
         // The kernel's own count, without spawning `ps` on every sample.
+        // SAFETY: `proc_taskinfo` is a plain C struct of integers, for which all-zero bytes are a valid value.
         let mut ti: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
         let want = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
         // SAFETY: `ti` is a writable `proc_taskinfo` of exactly `want` bytes, the size passed to the call.
@@ -125,10 +130,12 @@ pub fn apply_mem_limit(mb: u64) -> String {
     }
     let bytes = (mb * 1024 * 1024) as libc::rlim_t;
     let mut cur: libc::rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `cur` is a live, writable `rlimit`.
     if unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut cur) } != 0 {
         return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
     let lim = libc::rlimit { rlim_cur: bytes.min(cur.rlim_max), rlim_max: cur.rlim_max };
+    // SAFETY: `lim` is a live `rlimit` that `setrlimit` only reads.
     if unsafe { libc::setrlimit(libc::RLIMIT_DATA, &lim) } != 0 {
         return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
@@ -138,6 +145,7 @@ pub fn apply_mem_limit(mb: u64) -> String {
 /// Lower this process's priority by `n`.
 pub fn apply_nice(n: i32) {
     if n > 0 {
+        // SAFETY: `setpriority` takes plain integers and has no memory-safety preconditions.
         unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, n) };
     }
 }
@@ -154,6 +162,7 @@ pub fn peer_uid(s: &UnixStream) -> Option<u32> {
     #[cfg(not(target_os = "linux"))]
     {
         let (mut u, mut g): (libc::uid_t, libc::gid_t) = (0, 0);
+        // SAFETY: `s` is an open socket and `u` and `g` are live, writable out-values.
         let rc = unsafe { libc::getpeereid(s.as_raw_fd(), &mut u, &mut g) };
         (rc == 0).then_some(u)
     }
@@ -226,7 +235,7 @@ mod tests {
     #[test]
     fn private_dir_is_created_0700_tightened_and_refuses_symlinks_and_files() {
         let base = std::env::temp_dir().join(format!("ah-lim-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&base).unwrap();
         let d = base.join("d");
         ensure_private_dir(&d).unwrap();
@@ -238,7 +247,7 @@ mod tests {
         assert_eq!(ensure_private_dir(&base.join("link")).unwrap_err().code(), "unsafe_dir");
         std::fs::write(base.join("f"), "x").unwrap();
         assert_eq!(ensure_private_dir(&base.join("f")).unwrap_err().code(), "unsafe_dir");
-        let _ = std::fs::remove_dir_all(&base);
+        crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]

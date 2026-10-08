@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 fn home(tag: &str) -> String {
     let d = std::env::temp_dir().join(format!("ah-sibsweep-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a leftover from an earlier run may or may not exist
     std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
     d.to_string_lossy().to_string()
 }

@@ -9,7 +9,6 @@ use super::guard::*;
 use super::support::*;
 use regex::Regex;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -516,7 +515,6 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         }
         k.add(steps, &fz, format!("fuzz-{i}"));
     }
-    let _ = BTreeMap::<u8, u8>::new();
     k.out
 }
 

@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn project_a_cannot_read_project_b() {
         let base = std::env::temp_dir().join(format!("ah-store-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
         for p in ["A/.git", "A/sub/deep", "B/.git", "A-evil"] {
             std::fs::create_dir_all(base.join(p)).unwrap();
         }
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(s.op(&kb, "", "len", "").unwrap(), "0");
         assert_eq!(s.op(&ka2, "", "get", "token").unwrap(), "a-only");
         assert_eq!(s.op(&ka2, "", "take", "").unwrap(), "secret for A");
-        let _ = std::fs::remove_dir_all(&base);
+        crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(s.op("/p", "", "take", "").unwrap(), "0", "oldest first");
         s.op("/p", "", "put", "x").unwrap();
         for i in 0..cap("max_projects") {
-            let _ = s.op(&format!("/q{i}"), "", "put", "x");
+            crate::discard::harmless(s.op(&format!("/q{i}"), "", "put", "x")); // keep: best effort, fail-open
         }
         assert_eq!(s.op("/one-too-many", "", "put", "x"), Err(DbError::Rejected(StoreError::TooManyProjects)));
         assert!(s.op("/p", "", "set", &format!("k {}", "v".repeat(cap("value_cap")))).is_err(), "value cap");

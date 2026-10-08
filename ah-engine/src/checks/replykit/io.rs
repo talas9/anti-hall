@@ -107,7 +107,7 @@ pub fn prune_stale(dir: &Path, prefix: &str, keep: Option<&str>) {
             return;
         }
     }
-    let _ = std::fs::write(&stamp, format!("{{\"lastSweep\":{}}}", super::json::js_number(now)));
+    crate::discard::harmless(std::fs::write(&stamp, format!("{{\"lastSweep\":{}}}", super::json::js_number(now)))); // keep: a lost sweep stamp only repeats the sweep
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let full_prefix = format!("{prefix}-");
     for e in entries.flatten() {
@@ -118,7 +118,7 @@ pub fn prune_stale(dir: &Path, prefix: &str, keep: Option<&str>) {
         let Ok(meta) = std::fs::metadata(e.path()) else { continue };
         let mtime = meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64() * 1000.0);
         if now - mtime > ttl {
-            let _ = std::fs::remove_file(e.path());
+            crate::discard::harmless(std::fs::remove_file(e.path())); // keep: cleanup that raced; an absent file is the goal state
         }
     }
 }

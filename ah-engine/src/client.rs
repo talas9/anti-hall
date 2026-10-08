@@ -67,7 +67,7 @@ pub fn exchange(sock: &Path, payload: &[u8], deadline: Duration) -> Exch {
     let (tx, rx) = mpsc::channel();
     let (sock, payload) = (sock.to_path_buf(), payload.to_vec());
     std::thread::spawn(move || {
-        let _ = tx.send(exchange_inner(&sock, &payload, deadline));
+        crate::discard::harmless(tx.send(exchange_inner(&sock, &payload, deadline))); // keep: the receiver is gone; nobody is waiting for the result
     });
     rx.recv_timeout(deadline + defaults::millis("client.deadline_slack_ms")).unwrap_or_else(|_| Exch::Failed(defaults::text("msg.client_timeout").into()))
 }
@@ -197,7 +197,7 @@ pub(crate) fn attempt(payload: &[u8], cfg: &ClientConfig, have_fallback: bool) -
 
 /// Log a fallback failure; the state dir may not exist yet (no daemon ever ran here), and the event must still be on record.
 fn log_fallback(kind: &str, code: &str, detail: &str) {
-    let _ = crate::limits::ensure_private_dir(&paths::dir());
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: a failure surfaces at the next create in that directory
     health::log_event(kind, code, detail);
 }
 
@@ -209,7 +209,7 @@ fn read_to_eof(mut stream: impl Read + Send + 'static) -> mpsc::Receiver<(Vec<u8
         let mut b = Vec::new();
         let clean = stream.read_to_end(&mut b).is_ok();
         // the receiver is gone only when the caller already gave up at its deadline
-        let _ = tx.send((b, clean));
+        crate::discard::harmless(tx.send((b, clean))); // keep: the receiver is gone; nobody is waiting for the result
     });
     rx
 }
@@ -238,11 +238,11 @@ fn run_fallback(input: FallbackInput, path: &Path, cfg: &ClientConfig) -> Option
     let mut stdin = child.stdin.take()?;
     std::thread::spawn(move || match input {
         FallbackInput::Bytes(bytes) => {
-            let _ = stdin.write_all(&bytes);
+            crate::discard::harmless(stdin.write_all(&bytes)); // keep: best effort, fail-open
         }
         FallbackInput::BytesThenStdin(bytes, mut rest) => {
-            let _ = stdin.write_all(&bytes);
-            let _ = std::io::copy(&mut rest, &mut stdin);
+            crate::discard::harmless(stdin.write_all(&bytes)); // keep: best effort, fail-open
+            crate::discard::harmless(std::io::copy(&mut rest, &mut stdin)); // keep: best effort, fail-open
         }
     });
     let (out_rx, err_rx) = (read_to_eof(child.stdout.take()?), read_to_eof(child.stderr.take()?));
@@ -287,8 +287,8 @@ fn run_fallback(input: FallbackInput, path: &Path, cfg: &ClientConfig) -> Option
         libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
     }
     if !finished {
-        let _ = child.kill();
-        let _ = child.wait();
+        crate::discard::harmless(child.kill()); // keep: reaping or draining a child or thread that already ended
+        crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
         log_fallback("fallback_fail", "timeout", defaults::text("msg.log_fallback_timeout"));
         return None;
     }
@@ -507,16 +507,16 @@ pub fn hook_main(args: &[String]) -> i32 {
         let o = run_bytes(raw, force_fallback, fallback.as_deref(), rest, fail_closed_unavailable);
         if !o.err.is_empty() {
             let mut se = std::io::stderr();
-            let _ = se.write_all(o.err.as_bytes());
-            let _ = se.flush();
+            crate::discard::harmless(se.write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
+            crate::discard::harmless(se.flush()); // keep: best effort, fail-open
         }
         if !o.out.is_empty() {
             let mut so = std::io::stdout();
-            let _ = so.write_all(o.out.as_bytes());
+            crate::discard::harmless(so.write_all(o.out.as_bytes())); // keep: a closed pipe leaves nobody to tell
             if !o.out.ends_with('\n') {
-                let _ = so.write_all(b"\n");
+                crate::discard::harmless(so.write_all(b"\n")); // keep: a closed pipe leaves nobody to tell
             }
-            let _ = so.flush();
+            crate::discard::harmless(so.flush()); // keep: a closed pipe leaves nobody to tell
         }
         o.code
     });

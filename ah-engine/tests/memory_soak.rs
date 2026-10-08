@@ -6,6 +6,7 @@
 //! default RSS cap, and checks: the same daemon served every call (zero self-restarts), its resident set stayed under the cap,
 //! and after warm-up it is flat (no growth with the number of calls). The call count is `AH_SOAK_CALLS` (default 5000).
 //! Every Node hook is mapped to `true`, so only the engine's own checks run, which is what holds the memory.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,7 +24,7 @@ struct Soak {
 impl Soak {
     fn new() -> Soak {
         let dir = std::env::temp_dir().join(format!("ahd-soak-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(dir.join("home")).unwrap();
         // A transcript larger than the widest tail window any check reads, in the shape of a real one: user prompts, assistant
         // text, task tool uses and Bash/Edit tool uses, so the transcript-reading Stop checks have real work to do.
@@ -148,8 +149,8 @@ impl Drop for Soak {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["stop"]);
         self.env(&mut c);
-        let _ = c.output();
-        let _ = std::fs::remove_dir_all(&self.dir);
+        c.output().ok();
+        std::fs::remove_dir_all(&self.dir).ok();
     }
 }
 

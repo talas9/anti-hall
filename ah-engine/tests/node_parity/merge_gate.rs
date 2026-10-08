@@ -336,7 +336,6 @@ pub fn scenarios() -> Vec<Scenario> {
     for (id, p) in shapes {
         add(p, &on, Some(format!("shape-{id}")));
     }
-    let _ = Arc::strong_count(&on);
     out
 }
 

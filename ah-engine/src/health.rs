@@ -63,7 +63,7 @@ fn append_event_line(line: &str) -> bool {
         && let Ok(t) = std::fs::read_to_string(&p)
     {
         let keep: Vec<&str> = t.lines().rev().take(defaults::num("health.log_keep_lines") as usize).collect::<Vec<_>>().into_iter().rev().collect();
-        let _ = std::fs::write(&p, keep.join("\n") + "\n");
+        crate::discard::harmless(std::fs::write(&p, keep.join("\n") + "\n")); // keep: best effort, fail-open
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
         return f.write_all(line.as_bytes()).is_ok();
@@ -80,7 +80,7 @@ pub fn log_event(kind: &str, code: &str, detail: &str) {
 pub fn log_event_or_stderr(kind: &str, code: &str, detail: &str) {
     let line = event_line(kind, code, detail);
     if !append_event_line(&line) {
-        let _ = std::io::stderr().write_all(line.as_bytes());
+        crate::discard::harmless(std::io::stderr().write_all(line.as_bytes())); // keep: a closed pipe leaves nobody to tell
     }
 }
 
@@ -151,7 +151,7 @@ fn read_json(key: &str) -> Option<Value> {
 /// A healthy start clears an environment-class failure (the user fixed it); permanent ones stay.
 pub fn clear_env_failure() {
     if read_json("failure").and_then(|v| v["class"].as_str().map(|c| c == "env")).unwrap_or(false) {
-        let _ = std::fs::remove_file(state_file("failure"));
+        crate::discard::harmless(std::fs::remove_file(state_file("failure"))); // keep: cleanup that raced; an absent file is the goal state
     }
 }
 
@@ -162,6 +162,7 @@ pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
+    // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a pid that already exited just fails with ESRCH.
     let rc = unsafe { libc::kill(pid as i32, 0) };
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
@@ -186,12 +187,12 @@ pub fn pid_is_engine(pid: u32) -> bool {
 
 /// Record that a daemon is running, so a later start can tell a crash from a clean exit.
 pub fn write_marker() {
-    let _ = std::fs::write(state_file("run_marker"), std::process::id().to_string());
+    crate::discard::harmless(std::fs::write(state_file("run_marker"), std::process::id().to_string())); // keep: best effort, fail-open
 }
 
 /// Remove the run marker on a clean exit.
 pub fn clear_marker() {
-    let _ = std::fs::remove_file(state_file("run_marker"));
+    crate::discard::harmless(std::fs::remove_file(state_file("run_marker"))); // keep: cleanup that raced; an absent file is the goal state
 }
 
 /// If a previous daemon left its run marker and is gone (or the pid is no longer an engine), it died
@@ -205,7 +206,7 @@ pub fn reap_marker() {
     }
     let claim = file(&format!("{}{}", defaults::text("files.reaped_prefix"), std::process::id()));
     if std::fs::rename(&m, &claim).is_ok() {
-        let _ = std::fs::remove_file(&claim);
+        crate::discard::harmless(std::fs::remove_file(&claim)); // keep: cleanup that raced; an absent file is the goal state
         log_event("crash", "unknown", &defaults::render("msg.log_crash", &[("pid", &pid.to_string())]));
     }
 }
@@ -275,7 +276,7 @@ pub fn breaker_failure(cfg: &ClientConfig, why: &str) {
 /// Operator reset: clear the breaker, the crash-loop cooldown and the failure record.
 pub fn reset() {
     for key in ["breaker_until", "crashloop_until", "failure"] {
-        let _ = std::fs::remove_file(state_file(key));
+        crate::discard::harmless(std::fs::remove_file(state_file(key))); // keep: cleanup that raced; an absent file is the goal state
     }
     log_event("reset", "-", defaults::text("msg.log_operator_reset"));
 }
@@ -366,7 +367,7 @@ pub fn advisory(session: &str) -> Option<String> {
         return degraded_notice(session);
     };
     let dir = state_file("advised_dir");
-    let _ = std::fs::create_dir_all(&dir);
+    crate::discard::harmless(std::fs::create_dir_all(&dir)); // keep: the write that follows reports a failure
     let stamp = dir.join(format!("{:016x}", fnv(&format!("{session}|{}", f["ts"]))));
     std::fs::OpenOptions::new().write(true).create_new(true).open(&stamp).ok()?; // already advised => None
     prune_advised(&dir);
@@ -387,7 +388,7 @@ fn degraded_notice(session: &str) -> Option<String> {
         return None;
     }
     let dir = state_file("advised_dir");
-    let _ = std::fs::create_dir_all(&dir);
+    crate::discard::harmless(std::fs::create_dir_all(&dir)); // keep: the write that follows reports a failure
     let stamp = dir.join(format!("{:016x}", fnv(&format!("{session}|degraded"))));
     std::fs::OpenOptions::new().write(true).create_new(true).open(&stamp).ok()?; // already told => None
     prune_advised(&dir);
@@ -411,7 +412,7 @@ fn prune_advised(dir: &std::path::Path) {
     for e in all {
         let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > defaults::secs("health.advised_expire_s"));
         if old {
-            let _ = std::fs::remove_file(e.path());
+            crate::discard::harmless(std::fs::remove_file(e.path())); // keep: cleanup that raced; an absent file is the goal state
         }
     }
 }
@@ -439,6 +440,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation; the single-thread audit is the FIXME beside each call
     fn scrub_removes_secrets_emails_and_home() {
         // FIXME: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::set_var("HOME", "/Users/someone") };

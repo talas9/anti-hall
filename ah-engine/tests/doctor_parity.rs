@@ -7,6 +7,7 @@
 //! the engine reports. What only one of them checks (Node: the statusline render, the context footprint, the DevSwarm supervisor,
 //! OMC and Codex detection, hook syntax; engine: the engine daemon) is outside the comparison, so a check the engine does not make
 //! yet cannot pass as parity: the engine's report is asserted to contain every section it claims.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,7 +31,7 @@ struct Fx {
 
 impl Drop for Fx {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        fs::remove_dir_all(&self.root).ok();
     }
 }
 

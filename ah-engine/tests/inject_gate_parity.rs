@@ -1,5 +1,6 @@
 //! The injection gate's text constants and settings must say what the Node hooks and `settings-schema.js` say, so the gate
 //! recognises exactly what the hooks print and a settings change in one place reaches the other.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -67,7 +68,7 @@ fn the_task_tracker_text_the_gate_recognises_is_what_the_hook_prints() {
     };
     let long = run(1);
     let short = run(2);
-    let _ = std::fs::remove_dir_all(&home);
+    std::fs::remove_dir_all(&home).ok();
     assert!(long.starts_with(ah_engine::defaults::text("inject_gate.task_long_prefix")), "{long:?}");
     assert!(short.starts_with(ah_engine::defaults::text("inject_gate.task_short")), "{short:?}");
 }

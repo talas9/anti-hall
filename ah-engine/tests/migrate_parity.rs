@@ -9,6 +9,7 @@
 //!
 //! The steps that need the DevSwarm stores are the one place the engine differs on purpose (it defers them to Node while
 //! DevSwarm state exists); `deferred_*` scenarios pin that behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -423,7 +424,7 @@ fn stale_lock_scratch_files_are_swept_and_fresh_ones_and_real_locks_are_not() {
     // the same files, with no store directory, so the whole report is compared
     let plain = |home: &Path, cwd: &Path| {
         seed(home, cwd);
-        let _ = fs::remove_dir_all(home.join(".anti-hall/devswarm/store"));
+        fs::remove_dir_all(home.join(".anti-hall/devswarm/store")).ok();
     };
     let r = parity("lock-scratch-plain", &plain, &dry_then_real());
     did(&r, 1, &["sweep-lock-scratch"]);
@@ -701,5 +702,9 @@ fn the_committed_settings_schema_is_the_one_node_ships() {
     let out = Command::new("node").arg(repo().join("ah-engine/parity/gen-migrate-schema.js")).output().expect("node");
     assert!(out.status.success());
     let committed = fs::read_to_string(repo().join("plugins/anti-hall/engine/defaults/migrate_settings.toml")).unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), committed, "run `node ah-engine/parity/gen-migrate-schema.js > plugins/anti-hall/engine/defaults/migrate_settings.toml`");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        committed,
+        "run `node ah-engine/parity/gen-migrate-schema.js > plugins/anti-hall/engine/defaults/migrate_settings.toml`"
+    );
 }

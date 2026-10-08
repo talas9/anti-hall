@@ -90,6 +90,7 @@ pub fn new_write_id() -> String {
 /// Open (creating, mode 0600) and exclusively lock a spool-side file.
 fn open_locked(p: &Path) -> std::io::Result<File> {
     let f = OpenOptions::new().read(true).append(true).create(true).mode(0o600).open(p)?;
+    // SAFETY: `f` is an open file owned by this scope, so its descriptor is valid; `flock` takes only the descriptor and a flag.
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
         return Err(std::io::Error::last_os_error());
     }

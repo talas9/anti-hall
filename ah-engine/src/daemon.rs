@@ -837,7 +837,7 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
     if sh.draining.swap(true, SeqCst) {
         return;
     }
-    let _ = std::fs::remove_file(paths::socket());
+    crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
     if forced_exit {
         let why = why.to_string();
         let grace = defaults::millis("daemon.drain_grace_ms");
@@ -907,6 +907,7 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Option<std::fs::File>, 
     let f = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(lock_path)?;
     let start = Instant::now();
     loop {
+        // SAFETY: `f` is an open file owned by this scope, so its descriptor is valid; `flock` takes only the descriptor and a flag.
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             return Ok(Some(f));
         }
@@ -956,12 +957,12 @@ pub fn serve() {
     }
     crate::jev::shared::set_resident();
     health::reap_marker();
-    let _ = lock.set_len(0);
-    let _ = (&lock).write_all(std::process::id().to_string().as_bytes());
+    crate::discard::harmless(lock.set_len(0)); // keep: best effort, fail-open
+    crate::discard::harmless((&lock).write_all(std::process::id().to_string().as_bytes())); // keep: best effort, fail-open
     // a stale socket FILE (from a dead daemon) is removed; anything else at that path is left alone
     if let Ok(m) = std::fs::symlink_metadata(&sock) {
         if m.file_type().is_socket() {
-            let _ = std::fs::remove_file(&sock);
+            crate::discard::harmless(std::fs::remove_file(&sock)); // keep: cleanup that raced; an absent file is the goal state
         } else {
             start_fail("unsafe_dir", &defaults::render("msg.log_not_socket", &[("path", &sock.display())]));
         }
@@ -973,8 +974,9 @@ pub fn serve() {
             start_fail(&code, &defaults::render("msg.log_bind_fail", &[("path", &sock.display()), ("err", &e)]));
         }
     };
-    let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
+    crate::discard::harmless(std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))); // keep: best effort, fail-open
     listener.set_nonblocking(true).ok();
+    // SAFETY: both handlers are `extern "C"` fns that only store to an atomic, which is async-signal-safe.
     unsafe {
         libc::signal(libc::SIGHUP, on_hup as extern "C" fn(libc::c_int) as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
@@ -1065,7 +1067,7 @@ fn start_scheduler(sh: &Arc<Shared>) {
     let weak = Arc::downgrade(sh);
     let setting: Setting = Box::new(move |key| weak.upgrade().map(|sh| sh.cfg().effective.num(key)).unwrap_or_else(|| defaults::num(key)));
     let sched = Arc::new(Scheduler::new(&FileSource::standard(sh.cfg().test_hooks), sh.db.clone(), inproc, Box::new(PlannedDelivery), observe, setting));
-    let _ = sh.sched.set(sched.clone());
+    crate::discard::harmless(sh.sched.set(sched.clone())); // keep: best effort, fail-open
     let s = sh.clone();
     std::thread::spawn(move || sched.run_ticker(&|| s.draining.load(SeqCst)));
 }
@@ -1124,6 +1126,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         let draining = sh.draining.load(SeqCst);
         let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
         let timeout = defaults::num(if draining { "daemon.drain_poll_ms" } else { "daemon.accept_poll_ms" }) as i32;
+        // SAFETY: `pfd` is a live, writable `pollfd` and the count passed is 1.
         unsafe { libc::poll(&mut pfd, 1, timeout) };
         let mut got_any = false;
         // WouldBlock (or a transient error) ends the inner loop: back to poll
@@ -1142,7 +1145,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 let mut s = s;
                 s.set_nonblocking(false).ok();
                 s.set_write_timeout(Some(defaults::millis("daemon.busy_write_ms"))).ok();
-                let _ = s.write_all(&Reply::Busy.frame());
+                crate::discard::harmless(s.write_all(&Reply::Busy.frame())); // keep: best effort, fail-open
             } else {
                 // requests ahead of this one: the queued ones and those a worker is serving now
                 let in_flight = q.len() as u64 + sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64;

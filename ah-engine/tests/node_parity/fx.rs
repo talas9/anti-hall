@@ -436,7 +436,7 @@ pub(crate) fn dump_fx(name: &str, scenarios: &[Scenario]) {
         out.push_str(&serde_json::json!({"id": sc.id, "world": {"files": files, "dirs": w.dirs, "links": links, "gitdirs": w.gitdirs, "modes": modes}, "steps": steps, "expectDefer": sc.expect_defer, "answerWhenSilent": sc.answer_when_silent, "answerWhenNoBlock": sc.answer_when_no_block}).to_string());
         out.push('\n');
     }
-    let _ = std::fs::create_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok();
     std::fs::write(Path::new(&dir).join(format!("fx-{name}.scenarios.jsonl")), out).expect("dump");
 }
 
@@ -448,7 +448,7 @@ pub(crate) fn require(o: &Opts, hooks: &Path, scenarios: Vec<Scenario>, min: usi
     let rep = run_fx(o, hooks, &scenarios);
     println!("{}", rep.summary);
     if let Some(dir) = std::env::var_os("AH_PARITY_DUMP") {
-        let _ = std::fs::write(Path::new(&dir).join(format!("fx-{}.summary.txt", o.name)), &rep.summary);
+        std::fs::write(Path::new(&dir).join(format!("fx-{}.summary.txt", o.name)), &rep.summary).ok();
     }
     assert_eq!(rep.stats.mismatch, 0, "{}: mismatches:\n{}", o.name, rep.summary);
     assert!(rep.stats.scenarios >= min, "{}: only {} scenarios", o.name, rep.stats.scenarios);

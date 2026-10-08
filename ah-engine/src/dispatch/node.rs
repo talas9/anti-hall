@@ -136,10 +136,10 @@ fn start_with_input(entry: &Entry, input: Option<Input>) -> Running {
         if let Some(mut stdin) = c.stdin.take() {
             std::thread::spawn(move || match input {
                 Input::Bytes(ref data) => {
-                    let _ = write_stdin(&mut stdin, data);
+                    crate::discard::harmless(write_stdin(&mut stdin, data)); // keep: best effort, fail-open
                 }
                 Input::File(ref file) => {
-                    let _ = feed_file(file, &mut stdin);
+                    crate::discard::harmless(feed_file(file, &mut stdin)); // keep: best effort, fail-open
                 }
             });
         }
@@ -212,8 +212,8 @@ pub fn finish(mut running: Vec<Running>) -> Vec<Finished> {
                 unsafe {
                     libc::killpg(c.id() as libc::pid_t, libc::SIGKILL);
                 }
-                let _ = c.kill();
-                let _ = c.wait();
+                crate::discard::harmless(c.kill()); // keep: best effort, fail-open
+                crate::discard::harmless(c.wait()); // keep: best effort, fail-open
                 how
             };
             waited[i] = match c.try_wait() {
@@ -310,7 +310,7 @@ mod tests {
         for path in starts.iter().chain(&checked).chain(&finishes) {
             assert!(std::path::Path::new(path).exists(), "missing overlap marker {path}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -402,7 +402,7 @@ mod tests {
         let file = File::open(&path).unwrap();
         let mut writer = BrokenPipeWriter;
         let result = feed_file(&file, &mut writer);
-        let _ = std::fs::remove_file(&path);
+        crate::discard::harmless(std::fs::remove_file(&path)); // keep: cleanup that raced; an absent file is the goal state
         assert!(result.is_ok(), "{result:?}");
     }
 }

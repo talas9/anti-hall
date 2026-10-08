@@ -408,8 +408,8 @@ fn plugin_root(tmp: &Path, repo: &Path, spec: Option<&J>, cache: &Mutex<BTreeMap
         std::fs::write(root.join("hooks").join(n), "").expect("extra hook");
     }
     for n in list("removeHooks") {
-        let _ = std::fs::remove_dir_all(root.join("hooks").join(&n));
-        let _ = std::fs::remove_file(root.join("hooks").join(n));
+        std::fs::remove_dir_all(root.join("hooks").join(&n)).ok();
+        std::fs::remove_file(root.join("hooks").join(n)).ok();
     }
     for n in list("skillDirs") {
         std::fs::create_dir_all(root.join("skills").join(n)).expect("skill dir");
@@ -465,7 +465,7 @@ pub(crate) fn run_hook(hook: &str, hooks_dir: &Path, repo: &Path, mutate: Option
     }
     if let Some(dir) = std::env::var_os("AH_PARITY_DUMP") {
         let ids: String = scenarios.iter().map(|s| format!("{}\n", s.id())).collect();
-        let _ = std::fs::create_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
         std::fs::write(Path::new(&dir).join(format!("session-{hook}.ids")), ids).expect("dump");
         if std::env::var_os("AH_PARITY_DUMP_ONLY").is_some() {
             return Report { stats: Stats::default(), summary: String::new() };
@@ -590,7 +590,7 @@ pub(crate) fn run_hook(hook: &str, hooks_dir: &Path, repo: &Path, mutate: Option
             build();
             let init_tree = snapshot(&base);
             let spy_log = tmp.join(format!("spy{n}.log"));
-            let _ = std::fs::remove_file(&spy_log);
+            std::fs::remove_file(&spy_log).ok();
             let mut node_res = node(
                 &strs(&["-r", &tmp.join("spy.js").to_string_lossy(), &root.join("hooks").join(hook_file).to_string_lossy()]),
                 payload_text.as_bytes(),
@@ -726,7 +726,7 @@ pub(crate) fn require(hook: &str, hooks_dir: &Path, min: usize) {
     }
     println!("{}", rep.summary);
     if let Some(dir) = std::env::var_os("AH_PARITY_DUMP") {
-        let _ = std::fs::write(Path::new(&dir).join(format!("session-{hook}.summary.txt")), &rep.summary);
+        std::fs::write(Path::new(&dir).join(format!("session-{hook}.summary.txt")), &rep.summary).ok();
     }
     assert_eq!(rep.stats.mismatch, 0, "{hook}: mismatches:\n{}", rep.summary);
     assert!(rep.stats.scenarios >= min, "{hook}: only {} scenarios", rep.stats.scenarios);

@@ -223,7 +223,7 @@ fn mk_home(tmp: &Path, tag: &str, ctx: &Ctx) -> PathBuf {
     for (rel, target) in &ctx.links {
         let f = home.join(rel);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-        let _ = std::fs::remove_dir(&f);
+        std::fs::remove_dir(&f).ok();
         std::os::unix::fs::symlink(target.replace("$HOME", &home.to_string_lossy()), &f).unwrap();
     }
     home
@@ -681,7 +681,7 @@ pub fn dump_scenarios(name: &str, scenarios: &[Scenario]) {
         out.push_str(&serde_json::to_string(&json!({"id": sc.id, "ctx": ctx, "steps": steps})).unwrap());
         out.push('\n');
     }
-    let _ = std::fs::create_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok();
     std::fs::write(std::path::Path::new(&dir).join(format!("{name}.scenarios.jsonl")), out).unwrap();
 }
 
@@ -694,7 +694,7 @@ pub fn require(o: &Opts, hooks: &Path, scenarios: Vec<Scenario>, min_scenarios: 
     let rep = run_guard(o, hooks, &scenarios);
     println!("{}", rep.summary);
     if let Some(dir) = std::env::var_os("AH_PARITY_DUMP") {
-        let _ = std::fs::write(Path::new(&dir).join(format!("{}.summary.txt", o.name)), &rep.summary);
+        std::fs::write(Path::new(&dir).join(format!("{}.summary.txt", o.name)), &rep.summary).ok();
     }
     assert!(rep.stats.mismatch == 0, "{} mismatches:\n{}", o.name, rep.summary);
     assert!(rep.stats.scenarios >= min_scenarios, "{}: only {} scenarios", o.name, rep.stats.scenarios);

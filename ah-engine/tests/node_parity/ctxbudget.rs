@@ -238,7 +238,7 @@ pub(crate) fn run_lane(hooks_dir: &Path, mutate: Option<usize>) -> (BTreeMap<Str
     }
     if let Some(dir) = std::env::var_os("AH_PARITY_DUMP") {
         let ids: String = scenarios.iter().map(|s| format!("{}\n", s.id)).collect();
-        let _ = std::fs::create_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
         std::fs::write(Path::new(&dir).join("ctxbudget.ids"), ids).expect("dump");
         if std::env::var_os("AH_PARITY_DUMP_ONLY").is_some() {
             return (BTreeMap::new(), String::new());
@@ -337,7 +337,7 @@ pub(crate) fn require(hooks_dir: &Path) {
     }
     println!("{summary}");
     if let Some(dir) = std::env::var_os("AH_PARITY_DUMP") {
-        let _ = std::fs::write(Path::new(&dir).join("ctxbudget.summary.txt"), &summary);
+        std::fs::write(Path::new(&dir).join("ctxbudget.summary.txt"), &summary).ok();
     }
     assert!(stats.values().all(|s| s.mismatch == 0), "parity mismatches:\n{summary}");
     for (hook, _) in HOOKS {

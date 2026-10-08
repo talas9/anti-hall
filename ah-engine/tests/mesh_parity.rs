@@ -13,6 +13,7 @@
 //!   `~/.anti-hall/devswarm/store` (set `AH_MESH_PARITY_LIVE_ROOT` to that devswarm directory). It never opens a live file
 //!   for writing: it copies the database and its `-wal` with plain file reads (retrying until the files did not change
 //!   during the copy and the copy passes `quick_check`), folds the WAL into the copy, and compares on the copy only.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -30,7 +31,7 @@ fn support(name: &str) -> PathBuf {
 
 fn tmp(tag: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("mesh-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&p);
+    fs::remove_dir_all(&p).ok();
     fs::create_dir_all(&p).unwrap();
     p
 }
@@ -102,7 +103,7 @@ fn p1_fixture_stores_match_node() {
     assert!(rich.contains("\"hash\":null"), "null-hash rows exist");
     let old = String::from_utf8(node_dump(&home, "old-dddddd")).unwrap();
     assert!(old.contains("\"error\":true"), "a pre-mesh store fails identically on both sides, not silently empty");
-    let _ = fs::remove_dir_all(&home);
+    fs::remove_dir_all(&home).ok();
 }
 
 fn dir_state(d: &Path) -> Vec<(String, u64, Option<SystemTime>)> {
@@ -170,7 +171,7 @@ fn the_reader_never_writes_never_creates_and_refuses_a_journal_store() {
     let text = String::from_utf8_lossy(&o.stdout);
     let idx: Vec<u64> = text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).filter_map(|v| v["index"].as_u64()).collect();
     assert_eq!(idx, (3..=12).collect::<Vec<u64>>(), "child-one has 12 rows; since 2 skips two and keeps the positional index");
-    let _ = fs::remove_dir_all(&home);
+    fs::remove_dir_all(&home).ok();
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -189,8 +190,8 @@ fn copy_store(src: &Path, dst: &Path) -> Result<(), String> {
     let (db, wal) = (src.join("devswarm.db"), src.join("devswarm.db-wal"));
     for _ in 0..8 {
         let (s1, w1) = (stat(&db), stat(&wal));
-        let _ = fs::remove_file(dst.join("devswarm.db-wal"));
-        let _ = fs::remove_file(dst.join("devswarm.db-shm"));
+        fs::remove_file(dst.join("devswarm.db-wal")).ok();
+        fs::remove_file(dst.join("devswarm.db-shm")).ok();
         fs::copy(&db, dst.join("devswarm.db")).map_err(|e| e.to_string())?;
         if wal.exists() {
             fs::copy(&wal, dst.join("devswarm.db-wal")).map_err(|e| e.to_string())?;
@@ -208,8 +209,8 @@ fn copy_store(src: &Path, dst: &Path) -> Result<(), String> {
         }
         let _: String = c.query_row("PRAGMA journal_mode = DELETE", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         drop(c);
-        let _ = fs::remove_file(dst.join("devswarm.db-wal"));
-        let _ = fs::remove_file(dst.join("devswarm.db-shm"));
+        fs::remove_file(dst.join("devswarm.db-wal")).ok();
+        fs::remove_file(dst.join("devswarm.db-shm")).ok();
         return Ok(());
     }
     Err("the store kept changing during the copy".into())
@@ -257,10 +258,10 @@ fn p1_live_store_copies() {
             }
         }
         // a copy is scratch; remove only what this test made
-        let _ = fs::remove_dir_all(&dst);
+        fs::remove_dir_all(&dst).ok();
     }
     if let Ok(p) = std::env::var("AH_MESH_PARITY_REPORT") {
-        let _ = fs::write(p, &report);
+        fs::write(p, &report).ok();
     }
     eprintln!(
         "P1 live copies: {} stores, {equal} byte-equal ({empty} without any workspace, {errored} with a read that fails identically on both sides, {} with data), {} mismatches, {rows} message rows, {bytes} dump bytes",
@@ -269,5 +270,5 @@ fn p1_live_store_copies() {
         bad.len()
     );
     assert!(bad.is_empty(), "P1 mismatches:\n{}", bad.join("\n"));
-    let _ = fs::remove_dir_all(&home);
+    fs::remove_dir_all(&home).ok();
 }

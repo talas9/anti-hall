@@ -1,5 +1,6 @@
 //! Benchmarks for the pattern matcher and the shell tokenizers (`cargo bench --bench parsers`). The `**/**/**` groups
 //! are the worst case for a backtracking glob: time must stay flat-linear in the text length.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use ah_engine::checks::command::shell;
 use ah_engine::checks::git::tokenize as tk;
 use ah_engine::hookcfg::when::glob_match;

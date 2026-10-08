@@ -270,7 +270,7 @@ pub(crate) fn dump_lane(name: &str, scenarios: &[Sc]) {
         out.push('\n');
         wipe(&root);
     }
-    let _ = std::fs::create_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok();
     std::fs::write(Path::new(&dir).join(format!("b78-{name}.scenarios.jsonl")), out).expect("dump");
 }
 
@@ -284,7 +284,7 @@ pub(crate) fn require(name: &str, check: &str, hook_file: &str, hooks: &Path, sc
     let rep = run_lane(name, check, hook_file, hooks, &scenarios, false);
     println!("{}", rep.summary);
     if let Some(dir) = std::env::var_os("AH_PARITY_DUMP") {
-        let _ = std::fs::write(Path::new(&dir).join(format!("b78-{name}.summary.txt")), &rep.summary);
+        std::fs::write(Path::new(&dir).join(format!("b78-{name}.summary.txt")), &rep.summary).ok();
     }
     assert!(rep.mismatch == 0, "{name}: mismatches:\n{}", rep.summary);
     assert!(rep.n >= min, "{name}: only {} scenarios", rep.n);

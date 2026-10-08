@@ -493,7 +493,7 @@ impl Jev {
             this: OnceLock::new(),
             log_errors: AtomicU64::new(0),
         });
-        let _ = jev.this.set(Arc::downgrade(&jev));
+        crate::discard::harmless(jev.this.set(Arc::downgrade(&jev))); // keep: best effort, fail-open
         jev
     }
 
@@ -606,17 +606,17 @@ impl Jev {
         }
         let line = Jev::wire_line(&req, Jev::detached_budget(&s, &req));
         let Some(exe) = std::env::current_exe().ok() else { return };
-        let _ = (|| -> std::io::Result<()> {
+        crate::discard::harmless((|| -> std::io::Result<()> {
             use std::os::unix::process::CommandExt;
             use std::process::{Command, Stdio};
             let mut child = Command::new(exe); // inherits the hook's own environment, as Node's `env || process.env`
             child.args(defaults::list("jev.detached_args")).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
             let mut c = child.spawn()?;
             if let Some(mut stdin) = c.stdin.take() {
-                let _ = std::io::Write::write_all(&mut stdin, format!("{line}\n").as_bytes());
+                crate::discard::harmless(std::io::Write::write_all(&mut stdin, format!("{line}\n").as_bytes())); // keep: best effort, fail-open
             }
             Ok(()) // the child is not waited for; it ends when its one ask has finished
-        })();
+        })()); // keep: best effort, fail-open
     }
 
     /// Queue the call and return at once; the answer lands in the cache and the log for a later turn. A full queue is
@@ -1210,7 +1210,7 @@ mod tests {
         let cache2: Arc<dyn JevCache> = Arc::new(FileCache::new(path, 500));
         let jev2 = Jev::with_parts(&dir, Env::from_pairs(ON), f2.clone(), Arc::new(ManualClock::default()), Some(cache2), None);
         assert_eq!(jev2.ask(&b).backend, Backend::Jev, "a different chain asks again");
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
