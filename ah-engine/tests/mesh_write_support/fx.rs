@@ -223,9 +223,9 @@ pub fn raw_dump(db: &Path) -> String {
 
 /// Node's canonical dump of a store.
 pub fn node_dump(home: &Path, key: &str) -> String {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("mesh_support").join("dump.js");
+    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("it").join("mesh_support").join("dump.js");
     let o = Command::new("node").arg(d).arg(home).arg(key).env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", home).output().unwrap();
-    assert!(o.status.success());
+    assert!(o.status.success(), "dump.js failed: {}", String::from_utf8_lossy(&o.stderr));
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
