@@ -283,6 +283,18 @@ doc = "After a drain starts, a worker or loop that has not finished in this long
 value = 1000
 unit = "ms"
 
+[daemon.drain_max_ms]
+doc = "Longest a clean drain (handoff, stop, idle exit, SIGTERM) may take before the daemon exits anyway, so a worker stuck while draining can never keep the process (and the singleton lock) alive with its socket already gone. Above daemon.stuck_ms, so the stuck-worker check normally ends such a drain first."
+value = 10000
+min = 100
+unit = "ms"
+
+[daemon.accept_error_backoff_ms]
+doc = "Sleep after an accept that failed for a reason other than nothing pending (a full descriptor table, EMFILE): the pending connection would make poll fire again at once, so without it the accept loop spins at full CPU. Kept well under daemon.stall_ms."
+value = 50
+min = 1
+unit = "ms"
+
 [daemon.accept_poll_ms]
 doc = "Accept-loop poll interval while serving."
 value = 200

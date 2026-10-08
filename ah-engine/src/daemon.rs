@@ -115,6 +115,10 @@ pub struct Shared {
     pub rlimit: String,
     /// True once the daemon stopped taking new clients.
     pub draining: AtomicBool,
+    /// The exit timer of a clean drain (`daemon.drain_max_ms`) is armed.
+    drain_timer: AtomicBool,
+    /// The exit timer of a forced drain (`daemon.drain_grace_ms`) is armed.
+    forced_timer: AtomicBool,
     /// ms since `started` at the last accept-loop iteration
     loop_beat: AtomicU64,
     /// per worker: 0 = idle, else (ms since `started`) + 1 when it picked up the current request
@@ -168,6 +172,8 @@ impl Shared {
             started: Instant::now(),
             rlimit: "off".into(),
             draining: AtomicBool::new(false),
+            drain_timer: AtomicBool::new(false),
+            forced_timer: AtomicBool::new(false),
             loop_beat: AtomicU64::new(0),
             busy_since: (0..workers).map(|_| AtomicU64::new(0)).collect(),
             stall_ms: AtomicU64::new(0),
@@ -349,6 +355,7 @@ impl Shared {
             "budget_trips": self.stats.budget_trips.load(SeqCst),
             "panics": self.stats.panics.load(SeqCst),
             "reply_write_errors": REPLY_WRITE_ERRORS.load(SeqCst),
+            "accept_errors": ACCEPT_ERRORS.load(SeqCst),
             "rejected_peers": self.stats.rejected.load(SeqCst),
             "starts": self.starts,
             "restarts": self.starts.saturating_sub(1),
@@ -832,22 +839,29 @@ fn worker(sh: Arc<Shared>, idx: usize) {
     }
 }
 
-/// Stop taking new clients (unlink the socket) and arm the forced-exit timer. Idempotent.
+/// Stop taking new clients (unlink the socket) and arm an exit timer, so no drain can last forever (a worker stuck
+/// during a drain would otherwise keep the process alive holding the singleton lock, with its socket already gone, and
+/// every new daemon would give up on the lock). A forced drain (stall, stuck worker, memory cap) is cut off after
+/// `daemon.drain_grace_ms`; any other drain (handoff, stop, idle, SIGTERM) after `daemon.drain_max_ms`. A forced drain
+/// that follows a clean one arms the shorter timer too.
 fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
-    if sh.draining.swap(true, SeqCst) {
+    let first = !sh.draining.swap(true, SeqCst);
+    if first {
+        crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
+    }
+    let armed = if forced_exit { &sh.forced_timer } else { &sh.drain_timer };
+    if armed.swap(true, SeqCst) {
         return;
     }
-    crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
-    if forced_exit {
-        let why = why.to_string();
-        let grace = defaults::millis("daemon.drain_grace_ms");
-        std::thread::spawn(move || {
-            std::thread::sleep(grace);
-            health::clear_marker();
-            health::log_event("exit", "forced", &why);
-            std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
-        });
-    }
+    let why = why.to_string();
+    let grace = defaults::millis(if forced_exit { "daemon.drain_grace_ms" } else { "daemon.drain_max_ms" });
+    let code = if forced_exit { "forced" } else { "drain_timeout" };
+    std::thread::spawn(move || {
+        std::thread::sleep(grace);
+        health::clear_marker();
+        health::log_event("exit", code, &why);
+        std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
+    });
 }
 
 fn watchdog(sh: Arc<Shared>) {
@@ -855,9 +869,14 @@ fn watchdog(sh: Arc<Shared>) {
     let mut last_idle_check = Instant::now();
     loop {
         std::thread::sleep(sh.cfg().watchdog_tick);
-        if sh.draining.load(SeqCst) {
+        // the stall and stuck checks keep running while draining: a drain waits for its workers, so one stuck there would
+        // otherwise hold the process (and the singleton lock) until the drain timer. Once a forced exit is scheduled there
+        // is nothing left to decide, and a check that kept firing would log the same failure every tick (each one counts
+        // toward the client's crash-loop rule).
+        if sh.forced_timer.load(SeqCst) {
             continue;
         }
+        let draining = sh.draining.load(SeqCst);
         let cfg = sh.cfg();
         let now = sh.ms();
         if now.saturating_sub(sh.loop_beat.load(SeqCst)) > cfg.stall.as_millis() as u64 {
@@ -874,6 +893,9 @@ fn watchdog(sh: Arc<Shared>) {
                 begin_drain(&sh, defaults::text("msg.exit_reason_stuck"), true);
                 break;
             }
+        }
+        if draining {
+            continue;
         }
         // Idle exit is off unless configured (D7): the engine stays resident so the scheduler and mailbox keep running.
         if let Some(idle) = cfg.idle_exit
@@ -911,7 +933,14 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Option<std::fs::File>, 
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             return Ok(Some(f));
         }
-        if start.elapsed() > defaults::millis("daemon.lock_wait_ms") || crate::client::ping(sock).is_some() {
+        if crate::client::ping(sock).is_some() {
+            return Ok(None);
+        }
+        if start.elapsed() > defaults::millis("daemon.lock_wait_ms") {
+            // the lock is held but nothing answers on the socket: a daemon that is draining, wedged, or gone without
+            // releasing it; this start gives up (the client falls back to Node), and the line says why
+            let holder = std::fs::read_to_string(lock_path).unwrap_or_default();
+            health::log_event("lock_wait", "no_daemon", &defaults::render("msg.log_lock_no_daemon", &[("path", &lock_path.display()), ("pid", &holder.trim())]));
             return Ok(None);
         }
         std::thread::sleep(defaults::millis("daemon.lock_poll_ms"));
@@ -1110,10 +1139,27 @@ fn next_start_count() -> u64 {
     n
 }
 
+/// An `accept` that failed for a reason other than "nothing pending" (review finding 5): counted in `accept_errors` (by
+/// errno), logged at most once per `discard.log_interval_ms`, then the loop sleeps `daemon.accept_error_backoff_ms` before
+/// polling again, so a full descriptor table cannot turn the accept loop into a busy spin.
+fn accept_error(sh: &Shared, e: &std::io::Error) -> String {
+    let code = io_code(e);
+    ACCEPT_ERRORS.fetch_add(1, SeqCst);
+    sh.telemetry.with_metrics(|m| m.inc("accept_errors", &[("code", code.as_str())]));
+    crate::discard::note("daemon_accept_error", &defaults::render("msg.log_accept_error", &[("code", &code), ("err", e)]));
+    std::thread::sleep(defaults::millis("daemon.accept_error_backoff_ms"));
+    code
+}
+
+/// Accept calls that failed with something other than "nothing pending" (EMFILE and the like), since start.
+pub static ACCEPT_ERRORS: AtomicU64 = AtomicU64::new(0);
+
 fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
     let me = limits::uid();
     let fd = listener.as_raw_fd();
     let mut last_check = Instant::now();
+    // accept failures since the last accepted connection: (OS error code, count)
+    let mut failing: Option<(String, u64)> = None;
     loop {
         sh.loop_beat.store(sh.ms(), SeqCst);
         let st = sh.stall_ms.swap(0, SeqCst);
@@ -1129,8 +1175,23 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         // SAFETY: `pfd` is a live, writable `pollfd` and the count passed is 1.
         unsafe { libc::poll(&mut pfd, 1, timeout) };
         let mut got_any = false;
-        // WouldBlock (or a transient error) ends the inner loop: back to poll
-        while let Ok((s, _)) = listener.accept() {
+        loop {
+            let s = match listener.accept() {
+                Ok((s, _)) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break, // nothing pending: back to poll
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => continue,
+                Err(e) => {
+                    // EMFILE, ENFILE, ENOBUFS, ENOMEM: the connection stays pending, so poll fires again at once and the loop
+                    // would spin at full CPU until a descriptor frees up. Count it, say why (rate-limited), and back off.
+                    let n = failing.as_ref().map_or(0, |f| f.1);
+                    failing = Some((accept_error(sh, &e), n + 1));
+                    break;
+                }
+            };
+            if let Some((code, n)) = failing.take() {
+                // the log line written while the descriptor table was full may itself have failed to open the log
+                health::log_event("accept", "recovered", &defaults::render("msg.log_accept_recovered", &[("n", &n), ("code", &code)]));
+            }
             got_any = true;
             if !limits::peer_allowed(&s, me) {
                 sh.stats.rejected.fetch_add(1, SeqCst);
