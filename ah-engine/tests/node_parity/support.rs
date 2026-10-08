@@ -43,14 +43,27 @@ pub fn repo_root() -> PathBuf {
 }
 
 /// The Node hooks directory of this checkout, when Node and the hooks are both present (the engine can be built outside
-/// the monorepo; the parity lanes are then skipped).
+/// the monorepo; the parity lanes are then skipped). In CI (`CI=true`) a missing Node or missing hooks FAIL instead: a
+/// parity lane that silently skips there proves nothing.
 pub fn hooks_dir() -> Option<PathBuf> {
+    hooks_dir_with("node", std::env::var("CI").is_ok_and(|v| v == "true"))
+}
+
+fn hooks_dir_with(node: &str, ci: bool) -> Option<PathBuf> {
     let hooks = repo_root().join("plugins/anti-hall/hooks");
-    if !hooks.join("auto-handover.js").exists() || Command::new("node").arg("--version").output().is_err() {
+    if !hooks.join("auto-handover.js").exists() || Command::new(node).arg("--version").output().is_err() {
+        assert!(!ci, "CI=true but no Node ({node}) or no plugin hooks next to the engine: the Node parity lanes cannot be skipped in CI");
         eprintln!("skipped: no Node or no plugin hooks next to the engine");
         return None;
     }
     Some(hooks.canonicalize().unwrap_or(hooks))
+}
+
+#[test]
+fn a_missing_node_fails_in_ci_and_skips_elsewhere() {
+    // review P2 #10: in CI the lanes skipped silently when Node was missing
+    assert_eq!(hooks_dir_with("ah-no-such-node-binary", false), None);
+    assert!(std::panic::catch_unwind(|| hooks_dir_with("ah-no-such-node-binary", true)).is_err(), "CI must fail, not skip");
 }
 
 /// The result of one child process. `code` is the exit status, or `sig:<n>` when the child was killed by a signal.
