@@ -281,7 +281,7 @@ fn prune_stale(dir: &str, keep: &str, now: f64) {
     {
         return;
     }
-    crate::discard::harmless(std::fs::write(&stamp, json::stringify(&J::Obj(vec![("lastSweep".into(), J::Num(now))])))); // keep: a lost sweep stamp only repeats the sweep
+    crate::discard::harmless(crate::atomic::write(&stamp, json::stringify(&J::Obj(vec![("lastSweep".into(), J::Num(now))])))); // keep: a lost sweep stamp only repeats the sweep
     let Some(entries) = fsx::read_dir_names(dir) else { return };
     let full_prefix = format!("{prefix}-");
     let ttl = defaults::num("codex_handover.prune_ttl_ms") as f64;
@@ -363,7 +363,7 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
         return Ok(None);
     }
     let body = json::stringify(&J::Obj(vec![("sig".into(), J::Str(sig)), ("nudges".into(), J::Num(nudges + 1.0))]));
-    if !fsx::mkdir_p(&dir) || std::fs::write(&state, body).is_err() {
+    if !fsx::mkdir_p(&dir) || crate::atomic::write(&state, body).is_err() {
         return Ok(None);
     }
     prune_stale(&dir, &posix_basename(&state), date::now_ms());

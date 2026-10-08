@@ -251,7 +251,7 @@ pub fn decide(p: &Value, st: &Settings, root: &str, memory: &dyn MemSource, now:
         recent.push(now as f64);
         let body: Vec<String> = recent.iter().map(|t| format!("{}", *t as u64)).collect();
         crate::discard::harmless(std::fs::create_dir_all(&dir)); // keep: the write that follows fails too when the directory is missing
-        crate::discard::logged("swarm_state_write", std::fs::write(&log, format!("{}\n", body.join("\n"))));
+        crate::discard::logged("swarm_state_write", crate::atomic::write(&log, format!("{}\n", body.join("\n"))));
         None
     };
     lock.release();

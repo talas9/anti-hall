@@ -212,7 +212,10 @@ pub struct JevClient {
 /// The budget of one call in milliseconds: the caller's request when it is positive, else the configured one, and never
 /// more than `jev.max_timeout_ms`, whatever was asked (a `u64::MAX` request is the ceiling, not an overflow).
 fn budget_for(s: &JevSettings, requested: Option<u64>) -> u64 {
-    let ceiling = defaults::num("jev.max_timeout_ms");
+    // inside a daemon request, never past the time its client still waits (review finding 4): an answer that arrives later
+    // is lost, and the client's own Node fallback answers instead
+    let left = crate::deadline::remaining().map_or(u64::MAX, |d| d.as_millis() as u64);
+    let ceiling = defaults::num("jev.max_timeout_ms").min(left);
     match requested {
         Some(t) if t > 0 => t.min(ceiling),
         _ => s.timeout_ms.min(ceiling),
@@ -573,6 +576,17 @@ mod tests {
             assert!(c.decide(&with_fallback(), &q(), "x", None).fell_back);
         }
         assert!(!c.breaker_open(Vendor::Vercel), "timeouts under the shortened budget are not counted");
+    }
+
+    #[test]
+    fn inside_a_daemon_request_the_budget_never_outlasts_the_clients_deadline() {
+        // review finding 4: jev.max_timeout_ms (3 s) outlasted the 2 s client deadline
+        let s = settings(&KEYS, json!({"timeoutMs": 3000}));
+        assert_eq!(budget_for(&s, None), 3000, "no request: the configured budget");
+        crate::deadline::begin(std::time::Instant::now());
+        let left = crate::deadline::remaining().unwrap().as_millis() as u64;
+        assert!(budget_for(&s, None) <= left && budget_for(&s, Some(u64::MAX)) <= left);
+        crate::deadline::end();
     }
 
     #[test]

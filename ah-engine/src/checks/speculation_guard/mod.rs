@@ -234,6 +234,7 @@ fn append_judge_log(home: &str, line: &str) {
                 std::fs::create_dir_all(d)?;
             }
             if std::fs::metadata(&path).is_ok_and(|m| m.len() > defaults::num("speculation_guard.judge_log_max_bytes")) {
+                // an append-only log cut at its cap, as Node does: not whole-file state (DECISIONS, atomic-write exceptions)
                 std::fs::write(&path, "")?;
             }
             let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
@@ -356,7 +357,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
             );
         }
         let cleared = format!("{{\"hash\":{},\"blocks\":{},\"pending\":null}}", quote(&prior.last_blocked), js_number(prior.blocks));
-        crate::discard::logged("speculation_state_write", std::fs::create_dir_all(&state_dir).and_then(|()| std::fs::write(&state_file, cleared)));
+        crate::discard::logged("speculation_state_write", std::fs::create_dir_all(&state_dir).and_then(|()| crate::atomic::write(&state_file, cleared)));
     }
     if skipped {
         return Ok(Verdict::Allow);
@@ -472,7 +473,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         quote(&pending_h),
         quote(source)
     );
-    let persisted = std::fs::create_dir_all(&state_dir).is_ok() && std::fs::write(&state_file, body).is_ok();
+    let persisted = std::fs::create_dir_all(&state_dir).is_ok() && crate::atomic::write(&state_file, body).is_ok();
     if !persisted {
         return finish(Verdict::Allow, "allow");
     }

@@ -139,7 +139,7 @@ fn check_resume_verification(home: &str, sid: &str, work: u64, threshold: f64) -
     if fired.exists() {
         return Ok(None);
     }
-    if std::fs::create_dir_all(&dir).is_err() || std::fs::write(&fired, format!("{{\"nudged\":true,\"ts\":{}}}", time::now_ms())).is_err() {
+    if std::fs::create_dir_all(&dir).is_err() || crate::atomic::write(&fired, format!("{{\"nudged\":true,\"ts\":{}}}", time::now_ms())).is_err() {
         return Ok(None);
     }
     Ok(Some(defaults::render("tasklist_guard.resume_text", &[("file", &file)])))

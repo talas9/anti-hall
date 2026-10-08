@@ -73,11 +73,19 @@ pub fn judge(event: &str, payload: Option<&Value>, why: &str) -> Verdict {
     prune();
     let path = counter(payload, event);
     let cap = defaults::num("dispatch.stop_block_cap");
+    // two Stops of one session at once must not both read n and write n+1 (review finding 11): the read-increment-write
+    // runs under an exclusive lock on the counter's lock file; the count is replaced atomically
+    let lock = path
+        .parent()
+        .filter(|d| crate::limits::ensure_private_dir(d).is_ok())
+        .and_then(|_| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(crate::paths::lock_for(&path)).ok());
+    // SAFETY: the descriptor belongs to `lock`, which outlives the call; flock takes only it and a flag.
+    let locked = lock.as_ref().is_some_and(|f| unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(f), libc::LOCK_EX) } == 0);
     let seen: u64 = std::fs::read_to_string(&path).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
     if seen >= cap {
         return Verdict::Open(defaults::render("dispatch.msg_stop_capped", &[("event", &event), ("cap", &cap), ("why", &why)]));
     }
-    let recorded = path.parent().is_some_and(|d| crate::limits::ensure_private_dir(d).is_ok()) && std::fs::write(&path, (seen + 1).to_string()).is_ok();
+    let recorded = locked && crate::atomic::write(&path, (seen + 1).to_string()).is_ok();
     if recorded { Verdict::Block } else { Verdict::Open(defaults::render("dispatch.msg_stop_uncounted", &[("event", &event), ("why", &why)])) }
 }
 
@@ -94,6 +102,21 @@ pub fn reset(event: &str, payload: Option<&Value>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn concurrent_stops_of_one_session_count_every_block_once() {
+        // review finding 11: the read-increment-write was unlocked, so two Stops at once could both write n+1
+        let p = json!({"session_id": format!("race{}", std::process::id())});
+        let blocks: usize = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..8).map(|_| sc.spawn(|| judge("Stop", Some(&p), "why") == Verdict::Block)).collect();
+            hs.into_iter().map(|h| usize::from(h.join().unwrap())).sum()
+        });
+        let cap = defaults::num("dispatch.stop_block_cap") as usize;
+        assert_eq!(blocks, cap.min(8), "every block up to the cap, no more");
+        let seen: usize = std::fs::read_to_string(counter(Some(&p), "Stop")).unwrap().trim().parse().unwrap();
+        assert_eq!(seen, blocks, "the counter holds exactly the blocks given");
+        reset("Stop", Some(&p));
+    }
 
     #[test]
     fn counter_names_cannot_collide_across_ids_that_hold_hyphens() {

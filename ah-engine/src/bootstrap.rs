@@ -39,6 +39,9 @@ pub const ROOT_ENVS: &[&str] = &["AH_ENGINE_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", 
 pub const CACHE_FILE: &str = "defaults.cache";
 /// The last-resort error note inside the state directory (written when no defaults could be loaded, so no log path exists).
 pub const ERROR_FILE: &str = "defaults.error";
+/// The temporary-file suffix of an atomic write made before any defaults are loaded (the same as the shipped
+/// `atomic.tmp_suffix`; a test keeps them equal).
+pub const TMP_SUFFIX: &str = ".tmp";
 /// The exit code that tells the reliability wrapper "the engine cannot answer, run the Node hooks" (the wrapper's protocol; it equals
 /// the shipped `dispatch.defer_exit`, which a test keeps true). It is used when no defaults can be loaded, i.e. exactly when no
 /// shipped setting can be read.
@@ -121,6 +124,7 @@ mod tests {
         assert_eq!(crate::defaults::text("paths.state_dir"), STATE_REL[1]);
         assert!(home.is_none() || state_dir().is_some() || crate::defaults::env_var("dir").is_some());
         assert_eq!(crate::defaults::num("dispatch.defer_exit") as i32, UNAVAILABLE_EXIT);
+        assert_eq!(crate::defaults::text("atomic.tmp_suffix"), TMP_SUFFIX);
     }
 
     #[test]

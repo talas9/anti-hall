@@ -10,6 +10,7 @@ pub mod client;
 pub mod config;
 pub mod daemon;
 pub mod db;
+pub mod deadline;
 pub mod defaults;
 #[cfg(feature = "diag")]
 pub mod diag;
@@ -36,6 +37,7 @@ pub mod mesh;
 pub mod metrics;
 pub mod migrate;
 pub mod paths;
+pub mod proc;
 pub mod reqenv;
 pub mod rules;
 pub mod schedule;

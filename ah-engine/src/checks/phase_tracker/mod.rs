@@ -104,14 +104,15 @@ pub fn record(home: &str, now: f64, tag: &str) {
     if let Some(old) = old
         && std::fs::create_dir_all(&dir).is_ok()
     {
-        // in place, not through a rename: a symlinked log is written through, as Node's writeFileSync does
+        // in place, not through a rename: a symlinked log is written through, as Node's writeFileSync does (DECISIONS,
+        // atomic-write exceptions)
         crate::discard::logged("phase_log_write", std::fs::write(&log, next_log(&old, now, tag)));
     }
     let agents = dir.join(defaults::text("phase_tracker.agents_dir"));
     if std::fs::create_dir_all(&agents).is_ok() {
         crate::discard::logged(
             "phase_heartbeat_write",
-            std::fs::write(agents.join(defaults::text("phase_tracker.heartbeat_file")), format!("{{\"ts\":{}}}", now as u64)),
+            crate::atomic::write(agents.join(defaults::text("phase_tracker.heartbeat_file")), format!("{{\"ts\":{}}}", now as u64)),
         );
     }
 }

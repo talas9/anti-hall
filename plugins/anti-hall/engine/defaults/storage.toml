@@ -150,6 +150,18 @@ value = 16777216
 env = "AH_ENGINE_SPOOL_MAX_BYTES"
 unit = "bytes"
 
+[spool.lock_wait_ms]
+doc = "Longest a client append or a daemon drain waits for the spool's lock file (<spool>.lock); past it the caller gives up and says why instead of hanging behind a stuck holder."
+value = 500
+min = 1
+unit = "ms"
+
+[spool.lock_poll_ms]
+doc = "How often a waiter retries the spool's lock."
+value = 5
+min = 1
+unit = "ms"
+
 [spool.drain_ms]
 doc = "Interval of the scheduled spool drain job (it also drains on start and before each project write)."
 value = 1000

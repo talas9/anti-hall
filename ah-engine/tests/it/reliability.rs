@@ -172,8 +172,11 @@ fn bad_replies_run_the_node_fallback_never_allow() {
 fn engine_down_runs_fallback_and_plain_allow_only_without_one() {
     let e = Env::new("down", &[("AH_ENGINE_NOSPAWN", "1")]);
     assert_eq!(e.hook(DENY_IN, true).0, "NODE-FALLBACK");
+    // review finding 21: no engine AND no fallback on a guard event was a plain allow; it hands over to the Node hook instead
     let (out, code, _) = e.hook(DENY_IN, false);
-    assert_eq!((out.as_str(), code), ("", 0), "no engine AND no fallback = plain allow");
+    assert_eq!((out.as_str(), code), ("", ah_engine::defaults::num("dispatch.defer_exit") as i32), "a guard event never reads as an allow");
+    let quiet = r#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"Notification","message":"hi"}"#;
+    assert_eq!(e.hook(quiet, false).1, 0, "a non-guard event with no engine and no fallback stays the neutral no-op");
     // fallback unavailable (node missing) is the same plain allow
     let mut c = e.cmd();
     c.env("AH_ENGINE_NODE", "/nonexistent/node").args(["hook", "--fallback"]).arg(e.dir.join("fb.sh"));
@@ -181,6 +184,24 @@ fn engine_down_runs_fallback_and_plain_allow_only_without_one() {
     ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();
     assert!(o.stdout.is_empty() && o.status.success());
+}
+
+#[cfg(target_os = "macos")] // RLIMIT_NPROC counts processes only here (Linux counts threads too, which the client needs)
+#[test]
+fn a_daemon_that_cannot_be_forked_is_logged_with_its_errno() {
+    // review finding 18: spawn_daemon dropped the fork error (`.spawn().ok()`), so EAGAIN left no trace
+    let e = Env::new("nofork", &[]);
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let c = e.cmd();
+    let envs: Vec<(std::ffi::OsString, std::ffi::OsString)> = c.get_envs().filter_map(|(k, v)| Some((k.to_owned(), v?.to_owned()))).collect();
+    let mut sh = Command::new("/bin/sh");
+    // a process limit below what this user already runs: every fork fails with EAGAIN, exec does not fork
+    sh.args(["-c", "ulimit -u 1 2>/dev/null; exec \"$0\" hook", BIN]).envs(envs).env_remove("AH_ENGINE_NOSPAWN");
+    let mut ch = sh.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
+    ah_engine::discard::harmless(ch.wait());
+    let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("spawn_fail\tos35"), "the failed fork is logged with EAGAIN: {log:?}");
 }
 
 #[test]
@@ -276,6 +297,170 @@ fn stuck_worker_triggers_exit() {
 }
 
 #[test]
+fn a_worker_stuck_during_a_drain_still_ends_the_daemon() {
+    // review finding 1: once draining, the watchdog skipped its checks and a clean drain had no exit timer, so a worker
+    // stuck during a drain kept the daemon alive (holding the lock, its socket already removed) until the request ended
+    let e = Env::new("stuckdrain", &[("AH_ENGINE_STUCK_MS", "1500"), ("AH_ENGINE_WATCHDOG_TICK_MS", "100")]);
+    e.warm();
+    let old = e.pid().unwrap();
+    let h = std::thread::spawn({
+        let mut c = e.cmd();
+        move || {
+            ah_engine::discard::harmless(c.args(["ctl", "sleep 30000"]).output());
+        }
+    });
+    std::thread::sleep(Duration::from_millis(300)); // the sleep request is on a worker
+    assert_eq!(e.ctl("stop").as_deref(), Some("ok"), "stop begins a clean drain");
+    let t = Instant::now();
+    while alive(old) && t.elapsed() < Duration::from_secs(12) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(old), "a drain with a stuck worker must still end the daemon (it lived {:?})", t.elapsed());
+    let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap();
+    assert!(log.contains("\tstuck\t") && log.contains("\texit\tforced\t"), "{log}");
+    drop(h);
+}
+
+#[test]
+fn a_start_that_gives_up_on_a_held_lock_with_no_daemon_says_why() {
+    // review finding 1: a start that found the lock held and no daemon answering gave up in silence
+    let e = Env::new("heldlock", &[]);
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(e.eng().join("e.sock.lock")).unwrap();
+    // SAFETY: `lock` is an open file owned by this test; flock takes only its descriptor and a flag.
+    assert_eq!(unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    assert_eq!(e.cmd().arg("serve").status().unwrap().code(), Some(0), "giving up on the lock is not an error exit");
+    let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("lock_wait\tno_daemon"), "the give-up must be logged: {log:?}");
+    drop(lock);
+}
+
+/// CPU seconds a process has used, from `ps` (`[[dd-]hh:]mm:ss[.cc]` on both macOS and Linux).
+fn cpu_secs(pid: u32) -> f64 {
+    let o = Command::new("ps").args(["-o", "time=", "-p", &pid.to_string()]).output().unwrap();
+    let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let t = t.rsplit('-').next().unwrap_or("").to_string();
+    t.split(':').fold(0.0, |acc, part| acc * 60.0 + part.parse::<f64>().unwrap_or(0.0))
+}
+
+#[test]
+fn a_full_descriptor_table_backs_the_accept_loop_off_instead_of_spinning() {
+    // review finding 5: `while let Ok(..) = accept()` dropped EMFILE and went straight back to poll, which fired again at
+    // once for the still-pending connection: the accept loop spun at full CPU until a descriptor freed up
+    let e = Env::new("emfile", &[("AH_ENGINE_WORKERS", "1"), ("AH_ENGINE_QUEUE", "1000"), ("AH_ENGINE_NOSPAWN", "1")]);
+    std::fs::create_dir_all(e.eng()).unwrap();
+    // the daemon under a small descriptor limit (a child-process rlimit, so the test process keeps its own)
+    let c = e.cmd();
+    let envs: Vec<(std::ffi::OsString, std::ffi::OsString)> = c.get_envs().filter_map(|(k, v)| Some((k.to_owned(), v?.to_owned()))).collect();
+    let mut sh = Command::new("/bin/sh");
+    sh.args(["-c", "ulimit -n 48 && exec \"$0\" serve", BIN]).envs(envs).env_remove("AH_ENGINE_NOSPAWN");
+    let mut daemon = sh.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    assert!(wait_for(|| e.pid().is_some()), "daemon never came up under the descriptor limit");
+    let pid = e.pid().unwrap();
+    let busy = std::thread::spawn({
+        let mut c = e.cmd();
+        move || {
+            ah_engine::discard::harmless(c.args(["ctl", "sleep 4000"]).output());
+        }
+    });
+    std::thread::sleep(Duration::from_millis(300)); // the only worker is asleep: accepted connections stay queued
+    let mut held = Vec::new();
+    for _ in 0..100 {
+        if let Ok(s) = std::os::unix::net::UnixStream::connect(e.eng().join("e.sock")) {
+            ah_engine::discard::harmless(s.shutdown(std::net::Shutdown::Write));
+            held.push(s);
+        }
+    }
+    let before = cpu_secs(pid);
+    std::thread::sleep(Duration::from_secs(2));
+    let used = cpu_secs(pid) - before;
+    assert!(used < 1.0, "the accept loop spun on EMFILE: {used:.2}s of CPU in 2s");
+    drop(held);
+    ah_engine::discard::harmless(busy.join());
+    assert!(
+        wait_for(|| e.ctl("status").and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).is_some_and(|v| v["accept_errors"].as_u64() > Some(0))),
+        "the failed accepts are counted"
+    );
+    let log = || std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
+    assert!(wait_for(|| log().contains("accept\trecovered")), "the failed accepts are logged once a descriptor frees up: {}", log());
+    drop(e.ctl("stop"));
+    ah_engine::discard::harmless(daemon.wait());
+}
+
+#[test]
+fn a_slow_but_healthy_daemon_is_not_counted_toward_the_breaker() {
+    // review finding 4: every timeout counted toward the breaker, so a healthy daemon serving slow requests got bypassed
+    let e = Env::new("slowok", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "150"), ("AH_ENGINE_BREAKER_N", "3")]);
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let l = UnixListener::bind(e.eng().join("e.sock")).unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut s = s;
+                let mut b = Vec::new();
+                ah_engine::discard::harmless(s.read_to_end(&mut b));
+                if b.starts_with(b"CTL ping") {
+                    ah_engine::discard::harmless(s.write_all(&ah_engine::frame::encode(ah_engine::frame::Kind::Ok, "pong 0.1.0 1")));
+                } else {
+                    std::thread::sleep(Duration::from_secs(5)); // a slow request
+                }
+            });
+        }
+    });
+    for _ in 0..5 {
+        assert_eq!(e.hook(DENY_IN, true).0, "NODE-FALLBACK");
+    }
+    assert!(!e.eng().join("breaker.until").exists(), "a daemon that answers pings is slow, not broken");
+    let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("client_slow") && !log.contains("client_fail"), "{log}");
+}
+
+#[test]
+fn a_daemon_whose_state_dir_is_removed_exits_by_itself() {
+    // coordinator finding: 48 test daemons ran on for hours after their tests deleted the state dir (no idle exit, nothing
+    // left that could reach them); a daemon now drains and exits once its state dir, lock file or binary is gone
+    let e = Env::new("orphan", &[]);
+    e.warm();
+    let pid = e.pid().unwrap();
+    std::fs::remove_dir_all(e.eng()).unwrap();
+    let t = Instant::now();
+    while alive(pid) && t.elapsed() < Duration::from_secs(15) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(pid), "a daemon with its state dir gone must exit");
+}
+
+#[test]
+fn a_daemon_whose_run_marker_is_gone_is_still_reaped_by_its_test() {
+    // a daemon whose run marker was never written or was removed was skipped by the teardown and outlived its test; the
+    // teardown now falls back to the pid in the lock file
+    let e = Env::new("nomarker", &[]);
+    e.warm();
+    let pid = e.pid().unwrap();
+    std::fs::remove_file(e.eng().join("daemon.run")).unwrap();
+    common::reap(&e.eng(), || {}); // no polite stop: only the lock-file fallback can find it
+    assert!(!alive(pid), "the teardown must end the daemon it started");
+}
+
+/// CPU-free guard: no `ah-engine serve` of THIS build has been running for longer than any test run takes. A leak from an
+/// earlier run (a test that did not reap its daemon) fails here.
+#[test]
+fn no_daemon_of_this_build_outlives_its_test_run() {
+    let o = Command::new("ps").args(["-Ao", "pid=,etime=,command="]).output().unwrap();
+    let old: Vec<String> = String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter(|l| l.contains(&format!("{BIN} serve")))
+        .filter(|l| {
+            // etime is [[dd-]hh:]mm:ss: anything with an hour field, or over 45 minutes, is a leak
+            let et = l.split_whitespace().nth(1).unwrap_or("");
+            et.contains('-') || et.matches(':').count() >= 2 || et.split(':').next().and_then(|m| m.parse::<u64>().ok()).is_some_and(|m| m >= 45)
+        })
+        .map(String::from)
+        .collect();
+    assert!(old.is_empty(), "daemons of this build left running by earlier tests:\n{}", old.join("\n"));
+}
+
+#[test]
 fn breaker_opens_after_repeated_failures_and_skips_engine() {
     let e = Env::new("brk", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "150"), ("AH_ENGINE_BREAKER_N", "3")]);
     fake_server(&e, || None);
@@ -365,7 +550,9 @@ fn twenty_parallel_cold_clients_yield_exactly_one_daemon() {
         })
         .collect();
     for mut h in hs {
-        assert!(h.wait().unwrap().success());
+        // a cold start with no fallback hands the guard event over (dispatch.defer_exit), never a silent allow
+        let code = h.wait().unwrap().code();
+        assert!(code == Some(0) || code == Some(ah_engine::defaults::num("dispatch.defer_exit") as i32), "{code:?}");
     }
     assert!(wait_for(|| e.pid().is_some()));
     std::thread::sleep(Duration::from_millis(400)); // losers of the lock race exit
