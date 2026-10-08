@@ -77,3 +77,7 @@ pub static GIT_AUDIT: Scripted = Scripted::new("git-audit", "git_audit.summary")
 
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
+
+/// `handover-hygiene` (SessionStart; engine-only): the handover brief tree's advisory. The same script serves the
+/// `handovers` command and the `handovers` scheduled job.
+pub static HANDOVER_HYGIENE: Scripted = Scripted::new("handover-hygiene", "handovers.summary");

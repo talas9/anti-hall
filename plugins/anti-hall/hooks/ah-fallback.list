@@ -48,6 +48,7 @@ TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAU
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/repo-self-drift.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/progress-prune.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/handover-resume.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/handover-hygiene"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/jev-review-reminder.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js"

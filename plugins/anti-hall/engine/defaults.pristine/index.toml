@@ -53,5 +53,6 @@ files = [
     "operator.toml",
     "slcfg.toml",
     "update_cli.toml",
+    "handovers.toml",
 ]
 extra_dir = "hooks.d"

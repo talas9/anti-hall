@@ -77,6 +77,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("shadow-compare", crate::ops::cmd_shadow_compare),
         ("update", crate::operator::update::run),
         ("install-codex", crate::operator::install_codex::run),
+        ("handovers", crate::handovers::run_cmd),
     ]
 }
 

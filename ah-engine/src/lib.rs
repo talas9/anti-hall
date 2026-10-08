@@ -22,6 +22,7 @@ pub mod error;
 pub mod frame;
 pub mod gate;
 pub mod gitcache;
+pub mod handovers;
 pub mod health;
 pub mod hookcfg;
 pub mod hookio;
