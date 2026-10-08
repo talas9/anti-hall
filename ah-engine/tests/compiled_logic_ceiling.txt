@@ -4,4 +4,5 @@
 # devswarm-parent-inbox and devswarm-child-turn to scripts and batch 5 (lane d88b5) git, git-audit, swarm-guard and
 # sibling-sweep: 50.
 # Lane d88fa moved task-lifecycle-log, the three session gates, merge-side-pick, scan-throttle and merge-gate to scripts: 43.
-43
+# Lane d88fb moved dispatch-tier, model-routing, speculation-judge, speculation-guard, silent-agent-nudge, task-guard and tasklist-guard to scripts (-1 each).
+42

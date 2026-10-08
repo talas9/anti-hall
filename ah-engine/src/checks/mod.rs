@@ -21,7 +21,6 @@ pub mod ctxbudget;
 pub mod devswarm_comms;
 pub mod devswarm_gates;
 pub mod devswarm_role;
-pub mod dispatch_tier;
 pub mod emit_dedupe;
 pub mod failure_nudge;
 pub mod git;
@@ -234,7 +233,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &handover::precompact::PrecompactSnapshot,
         &handover::resume::HandoverResume,
         &scripted::TASK_LIFECYCLE_LOG,
-        &dispatch_tier::DispatchTier,
+        &scripted::DISPATCH_TIER,
         &task_guard::TaskGuard,
         &tasklist_guard::TasklistGuard,
         &scripted::DEVSWARM_PARENT_INBOX,

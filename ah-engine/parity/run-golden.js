@@ -11,7 +11,9 @@ const plugin = path.resolve(__dirname, '..', '..', 'plugins', 'anti-hall');
 const corpus = path.resolve(__dirname, '..', 'tests', 'golden', check + '.jsonl');
 const cases = fs.readFileSync(corpus, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const pluginReal = fs.realpathSync(plugin);
-const fill = (s, home, real) => s.split('{PLUGIN}').join(pluginReal).split('{HOMEREAL}').join(real).split('{HOME}').join(home);
+// {NOW}, {NOW-<ms>}, {NOW+<ms>}: the current time in ms; {ISO}, {ISO-<ms>}, {ISO+<ms>}: the same as ISO text (see script::expand_now)
+const expandNow = (s) => s.replace(/\{(NOW|ISO)([-+][0-9]+)?\}/g, (m, k, d) => { const t = Date.now() + (d ? Number(d) : 0); return k === 'NOW' ? String(t) : new Date(t).toISOString(); });
+const fill = (s, home, real) => expandNow(s.split('{PLUGIN}').join(pluginReal).split('{HOMEREAL}').join(real).split('{HOME}').join(home));
 const sub = (v, home, real) => {
   if (typeof v === 'string') return fill(v, home, real);
   if (Array.isArray(v)) return v.map((x) => sub(x, home, real));
@@ -33,8 +35,10 @@ for (const c of cases) {
   const env = { PATH: process.env.PATH, ...sub(c.env || {}, home, real) };
   if (c.opts && c.opts.plugin_root) env.CLAUDE_PLUGIN_ROOT = sub(c.opts.plugin_root, home, real); else env.CLAUDE_PLUGIN_ROOT = plugin;
   const r = cp.spawnSync('node', [path.join(plugin, hook), ...hookArgs], { input: JSON.stringify(sub(c.payload, home, real)), env, encoding: 'utf8' });
-  const fix = (s) => s.split(pluginReal).join('{PLUGIN}').split(real).join('{HOMEREAL}').split(home).join('{HOME}');
-  const e = c.expect, out = fix(r.stdout || ''), err = fix(r.stderr || '');
+  // normTs: a clock reading (12 or more digits) is {TS} in the stored and compared answers
+  const fix = (s) => { const t = s.split(pluginReal).join('{PLUGIN}').split(real).join('{HOMEREAL}').split(home).join('{HOME}'); return c.normTs ? t.replace(/[0-9]{12,}/g, '{TS}') : t; };
+  // a routing check's answer is a verdict plus telemetry rows: the oracle compares the verdict
+  const e = c.expect.v === 'routed' ? c.expect.verdict : c.expect, out = fix(r.stdout || ''), err = fix(r.stderr || '');
   let ok;
   if (e.v === 'allow') ok = r.status === 0 && out === '' && err === '';
   else if (e.v === 'advisory') ok = r.status === 0 && out === e.text + '\n' && err === '';
