@@ -48,6 +48,7 @@ files = [
     "limits.toml",
     "script.toml",
     "mcp_reaper.toml",
+    "devswarm_rt.toml",
     "task_tracker.toml",
 ]
 extra_dir = "hooks.d"

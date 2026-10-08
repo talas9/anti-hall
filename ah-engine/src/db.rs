@@ -46,6 +46,8 @@ pub enum Op {
     },
     /// A telemetry write (D78): a flush of counters and events, or a prune.
     Telemetry(crate::telemetry::persist::TelOp),
+    /// A realtime-state write (lane B1): the entity rows and change records of one namespace.
+    Rt(RtOp),
     /// A project-partition write (D21 pending mailbox and key-value state). A non-empty `write_id` makes it idempotent:
     /// a repeat with the same id returns the first result and changes nothing (D24).
     Proj {
@@ -56,6 +58,51 @@ pub enum Op {
         /// What to do.
         verb: ProjVerb,
     },
+}
+
+/// One persisted realtime entity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RtRow {
+    /// Entity key (a workspace id).
+    pub key: String,
+    /// The entity as JSON text.
+    pub body: String,
+    /// Signature of the source state it was derived from.
+    pub src_sig: String,
+    /// When its sources were last read.
+    pub observed_ms: i64,
+}
+
+/// One persisted realtime change record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RtEdgeRow {
+    /// Entity key.
+    pub key: String,
+    /// What changed.
+    pub kind: String,
+    /// The value before.
+    pub from: String,
+    /// The value after.
+    pub to: String,
+    /// Snapshot generation that produced it.
+    pub generation: i64,
+    /// When it was found.
+    pub at_ms: i64,
+    /// Found by the start-up diff, i.e. it happened while the engine was down.
+    pub while_down: bool,
+}
+
+/// A realtime-state write: one namespace's snapshot and the changes that led to it, in one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RtOp {
+    /// Namespace (the feature).
+    pub ns: String,
+    /// The complete set of entities: rows of the namespace not listed here are removed.
+    pub rows: Vec<RtRow>,
+    /// New change records to append.
+    pub edges: Vec<RtEdgeRow>,
+    /// Keep at most this many change records for the namespace.
+    pub edge_cap: i64,
 }
 
 /// A scheduler write.
@@ -438,6 +485,7 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
             Ok(String::new())
         }
         Op::Telemetry(t) => crate::telemetry::persist::apply(c, t),
+        Op::Rt(r) => rt_apply(c, r),
         Op::Proj { project, write_id, verb } => {
             if !write_id.is_empty()
                 && let Some(r) = c.prepare_cached(sql::APPLIED_GET)?.query_row(params![write_id], |r| r.get::<_, String>(0)).optional()?
@@ -452,6 +500,27 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
             Ok(r)
         }
     }
+}
+
+fn rt_apply(c: &Connection, op: &RtOp) -> Result<String, DbError> {
+    let mut have: Vec<String> = Vec::new();
+    {
+        let mut st = c.prepare_cached(sql::RT_ENTITY_KEYS)?;
+        for k in st.query_map(params![op.ns], |r| r.get::<_, String>(0))? {
+            have.push(k?);
+        }
+    }
+    for k in have.iter().filter(|k| !op.rows.iter().any(|r| &r.key == *k)) {
+        c.prepare_cached(sql::RT_ENTITY_DROP)?.execute(params![op.ns, k])?;
+    }
+    for r in &op.rows {
+        c.prepare_cached(sql::RT_ENTITY_PUT)?.execute(params![op.ns, r.key, r.body, r.src_sig, r.observed_ms])?;
+    }
+    for e in &op.edges {
+        c.prepare_cached(sql::RT_EDGE_PUT)?.execute(params![op.ns, e.key, e.kind, e.from, e.to, e.generation, e.at_ms, e.while_down as i64])?;
+    }
+    c.prepare_cached(sql::RT_EDGE_TRIM)?.execute(params![op.ns, op.edge_cap])?;
+    Ok(String::new())
 }
 
 fn sched_apply(c: &Connection, op: &SchedOp) -> Result<String, DbError> {

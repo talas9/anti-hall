@@ -12,6 +12,7 @@ pub mod daemon;
 pub mod db;
 pub mod deadline;
 pub mod defaults;
+pub mod devswarm_rt;
 #[cfg(feature = "diag")]
 pub mod diag;
 pub mod discard;

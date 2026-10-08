@@ -479,6 +479,16 @@ cues) and the plain `roster` (it spawns `hivecontrol` for native children and re
 `match`/`mismatch`/`concurrent`/`defer`; `inbox ack-primary` cannot (it consumes a receipt file outside the store), so Node runs it and the line
 says `skipped`.
 
+## DevSwarm realtime state (lane B1)
+
+The engine keeps the live state of every DevSwarm workspace in one atomically swapped snapshot (`devswarm_rt`): lifecycle (`active`, `closed`, `archived`, `hidden`, `unknown`), paused, activity (`working`, `stuck`, `waiting_ci`, `done`, `unknown`), unread mail, plan step, last heartbeat and the linked PR. Every field carries its source, the time it was observed and a source signature; an unreadable source gives `unknown`, never a guess, and nothing is ever written back to a source. It is inert (no thread, no read, no write) when DevSwarm is not detected (no app database file and no workspace descriptor) or `devswarm_rt.mode` is `off`.
+
+- **Paused.** No signal is proven yet. A workspace whose open terminals are all `resumable` is reported as `paused?` with that evidence and is never claimed paused until `devswarm_rt.paused_signal` is set to `panel_resumable` after an owner-confirmed crash fixture.
+- **Reconcile.** The whole state is re-read at start (differences from the persisted state are flagged `while_down` with a notify hold of `restart_grace_ms`) and every `reconcile_ms`. A change a periodic or overflow reconcile finds is one events missed and counts in `rt_reconcile_repairs`; `rt_edges` counts every change emitted and `rt_shadow_mismatches` every difference from the Node witness.
+- **Persistence.** hot.db tables `rt_entity` (latest record per workspace) and `rt_edges` (capped change log).
+- **GitHub facts.** PR and CI facts come through the `GithubState` trait when the GitHub realtime feature supplies them; otherwise from the app database's `pull_requests.checkStatus`, whose freshness is its `lastSyncedAt`.
+- **Shadow.** The comparison reads the Node witness's scratch-home tree (liveness verdicts, app-state cache), never the live Node files, and appends differences to `rt-shadow.ndjson`.
+
 ## Telemetry (D78, D77)
 
 Telemetry answers "what did the engine and the hooks do, how often, how long did it take and how much did it inject into
@@ -814,6 +824,7 @@ Files:
 | `devswarm_gates.toml` | switches, role and mode variables and the command pre-filter words of the DevSwarm child gate, reply tracker and drain checks |
 | `mesh.toml` | the mesh store reader (D45 S0): store and marker file names, the SQLite busy timeout and page cache, the preview length, the read byte cap and the `--last` bounds; and `mesh.engine_writes` (off, shadow, on), the switch of the stage 2 mesh writers |
 | `mesh_write.toml` | the mesh store writers (D45 stage 2, `ah-engine mesh <devswarm.js argv>`): Node's store names and statements' column list, the busy retry, the per-workspace lock budget and steal limits, the identity file and variable names, argv flag names, output texts, and the shadow log, scratch and snapshot settings |
+| `devswarm_rt.toml` | DevSwarm realtime state (lane B1): the mode (`on` by default; the Node supervisor is a non-acting witness), stale / stall / reconcile / restart-grace times, the edge-log cap, the paused signal (`none` until an owner-confirmed crash fixture proves it), the app-database column names and the PR and CI status words, and the witness and shadow-log settings |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |

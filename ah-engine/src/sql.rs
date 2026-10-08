@@ -6,7 +6,7 @@
 //! parameters at run time and come from the defaults; nothing tunable is written into a statement.
 
 /// hot.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5, HOT_V6];
+pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5, HOT_V6, HOT_V7];
 
 /// archive.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
 pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2, ARCHIVE_V3, ARCHIVE_V4];
@@ -223,6 +223,35 @@ CREATE TABLE IF NOT EXISTS tel_events (id INTEGER PRIMARY KEY, ts_ms INTEGER NOT
 CREATE INDEX IF NOT EXISTS tel_events_ts ON tel_events (ts_ms);
 CREATE INDEX IF NOT EXISTS tel_events_spawn ON tel_events (spawn_key);
 ";
+
+/// hot.db v7: realtime state (lane B1, v2 design I2): the latest body of each entity per namespace, and a capped log of
+/// the changes (edges) between snapshots. Both are the engine's own derived data; no source is ever written from them.
+const HOT_V7: &str = "
+CREATE TABLE IF NOT EXISTS rt_entity (ns TEXT NOT NULL, key TEXT NOT NULL, body TEXT NOT NULL, src_sig TEXT NOT NULL, observed_ms INTEGER NOT NULL, PRIMARY KEY (ns, key)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS rt_edges (id INTEGER PRIMARY KEY, ns TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, from_v TEXT NOT NULL, to_v TEXT NOT NULL, generation INTEGER NOT NULL, at_ms INTEGER NOT NULL, while_down INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS rt_edges_ns ON rt_edges (ns, id);
+";
+
+/// Insert or replace one realtime entity.
+pub const RT_ENTITY_PUT: &str = "INSERT INTO rt_entity (ns, key, body, src_sig, observed_ms) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (ns, key) DO UPDATE SET body = excluded.body, src_sig = excluded.src_sig, observed_ms = excluded.observed_ms";
+
+/// Every key held in one namespace.
+pub const RT_ENTITY_KEYS: &str = "SELECT key FROM rt_entity WHERE ns = ?1";
+
+/// Remove one realtime entity (a workspace the source no longer lists).
+pub const RT_ENTITY_DROP: &str = "DELETE FROM rt_entity WHERE ns = ?1 AND key = ?2";
+
+/// Every entity of one namespace.
+pub const RT_ENTITY_ALL: &str = "SELECT key, body, src_sig, observed_ms FROM rt_entity WHERE ns = ?1 ORDER BY key";
+
+/// Append one change record.
+pub const RT_EDGE_PUT: &str = "INSERT INTO rt_edges (ns, key, kind, from_v, to_v, generation, at_ms, while_down) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+
+/// Keep only the newest ?2 change records of a namespace.
+pub const RT_EDGE_TRIM: &str = "DELETE FROM rt_edges WHERE ns = ?1 AND id <= (SELECT COALESCE(MAX(id), 0) FROM rt_edges WHERE ns = ?1) - ?2";
+
+/// The newest ?2 change records of a namespace, oldest first.
+pub const RT_EDGE_RECENT: &str = "SELECT key, kind, from_v, to_v, generation, at_ms, while_down FROM (SELECT * FROM rt_edges WHERE ns = ?1 ORDER BY id DESC LIMIT ?2) ORDER BY id";
 
 /// archive.db v4: the daily telemetry rollups (D78), one row per day and (k, h, e, o); a re-run replaces a day's rows.
 const ARCHIVE_V4: &str = "
