@@ -61,6 +61,17 @@ grep -q '"id":"git-guard".*"dec":"block"' "$F/.anti-hall/ah-node-shadow/node-sha
 sleep 3; head -3 "$F/.anti-hall/ah-node-shadow/node-shadow.ndjson" | sed 's/^/   | /'
 [ ! -e "$F/.anti-hall/ah-node-shadow/q/"* ] 2>/dev/null; ls "$F/.anti-hall/ah-node-shadow/q" | wc -l | tr -d ' ' | sed 's/^/   queued payloads left: /'
 sh "$F/.anti-hall/ah-node-shadow/node-shadow.sh" --compare >"$F/cmp.out" 2>&1; chk $? "--compare runs"; sed 's/^/   | /' "$F/cmp.out" | head -14
+echo "== 2a. the witness has no side effects (deny-list)"
+NS="$F/.anti-hall/ah-node-shadow"; NDJ="$NS/node-shadow.ndjson"
+[ -f "$NS/node-shadow.skip" ]; chk $? "node-shadow.skip installed beside the script"
+before=$(cd "$F/proj" && find . -path ./.git -prune -o -print | sort | shasum)
+for ev in SessionEnd PreCompact Stop SessionStart; do printf '{"session_id":"s2","cwd":"%s","hook_event_name":"%s","reason":"other","trigger":"manual","transcript_path":"%s/none.jsonl"}' "$F/proj" "$ev" "$F" | sh "$NS/node-shadow.sh" "$ev"; done
+i=0; while [ $i -lt 40 ] && { ls "$NS/q" | grep -q .; }; do sleep 1; i=$((i+1)); done; sleep 2
+grep -q '"ev":"SessionEnd".*"id":"session-end-mcp-reaper[^"]*".*"dec":"skipped"' "$NDJ"; chk $? "SessionEnd: the reaper was logged as skipped (never run)"
+! grep '"ev":"SessionEnd"' "$NDJ" | grep -v '"dec":"skipped"' | grep -q reaper; chk $? "SessionEnd: no reaper row with a real decision"
+grep -q '"ev":"PreCompact".*"dec":"skipped"' "$NDJ"; chk $? "PreCompact: precompact-snapshot skipped"
+after=$(cd "$F/proj" && find . -path ./.git -prune -o -print | sort | shasum)
+[ "$before" = "$after" ]; chk $? "no file appeared in the project cwd after PreCompact/Stop/SessionEnd/SessionStart payloads"
 echo "== 2b. telemetry sync includes the node-shadow log"
 git init -q --bare "$F/telemetry.git"; printf 'sync.enabled=true\nsync.repo=file://%s\nsync.interval_s=3600\n' "$F/telemetry.git" > "$F/.anti-hall/ah-engine-shadow2/config"
 sh "$IS" --sync-now >"$F/sync.out" 2>&1; chk $? "--sync-now exit 0 ($(grep -m1 pushed "$F/sync.out" | cut -c1-90))"

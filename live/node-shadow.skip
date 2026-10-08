@@ -1,0 +1,24 @@
+# node-shadow.skip - hooks the Node witness NEVER runs (one hook id or script basename per line; # comments).
+# A skipped row is logged as dec:"skipped". Rule: the witness has no side effects outside its scratch HOME.
+# Derived by reading every hook in hooks/ah-fallback.list + ah-fallback.codex.list; re-check when a hook is added.
+session-end-mcp-reaper.js    # kills / signals MCP processes (process.kill, launchctl)
+repair-on-reload.js          # spawns a detached `doctor --repair` and copies state into <cwd>/.anti-hall/history
+version-alert.js             # spawns a detached network refresh (version-alert-refresh.js)
+devswarm-version.js          # spawns a detached refresh that runs the DevSwarm CLI
+repo-self-drift.js           # spawns detached repo probes
+dispatch-tier.js             # spawns a detached Jev worker (network, paid)
+task-tracker.js              # spawns a detached Jev worker (network, paid)
+claim-ledger.js              # spawns a detached Jev worker (network, paid)
+speculation-judge.js         # Jev judge: https call with credentials
+precompact-snapshot.js       # writes <cwd>/.anti-hall/handovers/.../PRECOMPACT-n.md
+progress-prune.js            # appends to and deletes <cwd>/.anti-hall/progress + history files
+tasklist-guard.js            # mkdir <cwd>/.anti-hall/progress/<date> in the project tree
+task-lifecycle-log.js        # appends the <cwd>/.anti-hall/history ledger
+api-guard.js                 # spawns python/node probes that import real modules (runs package code)
+devswarm-child-gate.js       # runs the DevSwarm CLI (hivecontrol) against the real app
+devswarm-child-role.js       # adopts the Primary seat through the DevSwarm CLI
+devswarm-child-turn.js       # writes DevSwarm mesh descriptors, cursors and inboxes
+devswarm-child-drain.js      # writes DevSwarm mesh drain state
+devswarm-parent-gate.js      # writes/deletes DevSwarm mesh state
+devswarm-parent-inbox.js     # reads/writes DevSwarm inbox state, runs the CLI
+devswarm-parent-reply-tracker.js  # appends DevSwarm mesh reply state

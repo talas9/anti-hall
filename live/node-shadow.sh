@@ -11,7 +11,12 @@
 #   node-shadow.sh --status         entries, log size, last call
 #   node-shadow.sh --compare [--window 7d] [--json]
 #                                   join the Node log with the engine's own per-check telemetry; disagreements, engine-weaker first
-# Needs: sh, node. Never reads or writes anything of the real state: Node hooks get a scratch HOME (under the shadow dir).
+# Needs: sh, node.
+# GUARANTEE (a witness has NO side effects): Node hooks run in a scratch HOME (never the real one) with every credential env var removed
+# (*KEY*, *TOKEN*, *SECRET*, CLAUDE_PLUGIN_OPTION_*, ANTHROPIC/AI_GATEWAY/TYPESAFE) and Jev off, so nothing can spend money. Hooks that kill
+# processes, spawn detached work, write the project tree, call the network with credentials or touch DevSwarm are listed in node-shadow.skip
+# (installed beside this script) and are logged as dec:"skipped", never run. Only the remaining read-only hooks run, with cwd = the real project.
+# If node-shadow.skip is missing, the worker runs NOTHING.
 D="$HOME/.anti-hall/ah-node-shadow"
 SHADOW2="$HOME/.anti-hall/ah-engine-shadow2"
 case "${1:-}" in
@@ -75,6 +80,8 @@ if (mode === '--install') {
   fs.mkdirSync(D, { recursive: true });
   const self = process.env.AH_NODE_SHADOW_SRC;
   if (self && path.resolve(self) !== path.join(D, 'node-shadow.sh')) { fs.copyFileSync(self, path.join(D, 'node-shadow.sh.new')); fs.chmodSync(path.join(D, 'node-shadow.sh.new'), 0o755); fs.renameSync(path.join(D, 'node-shadow.sh.new'), path.join(D, 'node-shadow.sh')); }
+  const skipSrc = path.join(path.dirname(self || ''), 'node-shadow.skip');
+  if (self && fs.existsSync(skipSrc) && path.resolve(skipSrc) !== path.join(D, 'node-shadow.skip')) fs.copyFileSync(skipSrc, path.join(D, 'node-shadow.skip'));
   fs.writeFileSync(path.join(D, 'root.new'), root + '\n'); fs.renameSync(path.join(D, 'root.new'), path.join(D, 'root'));
   fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
   let s = {};
@@ -132,11 +139,18 @@ if (mode === '--install') {
       if (TOOL_EVENTS.includes(ev) && matcher && matcher !== '*') { let ok = false; try { ok = new RegExp('^(?:' + matcher + ')$').test(tool); } catch (e) { } if (!ok) continue; }
       rows.push({ cmd, tmo: Math.min(tmo > 0 ? tmo : 10, 30) });
     }
+    // deny-list: a missing file means run nothing. Entries are hook ids or script basenames.
+    const skip = new Set(fs.readFileSync(path.join(D, 'node-shadow.skip'), 'utf8').split('\n').map(l => l.replace(/#.*/, '').trim().split(/\s+/)[0]).filter(Boolean));
     const env = Object.assign({}, process.env, { HOME: sh, CLAUDE_PLUGIN_ROOT: root, CLAUDE_CONFIG_DIR: path.join(sh, '.claude'), AH_ENGINE_DIR: path.join(sh, 'engine'), CLAUDE_PROJECT_DIR: p.cwd || '' });
     delete env.AH_ENGINE_PLUGIN_ROOT; delete env.AH_ENGINE_FALLBACK;
+    for (const k of Object.keys(env)) if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|^CLAUDE_PLUGIN_OPTION_|^(ANTHROPIC|AI_GATEWAY|TYPESAFE|OPENAI)/i.test(k)) delete env[k];
+    env.ANTIHALL_JEV = '0';
     const cwd = p.cwd && fs.existsSync(p.cwd) ? p.cwd : sh;
     for (const r of rows) {
       const t0 = Date.now();
+      const sid0 = idOf[r.cmd] || (r.cmd.match(/([\w.-]+\.js)/) || [, r.cmd.slice(0, 40)])[1];
+      const base = (r.cmd.match(/([\w.-]+\.js)/) || [])[1];
+      if (skip.has(sid0) || (base && skip.has(base))) { fs.appendFileSync(LOGF, JSON.stringify({ ts: t0, ev, sid, tool, id: sid0, rc: null, dec: 'skipped', ms: 0, out_bytes: 0 }) + '\n'); continue; }
       const x = cp.spawnSync('/bin/sh', ['-c', r.cmd], { input: payload, env, cwd, encoding: 'utf8', timeout: r.tmo * 1000, maxBuffer: 4 << 20 });
       const ms = Date.now() - t0, out = x.stdout || '';
       let dec = 'allow';
@@ -161,7 +175,7 @@ if (mode === '--install') {
   const checkOf = {};
   for (const [k, v] of Object.entries(cfg.settings)) { const m = k.match(/^dispatch\.hooks_claude_(\w+)$/); if (m) for (const e of v.value) checkOf[m[1] + '/' + e.id] = e.check || ''; }
   const node = {};
-  let log = []; try { log = fs.readFileSync(LOGF, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(x => x && x.ts >= since); } catch (e) { }
+  let log = []; try { log = fs.readFileSync(LOGF, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(x => x && x.dec !== 'skipped' && x.ts >= since); } catch (e) { }
   const first = log.length ? Math.min(...log.map(x => x.ts)) : null;
   for (const r of log) {
     const chk = checkOf[r.ev + '/' + r.id] || '';

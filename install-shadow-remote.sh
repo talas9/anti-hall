@@ -595,12 +595,12 @@ cmd_live() {
   SRC_KIT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)/live
   for t in git node; do command -v "$t" >/dev/null 2>&1 || die "$t not found (--live needs git and node)"; done
   command -v "${AH_LIVE_CLAUDE:-claude}" >/dev/null 2>&1 || die "claude CLI not found on PATH (the plugin is installed through it); set AH_LIVE_CLAUDE if it lives elsewhere"
-  [ -f "$SRC_KIT/go-live.sh" ] && [ -f "$SRC_KIT/node-shadow.sh" ] || die "$SRC_KIT is missing: git pull the $BRANCH branch next to this script"
+  [ -f "$SRC_KIT/go-live.sh" ] && [ -f "$SRC_KIT/node-shadow.sh" ] && [ -f "$SRC_KIT/node-shadow.skip" ] || die "$SRC_KIT is missing: git pull the $BRANCH branch next to this script"
   [ ! -f "$LIVEKIT/state/live.json" ] || die "already live ($LIVEKIT/state/live.json). To update: sh $0 --rollback-live, git pull, sh $0 --live"
   if [ -d "$D/update.lock" ]; then op=$(cat "$D/update.lock/pid" 2>/dev/null); if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then die "a shadow update is running (pid $op); retry in a minute"; fi; fi
   if [ -f "$MARK" ]; then emit_helpers; install_scripts || die "could not refresh the shadow helper scripts"; init_config; fi   # sync.sh learns live.conf
   mkdir -p "$LIVEKIT/state" || die "cannot create $LIVEKIT"
-  for f in lib.sh go-live.sh rollback.sh status.sh node-shadow.sh agreed-checks.txt; do cp "$SRC_KIT/$f" "$LIVEKIT/$f.new" && mv -f "$LIVEKIT/$f.new" "$LIVEKIT/$f" || die "cannot install $f"; done
+  for f in lib.sh go-live.sh rollback.sh status.sh node-shadow.sh node-shadow.skip agreed-checks.txt; do cp "$SRC_KIT/$f" "$LIVEKIT/$f.new" && mv -f "$LIVEKIT/$f.new" "$LIVEKIT/$f" || die "cannot install $f"; done
   chmod +x "$LIVEKIT"/*.sh
   # 1 the source: engine-proto (newer or equal to 8c9a332), cloned over SSH then HTTPS like the shadow
   LS="$LIVEKIT/src"; urls=$REPO_SSH; https=$REPO_HTTPS; [ -n "$LIVE_REPO" ] && { urls=$LIVE_REPO; https=; }
