@@ -1,0 +1,355 @@
+# ah-engine shipped defaults for the sibling-sweep check (Stop and SubagentStop). Format: see the header of engine.toml.
+# Regex sources use JavaScript syntax (translated by `checks::guardkit::jsre`; no lookaround) and are TOML literal strings so no
+# backslash is doubled. They are matched case-insensitively unless a doc says otherwise.
+
+[sibling_sweep.summary]
+doc = "One-line description of the sibling-sweep check in the generated reference."
+value = "Stop and SubagentStop reminder: when the reply states the cause of a bug in a fix context and the turn shows no search for other occurrences of the same pattern, asks once per cause to search, fix or list every occurrence and state the search run; counts reminders and follow-through (engine-only, no Node twin)."
+
+[sibling_sweep.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "sibling-sweep"
+
+[sibling_sweep.setting]
+doc = "Where the on/off switch is read from (guards.siblingSweep, default on). A Jev mode for the judgement parts (is this a cause statement, did the search cover the pattern) is a later addition and is not wired."
+value = { section = "guards", key = "siblingSweep", env = "", aliases = [], option = "guards_sibling_sweep", default = true }
+
+[sibling_sweep.events]
+doc = "The events this check answers; the payload's hook_event_name must be one of them."
+value = ["Stop", "SubagentStop"]
+
+[sibling_sweep.subagent_event]
+doc = "The event name that is a subagent's own stop (the telemetry scope label differs and the agent's own transcript is read)."
+value = "SubagentStop"
+
+[sibling_sweep.child_env]
+doc = "The environment variable the judge and Jev children carry; a hook that runs inside one does nothing (no recursion, no reminders to a classifier)."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[sibling_sweep.child_value]
+doc = "The value of the child variable that means this process is a judge or Jev child."
+value = "1"
+
+# ---- payload and transcript field names ---------------------------------------------------------------------
+
+[sibling_sweep.f_event]
+doc = "Payload field holding the event name."
+value = "hook_event_name"
+
+[sibling_sweep.f_session]
+doc = "Payload field holding the session id."
+value = "session_id"
+
+[sibling_sweep.f_agent]
+doc = "Payload field holding the subagent id (SubagentStop, and Stop inside a subagent)."
+value = "agent_id"
+
+[sibling_sweep.f_reply]
+doc = "Payload field holding the reply being stopped."
+value = "last_assistant_message"
+
+[sibling_sweep.f_active]
+doc = "Payload field that is true when the Stop is already a continuation of a Stop block; the check then only resolves follow-through and never reminds again."
+value = "stop_hook_active"
+
+[sibling_sweep.f_transcript]
+doc = "Payload field holding the session transcript path."
+value = "transcript_path"
+
+[sibling_sweep.f_agent_transcript]
+doc = "Payload field holding the subagent's own transcript path; it wins over the session transcript when present."
+value = "agent_transcript_path"
+
+[sibling_sweep.t_user]
+doc = "Transcript entry type of a user entry."
+value = "user"
+
+[sibling_sweep.t_assistant]
+doc = "Transcript entry type of an assistant entry."
+value = "assistant"
+
+[sibling_sweep.b_text]
+doc = "Content block type of a text block."
+value = "text"
+
+[sibling_sweep.b_tool_use]
+doc = "Content block type of a tool call."
+value = "tool_use"
+
+[sibling_sweep.injected_re]
+doc = "Regex source of the text an injected user block starts with (notifications, reminders, command echoes), which is not a human prompt and so does not start a turn."
+value = '^\s*<(?:task-notification|system-reminder|local-command|command-name|command-message|local-command-stdout)'
+
+# ---- limits -------------------------------------------------------------------------------------------------
+
+[sibling_sweep.window_bytes]
+doc = "The most of the transcript's end that is read to find the turn (one streaming pass, never the whole file)."
+value = 1048576
+unit = "bytes"
+min = 65536
+max = 16777216
+
+[sibling_sweep.read_buf_bytes]
+doc = "The size of the buffer the transcript window is read through."
+value = 65536
+unit = "bytes"
+min = 4096
+max = 1048576
+
+[sibling_sweep.line_max_bytes]
+doc = "A transcript line longer than this is skipped unparsed (almost always one huge tool result); it bounds the memory of the one line being read."
+value = 524288
+unit = "bytes"
+min = 4096
+max = 8388608
+
+[sibling_sweep.text_max_bytes]
+doc = "The most of one assistant text that is scanned for a cause statement."
+value = 65536
+unit = "bytes"
+min = 1024
+max = 1048576
+
+[sibling_sweep.max_events]
+doc = "The most events (assistant texts and tool calls) kept for one turn; older ones are dropped, the newest kept."
+value = 4000
+min = 100
+max = 100000
+
+[sibling_sweep.window_chars]
+doc = "How many characters before a cue are searched for a hedge or negation that voids the cue."
+value = 48
+unit = "chars"
+min = 8
+max = 400
+
+[sibling_sweep.snippet_chars]
+doc = "The longest excerpt of the cause sentence shown in the reminder when the pattern is named from the message."
+value = 100
+unit = "chars"
+min = 20
+max = 400
+
+[sibling_sweep.min_span_chars]
+doc = "The shortest inline code span that names the pattern in the reminder (a one or two character span is punctuation, not a name)."
+value = 3
+unit = "chars"
+min = 1
+max = 40
+
+[sibling_sweep.hash_chars]
+doc = "How many characters of the normalised cause sentence feed its identity hash (the once-per-cause key)."
+value = 200
+unit = "chars"
+min = 40
+max = 2000
+
+[sibling_sweep.hash_short]
+doc = "How many hex characters of a cause hash are written to the telemetry log."
+value = 10
+min = 4
+max = 40
+
+[sibling_sweep.max_per_scope]
+doc = "The most reminders for one session scope (the session, or one subagent of it); past it the check only counts."
+value = 6
+min = 1
+max = 1000
+
+[sibling_sweep.max_causes]
+doc = "The most distinct causes remembered for one turn."
+value = 8
+min = 1
+max = 100
+
+[sibling_sweep.follow_window]
+doc = "Follow-through: the search counts as following the reminder when a search tool call is among the first this many tool calls after the reminded reply."
+value = 12
+unit = "tool calls"
+min = 1
+max = 1000
+
+# ---- the cause matcher --------------------------------------------------------------------------------------
+
+[sibling_sweep.cause_cues]
+doc = "Regex sources, any of which states the cause of a bug in the assertive form (root-cause statements, 'caused by', 'the bug was', 'found the bug', a Cause label). Matched sentence by sentence after markdown emphasis, fenced code and quoted lines are removed."
+value = [
+  '\broot[- ]causes?\b[^.\n]{0,80}?\b(?:is|was|were|are|turned out|lies|lay|lives|came from)\b',
+  '\broot[- ]causes?\s*(?::|—|–|-\s)',
+  '\b(?:found|identified|isolated|confirmed|proved|proven|traced|nailed|located|pinned down|tracked down|tracked)\s+(?:down\s+)?(?:the|its|a|an|that)\s+(?:actual\s+|real\s+|underlying\s+|exact\s+|true\s+)?(?:root[- ]cause|cause|culprit|bug)\b',
+  '\b(?:the|its|this|that)\s+(?:actual\s+|real\s+|underlying\s+|exact\s+|true\s+|only\s+)?(?:cause|culprit|bug)\s+(?:is|was)\b',
+  '\b(?:is|was|were|are|been|being)\s+caused\s+by\b',
+  '\bthe\s+(?:actual\s+|real\s+)?(?:issue|problem|failure|crash|regression|defect)\s+(?:is|was)\s+(?:that|in|due|because|a|an|the)\b',
+  '\bstems?\s+from\b',
+  '^\s*(?:[-#]+\s*)?(?:the\s+)?(?:root\s+)?(?:cause|culprit)\s*:',
+]
+
+[sibling_sweep.hedge_any_re]
+doc = "Regex source of words that make the whole sentence a guess, a plan or a question rather than a finding: it is then no cause statement."
+value = '\b(?:probably|possibly|presumably|perhaps|maybe|apparently|supposedly|seems?|appears?|i\s+(?:suspect|think|guess|believe|assume)|suspect(?:s|ed)?|hypothes\w+|guess(?:ing)?|not\s+sure|unclear|unknown|undetermined|unresolved|unproven|unverified|inferred|partly|not\s+(?:yet\s+)?(?:proven|confirmed|verified|known)|could\s+be|might\s+be|may\s+be|could\s+have\s+been|might\s+have\s+been|if\s+the\s+(?:root\s+)?cause|whether|no\s+(?:single\s+)?(?:root\s+)?cause|not\s+the\s+(?:root\s+)?cause|isn.t\s+the\s+(?:root\s+)?cause|wasn.t\s+the\s+(?:root\s+)?cause)\b'
+
+[sibling_sweep.hedge_before_re]
+doc = "Regex source tested on the few characters just before the cue: a negation, condition, intent or modal there voids the cue ('to find the root cause', 'if it was caused by', 'may be caused by', 'not caused by')."
+value = '\b(?:if|unless|suppose|assuming|whether|may|might|could|would|should|can|cannot|not|never|no|to\s+(?:find|identify|determine|figure|locate|understand|discover|isolate|prove|confirm|get)|find(?:ing)?|identify(?:ing)?|determine|investigat\w+|looking\s+for|look\s+for|trying\s+to|try\s+to|need(?:s)?\s+to|want(?:s)?\s+to|let\s+me|let.s|help\s+me|going\s+to|will|until|until)\s+(?:\w+\s+){0,3}$|n.t\s+(?:\w+\s+){0,3}$'
+
+[sibling_sweep.meta_re]
+doc = "Regex source of mentions of the root-cause machinery itself (the skill, the nudge, a guard, a protocol): a sentence that holds one is about the tooling, not a bug cause."
+value = '\broot[- ]cause[- ](?:claim|attribution|statement|skill|nudge|guard|hook|protocol|discipline|playbook|analysis|investigation|check|rule|section|step|field|label|column|template|tracer|nudges)\b|anti-hall:root-cause|/root-cause|root-cause\.md|root_cause|\brca\b'
+
+[sibling_sweep.fence_re]
+doc = "Regex source of a fenced code block, which is removed before matching (code and logs are not statements)."
+value = '```[\s\S]*?```'
+
+[sibling_sweep.quote_line_re]
+doc = "Regex source of a quoted line (a Markdown quote), removed before matching."
+value = '(?m)^[ \t]*>.*$'
+
+[sibling_sweep.strip_chars]
+doc = "Characters removed from the text before matching (markdown emphasis markers), so a bold 'Root cause:' label reads as plain text."
+value = "*"
+
+[sibling_sweep.terminators]
+doc = "Characters that end a sentence when followed by white space or the end of the text (a newline and a semicolon always end one)."
+value = ".!?"
+
+[sibling_sweep.hard_breaks]
+doc = "Characters that always end a sentence (a newline and a semicolon)."
+value = "\n;"
+
+[sibling_sweep.question_terminator]
+doc = "The terminator that makes a sentence a question; a question is never a cause statement."
+value = "?"
+
+[sibling_sweep.code_span]
+doc = "The character that opens and closes an inline code span; the first span of the cause sentence names the pattern in the reminder."
+value = "`"
+
+[sibling_sweep.fix_context_re]
+doc = "Regex source of fix words: the reply is about a bug being fixed (an edit tool call in the turn also makes it a fix context)."
+value = '\b(?:fix(?:ed|es|ing)?|patch(?:ed|es)?|resolv(?:ed|es|ing)|repair(?:ed|s)?|correct(?:ed|s)?|hotfix(?:ed)?|workaround|mitigat\w+|regress\w*|bugfix)\b'
+
+[sibling_sweep.sweep_statement_re]
+doc = "Regex sources, any of which is an explicit statement that other occurrences were searched for ('searched for other occurrences', 'no other occurrences', 'all call sites fixed', 'sibling sweep')."
+value = [
+  '\b(?:searched|grepp?ed|scanned|swept|checked|looked|audited|rg|ran)\b[^.\n]{0,60}\b(?:other|similar|same|sibling|remaining|all|every)\b[^.\n]{0,40}\b(?:occurrences?|instances?|sites?|places?|call\s?sites?|usages?|callers?|patterns?|spots?|copies)\b',
+  '\bno\s+(?:other|more|further|remaining|similar)\s+(?:occurrences?|instances?|sites?|places?|usages?|call\s?sites?|callers?|copies|spots)\b',
+  '\b(?:all|every)\s+(?:other\s+)?(?:occurrences?|instances?|sites?|call\s?sites?|usages?|copies)\b[^.\n]{0,40}\b(?:fixed|updated|covered|handled|checked|audited|listed|patched)\b',
+  '\bsame\s+pattern\b[^.\n]{0,60}\b(?:elsewhere|nowhere|none|only|not\s+found|no\s+other|also)\b',
+  '\b(?:only|sole)\s+(?:occurrence|instance|site|place|caller|usage)\b',
+  '\bsibling[- ]sweep\b',
+]
+
+# ---- the tool evidence --------------------------------------------------------------------------------------
+
+[sibling_sweep.search_tools]
+doc = "Tool names whose use is a codebase search (matched exactly)."
+value = ["Grep", "Glob"]
+
+[sibling_sweep.search_tool_re]
+doc = "Regex source of tool names that are searches by their name (MCP structural search, find-references, ripgrep servers)."
+value = '(?:^|__)(?:ast_grep_search|lsp_find_references|rip_grep_packages|grep|find_references)$'
+
+[sibling_sweep.bash_tool]
+doc = "The tool name of a shell call, whose command is read for a search program."
+value = "Bash"
+
+[sibling_sweep.bash_search_re]
+doc = "Regex source of a shell command that searches the codebase: rg, grep and relatives as a command word, git grep, git log -S/-G/--grep."
+value = '(?:^|[\s;&|(`])(?:rg|grep|egrep|fgrep|ugrep|ag|ack)(?:\s|$)|\bgit\s+(?:-C\s+\S+\s+)?(?:grep|log\s+(?:-[SG]|--grep))'
+
+[sibling_sweep.agent_tools]
+doc = "Tool names that start a subagent; one whose subagent type is a search agent counts as a search."
+value = ["Agent", "Task"]
+
+[sibling_sweep.search_agent_types]
+doc = "Subagent types that are search agents."
+value = ["Explore", "explore", "oh-my-claudecode:explore"]
+
+[sibling_sweep.edit_tools]
+doc = "Tool names that change a file; one in the turn makes it a fix context."
+value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
+[sibling_sweep.f_tool_name]
+doc = "Content block field holding the tool name."
+value = "name"
+
+[sibling_sweep.f_tool_input]
+doc = "Content block field holding the tool input."
+value = "input"
+
+[sibling_sweep.f_command]
+doc = "Tool input field holding a shell command."
+value = "command"
+
+[sibling_sweep.f_subagent_type]
+doc = "Tool input field holding a subagent's type."
+value = "subagent_type"
+
+# ---- state and telemetry ------------------------------------------------------------------------------------
+
+[sibling_sweep.state_prefix]
+doc = "Prefix of the per-scope state file name under the state directory (the sanitised session id, the agent id and the JSON extension follow)."
+value = "sibling-sweep"
+
+[sibling_sweep.state_session_max]
+doc = "The most characters of the session id and of the agent id in the state file name."
+value = 80
+unit = "chars"
+min = 8
+max = 200
+
+[sibling_sweep.log]
+doc = "The telemetry log, relative to the anti-hall home directory: one JSON line per detected cause statement (reminded, swept, capped, duplicate, no fix context) and per resolved follow-through; holds no message text, only hashes and counts."
+value = "logs/sibling-sweep.ndjson"
+
+[sibling_sweep.log_max_bytes]
+doc = "The telemetry log is emptied before an append once it is larger than this (the same bound as the other guard logs)."
+value = 1048576
+unit = "bytes"
+min = 1024
+
+# ---- the reminder -------------------------------------------------------------------------------------------
+
+[sibling_sweep.msg_what]
+doc = "What happened, in the reminder. Placeholder: {pattern} (the pattern named from the cause statement, or empty)."
+value = "this reply states the cause of a bug{pattern} and the turn shows no search for other occurrences of it"
+
+[sibling_sweep.msg_pattern]
+doc = "The text that names the pattern in the reminder. Placeholder: {pattern}."
+value = " ({pattern})"
+
+[sibling_sweep.msg_why]
+doc = "Why it matters, in the reminder."
+value = "a bug cause is rarely unique: fixing one site and calling it done leaves its siblings, which is unverified completion"
+
+[sibling_sweep.msg_instead]
+doc = "What to do, in the reminder."
+value = "search the codebase for the same pattern (rg, grep or Glob), fix or list every other occurrence, and state the search you ran and what it found"
+
+[sibling_sweep.msg_allowed]
+doc = "What stays allowed, in the reminder."
+value = "one honest line is enough when there is none: name the search and say it found no other occurrence"
+
+[sibling_sweep.msg_override]
+doc = "How to turn the reminder off, in the reminder."
+value = "guards.siblingSweep=off in /anti-hall:settings"
+
+[sibling_sweep.what_log]
+doc = "The {what} of `msg_log_failed` when the telemetry log cannot be written."
+value = "the telemetry log"
+
+[sibling_sweep.what_transcript]
+doc = "The {what} of `msg_log_failed` when the transcript cannot be read."
+value = "the transcript read"
+
+[sibling_sweep.what_state]
+doc = "The {what} of `msg_log_failed` when the per-scope state file cannot be read or written."
+value = "the state file"
+
+[sibling_sweep.msg_log_failed]
+doc = "Daemon log line, written once per process, when the telemetry log or the state file cannot be written. Placeholders: {what}, {error}."
+value = "sibling-sweep: cannot write {what}: {error}"
+
+[sibling_sweep.msg_bad_setting]
+doc = "Daemon log line, written once per process, when a settings file holds an invalid value for a sibling_sweep setting (a pattern that does not compile, a rejected config file); the shipped value is used instead. Placeholder: {setting}."
+value = "sibling-sweep: ignoring an invalid value ({setting}), using the shipped one"

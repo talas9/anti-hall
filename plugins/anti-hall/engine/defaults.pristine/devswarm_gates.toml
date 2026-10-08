@@ -1,0 +1,67 @@
+# ah-engine shipped defaults for the DevSwarm gate checks (devswarm-child-gate, devswarm-parent-reply-tracker,
+# devswarm-child-drain). Format: see the header of engine.toml. Only the role/switch gates and the command pre-filter are
+# decided natively; everything that reads the mailbox store or spawns devswarm.js stays with the Node hook (D45).
+
+[devswarm_gates.child_gate_summary]
+doc = "One-line description of the devswarm-child-gate check in the generated reference."
+value = "DevSwarm child Stop gate: allows the stop when the hook cannot act (switch off, skip recorded, not a DevSwarm child); a child workspace defers to the Node gate, which owns the heartbeat state, the stop budgets, the mailbox store and the hivecontrol probe (port of devswarm-child-gate.js)."
+
+[devswarm_gates.reply_tracker_summary]
+doc = "One-line description of the devswarm-parent-reply-tracker check in the generated reference."
+value = "DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm send (switch off, child workspace, other tool, command without the devswarm and send words); a plausible send defers to the Node hook, which records the reply state (port of devswarm-parent-reply-tracker.js)."
+
+[devswarm_gates.child_drain_summary]
+doc = "One-line description of the devswarm-child-drain check in the generated reference."
+value = "DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child); a child workspace defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js)."
+
+[devswarm_gates.child_gate_setting]
+doc = "Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)."
+value = { section = "devswarm", key = "childGate", env = "", aliases = [], option = "devswarm_child_gate", default = true }
+
+[devswarm_gates.reply_tracker_setting]
+doc = "Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable)."
+value = { section = "devswarm", key = "parentReplyTracker", env = "", aliases = [], option = "devswarm_parent_reply_tracker", default = true }
+
+[devswarm_gates.child_drain_setting]
+doc = "Where the devswarm-child-drain on/off switch is read from (devswarm.childDrain, default on; no environment variable)."
+value = { section = "devswarm", key = "childDrain", env = "", aliases = [], option = "devswarm_child_drain", default = true }
+
+[devswarm_gates.supervisor_mode]
+doc = "Where the DevSwarm supervisor mode (auto, on, off) is read from (devswarm.supervisorMode; headline plugin option)."
+value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", values = ["auto", "on", "off"] }
+
+[devswarm_gates.child_gate_guard_name]
+doc = "The guard id the devswarm-child-gate check answers to in skip.json."
+value = "devswarm-child-gate"
+
+[devswarm_gates.kill_env]
+doc = "Environment variable that, set to exactly `1`, turns the DevSwarm integration off for the process."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[devswarm_gates.kill_env_value]
+doc = "The value of the kill variable that turns the integration off."
+value = "1"
+
+[devswarm_gates.repo_id_env]
+doc = "Environment variable DevSwarm sets on a workspace's processes; non-empty means the supervisor is in play in auto mode."
+value = "DEVSWARM_REPO_ID"
+
+[devswarm_gates.source_branch_env]
+doc = "Environment variable DevSwarm sets only on a child workspace; non-empty means this session is a child."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[devswarm_gates.mode_on]
+doc = "Supervisor mode value that forces the integration on."
+value = "on"
+
+[devswarm_gates.mode_off]
+doc = "Supervisor mode value that forces the integration off."
+value = "off"
+
+[devswarm_gates.send_words]
+doc = "Words that must both appear (ASCII case-insensitive, at word boundaries, in any order) in a Bash command for it to plausibly be a devswarm send; `devswarm` also matches before `.js`."
+value = ["devswarm", "send"]
+
+[devswarm_gates.bash_tool]
+doc = "The tool name the reply tracker and the drain nudge observe."
+value = "Bash"

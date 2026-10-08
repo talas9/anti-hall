@@ -1,0 +1,89 @@
+# ah-engine shipped schedules and scheduler settings (D33, D44, D51, D24, D26, D27). Format: see the header of engine.toml.
+#
+# The engine's own ticker runs these; nothing outside the engine has to trigger them (D33). A job is a table
+# `[job.<name>]` whose `value` holds:
+#   kind          "engine" (runs inside the engine) or "agent" (delivered to a session's mailbox: planned, D45)
+#   action        what it does: maintain | backup | metrics_snapshot | spool_drain | telemetry_rollup | noop
+#   every_key     the numeric setting (ms) that holds its interval, so it is tunable and env-overridable; 0 disables it
+#   jitter_ms     a random delay of up to this much is added to every next run, so jobs do not run in step
+#   timeout_ms    a run taking longer is stopped (a subprocess is killed) and counted as failed
+#   retries       failed runs retried before the job cools down; backoff_ms doubles per retry up to backoff_max_ms
+#   cooldown_ms   after the retries run out, the job waits at least this long before its next run
+#   catch_up      after a missed window (sleep, suspend, the engine down): "once" runs it once, "skip" waits for the next
+#   persist       true keeps its schedule and full run history in hot.db, so a restart never runs it twice; false keeps
+#                 the schedule in memory and records only failed runs (for frequent, cheap jobs)
+# User overrides: `schedules.json` in the state directory, `{"jobs": {"<name>": {<any of the fields above, or
+# every_ms>}}}`; it can change or disable a shipped job, or add one that uses a known action.
+
+[job.maintain]
+doc = "Size control (D26): move inactive rows to archive.db, prune derived data, checkpoint and VACUUM; runs as a subprocess so a timeout can kill it."
+value = { kind = "engine", action = "maintain", every_key = "schedule.maintain_ms", jitter_ms = 600000, timeout_ms = 600000, retries = 2, backoff_ms = 60000, backoff_max_ms = 600000, cooldown_ms = 3600000, catch_up = "once", persist = true }
+
+[job.backup]
+doc = "A scrubbed backup of both databases (D27); off until schedule.backup_ms is set. Runs as a subprocess."
+value = { kind = "engine", action = "backup", every_key = "schedule.backup_ms", jitter_ms = 600000, timeout_ms = 600000, retries = 2, backoff_ms = 60000, backoff_max_ms = 600000, cooldown_ms = 3600000, catch_up = "once", persist = true }
+
+[job.metrics_snapshot]
+doc = "Keep a snapshot of the metrics counters and histograms in hot.db and its rollups in archive.db (D51)."
+value = { kind = "engine", action = "metrics_snapshot", every_key = "telemetry.snapshot_ms", jitter_ms = 0, timeout_ms = 10000, retries = 1, backoff_ms = 5000, backoff_max_ms = 60000, cooldown_ms = 60000, catch_up = "skip", persist = false }
+
+[job.spool_drain]
+doc = "Apply writes clients spooled while the engine was down or busy (D24); the daemon also drains on start and before each project write."
+value = { kind = "engine", action = "spool_drain", every_key = "spool.drain_ms", jitter_ms = 0, timeout_ms = 30000, retries = 1, backoff_ms = 1000, backoff_max_ms = 30000, cooldown_ms = 30000, catch_up = "skip", persist = false }
+
+[job.telemetry_rollup]
+doc = "Roll complete days of telemetry counters up into archive.db and apply the telemetry retention (D78); idempotent, so a repeat or a catch-up changes nothing."
+value = { kind = "engine", action = "telemetry_rollup", every_key = "schedule.telemetry_rollup_ms", jitter_ms = 600000, timeout_ms = 300000, retries = 2, backoff_ms = 60000, backoff_max_ms = 600000, cooldown_ms = 3600000, catch_up = "once", persist = true }
+
+# ---- scheduler ------------------------------------------------------------------------------------------
+
+[schedule.tick_ms]
+doc = "Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks."
+value = 1000
+env = "AH_ENGINE_TICK_MS"
+unit = "ms"
+min = 10
+
+[schedule.maintain_ms]
+doc = "Interval of the maintain job (D26); 0 turns it off."
+value = 86400000
+env = "AH_ENGINE_MAINTAIN_MS"
+unit = "ms"
+
+[schedule.backup_ms]
+doc = "Interval of the backup job (D27); 0 (the default) turns it off."
+value = 0
+env = "AH_ENGINE_BACKUP_MS"
+unit = "ms"
+
+[schedule.telemetry_rollup_ms]
+doc = "Interval of the telemetry rollup job (D78); 0 turns it off."
+value = 86400000
+env = "AH_ENGINE_TELEMETRY_ROLLUP_MS"
+unit = "ms"
+
+[schedule.actions]
+doc = "Actions a job may name; anything else in a user override is refused and logged."
+value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "noop"]
+
+[schedule.subprocess_actions]
+doc = "Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started."
+value = ["maintain", "backup"]
+
+[schedule.test_sleep_argv]
+doc = "Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts."
+value = ["sleep", "3600"]
+
+[schedule.run_wait_ms]
+doc = "How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms."
+value = 5000
+unit = "ms"
+
+[schedule.history_default]
+doc = "Runs `schedule history` lists unless asked for more."
+value = 50
+
+[schedule.detail_max]
+doc = "Longest result detail kept with a run in the history (longer text is cut)."
+value = 2000
+unit = "chars"

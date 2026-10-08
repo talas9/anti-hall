@@ -1,0 +1,1591 @@
+# ah-engine shipped defaults for the small Bash guards ported from Node (merge-side-pick, ship-it-guard,
+# scan-throttle, coordinator-work-guard, compact-declaration-guard) and the helpers they share (D17, D30).
+#
+# Every pattern, message, setting name and limit of these checks lives here. Regex sources use JavaScript syntax
+# (the Node guards are the authority) and are translated by `checks::guardkit::jsre`; they are written as TOML
+# literal strings so no backslash is doubled. Format: see the header of engine.toml.
+
+# ---- shared helpers (checks::guardkit) --------------------------------------------------------------------
+
+[guardkit.js_space]
+doc = "Characters JavaScript treats as white space, written as the body of a regex character class; used to translate the JS escapes for white space exactly (Rust's own class differs: it has U+0085 and lacks U+FEFF)."
+value = '\t\n\x0b\x0c\r    -     　﻿'
+
+[guardkit.line_terminators]
+doc = "Characters JavaScript's dot excludes, as the body of a regex character class."
+value = '\n\r  '
+
+[guardkit.settings_file]
+doc = "Settings file, relative to the home directory."
+value = ".anti-hall/settings.json"
+
+[guardkit.skip_file]
+doc = "Skip file, relative to the home directory (a skipped guard is allowed until its expiry time)."
+value = ".anti-hall/skip.json"
+
+[guardkit.claude_settings_file]
+doc = "The host's own settings file, relative to the home directory, where plugin options are stored."
+value = ".claude/settings.json"
+
+[guardkit.plugin_config_keys]
+doc = "Keys of the host settings file's pluginConfigs map under which this plugin's options may be stored, lowest priority first."
+value = ["anti-hall", "anti-hall@anti-hall"]
+
+[guardkit.plugin_option_prefix]
+doc = "Prefix of the environment variables the host sets from plugin options."
+value = "CLAUDE_PLUGIN_OPTION_"
+
+[guardkit.true_tokens]
+doc = "Environment or settings strings that mean on (compared after trimming and lower-casing)."
+value = ["1", "on", "true", "yes"]
+
+[guardkit.false_tokens]
+doc = "Environment or settings strings that mean off (compared after trimming and lower-casing)."
+value = ["0", "off", "false", "no"]
+
+[guardkit.destructive_guards]
+doc = "Guards that a broad skip of everything does not cover; they must be named in the skip file."
+value = ["git-guard", "devswarm-read-guard", "git-stash-guard"]
+
+[guardkit.skip_all_key]
+doc = "Key of the skip file that skips every guard not listed in destructive_guards."
+value = "all"
+
+[guardkit.state_cap]
+doc = "How many per-session state entries the in-memory guard state keeps before it evicts the least recently written one."
+value = 4096
+min = 16
+max = 1000000
+
+[guardkit.session_key_max]
+doc = "Longest session key, in UTF-16 units, after the characters outside letters, digits, dot, underscore and hyphen are replaced (the Node state file name limit)."
+value = 120
+
+[guardkit.plugin_manifest]
+doc = "The plugin manifest, relative to the plugin root (its version is the one the settings migration stamp is compared with)."
+value = ".claude-plugin/plugin.json"
+
+[guardkit.migration_markers_file]
+doc = "The per-migration marker file, relative to the home directory."
+value = ".anti-hall/update-sweep-state.json"
+
+[guardkit.jev_legacy_file]
+doc = "The legacy Jev settings file (settings.js reads it below settings.json for the Jev keys), relative to the home directory."
+value = ".anti-hall/jev.json"
+
+[guardkit.settings_migration_key]
+doc = "Key of the marker that says the legacy settings were forward-migrated into settings.json for a plugin version."
+value = "migrateSettingsFromLegacy"
+
+[guardkit.settings_dir]
+doc = "The anti-hall directory under the home directory, where the legacy settings files live."
+value = ".anti-hall"
+
+[guardkit.icons]
+doc = "Leading icon of a block or advisory message, by kind."
+value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "✅", update = "⬆️", error = "❌" }
+
+[guardkit.msg_head]
+doc = "Text between the icon and the guard name in every block or advisory message."
+value = " anti-hall · "
+
+[guardkit.msg_labels]
+doc = "Labels of the optional lines of a block or advisory message."
+value = { why = "Why: ", instead = "Do instead: ", allowed = "Allowed here: ", override = "Override (only if the user explicitly asked): " }
+
+# ---- merge-side-pick (hooks/merge-side-pick.js, hooks/lib/merge-side-pick.js) ----------------------------
+
+[merge_side_pick.summary]
+doc = "One-line description of the merge-side-pick check in the generated reference."
+value = "Advisory: a push after a conflict was resolved by taking one side wholesale, with no test run since (port of merge-side-pick.js)."
+
+[merge_side_pick.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "merge-side-pick"
+
+[merge_side_pick.setting]
+doc = "Where the on/off switch is read from (guards.mergeSidePickAdvisory, default on)."
+value = { section = "guards", key = "mergeSidePickAdvisory", env = "ANTIHALL_MERGE_SIDE_PICK_ADVISORY", aliases = [], option = "", default = true }
+
+[merge_side_pick.state_ns]
+doc = "Namespace of this check's per-session state in the guard state store."
+value = "merge-side-pick"
+
+[merge_side_pick.quote_masks]
+doc = "Regexes whose matches (quoted spans) are blanked before a command is split into segments, so quoted text is never mistaken for a command (maskShellQuotes)."
+value = ['\x27[^\x27\n]*\x27', '"(?:[^"\\\n]|\\.)*"']
+
+[merge_side_pick.segment_split]
+doc = "Regex that splits a masked command into segments (semicolon, ampersand, pipe, newline)."
+value = '[;&|\n]+'
+
+[merge_side_pick.git_prefix]
+doc = "Regex source that every git pattern starts with: the git word with optional -C, -c and --no-pager options."
+value = '(?:^|\s)git(?:\s+-C\s+\S+|\s+-c\s+\S+|\s+--no-pager)*\s+'
+
+[merge_side_pick.pick_tails]
+doc = "Regex sources, each appended to git_prefix, that recognise taking one side of a conflict wholesale (checkout or restore --ours, -X ours, -s ours)."
+value = [
+  '(?:checkout|restore)\b[^\n]*?\s--(?:ours|theirs)\b',
+  '(?:merge|pull|rebase|cherry-pick|revert)\b[^\n]*?\s(?:-X\s*|--strategy-option[= ])(?:ours|theirs)\b',
+  '(?:merge|pull)\b[^\n]*?\s(?:-s\s*|--strategy[= ])ours\b',
+]
+
+[merge_side_pick.push_tail]
+doc = "Regex source appended to git_prefix that recognises a push."
+value = 'push\b'
+
+[merge_side_pick.dry_run]
+doc = "Regex that marks a push segment as a dry run, which is not a push."
+value = '\s(?:--dry-run|-n)\b'
+
+[merge_side_pick.test_patterns]
+doc = "Regex sources that recognise a test run in a command segment."
+value = [
+  '(?:^|\s)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)\b',
+  '(?:^|\s)(?:npx|bunx|pnpm\s+exec)\s+(?:jest|vitest|mocha|ava)\b',
+  '(?:^|\s)(?:jest|vitest|mocha|pytest|py\.test|tox|nox|rspec|phpunit|ctest)\b',
+  '(?:^|\s)node\s+(?:\S+\s+)*--test\b',
+  '(?:^|\s)python3?\s+-m\s+(?:pytest|unittest)\b',
+  '(?:^|\s)(?:go|cargo|flutter|dart|deno)\s+test\b',
+  '(?:^|\s)cargo\s+nextest\b',
+  '(?:^|\s)(?:\./)?(?:mvn|mvnw|gradle|gradlew)\s+(?:\S+\s+)*(?:test|verify|check)\b',
+  '(?:^|\s)(?:make|just)\s+(?:test|tests|check)\b',
+  '(?:^|\s)(?:bundle\s+exec\s+)?rake\s+test\b',
+  '(?:^|\s)dotnet\s+test\b',
+]
+
+[merge_side_pick.cmd_keep]
+doc = "How many UTF-16 units of the side-pick command are kept for the advisory."
+value = 120
+
+[merge_side_pick.msg_what]
+doc = "Advisory headline; {pick} is the recorded side-pick command."
+value = "pushing after a conflict was resolved by taking one side wholesale ({pick}) with no test run since"
+
+[merge_side_pick.msg_why]
+doc = "Advisory reason."
+value = "taking --ours/--theirs (or -X ours/theirs) silently drops the other side's changes, and nothing has verified the result."
+
+[merge_side_pick.msg_instead]
+doc = "Advisory advice."
+value = "run the tests first, review the discarded side in `git diff`, then push."
+
+[merge_side_pick.fallback_cmd]
+doc = "Text used for the side-pick command when none was recorded."
+value = "a side-pick"
+
+# ---- ship-it-guard (hooks/ship-it-guard.js) ----------------------------------------------------------------
+
+[ship_it.summary]
+doc = "One-line description of the ship-it-guard check in the generated reference."
+value = "Opt-in plan gate: blocks edits to hard-risk files with no PLAN.md and advises on files a plan's phases do not declare (port of ship-it-guard.js)."
+
+[ship_it.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "ship-it-guard"
+
+[ship_it.setting]
+doc = "Where the opt-in switch is read from (guards.shipitGate, default off)."
+value = { section = "guards", key = "shipitGate", env = "ANTIHALL_SHIPIT_GATE", aliases = [], option = "guards_shipit_gate", default = false }
+
+[ship_it.deferred_tools]
+doc = "Tool names whose targets the engine cannot derive exactly (shell writes need the command-guard parser, apply_patch needs the Codex patch parser): with the gate on they defer to the Node guard."
+value = ["Bash", "apply_patch"]
+
+[ship_it.plan_file]
+doc = "Name of the plan file looked for in the working directory."
+value = "PLAN.md"
+
+[ship_it.hard_risk]
+doc = "Regex sources (case-insensitive) of hard-risk paths: CI workflows, migrations, auth, security."
+value = [
+  '(^|[\\/])\.github[\\/]workflows[\\/]',
+  '(^|[\\/])migrations?[\\/]',
+  '(^|[\\/])migrate[\\/]',
+  '[._-]migration[s]?\.[a-z]+$',
+  '(^|[\\/])(auth|authn|authz)[\\/]',
+  '[._-](auth|authn|authz|login|session|password|credential|token|secret)s?\.[a-z]+$',
+  '(^|[\\/])(security|crypto)[\\/]',
+]
+
+[ship_it.non_code_name]
+doc = "Lower-cased base name that is never gated (the plan file itself)."
+value = "plan.md"
+
+[ship_it.non_code_ext]
+doc = "Regex source (case-insensitive), tested on the lower-cased base name, for documentation extensions that are never gated."
+value = '\.(md|mdx|markdown|txt|rst)$'
+
+[ship_it.non_code_test_file]
+doc = "Regex source (case-insensitive), tested on the lower-cased base name, for test file names that are never gated."
+value = '\.(test|spec)\.[a-z0-9]+$'
+
+[ship_it.non_code_test_dir]
+doc = "Regex source (case-insensitive), tested on the whole path, for test directories that are never gated."
+value = '(^|[\\/])(tests?|__tests__|spec)([\\/]|$)'
+
+[ship_it.phases_head]
+doc = "Regex source (case-insensitive) of the line that opens the Phases section of a plan."
+value = '(?:^|\n)##[ \t]+Phases\b'
+
+[ship_it.phases_end]
+doc = "Regex source that finds where the Phases section ends: the next level-two heading."
+value = '\n##[ \t]+\S'
+
+[ship_it.phase_split]
+doc = "Regex source that finds the line break before each phase heading, where the Phases section is split."
+value = '\n###[ \t]+'
+
+[ship_it.phase_head]
+doc = "Regex source a phase section must start with."
+value = '^###[ \t]+'
+
+[ship_it.files_head]
+doc = "Regex source (case-insensitive) of the files field a phase declares, up to where its value starts."
+value = '\n-[ \t]*files:[ \t]*'
+
+[ship_it.files_end]
+doc = "Regex source (case-insensitive) that finds where a files value ends: the next field bullet or phase heading."
+value = '\n-[ \t]*[\w][\w ]*:|\n###[ \t]'
+
+[ship_it.token_separators]
+doc = "Characters that separate path tokens inside a files value, besides white space."
+value = ",`\"'()"
+
+[ship_it.token_trim]
+doc = "Trailing characters stripped from a path token."
+value = ".,;:"
+
+[ship_it.token_ext_max]
+doc = "Longest dotted extension that makes a token without a slash look like a path."
+value = 10
+
+[ship_it.msg_block_what]
+doc = "Block headline; {file} is the first hard-risk file."
+value = "L-risk file {file} edited with no PLAN.md."
+
+[ship_it.msg_block_why]
+doc = "Block reason."
+value = "This path is a hard-risk trigger (migration / auth / CI-workflow / security); per the ship-it skill, L-tier changes go through plan mode and a PLAN.md before code."
+
+[ship_it.msg_block_instead]
+doc = "Block advice."
+value = "create PLAN.md (repo root) first."
+
+[ship_it.msg_block_override]
+doc = "Block override hint."
+value = "if this is genuinely a smaller change, unset ANTIHALL_SHIPIT_GATE or use the documented skip hatch"
+
+[ship_it.msg_adv_what]
+doc = "Advisory headline; {file} is the first target outside the declared files and {plan} the plan path."
+value = "{file} does not appear in any phase's declared \"files:\" list in {plan} (advisory, not a block)."
+
+[ship_it.msg_adv_why]
+doc = "Advisory reason."
+value = "It may be a legitimate shared-file touch (`files:` is free text, so false positives are expected) or scope drift."
+
+[ship_it.msg_adv_instead]
+doc = "Advisory advice."
+value = "if intentional, proceed; if not, update the PLAN.md Blast radius / phase `files:` list, or re-plan this phase."
+
+# ---- scan-throttle (hooks/scan-throttle.js) ----------------------------------------------------------------
+
+[scan_throttle.summary]
+doc = "One-line description of the scan-throttle check in the generated reference."
+value = "Advisory: recommends the background-throttled form of a user-configured heavy scan command (port of scan-throttle.js)."
+
+[scan_throttle.guard_name]
+doc = "The guard id this check answers to in messages."
+value = "scan-throttle"
+
+[scan_throttle.setting]
+doc = "Where the on/off switch is read from (guards.scanThrottle, default on; the old ANTI_HALL_SCAN_THROTTLE name is an alias)."
+value = { section = "guards", key = "scanThrottle", env = "ANTIHALL_SCAN_THROTTLE", aliases = ["ANTI_HALL_SCAN_THROTTLE"], option = "guards_scan_throttle", default = true }
+
+[scan_throttle.patterns_env]
+doc = "Environment variable holding the comma-separated regex sources of the scan commands to advise on; with none set the check matches nothing."
+value = "ANTI_HALL_THROTTLE_PATTERNS"
+
+[scan_throttle.known_prefixes]
+doc = "Every throttle prefix this check itself generates; a command that already starts with one is left alone."
+value = ["taskpolicy -c utility nice -n 19 ", "ionice -c 3 nice -n 19 ", "nice -n 19 "]
+
+[scan_throttle.darwin]
+doc = "The macOS throttle tool that must exist on PATH, and the prefix it gives."
+value = { tool = "taskpolicy", prefix = "taskpolicy -c utility nice -n 19 " }
+
+[scan_throttle.linux]
+doc = "The Linux throttle tool that must exist on PATH, the prefix it gives, and the optional I/O tool with its own prefix."
+value = { tool = "nice", prefix = "nice -n 19 ", io_tool = "ionice", io_prefix = "ionice -c 3 " }
+
+[scan_throttle.path_separator]
+doc = "Separator of the entries of the PATH variable."
+value = ":"
+
+[scan_throttle.path_var]
+doc = "Name of the variable that holds the executable search path."
+value = "PATH"
+
+[scan_throttle.assign_one]
+doc = "Regex source of one leading NAME=value assignment (quoted or unquoted value)."
+value = '^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|[^\s]*)'
+
+[scan_throttle.unsafe_start_chars]
+doc = "Characters that, as the first character where the prefix would go, make the position unsafe (subshell, group, separator, backtick)."
+value = ")(;{}|&`"
+
+[scan_throttle.unsafe_start_subst]
+doc = "Text that, at the position where the prefix would go, starts a command substitution and makes the position unsafe."
+value = "$("
+
+[scan_throttle.pattern_literal_chars]
+doc = "ASCII characters a user pattern may contain as plain literals for the engine to match it itself; a pattern with any other construct defers to the Node guard, whose regex engine is the authority."
+value = " !#%&',-/:;<=>@_\"~`ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+[scan_throttle.pattern_escapes]
+doc = "Characters that may follow a backslash in a user pattern the engine matches itself (escaped punctuation, class escapes, newline, tab)."
+value = ".-/\\()[]*+?|^$sSdDwWbBnt{}"
+
+[scan_throttle.msg_group_what]
+doc = "Advisory headline when the scan is not the first simple command."
+value = "a repo-wide scan command was detected in a compound or grouped command (not the first simple command); it was NOT modified."
+
+[scan_throttle.msg_group_instead]
+doc = "Advice when the scan is not the first simple command; {prefix} is the throttle prefix without its trailing space."
+value = "consider running the scan background-throttled, e.g. `{prefix} <that command>`."
+
+[scan_throttle.msg_first_what]
+doc = "Advisory headline when the scan is the first simple command."
+value = "this is a heavy repo-wide scan; the command was NOT modified."
+
+[scan_throttle.msg_first_why]
+doc = "Advisory reason when the scan is the first simple command."
+value = "To keep the machine responsive."
+
+[scan_throttle.msg_first_instead]
+doc = "Advice when the scan is the first simple command; {throttled} is the command with the prefix in place."
+value = "re-run it background-throttled: `{throttled}`."
+
+# ---- coordinator-work-guard (hooks/coordinator-work-guard.js, hooks/coordinator-detect.js) -----------------
+
+[coordinator_work.summary]
+doc = "One-line description of the coordinator-work-guard check in the generated reference."
+value = "Main-thread work window. PreToolUse: allows subagent Bash calls in the engine and defers the rest (the classification and the block stay with Node). PostToolUse: records the call in the window, nudges once per crossing and folds stale session files, when the call's classification is already known (the Node pre-verdict of the same tool call) or provably not work; otherwise defers (port of coordinator-work-guard.js)."
+
+[coordinator_work.agent_markers]
+doc = "Payload fields the host puts on a subagent's hook payload and never on the main thread's."
+value = ["agent_id", "agent_type"]
+
+[coordinator_work.codex_markers]
+doc = "Payload fields that, both non-empty strings, identify a Codex payload."
+value = ["turn_id", "model"]
+
+# ---- compact-declaration-guard (hooks/compact-declaration-guard.js, hooks/lib/compact-advice.js) ------------
+
+[compact_decl.summary]
+doc = "One-line description of the compact-declaration-guard check in the generated reference."
+value = "Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which decides and blocks (port of compact-declaration-guard.js)."
+
+[compact_decl.setting]
+doc = "Where the on/off switch is read from (guards.compactDeclarationGuard, default on; it has no environment variable)."
+value = { section = "guards", key = "compactDeclarationGuard", env = "", aliases = [], option = "guards_compact_declaration_guard", default = true }
+
+[compact_decl.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "compact-declaration-guard"
+
+[compact_decl.agent_markers]
+doc = "Payload fields that, present and non-null, prove the call comes from a subagent."
+value = ["agent_id", "agent_type"]
+
+[compact_decl.work_tools]
+doc = "Tools that always start new work (spawns and file edits)."
+value = ["Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit"]
+
+[compact_decl.handover_file]
+doc = "Rust regex source, tested on a resolved path, for a file inside the handovers directory: writing it is the very thing a block tells the agent to do, so it is never new work."
+value = '(?s)(?:^|/)\.anti-hall/handovers/[^/]'
+
+[compact_decl.bash_work_always]
+doc = "Regex sources (case-insensitive) of shell commands that change state wherever they appear in a command with quoted text blanked."
+value = [
+  '\bgit\s+(?:commit|rebase|merge|cherry-pick|stash|reset|apply|am)\b',
+  '\bgit\s+(?:checkout|switch|restore|clean)\b',
+  '\bsed\s+-i',
+  '\bnpm\s+(?:install|i|ci)\b',
+  '\b(?:pnpm|yarn)\s+(?:add|install)\b',
+  '\bpip\s+install\b',
+  '\bpatch\b',
+]
+
+[compact_decl.bash_work_command_position]
+doc = "Regex source (case-insensitive) of the bare state-changing verbs, which count only at command position (line start, or after a separator, parenthesis, backtick or substitution)."
+value = '(?:\A|[\n\r  ;&|`(]|\$\()\s*(?:rm|cp|mv|tee|mkdir|touch|make|chmod)\b'
+
+[compact_decl.bash_work_extra]
+doc = "Regex source (case-insensitive) of the pushes, tags and pull-request writes this guard counts as work on top of the shared list."
+value = '\bgit\s+(?:push|tag)\b|\bgh\s+pr\s+(?:merge|create)\b'
+
+[compact_decl.tail_bytes]
+doc = "How many bytes from the end of the transcript are read (the Node guard reads the same)."
+value = 1572864
+min = 1024
+
+[compact_decl.safe_word]
+doc = "Word a declaration must contain (compared without regard to ASCII case); a turn without it cannot hold one."
+value = "safe"
+
+[compact_decl.not_typed]
+doc = "Regex source for injected user content that never starts a turn (task notification, local command output, system reminder, shell output)."
+value = '^\s*<(task-notification|local-command-|system-reminder|bash-std(out|err))'
+
+[compact_decl.notify]
+doc = "Regex source for a background task notification."
+value = '^\s*<task-notification>'
+
+[compact_decl.compact_command]
+doc = "Regex source for the compact command line the host writes as a user entry."
+value = '^\s*<command-name>\s*/compact\s*</command-name>'
+
+[compact_decl.reminder_tags]
+doc = "Opening and closing tag of an injected system reminder, which may precede the real prompt."
+value = { open = "<system-reminder>", close = "</system-reminder>" }
+
+[compact_decl.deep_json_depth]
+doc = "Nesting depth beyond which a transcript line the engine cannot parse is deferred to Node (the Node parser has no such limit)."
+value = 100
+
+[compact_decl.codex_text_types]
+doc = "Content block types that carry assistant text in a Codex rollout entry."
+value = ["output_text", "text"]
+
+# ---- model-routing-guard (hooks/model-routing-guard.js) ----------------------------------------------------
+
+[model_routing.summary]
+doc = "One-line description of the model-routing check in the generated reference."
+value = "Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches (port of model-routing-guard.js)."
+
+[model_routing.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "model-routing-guard"
+
+[model_routing.message_guard]
+doc = "The guard label used in ordinary routing advisory text."
+value = "model-routing"
+
+[model_routing.handover_guard]
+doc = "The guard label used in the handover-delegation advisory."
+value = "handover"
+
+[model_routing.update_setting]
+doc = "Where the update-in-session switch is read from (guards.updateInSession, default on)."
+value = { section = "guards", key = "updateInSession", env = "ANTIHALL_UPDATE_IN_SESSION", aliases = [], option = "guards_update_in_session", default = true }
+
+[model_routing.mode_env]
+doc = "Environment variable whose value advisory downgrades strict omitted-model blocks."
+value = "ANTIHALL_MODEL_ROUTING"
+
+[model_routing.deploy_floor_env]
+doc = "Environment variable that sets the deploy/migration/secret minimum model floor."
+value = "ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR"
+
+[model_routing.mode_option]
+doc = "Claude plugin option key for guards.modelRouting."
+value = "guards_model_routing"
+
+[model_routing.deploy_floor_option]
+doc = "Claude plugin option key for guards.modelRoutingDeployFloor."
+value = "guards_model_routing_deploy_floor"
+
+[model_routing.mode_values]
+doc = "Valid guards.modelRouting enum values."
+value = ["strict", "advisory", "off"]
+
+[model_routing.deploy_floor_values]
+doc = "Valid guards.modelRoutingDeployFloor enum values."
+value = ["sonnet", "opus", "off"]
+
+[model_routing.advisory_mode]
+doc = "Routing-mode value that downgrades omitted-model strict blocks to advisories."
+value = "advisory"
+
+[model_routing.off_mode]
+doc = "Routing-mode value that disables model-routing."
+value = "off"
+
+[model_routing.deploy_floor_default]
+doc = "Default deploy/migration/secret model floor."
+value = "sonnet"
+
+[model_routing.deploy_floor_off]
+doc = "Deploy-floor value that disables the deploy/migration/secret floor."
+value = "off"
+
+[model_routing.scan_limit]
+doc = "Maximum JavaScript UTF-16 code units of description plus prompt scanned for routing keywords (String.prototype.slice parity)."
+value = 131072
+min = 1
+unit = "utf16-code-units"
+
+[model_routing.deploy_weak_threshold]
+doc = "Number of distinct weak deploy/migration/secret signal kinds needed to activate the deploy floor."
+value = 2
+min = 1
+
+[model_routing.setting_section]
+doc = "Settings section containing the model-routing settings."
+value = "guards"
+
+[model_routing.setting_key]
+doc = "Settings key containing the model-routing mode."
+value = "modelRouting"
+
+[model_routing.deploy_floor_key]
+doc = "Settings key containing the deploy/migration/secret model floor."
+value = "modelRoutingDeployFloor"
+
+[model_routing.routing_mode_default]
+doc = "Default model-routing mode when no setting or env override is present."
+value = "strict"
+
+[model_routing.generic_type]
+doc = "The generic subagent type whose spawns are eligible for the generic-agent routing rows."
+value = "general-purpose"
+
+[model_routing.explore_type]
+doc = "Subagent type recommended for read-only research-shaped generic spawns."
+value = "Explore"
+
+[model_routing.key_prefix_chars]
+doc = "Characters of the spawn prompt hashed (never stored) into the route event's spawn_key, with the session, parent agent and subagent type, so a retry after a deny (new tool_use_id, changed model) joins the first decision. Known limit: two spawns by one agent in one session whose prompts share this prefix and subagent type share a key."
+value = 256
+min = 1
+unit = "characters"
+
+[model_routing.flagship_models]
+doc = "Explicit model enum values treated as flagship tiers for row 1 and row 3."
+value = ["opus", "fable"]
+
+[model_routing.tier_haiku]
+doc = "The cheap execution model tier recommended by rows 1, 2 and 3."
+value = "haiku"
+
+[model_routing.tier_opus]
+doc = "The planning advisory's default stronger tier."
+value = "opus"
+
+[model_routing.tier_main]
+doc = "Pseudo-tier used when the guard forces work back to the main session."
+value = "main"
+
+[model_routing.tier_inherit]
+doc = "Pseudo-tier used in telemetry when an omitted model inherits from the parent."
+value = "inherit"
+
+[model_routing.model_rank]
+doc = "Rank table for the deploy/migration/secret model floor."
+value = { haiku = 1, sonnet = 2, opus = 3, fable = 3 }
+
+[model_routing.mechanical]
+doc = "Mechanical execution-only signal phrases, matched as token phrases after compatibility folding."
+value = ["fetch", "download", "curl", "grep", "glob", "search files", "run command", "run script", "install", "build", "run tests", "git push", "deploy", "dump", "export", "tail", "read logs", "list", "check status"]
+
+[model_routing.hard_execution]
+doc = "Mechanical signals that suppress the row-1 research exemption."
+value = ["run script", "install", "build", "run tests", "git push", "deploy"]
+
+[model_routing.complex]
+doc = "Complex/planning signal phrases whose presence vetoes rows that steer to haiku."
+value = ["plan", "planning", "design", "architect", "review", "audit", "regression", "coupling", "merge order", "critique", "debate", "validate", "simulate", "root cause", "workflow analysis", "logic", "mockup", "security"]
+
+[model_routing.role_word_re]
+doc = "Debate-role exemption regex matched against the description only."
+value = '\b(reviewer|auditor|critic|debate|deadly[- ]?loop)\b'
+
+[model_routing.research_re]
+doc = "Research/read-only regex for the row-1 research exemption and row-6 Explore advisory."
+value = '\b(research|investigate|find|search|audit|survey|read[ -]?only|locate|map|gather|explore|scout|look\s+up|trace|reconnaissance)\b'
+
+[model_routing.write_re]
+doc = "Write/execute regex that suppresses the row-6 Explore advisory."
+value = '\b(write|edit|modif|commit|push|changelog|create\s+(?:an?\s+|the\s+|new\s+)?files?|migrat|refactor|implement)\b'
+
+[model_routing.write_imperative_re]
+doc = "Instruction-position ambiguous write/execute regex that suppresses the row-6 Explore advisory."
+value = '(?:^|[\n\r\u2028\u2029]|[.;:!?]\s+|\b(?:then|and|also|please|to)\s+)(?:tag|release|bump|apply|patch|build|deploy|install|fix)\b'
+
+[model_routing.write_phrase_re]
+doc = "Explicit write phrase regex that suppresses the row-6 Explore advisory even when read-only override words are present."
+value = '\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch)\b|(?:^|[\n\r\u2028\u2029]|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b'
+
+[model_routing.readonly_override_re]
+doc = "Explicit read-only statement regex that overrides ambiguous write words for row 6."
+value = '''\b(?:report\s+only|read[- ]?only|(?:do\s+not|don'?t|never)\s+(?:edit|modify|write|change|commit)|no\s+(?:edits|changes|writes))\b'''
+
+[model_routing.deploy_strong_re]
+doc = "Strong deploy/migration/secret regex that activates the deploy floor."
+value = '\b(deploy\w*|redeploy\w*|migrat\w*|rollbacks?|roll\s+back|token\s+rotation|rotat\w*\s+(?:the\s+|a\s+)?(?:api\s+)?(?:tokens?|keys?|secrets?|credentials?)|wrangler|terraform|kubectl\s+apply|helm\s+(?:install|upgrade)|firebase\s+deploy|db\s+migrate)\b'
+
+[model_routing.deploy_weak_re]
+doc = "Weak deploy/migration/secret words; two distinct kinds activate the deploy floor."
+value = '\b(prod|production|secrets?|credentials?)\b'
+
+[model_routing.deploy_weak_aliases]
+doc = "Weak deploy/migration/secret words normalized before distinct-kind counting. This mirrors Node's production -> prod policy."
+value = { production = "prod" }
+
+[model_routing.update_qualifier]
+doc = "Lowercase qualifier required with a generic update.js command before it is treated as an anti-hall update-in-session."
+value = "anti-hall"
+
+[model_routing.update_node_re]
+doc = "Regex for node commands that run an update.js script."
+value = '''\bnode\s+["']?\S*update\.js\b'''
+
+[model_routing.update_skill_path_re]
+doc = "Regex for node commands that run anti-hall's update skill script."
+value = '''\bnode\s+["']?\S*skills[\\/]update[\\/]scripts[\\/]update\.js\b'''
+
+[model_routing.update_slash_re]
+doc = "Regex for explicit requests to invoke the anti-hall update skill."
+value = '\b(?:run|invoke|execute)\s+`?/anti-hall:update\b'
+
+[model_routing.planning_intent_re]
+doc = "Strict planning-intent regex for the row-4 haiku advisory."
+value = '\b(architect(?:ure)?|brainstorm|design\s+(?:a|the|an)\b|plan\s+(?:a|the|an|out)\b|deep\s+review|code\s+review|design\s+review|security\s+review|review\s+the\s+(?:code|design|architecture|plan)|review\s+(?:this|the|a)\s+(?:pr|pull\s+request|diff|patch|change(?:s|set)?)|audit\s+(?:the|this)\b|critique|debate|merge\s+order|workflow\s+analysis|root[- ]cause\s+analysis|(?:find|identify|determine|diagnose|trace)\s+(?:the\s+)?root[- ]cause|root[- ]cause\s+(?:why|how|the|this)|regression\s+analysis|security\s+audit)\b'
+
+[model_routing.readonly_re]
+doc = "Read-only/mechanical marker regex used to suppress row-4 false positives."
+value = '\b(verbatim|read[- ]?only|mechanical|append\s*only|run\s+exactly|do\s+nothing\s+else|nothing\s+else|no\s+other\s+file\s+edits|no\s+repo\s+edits|no\s+source\s+edits)\b'
+
+[model_routing.mechanical_shape_re]
+doc = "Fixed-command or bounded-output regex used to suppress row-4 false positives."
+value = '\b(run\s+exactly|run\s+only|run\s+(?:this|these|the\s+following)\s+(?:exact\s+)?commands?|exactly\s+(?:this|these)\s+commands?|verbatim|append\s*only|do\s+nothing\s+else|nothing\s+else|return\s+(?:only\s+)?(?:at\s+most\s+|no\s+more\s+than\s+|under\s+|up\s+to\s+)?\d+\s+lines?)\b|return\s+(?:only\s+)?(?:≤|<=)\s*\d+\s+lines?\b'
+
+[model_routing.review_design_verb_re]
+doc = "Review/design/analysis verb regex that keeps row 4 live despite read-only markers."
+value = '\b(review|audit|design|architect(?:ure)?|plan|brainstorm|critique|analy[sz]e|analysis|investigate|root[- ]cause)\b'
+
+[model_routing.reasoning_re]
+doc = "Heavy reading and synthesis regex that vetoes rows steering to haiku."
+value = '\b(analy[sz]\w*|synthesi[sz]\w*|summari[sz]\w*|reconcil\w*|evaluat\w*|interpret\w*|distill\w*|compare|comparison)\b|\bread\w*\b[^.\n]{0,60}\b(?:pdf|pdfs|pages?|papers?|documents?|specs?|transcripts?|articles?|books?|manuals?|whitepapers?)\b|\b\d+[- ]page\b|\bpage[- ]by[- ]page\b'
+
+[model_routing.handover_noun_re]
+doc = "Handover noun regex for the handover-delegation advisory."
+value = '\b(handover|handoff)\b'
+
+[model_routing.handover_verb_re]
+doc = "Handover write-verb regex for the handover-delegation advisory."
+value = '\b(write|prepare|create|author|draft)\b'
+
+[model_routing.code_fence_re]
+doc = "Regex for fenced code spans stripped before planning and reasoning regexes."
+value = '```[\s\S]*?```'
+
+[model_routing.inline_code_re]
+doc = "Regex for inline code spans stripped before planning and reasoning regexes."
+value = '`[^`]*`'
+
+[model_routing.session_safe_re]
+doc = "Regex whose non-matching characters are replaced in the handover advisory state file name."
+value = '[^A-Za-z0-9_.-]'
+
+[model_routing.state_dir]
+doc = "State directory, relative to home, for the handover-delegation advisory cap."
+value = ".anti-hall"
+
+[model_routing.handover_state_prefix]
+doc = "Prefix of the per-session handover-delegation advisory cap file."
+value = "model-routing-guard-handover-state-"
+
+[model_routing.handover_state_suffix]
+doc = "Suffix of the per-session handover-delegation advisory cap file."
+value = ".json"
+
+[model_routing.unknown_session]
+doc = "Fallback session id used in the handover advisory state file name."
+value = "unknown-session"
+
+[model_routing.handover_state_json]
+doc = "JSON written to cap the handover-delegation advisory."
+value = '{"advised":true}'
+
+[model_routing.msg_update_what]
+doc = "Update-in-session block headline."
+value = "a subagent spawn that runs the anti-hall update is blocked."
+
+[model_routing.msg_update_why]
+doc = "Update-in-session block reason."
+value = "update.js runs migrations and the main session must judge the result."
+
+[model_routing.msg_update_instead]
+doc = "Update-in-session block advice."
+value = "run `node <path>/update.js ...` directly in the main session."
+
+[model_routing.msg_handover_what]
+doc = "Handover-delegation advisory headline."
+value = "this spawn looks like it writes a session handover."
+
+[model_routing.msg_handover_why]
+doc = "Handover-delegation advisory reason."
+value = "A subagent never lived this session, so its reconstruction loses decision/trial fidelity."
+
+[model_routing.msg_handover_instead]
+doc = "Handover-delegation advisory advice."
+value = "invoke the handover skill yourself in the session that holds the memory."
+
+[model_routing.msg_deploy_omitted_what]
+doc = "Deploy-floor advisory headline for omitted-model spawns."
+value = "deploy/migration/secret-shaped spawn sets no explicit model."
+
+[model_routing.msg_deploy_omitted_instead]
+doc = "Deploy-floor advisory advice for omitted-model spawns."
+value = "set model:'{floor}' or higher, never haiku."
+
+[model_routing.msg_deploy_low_what]
+doc = "Deploy-floor advisory headline for too-low explicit model spawns."
+value = "deploy/migration/secret-shaped spawn runs on '{model}'."
+
+[model_routing.msg_deploy_low_instead]
+doc = "Deploy-floor advisory advice for too-low explicit model spawns."
+value = "use model:'{floor}' or higher.{extra}"
+
+[model_routing.msg_deploy_low_extra]
+doc = "Extra row-4 planning note appended to a haiku deploy-floor advisory when applicable."
+value = " It also looks planning-shaped; consider opus or fable for deeper reasoning."
+
+[model_routing.msg_deploy_why]
+doc = "Deploy-floor advisory reason."
+value = "Auth/secret edge cases get mishandled by a cheap model."
+
+[model_routing.msg_row1_what]
+doc = "Row-1 block headline."
+value = "execution-shaped task on a flagship model (model: '{model}') is blocked."
+
+[model_routing.msg_row1_why]
+doc = "Row-1 block reason."
+value = "This hook cannot see the parent model; execution-only work needs an explicit cheap model."
+
+[model_routing.msg_row1_instead]
+doc = "Row-1 block advice."
+value = "respawn with model:'haiku' (or 'sonnet' if it authors code)."
+
+[model_routing.msg_row1_role_what]
+doc = "Row-1 role-exempt advisory headline."
+value = "execution-shaped spawn on a flagship model ('{model}'), exempt because a debate-role word is in its description."
+
+[model_routing.msg_row1_role_instead]
+doc = "Row-1 role-exempt advisory advice."
+value = "if it is genuinely mechanical work, prefer model:'haiku'."
+
+[model_routing.msg_row1_research_what]
+doc = "Row-1 research-exempt advisory headline."
+value = "execution-shaped spawn on a flagship model ('{model}'), exempt from blocking because it reads as research with no unambiguous execution verb."
+
+[model_routing.msg_row2_block_what]
+doc = "Row-2 strict block headline."
+value = "execution-shaped spawn with no explicit model is blocked (strict default)."
+
+[model_routing.msg_row2_block_why]
+doc = "Row-2 strict block reason."
+value = "An omitted model inherits the orchestrator's and cannot be verified here; on a flagship orchestrator that silently makes an all-flagship swarm."
+
+[model_routing.msg_row2_block_instead]
+doc = "Row-2 strict block advice."
+value = "set model:'haiku' (or 'sonnet' for code) on the spawn."
+
+[model_routing.msg_row2_block_override]
+doc = "Row-2 strict block override text."
+value = "set ANTIHALL_MODEL_ROUTING=advisory to downgrade this block to an advisory"
+
+[model_routing.msg_row2_adv_what]
+doc = "Row-2 advisory headline."
+value = "execution-shaped spawn sets no explicit model."
+
+[model_routing.msg_row2_adv_instead]
+doc = "Row-2 advisory advice."
+value = "set model:'haiku' (or 'sonnet' if it authors code)."
+
+[model_routing.msg_row2_adv_why]
+doc = "Row-2 advisory reason."
+value = "An omitted model inherits the orchestrator's, so mechanical work may run on a flagship."
+
+[model_routing.msg_row1_jev_what]
+doc = "Row-1 Jev relaxation advisory headline."
+value = "execution-shaped spawn on a flagship model ('{model}'); Jev judged it non-mechanical, so the block is downgraded."
+
+[model_routing.msg_row1_jev_instead]
+doc = "Row-1 Jev relaxation advisory advice."
+value = "if it is genuinely mechanical work, prefer model:'haiku'."
+
+[model_routing.msg_row2_jev_what]
+doc = "Row-2 Jev relaxation advisory headline."
+value = "omitted-model spawn looks execution-shaped; Jev judged it non-mechanical, so the strict block is downgraded."
+
+[model_routing.msg_row2_jev_instead]
+doc = "Row-2 Jev relaxation advisory advice."
+value = "if it is genuinely mechanical work, prefer model:'haiku'."
+
+[model_routing.jev_id]
+doc = "Jev integration id used by the Node model-routing guard."
+value = "modelRouting"
+
+[model_routing.jev_question_instructions]
+doc = "Jev choice-question instructions for model-routing relaxation."
+value = "Classify the SHAPE of this agent-spawn task from its description/prompt."
+
+[model_routing.jev_choice_mechanical]
+doc = "Jev choice description for mechanical tasks."
+value = "Execution-only: running commands, fetching/building/testing/deploying, no authoring or judgment calls required."
+
+[model_routing.jev_choice_authoring]
+doc = "Jev choice description for authoring tasks."
+value = "Writing or editing substantial code/content that requires judgment."
+
+[model_routing.jev_choice_research]
+doc = "Jev choice description for research tasks."
+value = "Investigation, research, or audit work — read-only or reporting."
+
+[model_routing.jev_choice_plan_review]
+doc = "Jev choice description for planning/review tasks."
+value = "Planning, architecture, review, critique, or debate work."
+
+[model_routing.jev_state_limit]
+doc = "Maximum JavaScript UTF-16 code units sent to Jev for model-routing relaxation."
+value = 4000
+min = 1
+unit = "utf16-code-units"
+
+[model_routing.jev_budget_ms]
+doc = "Synchronous Jev budget for model-routing relaxation, matching the Node hook."
+value = 1200
+min = 1
+unit = "ms"
+
+[model_routing.jev_label_mechanical]
+doc = "Jev answer label that keeps the model-routing block."
+value = "mechanical"
+
+[model_routing.jev_label_authoring]
+doc = "Jev answer label for authoring work."
+value = "authoring"
+
+[model_routing.jev_label_research]
+doc = "Jev answer label for research work."
+value = "research"
+
+[model_routing.jev_label_plan_review]
+doc = "Jev answer label for planning/review work."
+value = "plan-review"
+
+[model_routing.msg_fail_closed_what]
+doc = "Fail-closed headline for internal model-routing errors."
+value = "model-routing could not safely evaluate this spawn."
+
+[model_routing.msg_fail_closed_why]
+doc = "Fail-closed reason for internal model-routing errors."
+value = "The built-in check hit a decode/config/runtime error; a silent allow would violate fail-closed routing."
+
+[model_routing.msg_fail_closed_instead]
+doc = "Fail-closed advice for internal model-routing errors."
+value = "run the Node hook fallback or set an explicit safe model before spawning."
+
+[model_routing.msg_row3_what]
+doc = "Row-3 advisory headline."
+value = "execution-shaped task on a flagship model ('{model}') via custom subagent_type '{subagent_type}'."
+
+[model_routing.msg_row3_instead]
+doc = "Row-3 advisory advice."
+value = "unless that agent is pinned to a flagship on purpose, prefer model:'haiku'."
+
+[model_routing.msg_row4_what]
+doc = "Row-4 advisory headline."
+value = "planning-shaped task (architecture/design/plan/brainstorm/deep review) runs on haiku."
+
+[model_routing.msg_row4_instead]
+doc = "Row-4 advisory advice."
+value = "consider opus or fable for deeper reasoning."
+
+[model_routing.msg_row6_what]
+doc = "Row-6 advisory headline."
+value = "research/read-only-shaped spawn uses subagent_type:'general-purpose'."
+
+[model_routing.msg_row6_instead]
+doc = "Row-6 advisory advice."
+value = "re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent tool, so it cannot recurse). Keep general-purpose only if it must write files or spawn sub-agents."
+
+[model_routing.msg_row6_why]
+doc = "Row-6 advisory reason."
+value = "general-purpose carries the Agent tool and can recurse; chains waste ~7x tokens by depth 5."
+
+# ---- file-backed guard state (checks::guardkit::fsio, hooks/lib/state-prune.js) -----------------------------
+
+[guardkit.state_dir_name]
+doc = "Name of the directory under the home directory that holds the per-session state files the Node guards share with the engine."
+value = ".anti-hall"
+
+[guardkit.state_ext]
+doc = "Extension of a per-session state file."
+value = ".json"
+
+[guardkit.prune_ttl_ms]
+doc = "How old, in milliseconds, a per-session state file must be before the pruning sweep removes it (7 days)."
+value = 604800000
+min = 60000
+max = 31536000000
+
+[guardkit.prune_throttle_ms]
+doc = "Minimum time, in milliseconds, between two pruning sweeps of one state-file family (6 hours)."
+value = 21600000
+min = 0
+max = 31536000000
+
+[guardkit.prune_stamp]
+doc = "Name of the stamp file that throttles the pruning sweep; {prefix} is the state-file family."
+value = ".prune-stamp-{prefix}.json"
+
+[guardkit.prune_stamp_key]
+doc = "Key of the stamp file that holds the time of the last sweep."
+value = "lastSweep"
+
+# ---- turn gate (hooks/lib/turn-gate.js) ---------------------------------------------------------------------
+
+[turn_gate.dir]
+doc = "Directory under the state directory that holds the per-session turn-gate files."
+value = "turn-gate"
+
+[turn_gate.prefix]
+doc = "Family name of a turn-gate state file: the file is `<prefix>-<session>.json` and the pruning sweep takes the same name (the Node hook passes `tg` and the sweep appends the dash itself, commit ef0a30b)."
+value = "tg"
+
+[turn_gate.session_max]
+doc = "Longest session id part, in UTF-16 units, of a turn-gate file name."
+value = 80
+
+[turn_gate.tail_bytes]
+doc = "How many bytes at the end of the transcript are read to find the newest human prompt."
+value = 524288
+min = 4096
+max = 67108864
+
+[turn_gate.max_sigs]
+doc = "How many distinct advisory signatures one key remembers per turn."
+value = 16
+min = 1
+max = 1024
+
+[turn_gate.injected_re]
+doc = "Regex source (JavaScript syntax) of the text an injected, non-human user entry starts with."
+value = '^\s*<(?:task-notification|system-reminder|local-command|command-name|command-message)'
+
+[turn_gate.agent_prefix]
+doc = "Prefix of the turn id of a subagent (its whole run is one turn)."
+value = "agent:"
+
+[turn_gate.main_label]
+doc = "The slot label used for the main thread."
+value = "main"
+
+# ---- expected-failure classifier (hooks/lib/expected-failure.js) -------------------------------------------
+
+[expected_failure.predicate_verbs]
+doc = "Verbs whose exit status 1 means no, different or false rather than broken."
+value = ["grep", "egrep", "fgrep", "ugrep", "rg", "ag", "ack", "test", "[", "[[", "diff", "cmp", "pgrep", "which", "type"]
+
+[expected_failure.trivial_verbs]
+doc = "Statements that cannot fail on their own and may sit in an && chain."
+value = ["echo", "printf", "true", ":"]
+
+[expected_failure.pass_through]
+doc = "Wrappers that pass the inner command's exit status through unchanged."
+value = ["command", "builtin", "env", "time", "nice", "nohup"]
+
+[expected_failure.predicate_exit]
+doc = "The only exit code (as text) that counts as a predicate's answer."
+value = "1"
+
+[expected_failure.command_v_verb]
+doc = "The verb name reported for the command -v form."
+value = "command -v"
+
+[expected_failure.git_verb]
+doc = "The verb whose read-only predicate forms are recognised by git_predicates."
+value = "git"
+
+[expected_failure.git_predicates]
+doc = "Regex sources (JavaScript syntax) over the arguments of a git command that make it a predicate (exit 1 is the answer)."
+value = [
+  '^(?:-C\s+\S+\s+)?diff\b.*(?:--quiet|--exit-code)\b',
+  '^(?:-C\s+\S+\s+)?merge-base\b.*--is-ancestor\b',
+  '^(?:-C\s+\S+\s+)?grep\b',
+  '^(?:-C\s+\S+\s+)?cat-file\b.*\s-e\b',
+  '^(?:-C\s+\S+\s+)?ls-files\b.*--error-unmatch\b',
+  '^(?:-C\s+\S+\s+)?show-ref\b.*(?:--verify|--quiet|-q)\b',
+]
+
+[expected_failure.bail]
+doc = "Regex source of the constructs that make the last statement not decide the exit status (heredocs, set -e, pipefail, trap, exec, eval, shells run with -e)."
+value = '<<|\bset\s+-[A-Za-z]*e|\bset\s+-o\b|\bpipefail\b|\berrexit\b|\btrap\b|\bexec\b|\beval\b|\bbash\s+-[A-Za-z]*e\b|\bsh\s+-[A-Za-z]*e\b'
+
+[expected_failure.assign]
+doc = "Regex source of a leading VAR=value assignment word."
+value = '^[A-Za-z_][A-Za-z0-9_]*='
+
+[expected_failure.command_v]
+doc = "Regex source of the command -v / command -V form (with optional leading assignments)."
+value = '^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*command\s+-[vV]\b'
+
+[expected_failure.control]
+doc = "Regex source of a statement that starts a shell control construct (never classified)."
+value = '^(?:if|for|while|until|case|select|function|do|then|else|fi|done|esac)\b'
+
+[expected_failure.trailing_bg]
+doc = "Regex source of a statement ending in an ampersand."
+value = '&\s*$'
+
+[expected_failure.trailing_and]
+doc = "Regex source of a statement ending in a double ampersand."
+value = '&&\s*$'
+
+[expected_failure.comment_or_empty]
+doc = "Regex source of a statement that is a comment or empty."
+value = '^\s*(?:#|$)'
+
+[expected_failure.subst]
+doc = "Regex source of a command substitution (dollar-parenthesis or backtick)."
+value = '\$\(|`'
+
+[expected_failure.redirect_split]
+doc = "Regex source that finds the first redirection in a deciding command."
+value = '\s(?:2?>|&>|<)'
+
+[expected_failure.exit_code]
+doc = "Regex source of the exit code stated in a failed tool call's error text; group 1 is the number."
+value = '^\s*Exit code (\d+)\b'
+
+[expected_failure.refusal]
+doc = "Regex source of an error text that is a harness refusal: the command never ran."
+value = '^\s*This (?:agent|session) is isolated in the worktree\b'
+
+# ---- failure-root-cause-nudge (hooks/failure-root-cause-nudge.js) -------------------------------------------
+
+[failure_nudge.summary]
+doc = "One-line description of the failure-root-cause-nudge check in the generated reference."
+value = "Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals and repeats within a turn (port of failure-root-cause-nudge.js)."
+
+[failure_nudge.guard_name]
+doc = "The skip.json key that silences this hook."
+value = "failure-root-cause-nudge"
+
+[failure_nudge.message_guard]
+doc = "The guard label shown in the advisory."
+value = "root-cause"
+
+[failure_nudge.setting]
+doc = "Where the on/off switch is read from (guards.failureRootCauseNudge, default on)."
+value = { section = "guards", key = "failureRootCauseNudge", env = "ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE", aliases = [], option = "guards_failure_root_cause_nudge", default = true }
+
+[failure_nudge.filter_setting]
+doc = "Where the noise-filter switch is read from (guards.failureNudgeFilter, default on)."
+value = { section = "guards", key = "failureNudgeFilter", env = "ANTIHALL_FAILURE_NUDGE_FILTER", aliases = [], option = "", default = true }
+
+[failure_nudge.gate_key]
+doc = "The turn-gate key under which the once-per-turn state of this advisory is kept."
+value = "failure-root-cause-nudge"
+
+[failure_nudge.event]
+doc = "The hook event name in the advisory's output."
+value = "PostToolUseFailure"
+
+[failure_nudge.max_cmd_len]
+doc = "Longest command text, in UTF-16 units, shown in the advisory before it is cut."
+value = 80
+min = 8
+max = 1000
+
+[failure_nudge.ellipsis]
+doc = "Text appended to a cut command."
+value = "…"
+
+[failure_nudge.cmd_open]
+doc = "Text before the shown command in the advisory headline."
+value = " (`"
+
+[failure_nudge.cmd_close]
+doc = "Text after the shown command in the advisory headline."
+value = "`)"
+
+[failure_nudge.msg_what]
+doc = "Advisory headline; {cmd} is the shown command part or empty."
+value = "this command failed{cmd}."
+
+[failure_nudge.msg_instead]
+doc = "Advisory advice."
+value = "before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) rather than guessing a fix from the symptom."
+
+# ---- coordinator-work-guard, PostToolUse pass (hooks/coordinator-work-guard.js --post, hooks/lib/coordinator-work.js) ----
+
+[coordinator_work.post_event]
+doc = "The event name of the pass that records calls into the window."
+value = "PostToolUse"
+
+[coordinator_work.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "coordinator-work-guard"
+
+[coordinator_work.command_guard_name]
+doc = "The skip.json key of command-guard, which also silences the work window."
+value = "command-guard"
+
+[coordinator_work.command_guard_setting]
+doc = "Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it."
+value = { section = "safety", key = "commandGuard", env = "ANTIHALL_COMMAND_GUARD", aliases = [], option = "safety_command_guard", default = true }
+
+[coordinator_work.window_setting]
+doc = "Minutes of the work window (guards.coordinatorWorkWindowMinutes); 0 turns the window off."
+value = { section = "guards", key = "coordinatorWorkWindowMinutes", env = "ANTIHALL_COORDINATOR_WORK_WINDOW_MINUTES", default = 10, min = 0 }
+
+[coordinator_work.nudge_setting]
+doc = "Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory."
+value = { section = "guards", key = "coordinatorWorkNudgeAt", env = "ANTIHALL_COORDINATOR_WORK_NUDGE_AT", default = 4, min = 0 }
+
+[coordinator_work.block_setting]
+doc = "The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never."
+value = { section = "guards", key = "coordinatorWorkBlockAt", env = "ANTIHALL_COORDINATOR_WORK_BLOCK_AT", default = 7, min = 0 }
+
+[coordinator_work.cap_setting]
+doc = "Safety cap on the stored window timestamps per session (guards.coordinatorWorkMaxEntries)."
+value = { section = "guards", key = "coordinatorWorkMaxEntries", env = "ANTIHALL_COORDINATOR_WORK_MAX_ENTRIES", default = 50, min = 1 }
+
+[coordinator_work.coordinator_entrypoints]
+doc = "CLAUDE_CODE_ENTRYPOINT values that mean the interactive main thread."
+value = ["cli", "vscode", "jetbrains", "vim", "emacs"]
+
+[coordinator_work.coordinator_entrypoint_prefix]
+doc = "Prefix of the CLAUDE_CODE_ENTRYPOINT values (IDE terminals) that also mean the main thread."
+value = "terminal_ide_"
+
+[coordinator_work.subagent_entrypoint]
+doc = "CLAUDE_CODE_ENTRYPOINT value of a subagent process."
+value = "agent_tool"
+
+[coordinator_work.entrypoint_env]
+doc = "The environment variable that names the host entry point."
+value = "CLAUDE_CODE_ENTRYPOINT"
+
+[coordinator_work.session_file_prefix]
+doc = "Prefix of a per-session window file under the state directory."
+value = "coordinator-work-session-"
+
+[coordinator_work.session_id_max]
+doc = "Longest session id part, in UTF-16 units, of a window file name."
+value = 80
+
+[coordinator_work.metrics_file]
+doc = "Name of the metrics file under the state directory."
+value = "coordinator-work-metrics.json"
+
+[coordinator_work.fold_stamp_file]
+doc = "Name of the stamp file that throttles folding stale window files into the metrics."
+value = ".coordinator-work-fold-stamp.json"
+
+[coordinator_work.trips_file]
+doc = "Name of the JSONL log of nudges and blocks."
+value = "coordinator-work-trips.log"
+
+[coordinator_work.trips_max_bytes]
+doc = "Size at which the trips log is rotated to its .1 file."
+value = 1048576
+min = 1024
+
+[coordinator_work.fold_throttle_ms]
+doc = "Minimum time between two folds of stale window files into the metrics (6 hours)."
+value = 21600000
+min = 0
+
+[coordinator_work.pre_cap]
+doc = "How many pre-call verdicts (kept until the matching post-call) a window file holds."
+value = 20
+min = 1
+
+[guardkit.lock_stale_ms]
+doc = "Age, in milliseconds, after which another process's lock on a window file or the metrics is considered abandoned and is taken over (the same limit for a live, a dead and an unknown holder)."
+value = 5000
+
+[coordinator_work.lock_wait_ms]
+doc = "How long a lock held by another process is waited for before the call is handed to the Node hook."
+value = 250
+min = 0
+
+[coordinator_work.lock_wait_env]
+doc = "Test-only variable that overrides the lock wait (honoured only with the isolation flag set)."
+value = "ANTIHALL_COORDINATOR_WORK_LOCK_WAIT_MS"
+
+[coordinator_work.lock_isolation_env]
+doc = "The variable that marks an isolated test home (enables the lock wait override)."
+value = "ANTIHALL_TEST_HOME_ISOLATED"
+
+[guardkit.lock_step_ms]
+doc = "Pause between two attempts to take a held lock."
+value = 5
+min = 1
+
+[coordinator_work.lock_suffix]
+doc = "Suffix of a lock file next to the file it guards."
+value = ".lock"
+
+[coordinator_work.plugin_json]
+doc = "Path of the plugin manifest, relative to the plugin root; its version stamps new window files."
+value = ".claude-plugin/plugin.json"
+
+[coordinator_work.unknown_version]
+doc = "The version text used when the manifest cannot be read."
+value = "unknown"
+
+[coordinator_work.safe_command]
+doc = "Regex source (JavaScript syntax) of the only characters a command may hold to be provably not work."
+value = '^[A-Za-z0-9 \t\n_.\/:=@%+,&|;-]*$'
+
+[coordinator_work.safe_arg]
+doc = "Regex source of an argument word of a command that is provably not work."
+value = '^[A-Za-z0-9_.\/:=@%+,-]+$'
+
+[coordinator_work.safe_verb]
+doc = "Regex source of the verb word of a command that is provably not work."
+value = '^[a-z-]+$'
+
+[coordinator_work.segment_split]
+doc = "Regex source that splits a provably-not-work candidate into segments (&&, ||, ;, |, newline)."
+value = '&&|\|\||;|\||\n'
+
+[coordinator_work.safe_max_len]
+doc = "Longest command, in UTF-16 units, that is tested for being provably not work."
+value = 4096
+
+[coordinator_work.readonly_verbs]
+doc = "Verbs that only read; a command built from these is not work."
+value = ["ls", "cat", "head", "tail", "pwd", "wc", "grep", "rg", "which", "whoami", "stat", "du", "df", "basename", "dirname", "realpath", "readlink", "id", "uname", "hostname", "true", "false"]
+
+[coordinator_work.readonly_git_subs]
+doc = "git subcommands that only read."
+value = ["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe"]
+
+[coordinator_work.git_verb]
+doc = "The verb of a git command."
+value = "git"
+
+[coordinator_work.git_output_flag]
+doc = "Regex source of a git argument that writes output to a file (so the command is not read-only)."
+value = 'output|^-o'
+
+[coordinator_work.nudge_what]
+doc = "Advisory headline; {count} is the number of work calls in the window and {minutes} the window length."
+value = "{count} state-changing calls in the main thread within {minutes} min."
+
+[coordinator_work.nudge_instead]
+doc = "Advisory advice without a block threshold."
+value = "delegate the rest to a subagent now."
+
+[coordinator_work.nudge_instead_block]
+doc = "Advisory advice with a block threshold; {block_at} is the call that is blocked."
+value = "delegate the rest to a subagent now; call {block_at} in the window is blocked."
+
+[coordinator_work.trip_nudge]
+doc = "The event name a nudge is logged under in the trips log."
+value = "nudge"
+
+[coordinator_work.counters]
+doc = "The counters a window file keeps and the metrics fold, by their key in the files."
+value = ["calls", "work", "blocks", "skippedWouldBlock"]
+
+[coordinator_work.version_keys]
+doc = "The keys of one version's entry in the metrics file, in file order: the number of folded sessions, then the counters."
+value = ["sessions", "calls", "work", "blocks", "skippedWouldBlock"]
+
+# ---- merge-gate (hooks/merge-gate.js) ---------------------------------------------------------------------
+
+[merge_gate.summary]
+doc = "One-line description of the merge-gate check in the generated reference."
+value = "Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js)."
+
+[merge_gate.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "merge-gate"
+
+[merge_gate.setting]
+doc = "Where the opt-in switch is read from (guards.mergeGate, default off)."
+value = { section = "guards", key = "mergeGate", env = "ANTIHALL_MERGE_GATE", aliases = [], option = "guards_merge_gate", default = false }
+
+[merge_gate.window_bytes]
+doc = "How much of the end of the transcript is scanned for a self-hedge (the same bounded tail the Node gate reads)."
+value = 131072
+unit = "bytes"
+min = 1024
+max = 16777216
+
+[merge_gate.hedge_phrases]
+doc = "Self-hedge phrases, matched case-insensitively as plain text in the recent assistant output."
+value = ["pending owner", "do not merge", "pending review", "needs your review", "needs your eyes", "review it in the build", "built, pending"]
+
+[merge_gate.hedge_patterns]
+doc = "Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output."
+value = ['first[- ]pass', 'not pixel[- ]perfect']
+
+[merge_gate.resolutions]
+doc = "Phrases that resolve a hedge when a REAL user prompt typed after the hedge contains one (case-insensitive plain text); the assistant can never clear its own hedge."
+value = ["owner approved", "owner signed off", "sign-off received", "fidelity verified", "verified against", "resolved:"]
+
+[merge_gate.injected_user]
+doc = "Regex source (case-insensitive) of the user-role bodies that are not a human typing (task notifications, system reminders, hook feedback, cross-session messages)."
+value = '^\s*(<(task-notification|system-reminder|command-name|command-message|local-command|user-prompt-submit-hook|cross-session-message)\b|Stop hook feedback:)|Another Claude session sent a message|<cross-session-message\b'
+
+[merge_gate.system_reminder]
+doc = "Regex source (case-insensitive) of a system-reminder block, removed from a user prompt before it is judged."
+value = '<system-reminder>[\s\S]*?<\/system-reminder>'
+
+[merge_gate.non_human_origins]
+doc = "The origin kinds of a user record that still count as a human typing."
+value = ["human", "user"]
+
+[merge_gate.jev_id]
+doc = "The Jev integration id of the shadow question asked when a hedge is found on a merge command."
+value = "mergeGateHedge"
+
+[merge_gate.jev_instructions]
+doc = "The Noul question text of the mergeGateHedge shadow ask (byte-identical to the Node gate's)."
+value = 'Does the recent reply text below contain an UNRESOLVED self-hedge (e.g. "pending review", "first-pass", "do not merge") that was never followed by a resolution/sign-off?'
+
+[merge_gate.jev_true]
+doc = "The label for a true answer of the mergeGateHedge question."
+value = "unresolved hedge present"
+
+[merge_gate.jev_false]
+doc = "The label for a false answer of the mergeGateHedge question."
+value = "no unresolved hedge"
+
+[merge_gate.jev_state_chars]
+doc = "How many trailing UTF-16 units of the assistant text the mergeGateHedge ask evaluates (Node: text.slice(-4000))."
+value = 4000
+min = 1
+
+[merge_gate.msg_what]
+doc = "The block message's first line; {hedge} is the last hedge phrase found."
+value = 'auto-merge blocked: your recent output flagged a deliverable as pending/unverified ("{hedge}").'
+
+[merge_gate.msg_why]
+doc = "The block message's reason."
+value = "A self-issued hedge blocks auto-merge (false-done backstop)."
+
+[merge_gate.msg_instead]
+doc = "The block message's alternative."
+value = "verify it against its agreed criterion or get owner sign-off, then merge."
+
+[merge_gate.msg_override]
+doc = "The block message's override line."
+value = "set ANTIHALL_MERGE_GATE=off, or skip merge-gate"
+
+[merge_gate.segment_split]
+doc = "Regex source that splits a Bash command into the segments the auto-merge scan looks at (shell separators; quotes are not honoured, on purpose, as in the Node gate)."
+value = '&&|\|\||[;&|\n]'
+
+[merge_gate.env_assign]
+doc = "Regex source of a leading environment assignment the scan skips before the command word."
+value = '^[A-Za-z_][A-Za-z0-9_]*='
+
+[merge_gate.protected_target]
+doc = "Regex source (case-insensitive) of the branch names a plain `git merge` must name to count as an auto-merge."
+value = '^(main|master|develop|origin\/(main|master|develop))$'
+
+[merge_gate.merge_rules]
+doc = "The command shapes that are an auto-merge intent. verb: the command word (after leading assignments); prefix: the words that must follow it, in order; includes_any: when present, at least one of these words must appear after the prefix; needs_target: when true, a word after the prefix must match protected_target."
+value = [
+  { verb = "gh", prefix = ["pr", "merge"] },
+  { verb = "gh", prefix = ["pr", "review"], includes_any = ["--approve"] },
+  { verb = "git", prefix = ["merge"], includes_any = ["--no-ff", "--ff", "--ff-only"], needs_target = true },
+  { verb = "hivecontrol", prefix = ["workspace", "merge-into-source"] },
+  { verb = "hivecontrol", prefix = ["workspace", "merge-from-source"] },
+]
+
+# ---- api-guard (hooks/api-guard.js) -----------------------------------------------------------------------
+
+[api_guard.summary]
+doc = "One-line description of the api-guard check in the generated reference."
+value = "Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js)."
+
+[api_guard.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "api-guard"
+
+[api_guard.setting]
+doc = "Where the guard's own on/off switch is read from (guards.apiGuard, default on)."
+value = { section = "guards", key = "apiGuard", env = "", aliases = [], option = "guards_api_guard", default = true }
+
+[api_guard.shell_setting]
+doc = "Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on)."
+value = { section = "guards", key = "shellWriteChecks", env = "ANTIHALL_SHELL_WRITE_CHECKS", aliases = [], option = "", default = true }
+
+[api_guard.thirdparty_setting]
+doc = "Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off)."
+value = { section = "guards", key = "apiGuardThirdparty", env = "ANTIHALL_API_GUARD_THIRDPARTY", aliases = [], option = "", default = false }
+
+[api_guard.tool_write]
+doc = "Tool whose code is `tool_input.content`."
+value = "Write"
+
+[api_guard.tool_edit]
+doc = "Tool whose code is `tool_input.new_string`."
+value = "Edit"
+
+[api_guard.tool_multi]
+doc = "Tool whose code is the `new_string` of each entry of `tool_input.edits`."
+value = "MultiEdit"
+
+[api_guard.tool_shell]
+doc = "Tool whose command can write a code file."
+value = "Bash"
+
+[api_guard.tool_patch]
+doc = "Codex tool whose patch text carries the code."
+value = "apply_patch"
+
+[api_guard.python_extensions]
+doc = "File extensions (lower-case) the guard checks as Python."
+value = ["py", "pyi"]
+
+[api_guard.js_extensions]
+doc = "File extensions (lower-case) the guard checks as JavaScript or TypeScript."
+value = ["js", "mjs", "cjs", "ts", "tsx", "jsx"]
+
+[api_guard.extension_pattern]
+doc = "Regex source (case-insensitive) of a file name's extension, group 1."
+value = '\.([a-z]+)$'
+
+[api_guard.code_name_pattern]
+doc = "Regex source (case-insensitive) that finds a code file name inside a Bash command or an apply_patch text. Written without a word boundary, so it finds every spelling the Node guard's own pattern finds, and more."
+value = '\.(?:py|pyi|js|mjs|cjs|ts|tsx|jsx)'
+
+[api_guard.python_stdlib]
+doc = "Python standard-library modules whose attributes the Node guard verifies by default."
+value = ["os", "sys", "math", "cmath", "random", "json", "re", "collections", "itertools", "functools", "pathlib", "asyncio", "datetime", "time", "statistics", "heapq", "bisect", "string", "textwrap", "shutil", "glob", "csv", "sqlite3", "decimal", "fractions", "secrets", "uuid", "contextlib", "operator", "inspect", "abc", "numbers", "array", "enum", "dataclasses", "typing", "io", "struct", "hashlib", "base64", "binascii", "copy", "pprint", "queue", "threading", "socket"]
+
+[api_guard.node_builtins]
+doc = "Node built-in modules whose attributes the Node guard verifies by default."
+value = ["fs", "path", "os", "crypto", "util", "stream", "buffer", "events", "url", "querystring", "http", "https", "net", "dns", "zlib", "readline", "child_process", "assert", "timers", "string_decoder", "tls", "dgram", "process"]
+
+[api_guard.js_globals]
+doc = "JavaScript global builtins whose members the Node guard verifies by default."
+value = ["Array", "String", "Object", "Promise", "Map", "Set", "WeakMap", "WeakSet", "Number", "Math", "JSON", "Reflect", "Symbol", "Date", "RegExp", "BigInt", "Buffer"]
+
+[api_guard.python_import_word]
+doc = "The word a Python module reference needs before the guard can resolve an attribute against it."
+value = "import"
+
+[api_guard.js_require_word]
+doc = "The text a JavaScript module reference needs before the guard can resolve an attribute against it."
+value = "require"
+
+# ---- edit-guard (hooks/edit-guard.js) ---------------------------------------------------------------------
+
+[edit_guard.summary]
+doc = "One-line description of the edit-guard check in the generated reference."
+value = "Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js)."
+
+[edit_guard.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "edit-guard"
+
+[edit_guard.setting]
+doc = "Where the guard's on/off switch is read from (safety.editGuard, default on)."
+value = { section = "safety", key = "editGuard", env = "ANTIHALL_EDIT_GUARD", aliases = [], option = "safety_edit_guard", default = true }
+
+[edit_guard.edit_tools]
+doc = "The tools whose target file the guard checks."
+value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
+[edit_guard.notebook_tool]
+doc = "The tool whose target is `tool_input.notebook_path` instead of `tool_input.file_path`."
+value = "NotebookEdit"
+
+[edit_guard.patch_tool]
+doc = "The Codex tool whose targets are the files of a patch; the engine has no patch parser, so it defers."
+value = "apply_patch"
+
+[edit_guard.launcher_dir]
+doc = "Path of the stable launcher directory under the home directory, as its parts. A write into it is blocked for every agent."
+value = [".anti-hall", "bin"]
+
+[edit_guard.msg_launcher_what]
+doc = "Launcher-directory block headline; {tool} is the tool name."
+value = "{tool} into ~/.anti-hall/bin/ (the stable launcher directory) is blocked."
+
+[edit_guard.msg_launcher_why]
+doc = "Launcher-directory block reason."
+value = "anti-hall installs and refreshes those files itself; overwriting one would run arbitrary code under a trusted name."
+
+[edit_guard.msg_launcher_instead]
+doc = "Launcher-directory block advice."
+value = "leave that directory alone."
+
+[edit_guard.msg_launcher_allowed]
+doc = "What stays allowed next to the launcher directory."
+value = "the rest of .anti-hall/** (handovers, progress, history, state)."
+
+# ---- coordinator detection (hooks/coordinator-detect.js) --------------------------------------------------
+
+[coordinator_work.main_entrypoints]
+doc = "Entry point values (exact) of a main-thread session."
+value = ["cli", "vscode", "jetbrains", "vim", "emacs"]
+
+[coordinator_work.main_entrypoint_prefix]
+doc = "Entry point prefix of a main-thread session started from a terminal inside an IDE."
+value = "terminal_ide_"
+
+[coordinator_work.codex_tool]
+doc = "The tool name only Codex sends; a payload naming it is a Codex payload."
+value = "apply_patch"
+# ---- DevSwarm prompt gates (hooks/devswarm-parent-inbox.js, hooks/devswarm-child-turn.js) -------------------------------
+
+[devswarm_prompt.parent_summary]
+doc = "One-line description of the devswarm-parent-inbox check in the generated reference."
+value = "DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) in the engine; an active Primary defers to the Node hook, which owns the roster, mailbox and dedupe state (port of the gate of devswarm-parent-inbox.js)."
+
+[devswarm_prompt.child_summary]
+doc = "One-line description of the devswarm-child-turn check in the generated reference."
+value = "DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) in the engine; an active child defers to the Node hook, which writes the heartbeat and descriptor and renders the mailbox (port of the gate of devswarm-child-turn.js)."
+
+[devswarm_prompt.parent_setting]
+doc = "Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+value = { section = "devswarm", key = "parentInbox", env = "", aliases = [], option = "devswarm_parent_inbox", default = true }
+
+[devswarm_prompt.child_setting]
+doc = "Where the devswarm.childTurn switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+value = { section = "devswarm", key = "childTurn", env = "", aliases = [], option = "devswarm_child_turn", default = true }
+
+[devswarm_prompt.judge_env]
+doc = "Environment variable that marks a Jev judge child process; its hooks do nothing (hooks/lib/judge-child-exit.js). Only the exact value in judge_value counts."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[devswarm_prompt.judge_value]
+doc = "The value of judge_env that silences the hook."
+value = "1"
+
+[devswarm_prompt.kill_env]
+doc = "Hard kill switch of the DevSwarm integration (hooks/lib/devswarm-detect.js): the exact value in kill_value makes the integration inactive."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[devswarm_prompt.kill_value]
+doc = "The value of kill_env that deactivates the DevSwarm integration."
+value = "1"
+
+[devswarm_prompt.repo_env]
+doc = "Environment variable whose non-blank value makes the DevSwarm integration active in auto mode."
+value = "DEVSWARM_REPO_ID"
+
+[devswarm_prompt.branch_env]
+doc = "Environment variable whose non-blank value marks a child workspace (hooks/lib/devswarm-role.js)."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[devswarm_prompt.mode_setting]
+doc = "Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset, as in hooks/lib/settings.js)."
+value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", manifest_default = "auto", values = ["auto", "on", "off"] }

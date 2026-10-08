@@ -132,17 +132,17 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
     assert!(std::fs::read_to_string(eng.join("defaults.cache")).unwrap().contains(&format!("\"v\":{q1}")), "the cache is regenerated on every load");
     assert!(ah_engine::health::events().iter().any(|e| e.kind == "defaults_applied"), "an applied reload is logged");
 
-    // ---- an invalid edit keeps the last good snapshot and logs a reason-coded error ---------------------------------
+    // ---- an invalid edit falls back to the last-known-good copy (which holds the earlier edit), logged with a reason code ----
     let good = std::fs::read_to_string(&engine_toml).unwrap();
     put(&engine_toml, &set_value(&good, "daemon.queue", q2).replacen("[daemon.queue]\n", "[daemon.queue\n", 1)); // not TOML
-    wait_for("the parse error", || status().is_some_and(|s| s["config"]["last_error"].as_str().is_some_and(|e| e.starts_with("parse"))));
-    assert_eq!(queue_cap(), Some(q1), "an invalid edit changes nothing");
-    assert!(ah_engine::health::events().iter().any(|e| e.kind == "defaults_invalid" && e.code == "parse"), "defaults_invalid with a reason code");
-    // a well-formed file that breaks a rule (a setting with no `doc`) is rejected the same way, with its own code
+    wait_for("the parse fallback", || ah_engine::health::events().iter().any(|e| e.kind == "defaults_fallback" && e.code == "parse"));
+    assert_eq!(queue_cap(), Some(q1), "the broken file is answered by its last good copy, edit included");
+    assert!(status().is_some_and(|s| s["health"]["degraded"] == true), "a defaults fallback marks the engine degraded");
+    // a well-formed file that breaks a rule (a setting with no `doc`) falls back for that setting only, with its own code
     let undocumented = good.replacen("[daemon.queue]\ndoc = ", "[daemon.queue]\nnote = ", 1);
     assert_ne!(undocumented, good);
     put(&engine_toml, &undocumented);
-    wait_for("the doc error", || ah_engine::health::events().iter().any(|e| e.kind == "defaults_invalid" && e.code == "doc"));
+    wait_for("the doc fallback", || ah_engine::health::events().iter().any(|e| e.kind == "defaults_fallback" && e.code == "doc"));
     assert_eq!(queue_cap(), Some(q1));
     // fixing the file applies it and clears the error
     put(&engine_toml, &set_value(&good, "daemon.queue", q2));
@@ -198,10 +198,14 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
     assert!(err.contains("no_root"), "the reason is named: {err}");
     let note = std::fs::read_to_string(fresh_state.join("defaults.error")).expect("the reason is also written down in the state dir");
     assert!(note.contains("no_root"));
-    // broken files at cold start: same answer, with the validation code
+    // a broken file at cold start is answered by the plugin's pristine copy (no last-known-good copy in a fresh state dir)
     let broken = root.join("broken-plugin");
     plugin_copy(&broken);
     std::fs::write(broken.join("engine/defaults/engine.toml"), "[daemon\nnot toml").unwrap();
+    let (code, _, err) = run_hook(&root, &broken, &root.join("fresh-state-1"));
+    assert_ne!(code, 75, "the pristine copy answers: {err}");
+    // with the pristine copy broken too: unavailable, with the validation code
+    std::fs::write(broken.join("engine/defaults.pristine/engine.toml"), "[daemon\nnot toml").unwrap();
     let (code, _, err) = run_hook(&root, &broken, &root.join("fresh-state-2"));
     assert_eq!(code, 75, "{err}");
     assert!(err.contains("parse"), "{err}");
@@ -213,6 +217,8 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
     let cut = eng_text.find("[msg.client_timeout]").unwrap();
     let end = cut + eng_text[cut..].find("\n\n").unwrap() + 2;
     std::fs::write(&msgs, format!("{}{}", &eng_text[..cut], &eng_text[end..])).unwrap();
+    // (the pristine copy ships the same skew: a missing setting is otherwise taken from it)
+    std::fs::write(skewed.join("engine/defaults.pristine/messages.toml"), format!("{}{}", &eng_text[..cut], &eng_text[end..])).unwrap();
     let (code, _, err) = run_hook(&root, &skewed, &root.join("fresh-state-3"));
     assert_eq!(code, 75, "{err}");
     assert!(err.contains("missing_key") && err.contains("msg.client_timeout"), "{err}");

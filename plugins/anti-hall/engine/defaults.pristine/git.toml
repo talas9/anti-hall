@@ -1,0 +1,743 @@
+# ah-engine shipped defaults for the built-in `git` check (a port of the git-guard hook), D17 and D30.
+#
+# Every table, allowlist, wrapper grammar, limit, timeout, setting name and block-message text of the check lives
+# here; the Rust code in src/checks/git holds only the parsing logic. Format: see the header of engine.toml.
+# Compact option-name sets are space-separated strings (as in the Node source); lists are TOML arrays. Message
+# entries are tables of `what` / `why` / `instead` / `override` lines with `{name}` placeholders.
+
+# ---- shell grammar tables (tokenizer and wrappers) -------------------------------------------------------
+
+[git.wrappers]
+doc = "Words that run another command and are looked through when finding what a segment really executes (git-guard.js WRAPPERS)."
+value = [
+  "command", "builtin", "exec", "sudo", "env", "nice", "nohup", "time", "timeout", "then", "do", "else",
+  "if", "while", "until", "elif", "coproc", "!",
+]
+
+[git.wrapper_value_opts]
+doc = "Options of the sudo, timeout and nice wrappers that take a value, so the word after them is not the wrapped command (git-guard.js SUDO_VAL and the timeout and nice branches)."
+value = { sudo = [
+  "-u", "-g", "-p", "-C", "-r", "-t", "-U", "-h", "--user", "--group", "--prompt", "--close-from", "--role",
+  "--type", "--other-user", "--host",
+], timeout = ["-s", "--signal", "-k", "--kill-after"], nice = ["-n", "--adjustment"] }
+
+[git.shell_verbs]
+doc = "Shell programs whose `-c` argument is itself a script to scan."
+value = ["bash", "sh", "zsh", "dash", "ksh", "ash"]
+
+[git.opt_wrappers]
+doc = "Option grammar of wrappers with options: s = short flags without a value, v = short flags with a value, l = long flags without a value, big_l = long flags with a value, ops = operands consumed before the wrapped command."
+value = { stdbuf = { s = "", v = "ioe", l = [], big_l = ["input", "output", "error"], ops = 0 }, caffeinate = { s = "dimsu", v = "tw", l = [], big_l = [], ops = 0 }, ionice = { s = "t", v = "cnpPu", l = ["ignore"], big_l = ["class", "classdata", "pid", "pgid", "uid"], ops = 0 }, flock = { s = "sexnouFv", v = "wE", l = [
+  "shared", "exclusive", "unlock", "nonblock", "nb", "close", "no-fork", "verbose",
+], big_l = ["wait", "timeout", "conflict-exit-code"], ops = 1 }, setsid = { s = "cfw", v = "", l = ["ctty", "fork", "wait"], big_l = [], ops = 0 }, chrt = { s = "abdefiomrRpv", v = "TPD", l = [
+  "all-tasks", "batch", "deadline", "ext", "fifo", "idle", "other", "rr", "reset-on-fork", "max", "pid",
+  "verbose",
+], big_l = ["sched-runtime", "sched-period", "sched-deadline"], ops = 1 }, taskset = { s = "apc", v = "", l = ["all-tasks", "pid", "cpu-list"], big_l = [], ops = 1 }, doas = { s = "nsL", v = "uC", l = [], big_l = [], ops = 0 } }
+
+[git.xargs_short_req]
+doc = "xargs short options that take a value."
+value = "adEILnPsJRS"
+
+[git.xargs_short_opt]
+doc = "xargs short options with an optional attached value."
+value = "eil"
+
+[git.xargs_long_req]
+doc = "xargs long options that take a value."
+value = ["arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var"]
+
+[git.xargs_long_other]
+doc = "xargs long options without a value."
+value = [
+  "null", "eof", "replace", "max-lines", "interactive", "no-run-if-empty", "verbose", "exit", "open-tty",
+  "show-limits", "help", "version",
+]
+
+[git.find_exec_flags]
+doc = "find actions that run a command."
+value = ["-exec", "-execdir", "-ok", "-okdir"]
+
+[git.parallel_separators]
+doc = "GNU parallel argument-source separators."
+value = [":::", "::::", ":::+", "::::+"]
+
+[git.redirect_words]
+doc = "Shell redirection operators, which are not command words."
+value = [
+  "<", "<<", "<<<", ">", ">>", "&>", "&>>", ">&", "<&", "<>", ">|",
+]
+
+[git.copy_verbs]
+doc = "Commands that copy, move or link files, checked for a launcher-directory target."
+value = ["cp", "mv", "install", "ln", "rsync", "ditto"]
+
+# ---- git command tables ----------------------------------------------------------------------------------
+
+[git.git_builtins]
+doc = "git subcommands, so an alias that shadows one is not mistaken for a built-in."
+value = [
+  "add", "am", "annotate", "apply", "archive", "bisect", "blame", "branch", "bundle", "cat-file",
+  "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "checkout", "checkout-index", "cherry",
+  "cherry-pick", "citool", "clean", "clone", "column", "commit", "commit-graph", "commit-tree", "config",
+  "count-objects", "credential", "describe", "diff", "diff-files", "diff-index", "diff-tree", "difftool",
+  "fast-export", "fast-import", "fetch", "fetch-pack", "filter-branch", "fmt-merge-msg", "for-each-ref",
+  "for-each-repo", "format-patch", "fsck", "gc", "get-tar-commit-id", "grep", "gui", "hash-object", "help",
+  "hook", "index-pack", "init", "instaweb", "interpret-trailers", "log", "ls-files", "ls-remote", "ls-tree",
+  "mailinfo", "mailsplit", "maintenance", "merge", "merge-base", "merge-file", "merge-index", "merge-tree",
+  "mergetool", "mktag", "mktree", "multi-pack-index", "mv", "name-rev", "notes", "p4", "pack-objects",
+  "pack-redundant", "pack-refs", "prune", "prune-packed", "pull", "push", "range-diff", "read-tree",
+  "rebase", "receive-pack", "reflog", "remote", "repack", "replace", "request-pull", "rerere", "reset",
+  "restore", "rev-list", "rev-parse", "revert", "rm", "send-email", "send-pack", "shortlog", "show",
+  "show-branch", "show-index", "show-ref", "sparse-checkout", "stage", "stash", "status", "stripspace",
+  "submodule", "switch", "symbolic-ref", "tag", "unpack-file", "unpack-objects", "update-index",
+  "update-ref", "update-server-info", "upload-archive", "upload-pack", "var", "verify-commit", "verify-pack",
+  "verify-tag", "version", "whatchanged", "worktree", "write-tree",
+]
+
+[git.git_opts_with_value]
+doc = "git global options that take a value, skipped when finding the subcommand."
+value = [
+  "-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env",
+]
+
+[git.push_long_opts]
+doc = "Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w."
+value = [
+  "all", "branches", "mirror", "tags", "follow-tags", "delete", "prune", "force", "force-with-lease",
+  "force-if-includes", "atomic", "dry-run", "porcelain", "verbose", "quiet", "progress", "verify",
+  "set-upstream", "signed", "push-option", "repo", "receive-pack", "exec", "thin", "recurse-submodules",
+  "ipv4", "ipv6",
+]
+
+[git.commit_creating]
+doc = "Subcommands that create a commit, where self-credit and handover checks apply."
+value = [
+  "commit", "merge", "rebase", "cherry-pick", "revert", "am", "pull", "commit-tree", "tag",
+]
+
+[git.commit_long]
+doc = "Long options of the commit subcommand, for resolving abbreviations in reused-message checks."
+value = [
+  "ahead-behind", "all", "allow-empty", "allow-empty-message", "amend", "author", "branch", "cleanup",
+  "date", "dry-run", "edit", "file", "fixup", "gpg-sign", "include", "inter-hunk-context", "interactive",
+  "long", "message", "no-post-rewrite", "no-verify", "null", "only", "patch", "pathspec-file-nul",
+  "pathspec-from-file", "porcelain", "post-rewrite", "quiet", "reedit-message", "reset-author",
+  "reuse-message", "short", "signoff", "squash", "status", "template", "trailer", "unified",
+  "untracked-files", "verbose", "verify", "no-edit", "no-status", "no-signoff", "no-gpg-sign",
+  "no-allow-empty", "no-amend",
+]
+
+[git.commit_long_value]
+doc = "Long options of the commit subcommand that take a value."
+value = [
+  "author", "date", "message", "file", "reuse-message", "reedit-message", "fixup", "squash", "trailer",
+  "cleanup", "template", "pathspec-from-file", "unified", "inter-hunk-context",
+]
+
+[git.add_commit_value_opts]
+doc = "Options of commit-style commands that take a value, skipped when scanning for a broad add."
+value = [
+  "-m", "-F", "-C", "-c", "-t", "--message", "--file", "--author", "--date", "--template", "--reuse-message",
+  "--reedit-message", "--fixup", "--squash", "--cleanup",
+]
+
+[git.commit_cluster_value_flags]
+doc = "Short commit flags that take a value inside a cluster (-m, -F, -C, -c, -t)."
+value = "mFCct"
+
+[git.backstop_commit_subs]
+doc = "Subcommands whose messages the backstop scan checks for AI self-credit."
+value = ["commit", "merge", "commit-tree", "interpret-trailers", "tag"]
+
+[git.git_binary]
+doc = "The git program the check runs for read-only queries."
+value = "git"
+
+[git.argv_alias_list]
+doc = "git arguments that list configured aliases (NUL separated)."
+value = ["config", "-z", "--get-regexp", "^alias\\."]
+
+[git.argv_commit_template]
+doc = "git arguments that read the configured commit template path."
+value = ["config", "--path", "--get", "commit.template"]
+
+[git.argv_log_message]
+doc = "git arguments that print one commit message; {rev} is the revision."
+value = ["log", "-1", "--format=%B", "{rev}", "--"]
+
+[git.argv_diff_names]
+doc = "git arguments that list changed file names, deleted files excluded."
+value = ["diff", "--name-only", "--diff-filter=d", "-z"]
+
+[git.argv_git_dir]
+doc = "git arguments that print the git directory of a repo."
+value = ["rev-parse", "--git-dir"]
+
+[git.argv_diff_relative]
+doc = "git configuration passed so diff paths are repo-relative."
+value = ["-c", "diff.relative=false"]
+
+[git.forward_env_names]
+doc = "Environment names a wrapper forwards to git (config and repo location)."
+value = ["GIT_DIR", "GIT_WORK_TREE", "HOME", "XDG_CONFIG_HOME"]
+
+[git.forward_config_names]
+doc = "GIT_CONFIG_<name> variables that are forwarded."
+value = ["GLOBAL", "SYSTEM", "NOSYSTEM", "COUNT", "PARAMETERS"]
+
+[git.forward_config_indexed]
+doc = "GIT_CONFIG_<prefix><n> variable families that are forwarded."
+value = ["KEY_", "VALUE_"]
+
+[git.noop_editors]
+doc = "Commit editors that leave the message untouched, so a reused message is used verbatim."
+value = ["true", ":", "cat"]
+
+# ---- AI self-credit detection ----------------------------------------------------------------------------
+
+[git.credit_coauthor_alts]
+doc = "Text after a Co-Authored-By trailer that names an AI tool (case-insensitive prefix match)."
+value = [
+  "claude", "anthropic.com", "@openai.com", "chatgpt", "codex <", "cursor <", "github copilot",
+]
+
+[git.credit_gpt]
+doc = "A gpt- model name in a trailer: the prefix and the version digits that count."
+value = { prefix = "gpt-", versions = "45" }
+
+[git.credit_generated_alts]
+doc = "Names after a \"Generated with\" footer that count as an AI tool."
+value = ["claude code", "claude", "chatgpt", "codex", "copilot"]
+
+[git.gh_body_markers]
+doc = "Markers in a gh pr, issue or release body or title that credit an AI tool."
+value = ["claude.com/claude-code", "chatgpt.com/codex", "<noreply@anthropic.com>"]
+
+[git.gh_subs]
+doc = "gh subcommands whose bodies are checked."
+value = ["pr", "issue", "release"]
+
+[git.gh_actions]
+doc = "gh actions whose bodies are checked."
+value = ["create", "edit", "comment", "merge"]
+
+[git.gh_value_opts]
+doc = "gh options that carry body or title text as the next word."
+value = [
+  "--body", "-b", "--title", "-t", "--notes", "-n", "--subject",
+]
+
+[git.gh_value_prefixes]
+doc = "gh options that carry body or title text after an equals sign."
+value = ["--body=", "--title=", "--notes=", "--subject="]
+
+[git.gh_file_opts]
+doc = "gh options that name a file holding body text as the next word."
+value = ["--body-file", "-F", "--notes-file"]
+
+[git.gh_file_prefixes]
+doc = "gh options that name a file holding body text after an equals sign."
+value = ["--body-file=", "--notes-file="]
+
+# ---- heredoc data masking --------------------------------------------------------------------------------
+
+[git.heredoc_safe_verbs]
+doc = "Commands a data heredoc may be fed to without being treated as a shell script."
+value = [
+  "cat", "tee", "git", "gh", "echo", "printf", "cd", "pushd", "popd", "mkdir", "wc", "head", "tail", "ls",
+  "pwd", "true", ":", "date", "stat", "test", "[",
+]
+
+[git.heredoc_git_msg_subs]
+doc = "git subcommands that take a message from a heredoc."
+value = ["commit", "tag", "notes", "merge"]
+
+[git.hd_notes_subs]
+doc = "git notes subcommands a heredoc message may feed."
+value = ["add", "append", "show", "list"]
+
+[git.hd_gh_subs]
+doc = "gh subcommands a heredoc body may feed."
+value = ["pr", "issue", "release"]
+
+[git.hd_gh_actions]
+doc = "gh actions a heredoc body may feed."
+value = ["create", "edit", "comment"]
+
+[git.hd_deny_first]
+doc = "First words that make a heredoc consumer a script runner, so the heredoc is not data."
+value = [
+  "bash", "sh", "zsh", "dash", "ksh", "ash", "fish", "csh", "tcsh", "busybox", "eval", "source", ".", "exec",
+  "xargs", "env", "sudo", "su", "doas", "command", "builtin", "node", "nodejs", "deno", "bun", "perl",
+  "ruby", "php", "lua", "tclsh", "expect", "osascript", "pwsh", "powershell", "rscript", "ssh", "at",
+  "batch", "crontab", "watch", "parallel", "find", "awk", "gawk", "sed", "make", "npm", "npx", "pnpm",
+  "yarn", "docker", "kubectl", "script", "nohup", "setsid", "time", "timeout", "nice", "coproc",
+]
+
+[git.hd_bad_dirs]
+doc = "Directory names whose files a heredoc must not be written into (hooks, config, credentials)."
+value = [
+  ".git", ".husky", ".githooks", "hooks", ".ssh", ".config", ".claude", ".codex", ".local", ".gnupg",
+]
+
+[git.git_hook_names]
+doc = "git hook file names (a heredoc written to one is a script, not data)."
+value = [
+  "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+  "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-push",
+  "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction",
+  "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman",
+  "post-index-change",
+]
+
+[git.hd_data_ext]
+doc = "File extensions a heredoc may be written to as plain data."
+value = [
+  "md", "markdown", "mdx", "txt", "text", "rst", "adoc", "asciidoc", "org", "log", "csv", "tsv",
+]
+
+[git.hd_sinks_basic]
+doc = "Device paths a heredoc may be written to."
+value = ["/dev/null", "/dev/stdout", "/dev/stderr"]
+
+[git.hd_sinks_fd]
+doc = "Extra descriptor paths accepted as data sinks in redirects."
+value = ["/dev/fd/1", "/dev/fd/2"]
+
+[git.hd_read_long]
+doc = "Read-only long options accepted for log, diff and show in a heredoc-fed command."
+value = [
+  "stat", "shortstat", "numstat", "name-only", "name-status", "summary", "patch", "no-patch", "raw",
+  "cached", "staged", "no-color", "no-ext-diff", "no-textconv", "no-renames", "check", "exit-code", "quiet",
+  "ignore-all-space", "ignore-space-change", "oneline", "graph", "all", "reverse", "first-parent",
+  "no-merges", "merges", "abbrev-commit", "follow", "decorate", "no-decorate", "full-history", "source",
+  "date-order", "topo-order",
+]
+
+[git.hd_read_val]
+doc = "Read-only long options with a required value."
+value = [
+  "max-count", "skip", "since", "until", "after", "before", "author", "committer", "grep", "date",
+  "diff-filter",
+]
+
+[git.hd_read_opt]
+doc = "Read-only long options with an optional value."
+value = [
+  "color", "word-diff", "decorate", "format", "pretty", "unified", "abbrev", "find-renames", "find-copies",
+  "relative",
+]
+
+[git.hd_specs]
+doc = "Option grammar per git subcommand for heredoc-fed commands: s = short flags, v = short flags with a value, o = short flags with an optional value, l / big_l / big_o = long flags (none / required value / optional value), num = numeric -<n> allowed, strict = unknown options are not data, read = also accept the shared read-only option sets, l_extra = more long flags."
+value = { commit = { s = "aqvsnei", v = "mFCct", o = "uS", l = "all amend no-edit edit no-verify verify signoff no-signoff quiet verbose dry-run allow-empty allow-empty-message only include short porcelain no-gpg-sign reset-author status no-status", big_l = "message file author date cleanup trailer fixup squash reuse-message reedit-message", big_o = "untracked-files gpg-sign", num = false, strict = false }, tag = { s = "asfdlv", v = "mFu", o = "n", l = "annotate sign no-sign force delete list no-edit edit", big_l = "message file local-user cleanup points-at sort format", big_o = "contains", num = false, strict = false }, notes = { s = "f", v = "mFCc", o = "", l = "force allow-empty", big_l = "message file reuse-message reedit-message ref", big_o = "", num = false, strict = false }, merge = { s = "nqv", v = "mF", o = "", l = "no-ff ff ff-only squash no-squash no-commit commit no-edit stat no-stat log no-log quiet verbose abort continue quit signoff no-signoff no-verify allow-unrelated-histories no-gpg-sign", big_l = "message file cleanup", big_o = "log", num = false, strict = false }, status = { s = "sbvz", v = "", o = "u", l = "short branch long verbose show-stash ahead-behind no-ahead-behind null no-renames", big_l = "", big_o = "porcelain untracked-files ignored column", num = false, strict = false }, log = { s = "pqw", v = "n", o = "MCU", l = "", big_l = "", big_o = "", num = true, strict = true, read = true }, diff = { s = "pqwb", v = "", o = "MCU", l = "", big_l = "", big_o = "", num = false, strict = true, read = true }, show = { s = "pqws", v = "n", o = "MCU", l = "", big_l = "", big_o = "", num = true, strict = true, read = true, l_extra = "no-patch" }, add = { s = "Aunvf", v = "", o = "", l = "all update dry-run verbose force no-all intent-to-add ignore-removal", big_l = "", big_o = "", num = false, strict = false }, rev-parse = { s = "q", v = "", o = "", l = "show-toplevel abbrev-ref verify quiet git-dir is-inside-work-tree show-prefix symbolic-full-name", big_l = "", big_o = "short", num = false, strict = false } }
+
+[git.hd_gh_spec]
+doc = "Option grammar for gh pr, issue and release commands fed by a heredoc (same fields as hd_specs)."
+value = { s = "dfp", v = "tbFBHlarmRnT", o = "", l = "draft fill fill-first fill-verbose prerelease generate-notes no-maintainer-edit edit-last verify-tag", big_l = "title body body-file base head label add-label remove-label assignee add-assignee remove-assignee reviewer add-reviewer remove-reviewer milestone repo project add-project remove-project notes notes-file target notes-start-tag", big_o = "latest", num = false, strict = false }
+
+# ---- limits, budgets and timeouts ------------------------------------------------------------------------
+
+[git.max_chain]
+doc = "Longest git alias chain followed before giving up."
+value = 10
+
+[git.alias_depth]
+doc = "Deepest alias or shell-definition expansion that is rescanned."
+value = 3
+
+[git.max_nest]
+doc = "Nesting limit for the substitution scanners (JS overflows its stack far deeper and its caller then scans the raw text, which is what a bail-out means here)."
+value = 1500
+
+[git.launcher_hops]
+doc = "Most symlink hops followed when resolving a dangling launcher link."
+value = 10
+
+[git.cd_max_chars]
+doc = "A tracked cd directory longer than this many characters is dropped (a command that long is not worth resolving)."
+value = 4096
+unit = "chars"
+
+[git.cd_max_segments]
+doc = "A tracked cd directory with more path segments than this is dropped."
+value = 64
+
+[git.commit_hash_len]
+doc = "Length of a full commit hash, used to shorten it in messages."
+value = 40
+
+[git.commit_hash_short]
+doc = "Length a commit hash is shortened to in messages."
+value = 12
+
+[git.budget_launcher_fs]
+doc = "Filesystem probes the launcher check may spend per command."
+value = 64
+
+[git.budget_handover_queries]
+doc = "Distinct git queries the handover check may run per command."
+value = 8
+
+[git.budget_handover_evals]
+doc = "Commit evaluations the handover check may do per command."
+value = 50
+
+[git.git_timeout_ms]
+doc = "Timeout for the git query that resolves aliases."
+value = 1500
+unit = "ms"
+
+[git.handover_git_timeout_ms]
+doc = "Timeout for each git query of the handover check."
+value = 3000
+unit = "ms"
+
+[git.child_poll_ms]
+doc = "Poll interval while a git child process runs."
+value = 1
+unit = "ms"
+
+[git.child_read_ms]
+doc = "Time allowed to collect the output of a child process after it exits."
+value = 500
+unit = "ms"
+
+[git.stack_mb]
+doc = "Stack size of the thread the check runs on: the parsers recurse on nested input, so a pathological command must not overflow a daemon worker."
+value = 64
+unit = "MB"
+
+# ---- settings, files and environment names (read per request) --------------------------------------------
+
+[git.guard_name]
+doc = "The guard id this check answers to in skip.json and in the skip command."
+value = "git-guard"
+
+[git.settings_file]
+doc = "Settings file, relative to the home directory."
+value = ".anti-hall/settings.json"
+
+[git.skip_file]
+doc = "Skip file, relative to the home directory (a skipped guard is allowed until its expiry time)."
+value = ".anti-hall/skip.json"
+
+[git.plugin_option_prefix]
+doc = "Prefix of the environment variables the host sets from plugin options."
+value = "CLAUDE_PLUGIN_OPTION_"
+
+[git.setting_git_guard]
+doc = "Master switch of the check: settings.json section and key, environment variable and plugin-option name."
+value = { section = "safety", key = "gitGuard", env = "ANTIHALL_GIT_GUARD", option = "safety_git_guard" }
+
+[git.setting_heredoc_data]
+doc = "Switch for data-heredoc masking."
+value = { section = "guards", key = "gitGuardHeredocData", env = "ANTIHALL_GIT_GUARD_HEREDOC_DATA", option = "" }
+
+[git.setting_alias_resolve]
+doc = "Switch for git alias and shell definition resolution."
+value = { section = "guards", key = "gitAliasResolve", env = "ANTIHALL_GIT_ALIAS_RESOLVE", option = "" }
+
+[git.setting_reused_message]
+doc = "Switch for the reused-commit-message check."
+value = { section = "guards", key = "gitReusedMessageCheck", env = "ANTIHALL_GIT_REUSED_MESSAGE_CHECK", option = "" }
+
+[git.setting_handover_guard]
+doc = "Switch for the handover-commit guard."
+value = { section = "guards", key = "handoverCommitGuard", env = "ANTIHALL_HANDOVER_COMMIT_GUARD", option = "guards_handover_commit_guard" }
+
+[git.launcher_dir_pattern]
+doc = "Pattern (case-insensitive) that recognises a path inside the plugin launcher directory."
+value = "(?i)\\.anti-hall[\\\\/]+bin(?:[\\\\/]|$)"
+
+[git.skip_script]
+doc = "Script, relative to the plugin directory, that records a skip for a guard."
+value = "scripts/devswarm.js"
+
+[git.skip_command]
+doc = "Command that records a skip for a guard; {script} is the quoted script path and {key} the guard id."
+value = "node '{script}' skip {key}"
+
+[git.handover_dir_prefix]
+doc = "Directory under which handovers live (never committed)."
+value = ".anti-hall/handovers/"
+
+# ---- block messages --------------------------------------------------------------------------------------
+
+[git.block_emoji]
+doc = "Leading symbol of a block message."
+value = "⛔"
+
+[git.block_mark]
+doc = "Product and guard label after the symbol; also the marker alias notes are inserted after."
+value = " anti-hall · git-guard: "
+
+[git.label_why]
+doc = "Label of the reason line."
+value = "Why: "
+
+[git.label_instead]
+doc = "Label of the remedy line."
+value = "Do instead: "
+
+[git.label_allowed]
+doc = "Label of the allowed-here line."
+value = "Allowed here: "
+
+[git.label_override]
+doc = "Label of the override line."
+value = "Override (only if the user explicitly asked): "
+
+[git.file_write_tip]
+doc = "Added to a block when the command writes a file with shell text: the file was scanned as shell."
+value = "\nTip: this file's content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `devswarm.js send --message-file <path>`)."
+
+[git.handover_skipped_advisory]
+doc = "Advisory when the handover check ran out of budget. Placeholder: {n}."
+value = "anti-hall git-guard: the handover-commit check was skipped for {n} commit(s) in this command (too many distinct commits/repos to check). Make sure none of them includes a session handover (.anti-hall/handovers/**, HANDOVER*.md, CONTINUE-HERE.md)."
+
+[git.check_summary]
+doc = "One-line description of the check for the generated reference."
+value = "Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self-credit in commits, handover commits, launcher-directory writes and the same through aliases, runners and heredocs"
+
+[git.note_git_alias_def]
+doc = "Note on a block found inside an alias definition made with -c or git config. Placeholder: {name}."
+value = "defining git alias `{name}` to run a blocked command:"
+
+[git.note_shell_alias_def]
+doc = "Note on a block found inside a shell alias definition. Placeholder: {name}."
+value = "defining shell alias `{name}` to run a blocked command:"
+
+[git.note_env_alias_def]
+doc = "Note on a block found inside an alias defined through GIT_CONFIG_VALUE_<n>. Placeholder: {name}."
+value = "defining a git alias via `{name}` to run a blocked command:"
+
+[git.note_shell_def_use]
+doc = "Note on a block reached through a shell alias or function. Placeholders: {kind}, {name}."
+value = "via shell {kind} `{name}`:"
+
+[git.word_alias]
+doc = "The word for a shell alias in notes."
+value = "alias"
+
+[git.word_function]
+doc = "The word for a shell function in notes."
+value = "function"
+
+[git.note_git_alias_use]
+doc = "Note on a block reached through a git alias chain. Placeholder: {chain}."
+value = "via git alias `{chain}`:"
+
+[git.chain_joiner]
+doc = "Separator between the aliases of a chain in a note."
+value = "` -> `"
+
+[git.origin_template]
+doc = "Where a reused message came from: the commit template."
+value = "the commit template"
+
+[git.origin_amend]
+doc = "Where a reused message came from: an amend."
+value = "HEAD (`--amend` reuses it)"
+
+[git.origin_commit]
+doc = "Where a reused message came from: a named commit. Placeholder: {ref}."
+value = "commit `{ref}`"
+
+[git.more_marker]
+doc = "Appended to a list that was cut short."
+value = ", ..."
+
+[git.msg_launcher]
+doc = "Block: a write into the launcher directory."
+value = { what = "a write into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.", why = "anti-hall installs those files itself (update / doctor --repair); overwriting one would run arbitrary code (such as a force push) under a trusted launcher name.", instead = "leave that directory alone; if the path only appears as prose in a heredoc/brief, write that text with the Write tool instead." }
+
+[git.msg_reused_message]
+doc = "Block: a reused commit message carries an AI self-credit. Placeholder: {origin}."
+value = { what = "a commit whose message is taken from {origin} and carries an AI/assistant self-credit trailer is blocked.", why = "Commits carry no AI co-author credit, even when the message is reused rather than typed.", instead = "commit with an explicit clean message (`-m \"<msg>\"` or `-F <file>`) instead of reusing that one." }
+
+[git.msg_gh_credit]
+doc = "Block: a gh pr, issue or release body or title carries an AI self-credit."
+value = { what = "a gh pr/issue/release body or title carries AI/assistant self-credit (\"Generated with\" footer, Co-Authored-By, a claude.com/claude-code link) is blocked.", why = "PRs and issues carry no AI attribution.", instead = "remove it and re-run." }
+
+[git.msg_runner_placeholder]
+doc = "Block: a runner placeholder stands for the command or subcommand beside a force or delete flag."
+value = { what = "a command whose name or git subcommand is an xargs / find / parallel placeholder, with a force or delete flag, is blocked.", why = "The placeholder is filled from input at run time, so the command may be `git push`.", instead = "run the git command directly with an explicit subcommand and arguments." }
+
+[git.msg_runner_no_subcommand]
+doc = "Block: a runner with git and no subcommand beside a force or delete flag. Placeholder: {runner}."
+value = { what = "`{runner} git` with no subcommand, beside a force or delete flag, is blocked.", why = "{runner} reads the subcommand from its input, so it may be `push` with that flag.", instead = "run the git command directly with an explicit subcommand and arguments." }
+
+[git.msg_runner_push]
+doc = "Block: a push through xargs or parallel. Placeholder: {runner}."
+value = { what = "force push via `{runner} git push` is blocked.", why = "{runner} appends input words to the command, so the full argv (and any hidden --force/-f) cannot be verified statically.", instead = "run `git push` directly with explicit arguments." }
+
+[git.msg_find_push]
+doc = "Block: a push through find -exec."
+value = { what = "push via `find -exec git push ... {}` is blocked.", why = "find puts file names where {} stands, so the refspecs (a `+ref` is a force push) cannot be verified statically.", instead = "run `git push` directly with explicit arguments." }
+
+[git.msg_handover]
+doc = "Block: a commit that includes a session handover. Placeholders: {shown}, {skip}."
+value = { what = "this commit includes a session handover ({shown}) and is blocked.", why = "Handovers are local session state and are never committed.", instead = "unstage a NEW one with `git restore --staged <path>`; if ALREADY tracked, `git rm --cached <path>` and commit that removal (allowed).", override = "{skip} (only if the owner explicitly asked to commit this file)" }
+
+[git.msg_force_push]
+doc = "Block: a force push."
+value = { what = "force push is blocked.", why = "Rewriting published history is a deliberate human action.", instead = "do it manually with explicit owner confirmation, never from an automated push." }
+
+[git.msg_delete_ref]
+doc = "Block: remote ref deletion. Placeholder: {skip}."
+value = { what = "remote ref deletion (push --delete / -d / --prune / an empty-source :<ref> refspec) is blocked.", why = "Deleting published branches or tags needs explicit owner confirmation.", instead = "leave the ref.", override = "{skip} (only if the owner asked for this exact deletion)" }
+
+[git.msg_push_cmdsubst]
+doc = "Block: a push argument produced by command substitution."
+value = { what = "`git push` with an argument produced by command substitution / backticks is blocked.", why = "It can smuggle a --force flag past static inspection.", instead = "run the push with literal arguments (no dollar-paren or backticks). If this is message text in printf/echo written to a file, write that file with the Write tool instead." }
+
+[git.push_cmdsubst_heredoc_note]
+doc = "Appended to the remedy of the push_cmdsubst block when the command contains a heredoc."
+value = " Heredoc bodies are scanned as shell even when a script only reads them as text: write the script or note with the Write tool, then run or reference the file."
+
+[git.msg_trailer_remap]
+doc = "Block: a trailer remap to an AI self-credit key."
+value = { what = "a `-c trailer.*.key=` remap to an AI self-credit key (Co-Authored-By / Generated-with) is blocked.", why = "Commits carry no AI co-author credit.", instead = "remove the trailer remap." }
+
+[git.msg_commit_credit]
+doc = "Block: an inline commit message with an AI self-credit."
+value = { what = "a commit message with an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") is blocked.", why = "Commits carry no AI co-author credit.", instead = "re-run the commit without that trailer." }
+
+[git.msg_commit_file_credit]
+doc = "Block: a commit message read from a file or heredoc with an AI self-credit."
+value = { what = "a commit message (via `-F`/`--file`, from a heredoc body or file) with an AI/assistant self-credit trailer is blocked.", why = "Commits carry no AI co-author credit.", instead = "re-run the commit without that trailer." }
+
+[git.msg_gh_jev]
+doc = "Block: Jev judged a gh body or title to credit an AI assistant (paraphrased)."
+value = { what = "a gh pr/issue/release body or title appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) and is blocked.", why = "PRs and issues carry no AI attribution.", instead = "remove it and re-run." }
+
+[git.msg_commit_jev]
+doc = "Block: Jev judged an inline commit message to credit an AI assistant (paraphrased)."
+value = { what = "a commit message that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.", why = "Commits carry no AI co-author credit.", instead = "reword the message and re-run." }
+
+[git.msg_commit_file_jev]
+doc = "Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased)."
+value = { what = "a commit message (via `-F`/`--file`) that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.", why = "Commits carry no AI co-author credit.", instead = "reword the message and re-run." }
+
+[git.jev_id]
+doc = "The Jev integration id of the self-credit question (add-block trust)."
+value = "gitGuardSelfCredit"
+
+[git.jev_instructions]
+doc = "The Noul question of the self-credit ask (byte-identical to the Node guard's)."
+value = "Does this commit message, or PR/issue/release body or title, credit an AI assistant as an author, co-author, or contributor — even paraphrased or indirect (e.g. \"written with help from Claude\", \"AI-assisted commit\", \"co-written by an assistant\") — NOT a canonical trailer/footer/link (those are already caught by regex and never reach this question)?"
+
+[git.jev_true]
+doc = "The label for a true answer of the self-credit question."
+value = "credits an AI assistant as author/co-author/contributor, in any phrasing"
+
+[git.jev_false]
+doc = "The label for a false answer of the self-credit question."
+value = "no AI self-credit of any kind"
+
+[git.jev_state_chars]
+doc = "How many UTF-16 units of a message the self-credit ask evaluates (Node: String(text).slice(0, 4000))."
+value = 4000
+min = 1
+
+[git.jev_budget_ms]
+doc = "Time budget of one self-credit consult (Node: CONSULT_BUDGET_MS)."
+value = 1500
+unit = "ms"
+min = 1
+
+[git.jev_backstop_ms]
+doc = "Extra time Node's synchronous worker is allowed beyond the budget; counted in the total-time guard (Node: the +500 in the guard)."
+value = 500
+unit = "ms"
+
+[git.jev_total_budget_ms]
+doc = "Most time one command may spend on self-credit consults in total; past it a consult is skipped and the regex verdict stands (Node: JEV_TOTAL_BUDGET_MS)."
+value = 4000
+unit = "ms"
+
+[git.jev_consult_cap]
+doc = "Most distinct texts one command may consult Jev about (Node: JEV_CONSULT_CAP)."
+value = 8
+min = 1
+
+[git.msg_creating_credit]
+doc = "Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}."
+value = { what = "a command that creates a commit (git {sub}) and carries an AI/assistant self-credit trailer line is blocked.", why = "Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).", instead = "remove the trailer line and re-run." }
+
+
+# ---- PostToolUse audit (git-guard.js --audit) --------------------------------------------------------------------
+
+[git_audit.summary]
+doc = "One-line description of the git-audit check in the generated reference."
+value = "Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer (port of git-guard.js --audit)."
+
+[git_audit.window_s]
+doc = "How recent, in seconds, a commit must be for the audit to look at it."
+value = 900
+min = 1
+max = 86400
+
+[git_audit.commits]
+doc = "How many commits at HEAD the audit reads."
+value = 20
+min = 1
+max = 1000
+
+[git_audit.timeout_ms]
+doc = "Timeout of the git log the audit runs in each repository."
+value = 4000
+unit = "ms"
+
+[git_audit.argv_log]
+doc = "git arguments of the audit's log query; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e)."
+value = ["-C", "{dir}", "log", "-n", "{n}", "--format=%h%x1f%ct%x1f%B%x1e", "HEAD"]
+
+[git_audit.record_sep]
+doc = "The character that ends one commit record of the audit's log output (RS)."
+value = "\u001e"
+
+[git_audit.field_sep]
+doc = "The character that separates the fields of one commit record (US)."
+value = "\u001f"
+
+[git_audit.max_depth]
+doc = "How deep eval and shell -c payloads are followed when looking for commit-creating git commands."
+value = 3
+min = 0
+max = 16
+
+[git_audit.msg]
+doc = "Advisory text. Placeholders: {window_min} (minutes) and {hits} (comma separated short hashes)."
+value = "anti-hall git-guard (audit): recent commit(s) on HEAD (committed in the last {window_min} min) {hits} carry an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") - added by a git hook, template, cherry-pick/rebase, or an editor. Commits carry no AI co-author credit: reword them now (`git commit --amend` for HEAD, `git rebase -i` for older ones) BEFORE pushing."
+
+[git_audit.cd_verb]
+doc = "The verb whose directory argument moves the audit's working directory."
+value = "cd"
+
+[git_audit.eval_verb]
+doc = "The verb whose payload is scanned as a command."
+value = "eval"
+
+[git_audit.git_verb]
+doc = "The verb of a git command."
+value = "git"
+
+[git_audit.opts_with_value]
+doc = "Global git options that take a value in the next word (skipped when looking for the repository directory)."
+value = ["-c", "--git-dir", "--work-tree", "--namespace", "--config-env"]
+
+[git_audit.dir_opt]
+doc = "The global git option that changes the repository directory."
+value = "-C"
+
+[git_audit.event]
+doc = "The hook event name in the audit's output."
+value = "PostToolUse"
+
+[git_audit.max_buffer]
+doc = "Largest log output, in bytes, the audit accepts from one repository (Node's child-process buffer cap: a larger output is dropped)."
+value = 1048576
+min = 1024
+max = 268435456

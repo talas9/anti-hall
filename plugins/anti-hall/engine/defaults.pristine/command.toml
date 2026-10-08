@@ -1,0 +1,281 @@
+# ah-engine shipped defaults for the built-in `command` check (a port of the command-guard hook), D17 and D30.
+#
+# Every table, allowlist, wrapper grammar, heavy-command pattern, light exception and limit of the check lives here;
+# the Rust code in src/checks/command holds only the parsing logic. Format: see the header of engine.toml.
+# Regular expressions are Rust `regex` syntax, transcribed from the Node source with the same meaning on ASCII text
+# (the check defers every command that contains a non-ASCII character, so JavaScript's UTF-16 indexing, its wider
+# `\s` and its case folding never come into play). A JavaScript lookahead has no Rust equivalent: a trailing
+# `(?=\s|$)` is written as the consuming `(?:\s|$)` (same answer for a yes/no test), and a negative lookahead entry is
+# split into `head` / `end` / `not_after` (see `light_exceptions_neg`).
+
+# ---- what the engine decides, and when it hands the command to the Node hook -------------------------------------
+
+[command.check_summary]
+doc = "One-line description of the command check for the generated reference."
+value = "command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook."
+
+[command.max_classify_len]
+doc = "Commands longer than this many characters are deferred to the Node hook (command-guard.js MAX_CLASSIFY_LEN: the Node guard switches to a head/tail scan above it)."
+value = 65536
+
+[command.max_depth]
+doc = "Nesting depth of inline shells, eval and command substitutions the heavy and write scans follow (command-guard.js `d < 3`)."
+value = 3
+
+[command.defer_substrings]
+doc = "If the command, lower-cased with quotes and backslashes removed, contains any of these, the engine defers: the DevSwarm subagent-mailbox guard needs the literal script name (devswarm.js) and the git-stash guard a `stash` word, and both need state the engine does not mirror."
+value = ["devswarm.js", "stash"]
+
+[command.devswarm_cli_verbs]
+doc = "If any segment the DevSwarm read/send guards scan has one of these as its effective verb, the engine defers (command-guard.js DEVSWARM_CLI_VERBS)."
+value = ["hivecontrol", "devswarm"]
+
+[command.defer_path_parts]
+doc = "If the command or the payload cwd has one of these as a path component (lower-cased; split at slashes, backslashes, blanks and shell punctuation), the engine defers: the raw DevSwarm inbox/store read guard denies only paths whose first component under the DevSwarm root is one of them (lib/devswarm-inbox-paths.js classifyDevswarmPath)."
+value = ["inbox", "store"]
+
+# ---- shell grammar tables -----------------------------------------------------------------------------------------
+
+[command.wrappers]
+doc = "Words skipped when finding a segment's effective verb (command-guard.js WRAPPERS)."
+value = [
+  "command", "builtin", "exec", "sudo", "env", "nice", "nohup", "time", "timeout", "taskpolicy", "xargs", "then",
+  "do", "else", "if", "while", "until", "!",
+]
+
+[command.sudo_value_flags]
+doc = "sudo options that take a value (command-guard.js effectiveVerb SUDO_VAL)."
+value = [
+  "-u", "-g", "-p", "-C", "-r", "-t", "-U", "-h", "--user", "--group", "--prompt", "--close-from", "--role", "--type",
+  "--other-user", "--host",
+]
+
+[command.timeout_value_flags]
+doc = "timeout options that take a value (command-guard.js effectiveVerb)."
+value = ["-s", "--signal", "-k", "--kill-after"]
+
+[command.nice_value_flags]
+doc = "nice options that take a value (command-guard.js effectiveVerb)."
+value = ["-n", "--adjustment"]
+
+[command.taskpolicy_value_flags]
+doc = "taskpolicy options that take a value (command-guard.js effectiveVerb)."
+value = ["-c", "-t", "-p"]
+
+[command.shell_verbs]
+doc = "Shell programs whose `-c` argument or heredoc body is itself a script (lib/shell-scan.js SHELL_VERBS)."
+value = ["bash", "sh", "zsh", "dash", "ksh", "ash"]
+
+[command.test_keywords]
+doc = "Words after which a `[[` or `((` is at command position, so its `<`/`>` are comparisons, not redirects (command-guard.js TEST_KEYWORDS)."
+value = ["if", "while", "until", "then", "do", "elif", "else"]
+
+[command.pattern_first_verbs]
+doc = "Verbs whose first operand is a pattern, blanked before the heavy patterns run (command-guard.js PATTERN_FIRST_VERBS)."
+value = ["grep", "sed", "awk"]
+
+# ---- heavy commands -----------------------------------------------------------------------------------------------
+
+[command.heavy_verbs]
+doc = "Effective verbs that are always heavy in the main thread (command-guard.js HEAVY_VERBS)."
+value = [
+  "npm", "npx", "pnpm", "yarn", "bun", "pip", "pip3", "poetry", "uv", "conda", "make", "cmake", "gradle", "mvn", "ant",
+  "bazel", "buck", "ninja", "tsc", "swc", "esbuild", "rollup", "vite", "webpack", "turbo", "pytest", "jest", "vitest",
+  "mocha", "jasmine", "karma", "cypress", "playwright", "flutter", "go", "cargo", "dotnet", "firebase", "gcloud", "aws",
+  "az", "kubectl", "helm", "terraform", "pulumi", "serverless", "vercel", "netlify", "heroku", "psql", "mysql", "mongosh",
+  "redis-cli", "sqlite3", "prisma", "knex", "alembic", "flyway", "liquibase", "docker", "podman", "vagrant", "ansible",
+]
+
+[command.heavy_patterns]
+doc = "Patterns over the quote-neutralized segment that make it heavy (command-guard.js HEAVY_PATTERNS)."
+value = [
+  '(?i)\bnpm\s+run\s+(?:build|test|deploy|start|lint|typecheck|check)\b',
+  '(?i)\byarn\s+(?:run\s+)?(?:build|test|deploy|start|lint|typecheck|check)\b',
+  '(?i)\bpnpm\s+(?:run\s+)?(?:build|test|deploy|start|lint|typecheck|check)\b',
+  '(?i)\bgit\s+(?:push|pull|fetch|clone)\b',
+  '(?i)\bpython[23]?\s+\S+\.py\b',
+  '(?i)\bnode\s+\S+\.(?:js|mjs|cjs)\b',
+  '(?i)\bdeno\s+(?:run|task)\b',
+]
+
+[command.light_exceptions]
+doc = "Patterns over the raw segment (and the segment without a leading `timeout N`) that make it light (command-guard.js LIGHT_EXCEPTIONS, the entries without a negative lookahead; a trailing `(?=\\s|$)` is written as `(?:\\s|$)`)."
+value = [
+  '(?i)\bgit\s+(?:status|log|diff|show|branch(?:\s+--list)?|rev-parse|config\s+--get|config\s+--list|worktree\s+list|remote\s+-v|shortlog|stash\s+list|tag\s+-l|describe|ls-remote|ls-tree|merge-base|reflog\s+show)\b',
+  '(?i)\bnpm\s+(?:--version|-v|view|info|ls)\b',
+  '(?i)\bnode\s+(?:--version|-v)\b',
+  '(?i)\bflutter\s+--version\b',
+  '(?i)\bgo\s+version\b',
+  '(?i)\bcargo\s+(?:--version|version)\b',
+  '(?i)\bgit\s+(?:push|pull)\b[^\n]*\s--dry-run\b',
+  '(?i)\bdocker\s+(?:ps|images|inspect|logs|stats)\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]jev-setup\.js\s+(?:-\S+\s+)*status\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]settings\.js\s+(?:-\S+\s+)*(?:show|get)\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]defect\.js\s+(?:-\S+\s+)*(?:report|list|show|recurring|similar)\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?statusline[\\/]phase\.js\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?hooks[\\/]agent-watchdog\.js\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]devswarm\.js(?:\s|$)',
+  '''(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+["']?(?:\S*[\\/])?skills[\\/]update[\\/]scripts[\\/]update\.js["']?(?:\s|$)''',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?companion[\\/]install-devswarm-supervisor\.js(?:\s|$)',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?companion[\\/]install-devswarm-ingest\.js(?:\s|$)',
+]
+
+[command.light_exceptions_neg]
+doc = "LIGHT_EXCEPTIONS entries of the form HEAD`\\b(?![^\\n]*NOT)`: the segment is light when some match of `head` ends (at a word boundary, right after the text `end`) where `not_after` does not match before the end of that line (jev-report.js, doctor.js and `go env`)."
+value = [
+  { head = '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]jev-report\.js', end = "jev-report.js", not_after = '(?i)\b(?:label|prune-audit)\b' },
+  { head = '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?hooks[\\/]doctor\.js', end = "doctor.js", not_after = '(?i)--(?:repair|fix|repair-ingest-orphans|repair-test-stores|reclaim-ingest-lock)\b' },
+  { head = '(?i)\bgo\s+env', end = "env", not_after = '(?i)\s-w\b' },
+]
+
+[command.control_keyword_prefix]
+doc = "Leading shell keywords stripped before a segment is judged (command-guard.js CONTROL_KEYWORD_PREFIX_RE)."
+value = '^\s*(?:(?:do|then|else|if|while|until|!)\s+)+'
+
+[command.timeout_prefix]
+doc = "A leading `timeout [opts] N` stripped for the light-exception test (command-guard.js TIMEOUT_PREFIX_RE)."
+value = '^\s*timeout\s+(?:-[ks]\s+\S+\s+|-\S+\s+)*\d+[smhd]?\s+'
+
+[command.script_check_interpreter]
+doc = "Interpreters whose flagged script runs are heavy (command-guard.js SCRIPT_CHECK_INTERPRETER_RE)."
+value = '^(?:python[0-9.]*|node|ruby|perl|php)$'
+
+[command.node_script_ext]
+doc = "Script file extensions of node for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript)."
+value = '(?i)\.(?:js|mjs|cjs)$'
+
+[command.python_script_ext]
+doc = "Script file extension of the other interpreters for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript)."
+value = '(?i)\.py$'
+
+# ---- node -e payloads ---------------------------------------------------------------------------------------------
+
+[command.node_eval_flags]
+doc = "node options whose next word is inline code (command-guard.js isSafeNodeEval)."
+value = ["-e", "--eval"]
+
+[command.node_eval_deny]
+doc = "Patterns that make a `node -e` payload unsafe (command-guard.js NODE_EVAL_UNSAFE_RE, NODE_EVAL_BRACKET_ACCESS_RE and the inline denials of isSafeNodeEvalPayload)."
+value = [
+  '\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|unlink(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|mkdir(?:Sync)?|rename(?:Sync)?|truncate(?:Sync)?|chmod(?:Sync)?|chown(?:Sync)?|symlink(?:Sync)?|copyFile(?:Sync)?|spawn(?:Sync)?|exec(?:Sync)?|execFile(?:Sync)?|fork)\s*\(|child_process',
+  '''\[\s*['"]''',
+  '\bchild_process\b',
+  '\bfs/promises\b',
+  '\bprocess\s*\.\s*binding\s*\(',
+  '\beval\s*\(',
+  '\bFunction\s*\(',
+  '\bimport\s*\(',
+]
+
+[command.node_fs_method_call]
+doc = "An fs API call in a `node -e` payload; group 1 is the method (command-guard.js NODE_FS_METHOD_CALL_RE)."
+value = '''(?:\brequire\(\s*['"]fs['"]\s*\)|\bfs)\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\('''
+
+[command.node_fs_read_allowlist]
+doc = "fs methods a safe `node -e` payload may call (command-guard.js NODE_FS_READ_ALLOWLIST)."
+value = ["readFileSync", "readdirSync", "statSync", "existsSync", "lstatSync"]
+
+# ---- git ----------------------------------------------------------------------------------------------------------
+
+[command.git_global_value_opts]
+doc = "git global options that take a value (command-guard.js GIT_GLOBAL_VALUE_OPTS)."
+value = ["-c", "-C", "--namespace", "--super-prefix", "--exec-path", "--config-env", "--git-dir", "--work-tree"]
+
+[command.git_fetch_dangerous_flags]
+doc = "git fetch options that rewrite or delete local refs (command-guard.js GIT_FETCH_DANGEROUS_FLAGS)."
+value = ["--prune", "-p", "--prune-tags", "--force", "-f"]
+
+[command.git_heavy_subs]
+doc = "git subcommands that are always heavy (command-guard.js isHeavyGitSegment)."
+value = ["push", "pull", "clone"]
+
+# ---- sqlite3 ------------------------------------------------------------------------------------------------------
+
+[command.sqlite_dangerous]
+doc = "sqlite3 dot-commands and SQL that write despite -readonly (command-guard.js SQLITE_DANGEROUS_RE)."
+value = '(?i)(^|[\s;])\.(shell|system|output|once|import|save)\b|\bATTACH\b'
+
+# ---- cloud CLIs ---------------------------------------------------------------------------------------------------
+
+[command.cloud_binaries]
+doc = "Cloud CLIs with a read-only inspect exemption (command-guard.js CLOUD_BINARIES)."
+value = ["gcloud", "gh", "kubectl"]
+
+[command.cloud_readonly_verbs]
+doc = "First words after gh/kubectl that read only (command-guard.js CLOUD_READONLY_VERBS)."
+value = ["describe", "list", "get", "view"]
+
+[command.cloud_mutating_verbs]
+doc = "Words that disqualify the gh/kubectl read-only exemption (command-guard.js CLOUD_MUTATING_VERBS)."
+value = [
+  "deploy", "delete", "create", "update", "set", "patch", "apply", "rm", "remove", "scale", "rollout", "run", "exec",
+  "push", "merge", "close", "edit",
+]
+
+[command.gcloud_inspect_verbs]
+doc = "gcloud command-path verbs that read only (command-guard.js GCLOUD_INSPECT_VERBS)."
+value = ["describe", "list", "get", "view", "read"]
+
+[command.gcloud_refused_path]
+doc = "gcloud command-path words that refuse the read-only grammar (command-guard.js GCLOUD_REFUSED_PATH_RE)."
+value = '^(?:access|ssh|scp|run|sign|print-[^\n\r]*|attach-[^\n\r]*|detach-[^\n\r]*|add-[^\n\r]*|set-[^\n\r]*|remove-[^\n\r]*|(?:reset|suspend|resume|publish|call|execute|decrypt|encrypt|delete|create|update|deploy)(?:-[^\n\r]*)?)$'
+
+[command.gcloud_boolean_flags]
+doc = "gcloud flags without a value the read-only grammar accepts (command-guard.js GCLOUD_BOOLEAN_FLAGS)."
+value = ["--quiet", "--uri"]
+
+[command.gcloud_value_flags]
+doc = "gcloud flags whose separated value the whole-command read-only form accepts (command-guard.js GCLOUD_VALUE_FLAGS)."
+value = ["--project", "--region", "--zone", "--location", "--limit", "--freshness", "--page-size", "--sort-by"]
+
+[command.gcloud_logging_group]
+doc = "The only gcloud group whose `read` verb is read-only (command-guard.js `g.path[last] !== 'logging'`)."
+value = "logging"
+
+[command.whole_command_clis]
+doc = "CLIs whose whole-command read-only form (version query or gcloud read piped to a closed sink) is light (command-guard.js isWholeCommandReadOnlyForm and VERSION_CLI_RE)."
+value = ["firebase", "gcloud", "aws", "az", "kubectl", "helm", "terraform", "pulumi", "vercel", "netlify", "heroku", "serverless"]
+
+# ---- gh -----------------------------------------------------------------------------------------------------------
+
+[command.gh_mutating_subcommands]
+doc = "gh group and subcommand pairs that are heavy (command-guard.js GH_MUTATING_SUBCOMMANDS, plus `workflow run`)."
+value = { pr = ["merge", "close", "edit", "create", "review"], issue = ["create", "close", "delete", "edit"], release = ["create", "delete", "edit", "upload"], repo = ["delete", "edit"], secret = ["set", "delete"], workflow = ["run"] }
+
+[command.gh_api_mutating_methods]
+doc = "gh api methods that are heavy (command-guard.js GH_API_MUTATING_METHODS)."
+value = ["POST", "PATCH", "PUT", "DELETE"]
+
+[command.gh_api_field_flags]
+doc = "gh api options that send a request body (command-guard.js isHeavyGhSegment and GH_GQL_FIELD_FLAGS)."
+value = ["-f", "-F", "--field", "--raw-field"]
+
+[command.gh_gql_value_flags]
+doc = "gh api graphql options that take a value (command-guard.js GH_GQL_VALUE_FLAGS)."
+value = ["--jq", "-q", "-H", "--header", "--hostname", "--cache", "-t", "--template"]
+
+[command.gh_gql_bool_flags]
+doc = "gh api graphql options without a value (command-guard.js GH_GQL_BOOL_FLAGS)."
+value = ["--paginate", "--slurp", "--silent", "-i", "--include", "--verbose"]
+
+# ---- Bash writes (the edit-guard parity scan) -----------------------------------------------------------------------
+
+[command.inline_verbs]
+doc = "Interpreters whose inline code is scanned for literal write targets (command-guard.js INLINE_VERBS)."
+value = ["python", "python3", "perl", "ruby", "node"]
+
+[command.inline_python_flags]
+doc = "The inline-code flag of the python interpreters (command-guard.js inlineCodeBody)."
+value = ["-c"]
+
+[command.inline_other_flags]
+doc = "The inline-code flags of perl, ruby and node (command-guard.js inlineCodeBody)."
+value = ["-e", "-E"]
+
+[command.inline_write_markers]
+doc = "If inline interpreter code contains any of these, it may name a literal write target and the engine defers (a superset of command-guard.js INLINE_OPEN_RE, INLINE_PERL_OPEN3_RE, INLINE_PERL_OPEN2_RE, INLINE_WRITEFILE_RE and INLINE_FILE_WRITE_RE, which all need one of them)."
+value = ["open", "File", "createWriteStream", ".write("]
+
+[command.write_target_unknowable]
+doc = "A write target containing one of these characters cannot be resolved and is skipped (command-guard.js resolveWriteTarget)."
+value = "$`*?[]{}"

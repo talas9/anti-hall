@@ -59,6 +59,8 @@ pub struct Data {
     pub(super) index: Vec<(&'static str, &'static Entry)>,
     /// Canonical text of each entry's source table, to tell a changed entry from an unchanged one at the next load.
     canon: HashMap<&'static str, String>,
+    /// What the load fell back on, what to heal and what to keep as last-known-good.
+    pub(super) report: Report,
 }
 
 impl Data {
@@ -179,56 +181,307 @@ fn check_entry(file: &str, key: &str, e: &toml::Table, kind: Option<Kind>) -> Re
     Ok(())
 }
 
-/// Read and validate the defaults of the plugin at `root`. `prev` lets unchanged entries be reused instead of leaked again.
-pub fn load(root: &Path, prev: Option<&Data>) -> Result<Data, DefaultsError> {
-    let dir = root.join(bootstrap::DEFAULTS_DIR);
-    let mut entries: Vec<&'static Entry> = Vec::new();
-    let mut canon: HashMap<&'static str, String> = HashMap::new();
-    let mut seen: HashMap<String, String> = HashMap::new();
-    let kinds: HashMap<&str, Kind> = super::generated::REQUIRED.iter().copied().collect();
-    for file in file_list(&dir)? {
-        let text = read(&dir.join(&file), &file)?;
-        let table: toml::Table = text.parse().map_err(|e: toml::de::Error| DefaultsError::new("parse", &file, "", e))?;
-        for (section, body) in &table {
-            let body = body.as_table().ok_or_else(|| DefaultsError::new("entry", &file, section, "a section must be a table of settings"))?;
-            for (name, e) in body {
-                let key = format!("{section}.{name}");
-                let e = e.as_table().ok_or_else(|| DefaultsError::new("entry", &file, &key, "a setting must be a table with `value` and `doc`"))?;
-                let doc = e.get("doc").and_then(toml::Value::as_str).ok_or_else(|| DefaultsError::new("doc", &file, &key, "no `doc`"))?;
-                if !doc.trim().ends_with('.') {
-                    return Err(DefaultsError::new("doc", &file, &key, "doc must be a sentence ending in a period"));
-                }
-                let v = e.get("value").ok_or_else(|| DefaultsError::new("value", &file, &key, "no `value`"))?;
-                if let Some(k) = e.keys().find(|k| !FIELDS.contains(&k.as_str())) {
-                    return Err(DefaultsError::new("field", &file, &key, format!("unknown field {k:?}")));
-                }
-                check_entry(&file, &key, e, kinds.get(key.as_str()).copied())?;
-                if let Some(first) = seen.insert(key.clone(), file.clone()) {
-                    return Err(DefaultsError::new("duplicate", &file, &key, format!("also in {first}")));
-                }
-                let text = format!("{e:?}");
-                let reused = prev.and_then(|p| p.find(&key).filter(|old| old.file == file && p.canon.get(old.key).is_some_and(|c| *c == text)));
-                let entry: &'static Entry = match reused {
-                    Some(old) => old,
-                    None => {
-                        let value =
-                            to_v(v).ok_or_else(|| DefaultsError::new("unsupported", &file, &key, "use integers, booleans, strings, arrays and tables"))?;
-                        Box::leak(Box::new(Entry {
-                            key: leak_str(&key),
-                            file: leak_str(&file),
-                            value,
-                            doc: leak_str(doc),
-                            env: e.get("env").and_then(toml::Value::as_str).map(leak_str),
-                            min: e.get("min").and_then(toml::Value::as_integer),
-                            max: e.get("max").and_then(toml::Value::as_integer),
-                            unit: e.get("unit").and_then(toml::Value::as_str).map(leak_str),
-                        }))
-                    }
-                };
-                canon.insert(entry.key, text);
-                entries.push(entry);
+// ---- layered resolution (failover) ---------------------------------------------------------------------------------------
+//
+// Three sources of the same files, tried in order and each through the same full validation:
+//   1. edited    the plugin's `engine/defaults/` (what the owner edits)
+//   2. lkg       the last-known-good copy in the state directory: every edited file that last validated in full, written
+//                after each successful load; used only when its stamp (engine version, plugin root, plugin version) matches
+//   3. pristine  the plugin's read-only `engine/defaults.pristine/`, byte-identical to the shipped defaults
+// Resolution is per file and per setting: a file that does not parse falls back as a whole, a setting that fails validation
+// falls back alone, and a setting the edited files lack is taken from the pristine copy (and reported for healing). When the
+// assembled set still fails a cross-file check (a duplicate, a required key, the hooks or the dispatch table), the whole
+// last-known-good copy is tried, then the whole pristine copy. Only when all fail is the load an error (exit 75: Node runs).
+
+/// A source of defaults files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Layer {
+    /// The plugin's editable `engine/defaults/`.
+    Edited,
+    /// The last-known-good copy in the state directory.
+    Lkg,
+    /// The plugin's pristine copy.
+    Pristine,
+}
+
+impl Layer {
+    /// The stable code of the layer, for the event log.
+    pub fn code(self) -> &'static str {
+        match self {
+            Layer::Edited => "edited",
+            Layer::Lkg => "lkg",
+            Layer::Pristine => "pristine",
+        }
+    }
+}
+
+/// One fallback a load took: what was rejected and which layer answered instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    /// The rejection's reason code (a [`DefaultsError`] code).
+    pub code: &'static str,
+    /// The file, relative to the defaults directory.
+    pub file: String,
+    /// The setting (empty for a whole file or the whole set).
+    pub key: String,
+    /// The layer that answered.
+    pub layer: Layer,
+    /// The validator's detail.
+    pub detail: String,
+}
+
+/// What a load did besides producing values: the fallbacks, the settings to heal, and the files to keep as last-known-good.
+#[derive(Debug, Clone, Default)]
+pub struct Report {
+    /// Every fallback, in order.
+    pub notes: Vec<Note>,
+    /// Per edited file, the settings it lacks that the pristine copy has.
+    pub missing: std::collections::BTreeMap<String, Vec<String>>,
+    /// The edited files that validated in full, with their text.
+    pub clean: Vec<(String, String)>,
+    /// The stamp the last-known-good copy is written under.
+    pub stamp: String,
+}
+
+/// The directories of the three layers for one plugin root.
+struct Dirs {
+    edited: PathBuf,
+    lkg: Option<PathBuf>,
+    pristine: Option<PathBuf>,
+    stamp: String,
+}
+
+impl Dirs {
+    fn new(root: &Path, lkg_base: Option<&Path>) -> Dirs {
+        let pristine = Some(root.join(bootstrap::PRISTINE_DIR)).filter(|d| d.is_dir());
+        let stamp = stamp(root);
+        let lkg = lkg_base.map(|b| b.join(stamp_dir(&stamp))).filter(|d| std::fs::read_to_string(d.join(bootstrap::LKG_STAMP)).is_ok_and(|s| s == stamp));
+        Dirs { edited: root.join(bootstrap::DEFAULTS_DIR), lkg, pristine, stamp }
+    }
+
+    fn dir(&self, l: Layer) -> Option<&Path> {
+        match l {
+            Layer::Edited => Some(&self.edited),
+            Layer::Lkg => self.lkg.as_deref(),
+            Layer::Pristine => self.pristine.as_deref(),
+        }
+    }
+
+    /// The layers after `base` that exist, in fallback order.
+    fn after(&self, base: Layer) -> Vec<(Layer, &Path)> {
+        [Layer::Lkg, Layer::Pristine].into_iter().filter(|l| *l > base).filter_map(|l| self.dir(l).map(|d| (l, d))).collect()
+    }
+}
+
+/// What makes a last-known-good copy usable: the same engine version, plugin root and plugin version (from the plugin's
+/// manifest; a damaged pristine copy must not invalidate the copy that stands in for it).
+fn stamp(root: &Path) -> String {
+    let manifest = std::fs::read_to_string(root.join(bootstrap::PLUGIN_MANIFEST)).ok().and_then(|t| serde_json::from_str::<Json>(&t).ok());
+    let version = manifest.as_ref().and_then(|m| m.get("version")).and_then(Json::as_str).unwrap_or("-").to_string();
+    format!("{}\t{}\t{version}", env!("CARGO_PKG_VERSION"), root.display())
+}
+
+/// The subdirectory of the last-known-good base that holds the copy for `stamp`.
+fn stamp_dir(stamp: &str) -> String {
+    let d = ring::digest::digest(&ring::digest::SHA256, stamp.as_bytes());
+    d.as_ref()[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The settings of one file, in file order, after the structural checks (a section is a table of settings, a setting a table).
+type Rows = Vec<(String, toml::Table)>;
+
+/// Read one file of a layer: its text and its settings.
+fn read_rows(dir: &Path, file: &str) -> Result<(String, Rows), DefaultsError> {
+    let text = read(&dir.join(file), file)?;
+    let table: toml::Table = text.parse().map_err(|e: toml::de::Error| DefaultsError::new("parse", file, "", e))?;
+    let mut rows = Vec::new();
+    for (section, body) in table {
+        let toml::Value::Table(body) = body else {
+            return Err(DefaultsError::new("entry", file, &section, "a section must be a table of settings"));
+        };
+        for (name, e) in body {
+            let key = format!("{section}.{name}");
+            let toml::Value::Table(e) = e else {
+                return Err(DefaultsError::new("entry", file, &key, "a setting must be a table with `value` and `doc`"));
+            };
+            rows.push((key, e));
+        }
+    }
+    Ok((text, rows))
+}
+
+/// Every check of one setting on its own: the fields, the value's type and range, and the type the shipped copy gives it.
+fn validate(file: &str, key: &str, e: &toml::Table, kinds: &HashMap<&str, Kind>, shipped: Option<&toml::Value>) -> Result<(), DefaultsError> {
+    let doc = e.get("doc").and_then(toml::Value::as_str).ok_or_else(|| DefaultsError::new("doc", file, key, "no `doc`"))?;
+    if !doc.trim().ends_with('.') {
+        return Err(DefaultsError::new("doc", file, key, "doc must be a sentence ending in a period"));
+    }
+    let v = e.get("value").ok_or_else(|| DefaultsError::new("value", file, key, "no `value`"))?;
+    if let Some(k) = e.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+        return Err(DefaultsError::new("field", file, key, format!("unknown field {k:?}")));
+    }
+    check_entry(file, key, e, kinds.get(key).copied())?;
+    if !supported(v) {
+        return Err(DefaultsError::new("unsupported", file, key, "use integers, booleans, strings, arrays and tables"));
+    }
+    if let Some(s) = shipped.and_then(|s| s.as_table()).and_then(|s| s.get("value"))
+        && s.type_str() != v.type_str()
+    {
+        return Err(DefaultsError::new("type", file, key, format!("the shipped value is {}, this one is {}", s.type_str(), v.type_str())));
+    }
+    let row_ok =
+        |r: &toml::Value| r.as_table().is_some_and(|t| t.get("id").is_some_and(toml::Value::is_str) && t.get("command").is_some_and(toml::Value::is_str));
+    if key.starts_with(table::key("", "").trim_end_matches('_')) && !v.as_array().is_some_and(|a| a.iter().all(row_ok)) {
+        return Err(DefaultsError::new("dispatch", file, key, "a dispatch row must be a list of entry tables, each with a string id and command"));
+    }
+    Ok(())
+}
+
+/// Whether [`to_v`] can convert `v` (checked without converting, which would leak).
+fn supported(v: &toml::Value) -> bool {
+    match v {
+        toml::Value::Integer(_) | toml::Value::Boolean(_) | toml::Value::String(_) => true,
+        toml::Value::Array(a) => a.iter().all(supported),
+        toml::Value::Table(t) => t.values().all(supported),
+        _ => false,
+    }
+}
+
+/// One chosen setting: its file, key and table.
+struct Pick {
+    file: String,
+    key: String,
+    e: toml::Table,
+}
+
+/// Parsed files of the fallback layers, read once per load.
+#[derive(Default)]
+struct Files(HashMap<(Layer, String), Option<Rows>>);
+
+impl Files {
+    fn rows(&mut self, layer: Layer, dir: &Path, file: &str) -> Option<&Rows> {
+        self.0.entry((layer, file.to_string())).or_insert_with(|| read_rows(dir, file).ok().map(|(_, r)| r)).as_ref()
+    }
+
+    fn setting(&mut self, layer: Layer, dir: &Path, file: &str, key: &str) -> Option<toml::Table> {
+        self.rows(layer, dir, file)?.iter().find(|(k, _)| k == key).map(|(_, e)| e.clone())
+    }
+}
+
+/// The settings of the layer `base`, with per-file and per-setting fallback to the layers after it.
+fn assemble(d: &Dirs, base: Layer, kinds: &HashMap<&str, Kind>, report: &mut Report) -> Result<Vec<Pick>, DefaultsError> {
+    let base_dir = d.dir(base).ok_or_else(|| DefaultsError::new("io", "", "", format!("no {} layer", base.code())))?;
+    let fallbacks = d.after(base);
+    let mut cache = Files::default();
+    // what the shipped copy says about each setting: its type is the expected one
+    let mut shipped: HashMap<String, toml::Value> = HashMap::new();
+    let pristine_files = d.pristine.as_deref().and_then(|p| file_list(p).ok().map(|f| (p, f)));
+    if let Some((p, files)) = &pristine_files {
+        for f in files {
+            if let Some(rows) = cache.rows(Layer::Pristine, p, f) {
+                shipped.extend(rows.iter().map(|(k, e)| (k.clone(), toml::Value::Table(e.clone()))));
             }
         }
+    }
+    let files = match file_list(base_dir) {
+        Ok(f) => f,
+        Err(e) => {
+            let (layer, f) = fallbacks.iter().find_map(|(l, dir)| file_list(dir).ok().map(|f| (*l, f))).ok_or_else(|| e.clone())?;
+            report.notes.push(Note { code: e.code, file: e.file.clone(), key: String::new(), layer, detail: e.detail.clone() });
+            f
+        }
+    };
+    let mut picks: Vec<Pick> = Vec::new();
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for file in &files {
+        let (rows, from, text) = match read_rows(base_dir, file) {
+            Ok((text, rows)) => (rows, base, Some(text)),
+            // a file the edited copy does not have at all: its settings are missing ones, taken from the pristine copy below
+            Err(e) if base == Layer::Edited && e.code == "io" && !base_dir.join(file).exists() && d.pristine.is_some() => (Vec::new(), base, None),
+            Err(e) => {
+                let found = fallbacks.iter().find_map(|(l, dir)| read_rows(dir, file).ok().map(|(_, r)| (*l, r)));
+                let (layer, rows) = found.ok_or_else(|| e.clone())?;
+                report.notes.push(Note { code: e.code, file: file.clone(), key: String::new(), layer, detail: e.detail.clone() });
+                (rows, layer, None)
+            }
+        };
+        let mut clean = text.is_some();
+        for (key, e) in rows {
+            if let Some(first) = seen.get(&key) {
+                return Err(DefaultsError::new("duplicate", file, &key, format!("also in {first}")));
+            }
+            let e = match validate(file, &key, &e, kinds, shipped.get(&key)) {
+                Ok(()) => e,
+                Err(err) => {
+                    clean = false;
+                    let later: Vec<(Layer, &Path)> = fallbacks.iter().copied().filter(|(l, _)| *l > from).collect();
+                    let alt = later.iter().find_map(|(l, dir)| {
+                        let alt = cache.setting(*l, dir, file, &key)?;
+                        validate(file, &key, &alt, kinds, shipped.get(&key)).ok().map(|()| (*l, alt))
+                    });
+                    let (layer, alt) = alt.ok_or_else(|| err.clone())?;
+                    report.notes.push(Note { code: err.code, file: file.clone(), key: key.clone(), layer, detail: err.detail.clone() });
+                    alt
+                }
+            };
+            seen.insert(key.clone(), file.clone());
+            picks.push(Pick { file: file.clone(), key, e });
+        }
+        if clean
+            && from == Layer::Edited
+            && let Some(t) = text
+        {
+            report.clean.push((file.clone(), t));
+        }
+    }
+    // the settings the base layer lacks and the pristine copy has
+    if base != Layer::Pristine
+        && let Some((p, pfiles)) = &pristine_files
+    {
+        for file in pfiles {
+            let Some(rows) = cache.rows(Layer::Pristine, p, file).cloned() else { continue };
+            for (key, e) in rows {
+                if seen.contains_key(&key) || validate(file, &key, &e, kinds, None).is_err() {
+                    continue;
+                }
+                report.notes.push(Note { code: "missing_key", file: file.clone(), key: key.clone(), layer: Layer::Pristine, detail: String::new() });
+                if base == Layer::Edited && files.contains(file) {
+                    report.missing.entry(file.clone()).or_default().push(key.clone());
+                }
+                seen.insert(key.clone(), file.clone());
+                picks.push(Pick { file: file.clone(), key, e });
+            }
+        }
+    }
+    Ok(picks)
+}
+
+/// Build the snapshot from the chosen settings and run the cross-file checks.
+fn finish(root: &Path, picks: Vec<Pick>, prev: Option<&Data>) -> Result<Data, DefaultsError> {
+    let mut entries: Vec<&'static Entry> = Vec::new();
+    let mut canon: HashMap<&'static str, String> = HashMap::new();
+    for Pick { file, key, e } in picks {
+        let text = format!("{e:?}");
+        let reused = prev.and_then(|p| p.find(&key).filter(|old| old.file == file && p.canon.get(old.key).is_some_and(|c| *c == text)));
+        let entry: &'static Entry = match reused {
+            Some(old) => old,
+            None => {
+                let v = e.get("value").ok_or_else(|| DefaultsError::new("value", &file, &key, "no `value`"))?;
+                let value = to_v(v).ok_or_else(|| DefaultsError::new("unsupported", &file, &key, "use integers, booleans, strings, arrays and tables"))?;
+                Box::leak(Box::new(Entry {
+                    key: leak_str(&key),
+                    file: leak_str(&file),
+                    value,
+                    doc: leak_str(e.get("doc").and_then(toml::Value::as_str).unwrap_or("")),
+                    env: e.get("env").and_then(toml::Value::as_str).map(leak_str),
+                    min: e.get("min").and_then(toml::Value::as_integer),
+                    max: e.get("max").and_then(toml::Value::as_integer),
+                    unit: e.get("unit").and_then(toml::Value::as_str).map(leak_str),
+                }))
+            }
+        };
+        canon.insert(entry.key, text);
+        entries.push(entry);
     }
     let mut index: Vec<(&'static str, &'static Entry)> = entries.iter().map(|e| (e.key, *e)).collect();
     index.sort_by(|a, b| a.0.cmp(b.0));
@@ -244,7 +497,101 @@ pub fn load(root: &Path, prev: Option<&Data>) -> Result<Data, DefaultsError> {
     }
     crate::hookcfg::check_shipped(&entries).map_err(|e| DefaultsError::new("hooks", "", "", e))?;
     check_rows(root, &entries).map_err(|e| DefaultsError::new("dispatch", "", "", e))?;
-    Ok(Data { root: root.to_path_buf(), entries: Box::leak(entries.into_boxed_slice()), index, canon })
+    Ok(Data { root: root.to_path_buf(), entries: Box::leak(entries.into_boxed_slice()), index, canon, report: Report::default() })
+}
+
+/// Read and validate the defaults of the plugin at `root`, falling back per file and per setting to the last-known-good
+/// and pristine copies (see above). `prev` lets unchanged entries be reused instead of leaked again.
+pub fn load(root: &Path, prev: Option<&Data>) -> Result<Data, DefaultsError> {
+    load_from(root, bootstrap::lkg_dir().as_deref(), prev)
+}
+
+/// [`load`] with the last-known-good base directory given (`None`: no last-known-good layer).
+pub fn load_from(root: &Path, lkg_base: Option<&Path>, prev: Option<&Data>) -> Result<Data, DefaultsError> {
+    let d = Dirs::new(root, lkg_base);
+    let kinds: HashMap<&str, Kind> = super::generated::REQUIRED.iter().copied().collect();
+    let mut first: Option<DefaultsError> = None;
+    for base in [Layer::Edited, Layer::Lkg, Layer::Pristine] {
+        if d.dir(base).is_none() {
+            continue;
+        }
+        let mut report = Report { stamp: d.stamp.clone(), ..Report::default() };
+        match assemble(&d, base, &kinds, &mut report).and_then(|picks| finish(root, picks, prev)) {
+            Ok(mut data) => {
+                if let Some(e) = &first {
+                    // the whole edited set was rejected: name why first
+                    report.notes.insert(0, Note { code: e.code, file: e.file.clone(), key: e.key.clone(), layer: base, detail: e.detail.clone() });
+                    report.missing.clear();
+                    report.clean.clear();
+                }
+                data.report = report;
+                return Ok(data);
+            }
+            Err(e) => {
+                first.get_or_insert(e);
+            }
+        }
+    }
+    Err(first.unwrap_or_else(|| DefaultsError::new("io", "", "", "no defaults layer")))
+}
+
+/// Keep the last-known-good copy for `report` under `base`: every edited file that validated in full, then the stamp the
+/// copy is valid for. Copies for older stamps beyond `defaults_load.lkg_keep` are removed (derived copies, rebuilt by the
+/// next load). Called after the snapshot is installed (it reads settings).
+pub fn write_lkg(report: &Report, base: &Path) -> std::io::Result<()> {
+    if report.clean.is_empty() {
+        return Ok(());
+    }
+    let dir = base.join(stamp_dir(&report.stamp));
+    std::fs::create_dir_all(&dir)?;
+    for (file, text) in &report.clean {
+        let p = dir.join(file);
+        if std::fs::read_to_string(&p).is_ok_and(|t| t == *text) {
+            continue;
+        }
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::atomic::write(&p, text)?;
+    }
+    let stamp = dir.join(bootstrap::LKG_STAMP);
+    if !std::fs::read_to_string(&stamp).is_ok_and(|s| s == report.stamp) {
+        crate::atomic::write(&stamp, &report.stamp)?;
+    }
+    let mut olds: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(base)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && *p != dir)
+        .map(|p| (std::fs::metadata(p.join(bootstrap::LKG_STAMP)).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH), p))
+        .collect();
+    olds.sort();
+    let keep = super::num("defaults_load.lkg_keep").saturating_sub(1) as usize;
+    for (_, p) in olds.iter().rev().skip(keep) {
+        crate::discard::harmless(std::fs::remove_dir_all(p)); // keep: a stale copy left behind is ignored (its stamp does not match)
+    }
+    Ok(())
+}
+
+/// What follows a successful load once its snapshot is active: each fallback goes to the event log (which marks the
+/// engine degraded, `health.degraded_kinds`), and the last-known-good copy is kept.
+pub fn after(report: &Report) {
+    for n in &report.notes {
+        let detail = super::render(
+            "defaults_load.msg_fallback",
+            &[
+                ("file", &n.file),
+                ("key", &n.key),
+                ("layer", &n.layer.code()),
+                ("why", &if n.detail.is_empty() { n.code.to_string() } else { n.detail.clone() }),
+            ],
+        );
+        crate::health::log_event("defaults_fallback", n.code, &detail);
+    }
+    if let Some(base) = bootstrap::lkg_dir()
+        && let Err(e) = write_lkg(report, &base)
+    {
+        crate::health::log_event("defaults_lkg_failed", "io", &super::render("defaults_load.msg_lkg_failed", &[("err", &e)]));
+    }
 }
 
 // ---- the dispatch table against the wrapper's fallback lists ----------------------------------------------------------
@@ -452,7 +799,8 @@ pub fn report_unavailable(e: &DefaultsError) {
 mod tests {
     use super::*;
 
-    /// A copy of the repository plugin's `engine/` and `hooks/` fallback lists under a fresh temporary root.
+    /// A copy of the repository plugin's `engine/defaults/` and `hooks/` fallback lists under a fresh temporary root,
+    /// without the pristine copy (so a rejection has no layer to fall back on); see [`plugin_with_pristine`].
     pub(crate) fn plugin_copy(tag: &str) -> PathBuf {
         fn cp(from: &Path, to: &Path) {
             std::fs::create_dir_all(to).unwrap();
@@ -468,7 +816,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ah-defaults-load-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&root));
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
-        cp(&src.join("engine"), &root.join("engine"));
+        cp(&src.join(bootstrap::DEFAULTS_DIR), &root.join(bootstrap::DEFAULTS_DIR));
         std::fs::create_dir_all(root.join("hooks")).unwrap();
         for l in ["ah-fallback.list", "ah-fallback.codex.list"] {
             std::fs::copy(src.join("hooks").join(l), root.join("hooks").join(l)).unwrap();
@@ -489,9 +837,9 @@ mod tests {
     #[test]
     fn a_table_row_the_fallback_list_runs_hooks_for_cannot_go_missing() {
         let root = plugin_copy("norow");
-        assert!(load(&root, None).is_ok(), "the shipped plugin loads");
+        assert!(load_from(&root, None, None).is_ok(), "the shipped plugin loads");
         replace_table(&root, "dispatch.toml", "dispatch.hooks_claude_Stop", "");
-        let e = load(&root, None).err().expect("a lost row the list runs hooks for is rejected");
+        let e = load_from(&root, None, None).err().expect("a lost row the list runs hooks for is rejected");
         assert_eq!(e.code, "dispatch", "{e}");
         assert!(e.detail.contains("dispatch.hooks_claude_Stop"), "{e}");
         crate::discard::harmless(std::fs::remove_dir_all(&root));
@@ -501,7 +849,7 @@ mod tests {
     fn a_wrong_type_table_row_is_rejected() {
         let root = plugin_copy("badrow");
         replace_table(&root, "dispatch.toml", "dispatch.hooks_claude_Stop", "[dispatch.hooks_claude_Stop]\ndoc = \"Broken.\"\nvalue = \"oops\"\n");
-        let e = load(&root, None).err().expect("a row that is not a list of entries is rejected");
+        let e = load_from(&root, None, None).err().expect("a row that is not a list of entries is rejected");
         assert_eq!(e.code, "dispatch", "{e}");
         crate::discard::harmless(std::fs::remove_dir_all(&root));
     }
@@ -513,7 +861,7 @@ mod tests {
         for (file, name) in [("engine.toml", "env.done_file"), ("sibling_sweep.toml", "sibling_sweep.text_max_bytes")] {
             let root = plugin_copy("helperkey");
             replace_table(&root, file, name, "");
-            let e = load(&root, None).err().unwrap_or_else(|| panic!("a plugin without {name} must be rejected"));
+            let e = load_from(&root, None, None).err().unwrap_or_else(|| panic!("a plugin without {name} must be rejected"));
             assert_eq!((e.code, e.key.as_str()), ("missing_key", name), "{e}");
             crate::discard::harmless(std::fs::remove_dir_all(&root));
         }
@@ -533,9 +881,107 @@ mod tests {
         for (file, key, with, code) in cases {
             let root = plugin_copy("badvalue");
             replace_table(&root, file, key, with);
-            let e = load(&root, None).err().unwrap_or_else(|| panic!("{key} = {with:?} must be rejected"));
+            let e = load_from(&root, None, None).err().unwrap_or_else(|| panic!("{key} = {with:?} must be rejected"));
             assert_eq!((e.code, e.key.as_str()), (code, key), "{e}");
             crate::discard::harmless(std::fs::remove_dir_all(&root));
         }
+    }
+
+    // ---- failover: last-known-good, then pristine, then 75 ---------------------------------------------------------------
+
+    /// [`plugin_copy`] with the pristine copy too.
+    fn plugin_with_pristine(tag: &str) -> PathBuf {
+        let root = plugin_copy(tag);
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall").join(bootstrap::PRISTINE_DIR);
+        let to = root.join(bootstrap::PRISTINE_DIR);
+        std::fs::create_dir_all(&to).unwrap();
+        for e in std::fs::read_dir(src).unwrap().flatten() {
+            std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        }
+        root
+    }
+
+    fn int(d: &Data, key: &str) -> i64 {
+        d.find(key).and_then(|e| e.value.as_integer()).unwrap_or_else(|| panic!("{key} is not an integer"))
+    }
+
+    fn set_int(root: &Path, file: &str, key: &str, n: i64) {
+        let p = root.join(bootstrap::DEFAULTS_DIR).join(file);
+        let text = std::fs::read_to_string(&p).unwrap();
+        let head = format!("[{key}]\n");
+        let at = text.find(&head).unwrap() + head.len();
+        let v = at + text[at..].find("\nvalue = ").unwrap() + 1;
+        let end = v + text[v..].find('\n').unwrap();
+        std::fs::write(&p, format!("{}value = {n}{}", &text[..v], &text[end..])).unwrap();
+    }
+
+    fn corrupt(dir: &Path, file: &str) {
+        let p = dir.join(file);
+        let text = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, text.replacen("\n[", "\n[[[", 1)).unwrap();
+    }
+
+    #[test]
+    fn a_broken_file_falls_back_to_last_known_good_alone_and_other_edits_stay() {
+        let root = plugin_with_pristine("lkg");
+        let lkg = root.join("state-lkg");
+        // two valid edits in two files; the load keeps both files as last-known-good
+        set_int(&root, "engine.toml", "daemon.queue", 33);
+        set_int(&root, "git.toml", "git.max_chain", 7);
+        let d = load_from(&root, Some(&lkg), None).unwrap();
+        assert!(d.report.notes.is_empty(), "{:?}", d.report.notes);
+        write_lkg(&d.report, &lkg).unwrap();
+        // a later edit of git.toml is valid; engine.toml is broken
+        set_int(&root, "git.toml", "git.max_chain", 9);
+        corrupt(&root.join(bootstrap::DEFAULTS_DIR), "engine.toml");
+        let d = load_from(&root, Some(&lkg), None).unwrap();
+        assert_eq!(int(&d, "daemon.queue"), 33, "engine.toml comes from the last-known-good copy (with its edit)");
+        assert_eq!(int(&d, "git.max_chain"), 9, "git.toml keeps its newer edit");
+        let n = &d.report.notes;
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!((n[0].code, n[0].file.as_str(), n[0].layer), ("parse", "engine.toml", Layer::Lkg));
+        assert!(!d.report.clean.iter().any(|(f, _)| f == "engine.toml"), "a broken file never overwrites its last-known-good copy");
+        // one wrong-type setting falls back alone; the rest of its file keeps the edits
+        set_int(&root, "git.toml", "git.max_chain", 9);
+        let p = root.join(bootstrap::DEFAULTS_DIR).join("engine.toml");
+        std::fs::write(&p, std::fs::read_to_string(root.join(bootstrap::PRISTINE_DIR).join("engine.toml")).unwrap()).unwrap();
+        set_int(&root, "engine.toml", "daemon.workers", 5);
+        replace_table(&root, "engine.toml", "daemon.queue", "[daemon.queue]\ndoc = \"Queue.\"\nvalue = \"x\"\nenv = \"AH_ENGINE_QUEUE\"\n");
+        let d = load_from(&root, Some(&lkg), None).unwrap();
+        assert_eq!((int(&d, "daemon.queue"), int(&d, "daemon.workers")), (33, 5), "only the bad setting falls back");
+        assert_eq!((d.report.notes[0].code, d.report.notes[0].key.as_str(), d.report.notes[0].layer), ("type", "daemon.queue", Layer::Lkg));
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn without_last_known_good_the_pristine_copy_answers_and_with_all_three_broken_the_load_fails() {
+        let root = plugin_with_pristine("pristine");
+        set_int(&root, "git.toml", "git.max_chain", 9);
+        corrupt(&root.join(bootstrap::DEFAULTS_DIR), "engine.toml");
+        let shipped = load_from(&plugin_copy("shipped"), None, None).unwrap();
+        let d = load_from(&root, None, None).unwrap();
+        assert_eq!(int(&d, "daemon.queue"), int(&shipped, "daemon.queue"), "the pristine copy answers");
+        assert_eq!(int(&d, "git.max_chain"), 9, "the other files keep their edits");
+        assert_eq!((d.report.notes[0].file.as_str(), d.report.notes[0].layer), ("engine.toml", Layer::Pristine));
+        // a broken last-known-good copy as well
+        corrupt(&root.join(bootstrap::PRISTINE_DIR), "engine.toml");
+        let lkg = root.join("state-lkg");
+        let rep = Report { stamp: Dirs::new(&root, None).stamp, clean: vec![("engine.toml".into(), "not [ toml".into())], ..Report::default() };
+        write_lkg(&rep, &lkg).unwrap();
+        assert!(Dirs::new(&root, Some(&lkg)).lkg.is_some(), "the broken last-known-good copy is in play");
+        let e = load_from(&root, Some(&lkg), None).err().expect("all three layers broken: no defaults (exit 75)");
+        assert_eq!((e.code, e.file.as_str()), ("parse", "engine.toml"), "the edited file's own error is reported");
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn a_setting_whose_type_differs_from_the_shipped_one_is_rejected() {
+        let root = plugin_with_pristine("shippedtype");
+        // `daemon.workers` is read through the config layer (any type at the call site): the shipped type decides
+        replace_table(&root, "engine.toml", "daemon.workers", "[daemon.workers]\ndoc = \"Workers.\"\nvalue = true\n");
+        let d = load_from(&root, None, None).unwrap();
+        assert_eq!((d.report.notes[0].code, d.report.notes[0].layer), ("type", Layer::Pristine));
+        assert_eq!(int(&d, "daemon.workers"), 4);
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
     }
 }

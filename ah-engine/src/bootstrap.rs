@@ -22,6 +22,15 @@ use std::path::{Path, PathBuf};
 
 /// The defaults directory, relative to the plugin root.
 pub const DEFAULTS_DIR: &str = "engine/defaults";
+/// The pristine copy of the shipped defaults, relative to the plugin root: a read-only sibling of [`DEFAULTS_DIR`],
+/// byte-identical to it as shipped (a test keeps them equal), the last layer the loader falls back to before Node.
+pub const PRISTINE_DIR: &str = "engine/defaults.pristine";
+/// The plugin's manifest, relative to the plugin root: its `version` keys the last-known-good copy of the defaults.
+pub const PLUGIN_MANIFEST: &str = ".claude-plugin/plugin.json";
+/// The last-known-good copies of the defaults inside the state directory (one subdirectory per stamp).
+pub const LKG_DIR: &str = "defaults.lkg";
+/// The stamp file inside a last-known-good subdirectory: what the copy is valid for.
+pub const LKG_STAMP: &str = "STAMP";
 /// The index file inside the defaults directory.
 pub const INDEX_FILE: &str = "index.toml";
 /// Environment variables naming the plugin root, in order of precedence.
@@ -47,6 +56,11 @@ pub fn state_dir() -> Option<PathBuf> {
     }
     let home = std::env::var_os(HOME_ENV).filter(|h| !h.is_empty())?;
     Some(STATE_REL.iter().fold(PathBuf::from(home), |p, s| p.join(s)))
+}
+
+/// The base directory of the last-known-good copies.
+pub fn lkg_dir() -> Option<PathBuf> {
+    state_dir().map(|d| d.join(LKG_DIR))
 }
 
 /// The snapshot cache path.

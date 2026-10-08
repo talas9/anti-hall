@@ -1,0 +1,46 @@
+# The shipped defaults index (D17, amended): which files hold the engine's settings, tables, messages and the dispatch
+# table, in the order their entries are listed. The engine reads this index and the files it names AT RUN TIME from the
+# plugin (nothing is compiled into the binary); tuning the engine is editing these files, never rebuilding it.
+#
+# `files`: the defaults files in this directory, in listing order. `extra_dir`: a sub-directory whose `*.toml` files
+# (sorted by name) are read after them (one file per batch of ported hooks, D87).
+
+files = [
+    "engine.toml",
+    "messages.toml",
+    "git.toml",
+    "command.toml",
+    "commands.toml",
+    "telemetry.toml",
+    "storage.toml",
+    "config.toml",
+    "transcript.toml",
+    "gitcache.toml",
+    "schedules.toml",
+    "small_guards.toml",
+    "spawn_context.toml",
+    "jev.toml",
+    "dispatch.toml",
+    "hooks.toml",
+    "verify_first.toml",
+    "prompt_emit.toml",
+    "ctxbudget.toml",
+    "inject_gate.toml",
+    "session.toml",
+    "response_guards.toml",
+    "agent_controls.toml",
+    "spawn_guards.toml",
+    "session_gates.toml",
+    "codex_handover.toml",
+    "task_guards.toml",
+    "devswarm_role.toml",
+    "devswarm_gates.toml",
+    "migrate.toml",
+    "migrate_settings.toml",
+    "doctor.toml",
+    "setup.toml",
+    "mesh.toml",
+    "sibling_sweep.toml",
+    "limits.toml",
+]
+extra_dir = "hooks.d"

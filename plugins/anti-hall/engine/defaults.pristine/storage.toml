@@ -1,0 +1,236 @@
+# ah-engine shipped storage defaults (D19-D27, D73): file names, SQLite durability settings, the writer queue, the
+# in-memory tier, the spool, retention and backups. Format: see the header of engine.toml.
+#
+# Durability settings are keys, not code (D73). The measured choice for hot.db is WAL with synchronous=FULL (every
+# commit is on disk before the write is acknowledged, so nothing acknowledged is lost if the process dies);
+# archive.db holds append-mostly history and commits in batches.
+
+# ---- files ----------------------------------------------------------------------------------------------
+
+[storage.hot_file]
+doc = "The database for frequent small writes (impact events, project state, metric snapshots), inside the state directory (D21)."
+value = "hot.db"
+
+[storage.archive_file]
+doc = "The database for append-mostly history, inside the state directory; opened on first use (D21)."
+value = "archive.db"
+
+[storage.wal_suffix]
+doc = "Suffix SQLite gives a database's write-ahead log file; used to report WAL sizes."
+value = "-wal"
+
+# ---- SQLite settings ------------------------------------------------------------------------------------
+
+[storage.journal_mode]
+doc = "SQLite journal mode for both databases; WAL lets readers run while the writer commits (D73)."
+value = "WAL"
+
+[storage.hot_synchronous]
+doc = "SQLite synchronous level for hot.db; FULL syncs every commit, so an acknowledged write survives a process crash (D23, D73)."
+value = "FULL"
+
+[storage.archive_synchronous]
+doc = "SQLite synchronous level for archive.db, which takes batched, re-runnable moves and rollups."
+value = "NORMAL"
+
+[storage.fullfsync]
+doc = "1 makes SQLite use F_FULLFSYNC on macOS, which also survives power loss at a large cost in commit rate (D73: 479 against 43k commits per second measured); 0 keeps the plain fsync. Off until metrics decide."
+value = 0
+env = "AH_ENGINE_FULLFSYNC"
+min = 0
+max = 1
+
+[storage.cache_kb]
+doc = "SQLite page cache per connection; capped so the daemon's memory stays flat (D25)."
+value = 512
+unit = "KB"
+min = 64
+
+[storage.mmap_kb]
+doc = "SQLite memory-mapped I/O per connection; 0 turns it off so file pages are not counted in the daemon's resident set (D25)."
+value = 0
+unit = "KB"
+
+[storage.busy_timeout_ms]
+doc = "How long a connection waits for another connection's lock before the statement fails."
+value = 1000
+unit = "ms"
+
+[storage.wal_autocheckpoint]
+doc = "WAL pages after which SQLite checkpoints on its own (between explicit checkpoints by `ah-engine maintain`)."
+value = 1000
+unit = "pages"
+
+# ---- writer ---------------------------------------------------------------------------------------------
+
+[storage.write_queue]
+doc = "Writes that may wait for the writer thread; beyond this a write is refused as busy (the client retries, then spools)."
+value = 1024
+env = "AH_ENGINE_WRITE_QUEUE"
+min = 1
+max = 65536
+
+[storage.batch_max]
+doc = "Most writes committed in one transaction."
+value = 256
+min = 1
+
+[storage.group_commit_ms]
+doc = "Group-commit window: after taking a write, the writer waits up to this long for more before committing them together (D23); 0 commits at once with whatever is already queued, which still groups writes that arrive during a commit."
+value = 0
+env = "AH_ENGINE_GROUP_COMMIT_MS"
+unit = "ms"
+max = 1000
+
+[storage.ack_timeout_ms]
+doc = "How long a request waits for its write to commit before it is answered with an error (the client then retries or spools; the write id makes a late commit harmless); kept below client.ctl_timeout_ms so the client hears the error."
+value = 1000
+env = "AH_ENGINE_ACK_TIMEOUT_MS"
+unit = "ms"
+min = 1
+
+# ---- in-memory layer (D20, D22, D25) ---------------------------------------------------------------------
+
+[tier.budget_kb]
+doc = "Memory budget of the active key-value items; past it the least recently used item is dropped from memory (SQLite keeps it)."
+value = 2048
+env = "AH_ENGINE_TIER_BUDGET_KB"
+unit = "KB"
+
+[tier.item_overhead]
+doc = "Bytes charged per item on top of its text, for the map and ordering entries that hold it."
+value = 96
+unit = "bytes"
+
+[tier.bus_queue]
+doc = "Notifications each pub/sub subscriber can hold; a full queue loses notifications (counted), never data."
+value = 256
+
+[tier.bus_channels]
+doc = "Most pub/sub channels with subscribers at once."
+value = 1024
+
+[tier.project_channel_prefix]
+doc = "Channel name prefix for a project's notifications; the hashed project key follows it."
+value = "project:"
+
+# ---- spool (D24) ----------------------------------------------------------------------------------------
+
+[spool.verbs]
+doc = "Project verbs a client may spool when the engine is down or busy: writes whose answer it does not need."
+value = ["put", "set", "setex"]
+
+[spool.retries]
+doc = "Retries of a project write before it is spooled (the first attempt is not counted)."
+value = 4
+env = "AH_ENGINE_SPOOL_RETRIES"
+max = 20
+
+[spool.backoff_ms]
+doc = "First retry delay; each retry doubles it, up to backoff_max_ms, with random jitter of up to half the delay."
+value = 20
+env = "AH_ENGINE_SPOOL_BACKOFF_MS"
+unit = "ms"
+min = 1
+
+[spool.backoff_max_ms]
+doc = "Longest retry delay."
+value = 400
+unit = "ms"
+
+[spool.max_bytes]
+doc = "Largest spool; a write that would grow it past this is refused instead of spooled, so the client learns it was not kept."
+value = 16777216
+env = "AH_ENGINE_SPOOL_MAX_BYTES"
+unit = "bytes"
+
+[spool.drain_ms]
+doc = "Interval of the scheduled spool drain job (it also drains on start and before each project write)."
+value = 1000
+env = "AH_ENGINE_SPOOL_DRAIN_MS"
+unit = "ms"
+min = 10
+
+# ---- size control and retention (D26, D59) --------------------------------------------------------------
+# Applied by `ah-engine maintain`. Moving to archive.db never loses anything; only derived bookkeeping is pruned, and
+# archived user data is deleted only when archive_delete_after_s is set.
+
+[retention.mailbox_consumed_s]
+doc = "A consumed mailbox message moves from hot.db to archive.db this long after it was consumed."
+value = 604800
+unit = "s"
+
+[retention.kv_expired_s]
+doc = "A key value moves from hot.db to archive.db this long after its TTL ended."
+value = 86400
+unit = "s"
+
+[retention.impact_hot_s]
+doc = "An impact event moves from hot.db to archive.db once it is this old (its totals stay in hot.db)."
+value = 2592000
+unit = "s"
+
+[retention.impact_hot_rows]
+doc = "Most impact events kept in hot.db; the oldest beyond this move to archive.db."
+value = 100000
+unit = "rows"
+min = 1
+
+[retention.applied_s]
+doc = "Applied write ids older than this are forgotten (derived bookkeeping, D59); a spooled write older than this would be applied again, so it is far longer than any spool wait."
+value = 2592000
+unit = "s"
+
+[retention.archive_delete_after_s]
+doc = "Archived user data (messages, key values, impact events) older than this is deleted; 0 means never, the default (D26: hard delete only with an explicit value)."
+value = 0
+unit = "s"
+
+[retention.schedule_runs_s]
+doc = "Scheduler run history older than this is forgotten by `maintain` (a derived log, D59)."
+value = 2592000
+unit = "s"
+
+[retention.batch_rows]
+doc = "Rows moved per archive transaction (archive.db commits in batches)."
+value = 1000
+min = 1
+
+[retention.max_batches]
+doc = "Most batches one maintenance run moves per table, so a run stays bounded."
+value = 10000
+min = 1
+
+# ---- backup and restore (D27) ---------------------------------------------------------------------------
+
+[backup.pages_per_step]
+doc = "Pages the online backup copies per step; between steps the daemon's writer can commit."
+value = 256
+min = 1
+max = 1000000
+
+[backup.pause_ms]
+doc = "Pause between backup steps (and after a step finds the source busy)."
+value = 0
+unit = "ms"
+
+[backup.journal_mode]
+doc = "Journal mode a snapshot file is left in: DELETE makes it one self-contained file with no WAL beside it."
+value = "DELETE"
+
+[backup.manifest_file]
+doc = "File in each snapshot directory that lists its databases, their sizes, schema versions and integrity checks."
+value = "manifest.json"
+
+[backup.scrub_columns]
+doc = "Text columns (`table.column`) a backup scrubs of secrets and the home path, in both databases where the table exists; project keys are kept so a restore can find each project's data."
+value = ["mailbox.body", "kv.value", "applied.result"]
+
+[backup.pre_restore_prefix]
+doc = "Name prefix of the snapshot a restore takes of the current state before it swaps (the time in ms follows)."
+value = "pre-restore-"
+
+[backup.stop_wait_ms]
+doc = "How long a restore waits for the daemon to stop and release its lock before it gives up without changing anything."
+value = 5000
+unit = "ms"

@@ -1368,6 +1368,8 @@ fn a_missing_table_row_defers_to_node_instead_of_allowing() {
     let dispatch = plugin.join("engine/defaults/dispatch.toml");
     let text = std::fs::read_to_string(&dispatch).unwrap();
     std::fs::write(&dispatch, drop_table(&text, "dispatch.hooks_claude_Stop")).unwrap();
+    // the pristine copy too: a row only the edited copy lost is otherwise taken from it
+    std::fs::write(plugin.join("engine/defaults.pristine/dispatch.toml"), drop_table(&text, "dispatch.hooks_claude_Stop")).unwrap();
     let done = e.dir.join("done");
     let root = plugin.to_string_lossy().to_string();
     let env = [("AH_ENGINE_PLUGIN_ROOT", root.as_str()), ("AH_ENGINE_DONE_FILE", done.to_str().unwrap()), ("AH_ENGINE_NOSPAWN", "1")];

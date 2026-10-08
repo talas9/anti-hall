@@ -192,6 +192,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.workers` | `4` | `AH_ENGINE_WORKERS` |  | Worker threads evaluating requests. |
 | `daemon.write_ms` | `1000` | `AH_ENGINE_WRITE_MS` | ms | Time allowed to write a reply. |
 
+### engine.toml / defaults_load
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `defaults_load.lkg_keep` | `3` |  |  | How many last-known-good copies of the defaults (one per engine version, plugin root and shipped content) the state directory keeps; older ones are removed. |
+| `defaults_load.msg_fallback` | `defaults {file} {key} rejected ({why}): using the {layer} copy` |  |  | Event-log detail when a defaults file or setting was rejected and another layer answered. Placeholders: {file}, {key} (empty for a whole file), {layer} (lkg or pristine), {why}. |
+| `defaults_load.msg_lkg_failed` | `could not write the last-known-good defaults: {err}` |  |  | Event-log detail when the last-known-good copy of the defaults could not be written. Placeholder: {err}. |
+
 ### engine.toml / discard
 
 | Key | Default | Env override | Unit | What it is |
@@ -243,6 +251,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.advisory_ttl_ms` | `3600000` |  | ms | A recorded failure older than this no longer produces an advisory. |
 | `health.context_events` | `PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SubagentStart` |  |  | Hook events whose output carries `additionalContext`; other events use `systemMessage` when an advisory is merged. |
 | `health.crashy_kinds` | `crash, panic, start_fail, watchdog, rss` |  |  | Event kinds that count toward the crash-loop threshold. |
+| `health.degraded_kinds` | `defaults_fallback, defaults_heal_skipped` |  |  | Event-log kinds that mark the engine degraded while one is in the degraded window (a defaults file or setting that fell back to the last-known-good or pristine copy, or missing settings that could not be healed). |
 | `health.degraded_window_s` | `3600` |  | s | The window over which `status` counts self-restarts and Node fallbacks, and over which a restart marks the engine degraded (shown by `status`, the shadow report and, once per session, in the session context). |
 | `health.diag_lines` | `8` |  |  | Event-log lines included in the diagnostic block of a permanent-failure advisory. |
 | `health.error_codes` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | Error-code classification: environment-class codes get a plain self-fix hint (a message key); every other code is a permanent failure that asks for an issue. |
@@ -3385,6 +3394,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 
 | Key | When it is shown |
 |---|---|
+| `msg.advisory_defaults` | Appended to the degraded notice when defaults fell back to another layer. Placeholders: {count} fallbacks in the window, {last} the last one's detail. |
 | `msg.advisory_degraded` | Once-per-session notice that the engine is running below full strength. Placeholders: {restarts} self-restarts and {fallbacks} fallbacks to Node in the last {mins} minutes, {log} the event-log path. |
 | `msg.advisory_env` | Once-per-session advisory for an environment-class failure. Placeholder: {hint}. |
 | `msg.advisory_permanent` | Once-per-session advisory for a permanent failure; nothing is ever filed automatically. Placeholders: {reason}, {diagnostics}. |
