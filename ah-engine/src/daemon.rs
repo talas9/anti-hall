@@ -22,7 +22,7 @@ use crate::store::{KeyCache, Store};
 use crate::telemetry::{self, Telemetry};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -978,6 +978,44 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Option<std::fs::File>, 
     }
 }
 
+/// What a running daemon stands on: its state directory, the lock file it holds (by inode) and its executable.
+struct Footing {
+    dir: std::path::PathBuf,
+    lock: std::path::PathBuf,
+    lock_ino: u64,
+    exe: Option<std::path::PathBuf>,
+}
+
+impl Footing {
+    /// Why the daemon has lost its footing, if it has: the state directory or the executable is gone, or the lock file is
+    /// gone or replaced (a new daemon could then start beside this one).
+    fn lost(&self) -> Option<&'static str> {
+        if !self.dir.is_dir() {
+            return Some("state_dir_gone");
+        }
+        if std::fs::metadata(&self.lock).map(|m| m.ino()).ok() != Some(self.lock_ino) {
+            return Some("lock_gone");
+        }
+        if self.exe.as_ref().is_some_and(|e| !e.exists()) {
+            return Some("binary_gone");
+        }
+        None
+    }
+}
+
+/// Every `daemon.orphan_check_ms`, check the daemon's [`Footing`]; once lost, log why and drain (a clean exit). The idle exit
+/// (`daemon.idle_exit_s`) covers a daemon nobody talks to; this covers one whose files were removed under it.
+fn footing_watch(sh: Arc<Shared>, footing: Footing) {
+    while !sh.draining.load(SeqCst) {
+        std::thread::sleep(defaults::millis("daemon.orphan_check_ms"));
+        if let Some(why) = footing.lost() {
+            health::log_event("exit", "orphaned", why);
+            begin_drain(&sh, why, false);
+            return;
+        }
+    }
+}
+
 fn mtime(p: &Path) -> Option<(SystemTime, u64)> {
     std::fs::metadata(p).ok().and_then(|m| Some((m.modified().ok()?, m.len())))
 }
@@ -1075,6 +1113,14 @@ pub fn serve() {
     {
         let s = sh.clone();
         std::thread::spawn(move || watchdog(s));
+    }
+    {
+        // the daemon's footing, as it is now: a test (or an uninstall) that removes the state dir or the binary under a
+        // running daemon must not leave it running for hours with nothing that can reach or stop it
+        let footing =
+            Footing { dir: paths::dir(), lock: lock_path.clone(), lock_ino: lock.metadata().map(|m| m.ino()).unwrap_or(0), exe: std::env::current_exe().ok() };
+        let s = sh.clone();
+        std::thread::spawn(move || footing_watch(s, footing));
     }
     start_scheduler(&sh);
     if sh.db.is_some() {
@@ -1192,6 +1238,8 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
     let mut last_check = Instant::now();
     // accept failures since the last accepted connection: (OS error code, count)
     let mut failing: Option<(String, u64)> = None;
+    // a connection was accepted after the last accept error (the recovery line is then due)
+    let mut accepted_since_error = false;
     loop {
         sh.loop_beat.store(sh.ms(), SeqCst);
         let st = sh.stall_ms.swap(0, SeqCst);
@@ -1217,13 +1265,11 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                     // would spin at full CPU until a descriptor frees up. Count it, say why (rate-limited), and back off.
                     let n = failing.as_ref().map_or(0, |f| f.1);
                     failing = Some((accept_error(sh, &e), n + 1));
+                    accepted_since_error = false;
                     break;
                 }
             };
-            if let Some((code, n)) = failing.take() {
-                // the log line written while the descriptor table was full may itself have failed to open the log
-                health::log_event("accept", "recovered", &defaults::render("msg.log_accept_recovered", &[("n", &n), ("code", &code)]));
-            }
+            accepted_since_error = true;
             got_any = true;
             if !limits::peer_allowed(&s, me) {
                 sh.stats.rejected.fetch_add(1, SeqCst);
@@ -1247,6 +1293,14 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 drop(q);
                 sh.cv.notify_one();
             }
+        }
+        // accepts work again: say so once the line can be written (the descriptor table may still be full right after one
+        // accept, and the failure's own line may never have reached the log); kept and retried each round until written
+        if accepted_since_error
+            && let Some((code, n)) = failing.take()
+            && !health::try_log_event("accept", "recovered", &defaults::render("msg.log_accept_recovered", &[("n", &n), ("code", &code)]))
+        {
+            failing = Some((code, n));
         }
         if draining && !got_any && lk(&sh.queue).is_empty() && sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) {
             return; // queue drained, nothing in flight

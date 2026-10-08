@@ -19,6 +19,21 @@ pub fn marker_pid(state_dir: &Path) -> Option<i32> {
     std::fs::read_to_string(state_dir.join("daemon.run")).ok().and_then(|t| t.trim().parse().ok())
 }
 
+/// True when `pid` is a live `ah-engine serve` (never signal a pid that was reused by something else).
+pub fn is_daemon(pid: i32) -> bool {
+    alive(pid)
+        && std::process::Command::new("ps")
+            .args(["-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("ah-engine serve"))
+}
+
+/// The pid in a state dir's singleton lock file (written by the daemon that holds it), if any.
+pub fn lock_pid(state_dir: &Path) -> Option<i32> {
+    let lock = ah_engine::paths::lock_for(&ah_engine::paths::socket_in(state_dir));
+    std::fs::read_to_string(lock).ok().and_then(|t| t.trim().parse().ok()).filter(|p| *p > 1)
+}
+
 fn wait_dead(pid: i32, within: Duration) -> bool {
     let t = Instant::now();
     while t.elapsed() < within {
@@ -33,7 +48,9 @@ fn wait_dead(pid: i32, within: Duration) -> bool {
 /// Stop the daemon of `state_dir`: call `stop` (the polite control request), then fall back to its run marker, and
 /// panic (outside an unwind) if it is still alive. Call this BEFORE removing the state dir.
 pub fn reap(state_dir: &Path, stop: impl Fn()) {
-    let pid = marker_pid(state_dir);
+    // the run marker, else the pid the singleton lock file names: a daemon whose marker was never written or already
+    // removed (a failed start, a crash-loop test) must still be ended, or it outlives the test with its dir deleted
+    let pid = marker_pid(state_dir).or_else(|| lock_pid(state_dir)).filter(|p| is_daemon(*p));
     stop();
     let Some(pid) = pid else { return };
     if !wait_dead(pid, Duration::from_millis(1500)) {

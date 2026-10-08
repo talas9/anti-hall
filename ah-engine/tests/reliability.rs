@@ -381,8 +381,8 @@ fn a_full_descriptor_table_backs_the_accept_loop_off_instead_of_spinning() {
         wait_for(|| e.ctl("status").and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).is_some_and(|v| v["accept_errors"].as_u64() > Some(0))),
         "the failed accepts are counted"
     );
-    let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
-    assert!(log.contains("accept\trecovered"), "the failed accepts are logged with their reason once a descriptor frees up: {log}");
+    let log = || std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
+    assert!(wait_for(|| log().contains("accept\trecovered")), "the failed accepts are logged once a descriptor frees up: {}", log());
     drop(e.ctl("stop"));
     ah_engine::discard::harmless(daemon.wait());
 }
@@ -413,6 +413,51 @@ fn a_slow_but_healthy_daemon_is_not_counted_toward_the_breaker() {
     assert!(!e.eng().join("breaker.until").exists(), "a daemon that answers pings is slow, not broken");
     let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
     assert!(log.contains("client_slow") && !log.contains("client_fail"), "{log}");
+}
+
+#[test]
+fn a_daemon_whose_state_dir_is_removed_exits_by_itself() {
+    // coordinator finding: 48 test daemons ran on for hours after their tests deleted the state dir (no idle exit, nothing
+    // left that could reach them); a daemon now drains and exits once its state dir, lock file or binary is gone
+    let e = Env::new("orphan", &[]);
+    e.warm();
+    let pid = e.pid().unwrap();
+    std::fs::remove_dir_all(e.eng()).unwrap();
+    let t = Instant::now();
+    while alive(pid) && t.elapsed() < Duration::from_secs(15) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(pid), "a daemon with its state dir gone must exit");
+}
+
+#[test]
+fn a_daemon_whose_run_marker_is_gone_is_still_reaped_by_its_test() {
+    // a daemon whose run marker was never written or was removed was skipped by the teardown and outlived its test; the
+    // teardown now falls back to the pid in the lock file
+    let e = Env::new("nomarker", &[]);
+    e.warm();
+    let pid = e.pid().unwrap();
+    std::fs::remove_file(e.eng().join("daemon.run")).unwrap();
+    common::reap(&e.eng(), || {}); // no polite stop: only the lock-file fallback can find it
+    assert!(!alive(pid), "the teardown must end the daemon it started");
+}
+
+/// CPU-free guard: no `ah-engine serve` of THIS build has been running for longer than any test run takes. A leak from an
+/// earlier run (a test that did not reap its daemon) fails here.
+#[test]
+fn no_daemon_of_this_build_outlives_its_test_run() {
+    let o = Command::new("ps").args(["-Ao", "pid=,etime=,command="]).output().unwrap();
+    let old: Vec<String> = String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter(|l| l.contains(&format!("{BIN} serve")))
+        .filter(|l| {
+            // etime is [[dd-]hh:]mm:ss: anything with an hour field, or over 45 minutes, is a leak
+            let et = l.split_whitespace().nth(1).unwrap_or("");
+            et.contains('-') || et.matches(':').count() >= 2 || et.split(':').next().and_then(|m| m.parse::<u64>().ok()).is_some_and(|m| m >= 45)
+        })
+        .map(String::from)
+        .collect();
+    assert!(old.is_empty(), "daemons of this build left running by earlier tests:\n{}", old.join("\n"));
 }
 
 #[test]

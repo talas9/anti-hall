@@ -8,6 +8,8 @@
 //! Every Node hook is mapped to `true`, so only the engine's own checks run, which is what holds the memory.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
+mod common;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -146,10 +148,12 @@ impl Soak {
 
 impl Drop for Soak {
     fn drop(&mut self) {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-        c.args(["stop"]);
-        self.env(&mut c);
-        c.output().ok();
+        common::reap(&self.dir.join("state"), || {
+            let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+            c.args(["stop"]);
+            self.env(&mut c);
+            c.output().ok();
+        });
         std::fs::remove_dir_all(&self.dir).ok();
     }
 }

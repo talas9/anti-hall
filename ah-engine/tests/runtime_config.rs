@@ -113,6 +113,12 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
                 std::thread::sleep(Duration::from_millis(20));
             }
             common::reap(&self.0, || {});
+            // the direct child, whatever the marker said, then the files: the dir goes only once the daemon is gone
+            ah_engine::discard::harmless(self.1.kill());
+            ah_engine::discard::harmless(self.1.wait());
+            if let Some(root) = self.0.parent() {
+                ah_engine::discard::harmless(std::fs::remove_dir_all(root));
+            }
         }
     }
     let _guard = Reap(eng.clone(), daemon);
@@ -226,5 +232,5 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
     let (code, _, err) = run_hook(&root, &plugin, &root.join("fresh-state-4"));
     assert_ne!(code, 75, "good defaults are loadable: {err}");
     assert!(root.join("fresh-state-4").join("defaults.cache").is_file(), "a client that had to parse the files leaves the cache for the next call");
-    std::fs::remove_dir_all(&root).ok();
+    // the guard reaps the daemon, then removes `root` (removing it here first left the daemon running with no marker to find)
 }
