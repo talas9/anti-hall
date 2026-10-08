@@ -3432,12 +3432,30 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.alias_file` | `sender-aliases.json` |  |  | The sender alias map under the DevSwarm state directory (devswarm-sender-alias.js). |
 | `mesh_write.alias_key` | `aliases` |  |  | The object of that file holding the aliases. |
 | `mesh_write.allowed_urgency` | `low, normal, high, urgent` |  |  | send's urgency words (Node's ALLOWED_URGENCY). |
+| `mesh_write.app_busy_timeout_ms` | `0` |  |  | How long a locked app database is waited for: Node's node:sqlite waits not at all, so a locked database reads as unavailable. |
+| `mesh_write.app_cache_dir` | `cache` |  |  | Directory under the DevSwarm root of the cross-invocation archived-verdict cache. |
+| `mesh_write.app_cache_file` | `app-archived.json` |  |  | The cache file. |
+| `mesh_write.app_cache_ttl_ms` | `30000` |  |  | How long a cached verdict map is trusted (CROSS_CACHE_TTL_MS). |
+| `mesh_write.app_col_active` | `isActive` |  |  | The `builders` open flag column. |
 | `mesh_write.app_col_builder_type` | `builderType` |  |  | The `builders` type column. |
+| `mesh_write.app_col_hidden` | `isHidden` |  |  | The `builders` hidden flag column (archived = hidden and not active). |
+| `mesh_write.app_col_id` | `id` |  |  | The `builders` id column. |
 | `mesh_write.app_col_worktree` | `worktreePath` |  |  | The `builders` worktree column. |
+| `mesh_write.app_cols_builder_terminals` | `13 items` |  |  | Every `builder_terminals` column the snapshot reads (SCHEMA.builder_terminals). |
+| `mesh_write.app_cols_builders` | `16 items` |  |  | Every `builders` column the snapshot reads (SCHEMA.builders). |
+| `mesh_write.app_cols_pull_requests` | `10 items` |  |  | Every `pull_requests` column the snapshot reads (SCHEMA.pull_requests). |
+| `mesh_write.app_cols_repositories` | `id, path, name, defaultBaseBranch` |  |  | Every `repositories` column the snapshot reads (SCHEMA.repositories). |
 | `mesh_write.app_core_columns` | `id, isActive` |  |  | The `builders` columns without which Node's app snapshot is null. |
 | `mesh_write.app_db_linux` | `DevSwarm/devswarm.db` |  |  | The DevSwarm app database under the config directory on Linux. |
 | `mesh_write.app_db_macos` | `Library/Application Support/DevSwarm/devswarm.db` |  |  | The DevSwarm app database under the home directory on macOS. |
 | `mesh_write.app_db_off` | `off` |  |  | Its disabling value. |
+| `mesh_write.app_max_exact_int` | `9007199254740991` |  |  | Integers beyond this magnitude are not exact JavaScript numbers; a database holding one in a column the verdict reads defers. |
+| `mesh_write.app_prompt_column` | `initialPrompt` |  |  | The terminal column read as its length only (never its text). |
+| `mesh_write.app_table_builders` | `builders` |  |  | The app's builder (workspace) table. |
+| `mesh_write.app_table_pull_requests` | `pull_requests` |  |  | The app's pull-request table, read by the snapshot. |
+| `mesh_write.app_table_repositories` | `repositories` |  |  | The app's repository table, read by the snapshot (a failed read of any of the three makes the snapshot null, as in Node). |
+| `mesh_write.app_table_terminals` | `builder_terminals` |  |  | The app's terminal table, read by the snapshot besides `builders`. |
+| `mesh_write.app_wal_suffix` | `-wal` |  |  | Suffix of the app database's write-ahead log, part of the cache signature. |
 | `mesh_write.archive_request_marker` | `[[ANTIHALL_ARCHIVE_REQUEST]]` |  |  | Body marker of an archive-request send (devswarm-store.js ARCHIVE_REQUEST_MARKER). |
 | `mesh_write.backend_journal` | `journal` |  |  | The marker text of Node's journal backend; a store pinned to it is Node's alone. |
 | `mesh_write.boolean_only_flags` | `9 items` |  |  | Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS). |
@@ -3450,6 +3468,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.channel_store_cursor` | `store-cursor` |  |  | The `channel` of a failed own-partition cursor move in an ack result. |
 | `mesh_write.claude_dir` | `.claude` |  |  | The harness's directory under the home directory. |
 | `mesh_write.commondir_file` | `commondir` |  |  | The file of a linked worktree's git directory naming the common directory. |
+| `mesh_write.cron_found_mail_cap` | `1000` |  |  | How many lines the cron-found-mail file keeps (core.js CRON_FOUND_MAIL_CAP). |
 | `mesh_write.csv_separator` | `,` |  |  | Separator of a comma-separated setting. |
 | `mesh_write.cursor_base_suffix` | `#base` |  |  | Suffix of a partition's legacy baseline cursor file name (cursors/<id>#base.json). |
 | `mesh_write.cursor_floor_reader` | `#floor` |  |  | The reader key of a partition's floor row in reader_cursors (reader-cursors.js FLOOR). |
@@ -3462,6 +3481,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.cursor_namespaces` | `store, nd` |  |  | The two cursor namespaces of `reader_cursors`, in Node's order (NAMESPACES): the store and the NDJSON inbox. |
 | `mesh_write.cursor_ns_nd` | `nd` |  |  | The reader_cursors namespace of the durable NDJSON inbox side. |
 | `mesh_write.cursor_ns_store` | `store` |  |  | The reader_cursors namespace of the store side. |
+| `mesh_write.default_tmpdir` | `/tmp` |  |  | The temp directory when none of those variables is set. |
 | `mesh_write.dir_anti_hall` | `.anti-hall` |  |  | anti-hall's directory under the home directory. |
 | `mesh_write.dir_archived` | `archived` |  |  | The archived workspace descriptors directory under the DevSwarm state directory (row-state.js archiveCompleteIds). |
 | `mesh_write.dir_cache` | `cache` |  |  | anti-hall's cache directory under its home directory (Jev's triage label cache lives there). |
@@ -3478,6 +3498,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.dir_state` | `state` |  |  | anti-hall's state directory under its home directory. |
 | `mesh_write.dir_store` | `store` |  |  | The per-repo stores directory under the DevSwarm state directory. |
 | `mesh_write.dir_summaries` | `summaries` |  |  | The per-project summary projections directory under the DevSwarm state directory (summaries/<repoKey>.json). |
+| `mesh_write.dir_wake_tick` | `wake-tick` |  |  | The wake-tick marker directory under the DevSwarm state directory (core.js wakeTickDir). |
+| `mesh_write.dir_wal` | `wal` |  |  | The delivery write-ahead-log directory under the DevSwarm state directory (devswarm-read-wal.js). |
+| `mesh_write.dir_wal_spill` | `wal-spill` |  |  | The directory the delivery log spills batches to when the log itself is not writable. |
 | `mesh_write.dir_workspaces` | `workspaces` |  |  | The workspace descriptors directory under the DevSwarm state directory. |
 | `mesh_write.done_setby_prefix` | `devswarm-done@` |  |  | Setter prefix of a done gate that carries the HEAD sha (devswarm-store.js DONE_GATE_SETBY_PREFIX). |
 | `mesh_write.dot_git` | `.git` |  |  | A checkout's git entry. |
@@ -3491,6 +3514,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.env_session_id` | `CLAUDE_CODE_SESSION_ID` |  |  | The variable naming the caller's session (the Primary seat guard reads it). |
 | `mesh_write.env_source_branch` | `DEVSWARM_SOURCE_BRANCH` |  |  | The environment variable that marks a DevSwarm child workspace (devswarm-role.js isChildWorkspace). |
 | `mesh_write.env_store_backend` | `ANTIHALL_DEVSWARM_STORE_BACKEND` |  |  | The variable that forces Node's store backend (ANTIHALL_DEVSWARM_STORE_BACKEND). |
+| `mesh_write.env_tmpdir` | `TMPDIR, TMP, TEMP` |  |  | The environment variables that name the temp directory, in the order Node's os.tmpdir() reads them. |
+| `mesh_write.env_verify_nonce` | `AH_ENGINE_VERIFY_NONCE` |  |  | The environment variable that hands the engine's reader nonce to the tick verifier (the detached verifier does not share the caller's process ancestry, which Node derives the reader from); it is the name the verify_tick_node_snippet reads. |
 | `mesh_write.env_xdg_config` | `XDG_CONFIG_HOME` |  |  | The XDG config directory variable (Linux). |
 | `mesh_write.err_cursor_import_needed` | `reader_cursors floor row missing (legacy import needed)` |  |  | Failure text when a partition has no floor row and the engine will not import the legacy cursors itself (Node's reader-cursors import). |
 | `mesh_write.exit_committed_failure` | `70` |  |  | Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (sysexits EX_SOFTWARE, 70). Deliberately NOT 75: exit 75 (EX_TEMPFAIL) means 'deferred, nothing written' everywhere in the engine (dispatch.defer_exit), and a caller that sees 75 may run Node. |
@@ -3505,6 +3530,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.field_repo_key` | `repoKey` |  |  | A descriptor's persisted project key. |
 | `mesh_write.field_session_id` | `sessionId` |  |  | A descriptor's session field. |
 | `mesh_write.field_worktree_path` | `worktreePath` |  |  | A descriptor's worktree field. |
+| `mesh_write.file_cron_found_mail` | `cron-found-mail.jsonl` |  |  | The cron-found-mail measurement file under the DevSwarm state directory (core.js cronFoundMailPath). |
 | `mesh_write.flag_ack` | `ack` |  |  | roster's consume flag. |
 | `mesh_write.flag_ack_as_owner` | `ack-as-owner` |  |  | The flag that skips the ownership check of ack-primary. |
 | `mesh_write.flag_answers` | `answers` |  |  | send's reply-correlation flag. |
@@ -3546,11 +3572,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.git_modules_dir` | `modules` |  |  | Where a superproject keeps absorbed submodule git directories. |
 | `mesh_write.git_worktree_key` | `worktree` |  |  | The `core.worktree` key (an absorbed submodule's git directory carries it; the engine then defers to Node). |
 | `mesh_write.gitdir_key` | `gitdir:` |  |  | The key of a `.git` file pointing at its git directory. |
+| `mesh_write.hb_plan_hint` | `no step plan for {id} — run `devswarm.js plan set {id} --steps "1. …\n2. …"` ...` |  |  | The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id. |
+| `mesh_write.hb_plan_no_plan` | `no-plan` |  |  | The `plan.reason` of a heartbeat --step for a workspace that has no plan. |
 | `mesh_write.heal_healthy` | `daemonHealthy` |  |  | The self-heal field of a healthy daemon. |
 | `mesh_write.heal_no_worktree` | `no-worktree` |  |  | daemonWarning when the cwd is not in a checkout. |
 | `mesh_write.heal_stale` | `stale` |  |  | daemonWarning when the ingest daemon looks stale or missing. |
 | `mesh_write.heal_warning` | `daemonWarning` |  |  | The self-heal field naming a daemon problem. |
 | `mesh_write.heartbeat_source` | `cli-heartbeat` |  |  | The `source` a CLI heartbeat stamps on its record (cmdHeartbeat). |
+| `mesh_write.heartbeat_source_tick` | `inbox-tick` |  |  | The `source` a tick stamps on a heartbeat record it has to create (cmdInboxTick). |
 | `mesh_write.held_partitions_default` | `` |  |  | Schema default of devswarm.heldPartitions (none held). |
 | `mesh_write.held_partitions_env` | `ANTIHALL_DEVSWARM_HELD_PARTITIONS` |  |  | Environment variable of devswarm.heldPartitions. |
 | `mesh_write.held_partitions_key` | `heldPartitions` |  |  | settings.json key of the owner-held partition ids. |
@@ -3572,7 +3601,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.jev_hash_hex` | `32` |  |  | Hex characters of a triage cache key (jev-triage.js hashMessage: sha256, first 32). |
 | `mesh_write.jev_pending_file` | `jev-triage-pending.json` |  |  | Jev triage's pending labeled messages under anti-hall's state directory (jev-triage.js pendingPath). |
 | `mesh_write.jev_question_kind` | `question-needs-answer` |  |  | The triage label kind of a message that asks a question (jev-triage.js). |
+| `mesh_write.js_false` | `false` |  |  | JavaScript's text for false, as a tick line prints a boolean. |
 | `mesh_write.js_null` | `null` |  |  | `String(null)`. |
+| `mesh_write.js_true` | `true` |  |  | JavaScript's text for true, as a tick line prints a boolean. |
 | `mesh_write.js_undefined` | `undefined` |  |  | `String(undefined)`. |
 | `mesh_write.json_suffix` | `.json` |  |  | File-name suffix of a JSON record. |
 | `mesh_write.kind_child` | `child` |  |  | Sender identity kind: a child workspace's registered id. |
@@ -3679,6 +3710,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.summary_pending_questions_cap` | `200` |  |  | Most per-sender pending questions a summary keeps per workspace (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP). |
 | `mesh_write.summary_recent_cap` | `50` |  |  | Most broadcast runs a summary keeps in recent[] (devswarm-store.js DEFAULT_RECENT_CAP). |
 | `mesh_write.synthetic_session_prefix` | `unclaimed:` |  |  | The same prefix as the routing code names it (SYNTHETIC_SESSION_PREFIX). |
+| `mesh_write.tick_line` | `tick {id}: unread {unread}, known {known}, meshGap {gap}, watcherArmed {armed}` |  |  | The one line `inbox tick --quiet` prints (inboxTickQuietLine); `{id}`, `{unread}`, `{known}`, `{gap}` and `{armed}` are filled in. |
+| `mesh_write.tick_roster_env` | `ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY` |  |  | The environment variable of that setting. |
+| `mesh_write.tick_roster_setting` | `tickRosterEvery` |  |  | Name of the setting (devswarm.tickRosterEvery) that makes a quiet tick append the roster; any trace of it sends the tick to Node. |
+| `mesh_write.tick_settings_files` | `.anti-hall/settings.json, .claude/settings.json` |  |  | The settings files, relative to the home directory, in which a trace of the roster setting sends a tick to Node. |
+| `mesh_write.tick_tmp_suffix` | `.tick.tmp` |  |  | Suffix of the staged file a tick marker or heartbeat refresh is written to before the rename (after `.<pid>.<clock>`). |
 | `mesh_write.tmp_suffix` | `.tmp` |  |  | Suffix of a staged file before its rename. |
 | `mesh_write.unclaimed_prefix` | `unclaimed:` |  |  | Prefix of a session id that no real session claimed yet (the seat ignores it). |
 | `mesh_write.urgency_default` | `normal` |  |  | send's urgency when none is given. |
@@ -3693,8 +3729,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.verb_read` | `read` |  |  | Its read subcommand. |
 | `mesh_write.verb_roster` | `roster` |  |  | The roster verb (`roster --ack` is `mesh read`). |
 | `mesh_write.verb_send` | `send` |  |  | The send verb. |
+| `mesh_write.verb_tick` | `tick` |  |  | The tick subverb of `inbox`. |
 | `mesh_write.verify_cap` | `600` |  |  | Characters of each output kept in a mismatch record. |
-| `mesh_write.verify_copy_dirs` | `workspaces, heartbeats, liveness, cursors, archived` |  |  | Directories of the DevSwarm root copied into the scratch home before the engine writes (what Node reads or writes for a heartbeat). |
+| `mesh_write.verify_copy_dirs` | `7 items` |  |  | Directories of the DevSwarm root copied into the scratch home before the engine writes (what Node reads or writes for a heartbeat). |
 | `mesh_write.verify_dir` | `mesh-verify` |  |  | Directory in the state directory that holds the scratch homes of pending verifications. |
 | `mesh_write.verify_error` | `error` |  |  | Log result of a verification that could not run Node. |
 | `mesh_write.verify_flag` | `--shadow-verify` |  |  | The word after `mesh` that makes the engine run as the background verifier of an answered heartbeat (never a devswarm.js verb). |
@@ -3702,7 +3739,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.verify_log` | `mesh-verify.jsonl` |  |  | File in the state directory that receives one JSON line per background verification (`verb`, `result` match or mismatch, `ms`; on a mismatch both outputs, capped). |
 | `mesh_write.verify_match` | `match` |  |  | Log result of a verification whose Node output and written files equal the engine's. |
 | `mesh_write.verify_mismatch` | `mismatch` |  |  | Log result of a verification that found a difference. |
+| `mesh_write.verify_names_heartbeat` | `sameHeartbeat, sameVerdict, sameCache` |  |  | The names under which a heartbeat verification mismatch reports whether the heartbeat record, the liveness verdict and the app-state cache are equal. |
+| `mesh_write.verify_names_tick` | `sameHeartbeat, sameMarker, sameCronFound` |  |  | The names under which a tick verification mismatch reports whether the heartbeat record, the wake-tick marker and the cron-found-mail file are equal. |
 | `mesh_write.verify_node_snippet` | `const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Num...` |  |  | The Node program of the verifier: runs the real devswarm.js `run()` with the engine's clock, prints the result object the CLI would print. Arguments: the CLI path, the clock, then the verb's argv. |
+| `mesh_write.verify_tick_copy_dirs` | `11 items` |  |  | Directories of the DevSwarm root copied into the scratch home before the engine writes for a tick (what Node reads or writes for it). |
+| `mesh_write.verify_tick_copy_files` | `cron-found-mail.jsonl` |  |  | Files of the DevSwarm root copied into the scratch home before the engine writes for a tick. |
+| `mesh_write.verify_tick_node_snippet` | `const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Num...` |  |  | The Node program of the tick verifier: runs the real devswarm.js `run()` with the engine's clock and prints the line `inbox tick --quiet` would print. Arguments: the CLI path, the clock, then the verb's argv. |
+| `mesh_write.wake_lock_prefix` | `wake-watch-` |  |  | File-name prefix of the wake-watch lock of a workspace in the locks directory (devswarm-wake-watch.js lockPathFor). |
+| `mesh_write.wake_lock_stale_ms` | `120000` |  |  | A wake-watch lock older than this is not a live watcher (devswarm-wake-watch.js WATCH_LOCK_STALE_MS). |
+| `mesh_write.wake_lock_suffix` | `.lock` |  |  | File-name suffix of the wake-watch lock. |
+| `mesh_write.wal_lastresort_prefix` | `anti-hall-wal-lastresort-` |  |  | Prefix of the last-resort delivery batches written to the temp directory; their presence sends a tick to Node. |
+| `mesh_write.wal_suffix` | `.ndjson` |  |  | File-name suffix of a delivery log. |
 | `mesh_write.write_seq_column` | `write_seq` |  |  | The registry's per-row write counter column (Node's ensureRegistryWriteSeqColumn). |
 | `mesh_write.xdg_default` | `.config` |  |  | Its default under the home directory. |
 

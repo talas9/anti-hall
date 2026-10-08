@@ -63,7 +63,7 @@ test('on: send and mesh read go to ah-engine mesh with the same argv and its exi
 
 test('on: other verbs stay in Node; an engine native nonzero result is passed through', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 2' });
-  const h = run(['inbox', 'tick', 'w1']);
+  const h = run(['inbox', 'read-primary', 'w1']);
   assert.strictEqual(h.code, 3);
   assert.doesNotMatch(h.trace, /engine/);
   assert.strictEqual(run(['send', '--to', 'w']).code, 2);
@@ -116,9 +116,23 @@ test('on: mesh history, roster --ack and heartbeat are routed; plain roster and 
   const plain = run(['roster']);
   assert.strictEqual(plain.code, 3);
   assert.strictEqual(run(['mesh', 'peek']).code, 3);
-  const last = run(['inbox', 'tick', 'w1']);
+  const last = run(['inbox', 'read-primary', 'w1']);
   assert.strictEqual(last.code, 3);
-  assert.match(last.trace, /engine mesh mesh history\nengine mesh roster --ack\nengine mesh roster --json --ack=1\nengine mesh heartbeat w1 --session s\nnode roster stdin=\nnode mesh peek stdin=\nnode inbox tick w1 stdin=\n$/);
+  assert.match(last.trace, /engine mesh mesh history\nengine mesh roster --ack\nengine mesh roster --json --ack=1\nengine mesh heartbeat w1 --session s\nnode roster stdin=\nnode mesh peek stdin=\nnode inbox read-primary w1 stdin=\n$/);
+});
+
+test('on: inbox tick is routed; a deferral (exit 75) runs Node, a committed failure (exit 70) never reruns it', () => {
+  const ok = setup({ mode: 'on', engine: 'exit 0' });
+  assert.strictEqual(ok.run(['inbox', 'tick', 'w1', '--quiet']).code, 0);
+  assert.match(ok.run(['inbox', 'tick', 'w1', '--quiet']).trace, /engine mesh inbox tick w1 --quiet/);
+  const d = setup({ mode: 'on', engine: 'exit 75' });
+  const r = d.run(['inbox', 'tick', 'w1', '--quiet']);
+  assert.strictEqual(r.code, 3);
+  assert.match(r.trace, /engine mesh inbox tick w1 --quiet\nnode inbox tick w1 --quiet/);
+  const f = setup({ mode: 'on', engine: 'exit 70' });
+  const r2 = f.run(['inbox', 'tick', 'w1', '--quiet']);
+  assert.strictEqual(r2.code, 70);
+  assert.doesNotMatch(r2.trace, /^node /m);
 });
 
 test('on, heartbeat deferred (exit 75): Node runs it; a committed failure (exit 70) is never rerun', () => {
