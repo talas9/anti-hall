@@ -60,6 +60,7 @@ mod process_env_reads;
 mod prompt_emit_dispatch;
 mod prompt_emit_parity;
 mod prop_parsers;
+mod read_only_verbs;
 mod reference;
 mod reliability;
 mod response_guards_parity;

@@ -3,7 +3,9 @@
 # Every command the binary understands has an entry here and a handler in code; a test keeps the two in step.
 # `read_only` marks a command that never changes state (an agent can run it freely; command-guard will
 # allowlist exactly these); `status` is `implemented` or `planned (D-n)` (a planned command is registered so the
-# generated reference lists it, and running it says so). Every command accepts `--json`.
+# generated reference lists it, and running it says so). `read_only_args` marks the read-only forms of a command that otherwise changes
+# state: the first non-flag arguments ("" = none) whose runs write nothing. A read-only run also writes no telemetry, so it cannot create
+# the state directory. Every command accepts `--json`.
 
 [cmd.serve]
 doc = "Run the resident daemon in the foreground (the client starts it detached when needed)."
@@ -27,7 +29,7 @@ value = { args = "[--kind <kind>] [--project <hash>] [--window <7d>]", read_only
 
 [cmd.telemetry]
 doc = "Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and spill events), `rollup` (move complete days into archive.db and apply the retention). Local only."
-value = { args = "[summary|events|rollup] [--window <7d>] [--kind <k>] [--limit <n>]", read_only = false, status = "implemented" }
+value = { args = "[summary|events|rollup] [--window <7d>] [--kind <k>] [--limit <n>]", read_only = false, read_only_args = ["", "summary", "events", "rollup"], status = "implemented" }
 
 [cmd.docs]
 doc = "Print the generated reference: every command, setting, metric, impact kind, check and error code."
@@ -126,11 +128,11 @@ value = { args = "<scratch dir>", read_only = false, status = "implemented" }
 
 [cmd.schedule]
 doc = "The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json."
-value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, status = "implemented" }
+value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, read_only_args = ["list", "history"], status = "implemented" }
 
 [cmd.config]
 doc = "Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the settings they lack from the pristine copy, also in a version-controlled checkout); versions, rollback and export are planned (D18, they need the config database)."
-value = { args = "[validate <file>|heal]", read_only = false, status = "implemented", planned_decision = "D18" }
+value = { args = "[validate <file>|heal]", read_only = false, read_only_args = ["", "validate"], status = "implemented", planned_decision = "D18" }
 
 [cmd.backup]
 doc = "Make a consistent online snapshot of hot.db and archive.db with SQLite's backup API, scrubbed of secrets, in backups/<ms> or the given directory; prints its manifest."
