@@ -1,5 +1,0 @@
-#!/bin/sh
-# engine-role-note and engine-role-guard are ENGINE-ONLY: there is no Node twin, the ah-engine answers their dispatch-table entries
-# in-process (the role matrix and the texts are plugin data, engine/defaults/roles.toml). This no-op is the command the table falls
-# back to when the engine cannot answer, so the entries keep an id and a readable script like every other entry. It does nothing.
-exit 0

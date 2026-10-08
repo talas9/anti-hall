@@ -41,6 +41,7 @@ impl Env {
             "scan-throttle",
             "api-guard",
             "ship-it-guard",
+            "engine-role-guard",
         ];
         let m: serde_json::Map<String, serde_json::Value> =
             ids.iter().map(|id| (id.to_string(), outs.iter().find(|(k, _)| k == id).map_or("true".to_string(), |(_, c)| c.to_string()).into())).collect();
@@ -76,6 +77,7 @@ impl Env {
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
             .env("ANTIHALL_JEV_RECOMMEND_NOTICE", "false") // the session gate answers the notice itself; these tests probe the Node fallback
+            .env("ANTIHALL_ROLE_NOTE", "0") // the role note is injected at every SessionStart; these tests probe the Node fallback and the exact bytes
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             // DevSwarm active makes the native verify-first-orch check defer to its mapped Node command, so the
             // SessionStart tests below keep driving Node hooks only (the check itself is covered by spawn_ctx_parity.rs)

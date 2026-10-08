@@ -17,7 +17,7 @@ const POST_BASH: [&str; 6] =
 /// Entries the engine answers itself in these tests' environment, so no Node command runs for them. None: the tests run with
 /// the checks down (`AH_ENGINE_NOSPAWN=1`), so every entry runs as its Node command.
 const POST_NATIVE: [&str; 0] = [];
-const PRE_BASH: [&str; 9] = [
+const PRE_BASH: [&str; 10] = [
     "compact-declaration-guard",
     "git-guard",
     "command-guard",
@@ -27,6 +27,7 @@ const PRE_BASH: [&str; 9] = [
     "scan-throttle",
     "api-guard",
     "ship-it-guard",
+    "engine-role-guard",
 ];
 
 impl Env {
