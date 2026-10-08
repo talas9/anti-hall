@@ -64,6 +64,15 @@ const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Permiss
 const NO_TRIGGER = ['WorktreeCreate', 'WorktreeRemove']; // their hook IS the operation; a silent witness would break worktrees
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { return d; } };
 const ours = g => g && Array.isArray(g.hooks) && g.hooks.some(h => String(h && h.command || '').includes(MARK));
+const BASEF = path.join(D, 'engine-baseline.json');
+// Checks whose Node decision depends on per-session state kept under $HOME (the witness runs in a scratch HOME that starts empty), so Node
+// and engine can legitimately differ: never reported as "engine weaker". task-guard: loop state last-stop-taskset-<session> (dedupe hash +
+// a 5-block cap) lives in $HOME/.anti-hall; the real hook was at its cap (quiet) while the empty scratch copy blocked again.
+const ENV_DEPENDENT = new Set(['task-guard']);
+// engine counters {check: {n, block, defer}} for the engine's whole retained window (engine telemetry is bucketed per UTC day, so it cannot be windowed finer)
+const engCounts = tel => { const o = {}; for (const h of (tel && tel.by_hook) || []) if (h.k === 'check') o[h.h] = { n: h.n, block: (h.outcomes || {}).block || 0, defer: (h.outcomes || {}).defer || 0 }; return o; };
+const engCall = (a, root) => { const bin = process.env.AH_ENGINE_BIN || path.join(HOME, '.anti-hall', 'ah-engine', 'bin', 'ah-engine'); const r = cp.spawnSync(bin, a, { encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, { AH_ENGINE_DIR: path.join(HOME, '.anti-hall', 'ah-engine'), AH_ENGINE_PLUGIN_ROOT: root || '' }) }); try { return JSON.parse(r.stdout); } catch (e) { return null; } };
+const saveBaseline = root => { const tel = engCall(['telemetry', 'summary', '--json', '--window', '7d'], root); if (!tel) return false; try { fs.writeFileSync(BASEF + '.new', JSON.stringify({ ts: Date.now(), counts: engCounts(tel) }) + '\n'); fs.renameSync(BASEF + '.new', BASEF); return true; } catch (e) { return false; } };
 
 if (mode === '--install') {
   let root = opt('--root', '');
@@ -83,6 +92,7 @@ if (mode === '--install') {
   const skipSrc = path.join(path.dirname(self || ''), 'node-shadow.skip');
   if (self && fs.existsSync(skipSrc) && path.resolve(skipSrc) !== path.join(D, 'node-shadow.skip')) fs.copyFileSync(skipSrc, path.join(D, 'node-shadow.skip'));
   fs.writeFileSync(path.join(D, 'root.new'), root + '\n'); fs.renameSync(path.join(D, 'root.new'), path.join(D, 'root'));
+  if (!fs.existsSync(BASEF)) saveBaseline(root); // engine counters at witness start: --compare counts only what the engine saw since then
   fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
   let s = {};
   if (fs.existsSync(SETTINGS)) {
@@ -167,15 +177,23 @@ if (mode === '--install') {
   const days = parseInt(win, 10) || 7, since = Date.now() - days * 864e5;
   const root = fs.existsSync(path.join(D, 'root')) ? fs.readFileSync(path.join(D, 'root'), 'utf8').trim() : '';
   const bin = process.env.AH_ENGINE_BIN || path.join(HOME, '.anti-hall', 'ah-engine', 'bin', 'ah-engine');
-  const eng = a => { const r = cp.spawnSync(bin, a, { encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, { AH_ENGINE_DIR: path.join(HOME, '.anti-hall', 'ah-engine'), AH_ENGINE_PLUGIN_ROOT: root }) }); try { return JSON.parse(r.stdout); } catch (e) { return null; } };
+  const eng = a => engCall(a, root);
   if (!root || !fs.existsSync(bin)) { console.error('node-shadow --compare: needs the live engine (' + bin + ') and the shadow install (' + D + '/root)'); process.exit(1); }
   const cfg = eng(['config', '--json']), tel = eng(['telemetry', 'summary', '--json', '--window', days + 'd']);
+  // Same window on both sides: engine counts are cumulative per UTC day, so subtract the counters recorded when the witness started.
+  // Without a baseline (witness installed before this existed) the engine side is the whole retained window, which includes traffic from
+  // before the witness ran: it is flagged "unaligned" and never reported as weaker; the baseline is captured now for the next run.
+  let base = readJson(BASEF, null), aligned = !!(base && base.counts);
+  const cur = engCounts(tel);
+  if (!aligned) saveBaseline(root);
+  const baseTs = aligned ? base.ts : null;
   if (!cfg || !tel) { console.error('node-shadow --compare: the engine did not answer config/telemetry'); process.exit(1); }
   // hook id -> engine check name, per event (the engine's own dispatch table)
   const checkOf = {};
   for (const [k, v] of Object.entries(cfg.settings)) { const m = k.match(/^dispatch\.hooks_claude_(\w+)$/); if (m) for (const e of v.value) checkOf[m[1] + '/' + e.id] = e.check || ''; }
   const node = {};
-  let log = []; try { log = fs.readFileSync(LOGF, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(x => x && x.dec !== 'skipped' && x.ts >= since); } catch (e) { }
+  const nowMs = Date.now();
+  let log = []; try { log = fs.readFileSync(LOGF, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(x => x && x.dec !== 'skipped' && x.ts >= since && (!baseTs || x.ts >= baseTs)); } catch (e) { }
   const first = log.length ? Math.min(...log.map(x => x.ts)) : null;
   for (const r of log) {
     const chk = checkOf[r.ev + '/' + r.id] || '';
@@ -185,7 +203,8 @@ if (mode === '--install') {
   }
   // entries the operator forced back to Node ([entries."Event/id"] mode = "off" in config.toml): Node decides them by design, the engine is not weaker there
   const nodeOwned = new Set(); try { const t = fs.readFileSync(path.join(HOME, '.anti-hall', 'ah-engine', 'config.toml'), 'utf8'); for (const m of t.matchAll(/\[entries\."([^"]+)"\]\s*\n\s*mode\s*=\s*"off"/g)) nodeOwned.add(m[1]); } catch (e) { }
-  const engBy = {}; for (const h of tel.by_hook || []) if (h.k === 'check') engBy[h.h] = h;
+  const engBy = {};
+  for (const [c, v] of Object.entries(cur)) { const b = (aligned && base.counts[c]) || { n: 0, block: 0, defer: 0 }; engBy[c] = { n: Math.max(0, v.n - b.n), outcomes: { block: Math.max(0, v.block - b.block), defer: Math.max(0, v.defer - b.defer) } }; }
   const rows = [];
   for (const [key, o] of Object.entries(node)) {
     const e = o.check ? (engBy[o.check] || { n: 0, outcomes: {} }) : null;
@@ -193,17 +212,21 @@ if (mode === '--install') {
     o.ms.sort((a, b) => a - b);
     // Node is the reference. A defer means Node ran and decided, so only blocks the engine neither made nor deferred are missing.
     const owned = [...o.ids].every(i => nodeOwned.has(i.replace(/#\d+$/, '')) || nodeOwned.has(i));
-    const gap = e && !owned ? Math.max(0, o.block - eb - ed) : 0;
+    const envDep = ENV_DEPENDENT.has(o.check);
+    // The engine saw nothing at all while Node ran: the engine is not active for those sessions (started before the plugin was live /
+    // hooks not loaded), which says nothing about its decisions. Not "weaker".
+    const inactive = !!e && aligned && e.n === 0 && o.n > 0;
+    const gap = e && !owned && !envDep && !inactive && aligned ? Math.max(0, o.block - eb - ed) : 0;
     rows.push({ check: o.check || key, node_owned: owned, node_ids: [...o.ids].join(' '), node_n: o.n, node_block: o.block, node_advise: o.advise, node_timeout: o.timeout, node_p50_ms: o.ms[o.ms.length >> 1] || 0,
-      engine_n: e ? e.n : null, engine_block: eb, engine_defer: ed, engine_allow: e ? (e.outcomes.allow || 0) : null, engine_weaker_by: gap, count_diff: e ? o.n - e.n : null });
+      engine_n: e ? e.n : null, engine_block: eb, engine_defer: ed, engine_allow: e ? (e.outcomes.allow || 0) : null, engine_weaker_by: gap, engine_inactive: inactive, witness_env_dependent: envDep, aligned, count_diff: e ? o.n - e.n : null });
   }
   rows.sort((a, b) => b.engine_weaker_by - a.engine_weaker_by || Math.abs(b.count_diff || 0) - Math.abs(a.count_diff || 0) || b.node_block - a.node_block);
-  if (asJson) { console.log(JSON.stringify({ window_days: days, node_log_lines: log.length, node_log_first: first, rows }, null, 2)); process.exit(0); }
-  console.log('Node-shadow vs engine, window ' + days + 'd, ' + log.length + ' Node hook runs' + (first ? ' since ' + new Date(first).toISOString() : '') + '. Engine counters are per check over the same window (in-memory, flushed every 10 s).');
+  if (asJson) { console.log(JSON.stringify({ window_days: days, aligned, baseline_ts: baseTs, node_log_lines: log.length, node_log_first: first, rows }, null, 2)); process.exit(0); }
+  console.log('Node-shadow vs engine, window ' + days + 'd, ' + log.length + ' Node hook runs' + (first ? ' since ' + new Date(first).toISOString() : '') + '. Engine counters are per check, counted from the witness start' + (aligned ? ' (' + new Date(baseTs).toISOString() + ', baseline delta)' : ' - NO BASELINE: engine counts include earlier traffic, weaker is not computed; baseline captured now, re-run later') + '. Units: one Node hook run vs one engine check call.');
   console.log('weaker = Node blocks the engine neither blocked nor deferred. count_diff = Node runs - engine runs (non-zero: a call one side missed, or the windows differ).\n');
   const pad = (s, n) => String(s === null || s === undefined ? '-' : s).padEnd(n);
   console.log([pad('check', 28), pad('weaker', 7), pad('nodeN', 7), pad('nodeBlk', 8), pad('engN', 7), pad('engBlk', 7), pad('engDef', 7), pad('cntDiff', 8), pad('nodeP50ms', 10), 'note'].join(' '));
-  for (const r of rows) console.log([pad(r.check.slice(0, 27), 28), pad(r.engine_weaker_by, 7), pad(r.node_n, 7), pad(r.node_block, 8), pad(r.engine_n, 7), pad(r.engine_block, 7), pad(r.engine_defer, 7), pad(r.count_diff, 8), pad(r.node_p50_ms, 10), r.node_owned ? 'node decides (config off)' : (r.engine_n === null ? 'node-only hook' : '')].join(' '));
+  for (const r of rows) console.log([pad(r.check.slice(0, 27), 28), pad(r.engine_weaker_by, 7), pad(r.node_n, 7), pad(r.node_block, 8), pad(r.engine_n, 7), pad(r.engine_block, 7), pad(r.engine_defer, 7), pad(r.count_diff, 8), pad(r.node_p50_ms, 10), r.node_owned ? 'node decides (config off)' : (r.engine_n === null ? 'node-only hook' : (r.witness_env_dependent ? 'not comparable: witness scratch HOME lacks per-session state' : (r.engine_inactive ? 'ENGINE NOT ACTIVE: 0 calls (restart sessions so plugin hooks load)' : (!aligned ? 'unaligned window (no baseline yet)' : ''))))].join(' '));
   const weak = rows.filter(r => r.engine_weaker_by > 0).length;
   console.log('\n' + (weak ? weak + ' check(s) where the engine is weaker than Node (top rows).' : 'no check where the engine blocked less than Node.') + (log.length ? '' : ' (the Node log is empty: no calls yet)'));
 } else { console.error('node-shadow: unknown mode ' + mode); process.exit(2); }
