@@ -368,6 +368,10 @@ pub fn run_doctor(p: &Parsed) -> i32 {
         let forwarded = Parsed { command: "migrate".into(), json: true, rest: p.rest.clone(), raw: p.rest.clone() };
         return migrate::cli::run_migrate(&forwarded);
     }
+    if !do_repair {
+        // a check reads and reports; the guards it exercises in-process must not leave telemetry (that would create the state directory)
+        crate::telemetry::emit::set_read_only();
+    }
     let (ctx, _) = match migrate::cli::context(p) {
         Ok(c) => c,
         Err(e) => return no_context(p, &e),

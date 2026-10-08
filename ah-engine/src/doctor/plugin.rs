@@ -228,12 +228,9 @@ pub fn registry_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>, version: 
     }
     let ours = installs.iter().find(|i| is_here(&i.1)).or(if installs.len() == 1 { installs.first() } else { None });
     if let Some((key, _, reg_ver)) = ours {
-        match enabled.get(key) {
-            Some((false, f)) => {
-                problem = true;
-                doc.bad(defaults::render("doctor_msg.plugin_disabled", &[("key", key), ("file", f)]));
-            }
-            _ => {}
+        if let Some((false, f)) = enabled.get(key) {
+            problem = true;
+            doc.bad(defaults::render("doctor_msg.plugin_disabled", &[("key", key), ("file", f)]));
         }
         if !reg_ver.is_empty() && !version.is_empty() && crate::version_cmp(version, reg_ver) == std::cmp::Ordering::Less {
             doc.warnl(defaults::render("doctor_msg.plugin_reload", &[("registered", reg_ver), ("running", &version)]));

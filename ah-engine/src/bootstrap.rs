@@ -7,6 +7,7 @@
 //!
 //! # Where the plugin root comes from (first hit wins)
 //!
+//! 0. `--plugin-root <dir>` on the command line (`doctor`): wins over everything below ([`set_root_flag`]).
 //! 1. `AH_ENGINE_PLUGIN_ROOT`: the reliability wrapper exports it from its own location, so it is the plugin that is
 //!    actually running; operators and tests can set it too.
 //! 2. `CLAUDE_PLUGIN_ROOT`, then `PLUGIN_ROOT`: the variables the hosts export to hook commands.
@@ -92,11 +93,23 @@ pub fn index_path(root: &Path) -> PathBuf {
     root.join(DEFAULTS_DIR).join(INDEX_FILE)
 }
 
+static ROOT_FLAG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Make `root` (from a `--plugin-root` flag) the plugin root of this process. It WINS over `AH_ENGINE_PLUGIN_ROOT` and the host
+/// variables: an explicit flag on the command line is the most specific choice, and like the variable it is not replaced by
+/// another plugin when it has no `index.toml`. Set once, before the defaults load.
+pub fn set_root_flag(root: PathBuf) {
+    crate::discard::harmless(ROOT_FLAG.set(root).map_err(|_| ())); // keep: a second call in one process changes nothing
+}
+
 /// The plugin root the environment names, if any: `AH_ENGINE_PLUGIN_ROOT` is an explicit choice, so when it is set it decides
 /// (`Some(root)` whether or not the root is any good, so a wrong value is reported rather than silently replaced by a
 /// different plugin); the host variables count only when their root holds a defaults index (a host may export its root for
 /// an older plugin that has none).
 pub fn env_root() -> Option<PathBuf> {
+    if let Some(flag) = ROOT_FLAG.get() {
+        return Some(flag.clone());
+    }
     if let Some(own) = std::env::var_os(ROOT_ENVS[0]).filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(own));
     }

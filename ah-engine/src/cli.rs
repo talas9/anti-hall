@@ -172,6 +172,10 @@ pub fn run(args: &[String]) -> i32 {
         emit(&p, v.clone(), json!({"version": v}));
         return 0;
     }
+    // an explicit `--plugin-root <dir>` decides which plugin's files are read, before anything is loaded
+    if let Some(root) = p.rest.iter().position(|a| a == "--plugin-root").and_then(|i| p.rest.get(i + 1)).filter(|r| !r.is_empty()) {
+        crate::bootstrap::set_root_flag(std::path::PathBuf::from(root));
+    }
     // commands that only talk to the daemon or print a version need a few settings, not the docs of all of them
     // the status line runs after every turn: like the hook client it reads the snapshot cache instead of parsing every file
     let statusline = p.command == "statusline";
