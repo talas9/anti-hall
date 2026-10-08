@@ -2,7 +2,29 @@
 // language the Node hooks do, so most of the "does JavaScript read this the same way" questions the compiled ports had to answer
 // do not arise; these cover the few that remain at the boundary with the engine (strings that cross it, files it caps).
 'use strict';
+var jxReMemo = { gen: -1, map: {} };
 var jx = {
+  // The regular expression of the defaults entry `key` (JavaScript syntax, compiled once per defaults generation); `flags` as RegExp's.
+  re: function (key, flags) {
+    var g = ahHost.cfgGen();
+    if (g !== jxReMemo.gen) { jxReMemo.gen = g; jxReMemo.map = {}; }
+    var id = key + '/' + (flags || '');
+    var r = jxReMemo.map[id];
+    if (r === undefined) { r = new RegExp(ah.cfg(key), flags || ''); jxReMemo.map[id] = r; }
+    r.lastIndex = 0;
+    return r;
+  },
+  // `text.slice(0, max)` without a trailing lone high surrogate (a half pair cannot cross into the engine; the compiled ports cut at
+  // whole characters).
+  sliceUnits: function (t, max) {
+    var s = t.slice(0, max);
+    var last = s.length ? s.charCodeAt(s.length - 1) : 0;
+    return last >= 0xd800 && last <= 0xdbff && t.length > s.length ? s.slice(0, -1) : s;
+  },
+  // ASCII-only lowercase (the compiled ports' `to_ascii_lowercase`).
+  asciiLower: function (t) { return t.replace(/[A-Z]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 32); }); },
+  // The UTF-8 length of a string in bytes.
+  utf8Len: function (t) { var n = 0; for (var i = 0; i < t.length; i++) { var c = t.charCodeAt(i); if (c < 0x80) n += 1; else if (c < 0x800) n += 2; else if (c >= 0xd800 && c <= 0xdbff) { n += 4; i++; } else n += 3; } return n; },
   // True when `s` holds a lone UTF-16 surrogate. Such a string cannot cross into the engine (a Rust string cannot hold one), so a
   // script that would hash it or send it to Jev defers instead.
   loneSurrogate: function (s) { return /[\ud800-\udbff](?![\udc00-\udfff])|(?:^|[^\ud800-\udbff])[\udc00-\udfff]/.test(s); },

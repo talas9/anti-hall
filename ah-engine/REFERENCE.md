@@ -1199,11 +1199,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.code_fence_re` | ````[\s\S]*?```` |  |  | Regex for fenced code spans stripped before planning and reasoning regexes. |
 | `model_routing.complex` | `18 items` |  |  | Complex/planning signal phrases whose presence vetoes rows that steer to haiku. |
 | `model_routing.deploy_floor_default` | `sonnet` |  |  | Default deploy/migration/secret model floor. |
-| `model_routing.deploy_floor_env` | `ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR` |  |  | Environment variable that sets the deploy/migration/secret minimum model floor. |
-| `model_routing.deploy_floor_key` | `modelRoutingDeployFloor` |  |  | Settings key containing the deploy/migration/secret model floor. |
 | `model_routing.deploy_floor_off` | `off` |  |  | Deploy-floor value that disables the deploy/migration/secret floor. |
-| `model_routing.deploy_floor_option` | `guards_model_routing_deploy_floor` |  |  | Claude plugin option key for guards.modelRoutingDeployFloor. |
-| `model_routing.deploy_floor_values` | `sonnet, opus, off` |  |  | Valid guards.modelRoutingDeployFloor enum values. |
+| `model_routing.deploy_floor_setting` | `7 entries` |  |  | Where the deploy/migration/secret model floor (sonnet, opus, off) is read from (guards.modelRoutingDeployFloor): the environment variable, settings.json, then the plugin option; sonnet when none holds a valid value. |
 | `model_routing.deploy_strong_re` | `\b(deploy\w*\|redeploy\w*\|migrat\w*\|rollbacks?\|roll\s+back\|token\s+rotation\|ro...` |  |  | Strong deploy/migration/secret regex that activates the deploy floor. |
 | `model_routing.deploy_weak_aliases` | `1 entries` |  |  | Weak deploy/migration/secret words normalized before distinct-kind counting. This mirrors Node's production -> prod policy. |
 | `model_routing.deploy_weak_re` | `\b(prod\|production\|secrets?\|credentials?)\b` |  |  | Weak deploy/migration/secret words; two distinct kinds activate the deploy floor. |
@@ -1236,9 +1233,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.mechanical` | `19 items` |  |  | Mechanical execution-only signal phrases, matched as token phrases after compatibility folding. |
 | `model_routing.mechanical_shape_re` | `\b(run\s+exactly\|run\s+only\|run\s+(?:this\|these\|the\s+following)\s+(?:exact\s...` |  |  | Fixed-command or bounded-output regex used to suppress row-4 false positives. |
 | `model_routing.message_guard` | `model-routing` |  |  | The guard label used in ordinary routing advisory text. |
-| `model_routing.mode_env` | `ANTIHALL_MODEL_ROUTING` |  |  | Environment variable whose value advisory downgrades strict omitted-model blocks. |
-| `model_routing.mode_option` | `guards_model_routing` |  |  | Claude plugin option key for guards.modelRouting. |
-| `model_routing.mode_values` | `strict, advisory, off` |  |  | Valid guards.modelRouting enum values. |
+| `model_routing.mode_setting` | `7 entries` |  |  | Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then the plugin option; strict when none holds a valid value. |
 | `model_routing.model_rank` | `4 entries` |  |  | Rank table for the deploy/migration/secret model floor. |
 | `model_routing.msg_deploy_low_extra` | ` It also looks planning-shaped; consider opus or fable for deeper reasoning.` |  |  | Extra row-4 planning note appended to a haiku deploy-floor advisory when applicable. |
 | `model_routing.msg_deploy_low_instead` | `use model:'{floor}' or higher.{extra}` |  |  | Deploy-floor advisory advice for too-low explicit model spawns. |
@@ -1246,9 +1241,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.msg_deploy_omitted_instead` | `set model:'{floor}' or higher, never haiku.` |  |  | Deploy-floor advisory advice for omitted-model spawns. |
 | `model_routing.msg_deploy_omitted_what` | `deploy/migration/secret-shaped spawn sets no explicit model.` |  |  | Deploy-floor advisory headline for omitted-model spawns. |
 | `model_routing.msg_deploy_why` | `Auth/secret edge cases get mishandled by a cheap model.` |  |  | Deploy-floor advisory reason. |
-| `model_routing.msg_fail_closed_instead` | `run the Node hook fallback or set an explicit safe model before spawning.` |  |  | Fail-closed advice for internal model-routing errors. |
-| `model_routing.msg_fail_closed_what` | `model-routing could not safely evaluate this spawn.` |  |  | Fail-closed headline for internal model-routing errors. |
-| `model_routing.msg_fail_closed_why` | `The built-in check hit a decode/config/runtime error; a silent allow would vi...` |  |  | Fail-closed reason for internal model-routing errors. |
 | `model_routing.msg_handover_instead` | `invoke the handover skill yourself in the session that holds the memory.` |  |  | Handover-delegation advisory advice. |
 | `model_routing.msg_handover_what` | `this spawn looks like it writes a session handover.` |  |  | Handover-delegation advisory headline. |
 | `model_routing.msg_handover_why` | `A subagent never lived this session, so its reconstruction loses decision/tri...` |  |  | Handover-delegation advisory reason. |
@@ -1287,11 +1279,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.research_re` | `\b(research\|investigate\|find\|search\|audit\|survey\|read[ -]?only\|locate\|map\|gat...` |  |  | Research/read-only regex for the row-1 research exemption and row-6 Explore advisory. |
 | `model_routing.review_design_verb_re` | `\b(review\|audit\|design\|architect(?:ure)?\|plan\|brainstorm\|critique\|analy[sz]e\|...` |  |  | Review/design/analysis verb regex that keeps row 4 live despite read-only markers. |
 | `model_routing.role_word_re` | `\b(reviewer\|auditor\|critic\|debate\|deadly[- ]?loop)\b` |  |  | Debate-role exemption regex matched against the description only. |
-| `model_routing.routing_mode_default` | `strict` |  |  | Default model-routing mode when no setting or env override is present. |
 | `model_routing.scan_limit` | `131072` |  | utf16-code-units | Maximum JavaScript UTF-16 code units of description plus prompt scanned for routing keywords (String.prototype.slice parity). |
 | `model_routing.session_safe_re` | `[^A-Za-z0-9_.-]` |  |  | Regex whose non-matching characters are replaced in the handover advisory state file name. |
-| `model_routing.setting_key` | `modelRouting` |  |  | Settings key containing the model-routing mode. |
-| `model_routing.setting_section` | `guards` |  |  | Settings section containing the model-routing settings. |
 | `model_routing.state_dir` | `.anti-hall` |  |  | State directory, relative to home, for the handover-delegation advisory cap. |
 | `model_routing.summary` | `Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inhe...` |  |  | One-line description of the model-routing check in the generated reference. |
 | `model_routing.tier_haiku` | `haiku` |  |  | The cheap execution model tier recommended by rows 1, 2 and 3. |
@@ -4576,12 +4565,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.what_create_dir` | `create the directory of` |  |  | What the decision log was doing when creating its directory failed. |
 | `jev.what_read_requests` | `read the requests from stdin` |  |  | What the Jev `ask` command was doing when reading its stdin failed. |
 | `jev.what_read_texts` | `read the texts from stdin` |  |  | What the Jev `scrub` command was doing when reading its stdin failed. |
-
-### limits.toml / model_routing
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `model_routing.fail_closed_marker` | `model-routing fail-closed` |  |  | The reason carried by the last-resort block when even the fail-closed message could not be built. |
 
 ### limits.toml / task_lifecycle_log
 

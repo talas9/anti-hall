@@ -87,6 +87,9 @@ pub static GIT_AUDIT: Scripted = Scripted::new("git-audit", "git_audit.summary")
 /// `dispatch-tier`.
 pub static DISPATCH_TIER: Scripted = Scripted::new("dispatch-tier", "dispatch_tier.summary");
 
+/// `model-routing`.
+pub static MODEL_ROUTING: Scripted = Scripted::new("model-routing", "model_routing.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

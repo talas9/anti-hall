@@ -29,7 +29,6 @@ pub mod handover;
 pub mod idle_agent_sweep;
 pub mod jsport;
 pub mod mcp_reaper;
-pub mod model_routing;
 pub mod output_verify;
 pub mod phase_tracker;
 pub mod replykit;
@@ -188,7 +187,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &coordinator_work::CoordinatorWorkGuard,
         &scripted::COMPACT_DECLARATION_GUARD,
         &command::CommandGuard,
-        &model_routing::ModelRouting,
+        &scripted::MODEL_ROUTING,
         &failure_nudge::FailureRootCauseNudge,
         &scripted::GIT_AUDIT,
         &scripted::VERIFY_FIRST_SUBAGENT,
