@@ -144,12 +144,15 @@ fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let (mut out, mut i) = (Vec::new(), 0);
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() + 1 && s.is_char_boundary(i + 1) && s.get(i + 1..i + 3).is_some() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len() + 1
+            && s.is_char_boundary(i + 1)
+            && s.get(i + 1..i + 3).is_some()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;

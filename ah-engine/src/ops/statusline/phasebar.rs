@@ -206,7 +206,7 @@ fn context_pct(cw: &J) -> Option<f64> {
 }
 
 fn num_field(cw: &J, keys: &[&str]) -> Option<f64> {
-    keys.iter().find_map(|k| match cw.get(*k) {
+    keys.iter().find_map(|k| match cw.get(k) {
         Some(J::Num(x)) => Some(*x),
         _ => None,
     })

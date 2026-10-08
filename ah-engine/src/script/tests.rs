@@ -23,6 +23,10 @@ fn run_forced(name: &str, p: &Value, e: &RequestEnv) -> Option<Option<Verdict>> 
     super::run_forced(name, p, &Value::Null, "PreToolUse", e)
 }
 
+fn user(t: &str) -> String {
+    json!({"type": "user", "message": {"role": "user", "content": t}}).to_string()
+}
+
 #[test]
 fn an_owner_override_wins_and_an_edit_reloads_without_a_restart() {
     let h = home("ov");

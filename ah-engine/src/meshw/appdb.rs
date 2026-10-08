@@ -216,7 +216,7 @@ pub fn read_states(file: &str) -> R<Option<Vec<State>>> {
         };
         // `Number(b.isActive) === 0 && (!hasHidden || Number(b.isHidden) === 1)`
         let archived = active_n == 0.0 && hidden_n.is_none_or(|h| h == 1.0);
-        let worktree = match i_wt.map(&get).transpose()? {
+        let worktree = match i_wt.map(get).transpose()? {
             Some(ValueRef::Text(t)) => norm_path(&String::from_utf8_lossy(t))?,
             Some(ValueRef::Blob(_)) => return defer("app-db-column-type"),
             _ => None,

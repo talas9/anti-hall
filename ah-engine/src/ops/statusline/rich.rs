@@ -325,13 +325,9 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         duration = if mins > 0.0 { format!("{}m{}s", n(mins), n(secs)) } else { format!("{}s", n(secs)) };
         let usd = cost.get("total_cost_usd").filter(|v| truthy(Some(v)));
         match usd {
-            None => {}
             Some(J::Num(x)) => cost_usd = *x,
-            Some(other) => {
-                if j_number(other) > 0.0 {
-                    return Ok(Rich::Threw); // `.toFixed` is not a function on a string
-                }
-            }
+            Some(other) if j_number(other) > 0.0 => return Ok(Rich::Threw), // `.toFixed` is not a function on a string
+            _ => {}
         }
     } else if let Some(d) = session_duration(cwd, cx)? {
         duration = d;

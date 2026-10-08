@@ -70,7 +70,9 @@ fn committed() -> bool {
 
 /// The files a native verb wrote (path under the home, bytes appended or written) and the mesh row it appended, kept for the
 /// background Node check, which compares what Node writes on a scratch copy with exactly what the engine wrote.
-static WRITTEN: std::sync::Mutex<(Vec<(String, Vec<u8>)>, Option<String>)> = std::sync::Mutex::new((Vec::new(), None));
+type Written = (Vec<(String, Vec<u8>)>, Option<String>);
+
+static WRITTEN: std::sync::Mutex<Written> = std::sync::Mutex::new((Vec::new(), None));
 
 /// Remember that `rel` (a path under the home) now holds / got `bytes` from this verb; bytes for the same path accumulate.
 pub fn note_written(rel: &str, bytes: &[u8]) {
