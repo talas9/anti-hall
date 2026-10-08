@@ -4,7 +4,7 @@
 //! A consuming read advances the caller's broadcast cursor to the head of the broadcast partition (`advanceBroadcastCursor`,
 //! one statement); a peek writes nothing. `--since` (an ISO time or a duration) and every refusal defer to Node, as does
 //! a caller whose own registry group has more than one row (Node picks among them by liveness).
-//! Not reproduced (Node keeps it, see DECISIONS D45 stage 2): the summary refresh after a consuming read.
+//! A consuming read refreshes the summary after the cursor moves, as Node does (`meshw::summary`).
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::meshw::args::{Args, FlagVal};
@@ -114,7 +114,17 @@ pub fn run(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
             b.done()
         })
         .collect();
-    let new_cursor = if peek { cursor } else { st.advance_broadcast_cursor(&cursor_key, common::now_ms()).map_err(|e| Defer(format!("advance:{e}")))? as f64 };
+    let new_cursor = if peek {
+        cursor
+    } else {
+        crate::meshw::summary::check(&st, inv, None)?;
+        let c = st.advance_broadcast_cursor(&cursor_key, common::now_ms()).map_err(|e| Defer(format!("advance:{e}")))? as f64;
+        crate::meshw::mark_committed();
+        if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, &repo_key) {
+            crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_read"), &why);
+        }
+        c
+    };
     let mut out = Obj::default();
     out.put("ok", OVal::Bool(true))
         .put("action", s(defaults::text(if history { "mesh_write.action_mesh_history" } else { "mesh_write.action_mesh_read" })))

@@ -413,6 +413,30 @@ impl MeshReader {
         Ok((values, set_by))
     }
 
+    /// A workspace's gate rows in insertion order: `String(gate_name)`, `value === 1` and `set_by` as text or null.
+    pub fn gate_rows(&self, id: &str) -> Res<Vec<(String, bool, Option<String>)>> {
+        let mut st = self.conn.prepare_cached(sql::MESH_GATE_ROWS)?;
+        let mut rows = st.query(params![id])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            // a JavaScript property key: null becomes the text "null"
+            let name = js_string(r.get_ref(0)?)?.unwrap_or_else(|| defaults::text("mesh_write.js_null").to_string());
+            out.push((name, is_one(r.get_ref(1)?), js_string(r.get_ref(2)?)?));
+        }
+        Ok(out)
+    }
+
+    /// Each registry row's `String(id)` and its raw `nudge_command` text (NULL as `None`), in id order.
+    pub fn registry_nudges(&self) -> Res<Vec<(String, Option<String>)>> {
+        let mut st = self.conn.prepare_cached(sql::MESH_REGISTRY_NUDGES)?;
+        let mut rows = st.query([])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            out.push((js_string(r.get_ref(0)?)?.unwrap_or_default(), js_string(r.get_ref(1)?)?));
+        }
+        Ok(out)
+    }
+
     /// The `reader_cursors` rows of one partition; a store that predates the table has none (Node's
     /// `readerCursorRows`).
     pub fn reader_cursors(&self, partition: &str) -> Res<Vec<Value>> {

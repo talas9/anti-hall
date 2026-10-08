@@ -758,3 +758,179 @@ value = "shadow"
 [mesh_write.on_native]
 doc = "On-mode result: the engine answered the call itself."
 value = "native"
+
+# ---- summary refresh (companion/lib/devswarm-store.js computeSummary / deriveSummary) ------------------------------
+
+[mesh_write.dir_summaries]
+doc = "The per-project summary projections directory under the DevSwarm state directory (summaries/<repoKey>.json)."
+value = "summaries"
+
+[mesh_write.dir_archived]
+doc = "The archived workspace descriptors directory under the DevSwarm state directory (row-state.js archiveCompleteIds)."
+value = "archived"
+
+[mesh_write.dir_cursors]
+doc = "The legacy cursor files directory under the DevSwarm state directory (reader-cursors.js cursorsDir)."
+value = "cursors"
+
+[mesh_write.dir_cache]
+doc = "anti-hall's cache directory under its home directory (Jev's triage label cache lives there)."
+value = "cache"
+
+[mesh_write.cursor_line_field]
+doc = "Field of a JSON cursor file that holds its position (devswarm-inbox-cursor.js readCursor)."
+value = "line"
+
+[mesh_write.cursor_floor_reader]
+doc = "The reader key of a partition's floor row in reader_cursors (reader-cursors.js FLOOR)."
+value = "#floor"
+
+[mesh_write.cursor_ns_store]
+doc = "The reader_cursors namespace of the store side."
+value = "store"
+
+[mesh_write.cursor_ns_nd]
+doc = "The reader_cursors namespace of the durable NDJSON inbox side."
+value = "nd"
+
+[mesh_write.cursor_base_suffix]
+doc = "Suffix of a partition's legacy baseline cursor file name (cursors/<id>#base.json)."
+value = "#base"
+
+[mesh_write.cursor_inst_sep]
+doc = "Separator of a legacy per-instance store cursor file name (cursors/<id>#inst-<short>.json)."
+value = "#inst-"
+
+[mesh_write.legacy_cursor_short_len]
+doc = "Length of the hex instance tag in a legacy cursor file name (reader-cursors.js listLegacy)."
+value = 6
+min = 1
+max = 64
+
+[mesh_write.legacy_cursor_forbidden]
+doc = "Texts a partition id must not contain to have legacy cursor files (reader-cursors.js legacySafeId)."
+value = ["#", ".seen-"]
+
+[mesh_write.field_cursor_path]
+doc = "Descriptor field naming the durable inbox's cursor file."
+value = "cursorPath"
+
+[mesh_write.urgency_rank]
+doc = "Urgency words from lowest to highest (devswarm-store.js URGENCY_RANK); any other word is ignored."
+value = ["low", "normal", "high", "urgent"]
+
+[mesh_write.summary_recent_cap]
+doc = "Most broadcast runs a summary keeps in recent[] (devswarm-store.js DEFAULT_RECENT_CAP)."
+value = 50
+min = 1
+max = 100000
+
+[mesh_write.summary_pending_questions_cap]
+doc = "Most per-sender pending questions a summary keeps per workspace (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP)."
+value = 200
+min = 1
+max = 100000
+
+[mesh_write.archive_request_marker]
+doc = "Body marker of an archive-request send (devswarm-store.js ARCHIVE_REQUEST_MARKER)."
+value = "[[ANTIHALL_ARCHIVE_REQUEST]]"
+
+[mesh_write.gate_done]
+doc = "The gate a child's `done` verb sets."
+value = "done"
+
+[mesh_write.done_setby_prefix]
+doc = "Setter prefix of a done gate that carries the HEAD sha (devswarm-store.js DONE_GATE_SETBY_PREFIX)."
+value = "devswarm-done@"
+
+[mesh_write.gate_merged_verified]
+doc = "The report-only gate recording the merged ancestry check."
+value = "merged_verified"
+
+[mesh_write.merged_setby_prefix]
+doc = "Setter prefix of a merged_verified gate that carries the HEAD sha (devswarm-store.js MERGED_VERIFIED_SETBY_PREFIX)."
+value = "devswarm-merged@"
+
+[mesh_write.settings_devswarm_section]
+doc = "The settings.json section of the DevSwarm settings."
+value = "devswarm"
+
+[mesh_write.csv_separator]
+doc = "Separator of a comma-separated setting."
+value = ","
+
+[mesh_write.required_gates_env]
+doc = "Environment variable of devswarm.requiredGates (settings-schema.js)."
+value = "ANTIHALL_DEVSWARM_REQUIRED_GATES"
+
+[mesh_write.required_gates_key]
+doc = "settings.json key of the gates a workspace needs before it is archive-ready."
+value = "requiredGates"
+
+[mesh_write.required_gates_option]
+doc = "Plugin option (/config) of devswarm.requiredGates."
+value = "devswarm_required_gates"
+
+[mesh_write.required_gates_option_default]
+doc = "The plugin option's manifest default; a plugin option equal to it does not override (settings.js readPluginOption)."
+value = "done,merged,tests_passed"
+
+[mesh_write.required_gates_default]
+doc = "Schema default of devswarm.requiredGates."
+value = "done,merged,tests_passed"
+
+[mesh_write.required_gates_fallback]
+doc = "The gates used when the setting lists none (devswarm-store.js DEFAULT_REQUIRED_GATES)."
+value = ["done", "merged", "tests_passed"]
+
+[mesh_write.held_partitions_env]
+doc = "Environment variable of devswarm.heldPartitions."
+value = "ANTIHALL_DEVSWARM_HELD_PARTITIONS"
+
+[mesh_write.held_partitions_key]
+doc = "settings.json key of the owner-held partition ids."
+value = "heldPartitions"
+
+[mesh_write.held_partitions_option]
+doc = "Plugin option of devswarm.heldPartitions (it has none: empty)."
+value = ""
+
+[mesh_write.held_partitions_option_default]
+doc = "Manifest default of that plugin option (unused while it has none)."
+value = ""
+
+[mesh_write.held_partitions_default]
+doc = "Schema default of devswarm.heldPartitions (none held)."
+value = ""
+
+[mesh_write.jev_cache_file]
+doc = "Jev triage's label cache file under anti-hall's cache directory (jev-triage.js cachePath)."
+value = "jev-triage.json"
+
+[mesh_write.jev_question_kind]
+doc = "The triage label kind of a message that asks a question (jev-triage.js)."
+value = "question-needs-answer"
+
+[mesh_write.field_kind]
+doc = "Field of a triage label that holds its kind."
+value = "kind"
+
+[mesh_write.jev_hash_hex]
+doc = "Hex characters of a triage cache key (jev-triage.js hashMessage: sha256, first 32)."
+value = 32
+min = 1
+max = 64
+
+[mesh_write.exit_committed_failure]
+doc = "Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (EX_TEMPFAIL)."
+value = 75
+min = 1
+max = 255
+
+[mesh_write.msg_committed_failure]
+doc = "Stderr line for that case."
+value = "ah-engine mesh: the write was committed but the engine failed before printing its result; not retried in Node (that would write twice). Check the store before resending."
+
+[mesh_write.summary_failed]
+doc = "Log result of a summary refresh the engine could not do after its write (Node's next derive refreshes the file)."
+value = "summary-failed"

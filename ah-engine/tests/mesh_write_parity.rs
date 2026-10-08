@@ -7,7 +7,7 @@
 //! stdout, the exit code, a raw dump of every store table (every column, rowids and `sqlite_sequence` included; only the
 //! wall-clock `updated_at` of the cursor tables is masked, since Node stamps it with `Date.now()`), Node's own canonical
 //! dump of both stores (`mesh_support/dump.js`), and every file of the home tree except the store files (compared above),
-//! `summaries/` (the summary refresh stays with Node: documented gap) and the engine's own state directory.
+//! and the engine's own state directory. `summaries/<repoKey>.json` IS compared: the engine refreshes it as Node does.
 //! The engine must ANSWER every `native` case itself (its on-mode log says `native`); a `defer` case must be handed to
 //! Node, whose output then is the engine's output.
 //!
@@ -30,6 +30,9 @@ struct Case {
     extra: Vec<(&'static str, String)>,
     native: bool,
 }
+
+/// Cases that first add an orphan partition with unread mail to both homes (`orphan.js`).
+const ORPHAN_CASES: &[&str] = &["send-with-orphan", "mesh-read-with-orphan"];
 
 #[test]
 fn engine_verbs_match_node_byte_for_byte() {
@@ -259,6 +262,39 @@ fn engine_verbs_match_node_byte_for_byte() {
             native: false,
         },
         Case {
+            name: "send-required-gates-env",
+            cwd: "main",
+            argv: vec![s("send"), s("--to"), s("child-1"), s("--message"), s("gates from env")],
+            stdin: None,
+            extra: vec![("ANTIHALL_DEVSWARM_REQUIRED_GATES", s(" done , tests_passed ,"))],
+            native: true,
+        },
+        Case {
+            name: "send-plugin-option-gates",
+            cwd: "main",
+            argv: vec![s("send"), s("--to"), s("child-1"), s("--message"), s("gates from /config")],
+            stdin: None,
+            extra: vec![("CLAUDE_PLUGIN_OPTION_DEVSWARM_REQUIRED_GATES", s("done"))],
+            native: true,
+        },
+        Case {
+            name: "send-question-from-child",
+            cwd: "child",
+            argv: vec![s("send"), s("--to-primary"), s("--question"), s("--message"), s("may I merge?")],
+            stdin: None,
+            extra: as_child.clone(),
+            native: true,
+        },
+        Case {
+            name: "send-with-orphan",
+            cwd: "main",
+            argv: vec![s("send"), s("--to"), s("child-1"), s("--message"), s("x")],
+            stdin: None,
+            extra: vec![],
+            native: false,
+        },
+        Case { name: "mesh-read-with-orphan", cwd: "main", argv: vec![s("mesh"), s("read")], stdin: None, extra: vec![], native: false },
+        Case {
             name: "jev-on-direct",
             cwd: "main",
             argv: vec![s("send"), s("--to"), s("child-1"), s("--message"), s("labelled?")],
@@ -283,6 +319,18 @@ fn engine_verbs_match_node_byte_for_byte() {
         copy_tree(&fx.seed_home, &hn);
         copy_tree(&fx.seed_home, &he);
         for h in [&hn, &he] {
+            if ORPHAN_CASES.contains(&c.name) {
+                let o = Command::new("node")
+                    .arg(support("orphan.js"))
+                    .arg(h)
+                    .arg(&fx.repo_key)
+                    .env_clear()
+                    .env("PATH", std::env::var("PATH").unwrap())
+                    .env("HOME", h)
+                    .output()
+                    .unwrap();
+                assert!(o.status.success(), "orphan seed failed: {}", String::from_utf8_lossy(&o.stderr));
+            }
             fs::create_dir_all(h.join(".anti-hall")).unwrap();
             fs::write(h.join(".anti-hall").join("settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
         }
