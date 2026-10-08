@@ -104,6 +104,27 @@ fn put(h: &Path, rel: &str, text: &str) {
     fs::write(p, text).unwrap();
 }
 
+fn chmod(p: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Undo every injected permission fault under `dir`, so the scratch tree can be removed.
+fn reset_modes(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(m) = fs::symlink_metadata(dir) {
+        if m.file_type().is_symlink() {
+            return;
+        }
+        fs::set_permissions(dir, fs::Permissions::from_mode(if m.is_dir() { 0o755 } else { 0o644 })).ok();
+        if m.is_dir() {
+            for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+                reset_modes(&e.path());
+            }
+        }
+    }
+}
+
 fn no_node_path(root: &Path) -> String {
     let bin = root.join("nonode-bin");
     fs::create_dir_all(&bin).unwrap();
@@ -529,6 +550,65 @@ fn cases(fx: &Fx) -> Vec<Case> {
             native: true,
             expect: vec!["known false"],
         },
+        // ---- injected faults the tick swallows, as Node does ----
+        Case {
+            name: "fault-unreadable-inbox-is-an-unknown-count",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 0, 0), d_inbox.clone()),
+            union: inbox(text3.clone()),
+            fixup: with_lock(|h, _| chmod(&h.join("inbox/child-1.ndjson"), 0o000)),
+            native: true,
+            expect: vec!["unread 2, known false"],
+        },
+        Case {
+            name: "fault-garbage-nd-cursor-file-is-an-unknown-count",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 0, 0), d_inbox.clone()),
+            union: inbox(text3.clone()),
+            fixup: with_lock(|h, _| fs::write(h.join("cursors-nd/child-1.txt"), "abc").unwrap()),
+            native: true,
+            expect: vec!["unread 2, known false"],
+        },
+        Case {
+            name: "fault-read-only-wake-tick-dir-the-marker-write-fails-silently",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(text3.clone()),
+            fixup: with_lock(|h, _| {
+                put(h, "wake-tick/other.json", "{}");
+                chmod(&devswarm(h).join("wake-tick"), 0o555);
+            }),
+            native: true,
+            expect: vec!["unread 3"],
+        },
+        Case {
+            name: "fault-read-only-heartbeats-dir-the-refresh-fails-silently",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: with_lock(|h, _| chmod(&devswarm(h).join("heartbeats"), 0o555)),
+            native: true,
+            expect: vec!["unread 0"],
+        },
+        Case {
+            name: "cron-found-mail-with-an-existing-line-keeps-it",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(text3.clone()),
+            fixup: with_lock(|h, _| put(h, "cron-found-mail.jsonl", "{\"ts\":1}\n")),
+            native: true,
+            expect: vec!["unread 3"],
+        },
         // ---- deferrals: nothing may be written ----
         Case {
             name: "child-flag",
@@ -806,6 +886,13 @@ fn tick_matches_node_byte_for_byte_and_defers_without_writing() {
     let list = cases(&fx);
     let (mut native, mut deferred) = (0, 0);
     for (i, c) in list.iter().enumerate() {
+        struct Undo(Vec<PathBuf>);
+        impl Drop for Undo {
+            fn drop(&mut self) {
+                self.0.iter().for_each(|p| reset_modes(p));
+            }
+        }
+        let _undo = Undo(["node", "engine", "defer"].iter().map(|k| fx.root.join(format!("{}-{k}", c.name))).collect());
         let now = NOW + i as i64 * 7_919;
         let cwd: PathBuf = if c.cwd == "main" { fx.main.clone() } else { fx.child.clone() };
         let (hn, he, hd) = (fx.root.join(format!("{}-node", c.name)), fx.root.join(format!("{}-engine", c.name)), fx.root.join(format!("{}-defer", c.name)));
@@ -826,7 +913,10 @@ fn tick_matches_node_byte_for_byte_and_defers_without_writing() {
             native += 1;
             assert_eq!(log["verb"], "InboxTick", "{}: telemetry names the verb", c.name);
             // the JSON form names the home (storePath): the two scratch homes differ
-            let (se, sn) = (String::from_utf8_lossy(&normalized(&he, e.stdout.as_bytes())).into_owned(), String::from_utf8_lossy(&normalized(&hn, n.stdout.as_bytes())).into_owned());
+            let (se, sn) = (
+                String::from_utf8_lossy(&normalized(&he, e.stdout.as_bytes())).into_owned(),
+                String::from_utf8_lossy(&normalized(&hn, n.stdout.as_bytes())).into_owned(),
+            );
             assert_eq!((e.code, &se), (n.code, &sn), "{}: stdout/exit differ", c.name);
             assert_same_home(c.name, &hn, &he, &fx.repo_key, "node vs engine");
             let v = verify_line(&he.join("state"));
@@ -846,5 +936,5 @@ fn tick_matches_node_byte_for_byte_and_defers_without_writing() {
         }
     }
     eprintln!("tick parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", list.len());
-    assert!(native >= 29 && deferred >= 20, "{native} native, {deferred} deferred");
+    assert!(native >= 34 && deferred >= 20, "{native} native, {deferred} deferred");
 }

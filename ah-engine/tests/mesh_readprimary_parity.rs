@@ -133,6 +133,27 @@ fn sql(h: &Path, key: &str, statement: &str) {
     rusqlite::Connection::open(db).unwrap().execute_batch(statement).unwrap();
 }
 
+fn chmod(p: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Undo every injected permission fault under `dir`, so the scratch tree can be removed.
+fn reset_modes(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(m) = fs::symlink_metadata(dir) {
+        if m.file_type().is_symlink() {
+            return;
+        }
+        fs::set_permissions(dir, fs::Permissions::from_mode(if m.is_dir() { 0o755 } else { 0o644 })).ok();
+        if m.is_dir() {
+            for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+                reset_modes(&e.path());
+            }
+        }
+    }
+}
+
 fn no_node_path(root: &Path) -> String {
     let bin = root.join("nonode-bin");
     fs::create_dir_all(&bin).unwrap();
@@ -260,7 +281,15 @@ fn assert_same_homes(name: &str, a: &Path, b: &Path, ba: &[String], bb: &[String
 
 fn store_dump(home: &Path, key: &str) -> String {
     let db = home.join(".anti-hall/devswarm/store").join(key).join("devswarm.db");
-    if db.is_file() { raw_dump(&db) } else { String::new() }
+    if !db.is_file() {
+        return String::new();
+    }
+    // an injected fault leaves an unreadable file or a file that is no database: a marker, not a panic
+    match fs::read(&db) {
+        Err(_) => "<unreadable>".to_string(),
+        Ok(b) if b.starts_with(b"SQLite format 3\0") => raw_dump(&db),
+        Ok(b) => format!("not a database: {b:?}"),
+    }
 }
 
 fn verify_line(state: &Path) -> Value {
@@ -880,6 +909,79 @@ fn cases(fx: &Fx) -> Vec<Case> {
         false,
         vec!["truncated"],
     ));
+    // ---- injected faults: the engine must not guess where Node would report ----
+    v.push(base(
+        "fault-the-receipt-directory-is-read-only",
+        rp("child-1", &[]),
+        ack(floors("child-1", 0, 0), d_store.clone()),
+        nothing(),
+        with_launcher(|h, _| {
+            put(h, "read-receipts/child-1/rkeep.json", "{}");
+            chmod(&devswarm(h).join("read-receipts/child-1"), 0o555);
+        }),
+        false,
+        vec!["receiptError"],
+    ));
+    v.push(base(
+        "fault-the-receipt-root-is-a-file",
+        rp("child-1", &[]),
+        ack(floors("child-1", 0, 0), d_store.clone()),
+        nothing(),
+        with_launcher(|h, _| put(h, "read-receipts", "not a directory")),
+        false,
+        vec!["receiptError"],
+    ));
+    v.push(base(
+        "fault-the-ndjson-inbox-is-unreadable",
+        rp("child-1", &[]),
+        ack(floors("child-1", 0, 0), d_inbox.clone()),
+        inbox(text3.clone()),
+        with_launcher(|h, _| chmod(&h.join("inbox/child-1.ndjson"), 0o000)),
+        false,
+        vec!["\"count\""],
+    ));
+    v.push(base(
+        "fault-the-nd-cursor-file-is-garbage",
+        rp("child-1", &[]),
+        ack(floors("child-1", 0, 0), d_inbox.clone()),
+        inbox(text3.clone()),
+        with_launcher(|h, _| fs::write(h.join("cursors-nd/child-1.txt"), "abc").unwrap()),
+        false,
+        vec!["\"count\""],
+    ));
+    v.push(base(
+        "fault-the-store-file-is-unreadable",
+        rp("child-1", &[]),
+        ack(floors("child-1", 0, 0), d_store.clone()),
+        nothing(),
+        {
+            let key = key.clone();
+            with_launcher(move |h, _| chmod(&devswarm(h).join("store").join(&key).join("devswarm.db"), 0o000))
+        },
+        false,
+        vec![],
+    ));
+    v.push(base(
+        "fault-the-descriptor-is-unreadable",
+        rp("child-1", &[]),
+        ack(floors("child-1", 0, 0), d_store.clone()),
+        nothing(),
+        with_launcher(|h, _| chmod(&devswarm(h).join("workspaces/child-1.json"), 0o000)),
+        false,
+        vec![],
+    ));
+    v.push(base(
+        "fault-the-store-is-not-a-database",
+        rp("child-1", &[]),
+        ack(floors("child-1", 0, 0), d_store.clone()),
+        nothing(),
+        {
+            let key = key.clone();
+            with_launcher(move |h, _| fs::write(devswarm(h).join("store").join(&key).join("devswarm.db"), b"this is not sqlite").unwrap())
+        },
+        false,
+        vec![],
+    ));
     // Node would label with Jev (a worker, the network): only the engine's deferral is checked
     v.push(Case {
         extra: vec![("ANTIHALL_JEV", "1".into())],
@@ -911,6 +1013,13 @@ fn read_primary_matches_node_byte_for_byte_and_defers_without_writing() {
     }
     let (mut native, mut deferred, mut acked) = (0, 0, 0);
     for (i, c) in list.iter().enumerate() {
+        struct Undo(Vec<PathBuf>);
+        impl Drop for Undo {
+            fn drop(&mut self) {
+                self.0.iter().for_each(|p| reset_modes(p));
+            }
+        }
+        let _undo = Undo(["node", "engine", "defer"].iter().map(|k| fx.root.join(format!("{}-{k}", c.name))).collect());
         let now = NOW + i as i64 * 7_919;
         let cwd: PathBuf = if c.cwd == "main" { fx.main.clone() } else { fx.child.clone() };
         let (hn, he, hd) = (fx.root.join(format!("{}-node", c.name)), fx.root.join(format!("{}-engine", c.name)), fx.root.join(format!("{}-defer", c.name)));
