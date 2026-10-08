@@ -37,6 +37,7 @@ files = [
     "codex_handover.toml",
     "task_guards.toml",
     "devswarm_role.toml",
+    "roles.toml",
     "devswarm_gates.toml",
     "migrate.toml",
     "migrate_settings.toml",

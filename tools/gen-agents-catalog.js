@@ -91,8 +91,10 @@ function build() {
   out.push('');
   // Skills
   const dirs = (d) => fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
-  out.push('**Skills** — Claude `/anti-hall:<name>`: ' + dirs(P('skills')).map((s) => '`' + s + '`').join(', ') + '.');
-  out.push('Codex `anti-hall-<name>`: ' + dirs(P('codex', 'skills')).map((s) => s.replace(/^anti-hall-/, '')).join(', ') + '.');
+  // the generated engine family (engine + one sub-skill per feature area) is one entry: `engine` is the entry point
+  const fold = (names) => { const area = names.filter((n) => /^engine-/.test(n)); return names.filter((n) => !/^engine-/.test(n)).map((n) => '`' + n + '`' + (n === 'engine' ? ' (+' + area.length + ' area skills `engine-*`)' : '')); };
+  out.push('**Skills** — Claude `/anti-hall:<name>`: ' + fold(dirs(P('skills'))).join(', ') + '.');
+  out.push('Codex `anti-hall-<name>`: ' + fold(dirs(P('codex', 'skills')).map((s) => s.replace(/^anti-hall-/, ''))).map((x) => x.replace(/`/g, '')).join(', ') + '.');
   out.push('');
   // CLI verbs
   out.push('**CLI verbs**:');

@@ -8,6 +8,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 mod replies;
+mod roles;
 mod transcript_support;
 
 mod agent_cli;

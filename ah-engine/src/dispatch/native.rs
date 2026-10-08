@@ -68,7 +68,7 @@ pub fn run_entry(entry: &Entry, meta: &Meta, p: &Value) -> Answer {
         tool_input: p.get("tool_input").unwrap_or(&null),
         prompt: p.get("prompt").and_then(Value::as_str),
     };
-    let opts = json!({ "plugin_root": meta.root, "payload_sha1": meta.payload_sha1 });
+    let opts = json!({ "plugin_root": meta.root, "payload_sha1": meta.payload_sha1, "host": meta.host });
     let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| checks::run_env_guarded(check, &subject, p, &opts, &meta.env)));
     match verdict {
         Ok(v) => answer_of(&entry.id, v),

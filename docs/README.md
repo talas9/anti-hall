@@ -86,6 +86,16 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `defects` | "file an anti-hall bug" | file/list/show/rule on anti-hall's own defect reports |
 | `jev` | "activate jev" | asks for your Vercel AI Gateway or TypeSafe key, installs it, enables and tests it |
 | `settings` | "anti-hall settings", "set auto-handover to 80%" | show or change any setting; one unified `~/.anti-hall/settings.json`, browsable via `show`/`get`/`set`/`reset` |
+| `engine-agents` | spawning, messaging or stopping agents, keeping the task list, or delegating work and a delegation, task or mo | Subagent, task-list, delegation and routing guards (generated from the engine registry) |
+| `engine-devswarm` | working in or with DevSwarm workspaces and a DevSwarm gate, role directive or wake guard applies | The DevSwarm role, gate and wake guards (generated from the engine registry) |
+| `engine-doctor` | checking whether anti-hall works, repairing it, migrating its state, or scanning what it can do on this machin | Health check, repair, migrations and capability scans (generated from the engine registry) |
+| `engine-github` | committing, pushing, merging or releasing and a git or merge guard applies | Git, merge and release guards (generated from the engine registry) |
+| `engine-guards` | an anti-hall guard blocked, warned or injected something, or you need to know which guard covers a rule | What the automatic guards check and how to read a block (generated from the engine registry) |
+| `engine-handovers` | writing or resuming a handover, or compacting context, and a handover or compaction guard applies | Handover, resume and compaction guards (generated from the engine registry) |
+| `engine-mesh` | you need to read workspace messages, unread counts or the per-project mailbox through the engine | Read the DevSwarm message store and per-project mailboxes (generated from the engine registry) |
+| `engine-resources` | you need the engine daemon status, metrics, impact, telemetry, a backup or restore, a scheduled job, or contex | Daemon status, metrics, backups, schedules and limits (generated from the engine registry) |
+| `engine-settings` | changing or reading an anti-hall setting or switch, looking up an engine reference, or configuring the Jev cla | Settings switches, the generated reference and the Jev classifier (generated from the engine registry) |
+| `engine` | you need to know what the anti-hall engine can do, which engine verbs your session may run, or which engine sk | start here: the role-gated engine verbs and the area skills (generated from the engine registry) |
 
 ## Knowledge base (KB-*)
 

@@ -120,6 +120,11 @@
             "type": "command",
             "command": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/engine-roles\"",
+            "timeout": 10
           }
         ]
       }
@@ -210,6 +215,11 @@
           {
             "type": "command",
             "command": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/engine-roles\"",
             "timeout": 10
           }
         ]

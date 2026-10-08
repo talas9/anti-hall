@@ -29,7 +29,7 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `autoHandover` | Auto Handover | 10 | `enabled`, `pct` |
 | `guards` | Guards | 74 | `modelRouting` |
 | `safety` | Safety Guards | 4 | `gitGuard`, `commandGuard`, `editGuard`, `swarmGuard` |
-| `context` | Context Injections | 20 | |
+| `context` | Context Injections | 22 | |
 | `maintenance` | Maintenance | 5 | |
 | `agents` | Agent tracker | 3 | |
 | `versionAlerts` | Version Alerts | 3 | |
@@ -147,8 +147,8 @@ and so does the `unknown command:` error, so neither can drift from the dispatch
 each with `--apply`); their names are stable, their report text is not.
 `update.js --post-pull-only` is an internal re-exec handshake, not a public flag.
 
-**Skill names** are stable too: `/anti-hall:<name>` for the 18 Claude skills and
-`anti-hall-<name>` for the 21 Codex skills. Renaming or removing one is MAJOR.
+**Skill names** are stable too: `/anti-hall:<name>` for the 28 Claude skills and
+`anti-hall-<name>` for the 31 Codex skills. Renaming or removing one is MAJOR.
 
 ## 3. Hook contracts
 

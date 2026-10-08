@@ -113,6 +113,8 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `merge-gate` | Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js). |
 | `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
+| `engine-role-guard` | PreToolUse on Bash: refuses an ah-engine command the caller's role may not run, per the roles.matrix (subagent from the payload, workspace child from the environment). |
+| `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
 | `swarm-guard` | Blocks an agent spawn past the spawn-rate cap or under critical memory pressure, and adds the shared-tree advisory to an allowed write-capable spawn that shares a working tree with a running write-capable agent (port of swarm-guard.js and lib/shared-tree-note.js). |
 | `jev-weekly-scorecard` | Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); when the check is due and the Jev decision log holds no rows it stamps the weekly latch itself; otherwise defers to the Node hook, which builds the report (port of jev-weekly-scorecard.js). |
@@ -1773,7 +1775,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_SessionEnd` | `5 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionStart` | `18 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_Stop` | `12 items` |  |  | The claude Stop hook entries, in dispatch order. |
-| `dispatch.hooks_claude_SubagentStart` | `5 entries` |  |  | The claude SubagentStart hook entries, in dispatch order. |
+| `dispatch.hooks_claude_SubagentStart` | `5 entries, 5 entries` |  |  | The claude SubagentStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStop` | `5 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCompleted` | `5 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCreated` | `5 entries` |  |  | The claude TaskCreated hook entries, in dispatch order. |
@@ -3451,6 +3453,43 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.sw_supervisor_mode` | `6 entries` |  |  | Setting devswarm.supervisorMode (auto, on or off): force the supervisor context on or off, or detect it from the environment. default is also the manifest default the plugin option is compared with. |
 | `devswarm_role.sw_wake_cron` | `4 entries` |  |  | Setting devswarm.wakeCron: the cron schedule of the mailbox-wake job, untrusted text that is validated before it is injected. |
 | `devswarm_role.test_markers` | `ANTIHALL_TEST, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; with one of them set and the home equal to the real home the Node settings reader refuses, so the check defers rather than guess what Node does. |
+
+### roles.toml / roles
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `roles.bash_re` | `(?:^\|[\s;&\|(])(?:\S*/)?ah-engine(?:\s\|$)` |  |  | Finds an engine invocation in a Bash command (engine syntax); the words after the match are the verb and its arguments, up to the next shell operator. |
+| `roles.branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable that is non-empty in a DevSwarm workspace child (and empty in a Primary). |
+| `roles.builder_env` | `DEVSWARM_BUILDER_ID` |  |  | Environment variable holding the caller's own workspace id: what a workspace child may act on. |
+| `roles.cli_cmd` | `ah-engine {verb}` |  |  | How a verb is typed, for the skills. |
+| `roles.declared_env` | `ANTIHALL_ROLE` |  |  | Environment variable a wrapper may set to declare the caller's role on the command line (a role name from roles.names). It can only narrow what the environment says is possible, never name a role the detection ruled out: a workspace child stays a workspace child. |
+| `roles.describe` | `4 entries` |  |  | What each role is, in one line (shown in the role note and the engine skill). |
+| `roles.engine_bin` | `ah-engine` |  |  | The engine's executable name, as an agent types it in a Bash command. |
+| `roles.groups` | `9 entries` |  |  | The feature areas, in skill order. `skill` is the sub-skill name (the main skill is `engine`), `title` its heading, `brief` the one line the main skill shows, `use_when` the sentence that makes the host load the sub-skill (a skill's description is what triggers loading), `prefixes` the engine checks (guards) it covers by name prefix and `settings_prefixes` the switches it lists by `section.key` prefix (first area that matches wins; the rest go to `guards`). |
+| `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
+| `roles.line_max` | `140` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
+| `roles.main_skill` | `3 entries` |  |  | The main skill: its name, its description (when to load it) and its intro line. |
+| `roles.matrix` | `28 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
+| `roles.msg_none` | `none` |  |  | The verb list in the note when the role may run none. |
+| `roles.msg_note` | `anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {v...` |  |  | The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}. |
+| `roles.msg_note_more` | ` (+{n} more, see the guide)` |  |  | Added to the note when the verb list was shortened. Placeholder: {n}. |
+| `roles.msg_refuse` | `anti-hall engine: `{verb}` is not available to {role} sessions. Who may run i...` |  |  | Refusal when the caller's role may not run a verb. Placeholders: {verb}, {role}, {allowed}, {why}. |
+| `roles.msg_refuse_self` | `anti-hall engine: `{verb}` from a workspace child may only act on itself ({se...` |  |  | Refusal when a workspace child names another workspace. Placeholders: {verb}, {target}, {self}. |
+| `roles.msg_why_other` | `This role is not on the verb's list in roles.matrix.` |  |  | The reason in msg_refuse when the role is simply not on the verb's list. |
+| `roles.msg_why_owner` | `It changes or removes state, so it is reserved for the main session; ask it t...` |  |  | The reason in msg_refuse when the verb or argument is owner-level. |
+| `roles.names` | `subagent, workspace, codex, main` |  |  | The caller roles, most specific first when two apply (a workspace child that is a Codex session is a workspace child). |
+| `roles.note_max` | `900` |  |  | Longest role note, in characters; the verb list is shortened to fit. |
+| `roles.owner_roles` | `codex, main` |  |  | The roles allowed to run a verb with one of its owner_args. |
+| `roles.refuse_exit` | `77` |  |  | Exit status of the command line when the caller's role may not run the verb. |
+| `roles.self_flags` | `--id, --workspace, --builder` |  |  | Command-line flags whose value names a workspace; a workspace child may only name itself there. |
+| `roles.skill_budget` | `2 entries` |  |  | Size limits of the generated skills, in bytes of SKILL.md: the main skill must stay tiny, a sub-skill bounded. A test fails when a generated skill is over its limit; shrink the area (split it into two) rather than raise the number. |
+| `roles.skill_frontmatter` | `---\nname: {name}\ndescription: "{description}"\n---\n\n` |  |  | Front matter of a generated skill. Placeholders: {name}, {description}. |
+| `roles.skill_host` | `2 entries` |  |  | Per host: where the generated skill files go under the plugin root, the skill folder name prefix, the command that names a skill in prose and the front matter name prefix. Codex skills are folders named anti-hall-<skill>. |
+| `roles.skill_labels` | `13 entries` |  |  | Labels the generated skills use. `roles_head` heads the role table, `verbs_head` the verb table, `guards_head` the guard list, `settings_head` the switches, `none` marks an empty cell, `yes` an allowed role, `self` a self-only role. |
+| `roles.summary_guard` | `PreToolUse on Bash: refuses an ah-engine command the caller's role may not ru...` |  |  | One-line description of the engine-role-guard check in the generated reference. |
+| `roles.summary_note` | `SessionStart and SubagentStart context: tells the session its role, the engin...` |  |  | One-line description of the engine-role-note check in the generated reference. |
+| `roles.sw_guard` | `5 entries` |  |  | Switch context.roleGuard (default on): off lets every role run every engine verb (the PreToolUse Bash check and the command-line check step aside). |
+| `roles.sw_note` | `5 entries` |  |  | Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note. |
 
 ### devswarm_gates.toml / devswarm_gates
 
