@@ -25,7 +25,7 @@ use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::guardkit::paths;
 use crate::checks::guardkit::settings::{get_bool, is_skipped};
 use crate::checks::guardkit::text::{is_js_space, js_trim};
-use crate::checks::speculation_guard::mask::mask_quoted_text;
+use crate::checks::guardkit::mask::mask_quoted_text;
 use crate::checks::{Check, Exact, Verdict};
 use crate::defaults;
 use crate::jev::{AskRequest, Question, Trust};
