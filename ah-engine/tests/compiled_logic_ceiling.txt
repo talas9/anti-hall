@@ -1,4 +1,4 @@
 # D88 v1.0 gate: the most checks that may still decide in compiled Rust (see tests/compiled_logic_gate.rs).
 # Batch 1 (lane d88) took it from 62 to 55. The nodeonly lane then added three checks as compiled Rust (task-tracker,
 # session-end-mcp-reaper, verify-first-orch-codex): 58. Migrating those three to scripts lowers it again.
-58
+57
