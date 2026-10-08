@@ -383,8 +383,8 @@ doc = "Printed by `proj` when the spool could not be written. Placeholder: {err}
 value = "the engine is unavailable and the spool could not be written: {err}"
 
 [msg.spool_rewrite_failed]
-doc = "Log detail when the spool could not be rewritten after a drain. Placeholders: {err} the OS error, {n} unapplied records that may be lost."
-value = "{err}; {n} unapplied record(s) may be lost"
+doc = "Log detail when the spool could not be replaced after a drain. The old spool stays whole (the records already applied are applied again, harmlessly, by their write ids). Placeholders: {err} the OS error, {n} unapplied records still in it."
+value = "{err}; the spool is kept as it was ({n} unapplied record(s) still in it)"
 
 [msg.spool_damaged]
 doc = "Quarantine reason for spool bytes that are not a valid record."
