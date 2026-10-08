@@ -62,7 +62,8 @@ fn copy_one(ctx: &Ctx, root: &Path, name: &str, dry_run: bool) -> Copy {
         return Copy::Failed(Error::Io { call: "mkdir", path: dest_dir, source });
     }
     let tmp = dest_dir.join(format!(".{name}{}-{}-{}", defaults::text("migrate.tmp_ext"), std::process::id(), num::to_js_string(date::now_ms())));
-    if let Err(source) = std::fs::write(&tmp, &src) {
+    // the temp name is Node's (DECISIONS, atomic-write exceptions); the write is synced before the rename
+    if let Err(source) = crate::atomic::stage(&tmp, &src, crate::atomic::Style::default()) {
         return Copy::Failed(Error::Io { call: "open", path: tmp, source });
     }
     if let Err(source) = std::fs::rename(&tmp, &dest) {
@@ -229,7 +230,7 @@ fn serialize_replies(folded: Vec<(String, f64)>) -> String {
 fn rewrite_replies(ctx: &Ctx, p: &Path, current: &mut String, folded: Vec<(String, f64)>) -> Result<bool, ()> {
     let tmp = PathBuf::from(format!("{}.migrate.{}.{}", p.display(), scratch_suffix(), super::rand36()));
     let step = (|| {
-        if let Err(e) = std::fs::write(&tmp, serialize_replies(folded)) {
+        if let Err(e) = crate::atomic::stage(&tmp, serialize_replies(folded), crate::atomic::Style::default()) {
             ctx.io_note("open", &tmp, &e);
             return Err(());
         }

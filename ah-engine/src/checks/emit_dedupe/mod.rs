@@ -164,7 +164,7 @@ fn prune_stale(dir: &std::path::Path, keep: &std::path::Path) {
     {
         return;
     }
-    crate::discard::harmless(std::fs::write(&stamp, Js::Obj(vec![("lastSweep".into(), Js::Num(now))]).stringify())); // keep: a lost sweep stamp only repeats the sweep
+    crate::discard::harmless(crate::atomic::write(&stamp, Js::Obj(vec![("lastSweep".into(), Js::Num(now))]).stringify())); // keep: a lost sweep stamp only repeats the sweep
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let keep_name = keep.file_name().map(|n| n.to_string_lossy().to_string());
     let (head, tail) = (format!("{prefix}-"), ".json");

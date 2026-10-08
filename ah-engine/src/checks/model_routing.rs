@@ -438,7 +438,7 @@ fn handover_advisory(payload: &Value, corpus: &str, st: &Settings) -> Option<Ver
         return None;
     }
     std::fs::create_dir_all(&dir).ok()?;
-    std::fs::write(&file, defaults::text("model_routing.handover_state_json")).ok()?;
+    crate::atomic::write(&file, defaults::text("model_routing.handover_state_json")).ok()?;
     Some(advise(msg::message(
         Kind::Tip,
         defaults::text("model_routing.handover_guard"),

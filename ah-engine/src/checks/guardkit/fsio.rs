@@ -47,7 +47,7 @@ pub fn prune_stale(dir: &str, prefix: &str, keep_file: Option<&str>) -> usize {
         }
     }
     let body = format!("{{\"{}\":{}}}", defaults::text("guardkit.prune_stamp_key"), now as u64);
-    crate::discard::harmless(std::fs::write(&stamp, body)); // keep: a lost sweep stamp only repeats the sweep
+    crate::discard::harmless(crate::atomic::write(&stamp, body)); // keep: a lost sweep stamp only repeats the sweep
     let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
     let full_prefix = format!("{prefix}-");
     let keep = keep_file.map(|k| k.rsplit('/').next().unwrap_or(k).to_string());

@@ -373,7 +373,7 @@ arguments, is in the generated reference.
 
 **Metrics** are counters, gauges and latency histograms kept in memory and bounded. Latency percentiles are reported as
 the upper bound of the histogram bucket that holds that rank, so they are upper estimates. The registered names are:
-`requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `hook_calls`, `hook_latency_us`, `dispatch_checks`,
+`requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `accept_errors` (accepts that failed with EMFILE and the like, by OS error code), `slow_replies` (replies finished after their client's deadline: slow but healthy), `hook_calls`, `hook_latency_us`, `dispatch_checks`,
 `check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth`, `uptime_s`, and for the
 memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evictions`, `tier_expired`, `bus_published`
 and `bus_dropped`, for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is sharing syncs), and for

@@ -275,6 +275,6 @@ fn decide(payload: &Value, env: &RequestEnv) -> Verdict {
     if let Some(dir) = std::path::Path::new(&stamp).parent() {
         crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write that follows fails too when the directory is missing
     }
-    crate::discard::harmless(std::fs::write(&stamp, J::Obj(vec![("lastSweep".to_string(), J::Num(now))]).stringify())); // keep: a lost sweep stamp only repeats the sweep
+    crate::discard::harmless(crate::atomic::write(&stamp, J::Obj(vec![("lastSweep".to_string(), J::Num(now))]).stringify())); // keep: a lost sweep stamp only repeats the sweep
     if line.is_empty() { Verdict::Allow } else { emit(&line) }
 }

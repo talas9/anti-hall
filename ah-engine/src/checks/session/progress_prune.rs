@@ -179,7 +179,7 @@ fn write_state(file: &str, state: &J) -> std::io::Result<()> {
     if let Some(dir) = Path::new(file).parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(file, state.stringify())
+    crate::atomic::write(file, state.stringify())
 }
 
 /// The gitignore reminder (`gitignoreHint(cwd)`): the advisory text to print, if any. Writes the weekly marker only when

@@ -3,6 +3,8 @@
 //! answer came from the engine and that its file effects are on disk.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
+use crate::common;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -52,6 +54,7 @@ impl World {
 
 impl Drop for World {
     fn drop(&mut self) {
+        common::reap(&self.dir.join("state"), || {}); // a daemon a hook call started never outlives the test
         ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }

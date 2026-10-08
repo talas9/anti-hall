@@ -53,7 +53,7 @@ pub fn prune_stale(state_dir: &Path, prefix: &str, keep_file: &Path) {
     {
         return;
     }
-    crate::discard::harmless(std::fs::write(&stamp, format!("{{\"lastSweep\":{}}}", now as i64))); // keep: a lost sweep stamp only repeats the sweep
+    crate::discard::harmless(crate::atomic::write(&stamp, format!("{{\"lastSweep\":{}}}", now as i64))); // keep: a lost sweep stamp only repeats the sweep
     let Ok(entries) = std::fs::read_dir(state_dir) else { return };
     let full_prefix = format!("{prefix}-");
     for e in entries.flatten() {
@@ -101,7 +101,7 @@ impl NotePlan {
     /// could not be remembered is not said, as in Node.
     pub fn apply(self) -> String {
         let Some(w) = self.write else { return self.note };
-        if std::fs::create_dir_all(&w.dir).is_err() || std::fs::write(&w.file, w.body).is_err() {
+        if std::fs::create_dir_all(&w.dir).is_err() || crate::atomic::write(&w.file, w.body).is_err() {
             return String::new();
         }
         prune_stale(&w.dir, w.prefix, &w.file);

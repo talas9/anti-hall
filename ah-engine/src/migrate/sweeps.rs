@@ -455,7 +455,9 @@ fn nd_cursors(ctx: &Ctx, repair: bool) -> Outcome {
         let mut tmp = inst.as_os_str().to_os_string();
         tmp.push(defaults::text("migrate.tmp_ext"));
         let tmp = PathBuf::from(tmp);
-        let written = std::fs::write(&tmp, num::to_js_string(applied)).and_then(|()| std::fs::rename(&tmp, &inst));
+        // Node's temp name and its leftover after a failed rename (DECISIONS, atomic-write exceptions); synced before the rename
+        let style = crate::atomic::Style { leave_temp_on_rename_failure: true, ..crate::atomic::Style::default() };
+        let written = crate::atomic::stage(&tmp, num::to_js_string(applied), style).and_then(|()| crate::atomic::replace(&tmp, &inst, style));
         match written {
             Ok(()) => out.push(item("fixed", String::new())),
             Err(e) => {

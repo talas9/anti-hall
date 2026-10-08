@@ -287,6 +287,24 @@ doc = "After a drain starts, a worker or loop that has not finished in this long
 value = 1000
 unit = "ms"
 
+[daemon.drain_max_ms]
+doc = "Longest a clean drain (handoff, stop, idle exit, SIGTERM) may take before the daemon exits anyway, so a worker stuck while draining can never keep the process (and the singleton lock) alive with its socket already gone. Above daemon.stuck_ms, so the stuck-worker check normally ends such a drain first."
+value = 10000
+min = 100
+unit = "ms"
+
+[daemon.accept_error_backoff_ms]
+doc = "Sleep after an accept that failed for a reason other than nothing pending (a full descriptor table, EMFILE): the pending connection would make poll fire again at once, so without it the accept loop spins at full CPU. Kept well under daemon.stall_ms."
+value = 50
+min = 1
+unit = "ms"
+
+[daemon.reply_slack_ms]
+doc = "Time kept back from a request's client deadline (client.deadline_ms, or what a dispatch request says) to write the reply: the inner budgets that could outlast the client's wait (a git call, a Jev consult) are clamped to the deadline minus this, so a slow dependency costs a fallback, not a lost answer."
+value = 150
+min = 0
+unit = "ms"
+
 [daemon.accept_poll_ms]
 doc = "Accept-loop poll interval while serving."
 value = 200
@@ -318,10 +336,16 @@ value = 100
 unit = "ms"
 
 [daemon.idle_exit_s]
-doc = "Seconds without any request after which the daemon exits; 0 keeps it resident (default, D7: the scheduler and mailbox must keep running with no session open)."
-value = 0
+doc = "Seconds without any request after which the daemon exits (the next hook call starts a fresh one, and the scheduler catches up its missed jobs); 0 keeps it resident. Long by default so the scheduler and mailbox keep running through a normal pause (D7), but never forever: a daemon a test or a crashed client left behind ends on its own."
+value = 21600
 env = "AH_ENGINE_IDLE_EXIT_S"
 unit = "s"
+
+[daemon.orphan_check_ms]
+doc = "How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable."
+value = 2000
+min = 100
+unit = "ms"
 
 [daemon.idle_check_ms]
 doc = "How often the watchdog compares the last request time with idle_exit_s."
@@ -410,6 +434,12 @@ unit = "bytes"
 doc = "Largest hook payload the client reads from stdin."
 value = 8388608
 unit = "bytes"
+
+[client.slow_probe_ms]
+doc = "After an exchange times out, how long the client waits for a ping: a daemon that answers is slow but healthy (logged as client_slow, not counted toward the breaker); one that does not counts as a failure."
+value = 200
+min = 1
+unit = "ms"
 
 [client.ctl_timeout_ms]
 doc = "Deadline for a control exchange (ping, status, reload, stop, project ops)."
@@ -516,6 +546,28 @@ value = [
 [health.pid_probe]
 doc = "Command used to read a process's command line when checking whether a pid is a live engine: the program, then its arguments with `{pid}` substituted."
 value = ["ps", "-p", "{pid}", "-o", "command="]
+
+[health.proc_cmdline]
+doc = "Where Linux keeps a process's command line (NUL-separated); read instead of running the pid probe. `{pid}` is substituted."
+value = "/proc/{pid}/cmdline"
+
+[health.probe_timeout_ms]
+doc = "Longest a pid or memory probe command (health.pid_probe, health.rss_probe) may run; it runs on the hook path, so a wedged one is cut off and reads as no answer."
+value = 1000
+min = 1
+unit = "ms"
+
+[health.probe_poll_ms]
+doc = "How often a running probe command is checked for completion."
+value = 2
+min = 1
+unit = "ms"
+
+[proc.read_grace_ms]
+doc = "After a helper process (git, ps, vm_stat, a scheduled job) exits, how long its output may take to reach end of file; a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer."
+value = 500
+min = 1
+unit = "ms"
 
 [health.rss_probe]
 doc = "Command used to read this process's resident set where /proc is unavailable (macOS): the program, then its arguments with `{pid}` substituted."
