@@ -160,8 +160,39 @@ t_wrapper_spawns() {
   [ -x "$(engine)" ] && [ "$("$(engine)" version)" = "$ver" ]
 }
 
+t_marker_records_the_binary() {
+  newhome mark; write_lock "$tmp/lock" "$ver" "$triple" "$good"
+  run || return 1
+  set -- $(cat "$HOME/.anti-hall/ah-engine/bootstrap.installed")
+  [ "$1 $2" = "$ver $good" ] && [ "${3:-}" = "$(sha_of "$(engine)")" ]
+}
+t_hand_built_untouched() {
+  # A binary replaced by hand after the bootstrap installed one (a local build) is not overwritten by a newer lock.
+  newhome hand; write_lock "$tmp/lock" "$ver" "$triple" "$good"
+  run || return 1
+  printf '#!/bin/sh\necho local-build\n' >"$(engine)"; chmod 755 "$(engine)"
+  write_lock "$tmp/lock" 9.8.8 "$triple" "$s2"
+  AH_BOOTSTRAP_RETRY_S=0 run || return 1
+  [ "$("$(engine)")" = local-build ] && logf | grep -q 'not the binary the bootstrap installed'
+}
+t_version_check_gets_the_plugin_root() {
+  # The real engine reads its settings from the plugin before it answers `version`: the check must name the plugin.
+  newhome root
+  v=9.8.6; n=ah-engine-v$v-$triple
+  mkdir -p "$tmp/pkg3/$n" "$tmp/www/ah-engine-v$v"
+  printf '#!/bin/sh\n[ -f "$AH_ENGINE_PLUGIN_ROOT/engine/defaults/index.toml" ] || { echo "defaults unavailable" >&2; exit 70; }\necho %s\n' "$v" >"$tmp/pkg3/$n/ah-engine"
+  chmod 755 "$tmp/pkg3/$n/ah-engine"
+  tar -czf "$tmp/www/ah-engine-v$v/$n.tar.gz" -C "$tmp/pkg3" "$n"
+  write_lock "$tmp/lock" "$v" "$triple" "$(sha_of "$tmp/www/ah-engine-v$v/$n.tar.gz")"
+  env -u AH_ENGINE_PLUGIN_ROOT -u CLAUDE_PLUGIN_ROOT -u PLUGIN_ROOT sh -c 'AH_BOOTSTRAP_UNAME_S=Linux AH_BOOTSTRAP_UNAME_M=x86_64 AH_BOOTSTRAP_UNAME_R=5.15.0 AH_BOOTSTRAP_LIBC=gnu sh "$1" --lock "$2"' _ "$boot" "$tmp/lock" || return 1
+  [ -x "$(engine)" ] && logf | grep -q 'ok: installed ah-engine 9.8.6'
+}
+
 check t_good
 check t_keeps_previous
+check t_marker_records_the_binary
+check t_hand_built_untouched
+check t_version_check_gets_the_plugin_root
 check t_wrong_hash
 check t_offline
 check t_unmanaged_untouched
