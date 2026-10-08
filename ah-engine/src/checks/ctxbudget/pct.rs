@@ -2,8 +2,9 @@
 //! the statusline's own reading, a Codex rollout's `token_count`, then an estimate from the last assistant usage block.
 //!
 //! The Node function writes one file on a path of its own (the inferred one-million-token window latch, whenever the
-//! observed usage is over the default window and no real window size is known). A check that must leave state exactly as
-//! Node does asks for [`Pct::Defer`] there instead of writing, so the Node hook runs and writes it.
+//! observed usage is over the default window and no real window size is known). Here the reading only says so
+//! ([`Reading::infer_write`]); the caller writes it with [`write_inferred`] once it has settled everything it might
+//! still defer on, so a deferral never leaves a half-written state behind.
 use super::{Jf, read_json};
 use crate::checks::compact_decl::json_depth;
 use crate::checks::git::util::Settings;
@@ -12,6 +13,21 @@ use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use serde_json::Value;
 
+/// Where the window size of an estimate came from (`windowLabel`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Label {
+    /// Not an estimate (`null`).
+    None,
+    /// The window size variable.
+    Env,
+    /// The window the statusline last stated.
+    Sticky,
+    /// Inferred one-million-token window.
+    Inferred,
+    /// The assumed default window.
+    Default,
+}
+
 /// One reading.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reading {
@@ -19,8 +35,16 @@ pub struct Reading {
     pub pct: f64,
     /// The tokens in use, when the source states them.
     pub used: Option<f64>,
+    /// The window size, when the source states one (`max`).
+    pub max: Option<f64>,
+    /// True for an estimate from the last usage block (`estimated`).
+    pub estimated: bool,
     /// False only for an estimate against the assumed default window.
     pub window_known: bool,
+    /// The source of an estimate's window size.
+    pub label: Label,
+    /// Node records the inferred window for this session while reading it: the caller must call [`write_inferred`].
+    pub infer_write: bool,
 }
 
 /// What looking for the reading came to.
@@ -69,7 +93,15 @@ fn statusline(st: &Settings, tag: &str) -> Result<Option<Reading>, ()> {
     if ts == 0.0 || now_ms() - ts > defaults::num("ctxbudget.pct_fresh_ms") as f64 {
         return Ok(None);
     }
-    Ok(Some(Reading { pct, used: num(raw.get("usedTokens")), window_known: true }))
+    Ok(Some(Reading {
+        pct,
+        used: num(raw.get("usedTokens")),
+        max: num(raw.get("maxTokens")),
+        estimated: false,
+        window_known: true,
+        label: Label::None,
+        infer_write: false,
+    }))
 }
 
 /// `store.readSticky`: the window size the statusline last stated, whatever its age.
@@ -178,7 +210,17 @@ pub fn context_pct(st: &Settings, session_id: Option<&Value>, transcript: Option
         }
     };
     match last_codex(lines) {
-        Ok(Some((used, max))) => return Pct::Reading(Reading { pct: (used / max * 100.0).clamp(0.0, 100.0), used: Some(used), window_known: true }),
+        Ok(Some((used, max))) => {
+            return Pct::Reading(Reading {
+                pct: (used / max * 100.0).clamp(0.0, 100.0),
+                used: Some(used),
+                max: Some(max),
+                estimated: false,
+                window_known: true,
+                label: Label::None,
+                infer_write: false,
+            });
+        }
         Ok(None) => {}
         Err(()) => return Pct::Defer,
     }
@@ -188,8 +230,8 @@ pub fn context_pct(st: &Settings, session_id: Option<&Value>, transcript: Option
         Err(()) => return Pct::Defer,
     };
     let env_max = st.env.get(defaults::text("ctxbudget.context_window_env")).and_then(|s| super::setting::js_parse_int(s)).filter(|m| *m > 0.0);
-    let (max, known) = if let Some(m) = env_max {
-        (m, true)
+    let (max, known, label, infer_write) = if let Some(m) = env_max {
+        (m, true, Label::Env, false)
     } else {
         let sticky = match tag.as_deref().map(|t| sticky_window(st, t)) {
             Some(Err(())) => return Pct::Defer,
@@ -203,15 +245,22 @@ pub fn context_pct(st: &Settings, session_id: Option<&Value>, transcript: Option
         };
         let over = used > defaults::num("ctxbudget.default_window") as f64;
         if let Some(m) = sticky {
-            (m, true)
+            (m, true, Label::Sticky, false)
         } else if over || already {
-            if over && tag.is_some() {
-                return Pct::Defer; // Node records the inferred window here
-            }
-            (defaults::num("ctxbudget.inferred_window") as f64, true)
+            (defaults::num("ctxbudget.inferred_window") as f64, true, Label::Inferred, over && tag.is_some())
         } else {
-            (defaults::num("ctxbudget.default_window") as f64, false)
+            (defaults::num("ctxbudget.default_window") as f64, false, Label::Default, false)
         }
     };
-    Pct::Reading(Reading { pct: (used / max * 100.0).clamp(0.0, 100.0), used: Some(used), window_known: known })
+    Pct::Reading(Reading { pct: (used / max * 100.0).clamp(0.0, 100.0), used: Some(used), max: Some(max), estimated: true, window_known: known, label, infer_write })
+}
+
+/// `store.writeInferred1m(home, tag)`: `{"inferred":true,"ts":<now>}` through a temporary file and a rename. Best effort.
+pub fn write_inferred(st: &Settings, session_id: Option<&Value>) {
+    let Some(tag) = tag_of(session_id) else { return };
+    let file = format!("{tag}{}", defaults::text("ctxbudget.inferred_suffix"));
+    let body = crate::checks::guardkit::msg::render("ctxbudget.inferred_json", &[("ts", &crate::checks::replykit::json::js_number(now_ms()))]);
+    if crate::checks::guardkit::fsio::write_atomic(&state_path(st, defaults::text("ctxbudget.pct_dir"), &file), &body).is_err() {
+        crate::discard::note("ctxbudget_inferred_write", "");
+    }
 }
