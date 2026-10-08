@@ -63,7 +63,7 @@ test('on: send and mesh read go to ah-engine mesh with the same argv and its exi
 
 test('on: other verbs stay in Node; an engine native nonzero result is passed through', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 2' });
-  const h = run(['inbox', 'read-primary', 'w1']);
+  const h = run(['inbox', 'peek-primary', 'w1']);
   assert.strictEqual(h.code, 3);
   assert.doesNotMatch(h.trace, /engine/);
   assert.strictEqual(run(['send', '--to', 'w']).code, 2);
@@ -102,9 +102,9 @@ test('on, engine exit 70 (committed failure, it already wrote): passed through, 
 test('on: inbox ack-primary is routed; the other inbox verbs stay in Node', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 0' });
   assert.strictEqual(run(['inbox', 'ack-primary', 'p1', '--receipt', 'r1']).code, 0);
-  const r = run(['inbox', 'read-primary', 'p1']);
+  const r = run(['inbox', 'peek-primary', 'p1']);
   assert.strictEqual(r.code, 3);
-  assert.match(r.trace, /engine mesh inbox ack-primary p1 --receipt r1\nnode inbox read-primary p1/);
+  assert.match(r.trace, /engine mesh inbox ack-primary p1 --receipt r1\nnode inbox peek-primary p1/);
 });
 
 test('on: mesh history, roster --ack and heartbeat are routed; plain roster and the other verbs stay in Node', () => {
@@ -116,9 +116,20 @@ test('on: mesh history, roster --ack and heartbeat are routed; plain roster and 
   const plain = run(['roster']);
   assert.strictEqual(plain.code, 3);
   assert.strictEqual(run(['mesh', 'peek']).code, 3);
-  const last = run(['inbox', 'read-primary', 'w1']);
+  const last = run(['inbox', 'peek-primary', 'w1']);
   assert.strictEqual(last.code, 3);
-  assert.match(last.trace, /engine mesh mesh history\nengine mesh roster --ack\nengine mesh roster --json --ack=1\nengine mesh heartbeat w1 --session s\nnode roster stdin=\nnode mesh peek stdin=\nnode inbox read-primary w1 stdin=\n$/);
+  assert.match(last.trace, /engine mesh mesh history\nengine mesh roster --ack\nengine mesh roster --json --ack=1\nengine mesh heartbeat w1 --session s\nnode roster stdin=\nnode mesh peek stdin=\nnode inbox peek-primary w1 stdin=\n$/);
+});
+
+test('on: inbox read-primary is routed (the engine decides; a deferral runs Node)', () => {
+  const ok = setup({ mode: 'on', engine: 'exit 0' });
+  const r = ok.run(['inbox', 'read-primary', 'w1', '--format', 'text']);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.trace, /engine mesh inbox read-primary w1 --format text\n$/);
+  const d = setup({ mode: 'on', engine: 'exit 75' });
+  const r2 = d.run(['inbox', 'read-primary', 'w1']);
+  assert.strictEqual(r2.code, 3);
+  assert.match(r2.trace, /engine mesh inbox read-primary w1[\s\S]*node inbox read-primary w1/);
 });
 
 test('on: inbox tick is routed; a deferral (exit 75) runs Node, a committed failure (exit 70) never reruns it', () => {

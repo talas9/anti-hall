@@ -1644,3 +1644,105 @@ value = ["sameHeartbeat", "sameVerdict", "sameCache"]
 [mesh_write.verify_names_tick]
 doc = "The names under which a tick verification mismatch reports whether the heartbeat record, the wake-tick marker and the cron-found-mail file are equal."
 value = ["sameHeartbeat", "sameMarker", "sameCronFound"]
+
+# ---- inbox read-primary (scripts/devswarm-lib/inbox-read.js cmdInboxMessagesInner, inbox-cmd.js, cursors.js writeReadReceipt) ----
+
+[mesh_write.verb_read_primary]
+doc = "The read-primary subverb of `inbox`."
+value = "read-primary"
+
+[mesh_write.action_read_primary]
+doc = "The `action` of a read-primary result."
+value = "read-primary"
+
+[mesh_write.flag_format]
+doc = "The rendering flag of read-primary (`--format text`)."
+value = "format"
+
+[mesh_write.format_text]
+doc = "The value of `--format` that selects the plain-text rendering."
+value = "text"
+
+[mesh_write.read_primary_flags]
+doc = "The flags `inbox read-primary` may carry for the engine to answer it; any other flag (a window, an ownership override, an immediate ack, a limit) is Node's."
+value = ["format", "json", "session"]
+
+[mesh_write.inbox_read_limit]
+doc = "DEFAULT_INBOX_READ_LIMIT: the most unread rows one read-primary returns; a larger backlog is truncated by Node's per-source cap, which the engine leaves to Node."
+value = 2000
+
+[mesh_write.receipt_keep_ms]
+doc = "READ_RECEIPT_KEEP_MS: a read receipt file older than this is pruned by the next receipt written for the id; the engine leaves a pruning write to Node."
+value = 604800000
+
+[mesh_write.receipt_version]
+doc = "The `v` of a read receipt record."
+value = 1
+
+[mesh_write.launcher_dir]
+doc = "Directory of the stable launchers under the home's `.anti-hall`."
+value = "bin"
+
+[mesh_write.launcher_devswarm]
+doc = "File name of the stable devswarm launcher (`stable-launcher.js` TARGETS.devswarm.name)."
+value = "devswarm.js"
+
+[mesh_write.ack_command]
+doc = "The `ackCommand` of a read-primary result: `{cli}` is the JSON-quoted stable launcher path, `{id}` the workspace id, `{rid}` the receipt id."
+value = "node {cli} inbox ack-primary {id} --receipt {rid}"
+
+[mesh_write.ack_hint]
+doc = "The `ackHint` of a read-primary result."
+value = "read-only: nothing was acked. After you have consumed these messages run ackCommand (advances exactly what this read returned; re-reading before the ack returns the same unread set)."
+
+[mesh_write.truncated_body_hint]
+doc = "The `truncatedBodyHint` of a read-primary result; `{id}` is the workspace id."
+value = "if this JSON looks shorter than `totalBodyBytes`/per-row `bodyLength` implies, the OUTPUT (not the ack) was clipped downstream — already-acked mail is still re-readable, read-only and not unread-scoped, via: inbox messages {id} (optionally --since)"
+
+[mesh_write.text_no_messages]
+doc = "What `inbox read-primary --format text` prints for an empty inbox."
+value = "(no messages)"
+
+[mesh_write.text_row]
+doc = "One message of `inbox read-primary --format text`: `{from}`, `{seq}` and `{body}`."
+value = "from: {from}\nseq: {seq}\n{body}\n"
+
+[mesh_write.text_row_sep]
+doc = "What joins the messages of `inbox read-primary --format text`."
+value = "\n"
+
+[mesh_write.origin_ndjson]
+doc = "The `origin` of a row that came from the NDJSON inbox."
+value = "ndjson"
+
+[mesh_write.origin_store]
+doc = "The `origin` of a store row in a union read."
+value = "store"
+
+[mesh_write.ndjson_from_field]
+doc = "The NDJSON line's sender field."
+value = "fromBranch"
+
+[mesh_write.ndjson_message_field]
+doc = "The NDJSON line's body field."
+value = "message"
+
+[mesh_write.ndjson_status_field]
+doc = "The NDJSON line's status field."
+value = "status"
+
+[mesh_write.forward_prefix]
+doc = "ARCHIVED_FORWARD_PREFIX_RE's literal start: a row whose body begins so is a forward whose original hash Node derives; the engine leaves such a row to Node."
+value = "[forwarded from archived "
+
+[mesh_write.verify_read_primary_node_snippet]
+doc = "The Node program of the read-primary verifier: runs the real devswarm.js `run()` with the engine's clock and reader nonce and prints what `main()` prints for the verb (the JSON, or the text rendering under `--format text` without `--json`). Arguments: the CLI path, the clock, then the verb's argv."
+value = "const c=require(process.argv[1]);const a=process.argv.slice(3);const r=c.run(a,{now:Number(process.argv[2]),instanceNonce:process.env.AH_ENGINE_VERIFY_NONCE||undefined});const t=(a.includes('--format=text')||(a.includes('--format')&&a[a.indexOf('--format')+1]==='text'))&&!a.includes('--json');process.stdout.write((t?c.inboxReadPrimaryTextLines(r.result):JSON.stringify(r.result))+'\\n');"
+
+[mesh_write.verify_read_primary_copy_dirs]
+doc = "Directories of the DevSwarm root copied into the scratch home before the engine writes a read receipt (what Node reads or writes for a read-primary)."
+value = ["workspaces", "heartbeats", "liveness", "cursors", "archived", "cache", "plans", "read-receipts", "locks"]
+
+[mesh_write.verify_names_read_primary]
+doc = "The names under which a read-primary verification mismatch reports whether the receipt file is equal."
+value = ["sameReceipt"]

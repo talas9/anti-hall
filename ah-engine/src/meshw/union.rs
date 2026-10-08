@@ -222,6 +222,25 @@ pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
     Ok(Union { unread: nd_lines.len() + store_only.len(), nd_unread_lines: nd_lines, store_only_unread: store_only, oldest_unread_age_ms: age })
 }
 
+/// `unionUnread`'s merged `total` over the whole history: the NDJSON lines plus the store rows no line covers (by hash,
+/// else by body). Only a read that reports `total` needs it.
+pub fn merged_total(i: &UnionIn<'_>) -> R<usize> {
+    let all = i.inbox.and_then(non_empty_lines).unwrap_or_default();
+    let Some(reader) = i.store else { return Ok(all.len()) };
+    let hashes = line_hashes(&all, i.id, 0)?;
+    let mut rows: Vec<Value> = Vec::new();
+    reader
+        .for_each_message(i.id, 0, |m| {
+            rows.push(m);
+            true
+        })
+        .map_err(|e| Defer(format!("store-read:{e}")))?;
+    let store_hashes: HashSet<String> = rows.iter().filter_map(|m| m["hash"].as_str().map(str::to_string)).collect();
+    let uncovered: Vec<Value> = rows.into_iter().filter(|r| truthy_hash(r).is_none_or(|h| !hashes.contains(h))).collect();
+    let by_body = body_covered(&uncovered, &all, &store_hashes, i.id, 0)?;
+    Ok(all.len() + uncovered.len() - by_body.len())
+}
+
 /// The floor view of `positions(store, { reader: null, partition, cursorPath })`: `(store base, nd base)`. A partition
 /// without both floor rows would be imported from the legacy cursor files by Node first: that defers.
 pub fn floor_bases(reader: &MeshReader, home: &Path, partition: &str, cursor_path: Option<&str>) -> R<(f64, f64)> {

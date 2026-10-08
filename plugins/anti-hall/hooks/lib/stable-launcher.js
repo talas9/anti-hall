@@ -68,7 +68,7 @@ function launcherPath(kind, home) {
 // meshRoute(argv, segments) -> a thin routing shim EMBEDDED in the devswarm
 // launcher (via Function#toString, so it must stay self-contained). For exactly
 // the ported verbs (the ROUTES table below: `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary`,
-// `heartbeat`, `inbox tick`), when settings.json `mesh.engine_writes`
+// `heartbeat`, `inbox tick`, `inbox read-primary`), when settings.json `mesh.engine_writes`
 // is "on" and the engine binary exists, it runs `ah-engine mesh <argv>` with a time
 // limit and returns {done: exitCode}; otherwise {input} (stdin already consumed
 // for --message-stdin, to be replayed) and the caller runs the Node script.
@@ -87,7 +87,7 @@ function meshRoute(argv, segments) {
     // it cannot answer is handed to Node by the engine itself, so a row here only says "ask the engine first".
     var ROUTES = [
       { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'], flag: '--ack' },
-      { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] }, { words: ['inbox', 'tick'] },
+      { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] }, { words: ['inbox', 'tick'] }, { words: ['inbox', 'read-primary'] },
     ];
     var routed = ROUTES.some(function (r) {
       return r.words.every(function (w, i) { return argv[i] === w; })

@@ -100,7 +100,7 @@ fn wal_is_quiet(inv: &Inv) -> R<()> {
 }
 
 /// Open the read-only store of the project the way `openStore` settles it; `Ok(None)` is a store Node would first create.
-fn open_reader(inv: &Inv, repo_key: &str) -> R<Option<MeshReader>> {
+pub(crate) fn open_reader(inv: &Inv, repo_key: &str) -> R<Option<MeshReader>> {
     let dir = union::store_dir(&inv.home, repo_key);
     if !dir.exists() {
         return Ok(None);
@@ -129,14 +129,19 @@ pub fn reader_nonce_cached(home: &Path) -> Option<String> {
     NONCE.get_or_init(|| ident::reader_nonce(home)).clone()
 }
 
-/// What `count` reports that a quiet tick uses: the unread total of a single, known partition.
-fn unread_total(inv: &Inv, id: &str, desc: &OVal) -> R<usize> {
-    if !matches!(desc.get(defaults::text("mesh_write.field_id")), Some(OVal::Str(d)) if d == id) {
-        return defer("descriptor-id");
-    }
-    let Some(inbox) = union::path_field(desc, defaults::text("mesh_write.field_inbox_path"))? else { return defer("no-inbox-path") };
-    let Some(cursor_file) = union::path_field(desc, defaults::text("mesh_write.field_cursor_path"))? else { return defer("no-cursor-path") };
-    // resolveWorkspaceStoreForRead: the caller's project against the id's registered project, then the re-home trigger
+/// The project's open reader and its registry rows, as `resolveWorkspaceStoreForRead` settles them for a read of `id`.
+pub(crate) struct Opened {
+    /// The caller's project key.
+    pub repo_key: String,
+    /// The read-only store of that project.
+    pub reader: MeshReader,
+    /// The registry rows.
+    pub rows: Vec<ident::Row>,
+}
+
+/// `resolveWorkspaceStoreForRead` for a read of `id`: the caller's project against the id's registered project, then the
+/// re-home trigger, then the store (read only) and its registry. Anything Node would write or refuse defers.
+pub(crate) fn open_partition(inv: &Inv, id: &str, desc: &OVal) -> R<Opened> {
     let Some(repo_key) = ident::resolve_context(&inv.cwd, true)?.repo_key else { return defer("no-project") };
     if let Some(reg) = crate::meshw::inbox::registered_repo_key(desc, id)?
         && reg != repo_key
@@ -145,8 +150,12 @@ fn unread_total(inv: &Inv, id: &str, desc: &OVal) -> R<usize> {
     }
     rehome_is_noop(inv, id)?;
     let Some(reader) = open_reader(inv, &repo_key)? else { return defer("no-store") };
-    // resolveMeshPartitionIds: a second registry row of the same worktree widens the read to a mesh group, which Node folds
     let rows = ident::rows_of(&reader.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?);
+    Ok(Opened { repo_key, reader, rows })
+}
+
+/// `resolveMeshPartitionIds`: a second registry row of the same worktree widens the read to a mesh group, which Node folds.
+pub(crate) fn single_partition(rows: &[ident::Row], desc: &OVal, id: &str) -> R<()> {
     let own_wt = rows.iter().find(|r| r.id == id).and_then(|r| r.worktree_path.clone());
     let wt = match own_wt {
         Some(w) if !w.is_empty() => Some(w),
@@ -155,15 +164,19 @@ fn unread_total(inv: &Inv, id: &str, desc: &OVal) -> R<usize> {
     if let Some(wt) = wt
         && let Some(mesh) = ident::canonical_mesh_id(&wt)?
     {
-        let mut ids: Vec<String> = mesh_candidates(&rows, Some(mesh.as_str()))?.into_iter().map(|r| r.id).collect();
+        let mut ids: Vec<String> = mesh_candidates(rows, Some(mesh.as_str()))?.into_iter().map(|r| r.id).collect();
         ids.sort();
         ids.dedup();
         if ids.len() > 1 && ids.iter().any(|x| x == id) {
             return defer("mesh-group");
         }
     }
-    // positions(): the floor rows, then this reader's own rows when it is a declared reader
-    let (mut store_base, mut nd_base) = union::floor_bases(&reader, &inv.home, id, Some(cursor_file.as_str()))?;
+    Ok(())
+}
+
+/// `positions()`: the floor rows, then this reader's own rows when it is a declared reader: `(store base, nd base)`.
+pub(crate) fn read_bases(inv: &Inv, reader: &MeshReader, id: &str, cursor_file: Option<&str>) -> R<(f64, f64)> {
+    let (mut store_base, mut nd_base) = union::floor_bases(reader, &inv.home, id, cursor_file)?;
     if let Some(me) = crate::meshw::cursors::reader_key(reader_nonce_cached(&inv.home).as_deref()) {
         let cursor_rows = reader.reader_cursors(id).map_err(|e| ident::Defer(format!("cursor-rows:{e}")))?;
         let own = |ns: &str| cursor_rows.iter().find(|r| r["ns"] == ns && r["reader"] == me.as_str()).and_then(|r| r["value"].as_f64());
@@ -174,6 +187,19 @@ fn unread_total(inv: &Inv, id: &str, desc: &OVal) -> R<usize> {
             nd_base = v;
         }
     }
+    Ok((store_base, nd_base))
+}
+
+/// What `count` reports that a quiet tick uses: the unread total of a single, known partition.
+fn unread_total(inv: &Inv, id: &str, desc: &OVal) -> R<usize> {
+    if !matches!(desc.get(defaults::text("mesh_write.field_id")), Some(OVal::Str(d)) if d == id) {
+        return defer("descriptor-id");
+    }
+    let Some(inbox) = union::path_field(desc, defaults::text("mesh_write.field_inbox_path"))? else { return defer("no-inbox-path") };
+    let Some(cursor_file) = union::path_field(desc, defaults::text("mesh_write.field_cursor_path"))? else { return defer("no-cursor-path") };
+    let o = open_partition(inv, id, desc)?;
+    single_partition(&o.rows, desc, id)?;
+    let (store_base, nd_base) = read_bases(inv, &o.reader, id, Some(cursor_file.as_str()))?;
     // known: the inbox and its cursor file both read (otherwise Node prints a warning and the count is unknown)
     if union::non_empty_lines(&inbox).is_none() || union::cursor_position(&cursor_file)?.is_none() {
         return defer("unknown-count");
@@ -182,7 +208,7 @@ fn unread_total(inv: &Inv, id: &str, desc: &OVal) -> R<usize> {
         inbox: Some(inbox.as_str()),
         cursor_file: Some(cursor_file.as_str()),
         id,
-        store: Some(&reader),
+        store: Some(&o.reader),
         store_base,
         nd_base,
         now: inv.now,
