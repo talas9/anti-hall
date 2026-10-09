@@ -886,3 +886,47 @@ fn the_unknown_session_counter_resets_wording_and_pruning() {
         }
     }
 }
+
+/// A check's OWN failure never blocks: an engine-only advisory whose script throws (or is interrupted at its CPU-time limit)
+/// on a guard event allows (exit 0, nothing on stdout), per `script.failure_mode_by_check` (2026-10-09: sibling-sweep blocked
+/// a SubagentStop when its script hit the limit on a long transcript). Every shipped engine-only check is `open`.
+#[test]
+fn an_engine_only_advisory_whose_script_fails_on_a_guard_event_allows() {
+    let dir = std::env::temp_dir().join(format!("ah-fcm-script-{}", std::process::id()));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
+    std::fs::create_dir_all(dir.join("home/.anti-hall/logic")).unwrap();
+    let t = dir.join("t.jsonl");
+    std::fs::write(&t, "{\"type\":\"user\",\"message\":{\"content\":\"fix it\"}}\n").unwrap();
+    let cases: [(&str, &str, &str, Value); 4] = [
+        ("sibling-sweep", "SubagentStop", "throw new Error('bad');", Value::Null),
+        ("sibling-sweep", "Stop", "for(;;){}", Value::Null),
+        ("engine-role-guard", "PreToolUse", "throw new Error('bad');", serde_json::json!({"command": "ah-engine status"})),
+        ("procwatch-advisory", "PreToolUse", "for(;;){}", serde_json::json!({"command": "ls"})),
+    ];
+    for (check, event, body, input) in cases {
+        std::fs::write(dir.join(format!("home/.anti-hall/logic/{check}.js")), format!("function decide(p){{ {body} }}")).unwrap();
+        let payload = serde_json::json!({
+            "hook_event_name": event, "session_id": "s1", "agent_id": "a1", "transcript_path": t, "cwd": dir,
+            "last_assistant_message": "Root cause: `read_window` holds the file twice. Fixed by streaming.",
+            "tool_name": "Bash", "tool_input": input,
+        });
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(["check", check])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", dir.join("home"))
+            .env("AH_ENGINE_DIR", dir.join("state"))
+            .env("AH_ENGINE_SCRIPT_TIME_MS", "50")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        c.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+        let out = c.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(0), "{check} on {event}: {stdout} {}", String::from_utf8_lossy(&out.stderr));
+        assert!(!stdout.contains("block") && !stdout.contains("deny"), "{check} on {event}: {stdout}");
+    }
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
+}

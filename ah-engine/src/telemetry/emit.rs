@@ -268,6 +268,11 @@ pub fn command_run(command: &str, sub: &str, exit: i32, micros: u64, items: u64)
     base(Kind::Cmd, command, sub, o, micros, 0, Extras::Fields(Fields::new().num("items", items).num("exit", exit.max(0) as u64)))
 }
 
+/// The event counting one failed check script (`check`, the hook `event`): kind `check`, outcome `error`.
+pub fn script_failure(check: &str, event: &str) -> Event {
+    base(Kind::Check, check, event, Outcome::Error, 0, 0, Extras::None)
+}
+
 /// The event for a daemon health snapshot: `readings` are the numbers the `daemon` schema lists.
 pub fn daemon_snapshot(degraded: bool, readings: &[(&str, u64)]) -> Event {
     let mut f = Fields::new().num("degraded", u64::from(degraded));

@@ -104,10 +104,22 @@ min = 1024
 max = 1048576
 
 [sibling_sweep.max_events]
-doc = "The most events (assistant texts and tool calls) kept for one turn; older ones are dropped, the newest kept."
-value = 4000
+doc = "The most events (assistant texts and tool calls) kept for one turn; older ones are dropped, the newest kept. The turn is read from its end, so only these are analysed: this bounds the check's CPU time on a long turn (measured 2026-10-09, release: about 40 us per event, so 4000 events took 145 ms against the 50 ms script limit and the script was interrupted)."
+value = 200
 min = 100
 max = 100000
+
+[sibling_sweep.max_turn_text_chars]
+doc = "The most assistant text (UTF-16 units, newest first) of one turn that is analysed for cause, fix and sweep statements; the walk back through the turn stops once it is reached. Analysis costs about 0.06 ms per 1,000 characters (measured 2026-10-09, release: 1 MB of turn text took 62 ms against the 50 ms script limit)."
+value = 131072
+min = 4096
+max = 16777216
+
+[sibling_sweep.max_lines]
+doc = "The most transcript lines, counted from the end of the window, that the engine parses and hands to the script; the turn is looked for in these. It bounds the parse and the hand-over on a window of many small lines (measured 2026-10-09, release: 5,692 lines of a 1 MB window took 32 ms)."
+value = 1000
+min = 100
+max = 1000000
 
 [sibling_sweep.window_chars]
 doc = "How many characters before a cue are searched for a hedge or negation that voids the cue."

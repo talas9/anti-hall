@@ -38,6 +38,7 @@
 //! | `cfgLive(key)` | the effective value of a defaults key through the owner's editable layers (`settings.json`, `config.toml`, shipped): see [`cfg_live`] |
 //! | `sha1(text)` | lowercase hex SHA-1 of the UTF-8 text |
 //! | `tailLines(path, windowBytes, lineMax)` | the last lines of a file with their byte offsets, bounded: see [`tail_lines`] |
+//! | `tailEntries(path, windowBytes, lineMax, keep, maxLines)` | the newest lines parsed by the engine, cut down to the paths `keep` names: see [`tail_entries`] |
 //! | `pruneState(prefix, keep)` | the state-file retention sweep of one writer prefix in the state directory (stale files older than the TTL, throttled; `keep` is never removed) |
 //! | `log(kind, text)` | one line in the engine's event log (rate-limited by the engine) |
 //! | `now()` | milliseconds since the epoch from the engine's one clock (injectable for tests): see [`now_ms`] |
@@ -561,6 +562,97 @@ pub fn cfg_live(key: &str) -> rquickjs::Result<String> {
 /// byte position of the line in the file; `text` is `null` for a line over `lineMax` bytes (never stored) or not valid UTF-8.
 /// `null` when the file cannot be read.
 pub fn tail_lines(path: &str, window: f64, line_max: f64) -> Option<String> {
+    let mut lines: Vec<serde_json::Value> = Vec::new();
+    tail_scan(path, window, line_max, |at, text| lines.push(serde_json::json!([at, text])))?;
+    Some(serde_json::json!({ "lines": lines }).to_string())
+}
+
+/// `tailEntries(path, windowBytes, lineMax, keep, maxLines)`: the newest `maxLines` lines of [`tail_lines`], each parsed as JSON by the engine and cut down
+/// to the parts `keep` names, so a script reads a large transcript window without parsing (or even receiving) the tool output
+/// it never looks at. `keep` is JSON text: a list of paths, each a list of object keys, `"*"` standing for every element of an
+/// array; a value at the end of a path is kept whole when it is not an object or an array (an object or array there keeps only
+/// what longer paths name, else it is empty). JSON `{"lines":[[offset, value], ...], "dropped": n, "droppedUnread": m}` (`n`
+/// older lines of the window left out, `m` of them over `lineMax` or not UTF-8), `value`:
+/// `null` (over `lineMax` or not UTF-8, as `tailLines`), `0` (a blank line, or JSON that is not an object), the cut-down object,
+/// or the line's own TEXT when the engine's parser refused it, so the script parses that line itself and reads exactly what
+/// JavaScript reads (a lone surrogate escape, nesting deeper than the parser allows). `null` when the file cannot be read or
+/// `keep` is not a list of paths.
+pub fn tail_entries(path: &str, window: f64, line_max: f64, keep: &str, max_lines: f64) -> Option<String> {
+    let trie = KeepNode::parse(keep)?;
+    let max_lines = if max_lines.is_finite() && max_lines >= 1.0 { max_lines as usize } else { usize::MAX };
+    // only the newest `max_lines` lines are parsed and returned; the older ones are counted (`dropped`, and `droppedUnread`
+    // for those that were over `lineMax` or not UTF-8)
+    let mut ring: std::collections::VecDeque<(u64, Option<String>)> = std::collections::VecDeque::new();
+    let (mut dropped, mut dropped_unread) = (0u64, 0u64);
+    tail_scan(path, window, line_max, |at, text| {
+        if ring.len() == max_lines
+            && let Some((_, old)) = ring.pop_front()
+        {
+            dropped += 1;
+            dropped_unread += u64::from(old.is_none());
+        }
+        ring.push_back((at, text));
+    })?;
+    let mut lines: Vec<serde_json::Value> = Vec::with_capacity(ring.len());
+    for (at, text) in ring {
+        let v = match text {
+            None => serde_json::Value::Null,
+            Some(t) if t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r')) => serde_json::json!(0),
+            Some(t) => match serde_json::from_str::<serde_json::Value>(&t) {
+                Ok(serde_json::Value::Object(m)) => trie.project_object(&m),
+                Ok(_) => serde_json::json!(0),
+                Err(_) => serde_json::Value::String(t),
+            },
+        };
+        lines.push(serde_json::json!([at, v]));
+    }
+    Some(serde_json::json!({ "lines": lines, "dropped": dropped, "droppedUnread": dropped_unread }).to_string())
+}
+
+/// The paths of a `tailEntries` projection, as a tree.
+#[derive(Default)]
+struct KeepNode {
+    kids: std::collections::BTreeMap<String, KeepNode>,
+}
+
+impl KeepNode {
+    fn parse(keep: &str) -> Option<KeepNode> {
+        let paths: Vec<Vec<String>> = serde_json::from_str(keep).ok()?;
+        let mut root = KeepNode::default();
+        for p in paths {
+            let mut at = &mut root;
+            for k in p {
+                at = at.kids.entry(k).or_default();
+            }
+        }
+        Some(root)
+    }
+
+    fn project_object(&self, m: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+        let mut out = serde_json::Map::new();
+        for (k, kid) in &self.kids {
+            if let Some(v) = m.get(k) {
+                out.insert(k.clone(), kid.project(v));
+            }
+        }
+        serde_json::Value::Object(out)
+    }
+
+    fn project(&self, v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(m) => self.project_object(m),
+            serde_json::Value::Array(a) => match self.kids.get("*") {
+                Some(kid) => serde_json::Value::Array(a.iter().map(|x| kid.project(x)).collect()),
+                None => serde_json::Value::Array(Vec::new()),
+            },
+            other => other.clone(),
+        }
+    }
+}
+
+/// The line reader of [`tail_lines`] and [`tail_entries`]: `each(offset, text)` for every whole line of the window, `text`
+/// `None` for a line over `line_max` bytes or not UTF-8. `None` when the file cannot be read.
+fn tail_scan(path: &str, window: f64, line_max: f64, mut each: impl FnMut(u64, Option<String>)) -> Option<()> {
     use std::io::{Seek, SeekFrom};
     let cap = defaults::num("script.tail_max_bytes");
     let window = if window.is_finite() && window > 0.0 { (window as u64).min(cap) } else { cap };
@@ -571,7 +663,6 @@ pub fn tail_lines(path: &str, window: f64, line_max: f64) -> Option<String> {
     f.seek(SeekFrom::Start(start)).ok()?;
     let mut r = std::io::BufReader::with_capacity(defaults::num("script.tail_buf_bytes") as usize, f.take(size - start));
     let mut offset = start;
-    let mut lines: Vec<serde_json::Value> = Vec::new();
     let mut buf: Vec<u8> = Vec::new();
     let mut first = start > 0;
     loop {
@@ -614,9 +705,9 @@ pub fn tail_lines(path: &str, window: f64, line_max: f64) -> Option<String> {
             buf.pop();
         }
         let text = if over { None } else { String::from_utf8(std::mem::take(&mut buf)).ok() };
-        lines.push(serde_json::json!([at, text]));
+        each(at, text);
     }
-    Some(serde_json::json!({ "lines": lines }).to_string())
+    Some(())
 }
 
 /// `deadlineLeftMs()`: milliseconds left of the request the engine is answering (the caller is not waiting past it), or `null`
@@ -815,6 +906,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("now", Function::new(c.clone(), now_ms)?)?; // documented (`ah.clock.now()`) but not installed by the host API commit
     h.set("sha1", Function::new(c.clone(), |t: String| crate::checks::replykit::io::sha1_hex(&t))?)?;
     h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| tail_lines(&p, w, l))?)?;
+    h.set("tailEntries", Function::new(c.clone(), |p: String, w: f64, l: f64, k: String, m: f64| tail_entries(&p, w, l, &k, m))?)?;
     h.set(
         "pruneState",
         Function::new(c.clone(), |prefix: String, keep: Option<String>| -> rquickjs::Result<()> {

@@ -275,18 +275,33 @@ fn verdict_of(v: &Value) -> Result<Option<Verdict>, String> {
 ///
 /// - a check that has a Node twin (every check not listed in `script.engine_only_checks`) DEFERS: the Node hook decides, so a
 ///   broken script never changes a decision;
-/// - an ENGINE-ONLY check has no Node hook to defer to (its fallback command is a no-op). On a guard event
-///   (`dispatch.guard_events`) it BLOCKS with `script.msg_fail_closed`, because allowing silently would let through what the
-///   check exists to stop; on any other event it ALLOWS quietly, because a broken script must never block ordinary work.
+/// - an ENGINE-ONLY check has no Node hook to defer to (its fallback command is a no-op). Its failure mode
+///   (`script.failure_mode_by_check`, else `script.failure_mode_default`) decides: `closed` BLOCKS on a guard event
+///   (`dispatch.guard_events`) with `script.msg_fail_closed`, for a security guard whose silent allow would let through what it
+///   exists to stop; `open` (every advisory check) ALLOWS, because a check's own failure must never block the user's agent.
+///   Every other event allows whatever the mode.
+///
+/// Every failure is logged (`script_error`, rate-limited) and counted (a telemetry check event with outcome `error`).
 pub fn failed(name: &str, event: &str, why: &str) -> Verdict {
     crate::discard::note("script_error", &format!("{name}: {why}"));
-    if !defaults::list("script.engine_only_checks").contains(&name) {
+    crate::telemetry::emit::queue(crate::telemetry::emit::script_failure(name, event));
+    failure_verdict(name, event, why, defaults::list("script.engine_only_checks").contains(&name), failure_mode(name))
+}
+
+/// [`failed`]'s decision for a check that is (or is not) engine-only and has failure mode `mode`.
+fn failure_verdict(name: &str, event: &str, why: &str, engine_only: bool, mode: &str) -> Verdict {
+    if !engine_only {
         return Verdict::Defer;
     }
-    if defaults::list("dispatch.guard_events").contains(&event) {
+    if mode == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event) {
         return Verdict::Block(defaults::render("script.msg_fail_closed", &[("check", &name), ("why", &why)]));
     }
     Verdict::Allow
+}
+
+/// The failure mode of engine-only check `name`: its entry in `script.failure_mode_by_check`, else `script.failure_mode_default`.
+pub fn failure_mode(name: &str) -> &'static str {
+    defaults::raw("script.failure_mode_by_check").get(name).and_then(defaults::V::as_str).unwrap_or_else(|| defaults::text("script.failure_mode_default"))
 }
 
 /// Run the script of check `name` on one payload. `None`: no script for this check (or scripts are off), so the compiled

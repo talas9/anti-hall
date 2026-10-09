@@ -181,6 +181,10 @@ var ah = {
     agents: function (p) { return JSON.parse(ahHost.agents(p)); },
     // The last lines of a file with their byte offsets: {lines: [[offset, text|null]]} (text null: over lineMax, or not UTF-8), or null.
     tailLines: function (p, windowBytes, lineMax) { var r = ahHost.tailLines(p, windowBytes || 0, lineMax || 0); return r === null || r === undefined ? null : JSON.parse(r); },
+    // The newest maxLines lines parsed by the engine and cut down to the `keep` paths (lists of keys, '*' = every array element):
+    // {lines: [[offset, value]], dropped, droppedUnread} (older lines left out; of them over lineMax or not UTF-8), value null (over lineMax or not UTF-8), 0 (blank, or not a JSON object), the cut-down object,
+    // or the line's text when the engine's parser refused it (parse it yourself); null when unreadable.
+    tailEntries: function (p, windowBytes, lineMax, keep, maxLines) { var r = ahHost.tailEntries(p, windowBytes || 0, lineMax || 0, JSON.stringify(keep), maxLines || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // null: no readable transcript; {hint:false}: no line can hold `hint`; {unsure:true}: a line JS might read differently;
     // {parts:[...]}: the current turn's assistant text blocks.
     turnText: function (p, maxBytes, hint) { return JSON.parse(ahHost.turnText(p, maxBytes, hint || '')); },

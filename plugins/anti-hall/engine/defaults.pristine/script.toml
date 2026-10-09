@@ -113,8 +113,20 @@ doc = "Logged reason (then the call defers) when a script returns a value that i
 value = "unexpected verdict {value}"
 
 [script.engine_only_checks]
-doc = "Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision."
-value = ["sibling-sweep", "handover-hygiene", "agent-reminders", "gh-rt-advisory"]
+doc = "Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, its failure mode decides (script.failure_mode_by_check): `open` allows (logged and counted), `closed` blocks on a guard event (dispatch.guard_events). Every other check defers to its Node hook on a script failure, so a broken script never changes a decision."
+value = ["sibling-sweep", "handover-hygiene", "agent-reminders", "gh-rt-advisory", "procwatch-advisory", "engine-role-guard"]
+
+[script.failure_mode_by_check]
+doc = "Failure mode of an engine-only check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. None ships `closed`: sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript."
+value = { sibling-sweep = "open", handover-hygiene = "open", agent-reminders = "open", gh-rt-advisory = "open", procwatch-advisory = "open", engine-role-guard = "open" }
+
+[script.failure_mode_default]
+doc = "Failure mode of an engine-only check not listed in script.failure_mode_by_check."
+value = "open"
+
+[script.failure_mode_closed]
+doc = "The failure-mode value that blocks on a guard event (any other value allows)."
+value = "closed"
 
 [script.msg_fail_closed]
 doc = "Block reason of an engine-only check on a guard event whose script could not answer. Placeholders: {check}, {why}."
