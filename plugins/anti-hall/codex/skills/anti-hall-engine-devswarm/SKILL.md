@@ -11,7 +11,7 @@ The DevSwarm role, gate and wake guards.
 
 | Verb | What it does | Roles |
 |---|---|---|
-| `ah-engine devswarm` | `<status\|line\|supervisor\|ingest\|recover --id <ws> --request <id>\|advisory --session <id>\|archive --id <ws> --request <id>\|plan-prune --older-than <days>\|prune --confirm-ids <ids> --plan <nonce>\|help [<verb>]\|skip <guard> [--ttl <min>]\|archive-ignore <id>\|archive-unignore <id>\|gate-intent --reason <text>\|notice --list\|plan set\|show <id>\|scope add <id> --glob <g> --note <t>\|gate <id> --set <csv> --clear <csv>\|workspaces list\|logs [--limit <n>]\|wake-directive <id>>` The DevSwarm realtime state and owner actions (lane dswire) | main, codex, workspace, subagent (owner args: archive, plan-prune, prune, recover, create, merge, skip, archive-ignore, archive-unignore, gate-intent, notice) |
+| `ah-engine devswarm` | `<status\|line\|supervisor\|ingest\|recover --id <ws> --request <id>\|advisory --session <id>\|archive --id <ws> --request <id>\|plan-prune --older-than <days>\|prune --confirm-ids <ids> --plan <nonce>\|help [<verb>]\|skip <guard> [--ttl <min>]\|archive-ignore <id>\|archive-unignore <id>\|gate-intent --reason <text>\|notice --list\|plan set\|show <id>\|scope add <id> --glob <g> --note <t>\|gate <id> --set <csv> --clear <csv>\|workspaces list\|logs [--limit <n>]\|wake-directive <id>\|ready-check <sha> [--base <ref>]\|app-state [--json]\|app-sync [--dry-run]\|done [--summary <text>]\|primary [status\|takeover] [--session <id>]\|relay <seq> --to <id> [--note-file <path>]\|archive-request <childId> [--reason <text>]\|nudge <id>\|supervision-report [--days <n>] [--json]\|sync-ui --titles-json <file> [--yes]\|retention status\|run [--dry-run] [--store <key>]>` The DevSwarm realtime state and owner actions (lane dswire) | main, codex, workspace, subagent (owner args: archive, plan-prune, prune, recover, create, merge, skip, archive-ignore, archive-unignore, gate-intent, notice) |
 
 ## Guards
 
@@ -34,6 +34,9 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.supervisorMode` = "auto": Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words...
 - `devswarm.parentInbox` = true: Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option
 - `devswarm.inboxReadGuard` = true: Where the on/off switch is read from (devswarm.inboxReadGuard, default on; it has no environment variable)
+- `devswarm.heldPartitions` = "": Where the owner's held workspace ids are read from: devswarm.heldPartitions (a comma-separated list) through the engine's settings layer...
+- `devswarm.stepStallMin` = 30: Where the quiet-child window is read from: devswarm.stepStallMin (minutes) through the engine's settings layer (the environment...
+- `devswarm.strayWarnMax` = 2: Where the most straying warnings per signal and step are read from: devswarm.strayWarnMax (0 turns warnings off) through the engine's...
 - `devswarm.commsGuard` = true: The switch devswarm.commsGuard (on by default); off makes the guard a no-op
 - `devswarm.childRole` = true: Switch devswarm.childRole (default on): off makes the SessionStart hook a no-op
 - `devswarm.parentGate` = true: Switch devswarm.parentGate (default on): off makes the Stop gate a no-op
@@ -52,14 +55,23 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.autoArchive.mode` = "on": Auto-archive mode: on (archive), dry-run (plan only, nothing spawned), off
 - `devswarm.nudgeCooldownSec` = 120: Seconds between two pokes of one workspace
 - `devswarm.nudgeMaxAttempts` = 2: Pokes before a stale workspace is escalated
+- `devswarm.appSync` = true: Sync the DevSwarm desktop app's state (archived flags, titles, message gaps) into anti-hall every tick
 - `devswarm.childGateRetentionDays` = 14: Days a per-session child-gate state file is kept before the housekeeping sweep removes it
 - `devswarm.housekeepingSweep` = "auto": Housekeeping sweep switch: auto / on / off
 - `devswarm.housekeepingSweepSec` = 3600: Least time between two housekeeping sweeps
+- `devswarm.idleSec` = 900: How long a workspace's transcript and worktree must both be quiet before an unread mailbox makes it stale
 - `devswarm.supervisorLogRotateBytes` = 10485760: Size above which the supervisor log is rotated to its .1 copy
 - `devswarm.maxRecoveries` = 3: Most kill-and-resume recoveries of one workspace
+- `devswarm.nudgeWindowSec` = 180: How long a poke stays in effect before the sweep decides again
 - `devswarm.reapedRetentionDays` = 30: Days a reaped-workspace log is kept before the housekeeping sweep removes it
 - `devswarm.reconcileSweep` = "auto": Reconcile sweep switch: auto / on / off
 - `devswarm.reconcileSweepSec` = 900: Least time between two reconcile sweeps
+- `devswarm.retention.archive` = true: Write a body to the gzip archive before tombstoning it (restorable)
+- `devswarm.retention.archiveMaxMB` = 0: Archive size cap in MB; 0 = never evict an archive month
+- `devswarm.retention.days` = 30: Days of message bodies kept before they are archived and tombstoned; 0 switches retention off
+- `devswarm.retention.keepPerPartition` = 200: The newest messages of each partition that are never tombstoned (by age or by size)
+- `devswarm.retention.maxStoreMB` = 100: Store size limit in MB: above it the oldest eligible bodies are tombstoned whatever their age; 0 = no limit
+- `devswarm.dormantMs` = 1800000: How long a workspace whose session transcript resolves may stay silent before the roster calls it dormant (Node: devswarm.dormantMs, a...
 - `devswarm.monitorTimeoutSec` = 30: The -t of every monitor call: it long-polls at most this long, then exits (an empty exit is a quiet poll, not an error)
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

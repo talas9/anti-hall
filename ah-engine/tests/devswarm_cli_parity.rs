@@ -338,7 +338,7 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     }
     v.push(case("read-primary-json-format-help", &["inbox", "read-primary", "x", "--format", "json", "--help"], "Help"));
     // `help` only counts as the first word: here it is `send`'s stray argument, and the send is Node's
-    v.push(Case { native: false, ..case("help-word-not-first", &["send", "help"], "Send") });
+    v.push(case("help-word-not-first", &["send", "help"], "Send")); // send answers its argument refusals natively since l8d
     for verb in verbs {
         v.push(case(&format!("help-{verb}"), &["help", verb], "Help"));
         v.push(case(&format!("help-{verb}-json"), &["help", verb, "--json"], "Help"));
@@ -897,8 +897,15 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
             let (es, ns) = (e.stdout.replace(homes[1].to_string_lossy().as_ref(), "<HOME>"), n.stdout.replace(homes[0].to_string_lossy().as_ref(), "<HOME>"));
             assert_eq!((e.code, &es), (n.code, &ns), "{}: stdout/exit differ\n engine: {:?}\n node:   {:?}", c.name, es, ns);
             let (te, tn) = (tree(&homes[1]), tree(&homes[0]));
+            // a logged refusal (send's, since l8d) carries the run's own time and pid: those two fields are masked
+            let unstamp = |v: Option<&String>| {
+                v.map(|t| {
+                    let t = regex::Regex::new(r#""ts":"[^"]*""#).unwrap().replace_all(t, r##""ts":"#""##).into_owned();
+                    regex::Regex::new(r#""pid":\d+"#).unwrap().replace_all(&t, r##""pid":#"##).into_owned()
+                })
+            };
             for k in te.keys().chain(tn.keys()) {
-                assert!(te.get(k) == tn.get(k), "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}", c.name, te.get(k), tn.get(k));
+                assert!(unstamp(te.get(k)) == unstamp(tn.get(k)), "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}", c.name, te.get(k), tn.get(k));
             }
             for w in &c.writes {
                 assert!(homes[1].join(w).is_file(), "{}: expected the verb to have written {w}", c.name);
