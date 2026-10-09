@@ -12,7 +12,8 @@
 //! a limit, and anything but a clean exit 0 is "not ok" (a missing binary, a spawn error, a timeout, a signal, a non-zero
 //! exit, output past the buffer limit). Node waits for a child that ignores its termination signal for ever; the engine
 //! kills it after a short grace, so a hanging binary is never worse than a missing one.
-use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::ojson::OVal;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use crate::meshw::ident::Env;
@@ -86,7 +87,7 @@ fn cache_keys(bin: &Path) -> Vec<String> {
     let (sec, nsec) = (m.mtime() as f64, m.mtime_nsec() as f64);
     let fractional = sec * 1000.0 + nsec / 1e6;
     let whole = sec * 1000.0 + (m.mtime_nsec() / 1_000_000) as f64;
-    let mut keys: Vec<String> = [fractional, whole].iter().map(|ms| format!("{}|{}|{}", bin.to_string_lossy(), js_number_text(*ms), m.size())).collect();
+    let mut keys: Vec<String> = [fractional, whole].iter().map(|ms| format!("{}|{}|{}", bin.to_string_lossy(), to_js_string(*ms), m.size())).collect();
     keys.dedup();
     keys
 }

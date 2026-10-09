@@ -24,7 +24,8 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or*` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (Node's try/catch around readFileSync / statSync)
 // - a value that is not the expected JSON type reads as absent where Node's `!= null` / typeof test does the same
-use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::ojson::OVal;
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, n, s};
@@ -136,7 +137,7 @@ fn store_msg(r: &Value, origin: bool) -> Msg {
 fn js_string_of(v: &OVal) -> R<String> {
     match v {
         OVal::Str(t) => Ok(t.clone()),
-        OVal::Num(x) => Ok(js_number_text(*x)),
+        OVal::Num(x) => Ok(to_js_string(*x)),
         OVal::Bool(b) => Ok(b.to_string()),
         _ => defer("ndjson-field-shape"),
     }
@@ -218,7 +219,7 @@ fn text_lines(rows: &[OVal]) -> String {
     }
     let seq_of = |m: &OVal| match m.get("storeSeq") {
         None => defaults::text("mesh_write.js_undefined").to_string(),
-        Some(OVal::Num(x)) => js_number_text(*x),
+        Some(OVal::Num(x)) => to_js_string(*x),
         Some(OVal::Null) => defaults::text("mesh_write.js_null").to_string(),
         Some(_) => defaults::text("mesh_write.js_null").to_string(),
     };

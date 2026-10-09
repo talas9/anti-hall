@@ -570,7 +570,7 @@ fn rollup_key(v: Option<&OVal>) -> R<String> {
     match v {
         None | Some(OVal::Null) => Ok(defaults::text("devswarm_cli.log_none_label").to_string()),
         Some(OVal::Str(t)) => Ok(t.clone()),
-        Some(OVal::Num(x)) => Ok(crate::checks::guardkit::ojson::js_number_text(*x)),
+        Some(OVal::Num(x)) => Ok(crate::checks::jsport::num::to_js_string(*x)),
         Some(OVal::Bool(b)) => Ok(b.to_string()),
         Some(_) => defer("log-rollup-shape"),
     }
