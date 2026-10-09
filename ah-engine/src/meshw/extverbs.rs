@@ -40,6 +40,8 @@ pub enum Ext {
     SyncUi,
     /// `retention status|run|restore` (lane l8c).
     Retention,
+    /// `unarchive <id>` (lane l8h).
+    Unarchive,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -68,6 +70,8 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::SyncUi)
     } else if is("devswarm_cli.verb_retention") {
         Some(Ext::Retention)
+    } else if is("devswarm_cli.verb_unarchive") {
+        Some(Ext::Unarchive)
     } else {
         None
     }
@@ -75,7 +79,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge)
+    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive)
 }
 
 /// Run the verb.
@@ -92,6 +96,7 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::SupervisionReport => super::reportverbs::supervision_report(inv, a),
         Ext::SyncUi => super::reportverbs::sync_ui(inv, a),
         Ext::Retention => super::reportverbs::retention(inv, a),
+        Ext::Unarchive => super::lifeverbs::unarchive(inv, a),
     }
 }
 

@@ -779,11 +779,12 @@ pub fn prepare(inv: &Inv, with_store: bool) -> Option<PathBuf> {
 fn prepare_into(inv: &Inv, with_store: bool, scratch: &Path) -> Option<PathBuf> {
     let home = scratch.join(defaults::text("mesh_write.shadow_home"));
     std::fs::create_dir_all(&home).ok()?;
+    let mut linked = std::collections::HashMap::new();
     for rel in defaults::list("devswarm_cli.witness_copy_paths") {
         let src = inv.home.join(rel);
         let dst = home.join(rel);
         if src.is_dir() {
-            crate::meshw::verify::copy_tree(&src, &dst).ok()?;
+            crate::meshw::verify::copy_tree_linked(&src, &dst, &mut linked).ok()?;
         } else if src.is_file() {
             std::fs::create_dir_all(dst.parent()?).ok()?;
             std::fs::copy(&src, &dst).ok()?;

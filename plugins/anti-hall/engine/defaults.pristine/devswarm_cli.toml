@@ -1884,3 +1884,13 @@ value = ["|", "\\|"]
 [devswarm_cli.rr_text_name]
 doc = "A row's name cell when a name is known. `{name}` is the name, `{short}` the first characters of the id."
 value = "{name} ({short})"
+
+# ---- lane l8h: lifecycle verbs ------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_unarchive]
+doc = "The verb that moves an archived workspace's descriptor back and revives its registry row."
+value = "unarchive"
+
+[devswarm_cli.action_unarchive]
+doc = "The `action` an unarchive result and its refusals carry."
+value = "unarchive"
