@@ -32,6 +32,7 @@ pub mod actverbs;
 pub mod appdb;
 pub mod appverbs;
 pub mod args;
+pub mod clog;
 pub mod common;
 pub mod cursors;
 pub mod extverbs;
