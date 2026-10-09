@@ -5,7 +5,7 @@
 
 [devswarm_recon.node_snippet]
 doc = "What Node runs for the witness: a dispatcher over the recorded calls, each run in order against the scratch mirror with Date.now pinned to the engine's clock and HOME, USERPROFILE and the central log directory pointed into the mirror. Arguments: the plugin root, the mirror home, the pinned clock, the calls as JSON. It prints the list of return values."
-value = 'const NOW=Number(process.argv[3]);Date.now=()=>NOW;const root=process.argv[1],home=process.argv[2],calls=JSON.parse(process.argv[4]);process.env.HOME=home;process.env.USERPROFILE=home;process.env.ANTI_HALL_LOG_DIR=home+"/.anti-hall/logs";const fs=require("fs"),path=require("path");const L=(m)=>require(root+"/"+m);const run=(c)=>{const a=c.args||{};switch(c.fn){case "sweepState":L("companion/devswarm-supervisor.js").writeReconcileSweepState(home,fs,{lastRunAt:a.lastRunAt});return null;case "resumeWrite":L("scripts/devswarm-lib/reconcile.js").writeReconcileResume(home,a.repoKey,a.ids);return null;case "nameWrite":return L("companion/lib/devswarm-names.js").writeName(home,a.id,a.name,a.now);case "repoUnknownRecord":return L("companion/lib/devswarm-repo-unknown.js").record(home,a.repoKey,a.scope,a.reason,a.now);case "repoUnknownClear":L("companion/lib/devswarm-repo-unknown.js").clear(home,a.repoKey,a.scope);return null;case "activeCache":{process.env.ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT=String(a.floorPct);const r=L("companion/lib/devswarm-archived-cache.js").writeActiveCache({home,byRepoKey:a.byRepoKey,now:a.now,env:process.env});return r===null?null:path.relative(home,r)}case "sampling":{const S=L("companion/lib/devswarm-startup-sampling.js");return S.runSamplingPass(a.ids.map((id)=>({id})),{home,env:process.env,now:a.now,maxProbe:a.maxProbe,run:(id)=>a.probes[id]||{ok:false,error:"no probe"}})}case "healRegistry":return L("scripts/devswarm-lib/fold.js").healRegistry(home,a.repoKey,{});case "healRows":{const F=L("scripts/devswarm-lib/fold.js");return a.ids.map((id)=>F.rehomeMiskeyedRow(home,id,a.repoKey,{}))}default:throw new Error("unknown call "+c.fn)}};const out=[];for(const c of calls){try{const r=run(c);out.push(r===undefined?null:r)}catch(e){out.push({threw:String(e&&e.message||e)})}}console.log(JSON.stringify(out))'
+value = 'const NOW=Number(process.argv[3]);Date.now=()=>NOW;const root=process.argv[1],home=process.argv[2],calls=JSON.parse(process.argv[4]);process.env.HOME=home;process.env.USERPROFILE=home;process.env.ANTI_HALL_LOG_DIR=home+"/.anti-hall/logs";const fs=require("fs"),path=require("path");const L=(m)=>require(root+"/"+m);const run=(c)=>{const a=c.args||{};switch(c.fn){case "sweepState":L("companion/devswarm-supervisor.js").writeReconcileSweepState(home,fs,{lastRunAt:a.lastRunAt});return null;case "resumeWrite":L("scripts/devswarm-lib/reconcile.js").writeReconcileResume(home,a.repoKey,a.ids);return null;case "nameWrite":return L("companion/lib/devswarm-names.js").writeName(home,a.id,a.name,a.now);case "repoUnknownRecord":return L("companion/lib/devswarm-repo-unknown.js").record(home,a.repoKey,a.scope,a.reason,a.now);case "repoUnknownClear":L("companion/lib/devswarm-repo-unknown.js").clear(home,a.repoKey,a.scope);return null;case "activeCache":{process.env.ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT=String(a.floorPct);const r=L("companion/lib/devswarm-archived-cache.js").writeActiveCache({home,byRepoKey:a.byRepoKey,now:a.now,env:process.env});return r===null?null:path.relative(home,r)}case "sampling":{const S=L("companion/lib/devswarm-startup-sampling.js");return S.runSamplingPass(a.ids.map((id)=>({id})),{home,env:process.env,now:a.now,maxProbe:a.maxProbe,run:(id)=>a.probes[id]||{ok:false,error:"no probe"}})}case "healRegistry":return L("scripts/devswarm-lib/fold.js").healRegistry(home,a.repoKey,{});case "healOrphans":return L("scripts/devswarm-lib/repair.js").healOrphanPartitions(home,{repoKey:a.repoKey});case "healRows":{const F=L("scripts/devswarm-lib/fold.js");return a.ids.map((id)=>F.rehomeMiskeyedRow(home,id,a.repoKey,{}))}default:throw new Error("unknown call "+c.fn)}};const out=[];for(const c of calls){try{const r=run(c);out.push(r===undefined?null:r)}catch(e){out.push({threw:String(e&&e.message||e)})}}console.log(JSON.stringify(out))'
 
 [devswarm_recon.node_timeout_ms]
 doc = "How long the Node witness may run for one job."
@@ -250,3 +250,43 @@ value = "hivecontrol workspace list returned {new} record(s) for {key}, below th
 [devswarm_recon.synthetic_prefix]
 doc = "The start of a session id the registry mints for a row with no live session (such a session never confirms an identity)."
 value = "unclaimed:"
+
+# ---- the orphan heal (slice S5) ------------------------------------------------------------------------------------------------
+
+[devswarm_recon.job_orphans]
+doc = "The label of the orphan-partition heal job in the witness log and the scratch directory name."
+value = "heal-orphans"
+
+[devswarm_recon.action_adopted]
+doc = "The detail action Node's orphan heal reports for an id it gave a registry row."
+value = "adopted"
+
+[devswarm_recon.action_unhealable]
+doc = "The detail action Node's orphan heal reports for an id it cannot give a registry row."
+value = "unhealable"
+
+[devswarm_recon.reason_no_descriptor]
+doc = "The reason of an unhealable orphan that has no descriptor in workspaces/ or archived/."
+value = "no-descriptor"
+
+[devswarm_recon.reason_wrong_store]
+doc = "The reason of an unhealable orphan whose worktree belongs to another repository."
+value = "wrong-store"
+
+[devswarm_recon.why_orphan_archived]
+doc = "Why a store was handed back: an orphan is archived (forward or drained, which are Node's) or the archive gate needs the liveness proof."
+value = "orphan-archived"
+
+[devswarm_recon.why_orphan_family]
+doc = "Why a store was handed back: an orphan's worktree already has registry rows, so adopting it forwards its unread into the survivor (the fold, which is Node's)."
+value = "orphan-family"
+
+[devswarm_recon.stage_heal_orphans]
+doc = "The name of the deferred post-update stage the orphan heal belongs to."
+value = "heal-orphan-partitions"
+
+[devswarm_recon.tail_max_stores]
+doc = "Most stores the engine takes through its own witnessed orphan heal in one supervisor tick (each costs one Node witness run)."
+value = 3
+min = 1
+max = 1000

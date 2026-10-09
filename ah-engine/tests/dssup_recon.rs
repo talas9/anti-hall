@@ -10,7 +10,7 @@ use ah_engine::checks::git::util::Settings;
 use ah_engine::checks::guardkit::ojson::OVal;
 use ah_engine::dsact::runner::{RunResult, RunSpec, Runner, System};
 use ah_engine::dssup::recon::gate::{self, Job, Verdict};
-use ah_engine::dssup::recon::{Hooks, Op, UnitEnd, apply, heal, norm, side};
+use ah_engine::dssup::recon::{Hooks, Op, UnitEnd, apply, heal, norm, orphans, side};
 use ah_engine::dssup::tick::Ctx;
 use ah_engine::meshw::store::{MeshStore, RegistryRow};
 use serde_json::Value;
@@ -72,6 +72,22 @@ impl Fix {
         std::fs::create_dir_all(&p).unwrap();
         assert!(Command::new("git").args(["init", "-q"]).current_dir(&p).status().unwrap().success());
         std::fs::canonicalize(&p).unwrap().to_string_lossy().into_owned()
+    }
+    /// A linked worktree of `repo` named `name` (the repository gets an empty commit first); returns its real path.
+    fn linked(&self, repo: &str, name: &str) -> String {
+        let git = |args: &[&str], dir: &str| {
+            assert!(Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(dir).output().unwrap().status.success(), "git {args:?}");
+        };
+        if !Command::new("git").args(["rev-parse", "--verify", "-q", "HEAD"]).current_dir(repo).output().unwrap().status.success() {
+            git(&["commit", "--allow-empty", "-q", "-m", "i"], repo);
+        }
+        let to = self.home.join("repos").join(name);
+        git(&["worktree", "add", "-q", "-b", name, to.to_str().unwrap()], repo);
+        std::fs::canonicalize(&to).unwrap().to_string_lossy().into_owned()
+    }
+    /// A message in `id`'s partition (the id is an orphan when it has no registry row).
+    fn msg(&self, key: &str, id: &str) {
+        self.store(key).append_message(id, 5, Some(&format!("h-{id}")), "body").unwrap();
     }
     fn key_of(&self, wt: &str) -> String {
         ah_engine::meshw::ident::repo_key_for_worktree(wt).unwrap().unwrap()
@@ -654,6 +670,245 @@ fn s2_a_deferred_store_shape_writes_nothing() {
     assert!(heal::plan(&f.home, "no-such-store").is_err());
 }
 
+// ---------------------------------------------------------------- S5: healOrphanPartitions
+
+struct OrphanCase {
+    name: &'static str,
+    build: fn(&Fix),
+    /// `Ok((adopted, unhealable))`: decided natively; `Err(reason)`: the whole store is handed back before anything is written.
+    want: Result<(u64, u64), &'static str>,
+}
+
+fn orphan_cases() -> Vec<OrphanCase> {
+    vec![
+        OrphanCase { name: "no store directory", build: |f| { let (_, k, _) = base(f); let _ = k; }, want: Ok((0, 0)) },
+        OrphanCase { name: "no orphans", build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.msg(&k, "w1"); }, want: Ok((0, 0)) },
+        OrphanCase {
+            name: "one live orphan is adopted",
+            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &p, "so1", Some(&k), Some(&k))); },
+            want: Ok((1, 0)),
+        },
+        OrphanCase {
+            name: "two orphans of two worktrees",
+            build: |f| {
+                let (p, k, _) = base(f);
+                let p2 = f.linked(&p, "p2");
+                f.msg(&k, "o1");
+                f.msg(&k, "o2");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+                f.descriptor("o2", &desc_json("o2", &p2, "so2", None, None));
+            },
+            want: Ok((2, 0)),
+        },
+        OrphanCase {
+            name: "two orphans of one worktree: the second joins the first's family",
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.msg(&k, "o1");
+                f.msg(&k, "o2");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+                f.descriptor("o2", &desc_json("o2", &p, "so2", None, None));
+            },
+            want: Err("orphan-family"),
+        },
+        OrphanCase { name: "no descriptor anywhere", build: |f| { let (_, k, _) = base(f); f.msg(&k, "o1"); }, want: Ok((0, 1)) },
+        OrphanCase {
+            name: "descriptor of another repository",
+            build: |f| { let (_, k, q) = base(f); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &q, "so1", None, None)); },
+            want: Ok((0, 1)),
+        },
+        OrphanCase {
+            name: "adopt beside a drained unhealable orphan and a wrong-store one",
+            build: |f| {
+                let (p, k, q) = base(f);
+                f.msg(&k, "o1");
+                f.msg(&k, "o2");
+                f.msg(&k, "o3");
+                f.store(&k).set_cursor("o2", 1, 10).unwrap();
+                f.store(&k).set_cursor("o3", 1, 10).unwrap();
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+                f.descriptor("o2", &desc_json("o2", &q, "so2", None, None));
+            },
+            want: Ok((1, 2)),
+        },
+        OrphanCase {
+            name: "adopt beside an unhealable orphan with unread: the summary is Node's, the store is handed back",
+            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.msg(&k, "o3"); f.descriptor("o1", &desc_json("o1", &p, "so1", None, None)); },
+            want: Err("summary-orphan"),
+        },
+        OrphanCase {
+            name: "worktree family already in the registry",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &p, "so1", None, None)); },
+            want: Err("orphan-family"),
+        },
+        OrphanCase {
+            name: "descriptor only in archived/",
+            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None)); },
+            want: Err("orphan-archived"),
+        },
+        OrphanCase {
+            name: "live descriptor with its own archive marker",
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.msg(&k, "o1");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+                f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "old", None, None));
+            },
+            want: Err("orphan-archived"),
+        },
+        OrphanCase {
+            name: "worktree archived under another id",
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.msg(&k, "o1");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+                f.put(&f.ds("archived/zz.json"), &desc_json("zz", &p, "szz", None, None));
+            },
+            want: Err("orphan-archived"),
+        },
+        OrphanCase {
+            name: "own archive marker names another worktree (id reuse)",
+            build: |f| {
+                let (p, k, q) = base(f);
+                f.msg(&k, "o1");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+                f.put(&f.ds("archived/o1.json"), &desc_json("o1", &q, "old", None, None));
+            },
+            want: Ok((1, 0)),
+        },
+        OrphanCase {
+            name: "unreadable archive marker",
+            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &p, "so1", None, None)); f.put(&f.ds("archived/o1.json"), "{not json"); },
+            want: Err("orphan-archived"),
+        },
+        OrphanCase {
+            name: "a descriptor field of a type the engine does not model",
+            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &p, "so1", None, None).replace("\"so1\"", "5")); },
+            want: Err("descriptor-field-type"),
+        },
+        OrphanCase {
+            name: "orphans known only by a cursor and a gate; broadcast and unsafe ids ignored",
+            build: |f| {
+                let (p, k, _) = base(f);
+                let st = f.store(&k);
+                st.set_cursor("o1", 3, 10).unwrap();
+                st.set_gate("o2", "g", true, "t", 10).unwrap();
+                st.append_message("*mesh-broadcast*", 5, Some("hb"), "x").unwrap();
+                st.append_message("bad id", 5, Some("hb2"), "x").unwrap();
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+            },
+            want: Ok((1, 1)),
+        },
+        OrphanCase {
+            name: "descriptor without a worktree",
+            build: |f| { let (_, k, _) = base(f); f.msg(&k, "o1"); f.descriptor("o1", "{\"id\":\"o1\",\"sessionId\":\"so1\"}"); },
+            want: Ok((1, 0)),
+        },
+    ]
+}
+
+#[test]
+fn s5_heal_orphan_partitions_matches_node_for_every_store_shape() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S5.heal-orphans");
+    for c in orphan_cases() {
+        let f = fix("s5");
+        (c.build)(&f);
+        let key = f.key_of(&std::fs::canonicalize(f.home.join("repos/p")).unwrap().to_string_lossy());
+        let before_msgs = msg_count(&f, &key);
+        match (orphans::run(&f.ctx(), &System::configured(), &key, &Hooks::none()), c.want) {
+            (Ok(run), Ok((adopted, unhealable))) => {
+                assert_eq!(run.verdict, Verdict::Agreed, "{}: {:?}", c.name, run.verdict);
+                assert!(run.deferred.is_empty(), "{}: {:?}", c.name, run.deferred);
+                assert_eq!((run.result["adopted"].as_u64(), run.result["unhealable"].as_u64()), (Some(adopted), Some(unhealable)), "{}", c.name);
+                t.case(true);
+                // idempotent: a second pass changes nothing
+                let after = f.snapshot();
+                let again = orphans::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap();
+                assert_eq!(again.verdict, Verdict::Agreed, "{} (second pass)", c.name);
+                assert_eq!(again.result["adopted"], 0, "{}", c.name);
+                assert_eq!(f.snapshot(), after, "{}: the second pass wrote something", c.name);
+            }
+            (Ok(run), Err(why)) => {
+                // decided natively, but the summary projection after the adoption is not the engine's: the witness fails and the
+                // adoption is handed back with nothing written
+                assert!(matches!(&run.verdict, Verdict::MirrorFailed(w) if w.contains(why)), "{}: {:?}", c.name, run.verdict);
+                assert_eq!(run.deferred.len(), 1, "{}", c.name);
+                assert_eq!(run.result["adopted"], 0, "{}", c.name);
+                assert!(ah_engine::dssup::recon::view::registry(&f.home, &key).unwrap().is_empty(), "{}: nothing adopted", c.name);
+                t.case(false);
+            }
+            (Err(d), Err(why)) => {
+                assert_eq!(d.0, why, "{}", c.name);
+                t.case(false);
+                // nothing was written
+                assert_eq!(msg_count(&f, &key), before_msgs);
+            }
+            (got, want) => panic!("{}: got {:?} want {want:?}", c.name, got.map(|r| (r.verdict, r.result)).map_err(|d| d.0)),
+        }
+        assert_eq!(msg_count(&f, &key), before_msgs, "{}: no message row was added or removed", c.name);
+    }
+    t.print();
+}
+
+fn msg_count(f: &Fix, key: &str) -> i64 {
+    let db = f.home.join(f.ds(&format!("store/{key}/devswarm.db")));
+    rusqlite::Connection::open(db).and_then(|c| c.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))).unwrap_or(0)
+}
+
+#[test]
+fn s5_a_busy_lock_hands_the_adoption_back_untouched() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let f = fix("s5lock");
+    let (p, k, _) = base(&f);
+    f.msg(&k, "o1");
+    f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+    let held = ah_engine::meshw::idlock::acquire(&f.home, "o1").expect("lock");
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    held.release();
+    assert_eq!(run.verdict, Verdict::Agreed);
+    assert_eq!(run.deferred.len(), 1);
+    assert_eq!(run.deferred[0].0, "o1");
+    assert_eq!(run.result["adopted"], 0);
+    assert!(ah_engine::dssup::recon::view::registry(&f.home, &k).unwrap().is_empty(), "nothing was adopted");
+}
+
+/// `sweep_tail_mode`: default `node` leaves the stage to Node alone; `engine` runs the witnessed orphan heal first and records it.
+#[test]
+fn s5_the_sweep_tail_mode_selects_the_engine_part_of_the_deferred_stage() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let build = |tag: &str, mode: Option<&str>| {
+        let mut f = fix(tag);
+        let (p, k, _) = base(&f);
+        f.msg(&k, "o1");
+        f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+        // the rotation stands on the orphan-heal stage (index 1 of 4) and its marker has the store pending
+        f.put(&f.ds("deferred-sweep-state.json"), "{\"nextStageIndex\":1}");
+        f.put(".anti-hall/update-sweep-state.json", &format!("{{\"healOrphanPartitions\":{{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[\"{k}\"]}}}}"));
+        if let Some(m) = mode {
+            f.st.env.insert("ANTIHALL_DEVSWARM_SUP_SWEEP_TAIL_MODE".into(), m.into());
+        }
+        (f, k)
+    };
+    let (node_home, k) = build("s5mode-node", None);
+    let rec = ah_engine::dssup::deferred::duty(&node_home.ctx(), &System::configured());
+    assert!(rec.get("engine").is_none(), "{rec}");
+    let _ = k;
+    let (eng_home, k) = build("s5mode-engine", Some("engine"));
+    let rec = ah_engine::dssup::deferred::duty(&eng_home.ctx(), &System::configured());
+    let stores = rec["engine"].as_array().unwrap_or_else(|| panic!("no engine part: {rec}"));
+    assert_eq!(stores.len(), 1, "{rec}");
+    assert_eq!((stores[0]["repoKey"].as_str(), stores[0]["agreed"].as_bool(), stores[0]["adopted"].as_u64()), (Some(k.as_str()), Some(true), Some(1)), "{rec}");
+    let rows = ah_engine::dssup::recon::view::registry(&eng_home.home, &k).unwrap();
+    assert_eq!(rows.iter().map(|r| r.row.id.as_str()).collect::<Vec<_>>(), ["o1"], "the engine adopted the orphan");
+}
+
 // ---------------------------------------------------------------- crash safety
 
 fn kill_hook(point: &str) -> impl Fn(&str) + '_ {
@@ -693,6 +948,10 @@ fn crash_child() {
         return;
     }
     let key = std::env::var("RECON_CRASH_KEY").unwrap();
+    if std::env::var("RECON_CRASH_KIND").as_deref() == Ok("orphans") {
+        let _ = orphans::run(&ctx, &System::configured(), &key, &Hooks { at: &hook });
+        return;
+    }
     let _ = heal::run(&ctx, &System::configured(), &key, &Hooks { at: &hook });
 }
 
@@ -743,6 +1002,71 @@ fn a_sigkill_at_every_op_boundary_leaves_a_state_nodes_next_sweep_converges_from
         assert_eq!(tup(&f, &k), tup(&reference, &key), "{point}: converged registry");
     }
     assert!(survived >= 4, "the kill points were reached ({survived})");
+}
+
+fn orphan_crash_fixture(f: &Fix) -> String {
+    let (p, k, _) = base(f);
+    let p2 = f.linked(&p, "p2");
+    f.msg(&k, "o1");
+    f.msg(&k, "o2");
+    f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+    f.descriptor("o2", &desc_json("o2", &p2, "so2", None, None));
+    k
+}
+
+/// The registry as (id, worktree basename, session) triples.
+fn reg_tuples(f: &Fix, key: &str) -> Vec<(String, Option<String>, Option<String>)> {
+    ah_engine::dssup::recon::view::registry(&f.home, key).unwrap().into_iter().map(|r| (r.row.id, r.row.worktree_path.map(|p| p.rsplit('/').next().unwrap_or("").to_string()), r.row.session_id)).collect()
+}
+
+#[test]
+fn s5_a_sigkill_at_every_adoption_and_summary_boundary_loses_nothing_and_nodes_next_pass_converges() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    // the uninterrupted result is the reference
+    let reference = fix("s5crash-ref");
+    let rkey = orphan_crash_fixture(&reference);
+    let r = orphans::run(&reference.ctx(), &System::configured(), &rkey, &Hooks::none()).unwrap();
+    assert_eq!(r.verdict, Verdict::Agreed);
+    assert_eq!(reg_tuples(&reference, &rkey).len(), 2);
+    let summary_rel = |x: &Fix, k: &str| x.ds(&format!("summaries/{k}.json"));
+    // the native part never forwards, so the boundaries are the two adoptions and the summary
+    let points: Vec<String> = ["before", "after"].iter().flat_map(|w| ["orphan:o1:0", "orphan:o2:0", "orphan-summary:0"].map(|u| format!("{u}:{w}"))).collect();
+    let mut survived = 0;
+    for point in &points {
+        let f = fix("s5crash");
+        let k = orphan_crash_fixture(&f);
+        let before = msg_count(&f, &k);
+        let o = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
+            .env("RECON_CRASH_HOME", &f.home)
+            .env("RECON_CRASH_AT", point)
+            .env("RECON_CRASH_KEY", &k)
+            .env("RECON_CRASH_KIND", "orphans")
+            .output()
+            .unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        if o.status.signal() != Some(9) {
+            continue;
+        }
+        survived += 1;
+        // every message survives; every registry row is whole; the summary parses or is absent
+        assert_eq!(msg_count(&f, &k), before, "{point}: no message lost or duplicated");
+        for (id, wt, sid) in reg_tuples(&f, &k) {
+            assert!(wt.is_some() && sid.as_deref() == Some(&format!("s{id}")), "{point}: row {id} is whole");
+        }
+        if let Some(s) = f.read(&summary_rel(&f, &k)) {
+            assert!(OVal::parse(&s).is_some(), "{point}: summary parses");
+        }
+        // Node's own next pass converges to the uninterrupted result
+        let code = "process.env.HOME=process.argv[2];const R=require(process.argv[1]+'/scripts/devswarm-lib/repair.js');R.healOrphanPartitions(process.argv[2],{repoKey:process.argv[3]})";
+        let n = Command::new("node").args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), &k]).env("ANTI_HALL_LOG_DIR", f.home.join("logs")).output().unwrap();
+        assert!(n.status.success(), "{}", String::from_utf8_lossy(&n.stderr));
+        assert_eq!(reg_tuples(&f, &k), reg_tuples(&reference, &rkey), "{point}: converged registry");
+        assert_eq!(msg_count(&f, &k), before, "{point}: still no message added by the convergence");
+    }
+    assert!(survived >= 6, "the kill points were reached ({survived})");
 }
 
 #[test]

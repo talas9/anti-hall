@@ -28,6 +28,7 @@ pub mod gate;
 pub mod heal;
 pub mod mirror;
 pub mod norm;
+pub mod orphans;
 pub mod side;
 pub mod view;
 

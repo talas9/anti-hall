@@ -5183,9 +5183,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.set_rt_keep` | `7 entries` |  |  | The newest messages of each partition that are never tombstoned (by age or by size). Node: devswarm.retention.keepPerPartition. |
 | `devswarm_sup.set_rt_max_store_mb` | `7 entries` |  |  | Store size limit in MB: above it the oldest eligible bodies are tombstoned whatever their age; 0 = no limit. Node: devswarm.retention.maxStoreMB. |
 | `devswarm_sup.set_rt_require_witness` | `5 entries` |  |  | Tombstone only when Node's planner ran and agreed. Turn off only when Node is decommissioned and the agreement record is proven; the engine then relies on its own two identical plans and its in-transaction checks. |
+| `devswarm_sup.set_sweep_tail_mode` | `6 entries` |  |  | Who does the sweep tail's own work in the deferred post-update stages: node (Node's stage functions do all of it) \| engine (the engine first does the part it has ported, each store witnessed against Node's function on a scratch mirror and applied only when both agree; Node's stage then runs as before and finds that part done). Today the engine takes the orphan-partition heal (additive adoptions); a store it cannot decide in full stays Node's. |
 | `devswarm_sup.set_witness` | `6 entries` |  |  | Run the non-acting Node witness for the native supervisor duties: on \| off. The witness only ever touches scratch copies; it costs one short Node run per duty per witness_every_ms. |
 | `devswarm_sup.status_escalated` | `escalated` |  |  | The verdict status after an escalation. |
 | `devswarm_sup.status_nudged` | `nudged` |  |  | The verdict status after a poke. |
+| `devswarm_sup.sweep_tail_engine` | `engine` |  |  | The word of devswarm_sup.sweep_tail_mode that lets the engine take the ported part of the sweep tail. |
 | `devswarm_sup.tick_budget_ms` | `900000` |  | ms | Most time one tick spends starting duties; a duty not yet started when it is spent waits for the next tick. Each duty is also bounded by its own timeout_ms. |
 | `devswarm_sup.tick_ms` | `60000` |  | ms | How often the scheduler job `devswarm_supervisor` runs while the mode is `engine` (Node's installer sweeps every 60-120 s). The job does nothing where DevSwarm is absent or the mode is witness. |
 | `devswarm_sup.verdict_fields` | `7 items` |  |  | The fields of a liveness verdict Node's recovery keeps across an update, in its order (PRESERVED_VERDICT_FIELDS); a nudge or an escalation rewrites the file as status + these + the new fields. |
@@ -5326,6 +5328,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `devswarm_recon.action_adopted` | `adopted` |  |  | The detail action Node's orphan heal reports for an id it gave a registry row. |
+| `devswarm_recon.action_unhealable` | `unhealable` |  |  | The detail action Node's orphan heal reports for an id it cannot give a registry row. |
 | `devswarm_recon.ansi_re` | `\x1b\[[0-9;]*m` |  |  | The colour escape sequences stripped from an error text before it is recorded. |
 | `devswarm_recon.diff_chars` | `160` |  |  | Most characters of each side's line quoted in a difference text. |
 | `devswarm_recon.dir_liveness` | `liveness` |  |  | The persisted liveness verdicts directory, under the DevSwarm state directory. |
@@ -5337,6 +5341,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.file_sampling_state` | `startup-sampling-state.json` |  |  | The start-up sampling state, under the DevSwarm state directory. |
 | `devswarm_recon.file_sweep_state` | `reconcile-sweep-state.json` |  |  | The reconcile sweep's cool-down file, under the DevSwarm state directory. |
 | `devswarm_recon.job_heal` | `heal-registry` |  |  | The label of the registry-heal job in the witness log and the scratch directory name. |
+| `devswarm_recon.job_orphans` | `heal-orphans` |  |  | The label of the orphan-partition heal job in the witness log and the scratch directory name. |
 | `devswarm_recon.log_component_cache` | `devswarm-archived-cache` |  |  | The component of the active-snapshot log lines. |
 | `devswarm_recon.log_level_warn` | `warn` |  |  | The level of the partial-list guard's log line. |
 | `devswarm_recon.log_op_partial` | `partial-list-guard` |  |  | The operation of the partial-list guard's log line. |
@@ -5359,16 +5364,20 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.probe_args` | `workspace, info` |  |  | The hivecontrol arguments of a start-up probe, before the workspace id. |
 | `devswarm_recon.probe_timeout_ms` | `3000` |  | ms | How long one start-up probe may run (Node: PROBE_TIMEOUT_MS). |
 | `devswarm_recon.reason_max` | `300` |  |  | Most characters (UTF-16 units) of an error text kept in the repository-not-known marker. |
+| `devswarm_recon.reason_no_descriptor` | `no-descriptor` |  |  | The reason of an unhealable orphan that has no descriptor in workspaces/ or archived/. |
+| `devswarm_recon.reason_wrong_store` | `wrong-store` |  |  | The reason of an unhealable orphan whose worktree belongs to another repository. |
 | `devswarm_recon.recheck_ms` | `21600000` |  | ms | How long a repository-not-known marker suppresses the failing calls before one attempt re-tests it (Node: RECHECK_MS). |
 | `devswarm_recon.samples_max_bytes` | `5242880` |  | bytes | Largest the samples log grows before it is rotated to its one kept generation (Node: 5 MB). |
 | `devswarm_recon.samples_rotated_suffix` | `.1` |  |  | The ending of the rotated samples log. |
 | `devswarm_recon.scratch_prefix` | `recon-` |  |  | The start of a job's scratch directory name (under devswarm_sup.witness_dir). |
 | `devswarm_recon.set_active_floor_pct` | `7 entries` |  |  | Least percent of a project's previous active-workspace snapshot a new one must hold, or the previous one is kept (0 turns the floor off). Node: devswarm.activeFloorPct. |
 | `devswarm_recon.settings_files` | `.claude/settings.json` |  |  | Settings files (relative to the home) a mirror also holds, because the Node functions and the summary projection read them. |
+| `devswarm_recon.stage_heal_orphans` | `heal-orphan-partitions` |  |  | The name of the deferred post-update stage the orphan heal belongs to. |
 | `devswarm_recon.status_stale` | `stale` |  |  | The verdict status word that makes a workspace a start-up sampling candidate. |
 | `devswarm_recon.summary_dirs` | `workspaces, archived, cursors, heartbeats` |  |  | Directories under the DevSwarm state directory that the summary projection reads; a job that rewrites a summary mirrors them whole. |
 | `devswarm_recon.suppress_after` | `3` |  |  | How many sweeps in a row must meet the same repository-not-known error before the calls are suppressed (Node: SUPPRESS_AFTER). |
 | `devswarm_recon.synthetic_prefix` | `unclaimed:` |  |  | The start of a session id the registry mints for a row with no live session (such a session never confirms an identity). |
+| `devswarm_recon.tail_max_stores` | `3` |  |  | Most stores the engine takes through its own witnessed orphan heal in one supervisor tick (each costs one Node witness run). |
 | `devswarm_recon.why_drift` | `drift:` |  |  | The start of the reason when a precondition changed between the plan and the apply (followed by what changed). |
 | `devswarm_recon.why_lock_busy` | `lock-busy` |  |  | Why a unit was handed back: its workspace lock is held by a live writer. |
 | `devswarm_recon.why_mirror` | `mirror-failed` |  |  | Why a unit was handed back: a scratch mirror could not be built or the engine's pass over it failed. |
@@ -5376,6 +5385,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.why_mismatch` | `witness-mismatch` |  |  | Why a unit was handed back: Node and the engine ended in different states on the scratch mirrors. |
 | `devswarm_recon.why_node_answer` | `node-answer-unparsable` |  |  | Why the witness failed: Node's answer was not the list of return values. |
 | `devswarm_recon.why_node_unavailable` | `node-unavailable` |  |  | Why a unit was handed back: Node could not be run, so the decision is unwitnessed. |
+| `devswarm_recon.why_orphan_archived` | `orphan-archived` |  |  | Why a store was handed back: an orphan is archived (forward or drained, which are Node's) or the archive gate needs the liveness proof. |
+| `devswarm_recon.why_orphan_family` | `orphan-family` |  |  | Why a store was handed back: an orphan's worktree already has registry rows, so adopting it forwards its unread into the survivor (the fold, which is Node's). |
 | `devswarm_recon.why_rehome_across` | `rehome-across-stores` |  |  | Why a row was handed back: it is mis-keyed and moving it between stores (rehomeAcrossStores) is still Node's. |
 | `devswarm_recon.why_surrogate` | `surrogate-cut` |  |  | Why a decision was handed back: cutting the text at Node's length would split a surrogate pair. |
 | `devswarm_recon.witness_diffs` | `20` |  |  | Most differences one witness log line lists. |
