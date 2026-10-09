@@ -21,6 +21,9 @@
 #                                                  back), remove the shadow triggers, add the Node witness (live/node-shadow.sh), keep telemetry sync
 #   sh install-shadow-remote.sh --rollback-live    undo --live byte-identically (settings.json, plugin state); the shadow works again
 #   (--status shows MODE: LIVE or SHADOW)   --live options: --live-select all-agreeing|none|id,id  --live-branch NAME (engine-proto)  --live-repo URL
+#   --live fetches the engine WITHOUT compiling: --bin PATH, else the prebuilt binary the ah-engine-bins workflow built for the exact
+#   engine-proto commit (needs an authenticated `gh`; sha256-verified). Compiling is a last resort and only with --allow-build or
+#   AH_LIVE_BUILD=1 (jobs: env AH_BUILD_JOBS, default 2). WSL/Linux/macOS one-liner:  gh auth login && sh install-shadow-remote.sh --live
 # Telemetry: every hook payload is spooled (50 MB cap) and, at most once per hour, the updater pushes the deltas plus the engine's
 # own telemetry export to a PRIVATE repo (config $D/config: sync.enabled=true, sync.repo=git@github.com:talas9/ah-shadow-telemetry.git,
 # sync.interval_s=3600). --no-sync (install or re-run) sets sync.enabled=false. Uninstall leaves the telemetry clone and the spool.
@@ -64,6 +67,7 @@ case "${1:-}" in
 esac
 
 # ---------------------------------------------------------------- args
+ALLOW_BUILD=${AH_LIVE_BUILD:-0}; BUILD_JOBS=${AH_BUILD_JOBS:-2}
 MODE=install; BIN=; FORCE=0; REPO=; NOSYNC=0; LIVE_SELECT=all-agreeing; LIVE_BRANCH=engine-proto; LIVE_REPO=
 LIVE_MIN_VERSION=0.202.0     # engine-proto 8c9a332 builds plugin 0.202.0; anything older lacks the thin triggers / defaults layout
 while [ "$#" -gt 0 ]; do
@@ -73,6 +77,7 @@ while [ "$#" -gt 0 ]; do
     --branch) [ "$#" -ge 2 ] || die "--branch needs a name"; BRANCH=$2; shift ;;
     --status) MODE=status ;;
     --live) MODE=live ;;
+    --allow-build) ALLOW_BUILD=1 ;;
     --rollback-live) MODE=rollbacklive ;;
     --live-select) [ "$#" -ge 2 ] || die "--live-select needs a value"; LIVE_SELECT=$2; shift ;;
     --live-branch) [ "$#" -ge 2 ] || die "--live-branch needs a name"; LIVE_BRANCH=$2; shift ;;
@@ -84,7 +89,7 @@ while [ "$#" -gt 0 ]; do
     --no-sync) NOSYNC=1 ;;
     --refresh-scripts) MODE=refresh ;;
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
   shift
@@ -685,6 +690,43 @@ cmd_status() {
 }
 
 # ---------------------------------------------------------------- live mode
+# live_triple: the Rust target triple of this machine (Rosetta: a translated x86_64 shell on Apple Silicon gets the arm64 build).
+live_triple() {
+  _os=$(uname -s 2>/dev/null); _m=$(uname -m 2>/dev/null)
+  case "$_os/$_m" in
+    Linux/x86_64|Linux/amd64) echo x86_64-unknown-linux-gnu ;;
+    Linux/aarch64|Linux/arm64) echo aarch64-unknown-linux-gnu ;;
+    Darwin/arm64) echo aarch64-apple-darwin ;;
+    Darwin/x86_64)
+      if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; then say "note: running under Rosetta on Apple Silicon, using the arm64 build" >&2; echo aarch64-apple-darwin
+      else echo x86_64-apple-darwin; fi ;;
+    *) return 1 ;;
+  esac
+}
+
+# live_download_bin SHA OUT: fetch the ah-engine-bins artifact built for exactly SHA with gh, verify its sha256, smoke-test it, copy to OUT.
+# Returns 1 with DL_WHY set when it is simply unavailable (no gh/auth/run/artifact); a checksum mismatch is fatal (die).
+live_download_bin() {
+  DL_WHY=
+  _tr=$(live_triple) || { DL_WHY="no prebuilt engine for this platform ($(uname -s)/$(uname -m))"; return 1; }
+  command -v gh >/dev/null 2>&1 || { DL_WHY="gh (GitHub CLI) is not installed"; return 1; }
+  ilim 30 gh auth status >/dev/null 2>&1 || { DL_WHY="gh is not authenticated (run: gh auth login)"; return 1; }
+  _slug=$(printf '%s' "$REPO_HTTPS" | sed 's#^https://github.com/##; s#\.git$##')
+  _rid=$(ilim 60 gh run list -R "$_slug" --workflow ah-engine-bins.yml --commit "$1" --status success --json databaseId -L 1 2>/dev/null | sed -n 's/.*"databaseId": *\([0-9][0-9]*\).*/\1/p' | head -1)
+  [ -n "$_rid" ] || { DL_WHY="no successful ah-engine-bins run for commit $1 yet (CI still building, or older than the 14-day retention)"; return 1; }
+  _an="ah-engine-$_tr-$(printf '%s' "$1" | cut -c1-8)"; _dd="$TMPD/dl"; rm -rf "$_dd"; mkdir -p "$_dd"
+  say "downloading $_an (run $_rid)"
+  ilim 300 gh run download "$_rid" -R "$_slug" -n "$_an" -D "$_dd" >"$TMPD/dl.err" 2>&1 || { DL_WHY="artifact download failed: $(head -c 200 "$TMPD/dl.err" | tr '\n' ' ')"; return 1; }
+  _f=$(find "$_dd" -type f -name ah-engine | head -1); _c=$(find "$_dd" -type f -name ah-engine.sha256 | head -1)
+  [ -n "$_f" ] && [ -n "$_c" ] || { DL_WHY="artifact $_an lacks ah-engine or ah-engine.sha256"; return 1; }
+  _want=$(awk '{print $1; exit}' "$_c"); _got=$(sha "$_f")
+  [ -n "$_want" ] && [ "$_want" = "$_got" ] || die "checksum mismatch for $_an (expected ${_want:-none}, got $_got): refusing the download"
+  chmod +x "$_f"
+  _v=$("$_f" version 2>&1) && case "$_v" in [0-9]*) ;; *) false ;; esac || { DL_WHY="the downloaded engine does not run here: $_v"; return 1; }
+  cp "$_f" "$2" || die "cannot copy the downloaded engine"
+  say "using prebuilt $_an (sha256 verified, version $_v)"
+}
+
 cmd_live() {
   SRC_KIT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)/live
   for t in git node; do command -v "$t" >/dev/null 2>&1 || die "$t not found (--live needs git and node)"; done
@@ -720,15 +762,18 @@ cmd_live() {
   pv=$(node -p 'require(process.argv[1]).version' "$PR/.claude-plugin/plugin.json") || die "cannot read the plugin version"
   node -e 'const a=process.argv[1].split(".").map(Number),b=process.argv[2].split(".").map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))process.exit((a[i]||0)>(b[i]||0)?0:1)}' "$pv" "$LIVE_MIN_VERSION" || die "plugin $pv on $LIVE_BRANCH is older than $LIVE_MIN_VERSION (engine-proto 8c9a332)"
   say "source: $LIVE_BRANCH $lc (plugin $pv)"
-  # 2 the engine binary: --bin, else build (the shadow's cargo cache is reused when present)
+  # 2 the engine binary: --bin, else the prebuilt CI artifact for exactly $lc (gh), else build ONLY when allowed (--allow-build / AH_LIVE_BUILD=1)
   STB="$TMPD/live-bin"
   if [ -n "$BIN" ]; then cp "$BIN" "$STB" || die "cannot copy --bin"; say "using prebuilt binary $BIN (assumed to match $lc)"
+  elif live_download_bin "$lc" "$STB"; then :
+  elif [ "$ALLOW_BUILD" != 1 ]; then
+    die "no prebuilt engine for $lc: $DL_WHY. Supply one with --bin PATH (built by the ah-engine-bins workflow), or after 'gh auth login' re-run this; to compile locally anyway (slow, heavy) add --allow-build or set AH_LIVE_BUILD=1"
   else
     PATH="$HOME/.cargo/bin:$PATH"; export PATH
     command -v cargo >/dev/null 2>&1 || die "cargo not found. Install rustup (https://rustup.rs) or pass --bin PATH"
     TD="$LIVEKIT/target"; [ -d "$D/target" ] && TD="$D/target"
-    say "building ah-engine at $lc (nice, 2 jobs; minutes on a cold cache; log $LIVEKIT/build.log)"
-    ( cd "$LS/ah-engine" && CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$TD" ilim 3600 nice -n 19 cargo build --release --locked ) >"$LIVEKIT/build.log" 2>&1 || { tail -5 "$LIVEKIT/build.log" >&2; die "cargo build failed"; }
+    say "building ah-engine at $lc (nice, $BUILD_JOBS jobs; minutes on a cold cache; log $LIVEKIT/build.log)"
+    ( cd "$LS/ah-engine" && CARGO_BUILD_JOBS="$BUILD_JOBS" CARGO_TARGET_DIR="$TD" ilim 3600 nice -n 19 cargo build --release --locked ) >"$LIVEKIT/build.log" 2>&1 || { tail -5 "$LIVEKIT/build.log" >&2; die "cargo build failed"; }
     cp "$TD/release/ah-engine" "$STB" || die "built binary missing"
   fi
   chmod +x "$STB"
