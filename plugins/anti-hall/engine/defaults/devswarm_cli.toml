@@ -1894,3 +1894,15 @@ value = "unarchive"
 [devswarm_cli.action_unarchive]
 doc = "The `action` an unarchive result and its refusals carry."
 value = "unarchive"
+
+[devswarm_cli.verb_migrate_owner_keys]
+doc = "The verb that backfills a missing ownerKey on every workspace descriptor."
+value = "migrate-owner-keys"
+
+[devswarm_cli.action_migrate_owner_keys]
+doc = "The `action` a migrate-owner-keys result carries."
+value = "migrate-owner-keys"
+
+[devswarm_cli.migrate_tmp_suffix]
+doc = "The ending of the staging file a descriptor rewrite is made in before it is renamed over the descriptor."
+value = "tmp"

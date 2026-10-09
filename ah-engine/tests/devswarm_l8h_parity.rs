@@ -380,3 +380,109 @@ fn unarchive_matches_node() {
     ];
     check(&fx, &cases, &[], 15, 3);
 }
+
+// ---- migrate-owner-keys --------------------------------------------------------------------------------------------------
+
+/// `store.hashFromWorkspaceId(id)` for an ordinary id (the first eight hex digits of its SHA-256), asked of Node itself.
+fn hash8(id: &str) -> String {
+    let o = Command::new("node")
+        .args(["-e", "process.stdout.write(require('crypto').createHash('sha256').update(process.argv[1]).digest('hex').slice(0,8))", id])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout).to_string()
+}
+
+fn desc_json(id: &str, wt: &str, extra: &str) -> String {
+    format!("{{\"id\":\"{id}\",\"worktreePath\":\"{wt}\",\"sessionId\":\"s-{id}\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null{extra}}}")
+}
+
+#[test]
+fn migrate_owner_keys_matches_node() {
+    need_node!();
+    let fx = fixture("l8hmigrate");
+    let wt = fx.child.to_string_lossy().to_string();
+    let key = fx.repo_key.clone();
+    let m = |name: &str, cwd: &'static str, native: bool| lc(name, &["migrate-owner-keys"], cwd, native, "MigrateOwnerKeys");
+    let active = |id: &str, extra: &str| {
+        let (id, d) = (id.to_string(), desc_json(id, &wt, extra));
+        move |h: &Path| put(h, &format!(".anti-hall/devswarm/workspaces/{id}.json"), &d)
+    };
+    let archived = |id: &str, extra: &str| {
+        let (id, d) = (id.to_string(), desc_json(id, &wt, extra));
+        move |h: &Path| put(h, &format!(".anti-hall/devswarm/archived/{id}.json"), &d)
+    };
+    let (a1, a2, a3, a4) = (active("mo-1", ""), active("mo-2", &format!(",\"ownerKey\":\"{key}\"")), active("mo-3", ",\"ownerKey\":\"\""), active("mo-4", ",\"repoKey\":\"keep-me-abc123\""));
+    let (r1, r2) = (archived("mo-arch", ""), archived("mo-arch-owned", &format!(",\"ownerKey\":\"{key}\"")));
+    let gone = {
+        let d = desc_json("mo-gone", "/no/such/worktree", "");
+        move |h: &Path| put(h, ".anti-hall/devswarm/workspaces/mo-gone.json", &d)
+    };
+    let gone_rk = {
+        let d = desc_json("mo-gone-rk", "/no/such/worktree", ",\"repoKey\":\"persisted-abc123\"");
+        move |h: &Path| put(h, ".anti-hall/devswarm/workspaces/mo-gone-rk.json", &d)
+    };
+    let stranded = {
+        let d = desc_json("mo-stranded", &wt, &format!(",\"ownerKey\":\"{}\"", hash8("mo-stranded")));
+        move |h: &Path| put(h, ".anti-hall/devswarm/workspaces/mo-stranded.json", &d)
+    };
+    let stranded_archived = {
+        let d = desc_json("mo-stranded-a", &wt, &format!(",\"ownerKey\":\"{}\"", hash8("mo-stranded-a")));
+        move |h: &Path| put(h, ".anti-hall/devswarm/archived/mo-stranded-a.json", &d)
+    };
+    let junk = |h: &Path| {
+        put(h, ".anti-hall/devswarm/workspaces/broken.json", "{not json");
+        put(h, ".anti-hall/devswarm/workspaces/array.json", "[1,2]");
+        put(h, ".anti-hall/devswarm/workspaces/notes.txt", "x");
+        put(h, ".anti-hall/devswarm/workspaces/no-wt.json", "{\"id\":\"no-wt\"}");
+        put(h, ".anti-hall/devswarm/workspaces/unsafe.json", "{\"id\":\"../x\",\"worktreePath\":\"/a\"}");
+    };
+    let mismatch = |h: &Path| put(h, ".anti-hall/devswarm/workspaces/other-name.json", &desc_json("not-the-file-name", "/a", ""));
+    let both_dirs = {
+        let (d1, d2) = (desc_json("mo-twin", &wt, ""), desc_json("mo-twin", &wt, ",\"note\":\"archived copy\""));
+        move |h: &Path| {
+            put(h, ".anti-hall/devswarm/workspaces/mo-twin.json", &d1);
+            put(h, ".anti-hall/devswarm/archived/mo-twin.json", &d2);
+        }
+    };
+    let cases = vec![
+        m("mo-empty-home", "main", true),
+        m("mo-backfills-one", "main", true).setup(a1.clone()),
+        m("mo-from-a-child", "child", true).setup(a1.clone()),
+        m("mo-outside-a-project", "nongit", true).setup(a1.clone()),
+        m("mo-already-owned", "main", true).setup(a2.clone()),
+        m("mo-empty-owner-key-is-missing", "main", true).setup(a3),
+        m("mo-persisted-repo-key-kept", "main", true).setup(a4),
+        m("mo-mixed-active-and-archived", "main", true).setup({
+            let (a, b, c, d, e) = (a1.clone(), a2.clone(), r1.clone(), r2, gone.clone());
+            move |h| {
+                a(h);
+                b(h);
+                c(h);
+                d(h);
+                e(h);
+            }
+        }),
+        m("mo-worktree-gone-falls-to-the-hash-bucket", "main", true).setup(gone.clone()),
+        m("mo-worktree-gone-keeps-its-repo-key", "main", true).setup(gone_rk),
+        m("mo-skips-what-is-no-descriptor", "main", true).setup({
+            let a = a1.clone();
+            move |h| {
+                junk(h);
+                a(h);
+            }
+        }),
+        m("mo-stranded-in-the-hash-bucket-is-node", "main", false).setup(stranded),
+        m("mo-stranded-archived-is-only-backfilled-never-rehomed", "main", true).setup(stranded_archived),
+        m("mo-file-name-is-not-the-id-is-node", "main", false).setup(mismatch),
+        m("mo-same-id-in-both-dirs-counts-once", "main", true).setup(both_dirs),
+        m("mo-twice-is-idempotent", "main", true).setup({
+            let main = fx.main.clone();
+            let a = a1.clone();
+            move |h| {
+                a(h);
+                node_first(h, &main, &["migrate-owner-keys"], NOW - 100);
+            }
+        }),
+    ];
+    check(&fx, &cases, &[], 13, 1);
+}

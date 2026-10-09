@@ -42,6 +42,8 @@ pub enum Ext {
     Retention,
     /// `unarchive <id>` (lane l8h).
     Unarchive,
+    /// `migrate-owner-keys` (lane l8h).
+    MigrateOwnerKeys,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -72,6 +74,8 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Retention)
     } else if is("devswarm_cli.verb_unarchive") {
         Some(Ext::Unarchive)
+    } else if is("devswarm_cli.verb_migrate_owner_keys") {
+        Some(Ext::MigrateOwnerKeys)
     } else {
         None
     }
@@ -97,6 +101,7 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::SyncUi => super::reportverbs::sync_ui(inv, a),
         Ext::Retention => super::reportverbs::retention(inv, a),
         Ext::Unarchive => super::lifeverbs::unarchive(inv, a),
+        Ext::MigrateOwnerKeys => super::lifeverbs::migrate_owner_keys(inv, a),
     }
 }
 
