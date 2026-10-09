@@ -19,7 +19,8 @@
 //! the apps-still-live report, the ghost-label fold and the text table.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable or torn optional file is the absent one (Node: `try { JSON.parse(readFileSync(...)) } catch (_) {}`)
-use crate::checks::guardkit::ojson::{OVal, is_array_index_key, js_number_text};
+use crate::checks::guardkit::ojson::{OVal, is_array_index_key};
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::{js_number_of_str, slice_utf16};
 use crate::defaults;
 use crate::dssup::appsync::plan::{app_sourced, dir_of, read_json_dir, wt_key};
@@ -137,7 +138,7 @@ fn real_sid(v: Option<&OVal>) -> R<Option<String>> {
     Ok(match v {
         None | Some(OVal::Null) => None,
         Some(OVal::Str(t)) => (!t.is_empty()).then(|| t.clone()),
-        Some(OVal::Num(x)) => Some(js_number_text(*x)),
+        Some(OVal::Num(x)) => Some(to_js_string(*x)),
         Some(OVal::Bool(b)) => Some(b.to_string()),
         Some(_) => return defer("session-type"),
     })
@@ -310,7 +311,7 @@ fn waiting_hint(e: &Eng, id: &str, wt: &str, session: &str) -> R<Option<String>>
     {
         let theirs = match theirs {
             OVal::Str(t) => t.clone(),
-            OVal::Num(x) => js_number_text(*x),
+            OVal::Num(x) => to_js_string(*x),
             OVal::Bool(b) => b.to_string(),
             _ => return defer("heartbeat-session-type"),
         };
@@ -344,7 +345,7 @@ fn hints(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>) -> R<Vec<St
         h.push(key("devswarm_cli.rr_hint_worktree_gone").to_string());
     }
     if let Some(d) = idle_days(e, id) {
-        h.push(tpl("devswarm_cli.rr_hint_idle", &[("days", &js_number_text(d))]));
+        h.push(tpl("devswarm_cli.rr_hint_idle", &[("days", &to_js_string(d))]));
     }
     if archived(e, id, wt)? {
         h.push(key("devswarm_cli.rr_hint_archived").to_string());
@@ -506,7 +507,7 @@ fn js_text(v: Option<&OVal>) -> R<String> {
         None => key("mesh_write.js_undefined").to_string(),
         Some(OVal::Null) => key("mesh_write.js_null").to_string(),
         Some(OVal::Str(t)) => t.clone(),
-        Some(OVal::Num(x)) => js_number_text(*x),
+        Some(OVal::Num(x)) => to_js_string(*x),
         Some(OVal::Bool(b)) => b.to_string(),
         Some(_) => return defer("descriptor-id-type"),
     })
@@ -609,7 +610,7 @@ fn fold_target(e: &Eng, id: &str, present: &HashSet<String>, aliases: &[(String,
         let to = match j.get(key("devswarm_cli.rr_field_retired_to")) {
             None | Some(OVal::Null) => String::new(),
             Some(OVal::Str(t)) => t.clone(),
-            Some(OVal::Num(x)) => js_number_text(*x),
+            Some(OVal::Num(x)) => to_js_string(*x),
             Some(OVal::Bool(b)) => b.to_string(),
             Some(_) => return defer("retired-type"),
         };
@@ -859,14 +860,14 @@ fn relative(ts: Option<f64>, now: f64) -> String {
     let Some(ts) = ts.filter(|t| t.is_finite() && *t > 0.0) else { return key("devswarm_cli.rr_text_dash").to_string() };
     let secs = ((now - ts).max(0.0) / 1000.0).floor();
     if secs < 60.0 {
-        return format!("{}s", js_number_text(secs));
+        return format!("{}s", to_js_string(secs));
     }
     let mins = (secs / 60.0).floor();
     if mins < 60.0 {
-        return format!("{}m", js_number_text(mins));
+        return format!("{}m", to_js_string(mins));
     }
     let hours = (mins / 60.0).floor();
-    if hours < 24.0 { format!("{}h", js_number_text(hours)) } else { format!("{}d", js_number_text((hours / 24.0).floor())) }
+    if hours < 24.0 { format!("{}h", to_js_string(hours)) } else { format!("{}d", to_js_string((hours / 24.0).floor())) }
 }
 
 /// `rosterHumanText(result, { all, home, now })`.
@@ -897,8 +898,8 @@ pub fn human_text(inv: &Inv, rows: &[Obj], all: bool, now: f64) -> R<String> {
             let unread = match num_field(r, "directUnread") {
                 None => key("devswarm_cli.rr_text_dash").to_string(),
                 Some(d) => match num_field(r, "broadcastUnread").filter(|b| *b > 0.0) {
-                    Some(b) => tpl("devswarm_cli.rr_text_unread_bcast", &[("direct", &js_number_text(d)), ("bcast", &js_number_text(b))]),
-                    None => js_number_text(d),
+                    Some(b) => tpl("devswarm_cli.rr_text_unread_bcast", &[("direct", &to_js_string(d)), ("bcast", &to_js_string(b))]),
+                    None => to_js_string(d),
                 },
             };
             let id = str_field(r, "id");

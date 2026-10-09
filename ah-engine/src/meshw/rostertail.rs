@@ -14,7 +14,7 @@
 //! to Node.
 //!
 //! Every limit, marker and text is a plugin setting (`devswarm_cli.rr_tr_*`).
-use crate::checks::guardkit::ojson::js_number_text;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::{collapse_ws, js_trim, js_trim_start, lossy_owned, slice_utf16};
 use crate::defaults;
 use crate::meshw::extverbs::tpl;
@@ -67,7 +67,7 @@ impl Sc {
         match self {
             Sc::Null => Ok("null".into()),
             Sc::Bool(b) => Ok(b.to_string()),
-            Sc::Num(n) => Ok(js_number_text(*n)),
+            Sc::Num(n) => Ok(to_js_string(*n)),
             Sc::Str(s) => Ok(s.clone()),
             Sc::Obj => Ok("[object Object]".into()),
             Sc::Arr => Err(()),

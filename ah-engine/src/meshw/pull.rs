@@ -29,7 +29,8 @@
 // - an unreadable optional file is the same as an absent one (Node's try/catch around readFileSync)
 // - text that does not parse is the absent value (Node's JSON.parse catch parity)
 use crate::checks::guardkit::nodelock;
-use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::ojson::OVal;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use crate::dssup::ingest::{import, wal};
@@ -708,8 +709,8 @@ fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
                 format!(
                     "\"reason\":\"{}\",\"nativeCount\":{},\"recovered\":{}",
                     defaults::text("mesh_write.wal_reason_shortfall"),
-                    js_number_text(native),
-                    js_number_text(recovered)
+                    to_js_string(native),
+                    to_js_string(recovered)
                 ),
             )
         } else {
@@ -728,9 +729,9 @@ fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
                 "mesh_write.msg_pull_shortfall",
                 &[
                     ("id", &OVal::Str(p.id.clone()).stringify()),
-                    ("count", &js_number_text(native)),
-                    ("recovered", &js_number_text(recovered)),
-                    ("lost", &js_number_text(native - recovered)),
+                    ("count", &to_js_string(native)),
+                    ("recovered", &to_js_string(recovered)),
+                    ("lost", &to_js_string(native - recovered)),
                     ("wal", &p.wal.display()),
                     ("entry", &entry.unwrap_or_else(|| defaults::text("mesh_write.js_null").to_string())),
                 ]
