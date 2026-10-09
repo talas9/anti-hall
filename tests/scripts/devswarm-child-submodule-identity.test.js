@@ -142,3 +142,20 @@ test('E: a child registered against the Primary path never receives --to-primary
   const got = withStore((s) => ({ child: (s.listMessages(CHILD) || []).filter((m) => /phase report/.test(String(m.body || m.message || ''))).length }));
   assert.strictEqual(got.child, 0, 'the child partition got nothing');
 });
+
+test('F: a heartbeat report sent from the child submodule cwd satisfies the child Stop gate (no re-hold)', { skip }, () => {
+  const { testHook } = require('../helpers/spawn-hook.js');
+  const core = require(path.join(PLUGIN, 'scripts', 'devswarm-lib', 'core.js'));
+  // the child is registered at its own worktree again (D repaired it); corroborate it for the gate
+  withStore((s) => s.upsertRegistry({ id: CHILD, worktreePath: child, sessionId: 'sess-child' }, { allowPathChange: true }));
+  core.writeDescriptorAtomic(home, CHILD, { id: CHILD, worktreePath: child, sessionId: 'sess-child', ownerKey: repoKey, repoKey });
+  const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: CHILD, CLAUDE_CODE_ENTRYPOINT: 'cli', PATH: path.join(os.tmpdir(), 'no-native-bin-here') };
+  const stop = () => testHook('devswarm-child-gate.js', { hook_event_name: 'Stop', session_id: 'gate-sess', cwd: childSub, stop_hook_active: false }, { home, env });
+  const before = stop();
+  assert.strictEqual(before.status, 0);
+  assert.match(before.stdout, /block/, 'control: with nothing reported the gate holds: ' + before.stdout);
+  const hb = cli(childSub, ['heartbeat', CHILD, '--summary', 'phase done', '--progress', '100'], { DEVSWARM_BUILDER_ID: CHILD });
+  assert.strictEqual(hb.ok, true, JSON.stringify(hb));
+  const after = stop();
+  assert.strictEqual(after.stdout.includes('"decision":"block"') || /decision.*block/.test(after.stdout), false, 'the report from the submodule cwd satisfies the gate: ' + after.stdout);
+});
