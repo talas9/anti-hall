@@ -41,6 +41,7 @@ impl Env {
             "scan-throttle",
             "api-guard",
             "ship-it-guard",
+            "procwatch-advisory",
             "engine-role-guard",
         ];
         let m: serde_json::Map<String, serde_json::Value> =
@@ -492,19 +493,19 @@ fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_n
 #[test]
 fn a_guard_node_module_resolution_exit_one_is_unrunnable_but_own_exit_one_is_not() {
     let e = Env::new("module-resolution");
-    // a non-ASCII command is one the engine's command-guard leaves to the Node hook, so the stand-in runs
+    // a Bash write with a relative cwd is one the engine's command-guard script leaves to the Node hook, so the stand-in runs
     let script = e.dir.join("hook.js");
     std::fs::write(&script, "// exists for preflight").unwrap();
     let bin = e.fake_node("echo MODULE_NOT_FOUND fake >&2; exit 1");
     let cmd = format!("node \"{}\"", script.display());
     let map = pretool_map(&e, &[("command-guard", &cmd)], "true");
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run_with(&args, true, &bash("echo \u{e9}", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
+    let (code, out, err) = e.run_with(&args, true, &bash("echo x > a.py", Path::new(".")), true, &[("PATH", bin.to_str().unwrap()), ("CLAUDE_CODE_ENTRYPOINT", "cli")]);
     assert_eq!((code, out.as_str()), (2, ""), "{err}");
     assert!(err.contains("could not run the guards for PreToolUse"), "{err}");
 
     let bin = e.fake_node("echo OWN_REASON >&2; exit 1");
-    let (code, out, err) = e.run_with(&args, true, &bash("echo \u{e9}", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
+    let (code, out, err) = e.run_with(&args, true, &bash("echo x > a.py", Path::new(".")), true, &[("PATH", bin.to_str().unwrap()), ("CLAUDE_CODE_ENTRYPOINT", "cli")]);
     assert_eq!((code, out.as_str()), (1, ""), "{err}");
     assert_eq!(err, "OWN_REASON\n");
 }
@@ -590,12 +591,17 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
         )
     };
     let (a, b, c) = (big("a", ""), big("b", ""), big("c", r#","permissionDecision":"ask","permissionDecisionReason":"sure?""#));
-    // coordinator-work-guard defers a main-session Bash call that is not provably non-work to Node (an interactive entry point
-    // makes the session the main thread; merge-side-pick answers natively), so its map entry runs
-    let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str()), ("api-guard", c.as_str())]);
+    // command-guard leaves a payload without an absolute cwd to Node, so its map entry runs (merge-gate and api-guard defer on the
+    // relative transcript path and the non-ASCII write)
+    let map = e.map(&[("command-guard", a.as_str()), ("merge-gate", b.as_str()), ("api-guard", c.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let main_thread = [("CLAUDE_CODE_ENTRYPOINT", "cli")];
-    let (code, out, err) = e.run_with(&args, true, &node_only_bash(&e), true, &main_thread);
+    let relative_cwd = {
+        let mut v: serde_json::Value = serde_json::from_str(&node_only_bash(&e)).unwrap();
+        v["cwd"] = ".".into();
+        v.to_string()
+    };
+    let (code, out, err) = e.run_with(&args, true, &relative_cwd, true, &main_thread);
     assert_eq!((code, err.as_str()), (0, ""));
     let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON object");
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask", "the decision survives the join");
@@ -603,9 +609,9 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
     assert_eq!(log.matches("dispatch_context_over_cap").count(), 1, "{log}");
     // two of them fit joined: delivered as one, nothing logged
-    let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str())]);
+    let map = e.map(&[("command-guard", a.as_str()), ("merge-gate", b.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    assert_eq!(e.run_with(&args, true, &node_only_bash(&e), true, &main_thread).0, 0);
+    assert_eq!(e.run_with(&args, true, &relative_cwd, true, &main_thread).0, 0);
 }
 
 /// An event that cannot block still hands an over-cap join back to the wrapper with `dispatch.defer_exit`.
@@ -838,10 +844,10 @@ fn small_payloads_do_not_need_a_usable_spool_dir() {
     let mark = e.dir.join("pretool-ran");
     let map = e.map(&[("command-guard", r#"wc -c > "$AH_TEST_MARK""#)]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    // a non-ASCII command is one the engine's command-guard leaves to the Node hook, so the fallback runs
-    let payload = bash("echo \u{e9}", &e.dir);
+    // a payload without an absolute cwd is one the engine's command-guard script leaves to the Node hook, so the fallback runs
+    let payload = bash("echo x > a.py", Path::new("."));
     let (code, out, err) =
-        e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
+        e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap()), ("CLAUDE_CODE_ENTRYPOINT", "cli")]);
     assert_eq!((code, out.as_str()), (0, ""));
     assert!(only_event_lines(&err), "{err:?}");
     assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());

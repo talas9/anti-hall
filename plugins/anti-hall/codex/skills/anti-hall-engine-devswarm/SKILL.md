@@ -21,11 +21,12 @@ The DevSwarm role, gate and wake guards.
 
 ## Switches
 
+- `devswarm.inboxCmd` = "": devswarm.inboxCmd: a consumer-configured command to read pending mesh messages (no default)
+- `devswarm.dispatchTierText` = true: devswarm.dispatchTierText: the DevSwarm Primary dispatch-tier text (default on)
 - `devswarm.childTurn` = true: Where the devswarm.childTurn switch (default on) is read from: no environment variable, then settings.json, then the plugin option
 - `devswarm.supervisorMode` = "auto": Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words...
 - `devswarm.parentInbox` = true: Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option
 - `devswarm.inboxReadGuard` = true: Where the on/off switch is read from (devswarm.inboxReadGuard, default on; it has no environment variable)
-- `devswarm.dispatchTierText` = true: Where the switch of the DevSwarm Primary dispatch-tier text is read from (devswarm.dispatchTierText, default on)
 - `devswarm.commsGuard` = true: The switch devswarm.commsGuard (on by default); off makes the guard a no-op
 - `devswarm.childRole` = true: Switch devswarm.childRole (default on): off makes the SessionStart hook a no-op
 - `devswarm.parentGate` = true: Switch devswarm.parentGate (default on): off makes the Stop gate a no-op
@@ -36,5 +37,6 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.childGate` = true: Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)
 - `devswarm.parentReplyTracker` = true: Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable)
 - `devswarm.drainTtlMs` = 600000: The drain marker time to live: the settings entry (section and key; its environment variable and bounds are in migrate_settings.toml)...
+- `devswarm.monitorNoOkFailMin` = 10: Where devswarm.monitorNoOkFailMin is read from (minutes without a successful monitor poll before the daemon reads FAILING)
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

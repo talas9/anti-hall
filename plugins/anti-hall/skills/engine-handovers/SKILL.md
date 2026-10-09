@@ -7,6 +7,12 @@ description: "Use when writing or resuming a handover, or compacting context, an
 
 Handover, resume and compaction guards.
 
+## Verbs
+
+| Verb | What it does | Roles |
+|---|---|---|
+| `ah-engine handovers` | `<index\|check\|search> [query] [--project <dir>] [--registered] [--force] [--limit <n>]` The handover brief tree: `index` rebuilds the root brief and the per-day briefs (BRIEF.md plus a typed BRIEF.json) of the changed days... | main, codex, workspace, subagent (owner args: --registered, --force) |
+
 ## Guards
 
 - `compact-declaration-guard`: Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which...
@@ -16,9 +22,11 @@ Handover, resume and compaction guards.
 - `progress-prune`: SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to...
 - `precompact-snapshot`: PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it...
 - `handover-resume`: SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js)
+- `handover-hygiene`: SessionStart advisory (engine-only, no Node twin): reports handovers that are unindexed, stale, missing a brief or malformed (no front...
 
 ## Switches
 
+- `guards.handoverCommitGuard` = true: Switch for the handover-commit guard
 - `guards.compactDeclarationGuard` = true: Where the on/off switch is read from (guards.compactDeclarationGuard, default on; it has no environment variable)
 - `autoHandover.decisivePrompt` = true: The autoHandover.decisivePrompt setting: the decisive good-point line at a Stop once the handover exists
 - `autoHandover.enabled` = true: The autoHandover.enabled setting: write an automatic handover before the context runs out

@@ -16,6 +16,7 @@ The anti-hall engine (`ah-engine`) runs the guards and the state behind anti-hal
 - Guards (`$anti-hall-engine-guards`): What the automatic guards check and how to read a block.
 - Handovers and compaction (`$anti-hall-engine-handovers`): Handover, resume and compaction guards.
 - Mesh (`$anti-hall-engine-mesh`): Read the DevSwarm message store and per-project mailboxes.
+- Process, resource and disk watch (`$anti-hall-engine-processes`): Leftover processes, runaway CPU or memory and low disk space.
 - Resources and state (`$anti-hall-engine-resources`): Daemon status, metrics, backups, schedules and limits.
 - Settings and Jev (`$anti-hall-engine-settings`): Settings switches, the generated reference and the Jev classifier.
 
