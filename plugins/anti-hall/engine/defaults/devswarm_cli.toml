@@ -587,3 +587,108 @@ value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", "
 [devswarm_cli.witness_node_snippet]
 doc = "The Node program of the witness: pins the clock, then loads the real devswarm.js as the main module so its own main() prints and exits. Arguments: the CLI path, the clock, then the verb's argv."
 value = "const c=process.argv[1],n=Number(process.argv[2]);Date.now=()=>n;process.argv=[process.argv[0],c].concat(process.argv.slice(3));require('module')._load(c,null,true);"
+
+# ---- ready-check (lane l8b) ---------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_ready_check]
+doc = "The verb that gives a readiness verdict for a child's READY <sha> claim (read-only; git)."
+value = "ready-check"
+
+[devswarm_cli.action_ready_check]
+doc = "The `action` of a ready-check result."
+value = "ready-check"
+
+[devswarm_cli.flag_fetch]
+doc = "The ready-check flag that runs `git fetch` first (a network action: Node's)."
+value = "fetch"
+
+[devswarm_cli.flag_base]
+doc = "The ready-check flag naming the base ref."
+value = "base"
+
+[devswarm_cli.flag_allow]
+doc = "The ready-check flag listing the globs a change may touch."
+value = "allow"
+
+[devswarm_cli.flag_watch_deletions]
+doc = "The ready-check flag listing directories whose files must not be deleted."
+value = "watch-deletions"
+
+[devswarm_cli.msg_ready_usage]
+doc = "The ready-check usage error."
+value = "usage: devswarm.js ready-check <sha> [--base <ref>] [--allow glob,glob] [--watch-deletions dir,dir] [--fetch]"
+
+[devswarm_cli.ready_default_base]
+doc = "The base ref of a ready-check without --base."
+value = "origin/main"
+
+[devswarm_cli.ready_git]
+doc = "The git executable ready-check runs (found on the PATH, as Node's spawn does)."
+value = "git"
+
+[devswarm_cli.ready_git_cwd_flag]
+doc = "The git option that names the directory to work in."
+value = "-C"
+
+[devswarm_cli.ready_git_timeout_ms]
+doc = "How long one git call of ready-check may run (devswarm-git-truth.js GIT_TIMEOUT_MS); a call that overruns is unknown, never a fact."
+value = 4000
+min = 100
+max = 600000
+
+[devswarm_cli.ready_git_max_bytes]
+doc = "Most output bytes of one git call (Node's spawnSync maxBuffer); more is an unknown probe."
+value = 1048576
+min = 1024
+
+[devswarm_cli.ready_any]
+doc = "The regular-expression piece that stands for JavaScript's `.` (any character but a line terminator)."
+value = "[^\\n\\r\\u{2028}\\u{2029}]"
+
+[devswarm_cli.ready_escape]
+doc = "The characters a glob's literal text escapes in the regular expression (roster-diag.js globToRegExp)."
+value = ".+^${}()|[]\\"
+
+[devswarm_cli.ready_gitlink_mode]
+doc = "The git file mode of a submodule pointer (a gitlink)."
+value = "160000"
+
+[devswarm_cli.ready_r_not_ff]
+doc = "The reason when the base is proven not to be an ancestor of the sha."
+value = "not-ff"
+
+[devswarm_cli.ready_r_ff_unknown]
+doc = "The reason when the ancestry probe failed."
+value = "ff-unknown"
+
+[devswarm_cli.ready_r_diff_unknown]
+doc = "The reason when the diff probe failed."
+value = "diff-unknown"
+
+[devswarm_cli.ready_r_gitlinks]
+doc = "The reason when a submodule pointer changed."
+value = "gitlinks-changed"
+
+[devswarm_cli.ready_r_deletions]
+doc = "The reason when a file under a watched directory was deleted."
+value = "deletions-under-watched-dirs"
+
+[devswarm_cli.ready_r_outside]
+doc = "The reason when a changed file matches none of the allowed globs."
+value = "files-outside-allowed"
+
+[devswarm_cli.ready_block_reasons]
+doc = "The reasons that make the verdict `block` (a proven risk); any other reason makes it `review`."
+value = ["not-ff", "gitlinks-changed", "deletions-under-watched-dirs"]
+
+[devswarm_cli.ready_v_ok]
+doc = "The verdict with no reason."
+value = "ok"
+
+[devswarm_cli.ready_v_review]
+doc = "The verdict with only unproven reasons."
+value = "review"
+
+[devswarm_cli.ready_v_block]
+doc = "The verdict with a proven risk."
+value = "block"

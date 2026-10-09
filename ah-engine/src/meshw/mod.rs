@@ -32,6 +32,8 @@ pub mod appdb;
 pub mod args;
 pub mod common;
 pub mod cursors;
+pub mod extverbs;
+pub mod gitverbs;
 pub mod heartbeat;
 pub mod hivecontrol;
 pub mod ident;
@@ -168,17 +170,20 @@ pub enum Verb {
     Gate,
     /// `workspaces list` (see [`wsverbs`]).
     Workspaces,
+    /// The verbs of lane l8b (see [`extverbs`]).
+    Ext(extverbs::Ext),
 }
 
 /// Whether the verb is checked by the CLI-verb Node witness (`simple::prepare` / `launch` / `run_witness`).
 fn cli_witnessed(v: Option<Verb>) -> bool {
-    matches!(v, Some(Verb::Simple(_) | Verb::Plan | Verb::Scope | Verb::Gate | Verb::Workspaces))
+    matches!(v, Some(Verb::Simple(_) | Verb::Plan | Verb::Scope | Verb::Gate | Verb::Workspaces | Verb::Ext(_)))
 }
 
 /// The verb's name as the telemetry log spells it (`Send`, `MeshRead`, `MeshHistory`, `InboxAckPrimary`).
 pub fn verb_label(a: &args::Args) -> String {
     match verb_of(a) {
         Some(Verb::Simple(v)) => format!("{v:?}"),
+        Some(Verb::Ext(v)) => format!("{v:?}"),
         v => v.map(|v| format!("{v:?}")).unwrap_or_default(),
     }
 }
@@ -187,6 +192,9 @@ pub fn verb_label(a: &args::Args) -> String {
 pub fn verb_of(a: &args::Args) -> Option<Verb> {
     if let Some(v) = simple::classify(a) {
         return Some(Verb::Simple(v));
+    }
+    if let Some(v) = extverbs::classify(a) {
+        return Some(Verb::Ext(v));
     }
     let p0 = a.positionals.first().map(String::as_str)?;
     let p1 = a.positionals.get(1).map(String::as_str);
@@ -248,6 +256,7 @@ pub fn run_native(inv: &Inv, a: &args::Args) -> R<Answer> {
         Some(Verb::Scope) => planverbs::run_scope(inv, a),
         Some(Verb::Gate) => wsverbs::run_gate(inv, a),
         Some(Verb::Workspaces) => wsverbs::run_workspaces(inv, a),
+        Some(Verb::Ext(v)) => extverbs::run(inv, a, v),
         None => ident::defer("not-ported"),
     }
 }
@@ -354,7 +363,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                 Some(Verb::InboxTick) => verify::prepare_tick(&inv),
                 Some(Verb::InboxReadPrimary) => verify::prepare_read_primary(&inv),
                 Some(Verb::Roster) => verify::prepare_roster(&inv),
-                v if cli_witnessed(v) => simple::prepare(&inv, matches!(v, Some(Verb::Gate | Verb::Workspaces))),
+                v if cli_witnessed(v) => simple::prepare(&inv, matches!(v, Some(Verb::Gate | Verb::Workspaces)) || matches!(v, Some(Verb::Ext(e)) if extverbs::needs_store(e))),
                 _ => None,
             };
             let r = std::panic::catch_unwind(|| run_native(&inv, &a));
@@ -404,6 +413,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                     | Verb::Scope
                     | Verb::Gate
                     | Verb::Workspaces
+                    | Verb::Ext(_)
             )
         ) =>
         {
