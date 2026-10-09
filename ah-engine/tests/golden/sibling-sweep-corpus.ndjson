@@ -93,3 +93,9 @@
 {"msg": "The root-cause claim is partly inferred, so I am not acting on it yet.", "cause": false}
 {"msg": "The cause is unresolved, and I would rather say so than give a plausible wrong answer.", "cause": false}
 {"msg": "The root cause attribution was inferred, not proven.", "cause": false}
+{"msg": "The cause was a 7-hour-old leftover git lock file, so every commit failed. I removed it and fixed the retry wrapper.", "cause": false}
+{"msg": "Root cause: load (25-60) from other agents starved the workers. I fixed the timeout.", "cause": false}
+{"msg": "The agent report says the root cause was the stale cache key; I patched the caller.", "cause": false}
+{"msg": "According to the lane, the root cause is that `parse_ts` treats a missing offset as UTC. I fixed it.", "cause": false}
+{"msg": "Root cause: `build_key` drops the tenant id, so two tenants share one entry. Fixed the builder.", "cause": true}
+{"msg": "I found the root cause: `retry` never resets `attempts`, so the second request starts at the cap. Patched it.", "cause": true}
