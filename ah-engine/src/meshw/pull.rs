@@ -38,7 +38,7 @@ use crate::meshw::common::{Inv, Obj, s};
 use crate::meshw::hivecontrol;
 use crate::meshw::ident::{self, R, defer};
 use crate::meshw::idlock::{self, devswarm_root};
-use crate::meshw::store::{MeshStore, RegistryRow};
+use crate::meshw::store::{CursorPut, MeshStore, RegistryRow};
 use crate::meshw::{summary, tick, union};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -67,6 +67,8 @@ pub(crate) struct Plan {
     repo_key: String,
     store: MeshStore,
     cache: Option<CacheWrite>,
+    /// The reader rows a created registration declares for the caller.
+    declare: Vec<CursorPut>,
     sender: Option<String>,
     cwd: String,
     inbox: PathBuf,
@@ -184,7 +186,7 @@ fn foreign_open_batches(root: &Path, own: &Path) -> bool {
 
 /// The first half of the plan: the ensure (what the descriptor, the registry and the summary become), decided without writing. The
 /// tick counts over [`Plan::ensured`], which is the descriptor Node's count reads after its own ensure.
-pub(crate) fn prepare(inv: &Inv, id: &str, desc: &OVal) -> R<Plan> {
+pub(crate) fn prepare(inv: &Inv, id: &str, desc: Option<&OVal>) -> R<Plan> {
     if crate::meshw::heartbeat::is_primary_label(id) {
         return defer("primary-label");
     }
@@ -195,64 +197,120 @@ pub(crate) fn prepare(inv: &Inv, id: &str, desc: &OVal) -> R<Plan> {
     if verdict == Some(true) {
         return defer("app-archived");
     }
-    let OVal::Obj(fields) = desc else { return defer("descriptor-shape") };
-    if fields.iter().any(|(k, _)| k == "__proto__") {
-        return defer("descriptor-keys");
-    }
     let ctx = ident::resolve_context(&inv.cwd, true)?;
     if ctx.kind.starts_with(defaults::text("mesh_write.kind_submodule_prefix")) {
         return defer("submodule");
     }
     let Some(current) = ctx.repo_key.clone() else { return defer("no-project") };
-    if let Some(reg) = crate::meshw::inbox::registered_repo_key(desc, id)?
-        && reg != current
-    {
-        return defer("project-context-mismatch");
-    }
-    let hash_key = crate::meshw::send::hash_from_workspace_id(id);
     let owner_key = defaults::text("mesh_write.field_owner_key");
-    let stored_owner = field_str(desc, owner_key);
-    if stored_owner.as_deref() == Some(hash_key.as_str()) && hash_key != current {
-        return defer("rehome");
-    }
     let wt_field = defaults::text("mesh_write.field_worktree_path");
-    let desc_wt = union::path_field(desc, wt_field)?;
     let fresh = |d: &OVal| -> R<Option<String>> {
         match union::path_field(d, wt_field)? {
             Some(w) => ident::repo_key_for_worktree(&w),
             None => Ok(None),
         }
     };
-    let proven = match stored_owner.clone() {
-        Some(k) => Some(k),
-        None => match field_str(desc, defaults::text("mesh_write.field_repo_key")) {
-            Some(k) => Some(k),
-            None => fresh(desc)?,
-        },
+    let create = desc.is_none();
+    let (ensured, rewrite_descriptor) = match desc {
+        Some(desc) => {
+            let OVal::Obj(fields) = desc else { return defer("descriptor-shape") };
+            if fields.iter().any(|(k, _)| k == "__proto__") {
+                return defer("descriptor-keys");
+            }
+            if let Some(reg) = crate::meshw::inbox::registered_repo_key(desc, id)?
+                && reg != current
+            {
+                return defer("project-context-mismatch");
+            }
+            let hash_key = crate::meshw::send::hash_from_workspace_id(id);
+            let stored_owner = field_str(desc, owner_key);
+            if stored_owner.as_deref() == Some(hash_key.as_str()) && hash_key != current {
+                return defer("rehome");
+            }
+            let proven = match stored_owner.clone() {
+                Some(k) => Some(k),
+                None => match field_str(desc, defaults::text("mesh_write.field_repo_key")) {
+                    Some(k) => Some(k),
+                    None => fresh(desc)?,
+                },
+            };
+            if proven.as_deref() != Some(current.as_str()) {
+                return defer("ensure-refused");
+            }
+            // the descriptor as the ensure leaves it
+            let mut ensured = desc.clone();
+            if stored_owner.is_none() {
+                ensured.set(owner_key, s(&current));
+            }
+            if fresh(&ensured)?.as_deref() == Some(current.as_str()) {
+                ensured.set(defaults::text("mesh_write.field_repo_key"), s(&current));
+            }
+            for (key, default) in [
+                (defaults::text("mesh_write.field_inbox_path"), inbox_default(&inv.home, id)),
+                (defaults::text("mesh_write.field_cursor_path"), cursor_default(&inv.home, id)),
+            ] {
+                if matches!(ensured.get(key), None | Some(OVal::Null)) || matches!(ensured.get(key), Some(OVal::Str(x)) if x.is_empty()) {
+                    ensured.set(key, s(&default));
+                }
+                if !matches!(ensured.get(key), Some(OVal::Str(_))) {
+                    return defer("descriptor-path-type");
+                }
+            }
+            let rewrite = ensured.stringify() != desc.stringify();
+            (ensured, rewrite)
+        }
+        None => {
+            // the auto-ensure CREATES the registration: refused ids, an archived twin and a cross-project worktree are Node's
+            let reserved = defaults::list("mesh_write.reserved_id_tokens").iter().any(|t| id.contains(t))
+                || id.ends_with(defaults::text("mesh_write.reserved_id_suffix"))
+                || id == defaults::text("mesh_write.reserved_exact_id");
+            if reserved {
+                return defer("reserved-id");
+            }
+            if devswarm_root(&inv.home)
+                .join(defaults::text("mesh_write.dir_archived"))
+                .join(format!("{id}{}", defaults::text("mesh_write.json_suffix")))
+                .exists()
+            {
+                return defer("archived-counterpart");
+            }
+            // buildDescriptorFromFlags(id, { worktree, session, inbox, cursor }, null, env): keys in Node's order
+            let session = inv
+                .env
+                .get(defaults::text("mesh_write.env_builder_id"))
+                .filter(|b| !b.is_empty())
+                .cloned()
+                .unwrap_or_else(|| format!("{}{id}", defaults::text("mesh_write.synthetic_session_prefix")));
+            let repo_id = inv.env.get(defaults::text("devswarm_gates.repo_id_env")).filter(|r| !r.is_empty()).cloned();
+            let mut d = Obj::default();
+            d.put(defaults::text("mesh_write.field_id"), s(id))
+                .put(wt_field, s(&ident::resolve_abs(&wt)))
+                .put(defaults::text("mesh_write.field_session_id"), s(&session))
+                .put(defaults::text("mesh_write.field_inbox_path"), s(&inbox_default(&inv.home, id)))
+                .put(defaults::text("mesh_write.field_cursor_path"), s(&cursor_default(&inv.home, id)));
+            if let Some(r) = &repo_id {
+                d.put(defaults::text("mesh_write.field_repo_id"), s(r));
+            }
+            d.put(defaults::text("mesh_write.field_nudge_command"), OVal::Null);
+            if repo_id.is_none() {
+                d.put(defaults::text("mesh_write.field_repo_id"), OVal::Null);
+            }
+            let mut built = d.done();
+            // the cross-project guard, then the project keys
+            let worktree_key = fresh(&built)?;
+            if let Some(wk) = &worktree_key
+                && *wk != current
+            {
+                return defer("cross-project-register");
+            }
+            if worktree_key.as_deref() == Some(current.as_str()) {
+                built.set(defaults::text("mesh_write.field_repo_key"), s(&current));
+            }
+            built.set(owner_key, s(&current));
+            (built, true)
+        }
     };
-    if proven.as_deref() != Some(current.as_str()) {
-        return defer("ensure-refused");
-    }
-    // the descriptor as the ensure leaves it
-    let mut ensured = desc.clone();
-    if stored_owner.is_none() {
-        ensured.set(owner_key, s(&current));
-    }
-    if fresh(&ensured)?.as_deref() == Some(current.as_str()) {
-        ensured.set(defaults::text("mesh_write.field_repo_key"), s(&current));
-    }
-    for (key, default) in [
-        (defaults::text("mesh_write.field_inbox_path"), inbox_default(&inv.home, id)),
-        (defaults::text("mesh_write.field_cursor_path"), cursor_default(&inv.home, id)),
-    ] {
-        if matches!(ensured.get(key), None | Some(OVal::Null)) || matches!(ensured.get(key), Some(OVal::Str(x)) if x.is_empty()) {
-            ensured.set(key, s(&default));
-        }
-        if !matches!(ensured.get(key), Some(OVal::Str(_))) {
-            return defer("descriptor-path-type");
-        }
-    }
-    let rewrite_descriptor = ensured.stringify() != desc.stringify();
+    let desc_wt = union::path_field(&ensured, wt_field)?;
     let nudge = match ensured.get(defaults::text("mesh_write.field_nudge_command")) {
         None | Some(OVal::Null) => None,
         Some(v) => Some(v.stringify()),
@@ -273,7 +331,8 @@ pub(crate) fn prepare(inv: &Inv, id: &str, desc: &OVal) -> R<Plan> {
     // of the same worktree may exist (retireWorktreeDuplicates would fold it)
     let Some(reader) = tick::open_reader(inv, &current)? else { return defer("no-store") };
     let rows = ident::rows_of(&reader.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?);
-    if let (Some(existing), Some(incoming)) = (rows.iter().find(|r| r.id == id).and_then(|r| r.worktree_path.clone()), row.worktree_path.as_deref())
+    if !create
+        && let (Some(existing), Some(incoming)) = (rows.iter().find(|r| r.id == id).and_then(|r| r.worktree_path.clone()), row.worktree_path.as_deref())
         && existing != incoming
     {
         return defer("registry-collision");
@@ -294,6 +353,7 @@ pub(crate) fn prepare(inv: &Inv, id: &str, desc: &OVal) -> R<Plan> {
     }
     let store = crate::meshw::common::open_store(inv, &current)?;
     summary::check(&store, inv, None)?;
+    let declare = if create { plan_declare(inv, &store, id)? } else { Vec::new() };
     // pullOnce reads the store of the worktree the caller stands in
     let pull_repo = ident::repo_key_for_worktree(&wt)?;
     if pull_repo.as_deref() != Some(current.as_str()) {
@@ -325,9 +385,43 @@ pub(crate) fn prepare(inv: &Inv, id: &str, desc: &OVal) -> R<Plan> {
         inbox,
         wal: wal_file,
         lock_file,
+        declare,
         pending: Vec::new(),
         peek: Peek::NotAsked,
     })
+}
+
+/// `readerCursors.declare(store, { partition, reader, home })` for a registration the pull creates: the caller's own `store` and
+/// `nd` rows, seeded at the partition's floor (INSERT-if-absent; a retired row of the caller's is revived). Declared only when
+/// the floor rows exist and no legacy per-instance cursor file maps the caller; the import of the legacy cursors is Node's.
+fn plan_declare(inv: &Inv, store: &MeshStore, id: &str) -> R<Vec<CursorPut>> {
+    let Some(reader) = crate::meshw::cursors::reader_key(tick::reader_nonce_cached(&inv.home).as_deref()) else { return Ok(Vec::new()) };
+    let rows = crate::meshw::cursors::rows_of(store, id).map_err(|e| ident::Defer(format!("cursor-rows:{e}")))?;
+    if crate::meshw::cursors::needs_import(&rows) {
+        return defer("reader-declare-import");
+    }
+    let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_cursors"));
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if defaults::list("mesh_write.legacy_cursor_seps").iter().any(|sep| name.starts_with(&format!("{id}{sep}"))) {
+            return defer("reader-declare-legacy");
+        }
+    }
+    let floor = defaults::text("mesh_write.floor_reader");
+    let mut puts = Vec::new();
+    for ns in defaults::list("mesh_write.cursor_namespaces") {
+        match rows.iter().find(|r| r.ns == ns && r.reader == reader) {
+            Some(r) if r.retired_line.is_some_and(|l| r.value <= l) => {
+                puts.push(CursorPut { partition: id.to_string(), ns: ns.to_string(), reader: reader.clone(), value: r.value, retired_line: Some(None), updated_at: inv.now });
+            }
+            Some(_) => {}
+            None => {
+                let Some(f) = rows.iter().find(|r| r.ns == ns && r.reader == floor) else { return defer("reader-declare-import") };
+                puts.push(CursorPut { partition: id.to_string(), ns: ns.to_string(), reader: reader.clone(), value: f.value, retired_line: Some(None), updated_at: inv.now });
+            }
+        }
+    }
+    Ok(puts)
 }
 
 impl Plan {
@@ -512,6 +606,11 @@ pub(crate) fn execute(inv: &Inv, p: Plan) -> R<Outcome> {
         precreate(&p.ensured);
         if p.store.upsert_registry(&p.row, inv.now, |_, _| true).is_err() {
             return false;
+        }
+        // a created registration declares the caller as a reader of the partition (best effort: an undeclared instance reads
+        // from the floor)
+        if !p.declare.is_empty() {
+            crate::discard::harmless(p.store.reader_cursor_txn(&p.declare)); // keep: Node's `catch (_) { /* fail-soft */ }`
         }
         if let Some(why) = summary::derive_after_write(&p.store, inv, &p.repo_key) {
             crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_inbox"), &why);

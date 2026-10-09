@@ -1952,3 +1952,23 @@ value = "shortfall"
 [mesh_write.msg_pull_shortfall]
 doc = "What a pull prints to stderr when the batch held fewer messages than the count promised. {id} {count} {recovered} {lost} {wal} {entry}."
 value = "devswarm-pull: reception shortfall for {id} — message-count={count} recovered={recovered} lost={lost} (marked-read natively but not parsed; raw batch kept in {wal} entry {entry})\n"
+
+[mesh_write.reserved_id_tokens]
+doc = "A fresh registration whose id contains one of these is refused: they are the namespace separators of the cursor files (cursors.js RESERVED_ID_TOKENS)."
+value = ["#", ".seen-", ".inst-", ".nd-"]
+
+[mesh_write.reserved_id_suffix]
+doc = "A fresh registration whose id ends with this is refused (cursors.js reservedIdToken)."
+value = ".base"
+
+[mesh_write.reserved_exact_id]
+doc = "The one id no workspace may register itself as: its rows would pass for system-authored ones (cursors.js RESERVED_EXACT_IDS)."
+value = "system"
+
+[mesh_write.field_repo_id]
+doc = "The descriptor field that holds the DevSwarm repository id (DEVSWARM_REPO_ID)."
+value = "repoId"
+
+[mesh_write.legacy_cursor_seps]
+doc = "What follows the workspace id in the name of a legacy per-instance cursor file under `cursors/` (`<id>#inst-<short>.json`, `<id>#nd-<short>.json`)."
+value = ["#inst-", "#nd-"]

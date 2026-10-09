@@ -480,10 +480,16 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         return defer("roster-setting");
     }
     // ---- reads: everything that can defer happens before the first write ----
-    let Some(desc) = ident::read_descriptor(&inv.home, id) else { return defer("no-descriptor") };
-    // a `--child` tick pulls first: the ensure may complete the descriptor the count then reads
-    let prepared = if form.child { Some(crate::meshw::pull::prepare(inv, id, &desc)?) } else { None };
-    let counted = count_mail(inv, id, prepared.as_ref().map_or(&desc, |p| p.ensured()), form.line)?;
+    let found = ident::read_descriptor(&inv.home, id);
+    if found.is_none() && !form.child {
+        return defer("no-descriptor");
+    }
+    // a `--child` tick pulls first: the ensure completes the descriptor (or registers the workspace) the count then reads
+    let prepared = if form.child { Some(crate::meshw::pull::prepare(inv, id, found.as_ref())?) } else { None };
+    let Some(desc) = prepared.as_ref().map(|p| p.ensured().clone()).or(found) else { return defer("no-descriptor") };
+    // a `--child` tick's pre-count only proves the count can be answered: the pull pre-creates the inbox and cursor files that
+    // make it known, and the count that is printed is taken after it
+    let counted = count_mail(inv, id, &desc, form.line || form.child)?;
     wal_is_quiet(inv, prepared.as_ref().map(|p| p.wal_path()))?;
     let marker_file =
         devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_wake_tick")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
