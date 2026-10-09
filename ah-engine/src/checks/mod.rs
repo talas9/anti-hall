@@ -15,10 +15,6 @@ pub mod codex;
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
-pub mod devswarm_comms;
-pub mod devswarm_gates;
-pub mod devswarm_prompt;
-pub mod devswarm_role;
 pub mod emit_dedupe;
 pub mod git;
 pub mod guardkit;
@@ -31,10 +27,7 @@ pub mod replykit;
 pub mod scan_throttle;
 pub mod scripted;
 pub mod session;
-pub mod session_gates;
-pub mod ship_it;
 pub mod spawnctx;
-pub mod task_lifecycle_log;
 pub mod taskkit;
 pub mod taskstate;
 
@@ -173,10 +166,10 @@ pub fn registry() -> &'static [&'static dyn Check] {
     static ALL: [&dyn Check; 66] = [
         &scripted::GIT_GUARD,
         &merge_side_pick::MergeSidePick,
-        &ship_it::ShipItGuard,
+        &scripted::SHIP_IT_GUARD,
         &scan_throttle::ScanThrottle,
         &coordinator_work::CoordinatorWorkGuard,
-        &compact_decl::CompactDeclarationGuard,
+        &scripted::COMPACT_DECLARATION_GUARD,
         &command::CommandGuard,
         &scripted::MODEL_ROUTING,
         &scripted::FAILURE_ROOT_CAUSE_NUDGE,
@@ -213,27 +206,27 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::API_GUARD,
         &scripted::EDIT_GUARD,
         &scripted::GH_RT_ADVISORY,
-        &devswarm_comms::DevswarmCommsGuard,
+        &scripted::DEVSWARM_COMMS_GUARD,
         &scripted::SWARM_GUARD,
-        &session_gates::JevWeeklyScorecard,
-        &session_gates::JevReviewReminder,
-        &session_gates::RepairOnReload,
+        &scripted::JEV_WEEKLY_SCORECARD,
+        &scripted::JEV_REVIEW_REMINDER,
+        &scripted::REPAIR_ON_RELOAD,
         &codex::availability::CodexAvailability,
         &codex::detect::CodexQuotaDetect,
         &codex::nudge::CodexNudge,
         &scripted::PRECOMPACT_SNAPSHOT,
         &scripted::HANDOVER_RESUME,
-        &task_lifecycle_log::TaskLifecycleLog,
+        &scripted::TASK_LIFECYCLE_LOG,
         &scripted::DISPATCH_TIER,
         &scripted::TASK_GUARD,
         &scripted::TASKLIST_GUARD,
-        &devswarm_prompt::DevswarmParentInbox,
-        &devswarm_prompt::DevswarmChildTurn,
-        &devswarm_role::DevswarmChildRole,
-        &devswarm_role::DevswarmParentGate,
-        &devswarm_gates::DevswarmChildGate,
-        &devswarm_gates::DevswarmParentReplyTracker,
-        &devswarm_gates::DevswarmChildDrain,
+        &scripted::DEVSWARM_PARENT_INBOX,
+        &scripted::DEVSWARM_CHILD_TURN,
+        &scripted::DEVSWARM_CHILD_ROLE,
+        &scripted::DEVSWARM_PARENT_GATE,
+        &scripted::DEVSWARM_CHILD_GATE,
+        &scripted::DEVSWARM_PARENT_REPLY_TRACKER,
+        &scripted::DEVSWARM_CHILD_DRAIN,
         &scripted::SIBLING_SWEEP,
         &scripted::SESSION_END_MCP_REAPER,
         &scripted::TASK_TRACKER,

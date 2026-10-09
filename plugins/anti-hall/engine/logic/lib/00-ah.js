@@ -32,8 +32,9 @@ var ah = {
     // The SCOPED append, same path rules; one O_APPEND write. false when the disk refuses.
     appendFile: function (rel, t) { return ahHost.appendFile(rel, ahWf(t)); },
     // The cross-process lock file `rel` (Node lock protocol) with the timings of the defaults group `group`: a handle, or null
-    // when it could not be taken. At most one per call; a lock still held when the call ends is released by the engine.
-    lock: function (rel, group) { return ahNull(ahHost.lockAcquire(rel, group)); },
+    // when it could not be taken. A lock still held when the call ends is released by the engine.
+    // `waitMs` (optional) replaces the group's wait (never past script.lock_wait_max_ms). Up to script.lock_max_held at once; take nested ones in a fixed order.
+    lock: function (rel, group, waitMs) { return ahNull(ahHost.lockAcquire(rel, group, waitMs === undefined ? null : waitMs)); },
     unlock: function (h) { return ahHost.lockRelease(h); },
     // The retention sweep of the state files of one writer prefix (stale ones go; `keep` stays).
     // Scoped read of a file under the state directory (null when absent, unreadable or over the cap).
@@ -44,7 +45,7 @@ var ah = {
     // first, capped by script.sweep_max_remove). Returns the number removed.
     sweep: function (dirRel, prefix, ageMs, max) { return ahHost.stateSweep(dirRel, prefix, ageMs, max); },
     // The scoped operations under any absolute `root` (the home directory, or a project root): `rel` must start with the state
-    // directory. op: 'write', 'after_reply' (atomic, landing only once the reply was delivered), 'append', 'mkdir', 'remove'.
+    // directory. op: 'write', 'after_reply' (atomic, landing only once the reply was delivered), 'append', 'mkdir', 'remove', 'rename' (the text is the destination, relative like `rel`).
     op: function (root, op, rel, t) { return ahHost.fileOp(root, rel, t === undefined ? '' : ahWf(t), op); },
     prune: function (prefix, keep) { ahHost.pruneState(prefix, keep === undefined ? null : keep); },
   },

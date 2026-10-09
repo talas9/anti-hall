@@ -85,10 +85,6 @@ value = "state/jev-weekly-notice.json"
 doc = "The key of the weekly latch that holds the time of the last check."
 value = "lastCheckedTs"
 
-[jev_weekly.latch_tmp_infix]
-doc = "What the Node hook puts between the latch path and its process id to name the temporary file of an atomic write."
-value = ".tmp."
-
 [jev_weekly.decision_log]
 doc = "The Jev decision log the weekly report reads, relative to the anti-hall directory; its rotated generations are this name plus a dot and a number."
 value = "logs/jev-assist.ndjson"
@@ -117,10 +113,6 @@ value = "state/jev-recommend-notice.json"
 [jev_review.latch_key]
 doc = "The key of the recommend notice latch that holds the time it was last shown."
 value = "lastShownTs"
-
-[jev_review.latch_tmp_suffix]
-doc = "What the Node notice appends after the latch path, a dot and its process id to name the temporary file of an atomic write."
-value = ".tmp"
 
 [jev_review.headless_setting]
 doc = "The setting jev.recommendNoticeHeadless (off by default): show the recommend notice in a non-interactive run too."

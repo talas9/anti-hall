@@ -29,7 +29,7 @@
 //! | `isDir(path)` | whether `path` is a directory (links followed) |
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
-//! | `lockAcquire(rel, group)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
+//! | `lockAcquire(rel, group, waitMs?)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
 //! | `memory()` | JSON `{available, total}` bytes of the machine: see [`memory`] |
 //! | `agents(path)` | the running agents of a transcript (id, description, launching input): see [`agents`] |
 //! | `repoContext(dir)` | JSON `{unsure, toplevel, root}` of the checkout around `dir`: see [`repo_context`] |
@@ -214,6 +214,8 @@ pub enum Op {
     Mkdir,
     /// Remove a regular file; an absent file is the goal state.
     Remove,
+    /// Rename a regular file to the path `text` names (same scoped rules for both; an existing destination is replaced).
+    Rename,
 }
 
 /// The scoped file API under any absolute `root` (the home directory, or a project root the script names): `rel` must start with
@@ -224,6 +226,11 @@ pub fn scoped(root: &str, rel: &str, text: &str, op: Op) -> rquickjs::Result<boo
         Op::Write => write_atomic(root, rel, text),
         Op::Append => append_file(root, rel, text),
         Op::Remove => state_remove(root, rel),
+        Op::Rename => {
+            let Some(from) = scoped_target(root, rel, 0, false)? else { return Ok(false) };
+            let Some(to) = scoped_target(root, text, 0, false)? else { return Ok(false) };
+            Ok(std::fs::rename(from, to).is_ok())
+        }
         Op::Mkdir => Ok(scoped_target(root, rel, 0, true)?.is_some()),
         Op::WriteAfterReply => {
             let Some(path) = scoped_target(root, rel, text.len(), false)? else { return Ok(false) };
@@ -324,7 +331,7 @@ pub fn readdir(path: &str) -> Option<Vec<String>> {
 /// other's lock file (processes cannot share a mutex, which is what the file is for).
 static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-type Held = (u64, crate::checks::guardkit::nodelock::Held, std::sync::MutexGuard<'static, ()>);
+type Held = (u64, crate::checks::guardkit::nodelock::Held, Option<std::sync::MutexGuard<'static, ()>>);
 
 thread_local! {
     static CLOCK: RefCell<Option<f64>> = const { RefCell::new(None) };
@@ -334,20 +341,26 @@ thread_local! {
     static EXECS: RefCell<u64> = const { RefCell::new(0) };
 }
 
-/// `lockAcquire(rel, group)`: take the cross-process lock file `rel` (the scoped path rules of [`write_atomic`]) with the Node
-/// lock protocol of `companion/lib/lock.js`, timings from the defaults group `group` (`<group>.lock_*`). Returns a handle number,
-/// or `null` when the lock could not be taken (the script decides what that means; the swarm guard fails open). A lock still
-/// held when the script call ends is released by the host. At most one lock is held per call.
-pub fn lock_acquire(home: &str, rel: &str, group: &str) -> rquickjs::Result<Option<f64>> {
-    let Some(params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
+/// `lockAcquire(rel, group, waitMs?)`: take the cross-process lock file `rel` (the scoped path rules of [`write_atomic`]) with the Node
+/// lock protocol of `companion/lib/lock.js`, timings from the defaults group `group` (`<group>.lock_*`), the wait replaced by `waitMs`
+/// when given (never past `script.lock_wait_max_ms`). Returns a handle number, or `null` when the lock could not be taken (the script
+/// decides what that means; the swarm guard fails open). A lock still held when the script call ends is released by the host. At most
+/// `script.lock_max_held` locks are held at once per call (a script that nests two takes them in one fixed order and releases the
+/// inner one first); the in-process serialization is taken by the first of them only.
+pub fn lock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -> rquickjs::Result<Option<f64>> {
+    let Some(mut params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
         return Err(err("lockAcquire", defaults::render("script.msg_unknown_key", &[("key", &group)])));
     };
-    if HELD.with(|h| !h.borrow().is_empty()) {
+    if let Some(w) = wait_ms.filter(|w| w.is_finite() && *w >= 0.0) {
+        params.wait_ms = (w as u64).min(defaults::num("script.lock_wait_max_ms"));
+    }
+    let held_now = HELD.with(|h| h.borrow().len());
+    if held_now as u64 >= defaults::num("script.lock_max_held") {
         return Ok(None);
     }
     let Some(path) = scoped_target(home, rel, 0, false)? else { return Ok(None) };
     let started = std::time::Instant::now();
-    let guard = IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = (held_now == 0).then(|| IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner()));
     let taken = crate::checks::guardkit::nodelock::acquire(&path.to_string_lossy(), params);
     credit_blocking(started);
     let Some(held) = taken else { return Ok(None) };
@@ -728,9 +741,9 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     )?;
     h.set(
         "lockAcquire",
-        Function::new(c.clone(), |rel: String, group: String| -> rquickjs::Result<Option<f64>> {
+        Function::new(c.clone(), |rel: String, group: String, wait_ms: Option<f64>| -> rquickjs::Result<Option<f64>> {
             let home = with_settings(|st| st.home.clone())?;
-            lock_acquire(&home, &rel, &group)
+            lock_acquire(&home, &rel, &group, wait_ms)
         })?,
     )?;
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;
