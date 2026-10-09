@@ -1856,3 +1856,119 @@ value = 8192
 [mesh_write.flag_ack_after_print]
 doc = "The `inbox read-primary` flag that acks the receipt it files in the same call (the ack's result is printed as `autoAck`)."
 value = "ack-after-print"
+
+# ---- the child pull behind `inbox tick --child` (inbox-cmd.js cmdInboxPull, register.js cmdRegister ensure, companion/lib/devswarm-pull.js pullOnce) ----
+
+[mesh_write.flag_child]
+doc = "The `inbox tick` flag that first imports the child's native message queue (a pull) before it counts."
+value = "child"
+
+[mesh_write.dir_inbox]
+doc = "The directory of the default NDJSON inboxes under the DevSwarm state directory (devswarm-pull.js inboxDefaultPath)."
+value = "inbox"
+
+[mesh_write.cursor_file_suffix]
+doc = "The suffix of a default cursor file under `cursors/` (devswarm-pull.js cursorDefaultPath)."
+value = ".cursor"
+
+[mesh_write.cursor_initial]
+doc = "What a cursor file that does not exist yet is created with (nothing consumed)."
+value = "0"
+
+[mesh_write.pull_file_prefix]
+doc = "The prefix of a pull's lock file and delivery log (`pull-<id>.lock`, `pull-<id>.ndjson`)."
+value = "pull-"
+
+[mesh_write.pull_wal_kind]
+doc = "The delivery-log kind of the child pull (the file is `wal/<kind>-<id>.ndjson`)."
+value = "pull"
+
+[mesh_write.pull_lock_stale_ms]
+doc = "A pull lock older than this, whose holder is not a live process, is taken over (devswarm-pull.js PULL_LOCK_STALE_MS). A live holder is never taken over."
+value = 60000
+min = 1000
+max = 3600000
+
+[mesh_write.pull_lock_step_ms]
+doc = "The pause between the two create attempts of a pull lock acquire (lock.js stepMs)."
+value = 5
+min = 1
+max = 1000
+
+[mesh_write.pull_read_timeout_ms]
+doc = "How long the ONE bounded `hivecontrol workspace read-messages` of a pull may run (devswarm-pull.js READ_TIMEOUT_MS)."
+value = 10000
+min = 1000
+max = 600000
+
+[mesh_write.hc_message_count]
+doc = "The hivecontrol arguments of the non-destructive count of unread native messages."
+value = ["workspace", "message-count"]
+
+[mesh_write.hc_read_messages]
+doc = "The hivecontrol arguments of the destructive read of the native queue (it marks what it prints as read)."
+value = ["workspace", "read-messages"]
+
+[mesh_write.pull_count_keys]
+doc = "The keys of a `message-count` answer that may hold the count, in the order devswarm-pull.js parseCount tries them."
+value = ["count", "unread", "unreadCount", "messages", "total", "pending"]
+
+[mesh_write.row_hash_field]
+doc = "The field of an NDJSON inbox line that carries the message's content hash."
+value = "_h"
+
+[mesh_write.row_fields]
+doc = "The fields of a native message copied into an NDJSON inbox line, in line order (after the hash, before the sender)."
+value = ["fromBranch", "message", "createdAt", "status"]
+
+[mesh_write.row_sender_field]
+doc = "The field of an NDJSON inbox line that names the sender (the Primary's id: the whole queue is the Primary's outbound)."
+value = "sender"
+
+[mesh_write.field_nudge_command]
+doc = "The descriptor field that holds the nudge command."
+value = "nudgeCommand"
+
+[mesh_write.empty_array]
+doc = "A batch of exactly this text is an empty poll, not an unparseable one."
+value = "[]"
+
+[mesh_write.wal_done]
+doc = "The kind of the delivery-log record that closes a batch that was imported."
+value = "done"
+
+[mesh_write.wal_quarantine]
+doc = "The kind of the delivery-log record that closes a batch that could not be used (its raw bytes stay in the log)."
+value = "quarantine"
+
+[mesh_write.wal_reason_unparseable]
+doc = "The reason of the record that closes a replayed batch that parsed to nothing."
+value = "unparseable"
+
+[mesh_write.wal_reason_shortfall]
+doc = "The reason of the record that closes a batch that held fewer messages than the count promised."
+value = "shortfall"
+
+[mesh_write.msg_pull_shortfall]
+doc = "What a pull prints to stderr when the batch held fewer messages than the count promised. {id} {count} {recovered} {lost} {wal} {entry}."
+value = "devswarm-pull: reception shortfall for {id} — message-count={count} recovered={recovered} lost={lost} (marked-read natively but not parsed; raw batch kept in {wal} entry {entry})\n"
+
+[mesh_write.reserved_id_tokens]
+doc = "A fresh registration whose id contains one of these is refused: they are the namespace separators of the cursor files (cursors.js RESERVED_ID_TOKENS)."
+value = ["#", ".seen-", ".inst-", ".nd-"]
+
+[mesh_write.reserved_id_suffix]
+doc = "A fresh registration whose id ends with this is refused (cursors.js reservedIdToken)."
+value = ".base"
+
+[mesh_write.reserved_exact_id]
+doc = "The one id no workspace may register itself as: its rows would pass for system-authored ones (cursors.js RESERVED_EXACT_IDS)."
+value = "system"
+
+[mesh_write.field_repo_id]
+doc = "The descriptor field that holds the DevSwarm repository id (DEVSWARM_REPO_ID)."
+value = "repoId"
+
+[mesh_write.legacy_cursor_seps]
+doc = "What follows the workspace id in the name of a legacy per-instance cursor file under `cursors/` (`<id>#inst-<short>.json`, `<id>#nd-<short>.json`)."
+value = ["#inst-", "#nd-"]
