@@ -47,6 +47,7 @@ mod fallback_read;
 mod flip_parity;
 mod gitcache_parity;
 mod gitcheck;
+mod goldens_unit;
 mod handover_codex_e2e;
 mod handover_hygiene;
 mod hooks_files;
