@@ -502,7 +502,7 @@ fn a_subagent_calling_an_owner_action_is_refused_before_anything_is_read() {
     assert_eq!(cli::run_with(&p(&["bogus"]), &sub), 64);
     let main = env_of(&[]);
     assert_eq!(cli::run_with(&p(&["create", "--branch", "x"]), &main), 75, "create is left to Node: nothing done");
-    assert_eq!(cli::run_with(&p(&["merge"]), &main), 75);
+    // `merge` is a devswarm.js verb the engine now runs itself (covered by tests/devswarm_dsB_parity.rs against a recording hivecontrol stub); it is not called here, where the real hivecontrol would be
 }
 
 // ---- facts -----------------------------------------------------------------------------------------------------------------
