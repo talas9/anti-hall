@@ -520,8 +520,7 @@ fn stale_corpus() -> Vec<Sc> {
     add(sc("teammate-name-with-controls", h, stop_payload(json!("al\nice"))).transcript(&pend("al\nice", 5.0)));
     add(sc("teammate-name-over-60", h, stop_payload(json!("n".repeat(70)))).transcript(&pend(&"n".repeat(70), 5.0)));
     add(sc("teammate-name-over-60-cuts-pair", h, stop_payload(json!(format!("{}{}", "a".repeat(59), "😀tail"))))
-        .transcript(&pend(&format!("{}{}", "a".repeat(59), "😀tail"), 5.0))
-        .defers());
+        .transcript(&pend(&format!("{}{}", "a".repeat(59), "😀tail"), 5.0)));
     add(sc("teammate-two-teammates", h, stop_payload(json!("bob"))).transcript(&join(vec![
         pend("alice", 5.0),
         teammate_spawn("tu_sp2", "bob", &ago(55.0)),

@@ -500,7 +500,7 @@ pub(super) fn golden_report(check: &str, limit: usize) {
                 shown += 1;
                 let mut p = c["payload"].to_string();
                 p.truncate(300);
-                eprintln!("MISMATCH {check} n={}\n  payload={p}\n  expect={}\n  got   ={}\n  errors={:?}", c["n"], c["expect"].to_string().chars().take(500).collect::<String>(), got.to_string().chars().take(500).collect::<String>(), crate::discard::captured());
+                eprintln!("MISMATCH {check} n={}\n  payload={p}\n  expect={}\n  got   ={}\n  errors={:?}", c["n"], c["expect"].to_string().chars().take(4000).collect::<String>(), got.to_string().chars().take(4000).collect::<String>(), crate::discard::captured());
             }
         }
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory

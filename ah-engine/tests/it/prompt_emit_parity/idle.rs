@@ -237,7 +237,7 @@ pub fn scenarios() -> Vec<Scn> {
         ("lt-gt", "<b>&amp;".to_string()),
     ] {
         let sc = one(&format!("label-{n}"), raw.clone(), finished(&name, 30.0, 1));
-        v.push(if n == "emoji-cut-pair" { sc.defers() } else { sc });
+        v.push(sc); // a label cut inside a surrogate pair is answered like Node (the script cuts by UTF-16 unit)
     }
 
     // ---- the replay ----------------------------------------------------------------------------------------------
@@ -909,15 +909,14 @@ pub fn scenarios() -> Vec<Scn> {
         vec![w("t.jsonl", n_finished(3, 20.0))],
     ));
     v.push(
-        seq("sid-array", vec![step(payload(json!({"session_id": [1], "transcript_path": TP, "prompt": "x"})))], vec![w("t.jsonl", n_finished(3, 20.0))])
-            .defers(),
+        seq("sid-array", vec![step(payload(json!({"session_id": [1], "transcript_path": TP, "prompt": "x"})))], vec![w("t.jsonl", n_finished(3, 20.0))]),
     );
     v.push(seq(
         "sid-array-quiet-transcript",
         vec![step(payload(json!({"session_id": [1], "transcript_path": TP, "prompt": "x"})))],
         vec![w("t.jsonl", filler(T0))],
     ));
-    v.push(seq("state-garbage", vec![step(rawd.clone())], vec![w("t.jsonl", n_finished(3, 20.0)), w(".anti-hall/emit-dedupe/dedupe-dd.json", "}{")]).defers());
+    v.push(seq("state-garbage", vec![step(rawd.clone())], vec![w("t.jsonl", n_finished(3, 20.0)), w(".anti-hall/emit-dedupe/dedupe-dd.json", "}{")]));
     v.push(seq("state-garbage-but-quiet", vec![step(rawd.clone())], vec![w("t.jsonl", filler(T0)), w(".anti-hall/emit-dedupe/dedupe-dd.json", "}{")]));
     v.push(seq(
         "state-old-record",
