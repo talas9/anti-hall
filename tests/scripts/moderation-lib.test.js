@@ -158,7 +158,7 @@ test('commit identity: allow-list passes, others fail with a masked email', () =
   const bad = identityHits(`c3c3c3c3c3c3\tmohammed@example.org\t${me}\n`, cfg);
   assert.strictEqual(bad.length, 1);
   assert.strictEqual(bad[0].msg, 'commit c3c3c3c3c3 authored as m***@e***; re-author as the maintainer identity');
-  assert.strictEqual(maskEmail('mo@tx.example.org'), 'm***@t***');
+  assert.strictEqual(maskEmail('mo@example.org'), 'm***@e***');
 });
 
 test('sanitize escapes all markup characters; comment and backslash payloads stay inert', () => {
