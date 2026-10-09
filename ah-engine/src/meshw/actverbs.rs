@@ -302,7 +302,7 @@ fn tokens_total(inv: &Inv, key: &str) -> OVal {
 
 /// Whether the caller is outside the project's Primary checkout (`seatVerdict(...).state === 'n/a'`): no worktree, or a child.
 /// Any other state needs the handover scan, the session transcripts or the seat holder's liveness: Node's.
-fn seat_not_applicable(inv: &Inv) -> R<bool> {
+pub(crate) fn seat_not_applicable(inv: &Inv) -> R<bool> {
     let c = ident::resolve_context(&inv.cwd, true)?;
     let Some(wt) = c.worktree_root.clone() else { return Ok(true) };
     Ok(!ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &inv.home, &inv.env)?)

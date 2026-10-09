@@ -37,6 +37,7 @@ pub mod clog;
 pub mod common;
 pub mod diagverbs;
 pub mod cursors;
+pub mod dsbverbs;
 pub mod extverbs;
 pub mod gitverbs;
 pub mod heartbeat;

@@ -2093,6 +2093,82 @@ value = "no orphaned partitions with unread mail in this project"
 doc = "The note of a pass that acted; {dir} is the directory the archives go to."
 value = "unread rows were archived + verified under {dir} and each partition retired by advancing its cursor; NO message rows were deleted"
 
+# ---- merge, the maintenance verbs, and the guarded fronts of spawn / respawn (lane dsB) -----------------------------------
+
+[devswarm_cli.verb_merge]
+doc = "The verb that merges a child workspace into its source (hivecontrol check-merge, merge-into-source, then a mesh broadcast of the outcome)."
+value = "merge"
+
+[devswarm_cli.verb_reconcile_registry]
+doc = "The verb that reports the drift between the mesh registry and hivecontrol's workspace list (report only)."
+value = "reconcile-registry"
+
+[devswarm_cli.verb_reap_stale]
+doc = "The verb that archives workspaces whose liveness verdict is stale or escalated (dry run unless --yes)."
+value = "reap-stale"
+
+[devswarm_cli.verb_reconcile_active]
+doc = "The verb that archives workspaces missing from an active set that the app's database proves archived (dry run unless --yes)."
+value = "reconcile-active"
+
+[devswarm_cli.verb_auto_archive]
+doc = "The verb that prints the plan of the supervisor's auto-archive (read only)."
+value = "auto-archive"
+
+[devswarm_cli.verb_spawn]
+doc = "The verb that creates a workspace through hivecontrol."
+value = "spawn"
+
+[devswarm_cli.verb_respawn]
+doc = "The verb by which the Primary replaces a straying child with a fresh workspace."
+value = "respawn"
+
+[devswarm_cli.action_merge]
+doc = "The `action` of a merge result."
+value = "merge"
+
+[devswarm_cli.action_reconcile_registry]
+doc = "The `action` of a reconcile-registry result and its refusals."
+value = "reconcile-registry"
+
+[devswarm_cli.action_reap_stale]
+doc = "The `action` of a reap-stale result."
+value = "reap-stale"
+
+[devswarm_cli.action_reconcile_active]
+doc = "The `action` of a reconcile-active result and its refusals."
+value = "reconcile-active"
+
+[devswarm_cli.action_auto_archive]
+doc = "The `action` of an auto-archive result."
+value = "auto-archive"
+
+[devswarm_cli.action_spawn]
+doc = "The `action` of a spawn refusal."
+value = "spawn"
+
+[devswarm_cli.action_respawn]
+doc = "The `action` of a respawn refusal."
+value = "respawn"
+
+# hivecontrol calls (the argument vectors are Node's; the capability gate is hivecontrol.rs)
+
+[devswarm_cli.hc_workspace]
+doc = "The first word of every hivecontrol workspace call."
+value = "workspace"
+
+[devswarm_cli.hc_check_merge]
+doc = "The hivecontrol workspace verb that reports whether a merge is possible (it may create the source worktree)."
+value = "check-merge"
+
+[devswarm_cli.hc_merge_into_source]
+doc = "The hivecontrol workspace verb that merges the workspace into its source branch."
+value = "merge-into-source"
+
+[devswarm_cli.hc_unbounded_ms]
+doc = "How long a hivecontrol merge call may run before the engine stops it. Node sets no limit; a merge must never be cut short, so this is a day."
+value = 86400000
+
 # ---- lane dsA: archive, register-primary, diagnose, healthcheck ---------------------------------------------------------
 
 [devswarm_cli.verb_archive]
@@ -2506,3 +2582,207 @@ doc = "The prefix of the name given to a signal with no entry in signal_names."
 value = "SIG"
 
 # merge
+
+[devswarm_cli.merge_summary_ok]
+doc = "The broadcast text after a successful merge."
+value = "merge-into-source completed"
+
+[devswarm_cli.merge_summary_failed]
+doc = "The broadcast text after a failed merge. {error}."
+value = "merge-into-source failed: {error}"
+
+[devswarm_cli.merge_error_default]
+doc = "The `error` of a failed merge that carries no text of its own."
+value = "merge-into-source failed"
+
+[devswarm_cli.merge_error_unknown]
+doc = "The text after the colon in the broadcast of a failed merge that carries no error."
+value = "unknown error"
+
+[devswarm_cli.urgency_normal]
+doc = "The urgency of the broadcast after a merge that landed."
+value = "normal"
+
+[devswarm_cli.urgency_high]
+doc = "The urgency of the broadcast after a merge that failed."
+value = "high"
+
+# reconcile-registry
+
+[devswarm_cli.rr_list_args]
+doc = "The hivecontrol call that lists every workspace."
+value = ["workspace", "list", "all"]
+
+[devswarm_cli.rr_children_key]
+doc = "The key under which the list may hold its records."
+value = "children"
+
+[devswarm_cli.rr_expected_fields]
+doc = "The fields the drift report depends on (`path` also accepts `worktreePath`)."
+value = ["id", "path"]
+
+[devswarm_cli.rr_field_path]
+doc = "The record field that names a workspace's path."
+value = "path"
+
+[devswarm_cli.rr_field_worktree_path]
+doc = "The record field accepted in place of `path`."
+value = "worktreePath"
+
+[devswarm_cli.rr_no_output]
+doc = "The text after a failed workspace list that printed no error."
+value = "no output"
+
+[devswarm_cli.reason_hc_unavailable]
+doc = "The `reason` of a reconcile-registry whose workspace list failed."
+value = "hivecontrol-unavailable"
+
+[devswarm_cli.reason_hc_shape]
+doc = "The `reason` of a reconcile-registry whose workspace list is not a shape it can compare."
+value = "hivecontrol-shape-unrecognized"
+
+[devswarm_cli.msg_rr_no_project]
+doc = "The refusal of reconcile-registry outside a git worktree."
+value = "reconcile-registry must run inside a git worktree (the mesh registry is per-project)"
+
+[devswarm_cli.msg_rr_list_failed]
+doc = "The refusal when the workspace list failed. {error}."
+value = "hivecontrol workspace list all failed: {error}"
+
+[devswarm_cli.msg_rr_unparseable]
+doc = "The refusal when the workspace list is not JSON."
+value = "hivecontrol workspace list all did not return parseable JSON"
+
+[devswarm_cli.msg_rr_not_list]
+doc = "The refusal when the workspace list holds no array of records."
+value = "expected an array of workspace records (bare, or under `children`)"
+
+[devswarm_cli.msg_rr_missing]
+doc = "The refusal when the records lack a field the report needs. {fields}."
+value = "hivecontrol workspace records are missing expected field(s): {fields} — refusing to guess at the mapping rather than emit a drift report built on assumptions"
+
+[devswarm_cli.msg_rr_note]
+doc = "The note of a drift report."
+value = "REPORT ONLY — nothing was changed. Drift runs in both directions and neither side is unconditionally authoritative, so reconciling is a human decision made per row."
+
+# reap-stale, reconcile-active
+
+[devswarm_cli.flag_confirm]
+doc = "The flag (besides --yes) that confirms an archiving run."
+value = "confirm"
+
+[devswarm_cli.dir_liveness]
+doc = "The directory (under the DevSwarm root) of the persisted liveness verdicts."
+value = "liveness"
+
+[devswarm_cli.reap_idle_ms]
+doc = "How recent a worktree's last commit must be for reap-stale to spare the workspace (liveness.js DEFAULT_IDLE_MS, 15 minutes)."
+value = 900000
+
+[devswarm_cli.reap_stale_states]
+doc = "The persisted verdict statuses that nominate a workspace for reaping."
+value = ["stale", "escalated"]
+
+[devswarm_cli.reap_skip_heartbeat]
+doc = "The reason reap-stale spares a workspace with a fresh heartbeat."
+value = "fresh-heartbeat"
+
+[devswarm_cli.reap_skip_activity]
+doc = "The reason reap-stale spares a workspace with a recent commit."
+value = "recent-activity"
+
+[devswarm_cli.msg_reap_stale_note]
+doc = "The note of a reap-stale dry run."
+value = "dry-run: pass --yes (or --confirm) to archive these workspaces"
+
+[devswarm_cli.flag_active]
+doc = "The reconcile-active flag that lists the workspaces to keep."
+value = "active"
+
+[devswarm_cli.flag_allow_empty]
+doc = "The reconcile-active flag that allows an empty active set."
+value = "allow-empty"
+
+[devswarm_cli.ra_min_prefix]
+doc = "The fewest characters of an --active token that may match an id by its start."
+value = 4
+
+[devswarm_cli.ra_min_part]
+doc = "The fewest characters of an --active token that may match any part of an id."
+value = 8
+
+[devswarm_cli.ra_why_unreadable]
+doc = "The reason (and the refusal's `reason`) when the app database cannot be read."
+value = "app-db-unreadable"
+
+[devswarm_cli.ra_why_active]
+doc = "The reason a workspace is kept: the app still shows it active."
+value = "app-active"
+
+[devswarm_cli.ra_why_unknown]
+doc = "The reason a workspace is kept: the app has no opinion."
+value = "app-unknown"
+
+[devswarm_cli.msg_ra_empty]
+doc = "The refusal of an empty active set."
+value = "reconcile-active requires a non-empty --active <id,...> set (pass --allow-empty to archive ALL current workspaces)"
+
+[devswarm_cli.msg_ra_db_unreadable]
+doc = "The note when the app database cannot be read."
+value = "DevSwarm app database unreadable (set ANTIHALL_DEVSWARM_APP_DB to its devswarm.db) — nothing is archived without app proof"
+
+[devswarm_cli.msg_ra_dry_note]
+doc = "The note of a reconcile-active dry run."
+value = "dry-run: pass --yes (or --confirm) to archive these workspaces (only app-archived ones are candidates)"
+
+# auto-archive
+
+[devswarm_cli.aa_reason_no_db]
+doc = "The `reason` of an auto-archive plan when the app database is not there."
+value = "app-db-unavailable"
+
+[devswarm_cli.aa_cap_reason]
+doc = "The capability reason of that plan (the archive verb was not probed)."
+value = "not probed"
+
+# spawn, respawn
+
+[devswarm_cli.msg_spawn_no_branch]
+doc = "The refusal of spawn without a branch."
+value = "spawn requires a branch name"
+
+[devswarm_cli.msg_spawn_no_value]
+doc = "The refusal of a create option with no value. {label} {name}."
+value = "spawn: {label} needs a value, but none was given after {name}."
+
+[devswarm_cli.msg_spawn_bad_value]
+doc = "The refusal of a create option handed what looks like the next option. {label} {value} {name} {short}."
+value = "spawn: {label} got {value} as its value, which looks like another option. Give {name} a real value (quote it), e.g. `spawn <branch> {short} \"<value>\"`."
+
+[devswarm_cli.spawn_value_flags]
+doc = "The value-taking create options. `anyDash` refuses any value that starts with a dash; the others refuse only a value shaped like an option."
+value = [{ short = "-s", long = "--source", anyDash = true }, { short = "-a", long = "--agent", anyDash = true }, { short = "-t", long = "--title", anyDash = true }, { short = "-p", long = "--prompt", anyDash = false }]
+
+[devswarm_cli.spawn_option_shape]
+doc = "A value shaped like an option (a single -x or --xx token, optionally with =value)."
+value = "^--?[A-Za-z][A-Za-z0-9_-]*(?:=\\S*)?$"
+
+[devswarm_cli.spawn_exotic_chars]
+doc = "Characters that JavaScript and the regular-expression engine disagree on as white space (NEL, BOM): a value holding one goes to Node."
+value = "\u0085﻿"
+
+[devswarm_cli.set_spawn_strict]
+doc = "Whether spawn refuses a create option with no value or an option-shaped value. Node: devswarm.spawnStrictFlagValues."
+value = { type = "bool", section = "devswarm", key = "spawnStrictFlagValues", env = "ANTIHALL_DEVSWARM_SPAWN_STRICT_FLAG_VALUES", option = "devswarm_spawn_strict_flag_values", default = true }
+
+[devswarm_cli.msg_respawn_usage]
+doc = "The refusal of respawn without a safe id."
+value = "usage: devswarm.js respawn <id> [--dry-run]"
+
+[devswarm_cli.msg_respawn_not_primary]
+doc = "The refusal of respawn from a session that does not hold the Primary seat. {seat}."
+value = "respawn runs only from the session that holds the Primary seat (seat: {seat})"
+
+[devswarm_cli.respawn_reason_not_primary]
+doc = "The `reason` of that refusal."
+value = "not-primary"

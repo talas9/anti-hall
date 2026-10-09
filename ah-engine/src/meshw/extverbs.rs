@@ -60,6 +60,20 @@ pub enum Ext {
     Diagnose,
     /// `healthcheck [--json]` (lane dsA).
     Healthcheck,
+    /// `merge` (lane dsB).
+    Merge,
+    /// `reconcile-registry` (lane dsB).
+    ReconcileRegistry,
+    /// `reap-stale` (lane dsB).
+    ReapStale,
+    /// `reconcile-active` (lane dsB).
+    ReconcileActive,
+    /// `auto-archive` (lane dsB).
+    AutoArchive,
+    /// `spawn` (lane dsB: the refusals before the create).
+    Spawn,
+    /// `respawn` (lane dsB: the refusals before the plan).
+    Respawn,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -108,6 +122,20 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Diagnose)
     } else if is("devswarm_cli.verb_healthcheck") {
         Some(Ext::Healthcheck)
+    } else if is("devswarm_cli.verb_merge") {
+        Some(Ext::Merge)
+    } else if is("devswarm_cli.verb_reconcile_registry") {
+        Some(Ext::ReconcileRegistry)
+    } else if is("devswarm_cli.verb_reap_stale") {
+        Some(Ext::ReapStale)
+    } else if is("devswarm_cli.verb_reconcile_active") {
+        Some(Ext::ReconcileActive)
+    } else if is("devswarm_cli.verb_auto_archive") {
+        Some(Ext::AutoArchive)
+    } else if is("devswarm_cli.verb_spawn") {
+        Some(Ext::Spawn)
+    } else if is("devswarm_cli.verb_respawn") {
+        Some(Ext::Respawn)
     } else {
         None
     }
@@ -115,7 +143,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register | Ext::Correct | Ext::ReapOrphans | Ext::RegisterPrimary | Ext::Diagnose | Ext::Healthcheck)
+    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register | Ext::Correct | Ext::ReapOrphans | Ext::RegisterPrimary | Ext::Diagnose | Ext::Healthcheck | Ext::ReconcileRegistry)
 }
 
 /// Run the verb.
@@ -142,11 +170,19 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::RegisterPrimary => super::lifeverbs::register_primary(inv, a),
         Ext::Diagnose => super::diagverbs::diagnose(inv, a),
         Ext::Healthcheck => super::diagverbs::healthcheck(inv, a),
+        Ext::Merge => super::dsbverbs::merge(inv, a),
+        Ext::ReconcileRegistry => super::dsbverbs::reconcile_registry(inv, a),
+        Ext::ReapStale => super::dsbverbs::reap_stale(inv, a),
+        Ext::ReconcileActive => super::dsbverbs::reconcile_active(inv, a),
+        Ext::AutoArchive => super::dsbverbs::auto_archive(inv, a),
+        Ext::Spawn => super::dsbverbs::spawn(inv, a),
+        Ext::Respawn => super::dsbverbs::respawn(inv, a),
     }
 }
 
 /// Whether the Node witness of the CLI verbs runs after the engine answered. Retention is gated before it acts (the engine's plan
-/// and Node's read-only planner must agree on every row), and Node's own `run` would prune a copy of a store of any size.
+/// and Node's read-only planner must agree on every row), and Node's own `run` would prune a copy of a store of any size. `merge`
+/// has none: a witness would run `hivecontrol workspace merge-into-source` a second time, on the real repository.
 pub fn witnessed(v: Ext) -> bool {
-    !matches!(v, Ext::Retention | Ext::Archive)
+    !matches!(v, Ext::Retention | Ext::Archive | Ext::Merge)
 }
