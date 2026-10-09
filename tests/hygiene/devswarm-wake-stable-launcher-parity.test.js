@@ -12,7 +12,9 @@
 // hooks/lib/devswarm-wake.js's wakeReassert for the fix of record).
 
 require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
-const { test } = require('node:test');
+const { test: nodeTest } = require('node:test');
+// Engine-parity duplicate (covered by ah-engine/tests/it/node_parity on the engine track): runs only with ANTIHALL_PARITY_TESTS=1 (nightly job).
+const test = (name, fn) => nodeTest(name, { skip: process.env.ANTIHALL_PARITY_TESTS !== '1' && 'set ANTIHALL_PARITY_TESTS=1 to run' }, fn);
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
