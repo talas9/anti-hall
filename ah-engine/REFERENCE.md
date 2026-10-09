@@ -5336,6 +5336,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.file_samples` | `devswarm-startup-samples.ndjson` |  |  | The start-up samples log, in the logs directory. |
 | `devswarm_recon.file_sampling_state` | `startup-sampling-state.json` |  |  | The start-up sampling state, under the DevSwarm state directory. |
 | `devswarm_recon.file_sweep_state` | `reconcile-sweep-state.json` |  |  | The reconcile sweep's cool-down file, under the DevSwarm state directory. |
+| `devswarm_recon.job_heal` | `heal-registry` |  |  | The label of the registry-heal job in the witness log and the scratch directory name. |
 | `devswarm_recon.log_component_cache` | `devswarm-archived-cache` |  |  | The component of the active-snapshot log lines. |
 | `devswarm_recon.log_level_warn` | `warn` |  |  | The level of the partial-list guard's log line. |
 | `devswarm_recon.log_op_partial` | `partial-list-guard` |  |  | The operation of the partial-list guard's log line. |
@@ -5365,7 +5366,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.set_active_floor_pct` | `7 entries` |  |  | Least percent of a project's previous active-workspace snapshot a new one must hold, or the previous one is kept (0 turns the floor off). Node: devswarm.activeFloorPct. |
 | `devswarm_recon.settings_files` | `.claude/settings.json` |  |  | Settings files (relative to the home) a mirror also holds, because the Node functions and the summary projection read them. |
 | `devswarm_recon.status_stale` | `stale` |  |  | The verdict status word that makes a workspace a start-up sampling candidate. |
+| `devswarm_recon.summary_dirs` | `workspaces, archived, cursors, heartbeats` |  |  | Directories under the DevSwarm state directory that the summary projection reads; a job that rewrites a summary mirrors them whole. |
 | `devswarm_recon.suppress_after` | `3` |  |  | How many sweeps in a row must meet the same repository-not-known error before the calls are suppressed (Node: SUPPRESS_AFTER). |
+| `devswarm_recon.synthetic_prefix` | `unclaimed:` |  |  | The start of a session id the registry mints for a row with no live session (such a session never confirms an identity). |
 | `devswarm_recon.why_drift` | `drift:` |  |  | The start of the reason when a precondition changed between the plan and the apply (followed by what changed). |
 | `devswarm_recon.why_lock_busy` | `lock-busy` |  |  | Why a unit was handed back: its workspace lock is held by a live writer. |
 | `devswarm_recon.why_mirror` | `mirror-failed` |  |  | Why a unit was handed back: a scratch mirror could not be built or the engine's pass over it failed. |
@@ -5373,6 +5376,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.why_mismatch` | `witness-mismatch` |  |  | Why a unit was handed back: Node and the engine ended in different states on the scratch mirrors. |
 | `devswarm_recon.why_node_answer` | `node-answer-unparsable` |  |  | Why the witness failed: Node's answer was not the list of return values. |
 | `devswarm_recon.why_node_unavailable` | `node-unavailable` |  |  | Why a unit was handed back: Node could not be run, so the decision is unwitnessed. |
+| `devswarm_recon.why_rehome_across` | `rehome-across-stores` |  |  | Why a row was handed back: it is mis-keyed and moving it between stores (rehomeAcrossStores) is still Node's. |
 | `devswarm_recon.why_surrogate` | `surrogate-cut` |  |  | Why a decision was handed back: cutting the text at Node's length would split a surrogate pair. |
 | `devswarm_recon.witness_diffs` | `20` |  |  | Most differences one witness log line lists. |
 | `devswarm_recon.witness_file` | `.anti-hall/logs/devswarm-recon-witness.ndjson` |  |  | The reconcile-port witness log, one JSON line per gated job (match: true / false, or null when Node could not run), relative to the home directory. |

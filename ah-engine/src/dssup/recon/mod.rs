@@ -25,6 +25,7 @@
 // - the witness is advisory: a scratch file that cannot be removed only costs disk
 pub mod apply;
 pub mod gate;
+pub mod heal;
 pub mod mirror;
 pub mod norm;
 pub mod side;

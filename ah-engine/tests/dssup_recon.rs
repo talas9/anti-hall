@@ -1,4 +1,4 @@
-//! The reconcile port, slices S0 and S1, against Node's own functions.
+//! The reconcile port, slices S0 to S2, against Node's own functions.
 //!
 //! Every case builds a scratch home, plans with the engine, and runs the witness gate: Node's function on one mirror, the engine's
 //! op list on another, byte-compared, then applied to the real (scratch) home. A case passes only when the gate agrees (or the
@@ -10,7 +10,7 @@ use ah_engine::checks::git::util::Settings;
 use ah_engine::checks::guardkit::ojson::OVal;
 use ah_engine::dsact::runner::{RunResult, RunSpec, Runner, System};
 use ah_engine::dssup::recon::gate::{self, Job, Verdict};
-use ah_engine::dssup::recon::{Hooks, Op, UnitEnd, apply, norm, side};
+use ah_engine::dssup::recon::{Hooks, Op, UnitEnd, apply, heal, norm, side};
 use ah_engine::dssup::tick::Ctx;
 use ah_engine::meshw::store::{MeshStore, RegistryRow};
 use serde_json::Value;
@@ -469,6 +469,191 @@ fn a_drifted_precondition_or_a_busy_lock_defers_the_unit_untouched() {
     assert_eq!(end, UnitEnd::Deferred("lock-busy".into()));
 }
 
+// ---------------------------------------------------------------- S2: healRegistry
+
+struct HealCase {
+    name: &'static str,
+    build: fn(&Fix) -> (),
+    /// ids the engine must hand back to Node
+    deferred: &'static [&'static str],
+}
+
+fn desc_json(id: &str, wt: &str, sid: &str, owner: Option<&str>, repo: Option<&str>) -> String {
+    let mut s = format!("{{\"id\":\"{id}\",\"worktreePath\":\"{wt}\",\"sessionId\":\"{sid}\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"repoId\":null");
+    if let Some(o) = owner {
+        s.push_str(&format!(",\"ownerKey\":\"{o}\""));
+    }
+    if let Some(r) = repo {
+        s.push_str(&format!(",\"repoKey\":\"{r}\""));
+    }
+    s.push('}');
+    s
+}
+
+/// The repository every case lives in (`p`), and a second one (`q`) for the mis-keyed cases.
+fn base(f: &Fix) -> (String, String, String) {
+    let p = f.repo("p");
+    let key = f.key_of(&p);
+    (p, key, f.repo("q"))
+}
+
+fn heal_cases() -> Vec<HealCase> {
+    vec![
+        HealCase { name: "empty store", build: |f| { let (_, k, _) = base(f); f.store(&k); }, deferred: &[] },
+        HealCase {
+            name: "already healed",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", Some(&k), Some(&k))); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "stale owner and repo keys",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", Some("deadbeef"), Some("other-1"))); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "keys missing from the descriptor",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", None, None)); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "stale registry worktree path",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", "/old/path", "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", Some(&k), Some(&k))); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "stale path and stale keys",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", "/old/path", "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", None, Some("zzz"))); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "no descriptor",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "descriptor of another session",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", "/old", "s1"); f.descriptor("w1", &desc_json("w1", &p, "foreign", None, None)); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "unclaimed sessions never confirm",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", "/old", "unclaimed:w1"); f.descriptor("w1", &desc_json("w1", &p, "unclaimed:w1", None, None)); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "descriptor id differs",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.descriptor("w1", &desc_json("w9", &p, "s1", None, None)); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "worktree is not a repository",
+            build: |f| {
+                let (_, k, _) = base(f);
+                let plain = f.home.join("plain");
+                std::fs::create_dir_all(&plain).unwrap();
+                let plain = plain.to_string_lossy().into_owned();
+                f.row(&k, "w1", &plain, "s1");
+                f.descriptor("w1", &desc_json("w1", &plain, "s1", None, None));
+            },
+            deferred: &[],
+        },
+        HealCase {
+            name: "mis-keyed row goes to Node",
+            build: |f| { let (_, k, q) = base(f); f.row(&k, "w1", &q, "s1"); f.descriptor("w1", &desc_json("w1", &q, "s1", None, None)); },
+            deferred: &["w1"],
+        },
+        HealCase {
+            name: "worktree gone with an archived counterpart",
+            build: |f| {
+                let (_, k, _) = base(f);
+                f.row(&k, "w1", "/gone/for/good", "s1");
+                f.descriptor("w1", &desc_json("w1", "/gone/for/good", "s1", None, None));
+                f.put(".anti-hall/devswarm/archived/w1.json", "{\"id\":\"w1\"}");
+            },
+            deferred: &[],
+        },
+        HealCase {
+            name: "worktree gone without an archived counterpart",
+            build: |f| { let (_, k, _) = base(f); f.row(&k, "w1", "/gone/for/good", "s1"); f.descriptor("w1", &desc_json("w1", "/gone/for/good", "s1", None, None)); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "unsafe id in the registry",
+            build: |f| { let (p, k, _) = base(f); f.row(&k, "bad id", &p, "s1"); },
+            deferred: &[],
+        },
+        HealCase {
+            name: "descriptor is a symlink",
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", &p, "s1");
+                f.put("real.json", &desc_json("w1", &p, "s1", None, None));
+                std::fs::create_dir_all(f.home.join(".anti-hall/devswarm/workspaces")).unwrap();
+                std::os::unix::fs::symlink(f.home.join("real.json"), f.home.join(".anti-hall/devswarm/workspaces/w1.json")).unwrap();
+            },
+            deferred: &[],
+        },
+        HealCase {
+            name: "a mixed store",
+            build: |f| {
+                let (p, k, q) = base(f);
+                f.row(&k, "a1", &p, "sa");
+                f.descriptor("a1", &desc_json("a1", &p, "sa", Some("x"), None));
+                f.row(&k, "b2", "/old", "sb");
+                f.descriptor("b2", &desc_json("b2", &p, "sb", Some(&k), Some(&k)));
+                f.row(&k, "c3", &q, "sc");
+                f.descriptor("c3", &desc_json("c3", &q, "sc", None, None));
+                f.row(&k, "d4", &p, "sd");
+            },
+            deferred: &["c3"],
+        },
+    ]
+}
+
+#[test]
+fn s2_heal_registry_matches_node_for_every_row_shape() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S2.heal-registry");
+    for c in heal_cases() {
+        let f = fix("s2");
+        (c.build)(&f);
+        let key = std::fs::read_dir(f.home.join(f.ds("store"))).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().into_owned();
+        let run = heal::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap_or_else(|d| panic!("{}: deferred {d:?}", c.name));
+        assert_eq!(run.verdict, Verdict::Agreed, "{}: {:?}", c.name, run.verdict);
+        let got: Vec<&str> = run.deferred.iter().map(|(i, _)| i.as_str()).collect();
+        assert_eq!(got, c.deferred, "{}", c.name);
+        t.case(c.deferred.is_empty());
+        // idempotent: a second pass over the healed home changes nothing
+        let before = f.snapshot();
+        let again = heal::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap();
+        assert_eq!(again.verdict, Verdict::Agreed, "{} (second pass)", c.name);
+        assert_eq!(f.snapshot(), before, "{}: the second pass wrote something", c.name);
+    }
+    t.print();
+}
+
+#[test]
+fn s2_rehome_core_answers_the_trivial_cases_and_defers_moves() {
+    assert_eq!(heal::rehome_core("w1", ""), heal::Core::Nothing);
+    assert_eq!(heal::rehome_core("w1", &ah_engine::meshw::send::hash_from_workspace_id("w1")), heal::Core::Nothing);
+    assert!(matches!(heal::rehome_core("w1", "repo-abc123"), heal::Core::Node(_)));
+}
+
+#[test]
+fn s2_a_deferred_store_shape_writes_nothing() {
+    let f = fix("s2def");
+    let (_, k, _) = base(&f);
+    // a journal-backend store
+    let dir = f.home.join(f.ds(&format!("store/{k}")));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("BACKEND"), "journal\n").unwrap();
+    assert!(heal::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).is_err());
+    // a missing store (Node would materialise one)
+    assert!(heal::plan(&f.home, "no-such-store").is_err());
+}
+
 // ---------------------------------------------------------------- crash safety
 
 fn kill_hook(point: &str) -> impl Fn(&str) + '_ {
@@ -480,6 +665,13 @@ fn kill_hook(point: &str) -> impl Fn(&str) + '_ {
     }
 }
 
+fn crash_fixture(f: &Fix) -> String {
+    let (p, k, _) = base(f);
+    f.row(&k, "w1", "/old/path", "s1");
+    f.descriptor("w1", &desc_json("w1", &p, "s1", Some("stale"), None));
+    k
+}
+
 #[test]
 fn crash_child() {
     // the child half of the crash tests: does nothing unless the parent set the environment
@@ -489,6 +681,8 @@ fn crash_child() {
     let mut env: HashMap<String, String> = HashMap::new();
     env.insert("HOME".into(), home.to_string_lossy().into_owned());
     let st = Settings { home: home.to_string_lossy().into_owned(), env };
+    let root = ah_engine::defaults::root().unwrap();
+    let ctx = Ctx { home: &home, root: &root, st: &st, now: NOW, engine_pokes: false };
     let hook = kill_hook(&at);
     if std::env::var("RECON_CRASH_KIND").as_deref() == Ok("sampling") {
         let ids = vec!["w1".to_string()];
@@ -498,6 +692,57 @@ fn crash_child() {
         let _ = apply::unit(&env, &p.unit, &Hooks { at: &hook });
         return;
     }
+    let key = std::env::var("RECON_CRASH_KEY").unwrap();
+    let _ = heal::run(&ctx, &System::configured(), &key, &Hooks { at: &hook });
+}
+
+#[test]
+fn a_sigkill_at_every_op_boundary_leaves_a_state_nodes_next_sweep_converges_from() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    // the uninterrupted result is the reference
+    let reference = fix("crash-ref");
+    let key = crash_fixture(&reference);
+    let r = heal::run(&reference.ctx(), &System::configured(), &key, &Hooks::none()).unwrap();
+    assert_eq!(r.verdict, Verdict::Agreed);
+    let points: Vec<String> = ["before", "after"].iter().flat_map(|w| (0..3).map(move |i| format!("heal:w1:{i}:{w}"))).collect();
+    let mut survived = 0;
+    for point in &points {
+        let f = fix("crash");
+        let k = crash_fixture(&f);
+        let desc_rel = f.ds("workspaces/w1.json");
+        let old_desc = f.read(&desc_rel).unwrap();
+        let o = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
+            .env("RECON_CRASH_HOME", &f.home)
+            .env("RECON_CRASH_AT", point)
+            .env("RECON_CRASH_KEY", &k)
+            .output()
+            .unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        if o.status.signal() != Some(9) {
+            continue; // the op list has fewer ops than this point names
+        }
+        survived += 1;
+        // invariants: the descriptor exists whole (old or new), the registry row is entirely old or entirely new, markers parse
+        let desc = f.read(&desc_rel).expect("the descriptor is never missing");
+        assert!(OVal::parse(&desc).is_some(), "{point}: descriptor parses");
+        assert!(desc == old_desc || desc.contains(&format!("\"ownerKey\":\"{k}\"")), "{point}: descriptor is old or new");
+        let rows = ah_engine::dssup::recon::view::registry(&f.home, &k).unwrap();
+        assert_eq!(rows.len(), 1);
+        let path = rows[0].row.worktree_path.clone().unwrap();
+        assert!(path == "/old/path" || path.ends_with("/p"), "{point}: row is old or new: {path}");
+        // Node's own next sweep converges to the uninterrupted result
+        let code = "process.env.HOME=process.argv[2];const F=require(process.argv[1]+'/scripts/devswarm-lib/fold.js');F.healRegistry(process.argv[2],process.argv[3],{})";
+        let n = Command::new("node").args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), &k]).env("ANTI_HALL_LOG_DIR", f.home.join("logs")).output().unwrap();
+        assert!(n.status.success(), "{}", String::from_utf8_lossy(&n.stderr));
+        let norm_desc = |x: &Fix, key: &str| x.read(&x.ds("workspaces/w1.json")).unwrap().replace(key, "KEY").replace(&x.home.to_string_lossy().into_owned(), "HOME");
+        assert_eq!(norm_desc(&f, &k), norm_desc(&reference, &key), "{point}: converged descriptor");
+        let tup = |x: &Fix, key: &str| ah_engine::dssup::recon::view::registry(&x.home, key).unwrap().into_iter().map(|r| (r.row.id, r.row.worktree_path.map(|p| p.rsplit('/').next().unwrap_or("").to_string()), r.row.session_id)).collect::<Vec<_>>();
+        assert_eq!(tup(&f, &k), tup(&reference, &key), "{point}: converged registry");
+    }
+    assert!(survived >= 4, "the kill points were reached ({survived})");
 }
 
 #[test]

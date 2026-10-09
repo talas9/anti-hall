@@ -42,9 +42,17 @@ value = 20
 min = 1
 max = 1000
 
+[devswarm_recon.job_heal]
+doc = "The label of the registry-heal job in the witness log and the scratch directory name."
+value = "heal-registry"
+
 [devswarm_recon.settings_files]
 doc = "Settings files (relative to the home) a mirror also holds, because the Node functions and the summary projection read them."
 value = [".claude/settings.json"]
+
+[devswarm_recon.summary_dirs]
+doc = "Directories under the DevSwarm state directory that the summary projection reads; a job that rewrites a summary mirrors them whole."
+value = ["workspaces", "archived", "cursors", "heartbeats"]
 
 # ---- the normaliser ------------------------------------------------------------------------------------------------------------
 
@@ -125,6 +133,10 @@ value = "mirror-failed"
 [devswarm_recon.why_mirror_cap]
 doc = "Why a mirror could not be built: a directory held more files than devswarm_recon.mirror_max_files."
 value = "mirror-too-large"
+
+[devswarm_recon.why_rehome_across]
+doc = "Why a row was handed back: it is mis-keyed and moving it between stores (rehomeAcrossStores) is still Node's."
+value = "rehome-across-stores"
 
 [devswarm_recon.why_surrogate]
 doc = "Why a decision was handed back: cutting the text at Node's length would split a surrogate pair."
@@ -232,3 +244,9 @@ value = "warn"
 [devswarm_recon.msg_partial_list]
 doc = "The partial-list guard's log line. Placeholders: {new}, {key}, {pct}, {prev}."
 value = "hivecontrol workspace list returned {new} record(s) for {key}, below the {pct}% floor of the previous snapshot's {prev} \u2014 refusing this write, keeping the previous snapshot for this project"
+
+# ---- the registry heal (slice S2) ----------------------------------------------------------------------------------------------
+
+[devswarm_recon.synthetic_prefix]
+doc = "The start of a session id the registry mints for a row with no live session (such a session never confirms an identity)."
+value = "unclaimed:"
