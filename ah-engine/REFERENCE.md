@@ -5014,6 +5014,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `agent_scan.cut_check_lines` | `256` |  |  | How many transcript lines the agent scan reads between two looks at its request's client deadline: a scripted check cut at that deadline (script.cut_at_request_deadline) stops its scan there instead of reading the rest of a window of many megabytes, which the interpreter cannot interrupt (measured 2026-10-09 under load: silent-agent-nudge's 64 MB scan ran 4.4 s past a 0.7 s remainder). |
 | `agent_scan.reader_buf_bytes` | `1048576` |  | bytes | Capacity of the buffered reader over the tail of a transcript the agent scan reads. |
 
 ### limits.toml / codex_handover
@@ -5126,6 +5127,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_no_request` | `no request state` |  |  | Error a host function raises when it is called outside a check call (no request state). |
 | `script.msg_no_script` | `no script file` |  |  | Reason logged (then the failure policy applies) when a check whose logic is a script has no script file. |
 | `script.msg_not_number` | `{key} is not a number` |  |  | Error a script sees when it asks `ah.cfgNum` for a key whose value is not a number. |
+| `script.msg_scan_cut` | `the request's client stopped waiting during the scan` |  |  | Exception a native transcript scan raises in a script call cut at its request's client deadline; the call then defers to its check's Node hook. |
 | `script.msg_settings_unreadable` | `settings file readable only by JavaScript` |  |  | Reason logged (then the failure policy applies) when the settings file holds something only JavaScript can parse. |
 | `script.msg_unknown_key` | `unknown defaults key {key}` |  |  | Error a script sees when it asks `ah.cfg` for a key that is not shipped. |
 | `script.msg_unknown_op` | `unknown file operation {op}` |  |  | Error a script sees when it asks a file operation the host does not have. Placeholder: {op}. |

@@ -69,6 +69,10 @@ max = 1
 doc = "Log detail (code script_deadline, rate-limited) of a check cut or not started at its request's client deadline; it defers to its Node hook. Placeholders: {check}, {event}."
 value = "{check} ({event}): past the client's deadline, deferred to its Node hook"
 
+[script.msg_scan_cut]
+doc = "Exception a native transcript scan raises in a script call cut at its request's client deadline; the call then defers to its check's Node hook."
+value = "the request's client stopped waiting during the scan"
+
 [script.wall_limit_factor]
 doc = "The wall-clock backstop of a script call, as a multiple of its time limit. The limit itself counts the interpreter thread's CPU time, so a thread kept waiting for a core by a loaded machine is not interrupted; the backstop ends a script that waits without using CPU. Time a host function spends blocked (a child process, a lock) is credited back to the backstop."
 value = 10

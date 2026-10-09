@@ -23,6 +23,8 @@ thread_local! {
     static REQ: Cell<Option<(Instant, Option<Instant>)>> = const { Cell::new(None) };
     /// The state writes the current request staged, in order.
     static STAGED: RefCell<Vec<Staged>> = const { RefCell::new(Vec::new()) };
+    /// Whether the script call in progress on this thread may be cut at the request's deadline (armed, not lifted by `commit()`).
+    static CUT_ARMED: std::sync::atomic::AtomicBool = const { std::sync::atomic::AtomicBool::new(false) };
     /// The daemon worker's progress beat (its watchdog slot and the daemon's start), set once per worker thread.
     static BEAT: RefCell<Option<(Arc<AtomicU64>, Instant)>> = const { RefCell::new(None) };
 }
@@ -43,6 +45,18 @@ pub fn beat() {
             slot.store(base.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
         }
     });
+}
+
+/// Arm (or disarm) the cut of the script call in progress at the request's client deadline.
+pub fn set_cut_armed(on: bool) {
+    CUT_ARMED.with(|c| c.store(on, Ordering::Relaxed));
+}
+
+/// True when the script call in progress may be cut and its request's client has stopped waiting: a native scan the call is
+/// running (a transcript window of many megabytes, which the interpreter cannot interrupt) stops early, and the call fails as
+/// a cut (its check defers to its Node hook).
+pub fn cut_due() -> bool {
+    CUT_ARMED.with(|c| c.load(Ordering::Relaxed)) && !in_time()
 }
 
 /// When the client of the request this thread serves stops waiting (after the reply slack); `None` outside a request.
@@ -166,6 +180,19 @@ mod tests {
         beat();
         assert!(slot.load(Ordering::Relaxed) > 5000, "the beat records the progress time: {}", slot.load(Ordering::Relaxed));
         BEAT.with(|b| *b.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_native_scan_is_cut_only_inside_an_armed_call_past_its_deadline() {
+        assert!(!cut_due(), "no request");
+        begin(Instant::now());
+        set_cut_armed(true);
+        assert!(!cut_due(), "the client still waits");
+        client_deadline(0);
+        assert!(cut_due(), "armed and past the deadline");
+        set_cut_armed(false); // commit() or the end of the call
+        assert!(!cut_due(), "a lifted call is never cut");
+        end();
     }
 
     #[test]

@@ -106,6 +106,7 @@ impl Pool {
             (now.as_nanos() as u64).saturating_add(left.as_nanos() as u64).max(1)
         });
         self.deadline.req.store(req, Ordering::Relaxed);
+        crate::deadline::set_cut_armed(req != 0);
     }
 
     /// Whether the call in progress has run past its request's client deadline.
@@ -118,6 +119,7 @@ impl Pool {
         self.deadline.cpu.store(0, Ordering::Relaxed);
         self.deadline.wall.store(0, Ordering::Relaxed);
         self.deadline.req.store(0, Ordering::Relaxed);
+        crate::deadline::set_cut_armed(false);
     }
 
     fn new() -> Option<Pool> {
