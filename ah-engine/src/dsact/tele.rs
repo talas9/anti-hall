@@ -35,6 +35,10 @@ pub struct Attempt<'a> {
     pub reason: Option<&'a str>,
     /// Wall time of the attempt.
     pub latency_ms: u64,
+    /// The idempotency key (what a mistake signal refers back to); empty when there is none.
+    pub key: &'a str,
+    /// The attempt already went through `Act::execute`, which emits its own shared `act` event: do not emit a second one.
+    pub via_execute: bool,
 }
 
 #[derive(Default)]
@@ -92,6 +96,9 @@ impl Tele {
                 "target": {"id": a.id, "doneHead": a.head}, "gates": a.gates, "outcome": a.outcome, "reason": a.reason, "latency_ms": a.latency_ms}),
         );
         let outs = defaults::list("devswarm_act.outcome_words");
+        if !a.via_execute {
+            crate::telemetry::emit::act(&self.rec(a.feature, a.action, a.outcome, a.latency_ms, a.id, a.reason.unwrap_or_default(), a.key));
+        }
         let mut g = self.lock();
         g.counters.push((
             "dsx_actions".into(),
@@ -103,12 +110,24 @@ impl Tele {
         g.totals[feature_ix(a.feature)][col] += 1;
     }
 
+    fn rec<'b>(&self, feature: &'b str, action: &'b str, outcome: &str, latency_ms: u64, target: &'b str, reason: &'b str, key: &'b str) -> crate::telemetry::emit::ActRec<'b> {
+        use crate::telemetry::event::Outcome;
+        let outs = defaults::list("devswarm_act.outcome_words");
+        let outcome = match outs.iter().position(|o| *o == outcome) {
+            Some(0) => Outcome::Allow,
+            Some(1) => Outcome::Block,
+            _ => Outcome::Error,
+        };
+        crate::telemetry::emit::ActRec { feature, action, outcome, latency_ms, target, inputs: "", reason, action_id: key }
+    }
+
     /// Record a mistake signal once per (signal, key). Returns whether it was new.
     pub fn mistake(&self, feature: &str, signal: &str, key: &str, id: &str, detail: Value, now_ms: i64) -> bool {
         if self.seen(signal, key) {
             return false;
         }
         append_line(&self.dir.join(defaults::text("devswarm_act.mistakes_file")), &Value::String(format!("{signal}|{key}")));
+        crate::telemetry::emit::mistake(&self.rec(feature, signal, defaults::list("devswarm_act.outcome_words")[0], 0, id, "", key));
         append_line(&self.file(), &json!({"ts": now_ms, "type": "mistake", "feature": feature, "signal": signal, "target": {"id": id, "key": key}, "detail": detail}));
         let mut g = self.lock();
         g.counters.push(("dsx_mistakes".into(), vec![("feature".into(), feature.into()), ("signal".into(), signal.into())], 1));

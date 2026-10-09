@@ -840,6 +840,10 @@ mod dsx {
         assert_eq!(m.counter("dsx_actions", &[("feature", "auto-archive"), ("outcome", "ok")]), 1);
         assert_eq!(m.counter("dsx_mistakes", &[("feature", "auto-archive"), ("signal", "unarchived")]), 1);
         assert_eq!(m.counter_total("dsx_mistakes"), 2);
+        // the shared schema: the archive went through execute (one act event), the mistakes are `mistake` events about its key
+        let q = crate::telemetry::emit::take_queued();
+        let kinds = |k: crate::telemetry::event::Kind| q.iter().filter(|e| e.kind == k && e.h.as_str() == "auto-archive").count();
+        assert_eq!((kinds(crate::telemetry::event::Kind::Act), kinds(crate::telemetry::event::Kind::Mistake)), (1, 2), "{q:?}");
         let rep = tele::report(&d.join("state"));
         assert_eq!((rep["auto-archive"]["ok"].as_u64(), rep["auto-archive"]["mistakes"].as_u64()), (Some(1), Some(2)));
         assert_eq!(rep["auto-archive"]["mistake_rate"], json!(2.0));

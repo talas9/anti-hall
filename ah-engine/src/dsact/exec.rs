@@ -300,22 +300,23 @@ impl<'a> Act<'a> {
         };
         let started = std::time::Instant::now();
         let head = first["facts"]["head"].clone();
-        let record = |outcome: &str, reason: Option<&str>, gates: Value| {
+        let key = first["key"].as_str().unwrap_or_default().to_string();
+        let record = |outcome: &str, reason: Option<&str>, gates: Value, via_execute: bool| {
             self.tele.attempt(
-                &Attempt { feature, action: "archive", trigger, id, head: &head, gates, outcome, reason, latency_ms: started.elapsed().as_millis() as u64 },
+                &Attempt { feature, action: "archive", trigger, id, head: &head, gates, outcome, reason, latency_ms: started.elapsed().as_millis() as u64, key: &key, via_execute },
                 self.live.now_ms(),
             );
         };
         let Some(_lock) = super::events::lock_id(id) else {
             let why = defaults::render("devswarm_act.msg_inflight", &[("id", &id)]);
-            record(outs[1], Some(&why), gate_values(&json!([])));
+            record(outs[1], Some(&why), gate_values(&json!([])), false);
             return One::Refused(why);
         };
         // facts are read again immediately before the action (the plan may be seconds old)
         let again = self.auto_candidate(id, s);
         let Some(d) = again.as_ref().filter(|d| d.get("eligible").and_then(Value::as_bool) == Some(true)) else {
             self.log(&json!({"ts": self.live.now_ms(), "kind": kind, "id": id, "outcome": Word::Stale.text()}));
-            record(outs[1], Some(defaults::text("devswarm_act.msg_stale")), gate_values(&again.as_ref().map(|a| a["blockers"].clone()).unwrap_or(json!([]))));
+            record(outs[1], Some(defaults::text("devswarm_act.msg_stale")), gate_values(&again.as_ref().map(|a| a["blockers"].clone()).unwrap_or(json!([]))), false);
             return One::Stale;
         };
         let live = self.live;
@@ -329,11 +330,11 @@ impl<'a> Act<'a> {
         self.node_records(&r, d, &head);
         let err = r.detail.get("error").and_then(Value::as_str).map(str::to_string);
         if r.word == Word::Done {
-            record(outs[0], None, gate_values(&json!([])));
+            record(outs[0], None, gate_values(&json!([])), true);
             One::Done(d.clone())
         } else {
             let outcome = if matches!(r.word, Word::Skipped | Word::Refused | Word::InDoubt | Word::Unavailable) { outs[1] } else { outs[2] };
-            record(outcome, err.as_deref().or(Some(r.word.text())), gate_values(&json!([])));
+            record(outcome, err.as_deref().or(Some(r.word.text())), gate_values(&json!([])), true);
             One::Failed(r)
         }
     }
