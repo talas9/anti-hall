@@ -281,6 +281,10 @@ value = "/proc/uptime"
 doc = "The Linux link that names this process's pid namespace."
 value = "/proc/self/ns/pid"
 
+[swarm_guard.lock_hb_infix]
+doc = "The text between a lock file's name and the temporary file a heartbeat (refresh) of that lock is written through (lock.js: `<lock>.hb.<pid>-<rand>`)."
+value = ".hb."
+
 [swarm_guard.vm_stat_poll_ms]
 doc = "How often the wait for the memory tool checks whether it has finished."
 value = 2

@@ -318,6 +318,65 @@ mod nodelock_tests {
     }
 
     #[test]
+    fn refresh_restamps_our_own_record_and_reports_loss_and_blips() {
+        use crate::checks::guardkit::nodelock::Refresh;
+        let d = dir("refresh");
+        let p = format!("{d}/x.lock");
+        let a = acquire(&p, quick()).unwrap();
+        let ts_of = |p: &str| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p).unwrap()).unwrap()["ts"].as_u64().unwrap();
+        let first = ts_of(&p);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert_eq!(a.refresh(), Refresh::Ok);
+        assert!(ts_of(&p) > first, "the time moved forward");
+        let rec: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(rec["token"].is_string() && rec["pid"] == std::process::id(), "the owner record is otherwise the same");
+        assert!(!std::fs::read_dir(&d).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains(".hb.")), "no temp file is left");
+        // torn record: not proof of loss
+        std::fs::write(&p, "{").unwrap();
+        assert_eq!(a.refresh(), Refresh::Error);
+        // another owner's record: definitive loss, and it is left alone
+        std::fs::write(&p, format!("{{\"pid\":1,\"host\":\"h\",\"ts\":{},\"token\":\"other\"}}", now())).unwrap();
+        assert_eq!(a.refresh(), Refresh::Lost);
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"other\""));
+        // file gone: definitive loss
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(a.refresh(), Refresh::Lost);
+    }
+
+    #[test]
+    fn the_ingest_rule_never_takes_a_live_holder_however_old_but_takes_a_dead_or_unknown_one() {
+        use crate::checks::guardkit::nodelock::acquire_respecting_live;
+        let d = dir("respect-live");
+        let p = format!("{d}/x.lock");
+        let host = {
+            let mut b = [0u8; 256];
+            // SAFETY: the buffer is valid for its length.
+            unsafe { libc::gethostname(b.as_mut_ptr().cast(), b.len()) };
+            String::from_utf8_lossy(&b[..b.iter().position(|x| *x == 0).unwrap_or(b.len())]).to_string()
+        };
+        // a live holder (this process) with a very old timestamp: the plain rule steals, the ingest rule respects
+        let old = |pid: u32, token: &str| format!("{{\"pid\":{pid},\"host\":\"{host}\",\"ts\":{},\"token\":\"{token}\"}}", now() - 3_600_000);
+        std::fs::write(&p, old(std::process::id(), "live-old")).unwrap();
+        assert!(acquire_respecting_live(&p, quick()).is_none(), "a live consumer is never taken over");
+        assert!(std::fs::read_to_string(&p).unwrap().contains("live-old"), "and its record is left alone");
+        // a holder whose pid is dead is taken at once, even when its record is fresh
+        let dead = {
+            let mut c = std::process::Command::new("true").spawn().unwrap();
+            c.wait().unwrap();
+            c.id()
+        };
+        std::fs::write(&p, format!("{{\"pid\":{dead},\"host\":\"{host}\",\"ts\":{},\"token\":\"dead-fresh\"}}", now())).unwrap();
+        let a = acquire_respecting_live(&p, quick()).expect("a dead holder is taken over at once");
+        assert!(a.release());
+        // an unknown holder (no pid) is taken once stale, not before
+        std::fs::write(&p, format!("{{\"ts\":{},\"token\":\"unknown-fresh\"}}", now())).unwrap();
+        assert!(acquire_respecting_live(&p, quick()).is_none());
+        std::fs::write(&p, format!("{{\"ts\":{},\"token\":\"unknown-old\"}}", now() - 3_600_000)).unwrap();
+        let b = acquire_respecting_live(&p, quick()).expect("a stale unknown holder is taken over");
+        assert!(b.release());
+    }
+
+    #[test]
     fn a_stale_lock_is_taken_over_and_a_fresh_one_is_not() {
         let d = dir("stale");
         let p = format!("{d}/x.lock");
