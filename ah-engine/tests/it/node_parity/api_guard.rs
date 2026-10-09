@@ -261,5 +261,7 @@ pub fn opts() -> Opts {
     let mut o = Opts::new("api-guard", "api-guard", "api-guard.js");
     o.events = vec!["PreToolUse"];
     o.tools = vec!["*"];
+    // the hook probes python3 and Node modules: their versions decide its answers
+    o.node_tools = vec![Tool::Node, Tool::Python3, Tool::Git];
     o
 }
