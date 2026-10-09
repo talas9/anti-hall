@@ -82,6 +82,7 @@ fn run_bounded(prog: &str, args: &[String], env: &HashMap<String, String>, timeo
     for (k, v) in env {
         cmd.env(k, v);
     }
+    crate::proc::apply_git_env(&mut cmd);
     let Ok(mut child) = cmd.spawn() else { return Run::Failed };
     let Some(mut out) = child.stdout.take() else { return Run::Failed };
     let (tx, rx) = std::sync::mpsc::channel();

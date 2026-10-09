@@ -47,6 +47,7 @@ fn git(args: &[&str], cwd: &str, env: &BTreeMap<String, String>) -> String {
     for (k, v) in env {
         c.env(k, v);
     }
+    crate::proc::apply_git_env(&mut c);
     match run_with_input(c, b"", Duration::from_millis(defaults::num("statusline.git_timeout_ms")), defaults::num("statusline.git_max_buffer") as usize) {
         Some(r) if r.ok => trim(&String::from_utf8_lossy(&r.stdout)).to_string(),
         _ => String::new(),

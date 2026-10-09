@@ -271,14 +271,10 @@ fn row_terminal(inv: &Inv, t: &Target, held: &std::collections::HashSet<String>)
 fn git_root(path: &str) -> Option<String> {
     use std::io::Read;
     let args: Vec<String> = defaults::list("devswarm_recon.git_root_args").iter().map(|a| a.replace("{path}", path)).collect();
-    let mut child = std::process::Command::new(defaults::text("devswarm_recon.git_bin"))
-        .args(&args)
-        .current_dir(path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut cmd = std::process::Command::new(defaults::text("devswarm_recon.git_bin"));
+    cmd.args(&args).current_dir(path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    crate::proc::apply_git_env(&mut cmd);
+    let mut child = cmd.spawn().ok()?;
     let end = std::time::Instant::now() + defaults::millis("devswarm_recon.git_timeout_ms");
     let status = loop {
         match child.try_wait() {

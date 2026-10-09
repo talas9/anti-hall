@@ -344,6 +344,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `proc.git_env` | `GIT_OPTIONAL_LOCKS=0` |  |  | Environment assignments (NAME=value) set on every git helper the engine runs. GIT_OPTIONAL_LOCKS=0 stops `git status`/`git diff` from taking .git/index.lock to refresh the index, so a helper killed at its timeout can never leave a stale lock that blocks the user's own git. |
+| `proc.git_programs` | `git` |  |  | Program names (the last path part) the process runner treats as git: they get the proc.git_env variables. |
 | `proc.read_grace_ms` | `500` |  | ms | After a helper process (git, ps, vm_stat, a scheduled job) exits, the least time its output may take to reach end of file (it may also use what is left of the command's own timeout, as Node's spawnSync does); a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer. |
 
 ### engine.toml / request_env

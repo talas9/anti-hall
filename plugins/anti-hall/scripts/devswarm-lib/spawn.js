@@ -1,4 +1,5 @@
 'use strict';
+const { readOnlyGitEnv } = require('../../hooks/lib/git-env.js');
 // anti-hall :: devswarm CLI — SPAWN module (scripts/devswarm-lib/spawn.js).
 // Part of the devswarm.js split: a PURE MOVE out of scripts/devswarm.js (the CLI
 // dispatcher). No behaviour change. Dependencies are explicit requires of core.js and
@@ -671,7 +672,7 @@ function spawnSourceFreshness(rest, ctx) {
   }
   let r;
   if (checkedOutAt) {
-    const st = spawnSync('git', ['-C', checkedOutAt, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8', timeout: gitTruth.GIT_TIMEOUT_MS });
+    const st = spawnSync('git', ['-C', checkedOutAt, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8', timeout: gitTruth.GIT_TIMEOUT_MS, env: readOnlyGitEnv() });
     const dirty = out(st);
     if (dirty === null || dirty !== '') {
       const modDir = /[\\/]\.git[\\/]modules[\\/](.+)$/.exec(checkedOutAt);

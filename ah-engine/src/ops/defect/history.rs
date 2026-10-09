@@ -108,7 +108,10 @@ pub struct GitFail(pub String);
 fn git(repo: &str, args: &[String]) -> Result<String, GitFail> {
     let mut full = vec![defaults::text("defect.git_dir_flag").to_string(), repo.to_string()];
     full.extend(args.iter().cloned());
-    let out = Command::new(defaults::text("defect.git_bin")).args(&full).stdin(Stdio::null()).output();
+    let mut cmd = Command::new(defaults::text("defect.git_bin"));
+    cmd.args(&full).stdin(Stdio::null());
+    crate::proc::apply_git_env(&mut cmd);
+    let out = cmd.output();
     match out {
         Err(_) => Err(GitFail(defaults::render("defect.git_spawn_failed", &[("bin", &defaults::text("defect.git_bin"))]))),
         Ok(o) if !o.status.success() => {

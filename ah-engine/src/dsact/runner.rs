@@ -119,6 +119,7 @@ impl Runner for System {
         if let Some(c) = &spec.cwd {
             cmd.current_dir(c);
         }
+        crate::proc::apply_git_env(&mut cmd);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
