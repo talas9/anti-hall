@@ -3,7 +3,7 @@ name: ah-engine
 # Self-contained CI for the Rust engine in ah-engine/ (D69): fmt, clippy, tests and docs on the supported unix targets.
 on:
   push:
-    branches: [engine-proto]
+    branches: [engine-proto, dev, main]
     paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
   pull_request:
     paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
