@@ -82,6 +82,13 @@ fn jobs(specs: Vec<(String, String, String, i64)>) -> Quota {
         for (repo, file, text, age) in &specs {
             lab.write(r, &format!("home/.claude/plugins/data/codex-openai-codex/state/{repo}/jobs/{file}"), text, Some(*age));
         }
+        // The check keeps the newest repository directories by their own modification time. A directory made during the run
+        // has the file system's clock: on ext4 that is a 4 ms tick, so 25 directories made in a row tie or split by chance, and
+        // the two runs (Node, then the engine) kept different ones (CI run 37894970868). Give each its newest log's time.
+        for (repo, _, _, _) in &specs {
+            let newest = specs.iter().filter(|(r2, ..)| r2 == repo).map(|(.., age)| *age).min().unwrap_or(0);
+            set_mtime(&r.join(format!("home/.claude/plugins/data/codex-openai-codex/state/{repo}")), (lab.base - newest) as f64);
+        }
     })
 }
 
