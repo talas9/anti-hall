@@ -192,10 +192,9 @@ pub fn plan(home: &Path, repo_key: &str) -> R<OrphanPlan> {
     }
     let (mut detail, mut units, mut adopts) = (Vec::new(), Vec::new(), Vec::new());
     let (mut adopted, mut unhealable) = (0, 0);
-    let words = |k: &str| defaults::text(&format!("devswarm_recon.{k}"));
     for (id, desc, archived) in with {
         if archived {
-            return defer(words("why_orphan_archived"));
+            return defer(defaults::text("devswarm_recon.why_orphan_archived"));
         }
         let wt = field(&desc, "worktreePath")?;
         let wt_text = wt.clone().filter(|w| !w.is_empty());
@@ -203,7 +202,7 @@ pub fn plan(home: &Path, repo_key: &str) -> R<OrphanPlan> {
         let inbox = field(&desc, "inboxPath")?;
         let cursor = field(&desc, "cursorPath")?;
         if !not_archived(home, &id, wt_text.as_deref(), &index)? {
-            return defer(words("why_orphan_archived"));
+            return defer(defaults::text("devswarm_recon.why_orphan_archived"));
         }
         let fresh = match &wt_text {
             Some(w) => repo_key_for_worktree(w)?,
@@ -211,7 +210,7 @@ pub fn plan(home: &Path, repo_key: &str) -> R<OrphanPlan> {
         };
         if let Some(f) = fresh.filter(|f| f != repo_key) {
             unhealable += 1;
-            detail.push(json!({"id": id, "action": words("action_unhealable"), "reason": words("reason_wrong_store"), "freshRepoKey": f}));
+            detail.push(json!({"id": id, "action": defaults::text("devswarm_recon.action_unhealable"), "reason": defaults::text("devswarm_recon.reason_wrong_store"), "freshRepoKey": f}));
             continue;
         }
         let mesh = match &wt_text {
@@ -219,7 +218,7 @@ pub fn plan(home: &Path, repo_key: &str) -> R<OrphanPlan> {
             None => None,
         };
         if mesh.as_ref().is_some_and(|m| family.contains_key(m)) {
-            return defer(words("why_orphan_family"));
+            return defer(defaults::text("devswarm_recon.why_orphan_family"));
         }
         if let Some(m) = mesh {
             *family.entry(m).or_default() += 1;
@@ -228,11 +227,11 @@ pub fn plan(home: &Path, repo_key: &str) -> R<OrphanPlan> {
         units.push(Unit { label: format!("orphan:{id}"), lock: Some(id.clone()), ops: vec![Op::Upsert { store: repo_key.to_string(), row: Box::new(row), pre: None::<Box<RegRow>> }] });
         adopts.push((id.clone(), detail.len()));
         adopted += 1;
-        detail.push(json!({"id": id, "action": words("action_adopted")}));
+        detail.push(json!({"id": id, "action": defaults::text("devswarm_recon.action_adopted")}));
     }
     for id in without {
         unhealable += 1;
-        detail.push(json!({"id": id, "action": words("action_unhealable"), "reason": words("reason_no_descriptor")}));
+        detail.push(json!({"id": id, "action": defaults::text("devswarm_recon.action_unhealable"), "reason": defaults::text("devswarm_recon.reason_no_descriptor")}));
     }
     let mut scope = super::side::scope_for(&[]);
     scope.stores.push(repo_key.to_string());

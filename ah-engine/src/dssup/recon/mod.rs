@@ -35,6 +35,7 @@ pub mod norm;
 pub mod orphans;
 pub mod pull;
 pub mod side;
+pub mod stage;
 pub mod sweep;
 pub mod view;
 

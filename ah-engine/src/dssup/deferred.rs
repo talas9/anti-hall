@@ -60,42 +60,13 @@ pub fn has_deferred_work(home: &Path, stage: &str) -> bool {
     any_bucket || ids
 }
 
-/// The hashes a stage's marker in the update sweep state still has to visit (the entry's pending list).
-fn pending_hashes(home: &Path, stage: &str) -> Vec<String> {
-    let Some(key) = defaults::raw("devswarm_sup.ds_stage_keys").get(stage).and_then(crate::defaults::V::as_str) else { return Vec::new() };
-    let state = read(&home.join(defaults::text("devswarm_sup.ds_update_state")));
-    match state.as_ref().and_then(|s| s.get(key)).and_then(|e| e.get(defaults::text("devswarm_sup.ds_pending_hashes"))) {
-        Some(OVal::Arr(a)) => a.iter().filter_map(|x| if let OVal::Str(s) = x { Some(s.clone()) } else { None }).collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// `devswarm_sup.sweep_tail_mode` is `engine`.
-fn tail_by_engine(ctx: &Ctx) -> bool {
-    super::setting(ctx.st, "devswarm_sup.sweep_tail_mode").as_str() == Some(defaults::text("devswarm_sup.sweep_tail_engine"))
-}
-
-/// The ported part of a stage, run before Node's stage function when the mode says so: the orphan-partition heal, store by store,
-/// each witnessed against Node's own function and applied only when both agree. A store the engine cannot decide in full, or a
-/// witness that disagrees, writes nothing and is left to Node's stage, which runs right after exactly as it would have. The
-/// stage's marker (pending list, completion stamp) stays Node's.
-fn engine_part(ctx: &Ctx, runner: &dyn Runner, stage: &str) -> Value {
-    if stage != defaults::text("devswarm_recon.stage_heal_orphans") {
-        return Value::Null;
-    }
-    let mut stores = Vec::new();
-    for key in pending_hashes(ctx.home, stage).into_iter().take(defaults::num("devswarm_recon.tail_max_stores") as usize) {
-        use super::recon::orphans;
-        stores.push(match orphans::run(ctx, runner, &key, &super::recon::Hooks::none()) {
-            Ok(r) => json!({"repoKey": key, "agreed": r.verdict == super::recon::gate::Verdict::Agreed, "adopted": r.result["adopted"], "unhealable": r.result["unhealable"], "handedBack": r.deferred.len()}),
-            Err(d) => json!({"repoKey": key, "handedBack": d.0}),
-        });
-    }
-    Value::Array(stores)
-}
-
 /// The duty's record: Node's `{ stage, ran, reason | budgetMs, result }`.
 pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
+    duty_with(ctx, runner, &super::recon::Hooks::none())
+}
+
+/// [`duty`] with kill points for the crash tests.
+pub fn duty_with(ctx: &Ctx, runner: &dyn Runner, hooks: &super::recon::Hooks) -> Value {
     let d = defaults::raw("devswarm_sup.duty.deferred");
     let stages = defaults::list("devswarm_sup.ds_stages");
     let fallback = |why: &str| {
@@ -119,14 +90,14 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
         return json!({"duty": "deferred", "outcome": "ran", "detail": {"stage": stage, "ran": false, "reason": defaults::text("devswarm_sup.ds_reason_no_marker")}});
     }
     let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-    let engine = if tail_by_engine(ctx) { engine_part(ctx, runner, stage) } else { Value::Null };
+    // With `devswarm_sup.sweep_tail_mode = engine` the engine walks the stage's pending items itself (see `recon::stage`); a stage it
+    // does not take (an unusable marker, an unknown stage) falls through to Node's whole `runDeferredStage` below.
+    if let Some(out) = super::recon::stage::run(ctx, runner, stage, hooks) {
+        return json!({"duty": "deferred", "outcome": "ran", "detail": {"stage": stage, "ran": true, "budgetMs": out.budget_ms, "result": out.result}, "engine": {"items": out.items}});
+    }
     let r = node(runner, ctx, d.str_field("stage_snippet"), &[stage], timeout);
     if r.ok {
-        let mut rec = json!({"duty": "deferred", "outcome": "ran", "detail": super::tick::parse(&r.stdout)});
-        if !engine.is_null() {
-            rec["engine"] = engine;
-        }
-        rec
+        json!({"duty": "deferred", "outcome": "ran", "detail": super::tick::parse(&r.stdout)})
     } else {
         json!({"duty": "deferred", "outcome": "failed", "error": r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr)), "status": r.status, "timedOut": r.timed_out})
     }

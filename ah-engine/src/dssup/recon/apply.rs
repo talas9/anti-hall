@@ -115,7 +115,7 @@ fn remove_guarded(env: &Env, store: &str, guard: &RegRow) -> Result<(), String> 
     let st = MeshStore::open(&super::view::store_db(env.home, store)).map_err(|e| e.to_string())?;
     let c = st.reader().conn();
     let g = &guard.row;
-    let n = crate::meshw::store::retry_busy(|| c.prepare_cached(crate::sql::RECON_REGISTRY_REMOVE_IF)?.execute(rusqlite::params![g.id, g.session_id, guard.updated_at, guard.write_seq]))
+    let n = crate::meshw::store::retry_busy(|| c.prepare_cached(crate::sql::RECON_REGISTRY_DELETE_IF)?.execute(rusqlite::params![g.id, g.session_id, guard.updated_at, guard.write_seq]))
         .map_err(|e| e.to_string())?;
     if n == 1 { Ok(()) } else { Err(format!("drift:{store}:{}", g.id)) }
 }

@@ -112,6 +112,10 @@ value = { type = "enum", section = "devswarm", key = "housekeepingSweep", env = 
 doc = "Least time between two housekeeping sweeps. Node: devswarm.housekeepingSweepSec (floor 300)."
 value = { type = "number", section = "devswarm", key = "housekeepingSweepSec", env = "ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC", min = 300, max = 100000000, default = 3600 }
 
+[devswarm_sup.set_sweep_budget_ms]
+doc = "Time budget for one deferred stage of the sweep tail (one stage per tick). Node: devswarm.supervisorSweepBudgetMs."
+value = { type = "number", section = "devswarm", key = "supervisorSweepBudgetMs", env = "ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS", min = 0, max = 86400000, default = 20000 }
+
 [devswarm_sup.set_max_recoveries]
 doc = "Most kill-and-resume recoveries of one workspace. Node: devswarm.maxRecoveries."
 value = { type = "number", section = "devswarm", key = "maxRecoveries", env = "ANTIHALL_DEVSWARM_MAX_RECOVERIES", min = 1, max = 20, default = 3 }
@@ -1469,6 +1473,3 @@ value = "no-marker"
 
 # ---- who runs the sweep tail (reconcile port) ----------------------------------------------------------------------------------
 
-[devswarm_sup.sweep_tail_engine]
-doc = "The word of devswarm_sup.sweep_tail_mode that lets the engine take the ported part of the sweep tail."
-value = "engine"

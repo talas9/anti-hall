@@ -285,12 +285,6 @@ value = "orphan-family"
 doc = "The name of the deferred post-update stage the orphan heal belongs to."
 value = "heal-orphan-partitions"
 
-[devswarm_recon.tail_max_stores]
-doc = "Most stores the engine takes through its own witnessed orphan heal in one supervisor tick (each costs one Node witness run)."
-value = 3
-min = 1
-max = 1000
-
 # ---- S6: the mesh fold ---------------------------------------------------------------------------------------------------------
 
 [devswarm_recon.skip_prefix]
@@ -737,3 +731,228 @@ value = "pull-handback"
 [devswarm_recon.job_project_handback]
 doc = "The label of the witness-log line for a project whose reconcile the engine left to Node (the line names the project and why)."
 value = "reconcile-handback"
+
+# ---- S8: the deferred stage wrappers ------------------------------------------------------------------------------------------
+
+[devswarm_recon.stage_fold_all]
+doc = "The name of the deferred post-update stage that folds duplicate mesh rows in every store."
+value = "fold-all-stores"
+
+[devswarm_recon.stage_archived]
+doc = "The name of the deferred post-update stage that folds archived registry rows and twin descriptors."
+value = "fold-archived-rows"
+
+[devswarm_recon.by_engine]
+doc = "The word an item record carries when the engine did the item itself (witnessed against Node)."
+value = "engine"
+
+[devswarm_recon.by_node]
+doc = "The word an item record carries when the item was handed to Node's own function."
+value = "node"
+
+[devswarm_recon.why_witness_mismatch]
+doc = "Why an item went to Node: the witness did not agree with the engine."
+value = "witness-mismatch"
+
+[devswarm_recon.why_units_handed_back]
+doc = "Why an item went to Node: part of its plan was handed back at apply time."
+value = "units-handed-back"
+
+[devswarm_recon.stage_yield_ms]
+doc = "Pause between two items of a stage, so a long stage does not hog the machine (Node: DEFAULT_SWEEP_YIELD_MS)."
+value = 30
+min = 0
+max = 10000
+unit = "ms"
+
+[devswarm_recon.unhealable_sample_cap]
+doc = "Most unhealable orphans a stage record names (Node: UNHEALABLE_SAMPLE_CAP)."
+value = 20
+min = 0
+max = 10000
+
+[devswarm_recon.terminal_left_reasons]
+doc = "The reasons a left row can have that no later run could change: they do not keep a pass from being complete (migrations.js TERMINAL_LEFT_REASONS)."
+value = ["live-descriptor", "archived-tombstone-differs", "mesh-anchor-attended"]
+
+[devswarm_recon.reason_unknown]
+doc = "The reason given to a left row that has none."
+value = "unknown"
+
+[devswarm_recon.inc_no_result]
+doc = "Why a pass is not complete: it left no result."
+value = "no result"
+
+[devswarm_recon.inc_not_ok]
+doc = "Why a pass is not complete: it reported ok false."
+value = "pass did not complete"
+
+[devswarm_recon.inc_not_ok_error]
+doc = "Why a pass is not complete: it reported ok false with an error. Placeholder {error}."
+value = "pass did not complete ({error})"
+
+[devswarm_recon.inc_errors]
+doc = "Why a pass is not complete: errors. Placeholder {n}."
+value = "{n} error(s)"
+
+[devswarm_recon.inc_budget]
+doc = "Why a pass is not complete: the budget was hit."
+value = "budget hit — resumes next run"
+
+[devswarm_recon.inc_budget_skipped]
+doc = "Why a pass is not complete: the budget was hit with items deferred. Placeholder {n}."
+value = "budget hit ({n} deferred) — resumes next run"
+
+[devswarm_recon.inc_pending]
+doc = "Why a pass is not complete: rows pending. Placeholder {n}."
+value = "{n} pending row(s)"
+
+[devswarm_recon.inc_forward]
+doc = "Why a pass is not complete: forward failures. Placeholder {n}."
+value = "{n} forward failure(s)"
+
+[devswarm_recon.inc_retryable]
+doc = "Why a pass is not complete: retryable left rows. Placeholder {list}."
+value = "retryable: {list}"
+
+[devswarm_recon.inc_retry_item]
+doc = "One retryable reason with its count. Placeholders {reason}, {n}."
+value = "{reason}×{n}"
+
+[devswarm_recon.d_forwarded]
+doc = "Detail suffix: messages forwarded. Placeholders in braces."
+value = " (forwarded {n} message(s))"
+
+[devswarm_recon.d_errors]
+doc = "Detail suffix: store errors. Placeholders in braces."
+value = " ({n} store error(s), fail-open)"
+
+[devswarm_recon.d_budget]
+doc = "Detail suffix: the budget was hit. Placeholders in braces."
+value = " (budget hit — {n} store(s) pending next run)"
+
+[devswarm_recon.d_fold]
+doc = "Detail of the mesh fold stage. Placeholders in braces."
+value = "fold-all-stores: folded {retired} duplicate mesh row(s) into their canonical survivor across {stores} store(s)"
+
+[devswarm_recon.d_fold_pending]
+doc = "Detail suffix of the mesh fold stage. Placeholders in braces."
+value = " ({n} row(s) pending — lock busy or survivor gone, retried next run)"
+
+[devswarm_recon.d_fold_partial]
+doc = "Detail suffix of the mesh fold stage. Placeholders in braces."
+value = " ({n} mesh group(s) deferred by a store deadline — not stamped, retries next run)"
+
+[devswarm_recon.d_fold_fwdfail]
+doc = "Detail suffix of the mesh fold stage. Placeholders in braces."
+value = " ({n} forward failure(s) — not stamped, retries next run)"
+
+[devswarm_recon.d_orph]
+doc = "Detail of the orphan heal stage. Placeholders in braces."
+value = "heal-orphan-partitions: adopted {adopted} orphan partition(s) across {stores} store(s)"
+
+[devswarm_recon.d_orph_unheal]
+doc = "Detail suffix of the orphan heal stage. Placeholders in braces."
+value = " ({n} unhealable — no descriptor/family{sample})"
+
+[devswarm_recon.d_orph_sample]
+doc = "Detail: the sample of unhealable orphans. Placeholders in braces."
+value = "; e.g. {list}"
+
+[devswarm_recon.d_orph_more]
+doc = "Detail: the sample is not the whole list."
+value = ", …"
+
+[devswarm_recon.d_orph_skipped]
+doc = "Detail suffix of the orphan heal stage. Placeholders in braces."
+value = " ({n} skipped — lock-busy or budget-deferred, retried next pass)"
+
+[devswarm_recon.d_orph_pending]
+doc = "Detail suffix of the orphan heal stage. Placeholders in braces."
+value = " ({n} pending — lock busy or survivor gone, not stamped done)"
+
+[devswarm_recon.d_heal_none]
+doc = "Detail of the registry heal stage when nothing needed healing. Placeholders in braces."
+value = "checked {checked} registry row(s) across {stores} store(s) — nothing mis-keyed/stale"
+
+[devswarm_recon.d_heal_some]
+doc = "Detail of the registry heal stage when it healed. Placeholders in braces."
+value = "healed {healed} + rehomed {rehomed} of {checked} registry row(s) across {stores} store(s)"
+
+[devswarm_recon.d_arch]
+doc = "Detail of the archived rows stage. Placeholders in braces."
+value = "fold-archived-rows: retired {retired} registry row(s) of archived workspace(s)"
+
+[devswarm_recon.d_arch_fam]
+doc = "Detail of the archived rows stage. Placeholders in braces."
+value = " + {n} orphaned twin descriptor(s)"
+
+[devswarm_recon.d_arch_left]
+doc = "Detail of the archived rows stage. Placeholders in braces."
+value = " — {n} row(s) left in place (safety-gated)"
+
+[devswarm_recon.d_arch_famleft]
+doc = "Detail of the archived rows stage. Placeholders in braces."
+value = " — {n} twin descriptor(s) left in place (safety-gated)"
+
+[devswarm_recon.d_arch_errors]
+doc = "Detail of the archived rows stage. Placeholders in braces."
+value = " ({n} error(s), fail-open)"
+
+[devswarm_recon.d_arch_famerrors]
+doc = "Detail of the archived rows stage. Placeholders in braces."
+value = " ({n} twin-descriptor error(s), fail-open)"
+
+[devswarm_recon.d_arch_famnotok]
+doc = "Detail of the archived rows stage."
+value = " (twin-descriptor pass did NOT complete cleanly)"
+
+[devswarm_recon.d_arch_budget]
+doc = "Detail of the archived rows stage. Placeholders in braces."
+value = " (budget hit — {n} pending next run)"
+
+[devswarm_recon.d_arch_notstamped]
+doc = "Detail of the archived rows stage. Placeholders in braces."
+value = " — not stamped, retries next run: {list}"
+
+[devswarm_recon.label_rows]
+doc = "The label of the registry-row half in a not-stamped note."
+value = "rows"
+
+[devswarm_recon.label_twins]
+doc = "The label of the twin-descriptor half in a not-stamped note."
+value = "twin descriptors"
+
+[devswarm_recon.sep_not_stamped]
+doc = "Separator between not-stamped notes."
+value = " | "
+
+[devswarm_recon.sep_reasons]
+doc = "Separator between the reasons of one not-stamped note."
+value = "; "
+
+[devswarm_recon.sep_sample]
+doc = "Separator between the sampled unhealable orphans."
+value = ", "
+
+[devswarm_recon.sep_retry]
+doc = "Separator between retryable reasons."
+value = ", "
+
+[devswarm_recon.fmt_not_stamped]
+doc = "One not-stamped note. Placeholders in braces."
+value = "{label}: {why}"
+
+[devswarm_recon.node_item_snippet]
+doc = "What Node runs for ONE item of a deferred stage the engine handed back (a store key, or rows / family for the archived stage): the very function the stage calls for that item, with the supervisor gate open. Arguments: root, home, stage, item, absolute deadline in ms. It prints the function's result as JSON."
+value = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";process.env.ANTIHALL_DEVSWARM_SUPERVISOR="on";const D=require(process.argv[1]+"/scripts/devswarm.js");const home=process.argv[2],stage=process.argv[3],item=process.argv[4],deadline=Number(process.argv[5]),env=process.env,cwd=process.cwd();let r;try{if(stage==="fold-all-stores")r=D.foldMeshDuplicates(home,{cwd,env,repoKey:item,deadline});else if(stage==="heal-orphan-partitions")r=D.healOrphanPartitions(home,{cwd,env,repoKey:item,deadline});else if(stage==="heal-registry-rows")r=D.healRegistry(home,item,{cwd,env});else if(stage==="fold-archived-rows")r=item==="family"?D.foldArchivedFamilyDescriptors(home,{cwd,env,deadline}):D.foldArchivedRegistryRows(home,{cwd,env,deadline});else throw new Error("unknown stage")}catch(e){r={ok:false,error:String(e&&e.message||e),threw:true}}console.log(JSON.stringify(r===undefined?null:r))'
+
+[devswarm_recon.d_raised]
+doc = "The detail of a stage whose own function raised. Placeholders: {stage}, {error}."
+value = "{stage} raised: {error}"
+
+[devswarm_recon.sample_names]
+doc = "How many of the sampled unhealable orphans a stage detail names (Node: slice(0, 5))."
+value = 5
+min = 0
+max = 1000

@@ -902,9 +902,10 @@ fn s5_the_sweep_tail_mode_selects_the_engine_part_of_the_deferred_stage() {
     let _ = k;
     let (eng_home, k) = build("s5mode-engine", Some("engine"));
     let rec = ah_engine::dssup::deferred::duty(&eng_home.ctx(), &System::configured());
-    let stores = rec["engine"].as_array().unwrap_or_else(|| panic!("no engine part: {rec}"));
-    assert_eq!(stores.len(), 1, "{rec}");
-    assert_eq!((stores[0]["repoKey"].as_str(), stores[0]["agreed"].as_bool(), stores[0]["adopted"].as_u64()), (Some(k.as_str()), Some(true), Some(1)), "{rec}");
+    let items = rec["engine"]["items"].as_array().unwrap_or_else(|| panic!("no engine part: {rec}"));
+    assert_eq!(items.len(), 1, "{rec}");
+    assert_eq!((items[0]["item"].as_str(), items[0]["by"].as_str()), (Some(k.as_str()), Some("engine")), "{rec}");
+    assert_eq!(rec["detail"]["result"]["adopted"].as_u64(), Some(1), "{rec}");
     let rows = ah_engine::dssup::recon::view::registry(&eng_home.home, &k).unwrap();
     assert_eq!(rows.iter().map(|r| r.row.id.as_str()).collect::<Vec<_>>(), ["o1"], "the engine adopted the orphan");
 }
