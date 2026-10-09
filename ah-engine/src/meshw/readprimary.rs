@@ -281,6 +281,44 @@ fn receipt_record(rid: &str, id: &str, reader: Option<&str>, now: i64, ops: Vec<
     r.done()
 }
 
+/// Whether `main()` renders the result as text: `--format=text` or `--format text` (the first `--format` word), and no `--json`.
+fn text_requested(raw: &[String]) -> bool {
+    let flag = defaults::text("mesh_write.flag_format");
+    let dashed = format!("--{flag}");
+    let text = defaults::text("mesh_write.format_text");
+    let is_text = raw.iter().any(|w| *w == format!("{dashed}={text}"))
+        || raw.iter().position(|w| *w == dashed).is_some_and(|i| raw.get(i + 1).map(String::as_str) == Some(text));
+    is_text && !raw.iter().any(|w| *w == format!("--{}", defaults::text("mesh_write.flag_json")))
+}
+
+/// `--since` / `--tail` on `inbox read-primary`: Node refuses them before it opens a store (`inboxWindowRejection`), prints
+/// the refusal (exit 2) and logs it to the central log. `None` when neither flag carries a value.
+fn window_refusal(inv: &Inv, a: &Args, id: &str) -> R<Option<Answer>> {
+    let used: Vec<&str> = defaults::list("devswarm_cli.window_flags").into_iter().filter(|f| a.one(f).is_some()).collect();
+    if used.is_empty() {
+        return Ok(None);
+    }
+    crate::meshw::clog::ready(inv)?;
+    let repo_key = ident::resolve_context(&inv.cwd, true)?.repo_key;
+    let verb = defaults::text("devswarm_cli.window_verb_read_primary");
+    let use_flags = used.iter().map(|f| fill_once(defaults::text("devswarm_cli.window_use_flag"), &[("flag", (*f).to_string())])).collect::<Vec<_>>().join(" ");
+    let msg = fill_once(
+        defaults::text("devswarm_cli.msg_window_refused"),
+        &[("flags", used.join("/--")), ("verb", verb.to_string()), ("use", use_flags)],
+    );
+    let reason = defaults::text("devswarm_cli.window_reason");
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false))
+        .put("error", s(&msg))
+        .put("reason", s(reason))
+        .put("flags", OVal::Arr(used.iter().map(|f| s(f)).collect()))
+        .put("verb", s(verb));
+    let stdout = if text_requested(&a.raw) { format!("{}{msg}", defaults::text("devswarm_cli.window_text_prefix")) } else { o.done().stringify() };
+    crate::meshw::clog::refusal(inv, defaults::text("devswarm_cli.window_op_read_primary"), repo_key.as_deref(), Some(id), &msg, Some(reason));
+    crate::meshw::mark_committed();
+    Ok(Some(Answer { code: 2, stdout: format!("{stdout}\n"), effect: Effect::None }))
+}
+
 /// Run `inbox read-primary <id>`.
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if a.is_help() {
@@ -290,6 +328,9 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         return defer("argv-shape");
     }
     let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else { return defer("bad-id") };
+    if let Some(refused) = window_refusal(inv, a, id)? {
+        return Ok(refused);
+    }
     let allowed = defaults::list("mesh_write.read_primary_flags");
     if a.flags.keys().any(|k| !allowed.contains(&k.as_str())) {
         return defer("flags");

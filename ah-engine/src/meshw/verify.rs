@@ -159,6 +159,14 @@ fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
     if kind == Kind::ReadPrimary {
         snapshot_descriptor_files(&inv.home, &scratch.join(defaults::text("mesh_write.shadow_home")), &sroot)?;
     }
+    // the central log: the witness appends to a copy, and what it appended is compared with what the engine appended
+    for rel in defaults::list("devswarm_cli.log_witness_files") {
+        let (src, dst) = (inv.home.join(rel), scratch.join(defaults::text("mesh_write.shadow_home")).join(rel));
+        if src.is_file() {
+            std::fs::create_dir_all(dst.parent()?).ok()?;
+            std::fs::copy(&src, &dst).ok()?;
+        }
+    }
     // the sender-alias map the summary refresh attributes rows with
     let alias = defaults::text("mesh_write.alias_file");
     if root.join(alias).is_file() {
@@ -184,8 +192,8 @@ fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
             std::fs::copy(&src, &dst).ok()?;
         }
     }
-    if with_store {
-        let real = super::real_store(inv).ok()?;
+    // a caller outside any project has no store to copy: the verb answers without one (a refusal), and Node meets none either
+    if with_store && let Some(real) = super::real_store(inv).ok().filter(|r| r.is_file()) {
         let key = real.parent()?.file_name()?.to_string_lossy().to_string();
         let dir = sroot.join(defaults::text("mesh_write.dir_store")).join(&key);
         std::fs::create_dir_all(&dir).ok()?;
@@ -338,7 +346,7 @@ fn read_primary_view(node_home: &Path, real_home: &Path, manifest: &[(String, St
     let (node_home_text, real_home_text) = (node_home.to_string_lossy().into_owned(), real_home.to_string_lossy().into_owned());
     let mut files = Vec::new();
     let mut out = String::from_utf8_lossy(stdout).replace(&node_home_text, &real_home_text);
-    for (rel, _) in manifest {
+    for (rel, _) in manifest.iter().filter(|(r, _)| !crate::meshw::clog::is_log_rel(r)) {
         let rel_path = Path::new(rel);
         let (Some(dir), Some(engine_rid)) = (rel_path.parent(), rel_path.file_stem().and_then(|x| x.to_str())) else { continue };
         let real_names: std::collections::HashSet<String> =
@@ -447,8 +455,11 @@ pub fn run_verifier(args: &[String]) -> i32 {
         .arg(now)
         .args(argv)
         .env(defaults::text("mesh_write.env_home"), &home)
+        // Node's central log goes to the scratch home whatever the caller's environment says
+        .env(defaults::text("devswarm_cli.env_log_dir"), crate::meshw::clog::witness_dir(&home))
         .stdin(Stdio::null())
         .stderr(Stdio::null());
+    let log_before = crate::meshw::clog::size_of(&home);
     let out = bounded_output(&mut node);
     match out {
         Ok(o) if o.status.success() => {
@@ -477,6 +488,13 @@ pub fn run_verifier(args: &[String]) -> i32 {
             let mut detail = serde_json::Map::new();
             for (rel, file) in &manifest {
                 let want = read(&scratch.join(file));
+                if crate::meshw::clog::is_log_rel(rel) {
+                    // the central log: what Node appended, with the timestamp and the writer's pid blanked on both sides
+                    if !crate::meshw::clog::delta_equal(&read(&home.join(rel)), log_before, &want) {
+                        diff.push(rel.clone());
+                    }
+                    continue;
+                }
                 let node_has = if kind == Kind::ReadPrimary {
                     node_files.iter().find(|(r, _)| r == rel).map(|(_, b)| b.clone()).unwrap_or_default()
                 } else {

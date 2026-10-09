@@ -877,8 +877,11 @@ pub fn run_witness(args: &[String]) -> i32 {
         .args(argv)
         .env(defaults::text("mesh_write.env_home"), &home)
         .env(defaults::text("mesh_write.env_app_db"), real_app_db.as_str())
+        // Node's central log goes to the scratch home whatever the caller's environment says
+        .env(defaults::text("devswarm_cli.env_log_dir"), crate::meshw::clog::witness_dir(&home))
         .stdin(Stdio::null())
         .stderr(Stdio::null());
+    let log_before = crate::meshw::clog::size_of(&home);
     match crate::meshw::verify::bounded_output(&mut node) {
         Ok(o) => {
             let read = |p: &Path| std::fs::read(p).unwrap_or_default();
@@ -894,7 +897,13 @@ pub fn run_witness(args: &[String]) -> i32 {
             let manifest: Vec<(String, String)> = serde_json::from_slice(&read(&scratch.join("expect-manifest"))).unwrap_or_default();
             let mut diff: Vec<String> = Vec::new();
             for (rel, file) in &manifest {
-                if read(&scratch.join(file)) != read(&home.join(rel)) {
+                // the central log: what Node appended, with the timestamp and the writer's pid blanked on both sides
+                let same = if crate::meshw::clog::is_log_rel(rel) {
+                    crate::meshw::clog::delta_equal(&read(&home.join(rel)), log_before, &read(&scratch.join(file)))
+                } else {
+                    read(&scratch.join(file)) == read(&home.join(rel))
+                };
+                if !same {
                     diff.push(rel.clone());
                 }
             }

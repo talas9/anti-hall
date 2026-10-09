@@ -251,7 +251,6 @@ max = 1000
 doc = "The error for a notice with neither --post nor --list."
 value = "usage: notice --post \"<text>\" [--ttl 7d] | notice --list"
 
-
 # ---- plan / scope ---------------------------------------------------------------------------------------------------------
 
 [devswarm_cli.verb_plan]
@@ -1386,3 +1385,131 @@ doc = "How many of the workspaces that used the most tokens the report names."
 value = 5
 min = 1
 max = 50
+
+# ---- the central DevSwarm log (companion/lib/anti-hall-log.js; lane l8d) --------------------------------------------------
+
+[devswarm_cli.log_env_repo_key]
+doc = "The environment variable that carries the repoKey of a log event whose caller names none."
+value = "DEVSWARM_REPO_KEY"
+
+[devswarm_cli.log_lock_suffix]
+doc = "Appended to the log file's name for its rotate lock."
+value = ".rotate.lock"
+
+[devswarm_cli.log_max_bytes]
+doc = "The log is rotated before an append that would take it past this size (anti-hall-log.js MAX_LOG_BYTES)."
+value = 5242880
+min = 1024
+max = 1073741824
+
+[devswarm_cli.log_lock_stale_ms]
+doc = "A rotate lock older than this whose holder is not alive is taken over (anti-hall-log.js ROTATE_LOCK_STALE_MS)."
+value = 3000
+min = 100
+max = 600000
+
+[devswarm_cli.log_lock_wait_ms]
+doc = "How long one writer waits for the rotate lock before it appends without it (anti-hall-log.js ROTATE_LOCK_WAIT_MS)."
+value = 300
+min = 0
+max = 60000
+
+[devswarm_cli.log_lock_step_ms]
+doc = "Pause between attempts at the rotate lock."
+value = 5
+min = 1
+max = 10000
+
+[devswarm_cli.log_lock_reclaim_stale_ms]
+doc = "A takeover marker of the rotate lock older than this is abandoned (lock.js RECLAIM_STALE_MS)."
+value = 5000
+min = 100
+max = 600000
+
+[devswarm_cli.log_lock_release_tries]
+doc = "Attempts a release of the rotate lock makes to take the takeover marker (lock.js RELEASE_SIDECAR_TRIES)."
+value = 5
+min = 1
+max = 100
+
+[devswarm_cli.log_lock_release_step_ms]
+doc = "Pause between those attempts (lock.js RELEASE_SIDECAR_STEP_MS)."
+value = 10
+min = 1
+max = 10000
+
+[devswarm_cli.log_lock_boot_slop_s]
+doc = "Two boot times this close are one boot (lock.js BOOT_SLOP_S)."
+value = 5
+min = 0
+max = 3600
+
+[devswarm_cli.log_component]
+doc = "The `component` field of every log entry the DevSwarm CLI writes."
+value = "devswarm-cli"
+
+[devswarm_cli.log_level_error]
+doc = "The level of a refusal entry."
+value = "error"
+
+[devswarm_cli.log_level_info]
+doc = "The level of an event entry."
+value = "info"
+
+[devswarm_cli.log_entry_fields]
+doc = "The field names of a log entry, in the order Node writes them: timestamp, component, operation, level, repository key, mesh id, writer pid, message, error, context."
+value = ["ts", "component", "op", "level", "repoKey", "meshId", "pid", "msg", "err", "ctx"]
+
+[devswarm_cli.log_err_message]
+doc = "The field of an entry's `err` object that holds the text."
+value = "message"
+
+[devswarm_cli.log_ctx_reason]
+doc = "The `reason` field of a refusal entry's context."
+value = "reason"
+
+[devswarm_cli.log_ctx_msg]
+doc = "The `msg` field of a refusal entry's context."
+value = "msg"
+
+[devswarm_cli.log_masks]
+doc = "Patterns the Node witness and the parity tests blank before comparing a central log: the entry's timestamp (the wall clock at the write) and the writer's pid differ between the engine and Node by design."
+value = ["^\\{\"ts\":\"[^\"]*\"", "\"pid\":[0-9]+,\"msg\""]
+
+[devswarm_cli.log_masks_to]
+doc = "What each pattern of `log_masks` becomes, in the same order."
+value = ["{\"ts\":\"T\"", "\"pid\":0,\"msg\""]
+
+[devswarm_cli.log_witness_files]
+doc = "Files under the home copied into a witness's scratch home so that the log lines Node appends there can be compared with the engine's."
+value = [".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1"]
+
+# ---- read-primary window refusal (lane l8d) ------------------------------------------------------------------------------
+
+[devswarm_cli.window_flags]
+doc = "The window flags of the inbox verbs, in the order Node checks them (INBOX_WINDOW_FLAGS)."
+value = ["tail", "since"]
+
+[devswarm_cli.window_verb_read_primary]
+doc = "The verb name a refused `inbox read-primary` window names."
+value = "inbox read-primary"
+
+[devswarm_cli.window_op_read_primary]
+doc = "The central-log operation of a read-primary refusal."
+value = "inbox-read-primary"
+
+[devswarm_cli.window_reason]
+doc = "The reason of a refused window flag on an acking verb."
+value = "window-flags-unsupported-on-acking-verb"
+
+[devswarm_cli.msg_window_refused]
+doc = "The refusal of a window flag on an acking verb. {flags} are the flags used joined with `/--`, {verb} the verb, {use} the non-acking read to use instead."
+value = "--{flags} is not supported on `{verb}` — it acks (or reports on) a CONTIGUOUS unread prefix, and a windowed/most-recent-N view cannot be expressed as a prefix without risking skipped mail. Use the non-acking read instead: `inbox messages <id> {use}`."
+
+[devswarm_cli.window_use_flag]
+doc = "One flag of the non-acking read the refusal points to; {flag} is the flag's name."
+value = "--{flag} <v>"
+
+[devswarm_cli.window_text_prefix]
+doc = "What `inbox read-primary --format text` prints in front of a refusal's message."
+value = "ok:false "
