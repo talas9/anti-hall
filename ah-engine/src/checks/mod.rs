@@ -11,7 +11,6 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod agent_scan;
-pub mod claim_ledger;
 pub mod codex;
 pub mod command;
 pub mod compact_decl;
@@ -210,7 +209,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::PROGRESS_PRUNE,
         &scripted::SPECULATION_GUARD,
         &scripted::SPECULATION_JUDGE,
-        &claim_ledger::ClaimLedger,
+        &scripted::CLAIM_LEDGER,
         &scripted::OUTPUT_VERIFY_GUARD,
         &scripted::ASK_GUARD,
         &scripted::SILENT_AGENT_NUDGE,

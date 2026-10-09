@@ -2193,10 +2193,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `claim_ledger.cls_hard` | `hard` |  |  | The class of a flag that would block once blocking is turned on. |
 | `claim_ledger.cls_soft` | `soft` |  |  | The class of a flag that would only nudge. |
 | `claim_ledger.context_chars` | `160` |  |  | How many UTF-16 units of the line around a flagged token are recorded. |
-| `claim_ledger.count_re` | `(\d{1,6}(?:[.,]\d+)?)\s*(ms\|s\|sec\|seconds\|minutes\|min\|hours\|days?\|weeks?\|work...` |  |  | Regex source (case-insensitive) of a count with a unit noun. The Node source starts with a look-behind that rejects a number glued to an identifier character; the check applies that rule by hand, because the regex engine has no look-behind. |
+| `claim_ledger.count_js_re` | `(?<![\w.-])(\d{1,6}(?:[.,]\d+)?)\s*(ms\|s\|sec\|seconds\|minutes\|min\|hours\|days?\|...` |  |  | JavaScript regex source (flags gi) of a count with a unit noun, as the Node hook has it: it starts with a look-behind that rejects a number glued to an identifier character (`V2-4 workspace` is a name, not a count of 4 workspaces). |
 | `claim_ledger.days_ago_re` | `\b\d+\s+days?\s+ago\b` |  |  | Regex source (case-insensitive) of an N days ago claim. |
 | `claim_ledger.dir` | `claim-ledger` |  |  | Directory of the ledger files under the state directory. |
-| `claim_ledger.event` | `Stop` |  |  | The only event this check answers. |
 | `claim_ledger.guard_name` | `claim-ledger` |  |  | The guard id this check answers to in skip.json. |
 | `claim_ledger.jev_false` | `supported by evidence` |  |  | The label for a false answer of the claimLedger question. |
 | `claim_ledger.jev_id` | `claimLedger` |  |  | The Jev integration id of the shadow question asked for each flagged claim. |
@@ -2211,17 +2210,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `claim_ledger.ledger_ext` | `.jsonl` |  |  | Extension of the per-session ledger of flagged claims (one JSON line per flagged reply). |
 | `claim_ledger.max_flags` | `40` |  |  | Most flags recorded for one reply. |
 | `claim_ledger.number_re` | `\d[\d,]*(?:\.\d+)?` |  |  | Regex source of a number in the evidence (thousands separators allowed). |
-| `claim_ledger.role_assistant` | `assistant` |  |  | The role of an assistant transcript entry. |
-| `claim_ledger.role_attachment` | `attachment` |  |  | The role of a hook attachment transcript entry. |
-| `claim_ledger.role_user` | `user` |  |  | The role of a user transcript entry. |
 | `claim_ledger.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.claimLedger, default on). |
 | `claim_ledger.sha_re` | `\b[0-9a-f]{7,40}\b` |  |  | Regex source of a git SHA (7 to 40 lower-case hex digits). |
 | `claim_ledger.state_re` | `\b(?:still\|currently)\s+(?:running\|live\|active\|pending\|blocked)\b` |  |  | Regex source (case-insensitive) of a runtime-state claim. |
 | `claim_ledger.summary` | `Stop, never blocks: records the checkable claims of the last reply that no ev...` |  |  | One-line description of the claim-ledger check in the generated reference. |
 | `claim_ledger.task_re` | `\btask\s+\d+\s+of\b` |  |  | Regex source (case-insensitive) of a task N of claim. |
-| `claim_ledger.type_text` | `text` |  |  | The content block type of a text block. |
-| `claim_ledger.type_tool_result` | `tool_result` |  |  | The content block type of a tool result. |
-| `claim_ledger.type_tool_use` | `tool_use` |  |  | The content block type of a tool call. |
 | `claim_ledger.window_bytes` | `2097152` |  | bytes | How much of the end of the transcript counts as evidence (a huge transcript cannot slow the hook). |
 
 ### response_guards.toml / output_verify
