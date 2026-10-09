@@ -38,6 +38,10 @@ cargo_home="${CARGO_HOME:-$HOME/.cargo}"
 flags="--remap-path-prefix=${root}=. --remap-path-prefix=${cargo_home}=/cargo"
 [ "$root_phys" = "$root" ] || flags="$flags --remap-path-prefix=${root_phys}=."
 export RUSTFLAGS="$flags"
+# C code compiled by build scripts (quickjs asserts, __FILE__) embeds absolute paths of the build directory; rustc's remap does not reach it.
+cflags="-ffile-prefix-map=${root}=. -ffile-prefix-map=${cargo_home}=/cargo"
+[ "$root_phys" = "$root" ] || cflags="$cflags -ffile-prefix-map=${root_phys}=."
+export CFLAGS="${CFLAGS:+$CFLAGS }$cflags"
 
 cargo build --release --locked --target "$target"
 
