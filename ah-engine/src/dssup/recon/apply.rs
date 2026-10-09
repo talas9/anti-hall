@@ -100,8 +100,15 @@ fn upsert(env: &Env, store: &str, row: &RegistryRow, pre: &Option<Box<RegRow>>) 
             if now.map(Box::new) != *pre {
                 return Ok(false);
             }
-            c.prepare_cached(crate::sql::MESHW_REGISTRY_UPSERT)?
-                .execute(rusqlite::params![row.id, row.worktree_path, row.session_id, row.inbox_path, row.cursor_path, row.nudge_command, env.now])?;
+            c.prepare_cached(crate::sql::MESHW_REGISTRY_UPSERT)?.execute(rusqlite::params![
+                row.id,
+                row.worktree_path,
+                row.session_id,
+                row.inbox_path,
+                row.cursor_path,
+                row.nudge_command,
+                env.now
+            ])?;
             Ok(true)
         })();
         match r {

@@ -98,8 +98,13 @@ fn or_zero(v: Option<&Value>) -> Value {
     if truthy(v) { v.cloned().unwrap_or(json!(0)) } else { json!(0) }
 }
 
-fn re(key: &str) -> regex::Regex {
-    RegexBuilder::new(defaults::text(key)).case_insensitive(true).build().unwrap_or_else(|_| regex::Regex::new("$^").expect("empty regex"))
+/// The case-insensitive pattern a defaults key holds; one that does not compile matches nothing (a text then reads as no match).
+fn re(key: &str) -> Option<regex::Regex> {
+    RegexBuilder::new(defaults::text(key)).case_insensitive(true).build().ok()
+}
+
+fn re_match(key: &str, text: &str) -> bool {
+    re(key).is_some_and(|r| r.is_match(text))
 }
 
 // ---- reading the state the sweep decides from ---------------------------------------------------------------------------------
@@ -184,7 +189,8 @@ struct Target {
 }
 
 fn has_archived_counterpart(home: &Path, id: &str) -> bool {
-    is_safe_id(id) && devswarm_root(home).join(defaults::text("mesh_write.dir_archived")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix"))).exists()
+    is_safe_id(id)
+        && devswarm_root(home).join(defaults::text("mesh_write.dir_archived")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix"))).exists()
 }
 
 /// `String(v)` of a marker's `sessionId`, `None` for null/undefined/empty (`realSid`).
@@ -210,9 +216,10 @@ fn marker_archived(home: &Path, t: &Target) -> R<bool> {
         return Ok(false);
     }
     let root = devswarm_root(home);
-    let Some(marker) = std::fs::read(root.join(defaults::text("mesh_write.dir_archived")).join(format!("{}{}", t.id, defaults::text("mesh_write.json_suffix"))))
-        .ok()
-        .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
+    let Some(marker) =
+        std::fs::read(root.join(defaults::text("mesh_write.dir_archived")).join(format!("{}{}", t.id, defaults::text("mesh_write.json_suffix"))))
+            .ok()
+            .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
     else {
         return Ok(false);
     };
@@ -254,7 +261,10 @@ fn row_terminal(inv: &Inv, t: &Target, held: &std::collections::HashSet<String>)
     if row_archived(inv, t)? || held.contains(&t.id) {
         return Ok(true);
     }
-    Ok(devswarm_root(&inv.home).join(defaults::text("devswarm_recon.dir_archive_ignore")).join(format!("{}{}", t.id, defaults::text("mesh_write.json_suffix"))).exists())
+    Ok(devswarm_root(&inv.home)
+        .join(defaults::text("devswarm_recon.dir_archive_ignore"))
+        .join(format!("{}{}", t.id, defaults::text("mesh_write.json_suffix")))
+        .exists())
 }
 
 /// The git root `git -C <path> rev-parse --show-toplevel` names, bounded; `None` when git fails or prints nothing.
@@ -417,7 +427,12 @@ fn budget_of(ctx: &Ctx, o: &Opts) -> u64 {
     if let Some(b) = o.budget_ms {
         return b;
     }
-    ctx.st.env.get(defaults::text("devswarm_recon.budget_env")).and_then(|v| v.trim().parse::<f64>().ok()).filter(|n| n.is_finite() && *n >= 0.0).map_or(defaults::num("devswarm_recon.budget_ms"), |n| n as u64)
+    ctx.st
+        .env
+        .get(defaults::text("devswarm_recon.budget_env"))
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|n| n.is_finite() && *n >= 0.0)
+        .map_or(defaults::num("devswarm_recon.budget_ms"), |n| n as u64)
 }
 
 /// A planned side-file change, witnessed and applied; `None` when the witness did not agree (nothing was written).
@@ -427,7 +442,13 @@ fn apply_side(ctx: &Ctx, runner: &dyn Runner, label: &str, p: side::Planned, ext
     }
     let mut files: Vec<String> = extra.to_vec();
     files.extend(side::touched(&p.unit));
-    let job = Job { label: label.to_string(), scope: side::scope_for(&files), calls: vec![p.call.clone()], expect: vec![Some(p.expect.clone())], units: vec![p.unit] };
+    let job = Job {
+        label: label.to_string(),
+        scope: side::scope_for(&files),
+        calls: vec![p.call.clone()],
+        expect: vec![Some(p.expect.clone())],
+        units: vec![p.unit],
+    };
     let out = gate::run(ctx, runner, &job, &Hooks::none());
     (out.verdict == Verdict::Agreed && out.ends.iter().all(|e| *e == UnitEnd::Applied)).then_some(p.expect)
 }
@@ -435,7 +456,11 @@ fn apply_side(ctx: &Ctx, runner: &dyn Runner, label: &str, p: side::Planned, ext
 /// One line of the central log, written by the engine (not a state change the witness could compare).
 fn log_line(ctx: &Ctx, component: &str, op: &str, level: &str, msg: &str, context: &Value) {
     let env = Env { home: ctx.home, now: ctx.now, st: ctx.st, log_dir: None };
-    let u = Unit { label: "log".into(), lock: None, ops: vec![Op::Log { component: component.into(), op: op.into(), level: level.into(), msg: msg.into(), ctx: context.to_string() }] };
+    let u = Unit {
+        label: "log".into(),
+        lock: None,
+        ops: vec![Op::Log { component: component.into(), op: op.into(), level: level.into(), msg: msg.into(), ctx: context.to_string() }],
+    };
     crate::discard::harmless(match apply::unit(&env, &u, &Hooks::none()) {
         UnitEnd::Failed(w) => Err(w),
         _ => Ok(()),
@@ -465,7 +490,7 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     let rows = view::registry(home, &repo_key)?;
     let mut targets: Vec<Target> = rows
         .iter()
-        .map(|r| descriptor_of(r))
+        .map(descriptor_of)
         .filter(|d| d.worktree_path.as_deref().is_some_and(|w| !w.is_empty()) && is_safe_id(&d.id))
         .map(|d| Target { id: d.id, worktree: d.worktree_path.unwrap_or_default(), session: d.session_id })
         .collect();
@@ -484,7 +509,15 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     let budget = budget_of(ctx, o);
     let started = (o.clock)();
     let over = || budget > 0 && ((o.clock)() - started) >= budget as i64;
-    let inv = Inv { home: home.to_path_buf(), env: pull::sweep_env(&ctx.st.env, home), cwd: cwd.to_string(), now: ctx.now, stdin: None, write_home: home.to_path_buf(), store_override: None };
+    let inv = Inv {
+        home: home.to_path_buf(),
+        env: pull::sweep_env(&ctx.st.env, home),
+        cwd: cwd.to_string(),
+        now: ctx.now,
+        stdin: None,
+        write_home: home.to_path_buf(),
+        store_override: None,
+    };
     let held = crate::meshw::summary::held_ids(&inv)?;
     let scope_of = |t: &Target| format!("{}{}", defaults::text("devswarm_recon.scope_pull_prefix"), t.id);
     let suppressed = |t: &Target| -> R<bool> { Ok(side::repo_unknown_suppressed(home, &repo_key, &scope_of(t), ctx.now) && row_terminal(&inv, t, &held)?) };
@@ -503,7 +536,10 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
             row.insert("archivedDuplicate".into(), json!(counterpart));
             row.insert("skipped".into(), json!(archived));
             row.insert("skipReason".into(), if archived { json!(defaults::text("devswarm_recon.msg_skip_pruned")) } else { Value::Null });
-            row.insert("error".into(), if archived { Value::Null } else { json!(defaults::render("devswarm_recon.msg_err_worktree_missing", &[("path", &t.worktree)])) });
+            row.insert(
+                "error".into(),
+                if archived { Value::Null } else { json!(defaults::render("devswarm_recon.msg_err_worktree_missing", &[("path", &t.worktree)])) },
+            );
             slots.push(Slot::Done(Value::Object(row)));
             continue;
         }
@@ -559,7 +595,7 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     let unknown_re = re("devswarm_recon.re_repo_unknown_line");
     let ansi = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).map_err(|e| Defer(e.to_string()))?;
     let is_unknown_text = |texts: &[Option<String>]| {
-        texts.iter().flatten().any(|t| ansi.replace_all(t, "").split(['\n']).any(|l| unknown_re.is_match(js_trim(l.trim_end_matches('\r')))))
+        texts.iter().flatten().any(|t| ansi.replace_all(t, "").split(['\n']).any(|l| unknown_re.as_ref().is_some_and(|r| r.is_match(js_trim(l.trim_end_matches('\r'))))))
     };
     for slot in slots {
         let (t, root, staged_ix) = match slot {
@@ -594,9 +630,8 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
         let native_timeout = is_native_timeout(parsed.as_ref(), run.as_ref());
         // repository-unknown bookkeeping
         let scope = scope_of(&t);
-        if parsed.as_ref().is_some_and(|p| truthy(p.get("ok"))) {
-            apply_side(ctx, runner, defaults::text("devswarm_recon.job_repo_unknown"), side::plan_repo_unknown_clear(home, &repo_key, &scope), &[]);
-        } else if !is_unknown_text(&[pv("error").map(js_str), pv("reason").map(js_str), run.as_ref().map(|r| r.stderr.clone())]) {
+        // a success, or a different error, ends the streak of the repository-unknown error
+        if parsed.as_ref().is_some_and(|p| truthy(p.get("ok"))) || !is_unknown_text(&[pv("error").map(js_str), pv("reason").map(js_str), run.as_ref().map(|r| r.stderr.clone())]) {
             apply_side(ctx, runner, defaults::text("devswarm_recon.job_repo_unknown"), side::plan_repo_unknown_clear(home, &repo_key, &scope), &[]);
         } else if row_terminal(&inv, &t, &held)? {
             let reason = match pv("error").filter(|v| truthy(Some(v))).or_else(|| pv("reason").filter(|v| truthy(Some(v)))) {
@@ -604,7 +639,8 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
                 None => run.as_ref().map(|r| r.stderr.clone()).unwrap_or_default(),
             };
             let planned = side::plan_repo_unknown_record(home, &repo_key, &scope, &reason, ctx.now)?;
-            let rec = apply_side(ctx, runner, defaults::text("devswarm_recon.job_repo_unknown"), planned, &[]).unwrap_or(json!({"first": false, "suppressed": false, "engaged": false}));
+            let rec = apply_side(ctx, runner, defaults::text("devswarm_recon.job_repo_unknown"), planned, &[])
+                .unwrap_or(json!({"first": false, "suppressed": false, "engaged": false}));
             if rec["engaged"] == json!(true) {
                 log_line(
                     ctx,
@@ -625,8 +661,8 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
         let err_text = parsed.as_ref().and_then(|p| p.get("error")).map(js_str).unwrap_or_default();
         let ok = parsed.as_ref().is_some_and(|p| truthy(p.get("ok")));
         let not_ok = parsed.as_ref().is_some_and(|p| p.get("ok") == Some(&json!(false)));
-        let locked = not_ok && pv("locked") == Some(&json!(false)) && re("devswarm_recon.re_locked").is_match(&err_text);
-        let hc_missing = not_ok && re("devswarm_recon.re_hc_missing").is_match(&err_text);
+        let locked = not_ok && pv("locked") == Some(&json!(false)) && re_match("devswarm_recon.re_locked", &err_text);
+        let hc_missing = not_ok && re_match("devswarm_recon.re_hc_missing", &err_text);
         let wt_missing = run.as_ref().is_some_and(|r| r.worktree_missing);
         let error: Value = if truthy(pv("error")) {
             pv("error").cloned().unwrap_or(Value::Null)
@@ -671,13 +707,17 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     }
     let sum = |k: &str| results.iter().map(|r| r.get(k).and_then(Value::as_f64).unwrap_or(0.0)).sum::<f64>();
     let flag = |r: &Value, k: &str| r.get(k) == Some(&json!(true));
-    let rejected = results.iter().filter(|r| !flag(r, "ok") && re("devswarm_recon.re_rejected").is_match(&r.get("error").map(js_str).unwrap_or_default())).count();
+    let rejected =
+        results.iter().filter(|r| !flag(r, "ok") && re_match("devswarm_recon.re_rejected", &r.get("error").map(js_str).unwrap_or_default())).count();
     let all_ok = results.iter().all(|r| defaults::list("devswarm_recon.benign_flags").iter().any(|k| flag(r, k)));
     let native_timeouts = results.iter().filter(|r| flag(r, "nativeTimeout")).count();
     // names: the app's titles (a native read), then the ones still missing from hivecontrol's list (Node's own call)
     let descs: Vec<plan::Desc> = targets
         .iter()
-        .map(|t| plan::Desc { id: t.id.clone(), body: OVal::Obj(vec![(defaults::text("mesh_write.field_worktree_path").to_string(), OVal::Str(t.worktree.clone()))]) })
+        .map(|t| plan::Desc {
+            id: t.id.clone(),
+            body: OVal::Obj(vec![(defaults::text("mesh_write.field_worktree_path").to_string(), OVal::Str(t.worktree.clone()))]),
+        })
         .collect();
     let refreshed = match ident::app_db_path(home, &ctx.st.env) {
         Some(f) => match snap::read(&f)? {
@@ -690,7 +730,13 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     let mut backfilled = 0u64;
     if !missing.is_empty() {
         let ids = json!(missing).to_string();
-        let r = node(runner, ctx, defaults::text("devswarm_recon.node_names_snippet"), &[cwd, &ids, &ctx.now.to_string()], defaults::num("devswarm_recon.node_names_timeout_ms"));
+        let r = node(
+            runner,
+            ctx,
+            defaults::text("devswarm_recon.node_names_snippet"),
+            &[cwd, &ids, &ctx.now.to_string()],
+            defaults::num("devswarm_recon.node_names_timeout_ms"),
+        );
         if r.ok {
             backfilled = parse(&r.stdout).get("backfilled").and_then(Value::as_u64).unwrap_or(0);
         }
@@ -772,7 +818,12 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner, hooks: &Hooks, fallback: &dyn Fn() -
             }
         }
     }
-    let scratch = ctx.home.join(defaults::text("devswarm_sup.witness_dir")).join(format!("{}{}-{}.json", defaults::text("devswarm_recon.pre_file_prefix"), ctx.now, std::process::id()));
+    let scratch = ctx.home.join(defaults::text("devswarm_sup.witness_dir")).join(format!(
+        "{}{}-{}.json",
+        defaults::text("devswarm_recon.pre_file_prefix"),
+        ctx.now,
+        std::process::id()
+    ));
     if let Some(d) = scratch.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports the failure
     }

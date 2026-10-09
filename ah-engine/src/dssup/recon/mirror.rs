@@ -4,8 +4,8 @@
 //! never taken). The source is only ever read.
 use super::Scope;
 use super::view::{store_db, store_rel};
-use crate::meshw::idlock::devswarm_root;
 use crate::defaults;
+use crate::meshw::idlock::devswarm_root;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 

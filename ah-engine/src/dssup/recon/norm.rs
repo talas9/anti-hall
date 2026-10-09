@@ -29,10 +29,8 @@ fn dump_db(db: &Path) -> String {
     let Ok(c) = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) else {
         return defaults::text("devswarm_recon.norm_unreadable_db").to_string();
     };
-    let tables: Vec<String> = c
-        .prepare(crate::sql::RECON_TABLES)
-        .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect()))
-        .unwrap_or_default();
+    let tables: Vec<String> =
+        c.prepare(crate::sql::RECON_TABLES).and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect())).unwrap_or_default();
     let mut out = String::new();
     for t in tables {
         let Ok(mut st) = c.prepare(&crate::sql::RECON_DUMP.replace("{table}", &t)) else {

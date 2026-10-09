@@ -66,7 +66,10 @@ fn init_env() -> String {
             std::env::set_var("ANTIHALL_INGEST_DRY_RUN", "1");
             std::env::set_var("AH_ENGINE_PLUGIN_ROOT", plugin_root());
             std::env::set_var("RECON_PIN_NOW", NOW.to_string());
-            std::env::set_var("NODE_OPTIONS", format!("--require={}", Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recon_support/pin-clock.js").display()));
+            std::env::set_var(
+                "NODE_OPTIONS",
+                format!("--require={}", Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recon_support/pin-clock.js").display()),
+            );
         }
         ah_engine::defaults::init().expect("defaults load");
         path
@@ -415,6 +418,45 @@ fn a_workspace_drain_leaves_the_same_home_as_nodes_own_inbox_pull() {
             }
         }),
         case("an-unclaimed-session", None, b(vec![("sessionId", json!("unclaimed:child-1"))], vec![])),
+        // the engine refuses before the queue is read: nothing was touched, so Node's own pull has the whole queue
+        case("untouched-an-adopted-log-still-holds-an-open-batch", None, {
+            let f = queued("1", msgs(&[("only", "2026-10-09T10:00:00.000Z")]));
+            move |h| {
+                f(h);
+                let rec = json!({"t": "batch", "e": "1-1-1-aaaa", "ts": 1, "raw": msgs(&[("adopted", "2026-10-09T09:00:00.000Z")]), "worktree": null})
+                    .to_string()
+                    + "\n";
+                put(h, "wal/adopted/pull-child-1/pull-old.1.1.ndjson", &rec);
+            }
+        }),
+        case("untouched-a-journal-backend-store", None, {
+            let (f, key) = (queued("1", msgs(&[("only", "2026-10-09T10:00:00.000Z")])), w.repo_key.clone());
+            move |h| {
+                f(h);
+                put(h, &format!("store/{key}/BACKEND"), "journal\n");
+            }
+        }),
+        case("untouched-another-reader-holds-an-open-batch-of-this-worktree", None, {
+            let (f, child) = (queued("1", msgs(&[("only", "2026-10-09T10:00:00.000Z")])), w.child.to_string_lossy().into_owned());
+            move |h| {
+                f(h);
+                let rec = json!({"t": "batch", "e": "1-1-1-bbbb", "ts": 1, "raw": msgs(&[("theirs", "2026-10-09T09:00:00.000Z")]), "worktree": child})
+                    .to_string()
+                    + "\n";
+                put(h, "wal/pull-other-reader.ndjson", &rec);
+            }
+        }),
+        case("another-readers-batch-of-a-different-worktree-is-not-adopted", Some(ok(1, 0, 1)), {
+            let f = queued("1", msgs(&[("only", "2026-10-09T10:00:00.000Z")]));
+            move |h| {
+                f(h);
+                let rec =
+                    json!({"t": "batch", "e": "1-1-1-cccc", "ts": 1, "raw": msgs(&[("theirs", "2026-10-09T09:00:00.000Z")]), "worktree": "/somewhere/else"})
+                        .to_string()
+                        + "\n";
+                put(h, "wal/pull-other-reader.ndjson", &rec);
+            }
+        }),
     ];
     let (mut identical, mut deferred) = (0, 0);
     for (i, c) in cases.iter().enumerate() {
@@ -438,6 +480,16 @@ fn a_workspace_drain_leaves_the_same_home_as_nodes_own_inbox_pull() {
             None => {
                 let why = engine.expect_err(&format!("{}: the engine must hand this one to Node", c.name));
                 eprintln!("{}: handed to Node ({why})", c.name);
+                if c.name.starts_with("untouched-") {
+                    assert!(he.join("hc/read").exists(), "{}: the queue was not read", c.name);
+                    assert!(
+                        wal_text(&he).lines().all(|l| !l.contains("\"raw\"") || c.name.contains("log-still") || c.name.contains("another-reader")),
+                        "{}: nothing was captured",
+                        c.name
+                    );
+                    deferred += 1;
+                    continue;
+                }
                 // nothing the engine did may be lost: whatever it read is in the log, and Node's own next pull settles the home
                 // exactly as Node alone would have
                 let after = node_pull(&he, &fx.child, now);
@@ -450,8 +502,8 @@ fn a_workspace_drain_leaves_the_same_home_as_nodes_own_inbox_pull() {
     }
     println!("PARITY S3.drain cases={} identical={identical} deferred={deferred}", cases.len());
     assert!(identical >= 8 && deferred >= 3);
+    assert_eq!(identical + deferred, cases.len());
 }
-
 
 // ---------------------------------------------------------------- the witness refuses, and nothing the engine read is lost
 
@@ -503,7 +555,11 @@ fn the_witness_never_reads_the_native_queue_itself() {
     hc(&he, "read", &msgs(&[("only", "2026-10-09T10:00:00.000Z")]));
     engine_drain(&he, &fx, &Hooks::none()).unwrap();
     let calls = fs::read_to_string(he.join("hc/calls.log")).unwrap();
-    assert_eq!(calls.lines().filter(|l| l.contains("read-messages")).count(), 1, "exactly the engine's own destructive read reached the real hivecontrol:\n{calls}");
+    assert_eq!(
+        calls.lines().filter(|l| l.contains("read-messages")).count(),
+        1,
+        "exactly the engine's own destructive read reached the real hivecontrol:\n{calls}"
+    );
 }
 
 #[test]
@@ -552,7 +608,11 @@ fn kill_hook(point: String) -> impl Fn(&str) {
 #[test]
 fn crash_child() {
     // the child half of the crash tests: does nothing unless the parent set the environment
-    let (Ok(home), Ok(at), Ok(child), Ok(key)) = (std::env::var("RECON_CRASH_HOME"), std::env::var("RECON_CRASH_AT"), std::env::var("RECON_CRASH_CHILD"), std::env::var("RECON_CRASH_KEY")) else { return };
+    let (Ok(home), Ok(at), Ok(child), Ok(key)) =
+        (std::env::var("RECON_CRASH_HOME"), std::env::var("RECON_CRASH_AT"), std::env::var("RECON_CRASH_CHILD"), std::env::var("RECON_CRASH_KEY"))
+    else {
+        return;
+    };
     init_env();
     let hook = kill_hook(at.clone());
     let _ = drain_at(Path::new(&home), Path::new(&child), &key, &Hooks { at: &hook }, &kill_hook(at));
@@ -576,11 +636,11 @@ fn a_sigkill_at_every_durable_boundary_loses_and_duplicates_nothing_and_nodes_ne
     assert_eq!(read_inbox(&reference).lines().count(), 2);
     // (point, does the batch survive the kill)
     let points: [(&str, bool); 6] = [
-        ("read:after", false),     // the documented residual window: the bytes exist only in the pipe between hivecontrol and the pull
-        ("wal:after", true),       // the log holds the batch, nothing else happened
+        ("read:after", false), // the documented residual window: the bytes exist only in the pipe between hivecontrol and the pull
+        ("wal:after", true),   // the log holds the batch, nothing else happened
         ("pull:child-1:0:before", true),
-        ("inbox:after", true),     // the inbox holds the rows, the store and the closing record do not
-        ("close:before", true),    // the store holds the rows too
+        ("inbox:after", true),  // the inbox holds the rows, the store and the closing record do not
+        ("close:before", true), // the store holds the rows too
         ("pull:child-1:0:after", true),
     ];
     for (point, survives) in points {
@@ -627,7 +687,6 @@ fn a_sigkill_at_every_durable_boundary_loses_and_duplicates_nothing_and_nodes_ne
     println!("PARITY S3.crash cases=6 identical=5 deferred=0");
 }
 
-
 // ================================================================ S4: cmdReconcile, distinctRepoKeys, the sweep
 
 fn support_js(name: &str) -> PathBuf {
@@ -651,7 +710,8 @@ fn node_reconcile(home: &Path, cwd: &Path, budget: Option<(u64, u64)>) -> Value 
     }
     c.current_dir(cwd).env_clear().envs(node_env(home));
     let o = run(&mut c, None);
-    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("node reconcile printed {:?} / {:?}: {e}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+    serde_json::from_slice(&o.stdout)
+        .unwrap_or_else(|e| panic!("node reconcile printed {:?} / {:?}: {e}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
 }
 
 fn engine_reconcile(home: &Path, cwd: &Path, budget: Option<(u64, u64)>, hooks: &Hooks) -> sweep::ProjectEnd {
@@ -681,7 +741,14 @@ fn keep_rows(h: &Path, key: &str, ids: &[&str]) {
 /// A registry row of the project (the engine's own store writer), for the cases that need more rows than the seed has.
 fn add_row(h: &Path, key: &str, id: &str, wt: &str, session: &str) {
     let st = ah_engine::meshw::store::MeshStore::open(&key_db(h, key)).unwrap();
-    let r = ah_engine::meshw::store::RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: Some(session.into()), inbox_path: None, cursor_path: None, nudge_command: None };
+    let r = ah_engine::meshw::store::RegistryRow {
+        id: id.into(),
+        worktree_path: Some(wt.into()),
+        session_id: Some(session.into()),
+        inbox_path: None,
+        cursor_path: None,
+        nudge_command: None,
+    };
     assert!(st.upsert_registry(&r, 1_000, |_, _| true).unwrap());
 }
 
@@ -733,67 +800,119 @@ fn reconcile_cases(w: &W, fx: &Fx) -> Vec<(&'static str, bool, Box<dyn Fn(&Path)
     };
     let mut cases: Vec<(&'static str, bool, Box<dyn Fn(&Path)>, Option<(u64, u64)>)> = Vec::new();
     {
-        let (wc, ) = (wc.clone(),);
-        cases.push(("one-row-nothing-queued", true, Box::new(move |h| { project(&wc, h, &["child-1"]); }), None));
+        let (wc,) = (wc.clone(),);
+        cases.push((
+            "one-row-nothing-queued",
+            true,
+            Box::new(move |h| {
+                project(&wc, h, &["child-1"]);
+            }),
+            None,
+        ));
     }
     {
         let wc = wc.clone();
-        cases.push(("one-row-two-messages", true, Box::new(move |h| { project(&wc, h, &["child-1"]); queued(h); }), None));
+        cases.push((
+            "one-row-two-messages",
+            true,
+            Box::new(move |h| {
+                project(&wc, h, &["child-1"]);
+                queued(h);
+            }),
+            None,
+        ));
     }
     {
         let wc = wc.clone();
-        cases.push(("a-live-row-whose-worktree-vanished-and-a-pruned-archived-one", true, Box::new(move |h| { project(&wc, h, &["child-1", "child-2", "child-3"]); }), None));
+        cases.push((
+            "a-live-row-whose-worktree-vanished-and-a-pruned-archived-one",
+            true,
+            Box::new(move |h| {
+                project(&wc, h, &["child-1", "child-2", "child-3"]);
+            }),
+            None,
+        ));
     }
     {
         let wc = wc.clone();
-        cases.push(("an-archived-marker-on-a-worktree-that-exists-is-skipped", true, Box::new(move |h| {
-            project(&wc, h, &["child-1"]);
-            put(h, "archived/child-1.json", &json!({"id": "child-1", "worktreePath": wc.child.to_string_lossy(), "sessionId": "child-1"}).to_string());
-        }), None));
+        cases.push((
+            "an-archived-marker-on-a-worktree-that-exists-is-skipped",
+            true,
+            Box::new(move |h| {
+                project(&wc, h, &["child-1"]);
+                put(h, "archived/child-1.json", &json!({"id": "child-1", "worktreePath": wc.child.to_string_lossy(), "sessionId": "child-1"}).to_string());
+            }),
+            None,
+        ));
     }
     {
         let (wc, key) = (wc.clone(), key.clone());
-        cases.push(("a-worktree-git-cannot-resolve-is-not-a-git-root", true, Box::new(move |h| {
-            project(&wc, h, &["child-1"]);
-            let plain = h.join("plain-dir");
-            fs::create_dir_all(&plain).unwrap();
-            add_row(h, &key, "child-1", &plain.to_string_lossy(), "child-1");
-        }), None));
+        cases.push((
+            "a-worktree-git-cannot-resolve-is-not-a-git-root",
+            true,
+            Box::new(move |h| {
+                project(&wc, h, &["child-1"]);
+                let plain = h.join("plain-dir");
+                fs::create_dir_all(&plain).unwrap();
+                add_row(h, &key, "child-1", &plain.to_string_lossy(), "child-1");
+            }),
+            None,
+        ));
     }
     {
         let wc = wc.clone();
-        cases.push(("the-native-count-times-out-and-is-retried-once", false, Box::new(move |h| {
-            project(&wc, h, &["child-1"]);
-            hc(h, "count.rc", "1");
-            hc(h, "count.err", "request timeout");
-        }), None));
+        cases.push((
+            "the-native-count-times-out-and-is-retried-once",
+            false,
+            Box::new(move |h| {
+                project(&wc, h, &["child-1"]);
+                hc(h, "count.rc", "1");
+                hc(h, "count.err", "request timeout");
+            }),
+            None,
+        ));
     }
     {
         let wc = wc.clone();
-        cases.push(("a-spilled-batch-hands-that-row-to-node", false, Box::new(move |h| {
-            project(&wc, h, &["child-1"]);
-            put(h, "wal-spill/pull-child-1/1-1-1-aaaa.json", &json!({"e": "1-1-1-aaaa", "ts": 1, "raw": "[]", "worktree": null}).to_string());
-        }), None));
+        cases.push((
+            "a-spilled-batch-hands-that-row-to-node",
+            false,
+            Box::new(move |h| {
+                project(&wc, h, &["child-1"]);
+                put(h, "wal-spill/pull-child-1/1-1-1-aaaa.json", &json!({"e": "1-1-1-aaaa", "ts": 1, "raw": "[]", "worktree": null}).to_string());
+            }),
+            None,
+        ));
     }
     {
         let (wc, key, child) = (wc.clone(), key.clone(), child.clone());
-        cases.push(("a-budget-spent-defers-the-rest-and-leaves-a-resume-marker", false, Box::new(move |h| {
-            project(&wc, h, &["child-1"]);
-            // more rows, each a different id on the same checkout: their pulls are Node's (a second row of one worktree)
-            for i in 2..=4 {
-                add_row(h, &key, &format!("child-{i}"), &child.to_string_lossy(), &format!("sess-{i}"));
-            }
-        }), Some((2500, 1000))));
+        cases.push((
+            "a-budget-spent-defers-the-rest-and-leaves-a-resume-marker",
+            false,
+            Box::new(move |h| {
+                project(&wc, h, &["child-1"]);
+                // more rows, each a different id on the same checkout: their pulls are Node's (a second row of one worktree)
+                for i in 2..=4 {
+                    add_row(h, &key, &format!("child-{i}"), &child.to_string_lossy(), &format!("sess-{i}"));
+                }
+            }),
+            Some((2500, 1000)),
+        ));
     }
     {
         let (wc, key, child) = (wc.clone(), key.clone(), child.clone());
-        cases.push(("the-resume-marker-of-a-prior-run-goes-first", false, Box::new(move |h| {
-            project(&wc, h, &["child-1"]);
-            for i in 2..=3 {
-                add_row(h, &key, &format!("child-{i}"), &child.to_string_lossy(), &format!("sess-{i}"));
-            }
-            put(h, "reconcile-resume.json", &json!({"repoKey": key, "ids": ["child-3", "child-1"], "ts": 1}).to_string());
-        }), Some((2500, 1000))));
+        cases.push((
+            "the-resume-marker-of-a-prior-run-goes-first",
+            false,
+            Box::new(move |h| {
+                project(&wc, h, &["child-1"]);
+                for i in 2..=3 {
+                    add_row(h, &key, &format!("child-{i}"), &child.to_string_lossy(), &format!("sess-{i}"));
+                }
+                put(h, "reconcile-resume.json", &json!({"repoKey": key, "ids": ["child-3", "child-1"], "ts": 1}).to_string());
+            }),
+            Some((2500, 1000)),
+        ));
     }
     cases
 }
@@ -814,7 +933,12 @@ fn a_project_reconcile_answers_like_nodes_cmd_reconcile() {
             sweep::ProjectEnd::Result(v) => without_elapsed(v),
             sweep::ProjectEnd::Node(why) => panic!("{name}: the engine handed the whole project to Node ({why})"),
         };
-        let handbacks: Vec<String> = fs::read_to_string(he.join(".anti-hall/logs/devswarm-recon-witness.ndjson")).unwrap_or_default().lines().filter(|l| l.contains("handback")).map(str::to_string).collect();
+        let handbacks: Vec<String> = fs::read_to_string(he.join(".anti-hall/logs/devswarm-recon-witness.ndjson"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains("handback"))
+            .map(str::to_string)
+            .collect();
         eprintln!("{name}: handbacks {handbacks:?}");
         if *native {
             assert!(handbacks.is_empty(), "{name}: the engine handed work to Node: {handbacks:?}");
@@ -847,13 +971,23 @@ fn distinct_repo_keys_picks_the_same_representatives_as_node() {
     };
     let orders: Vec<Vec<(&str, String)>> = vec![
         // the main checkout and a linked worktree of one repo, a second repo, a plain directory
-        vec![("a-main", d("a-main", &fx.main, Some("s"))), ("b-child", d("b-child", &fx.child, Some("s"))), ("c-other", d("c-other", &other, Some("s"))), ("d-plain", d("d-plain", &plain, Some("s")))],
+        vec![
+            ("a-main", d("a-main", &fx.main, Some("s"))),
+            ("b-child", d("b-child", &fx.child, Some("s"))),
+            ("c-other", d("c-other", &other, Some("s"))),
+            ("d-plain", d("d-plain", &plain, Some("s"))),
+        ],
         // the linked worktree first, then the main one
         vec![("a-child", d("a-child", &fx.child, Some("s"))), ("b-main", d("b-main", &fx.main, Some("s")))],
         // a vanished worktree of a repo whose other worktree exists: the existing one wins whatever the order
         vec![("a-gone", d("a-gone", &gone, Some("s"))), ("b-main", d("b-main", &fx.main, Some("s")))],
         // rows readDescriptors drops: no session, an unsafe id, torn json, not an object
-        vec![("a-nosession", d("a-nosession", &fx.main, None)), ("b-torn", "{\"id\":\"b-torn\",".to_string()), ("c-array", "[1]".to_string()), ("d-ok", d("d-ok", &other, Some("s")))],
+        vec![
+            ("a-nosession", d("a-nosession", &fx.main, None)),
+            ("b-torn", "{\"id\":\"b-torn\",".to_string()),
+            ("c-array", "[1]".to_string()),
+            ("d-ok", d("d-ok", &other, Some("s"))),
+        ],
         vec![],
     ];
     let mut cases = 0;
@@ -868,7 +1002,8 @@ fn distinct_repo_keys_picks_the_same_representatives_as_node() {
         let o = run(&mut c, None);
         let want: Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&o.stderr)));
         let descs = sweep::read_descriptors(&h).unwrap();
-        let got: Vec<Value> = sweep::distinct_repo_keys(&descs).unwrap().into_iter().map(|p| json!({"repoKey": p.repo_key, "worktreePath": p.worktree})).collect();
+        let got: Vec<Value> =
+            sweep::distinct_repo_keys(&descs).unwrap().into_iter().map(|p| json!({"repoKey": p.repo_key, "worktreePath": p.worktree})).collect();
         assert_eq!(Value::Array(got), want, "order {i}");
         cases += 1;
     }
@@ -923,7 +1058,11 @@ fn a_stranded_descriptor_hands_the_whole_project_to_node_before_anything_is_writ
     project(&w, &he, &["child-1"]);
     // a descriptor stranded in the legacy per-id bucket whose own worktree belongs to this project
     let hash = ah_engine::meshw::send::hash_from_workspace_id("stranded-1");
-    put(&he, "workspaces/stranded-1.json", &json!({"id": "stranded-1", "worktreePath": fx.child.to_string_lossy(), "sessionId": "s", "ownerKey": hash}).to_string());
+    put(
+        &he,
+        "workspaces/stranded-1.json",
+        &json!({"id": "stranded-1", "worktreePath": fx.child.to_string_lossy(), "sessionId": "s", "ownerKey": hash}).to_string(),
+    );
     hc(&he, "count", "1");
     hc(&he, "read", &msgs(&[("only", "2026-10-09T10:00:00.000Z")]));
     let before = tree(&he);
@@ -955,7 +1094,9 @@ fn a_torn_resume_marker_reads_as_nothing_deferred_and_a_budget_rewrite_replaces_
 
 #[test]
 fn crash_project_child() {
-    let (Ok(home), Ok(at), Ok(child)) = (std::env::var("RECON_CRASH_HOME"), std::env::var("RECON_CRASH_AT"), std::env::var("RECON_CRASH_CHILD")) else { return };
+    let (Ok(home), Ok(at), Ok(child)) = (std::env::var("RECON_CRASH_HOME"), std::env::var("RECON_CRASH_AT"), std::env::var("RECON_CRASH_CHILD")) else {
+        return;
+    };
     if std::env::var("RECON_CRASH_KIND").as_deref() != Ok("project") {
         return;
     }
@@ -1021,4 +1162,85 @@ fn a_sigkill_in_the_middle_of_a_project_reconcile_is_converged_by_nodes_next_rec
         }
     }
     println!("PARITY S4.crash cases=6 identical=5 deferred=0");
+}
+
+#[test]
+fn the_supervisor_tick_runs_the_port_only_behind_the_reconcile_mode_setting() {
+    let Some((fx, w)) = world("s4tick") else { return };
+    let build = |h: &Path| {
+        project(&w, h, &["child-1"]);
+        hc(h, "count", "2");
+        hc(h, "read", &msgs(&[("first", "2026-10-09T10:00:00.000Z"), ("second", "2026-10-09T10:01:00.000Z")]));
+    };
+    let cfg_dir = fx.root.join("cfg");
+    fs::create_dir_all(&cfg_dir).unwrap();
+    // SAFETY: only this test sets them, and only `reconcile_mode` is read through them
+    unsafe {
+        std::env::set_var("AH_ENGINE_CONFIG", cfg_dir.join("config.toml"));
+        std::env::set_var("AH_ENGINE_SETTINGS", cfg_dir.join("settings.json"));
+    }
+    for (mode, engine) in [("node", false), ("engine", true), ("enginee", false)] {
+        fs::write(cfg_dir.join("config.toml"), format!("[devswarm_sup]\nreconcile_mode = \"{mode}\"\n")).unwrap();
+        let h = fx.root.join(format!("tick-{mode}"));
+        copy_tree(&fx.seed_home, &h);
+        build(&h);
+        let st = Settings { home: h.to_string_lossy().into_owned(), env: ctx_env(&h) };
+        let root = ah_engine::defaults::root().unwrap();
+        let ctx = Ctx { home: &h, root: &root, st: &st, now: NOW, engine_pokes: false };
+        let (rec, _) = ah_engine::dssup::tick::run_duty_w("reconcile", &ctx, &System::configured());
+        assert_eq!(rec["outcome"], "ran", "{mode}: {rec}");
+        assert_eq!(rec.get("engineProjects").is_some(), engine, "{mode}: who ran the reconcile: {rec}");
+        // either way the queue is drained exactly once
+        assert_eq!(read_inbox(&h).lines().count(), 2, "{mode}");
+    }
+    println!("PARITY S4.tick cases=3 identical=3 deferred=0");
+}
+
+#[test]
+fn a_sweep_over_more_projects_than_the_cap_leaves_the_rest_for_a_later_tick_like_node() {
+    let Some((fx, w)) = world("s4cap") else { return };
+    let cap = ah_engine::defaults::num("devswarm_recon.max_projects_per_tick") as usize;
+    let build = |h: &Path| {
+        seed_home(h);
+        base(&w, h, &[], &[]);
+        // one more project than the cap, each its own repository with a registered workspace
+        for i in 0..=cap {
+            let repo = fx.root.join(format!("proj-{i}"));
+            if !repo.exists() {
+                fs::create_dir_all(&repo).unwrap();
+                git(&["init", "-q"], &repo);
+                git(&["commit", "-q", "--allow-empty", "-m", "init"], &repo);
+            }
+            let repo = real(&repo);
+            put(
+                h,
+                &format!("workspaces/p{i}.json"),
+                &json!({"id": format!("p{i}"), "worktreePath": repo.to_string_lossy(), "sessionId": format!("s{i}"), "inboxPath": null, "cursorPath": null})
+                    .to_string(),
+            );
+        }
+    };
+    let (hn, he) = (fx.root.join("cap-node"), fx.root.join("cap-engine"));
+    for h in [&hn, &he] {
+        copy_tree(&fx.seed_home, h);
+        build(h);
+    }
+    let mut c = Command::new("node");
+    c.arg(support_js("sweep.js")).arg(plugin_root()).arg(&hn).env_clear().envs(node_env(&hn));
+    let o = run(&mut c, None);
+    let want: Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&o.stderr)));
+    let st = Settings { home: he.to_string_lossy().into_owned(), env: ctx_env(&he) };
+    let root = ah_engine::defaults::root().unwrap();
+    let ctx = Ctx { home: &he, root: &root, st: &st, now: NOW, engine_pokes: false };
+    let rec = sweep::duty(&ctx, &System::configured(), &Hooks::none(), &|| panic!("the engine should start the sweep itself"));
+    assert_eq!(rec["detail"]["projects"], json!(cap), "engine {rec} / node {want}");
+    assert!(rec["detail"]["skipped"].as_u64().unwrap() >= 1, "engine {rec} / node {want}");
+    assert_eq!(rec["detail"]["projects"], want["projects"]);
+    assert_eq!(rec["detail"]["skipped"], want["skipped"]);
+    assert_eq!(
+        rec["detail"]["results"].as_array().unwrap().iter().map(|r| r["repoKey"].clone()).collect::<Vec<_>>(),
+        want["results"].as_array().unwrap().iter().map(|r| r["repoKey"].clone()).collect::<Vec<_>>(),
+        "the same projects, in the same order"
+    );
+    println!("PARITY S4.cap cases=1 identical=1 deferred=0");
 }

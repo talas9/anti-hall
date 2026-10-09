@@ -103,12 +103,20 @@ fn text_or_null(d: &OVal, key: &str) -> R<Option<String>> {
 
 /// `inboxDefaultPath(home, id)`.
 fn inbox_default(home: &Path, id: &str) -> String {
-    devswarm_root(home).join(defaults::text("mesh_write.dir_inbox")).join(format!("{id}{}", defaults::text("mesh_write.ndjson_suffix"))).to_string_lossy().into_owned()
+    devswarm_root(home)
+        .join(defaults::text("mesh_write.dir_inbox"))
+        .join(format!("{id}{}", defaults::text("mesh_write.ndjson_suffix")))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// `cursorDefaultPath(home, id)`.
 fn cursor_default(home: &Path, id: &str) -> String {
-    devswarm_root(home).join(defaults::text("mesh_write.dir_cursors")).join(format!("{id}{}", defaults::text("mesh_write.cursor_file_suffix"))).to_string_lossy().into_owned()
+    devswarm_root(home)
+        .join(defaults::text("mesh_write.dir_cursors"))
+        .join(format!("{id}{}", defaults::text("mesh_write.cursor_file_suffix")))
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn pull_lock_params() -> nodelock::Params {
@@ -415,12 +423,26 @@ fn plan_declare(inv: &Inv, store: &MeshStore, id: &str) -> R<Vec<CursorPut>> {
     for ns in defaults::list("mesh_write.cursor_namespaces") {
         match rows.iter().find(|r| r.ns == ns && r.reader == reader) {
             Some(r) if r.retired_line.is_some_and(|l| r.value <= l) => {
-                puts.push(CursorPut { partition: id.to_string(), ns: ns.to_string(), reader: reader.clone(), value: r.value, retired_line: Some(None), updated_at: inv.now });
+                puts.push(CursorPut {
+                    partition: id.to_string(),
+                    ns: ns.to_string(),
+                    reader: reader.clone(),
+                    value: r.value,
+                    retired_line: Some(None),
+                    updated_at: inv.now,
+                });
             }
             Some(_) => {}
             None => {
                 let Some(f) = rows.iter().find(|r| r.ns == ns && r.reader == floor) else { return defer("reader-declare-import") };
-                puts.push(CursorPut { partition: id.to_string(), ns: ns.to_string(), reader: reader.clone(), value: f.value, retired_line: Some(None), updated_at: inv.now });
+                puts.push(CursorPut {
+                    partition: id.to_string(),
+                    ns: ns.to_string(),
+                    reader: reader.clone(),
+                    value: f.value,
+                    retired_line: Some(None),
+                    updated_at: inv.now,
+                });
             }
         }
     }
@@ -709,7 +731,13 @@ pub(crate) fn replay_pending(inv: &Inv, p: &Plan, at: &dyn Fn(&str)) -> Result<(
         let empty = r.parsed == 0 && !raw_t.is_empty() && raw_t != defaults::text("mesh_write.empty_array");
         at("close:before");
         let closed = if empty {
-            wal::close_batch(&p.wal, &entry.e, defaults::text("mesh_write.wal_quarantine"), &format!("\"reason\":\"{}\"", defaults::text("mesh_write.wal_reason_unparseable")), inv.now)
+            wal::close_batch(
+                &p.wal,
+                &entry.e,
+                defaults::text("mesh_write.wal_quarantine"),
+                &format!("\"reason\":\"{}\"", defaults::text("mesh_write.wal_reason_unparseable")),
+                inv.now,
+            )
         } else {
             wal::close_batch(
                 &p.wal,
@@ -769,10 +797,13 @@ pub(crate) fn capture_fresh(inv: &Inv, p: &Plan, worktree: &str, at: &dyn Fn(&st
 fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
     let blocked = Outcome { wal_blocked: true };
     // the descriptor is read again, as Node does (the ensure has written it)
-    let Some(desc) = std::fs::read(devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{}{}", p.id, defaults::text("mesh_write.json_suffix"))))
-        .ok()
-        .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
-    else {
+    let Some(desc) = std::fs::read(devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces")).join(format!(
+        "{}{}",
+        p.id,
+        defaults::text("mesh_write.json_suffix")
+    )))
+    .ok()
+    .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) else {
         return Outcome::default();
     };
     let worktree = field_str(&desc, defaults::text("mesh_write.field_worktree_path")).unwrap_or_else(|| p.cwd.clone());

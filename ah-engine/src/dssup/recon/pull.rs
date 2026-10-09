@@ -111,7 +111,9 @@ pub fn stage(ctx: &Ctx, id: &str, cwd: &str, at: &dyn Fn(&str)) -> Stage {
         _ => None,
     };
     let (Some(inbox), Some(cursor)) = (field("mesh_write.field_inbox_path"), field("mesh_write.field_cursor_path")) else { return node("descriptor-paths") };
-    let (Some(inbox_rel), Some(cursor_rel)) = (inside_state_dir(ctx.home, &inbox), inside_state_dir(ctx.home, &cursor)) else { return node("path-outside-state-dir") };
+    let (Some(inbox_rel), Some(cursor_rel)) = (inside_state_dir(ctx.home, &inbox), inside_state_dir(ctx.home, &cursor)) else {
+        return node("path-outside-state-dir");
+    };
     let Some(wal_rel) = rel_of(ctx.home, plan.wal_path()) else { return node("path-outside-state-dir") };
     let Some(lock) = nodelock::acquire_stale_unless_live(&plan.lock_file().to_string_lossy(), pull::lock_params()) else { return node("pull-lock-held") };
     let held = Some(lock);
@@ -125,9 +127,7 @@ pub fn stage(ctx: &Ctx, id: &str, cwd: &str, at: &dyn Fn(&str)) -> Stage {
         return Stage::Node(d.0);
     }
     let worktree = field("mesh_write.field_worktree_path").unwrap_or_else(|| cwd.to_string());
-    let result = |native: f64, imported: usize, duplicate: usize| {
-        json!({"ok": true, "imported": imported, "duplicate": duplicate, "nativeCount": native as i64, "locked": true, "lost": 0})
-    };
+    let result = |native: f64, imported: usize, duplicate: usize| json!({"ok": true, "imported": imported, "duplicate": duplicate, "nativeCount": native as i64, "locked": true, "lost": 0});
     let (outcome, files) = (pull::capture_fresh(&inv, &plan, &worktree, at), vec![descriptor_rel(id), wal_rel, inbox_rel, cursor_rel]);
     let ready = |held: Option<nodelock::Held>, result: Value| Stage::Ready(Box::new(Staged { id: id.to_string(), cwd: cwd.to_string(), result, held, files }));
     match outcome {
@@ -225,7 +225,11 @@ pub fn drain(ctx: &Ctx, runner: &dyn Runner, repo_key: &str, staged: Vec<Staged>
     }
     // what Node's self-heal reads to call the daemon healthy (a stale one would make it spawn the installer), and the app cache
     let root = devswarm_root(ctx.home);
-    let lock = root.join(defaults::text("mesh_write.dir_locks")).join(format!("{}{repo_key}{}", defaults::text("mesh_write.ingest_lock_prefix"), defaults::text("mesh_write.lock_suffix")));
+    let lock = root.join(defaults::text("mesh_write.dir_locks")).join(format!(
+        "{}{repo_key}{}",
+        defaults::text("mesh_write.ingest_lock_prefix"),
+        defaults::text("mesh_write.lock_suffix")
+    ));
     let cache = root.join(defaults::text("mesh_write.app_cache_dir")).join(defaults::text("mesh_write.app_cache_file"));
     files.extend([lock, cache].iter().filter_map(|p| rel_of(ctx.home, p)));
     let mut scope = super::side::scope_for(&files);

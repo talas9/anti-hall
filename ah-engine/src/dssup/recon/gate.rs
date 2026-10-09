@@ -12,9 +12,9 @@
 //! weaker than Node, and an unwitnessed decision is not applied.
 use super::apply::{self, Env};
 use super::{Hooks, Unit, UnitEnd};
+use crate::defaults;
 use crate::dsact::runner::Runner;
 use crate::dssup::tick::Ctx;
-use crate::defaults;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -62,7 +62,12 @@ fn deferred(job: &Job, why: &str, verdict: Verdict) -> Outcome {
 }
 
 fn scratch_dir(ctx: &Ctx, label: &str) -> PathBuf {
-    ctx.home.join(defaults::text("devswarm_sup.witness_dir")).join(format!("{}{label}-{}-{}", defaults::text("devswarm_recon.scratch_prefix"), ctx.now, std::process::id()))
+    ctx.home.join(defaults::text("devswarm_sup.witness_dir")).join(format!(
+        "{}{label}-{}-{}",
+        defaults::text("devswarm_recon.scratch_prefix"),
+        ctx.now,
+        std::process::id()
+    ))
 }
 
 fn run_node(ctx: &Ctx, runner: &dyn Runner, home: &std::path::Path, calls: &[Value]) -> Result<Vec<Value>, String> {
