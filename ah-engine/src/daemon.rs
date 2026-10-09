@@ -1213,7 +1213,9 @@ fn start_devswarm(sh: &Arc<Shared>) {
     });
     let s = sh.clone();
     let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || s.draining.load(SeqCst));
-    crate::dswire::Wire::start(&home, &paths::dir(), sh.db.clone(), sink, stop); // None is the inert case: nothing was started
+    crate::dswire::Wire::start(&home, &paths::dir(), sh.db.clone(), sink, stop.clone()); // None is the inert case: nothing was started
+    // the native ingest drain: nothing at all unless devswarm_ingest.mode is `engine` (the Node ingest daemons drain otherwise)
+    crate::dssup::ingest::start(&home, &paths::dir(), stop);
 }
 
 /// Start the scheduler's ticker (D33). Its engine-side jobs (maintain, backup, the metrics snapshot, the spool drain)

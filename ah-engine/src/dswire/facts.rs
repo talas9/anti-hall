@@ -85,6 +85,7 @@ impl Git<'_> {
             args: a,
             cwd: None,
             timeout_ms: defaults::num("devswarm_wire.git_timeout_ms"),
+            ..RunSpec::default()
         })
     }
     /// `git rev-parse HEAD`.

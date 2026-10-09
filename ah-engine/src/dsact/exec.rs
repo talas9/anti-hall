@@ -136,7 +136,7 @@ impl<'a> Act<'a> {
             return p;
         }
         let args = defaults::list("devswarm_act.argv_version").into_iter().map(str::to_string).collect();
-        let r = self.runner.run(&RunSpec { bin: None, args, cwd: None, timeout_ms: defaults::num("devswarm_act.probe_timeout_ms") });
+        let r = self.runner.run(&RunSpec { bin: None, args, cwd: None, timeout_ms: defaults::num("devswarm_act.probe_timeout_ms"), ..RunSpec::default() });
         let p = (r.missing, parse_version(&format!("{} {}", r.stdout, r.stderr)));
         *self.probe.borrow_mut() = Some(p.clone());
         p
@@ -192,7 +192,7 @@ impl<'a> Act<'a> {
         let argv = d.get("argv").and_then(strings);
         let cwd = d.get("cwd").and_then(Value::as_str).map(str::to_string);
         let poking = defaults::list("devswarm_act.automatic_kinds")[1..].contains(&kind);
-        let mut spec = RunSpec { bin: None, args: vec![], cwd, timeout_ms };
+        let mut spec = RunSpec { bin: None, args: vec![], cwd, timeout_ms, ..RunSpec::default() };
         if let Some(a) = &argv {
             if poking {
                 spec.bin = a.first().cloned();
@@ -223,7 +223,7 @@ impl<'a> Act<'a> {
             }
         };
         if let Some(args) = pre {
-            let _check = self.runner.run(&RunSpec { bin: None, args, cwd: spec.cwd.clone(), timeout_ms }); // keep: the check is informational, its answer changes nothing
+            let _check = self.runner.run(&RunSpec { bin: None, args, cwd: spec.cwd.clone(), timeout_ms, ..RunSpec::default() }); // keep: the check is informational, its answer changes nothing
         }
         let mut res = if argv.is_some() { self.runner.run(&spec) } else { RunResult { ok: true, ..RunResult::default() } };
         let retry = kind == defaults::list("devswarm_act.owner_kinds")[0] && !res.ok && !res.timed_out && !res.missing;
@@ -415,7 +415,7 @@ impl<'a> Act<'a> {
             && let Some(title) = d.get("title").and_then(strings)
             && self.argv_ok(&title).is_ok()
         {
-            let t = self.runner.run(&RunSpec { bin: None, args: title, cwd: d["cwd"].as_str().map(str::to_string), timeout_ms: timeout });
+            let t = self.runner.run(&RunSpec { bin: None, args: title, cwd: d["cwd"].as_str().map(str::to_string), timeout_ms: timeout, ..RunSpec::default() });
             self.log(&json!({"ts": self.live.now_ms(), "kind": kind, "id": id, "key": key, "titled": t.ok}));
         }
         r
