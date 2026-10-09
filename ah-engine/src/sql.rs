@@ -511,6 +511,14 @@ pub const AS_MESSAGES: &str = "SELECT repositoryId, toBranch, createdAt FROM wor
 pub const AS_NATIVE_TS: &str = "SELECT ts FROM messages WHERE hash LIKE ?1";
 /// The reconcile port: every registry row with the two columns the conditional operations compare.
 pub const RECON_REGISTRY_ALL: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry ORDER BY id ASC;";
+/// The reconcile port, orphan heal: the workspace ids a store holds messages for (`listWorkspaceIds`, first source).
+pub const RECON_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages;";
+/// The reconcile port, orphan heal: the ids of the registry rows (`listWorkspaceIds`, second source).
+pub const RECON_IDS_REGISTRY: &str = "SELECT id FROM registry;";
+/// The reconcile port, orphan heal: the ids that hold a cursor (`listWorkspaceIds`, third source).
+pub const RECON_IDS_CURSORS: &str = "SELECT DISTINCT workspace_id AS id FROM cursors;";
+/// The reconcile port, orphan heal: the ids that hold a gate (`listWorkspaceIds`, fourth source).
+pub const RECON_IDS_GATES: &str = "SELECT DISTINCT workspace_id AS id FROM gates;";
 /// The reconcile port's normaliser: the user tables of a store.
 pub const RECON_TABLES: &str = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name;";
 /// The reconcile port's normaliser: every row of a table in storage order (`{table}` is filled from `RECON_TABLES`).

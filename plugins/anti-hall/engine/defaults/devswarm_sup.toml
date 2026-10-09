@@ -1454,3 +1454,13 @@ value = "ids"
 [devswarm_sup.ds_reason_no_marker]
 doc = "The answer of a tick whose stage has nothing deferred."
 value = "no-marker"
+
+# ---- who runs the sweep tail (reconcile port) ----------------------------------------------------------------------------------
+
+[devswarm_sup.set_sweep_tail_mode]
+doc = "Who does the sweep tail's own work in the deferred post-update stages: node (Node's stage functions do all of it) | engine (the engine first does the part it has ported, each store witnessed against Node's function on a scratch mirror and applied only when both agree; Node's stage then runs as before and finds that part done). Today the engine takes the orphan-partition heal (additive adoptions); a store it cannot decide in full stays Node's."
+value = { type = "enum", section = "devswarm_sup", key = "sweepTailMode", env = "ANTIHALL_DEVSWARM_SUP_SWEEP_TAIL_MODE", values = ["node", "engine"], default = "node" }
+
+[devswarm_sup.sweep_tail_engine]
+doc = "The word of devswarm_sup.sweep_tail_mode that lets the engine take the ported part of the sweep tail."
+value = "engine"
