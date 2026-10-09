@@ -16,12 +16,12 @@ use crate::meshw::ident::Defer;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-fn report_path(home: &Path) -> PathBuf {
+pub(super) fn report_path(home: &Path) -> PathBuf {
     crate::meshw::idlock::devswarm_root(home).join(defaults::text("devswarm_sup.rt_dry_report_file"))
 }
 
 /// `Math.round(x * 10) / 10` on a megabyte count.
-fn mb1(bytes: f64) -> f64 {
+pub(super) fn mb1(bytes: f64) -> f64 {
     let mb = defaults::num("devswarm_sup.rt_mb") as f64;
     ((bytes / mb) * 10.0 + 0.5).floor() / 10.0
 }
@@ -39,7 +39,7 @@ pub(super) fn legacy_of(ctx: &Ctx, runner: &dyn Runner, hash: &str) -> Result<Va
 }
 
 /// `summarize(r)` of a dry `pruneStore`, for one store.
-fn summary(ctx: &Ctx, runner: &dyn Runner, st: &OVal, s: &Settings, hash: &str) -> Result<OVal, Defer> {
+pub(super) fn summary(ctx: &Ctx, runner: &dyn Runner, st: &OVal, s: &Settings, hash: &str) -> Result<OVal, Defer> {
     let now = ctx.now as f64;
     let holds = super::plan::holds_of(st, hash, now);
     let bytes_before = super::apply::store_bytes(ctx.home, hash);
@@ -106,7 +106,7 @@ fn summary(ctx: &Ctx, runner: &dyn Runner, st: &OVal, s: &Settings, hash: &str) 
     ]))
 }
 
-fn settings_json(s: &Settings) -> OVal {
+pub(super) fn settings_json(s: &Settings) -> OVal {
     OVal::Obj(vec![
         ("days".into(), n(s.days)),
         ("maxStoreMB".into(), n(s.max_store_mb)),

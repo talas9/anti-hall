@@ -403,7 +403,7 @@ fn a_row_that_stopped_being_eligible_after_the_plan_is_not_tombstoned() {
     conn.execute("UPDATE reader_cursors SET value = 0 WHERE partition = ?1 AND ns = 'store'", [&c3.partition]).unwrap();
     drop(conn);
     let mut state = ah_engine::checks::guardkit::ojson::OVal::parse(r#"{"stores":{},"holds":{},"phase":"armed"}"#).unwrap();
-    let mut run = Run { home: &h, hash: HASH, settings: s, now: c.now as f64, budget_ms: 600_000.0, state: &mut state };
+    let mut run = Run { home: &h, hash: HASH, settings: s, now: c.now as f64, budget_ms: 600_000.0, state: &mut state, commit: false };
     let bytes = apply::store_bytes(&h, HASH);
     let r = apply::prune(&mut run, &p, chosen.clone(), 0, chosen.list.len(), bytes, false).unwrap();
     let after = bodies(&h);

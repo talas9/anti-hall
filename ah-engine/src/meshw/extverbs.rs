@@ -38,6 +38,8 @@ pub enum Ext {
     SupervisionReport,
     /// `sync-ui --titles-json F` (lane l8c).
     SyncUi,
+    /// `retention status|run|restore` (lane l8c).
+    Retention,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -64,6 +66,8 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::SupervisionReport)
     } else if is("devswarm_cli.verb_sync_ui") {
         Some(Ext::SyncUi)
+    } else if is("devswarm_cli.verb_retention") {
+        Some(Ext::Retention)
     } else {
         None
     }
@@ -87,5 +91,12 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::Nudge => super::actverbs::nudge(inv, a),
         Ext::SupervisionReport => super::reportverbs::supervision_report(inv, a),
         Ext::SyncUi => super::reportverbs::sync_ui(inv, a),
+        Ext::Retention => super::reportverbs::retention(inv, a),
     }
+}
+
+/// Whether the Node witness of the CLI verbs runs after the engine answered. Retention is gated before it acts (the engine's plan
+/// and Node's read-only planner must agree on every row), and Node's own `run` would prune a copy of a store of any size.
+pub fn witnessed(v: Ext) -> bool {
+    !matches!(v, Ext::Retention)
 }
