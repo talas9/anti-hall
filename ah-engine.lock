@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "version": "0.1.0",
+  "tag": "ah-engine-v0.1.0",
+  "fingerprint": "16946c87fb2290d221aa46b7aa8003d0666535f13bede6e304883a06da6b4c50",
+  "prepare_run": 37951304261,
+  "assets": {
+    "ah-engine-v0.1.0-aarch64-apple-darwin.tar.gz": "7ddd59043f415faf98cbed42aa3df06e64199a5db858d279aeacad0dfd4b5dd2",
+    "ah-engine-v0.1.0-aarch64-unknown-linux-gnu.tar.gz": "1d3e4761987ce1c3a12350e3c03dd41fc79eb592b96aad6d4f813b913d8fc577",
+    "ah-engine-v0.1.0-aarch64-unknown-linux-musl.tar.gz": "ad58fe390d30ffa22b58ddf416a419ff086a83633c1087ea55dd4691124cd0e7",
+    "ah-engine-v0.1.0-src.tar.gz": "6ef4c45210e5a2403a4d2f4d54ff31a8f4b60669a5210244410e721580184857",
+    "ah-engine-v0.1.0-x86_64-apple-darwin.tar.gz": "7523e6d376c243989aacadd3caa6dc222d2f92c7b7561619d1e6d2ebb2b0a630",
+    "ah-engine-v0.1.0-x86_64-unknown-linux-gnu.tar.gz": "2f30fb501fd3e6559b41facb5f334e826137f41917952180eda78e834b623bc4",
+    "ah-engine-v0.1.0-x86_64-unknown-linux-musl.tar.gz": "392431b4bdc295d55d2216d73536438dc4723fb5efbebb352cc36048d633520d"
+  }
+}
