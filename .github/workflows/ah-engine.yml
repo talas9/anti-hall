@@ -1,23 +1,36 @@
 name: ah-engine
 
-# Self-contained CI for the Rust engine in ah-engine/ (D69): fmt, clippy, tests and docs on the supported unix targets.
+# Self-contained CI for the Rust engine in ah-engine/ (D69). Two tiers:
+# - the gate (push, pull request): fmt, test.sh on ubuntu (the `ci` nextest profile: everything but the memory soak, the
+#   wall-clock benches and the heavy Node parity sweeps; every policy gate stays in), a macOS build + smoke subset, docs;
+# - the full run (the nightly schedule, a manual dispatch, a version tag): the whole suite (`nightly` profile) on both OSes;
+#   a scheduled failure opens or updates one issue.
 on:
   push:
     branches: [engine-proto, dev, main]
+    tags: ['v*']
     paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
   pull_request:
-    paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', '.github/workflows/ah-engine.yml']
   schedule:
-    - cron: '17 4 * * 1' # weekly: the full doc-check, with the long test suites
+    - cron: '17 3 * * *' # nightly: the full suite on both OSes
+    - cron: '17 4 * * 1' # weekly: the full doc-check on both OSes
   workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  # the full tier: the nightly schedule, a manual dispatch or a version tag
+  AH_FULL: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+
 jobs:
   rust:
     name: rust (${{ matrix.os }})
+    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'
     runs-on: ${{ matrix.os }}
+    # the gate fits well inside an hour; the full run (soak, benches, heavy sweeps) gets more
+    timeout-minutes: ${{ ((github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && 150 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +38,11 @@ jobs:
     defaults:
       run:
         working-directory: ah-engine
+    env:
+      # Headroom for the script CPU limit on a loaded shared runner (the shipped default is sized for an idle machine).
+      AH_ENGINE_SCRIPT_TIME_MS: "2000"
+      # Wall-clock tests (a transcript answered within the script limit) get the same headroom: 2000 ms x 3.
+      AH_TEST_TIME_SCALE: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The Node parity lanes run the Node hooks; with CI=true they fail rather than skip when Node is missing.
@@ -41,28 +59,60 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: ./test.sh
+        if: matrix.os == 'ubuntu-latest'
+      # The gate on ubuntu: test.sh (release clippy -D warnings, the `ci` profile, doctests, wrapper and bootstrap tests, the
+      # daemon-survivor check). Clippy runs only here, once.
+      - name: test.sh (gate)
+        if: matrix.os == 'ubuntu-latest' && env.AH_FULL != 'true'
+        run: ./test.sh
+      # The gate on macOS: build everything, then the end-to-end smoke (hook dispatch, daemon lifecycle, sessions) and the
+      # wrapper and bootstrap shell tests. The full macOS suite runs in the nightly tier.
+      - name: build + smoke (macOS gate)
+        if: matrix.os == 'macos-latest' && env.AH_FULL != 'true'
+        run: |
+          cargo nextest run --release --profile ci --no-run
+          cargo nextest run --release --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/)'
+          sh tests/wrapper.sh && sh tests/bootstrap.sh
+      - name: test.sh (full)
+        if: env.AH_FULL == 'true'
+        run: ./test.sh
         env:
-          # Headroom for the script CPU limit on a loaded shared runner (the shipped default is sized for an idle machine).
-          AH_ENGINE_SCRIPT_TIME_MS: "2000"
-          # Wall-clock tests (a transcript answered within the script limit) get the same headroom: 2000 ms x 3.
-          AH_TEST_TIME_SCALE: "3"
+          AH_TEST_PROFILE: nightly
       - run: cargo doc --no-deps
+        if: matrix.os == 'ubuntu-latest'
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # A failed nightly run opens one issue, or comments on the open one, instead of failing silently.
+  nightly-report:
+    needs: rust
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="ah-engine nightly suite failed"
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          body="The nightly full ah-engine suite failed on $(date -u +%F): $RUN_URL"
+          if [ -n "$n" ]; then gh issue comment "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+
   # Runs the shell commands in docs/DEVELOPMENT.md in a fresh clone (D83), so the guide cannot drift from the repo. A push
-  # or pull request runs it with --fast (the blocks marked `long`, the full test suites, are skipped: the rust job above
-  # already runs them); the weekly schedule and a manual dispatch run every block.
+  # or pull request runs it with --fast on ubuntu (the blocks marked `long`, the full test suites, are skipped: the rust job
+  # already runs them); the weekly schedule and a manual dispatch run every block on both OSes.
   doc-check:
     name: doc-check (${{ matrix.os }})
+    if: github.event_name != 'schedule' || github.event.schedule == '17 4 * * 1'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -87,11 +137,11 @@ jobs:
       - run: cargo audit
       - run: cargo deny check
 
-  # Informational, never gating (continue-on-error): scheduled reports. The schedule trigger is the weekly cron above;
+  # Informational, never gating (continue-on-error): scheduled reports. The schedule trigger is the weekly cron above (not the nightly one);
   # a manual dispatch runs them too, a push or pull request does not.
   coverage:
     name: coverage (informational)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 1') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     continue-on-error: true
     defaults:
@@ -114,7 +164,7 @@ jobs:
   # Binary size report: total release size and the biggest crates (cargo-bloat). Informational; compare to ah-engine/RELEASING.md.
   size:
     name: size report (informational)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 1') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     continue-on-error: true
     defaults:

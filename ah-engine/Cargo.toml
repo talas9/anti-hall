@@ -53,6 +53,9 @@ insta = "1.49.0"
 # Correctness tooling (tests/prop_*.rs, benches/): never linked into the release binary.
 proptest = { version = "1", default-features = false, features = ["std"] }
 criterion = { version = "0.8", default-features = false }
+# The D88 binary scan (tests/it/no_compiled_config.rs): one Aho-Corasick pass over the release binary for every sentinel text.
+# Already in the tree through regex; a dev-dependency is outside the normal graph that deps-budget.toml counts.
+aho-corasick = "1.1.5"
 
 [[bench]]
 name = "parsers"
