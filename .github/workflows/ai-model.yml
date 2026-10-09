@@ -144,10 +144,25 @@ jobs:
             const fs = require('node:fs');
             let text = '';
             try { text = fs.readFileSync(process.env.EXEC_FILE, 'utf8').slice(-6000); } catch { /* no log */ }
+            // Structure of the final result record (no model text): shows an instant, zero-cost
+            // error result (account/limit/auth) apart from a real answer that lacked structure.
+            try {
+              const log = JSON.parse(fs.readFileSync(process.env.EXEC_FILE, 'utf8'));
+              const res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
+              core.info(`primary result record: subtype=${res.subtype} is_error=${res.is_error} turns=${res.num_turns} cost=${res.total_cost_usd} duration_ms=${res.duration_ms} api_error_status=${res.api_error_status ?? 'n/a'} keys=${Object.keys(res).join(',')}`);
+              if (res.api_error_status) text += ` api_error_status ${res.api_error_status}`;
+              if (res.is_error) await core.summary.addRaw(`Claude primary error: HTTP ${res.api_error_status ?? 'n/a'}, cost ${res.total_cost_usd}, ${res.duration_ms} ms\n\n`, true).write();
+              if (res.is_error && typeof res.result === 'string') {
+                text += ' ' + res.result.slice(0, 300);
+                // Only the CLI's own error line (limit, auth, ...) goes to the job summary; never the prompt or reply.
+                await core.summary.addRaw(`Claude primary error result (HTTP ${res.api_error_status ?? 'n/a'}): ${String(res.result).slice(0, 200).replace(/[\r\n|]+/g, ' ')} (cost ${res.total_cost_usd}, ${res.duration_ms} ms)\n\n`, true).write();
+              }
+            } catch { /* no execution file */ }
             let why = '';
             if (process.env.OK1 !== 'true') why = 'secret empty';
             else if (process.env.OUTCOME !== 'success') {
-              if (/usage.?limit|rate.?limit|too many requests|429|quota|credit/i.test(text)) why = 'usage/rate limit';
+              if (/api_error_status 40[13]/.test(text)) why = 'auth error (token rejected, HTTP ' + text.match(/api_error_status (\d+)/)[1] + ')';
+              else if (/api_error_status 429|usage.?limit|too many requests|quota|credit/i.test(text)) why = 'usage/rate limit';
               else if (/overloaded|529|503/i.test(text)) why = 'overloaded';
               else if (/401|403|unauthori[sz]ed|authentication|invalid.*(token|credential)|expired/i.test(text)) why = 'auth error';
               else why = text ? 'failed (cause not recognised)' : 'failed (no log, cause unknown)';
@@ -173,6 +188,38 @@ jobs:
             --disallowedTools "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,Task,mcp__*"
             --json-schema '${{ inputs.schema }}'
 
+      - name: Classify the secondary result
+        id: why2
+        if: always() && steps.claude2.outcome != 'skipped' && steps.cred.outputs.ok2 == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OUTCOME: ${{ steps.claude2.outcome }}
+          STRUCTURED: ${{ steps.claude2.outputs.structured_output }}
+          EXEC_FILE: ${{ steps.claude2.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            let text = '';
+            try {
+              const log = JSON.parse(fs.readFileSync(process.env.EXEC_FILE, 'utf8'));
+              const res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
+              core.info(`secondary result record: subtype=${res.subtype} is_error=${res.is_error} turns=${res.num_turns} cost=${res.total_cost_usd} duration_ms=${res.duration_ms} api_error_status=${res.api_error_status ?? 'n/a'} keys=${Object.keys(res).join(',')}`);
+              if (res.api_error_status) text = `api_error_status ${res.api_error_status}`;
+              if (res.is_error) await core.summary.addRaw(`Claude secondary error: HTTP ${res.api_error_status ?? 'n/a'}, cost ${res.total_cost_usd}, ${res.duration_ms} ms\n\n`, true).write();
+              if (res.is_error && typeof res.result === 'string') {
+                text += ' ' + res.result.slice(0, 300);
+                await core.summary.addRaw(`Claude secondary error result (HTTP ${res.api_error_status ?? 'n/a'}): ${String(res.result).slice(0, 200).replace(/[\r\n|]+/g, ' ')} (cost ${res.total_cost_usd}, ${res.duration_ms} ms)\n\n`, true).write();
+              }
+            } catch { /* no execution file */ }
+            let why = '';
+            if (process.env.OUTCOME !== 'success' || !(process.env.STRUCTURED || '').trim()) {
+              if (/api_error_status 40[13]/.test(text)) why = 'auth error (token rejected, HTTP ' + text.match(/api_error_status (\d+)/)[1] + ')';
+              else if (/api_error_status 429|usage.?limit|too many requests|quota|credit/i.test(text)) why = 'usage/rate limit';
+              else if (/overloaded|529|503/i.test(text)) why = 'overloaded';
+              else why = text ? 'error result (cause not recognised)' : 'no structured output';
+            }
+            core.setOutput('why', why);
+
       - name: Collect the Claude result
         id: out
         if: always()
@@ -180,6 +227,7 @@ jobs:
         env:
           ANY: ${{ steps.cred.outputs.any }}
           WHY1: ${{ steps.why1.outputs.why }}
+          WHY2: ${{ steps.why2.outputs.why }}
           OUTCOME1: ${{ steps.claude1.outcome }}
           OUTCOME2: ${{ steps.claude2.outcome }}
           STRUCTURED1: ${{ steps.claude1.outputs.structured_output }}
@@ -204,7 +252,7 @@ jobs:
               tokens = (u.input_tokens || 0) + (u.output_tokens || 0) || '';
             } catch { /* no execution file */ }
             let reason = '';
-            if (!pickSlot) reason = e.ANY !== 'true' ? 'claude: both secrets empty' : `claude: primary ${e.WHY1 || 'failed'}; secondary ${e.OUTCOME2 ? 'failed' : 'not available'}`;
+            if (!pickSlot) reason = e.ANY !== 'true' ? 'claude: both secrets empty' : `claude: primary ${e.WHY1 || 'failed'}; secondary ${e.OUTCOME2 ? (e.WHY2 || 'failed') : 'not available'}`;
             else if (pickSlot === 'secondary') reason = `primary ${e.WHY1}`;
             const out = pickSlot === 'secondary' ? e.STRUCTURED2 : e.STRUCTURED1;
             core.setOutput('ok', pickSlot ? 'true' : 'false');
@@ -233,13 +281,16 @@ jobs:
       reason: ${{ steps.out.outputs.reason }}
       latency_ms: ${{ steps.out.outputs.latency_ms }}
     steps:
+      # Always checked out: the Copilot CLI install below needs .github/copilot-cli/package-lock.json.
+      # With tools 'none' only that folder is checked out (sparse), so the model sees no repo files.
       - name: Checkout the default branch (trusted)
-        if: inputs.tools != 'none'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           fetch-depth: 1
+          sparse-checkout: ${{ inputs.tools == 'none' && '.github/copilot-cli' || '' }}
+          sparse-checkout-cone-mode: false
 
       - name: Install Copilot CLI
         run: |
@@ -281,6 +332,7 @@ jobs:
             const out = read(process.env.RUNNER_TEMP + '/copilot.out').trim();
             const err = read(process.env.RUNNER_TEMP + '/copilot.err').slice(-2000);
             const latency = process.env.T0 ? Date.now() - Number(process.env.T0) : '';
+            if (process.env.OUTCOME !== 'success') core.info(`copilot stderr tail: ${err.slice(-400).replace(/\s+/g, ' ')}`);
             let reason = '';
             if (process.env.OUTCOME !== 'success') reason = /rate.?limit|quota|429|credits/i.test(err) ? 'copilot: rate/usage limit' : 'copilot: failed';
             else if (!out.includes('{')) reason = 'copilot: no JSON in reply';

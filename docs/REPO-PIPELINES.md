@@ -44,7 +44,8 @@ anything.
 | Moderation | Hides or labels spam and abuse; escalates to review |
 | PR check | Size, type and risk labels plus one checklist comment |
 | Privacy scan | Blocks private paths, emails and session ids in new text and diffs |
-| Roadmap manager | Keeps the project board in sync and posts a weekly digest |
+| Roadmap manager | Keeps the project board in sync, marks issues done when their PR merges, and posts a weekly digest |
+| Dependency updates | Patch and minor bumps merge once every check is green; a major bump waits for a human |
 
 !!! note "Model chain"
     When a model is used, the order is Claude (primary token), Claude (secondary token),

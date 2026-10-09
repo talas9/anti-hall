@@ -143,7 +143,7 @@ test('rank: priority first, blockers sink', () => {
 });
 
 test('templates referenced by the scripts exist', () => {
-  for (const t of ['needs-info', 'off-topic', 'triage-brief', 'qa-answer', 'pr-summary', 'privacy', 'stale-check', 'roadmap-digest', 'roadmap-digest-issue']) {
+  for (const t of ['needs-info', 'off-topic', 'triage-brief', 'qa-answer', 'pr-summary', 'privacy', 'stale-check', 'roadmap-digest', 'release-announcement', 'idea-accepted']) {
     assert.ok(fs.existsSync(path.join(DIR, '..', '..', 'moderation', 'templates', t + '.md')), t);
   }
 });
