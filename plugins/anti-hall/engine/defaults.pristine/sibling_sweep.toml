@@ -177,10 +177,11 @@ max = 1000
 # ---- the cause matcher --------------------------------------------------------------------------------------
 
 [sibling_sweep.cause_cues]
-doc = "Regex sources, any of which states the cause of a bug in the assertive form (root-cause statements, 'caused by', 'the bug was', 'found the bug', a Cause label). Matched sentence by sentence after markdown emphasis, fenced code and quoted lines are removed."
+doc = "Regex sources, any of which states the cause of a bug in the assertive form (root-cause statements, 'caused by', 'the bug was', 'found the bug', a Cause label). 'Root cause' must be the subject ('the root cause [of X] was'), not a modifier ('root-cause messages were captured by running ...' describes a method, issue #55). Matched sentence by sentence after markdown emphasis, fenced code and quoted lines are removed."
 value = [
-  '\broot[- ]causes?\b[^.\n]{0,80}?\b(?:is|was|were|are|turned out|lies|lay|lives|came from)\b',
+  '\broot[- ]causes?(?:\s+(?:of|for|behind|in)\b[^.\n]{0,80}?)?\s*,?\s+(?:(?:here|then|now|clearly|actually|really|ultimately|finally|itself)\s+)?(?:is|was|were|are|turned out|lies|lay|lives|came from)\b',
   '\broot[- ]causes?\s*(?::|—|–|-\s)',
+  '\broot[- ]causes?\s+(?:is\s+|was\s+|now\s+)?(?:confirmed|found|identified|established|isolated|located|proven|proved|nailed\s+down|pinned\s+down|tracked\s+down)\b',
   '\b(?:found|identified|isolated|confirmed|proved|proven|traced|nailed|located|pinned down|tracked down|tracked)\s+(?:down\s+)?(?:the|its|a|an|that)\s+(?:actual\s+|real\s+|underlying\s+|exact\s+|true\s+)?(?:root[- ]cause|cause|culprit|bug)\b',
   '\b(?:the|its|this|that)\s+(?:actual\s+|real\s+|underlying\s+|exact\s+|true\s+|only\s+)?(?:cause|culprit|bug)\s+(?:is|was)\b',
   '\b(?:is|was|were|are|been|being)\s+caused\s+by\b',

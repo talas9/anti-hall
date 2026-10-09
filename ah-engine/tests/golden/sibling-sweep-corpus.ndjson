@@ -99,3 +99,7 @@
 {"msg": "According to the lane, the root cause is that `parse_ts` treats a missing offset as UTC. I fixed it.", "cause": false}
 {"msg": "Root cause: `build_key` drops the tenant id, so two tenants share one entry. Fixed the builder.", "cause": true}
 {"msg": "I found the root cause: `retry` never resets `attempts`, so the second request starts at the cap. Patched it.", "cause": true}
+{"msg": "The root-cause messages were captured by running the hooks against a temp home, then I fixed the wording.", "cause": false}
+{"msg": "Root-cause reports were collected by running the replay; I fixed the two misfires it listed.", "cause": false}
+{"msg": "The root cause of the flake was the shared temp dir in `make_home`; I fixed it with a per-test dir.", "cause": true}
+{"msg": "The root cause here was that `split_segments` drops the last delimiter. Fixed it.", "cause": true}
