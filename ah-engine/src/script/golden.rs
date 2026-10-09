@@ -111,8 +111,13 @@ pub struct Laid {
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn lay(case: &Value) -> Laid {
-    let norm = case.get("normTs").and_then(Value::as_bool).unwrap_or(false);
-    lay_at(case, if norm { crate::checks::replykit::io::now_ms() } else { NOW0 })
+    // A case that places events relative to the real moment (`{NOW-5000}`, `{ISO}`, `{DATE}`: no colon) or normalizes clock readings
+    // (`normTs`) runs at the real clock, as the settings and skip files the host reads are judged against it; every other case runs at
+    // the pinned one (the `{MS:-1000}` family, whose answers are stored as the same tokens).
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = R.get_or_init(|| regex::Regex::new(r"\{(NOW|ISO|DATE)([-+][0-9]+)?\}").unwrap());
+    let real = case.get("normTs").and_then(Value::as_bool).unwrap_or(false) || re.is_match(&case.to_string());
+    lay_at(case, if real { crate::checks::replykit::io::now_ms() } else { NOW0 })
 }
 
 pub fn lay_at(case: &Value, now: f64) -> Laid {
