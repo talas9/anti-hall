@@ -179,7 +179,7 @@ fn diagnose_store(inv: &Inv, repo_key: &str) -> R<Diagnosis> {
         let desc_sid = match desc.as_ref().and_then(|x| x.get(text("mesh_write.field_session_id"))) {
             None | Some(OVal::Null) => None,
             Some(OVal::Str(x)) => Some(x.clone()),
-            Some(OVal::Num(x)) => Some(crate::checks::guardkit::ojson::js_number_text(*x)),
+            Some(OVal::Num(x)) => Some(crate::checks::jsport::num::to_js_string(*x)),
             Some(OVal::Bool(b)) => Some(b.to_string()),
             Some(_) => return defer("descriptor-session-type"),
         };
@@ -445,7 +445,7 @@ pub fn healthcheck(inv: &Inv, a: &Args) -> R<Answer> {
         ("phantoms", d.phantoms),
         ("unread", d.unread_total),
     ];
-    let parts: Vec<String> = parts.iter().map(|(k, c)| format!("{k}={}", crate::checks::guardkit::ojson::js_number_text(*c))).collect();
+    let parts: Vec<String> = parts.iter().map(|(k, c)| format!("{k}={}", crate::checks::jsport::num::to_js_string(*c))).collect();
     let mut warning = String::new();
     if !d.dead_splits.is_empty() {
         warning += &tpl("devswarm_cli.diag_line_warning", &[("warning", &dead_msg(d.dead_splits.len()))]);
