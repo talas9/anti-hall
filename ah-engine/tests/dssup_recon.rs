@@ -1161,7 +1161,7 @@ impl Fix {
         self.db(key).execute("UPDATE registry SET updated_at = ?1 WHERE id = ?2", rusqlite::params![updated_at, id]).unwrap();
     }
     /// A direct message in `part`'s partition (`sender` empty makes it non-forwardable).
-    fn msg(&self, key: &str, part: &str, ts: i64, body: &str, sender: &str) {
+    fn msg_at(&self, key: &str, part: &str, ts: i64, body: &str, sender: &str) {
         let st = self.store(key);
         st.append_mesh_row(&MeshRow {
             workspace_id: part.into(),
@@ -1221,8 +1221,8 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.row_s(&k, "w-live", &wt, Some("s1"));
                 f.row_s(&k, "w-ph", &wt, None);
                 f.floors(&k, "w-ph", 0);
-                f.msg(&k, "w-ph", 10, "one", "snd");
-                f.msg(&k, "w-ph", 11, "two", "snd");
+                f.msg_at(&k, "w-ph", 10, "one", "snd");
+                f.msg_at(&k, "w-ph", 11, "two", "snd");
                 (k.clone(), vec![k, wt])
             },
             retired: &["w-ph"],
@@ -1251,7 +1251,7 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.row_s(&k, "w-zdup", &wt, None);
                 f.descriptor("w-zdup", &desc_json("w-zdup", &wt, "", None, None));
                 f.floors(&k, "w-zdup", 0);
-                f.msg(&k, "w-zdup", 10, "kept", "snd");
+                f.msg_at(&k, "w-zdup", 10, "kept", "snd");
                 (k.clone(), vec![k, wt])
             },
             retired: &[],
@@ -1266,7 +1266,7 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.row_s(&k, "w-live", &wt, Some("s1"));
                 f.row_s(&k, "w-adup", &wt, None);
                 f.floors(&k, "w-adup", 0);
-                f.msg(&k, "w-adup", 10, "kept", "snd");
+                f.msg_at(&k, "w-adup", 10, "kept", "snd");
                 (k.clone(), pair(&k, &wt))
             },
             retired: &[],
@@ -1281,8 +1281,8 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.row_s(&k, "w-live", &wt, Some("s1"));
                 f.row_s(&k, "w-ph", &wt, None);
                 f.floors(&k, "w-ph", 0);
-                f.msg(&k, "w-ph", 10, "native", "");
-                f.msg(&k, "w-ph", 11, "real", "snd");
+                f.msg_at(&k, "w-ph", 10, "native", "");
+                f.msg_at(&k, "w-ph", 11, "real", "snd");
                 (k.clone(), vec![k, wt])
             },
             retired: &[],
@@ -1297,9 +1297,9 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.row_s(&k, "w-live", &wt, Some("s1"));
                 f.row_s(&k, "w-ph", &wt, None);
                 f.floors(&k, "w-ph", 1);
-                f.msg(&k, "w-ph", 10, "read", "snd");
-                f.msg(&k, "w-ph", 11, "unread-a", "snd");
-                f.msg(&k, "w-ph", 12, "unread-b", "snd");
+                f.msg_at(&k, "w-ph", 10, "read", "snd");
+                f.msg_at(&k, "w-ph", 11, "unread-a", "snd");
+                f.msg_at(&k, "w-ph", 12, "unread-b", "snd");
                 (k.clone(), vec![k, wt])
             },
             retired: &["w-ph"],
@@ -1318,8 +1318,8 @@ fn s6_cases() -> Vec<FoldCase> {
                     f.floors(&k, id, 0);
                 }
                 // same sender, body, time: the forwarded copies share a hash; the seeded originals differ in their part name
-                f.msg(&k, "w-b", 10, "same", "snd");
-                f.msg(&k, "w-c", 10, "same", "snd");
+                f.msg_at(&k, "w-b", 10, "same", "snd");
+                f.msg_at(&k, "w-c", 10, "same", "snd");
                 (k.clone(), vec![k, wt])
             },
             retired: &["w-b", "w-c"],
@@ -1365,7 +1365,7 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.row_s(&k, "w-b", &sub, None);
                 f.touch(&k, "w-a", NOW + 5); // the re-keyed row is stamped `now`; the live row must still win the fallback
                 f.floors(&k, "w-b", 0);
-                f.msg(&k, "w-b", 10, "from the subdir", "snd");
+                f.msg_at(&k, "w-b", 10, "from the subdir", "snd");
                 (k.clone(), pair(&k, &wt))
             },
             retired: &["w-b"],
@@ -1477,7 +1477,7 @@ fn s6_cases() -> Vec<FoldCase> {
                 let (wt, k) = s6_base(f);
                 f.row_s(&k, "w-live", &wt, Some("s1"));
                 f.row_s(&k, "w-ph", &wt, None);
-                f.msg(&k, "w-ph", 10, "one", "snd");
+                f.msg_at(&k, "w-ph", 10, "one", "snd");
                 (k.clone(), pair(&k, &wt))
             },
             retired: &[],
@@ -1621,7 +1621,7 @@ fn s6_retire_worktree_duplicates_matches_node() {
             f.row_s(&k, "w-keep", &wt, Some("s1"));
             f.row_s(&k, "w-ph", &wt, None);
             f.floors(&k, "w-ph", 0);
-            f.msg(&k, "w-ph", 10, "m", "snd");
+            f.msg_at(&k, "w-ph", 10, "m", "snd");
             (wt, k)
         }, Some(serde_json::json!({"retired": ["w-ph"], "forwarded": 1}))),
         ("a distinct live child is forwarded to and left", |f| {
@@ -1630,7 +1630,7 @@ fn s6_retire_worktree_duplicates_matches_node() {
             f.row_s(&k, "w-kid", &wt, Some("s2"));
             f.descriptor("w-kid", &desc_json("w-kid", &wt, "s2", None, None));
             f.floors(&k, "w-kid", 0);
-            f.msg(&k, "w-kid", 10, "m", "snd");
+            f.msg_at(&k, "w-kid", 10, "m", "snd");
             (wt, k)
         }, Some(serde_json::json!({"retired": [], "forwarded": 1, "left": ["w-kid"]}))),
         ("nothing to fold", |f| {
@@ -1665,7 +1665,7 @@ fn s6_retire_archived_worktree_group_matches_node() {
             f.descriptor("w-live", &desc_json("w-live", &wt, "s1", None, None));
             f.row_s(&k, "w-ph", &wt, None);
             f.floors(&k, "w-ph", 0);
-            f.msg(&k, "w-ph", 10, "m", "snd");
+            f.msg_at(&k, "w-ph", 10, "m", "snd");
             (wt, k)
         }, serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [{"id": "w-live", "reason": "live-descriptor"}], "forwardedTo": "w-live"})),
         ("no drainable sibling: phantoms fold into the archived row", |f| {
@@ -1673,14 +1673,14 @@ fn s6_retire_archived_worktree_group_matches_node() {
             f.row_s(&k, "w-arch", &wt, None);
             f.row_s(&k, "w-ph", &wt, None);
             f.floors(&k, "w-ph", 0);
-            f.msg(&k, "w-ph", 10, "m", "snd");
+            f.msg_at(&k, "w-ph", 10, "m", "snd");
             (wt, k)
         }, serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [], "forwardedTo": "w-arch"})),
         ("the archived row is already gone: the survivor is missing", |f| {
             let (wt, k) = s6_base(f);
             f.row_s(&k, "w-ph", &wt, None);
             f.floors(&k, "w-ph", 0);
-            f.msg(&k, "w-ph", 10, "m", "snd");
+            f.msg_at(&k, "w-ph", 10, "m", "snd");
             (wt, k)
         }, serde_json::json!({"retired": [], "forwarded": 0, "left": [{"id": "w-ph", "reason": "survivor-gone"}], "forwardedTo": "w-arch"})),
     ];
@@ -1709,10 +1709,10 @@ fn s6_forward_archived_orphan_unread_matches_node() {
     let (wt, k) = s6_base(&f);
     f.row_s(&k, "w-live", &wt, Some("s1"));
     f.floors(&k, "w-arch", 1);
-    f.msg(&k, "w-arch", NOW - 100 * day, "already read", "snd");
-    f.msg(&k, "w-arch", NOW - day, "fresh", "snd");
-    f.msg(&k, "w-arch", NOW - 40 * day, "stale", "snd");
-    f.msg(&k, "w-arch", NOW - day + 1, "native", "");
+    f.msg_at(&k, "w-arch", NOW - 100 * day, "already read", "snd");
+    f.msg_at(&k, "w-arch", NOW - day, "fresh", "snd");
+    f.msg_at(&k, "w-arch", NOW - 40 * day, "stale", "snd");
+    f.msg_at(&k, "w-arch", NOW - day + 1, "native", "");
     let (res, verdict, ends) = archived::forward_archived_orphan_unread(&f.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
     assert_eq!(verdict, Verdict::Agreed);
     assert_eq!((res.forwarded, res.stale, res.status.as_str()), (1, 1, "ok"));
@@ -1729,7 +1729,7 @@ fn s6_forward_archived_orphan_unread_matches_node() {
     let (wt, k) = s6_base(&g);
     g.row_s(&k, "w-other", &wt, Some("s1"));
     g.floors(&k, "w-arch", 0);
-    g.msg(&k, "w-arch", NOW - day, "fresh", "snd");
+    g.msg_at(&k, "w-arch", NOW - day, "fresh", "snd");
     let (res, verdict, _) = archived::forward_archived_orphan_unread(&g.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
     assert_eq!((res.forwarded, res.status.as_str(), verdict), (0, "gone", Verdict::Agreed));
     assert!(g.msgs_in(&k, "w-live").is_empty());
@@ -1744,8 +1744,8 @@ fn crash_fold_fixture(f: &Fix) -> String {
     f.row_s(&k, "w-live", &wt, Some("s1"));
     f.row_s(&k, "w-ph", &wt, None);
     f.floors(&k, "w-ph", 0);
-    f.msg(&k, "w-ph", 10, "one", "snd");
-    f.msg(&k, "w-ph", 11, "two", "snd");
+    f.msg_at(&k, "w-ph", 10, "one", "snd");
+    f.msg_at(&k, "w-ph", 11, "two", "snd");
     k
 }
 

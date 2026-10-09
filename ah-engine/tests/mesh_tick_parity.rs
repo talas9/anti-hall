@@ -611,9 +611,11 @@ fn cases(fx: &Fx) -> Vec<Case> {
         },
         // ---- deferrals: nothing may be written ----
         Case {
-            name: "child-flag",
+            // the plain `--child` tick is native since lane l8e (see devswarm_l8e_parity.rs, which runs it against a recording
+            // hivecontrol stub: this file runs with the machine's own PATH); a pull flag the engine does not read is still Node's
+            name: "child-flag-with-a-session",
             cwd: "child",
-            argv: tick_argv("child-1", &["--quiet", "--child"]),
+            argv: tick_argv("child-1", &["--quiet", "--child", "--session", "s1"]),
             extra: vec![],
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),

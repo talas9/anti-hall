@@ -99,7 +99,7 @@ pub fn check(env: &Env, ops: &[Op]) -> Result<(), String> {
                     return Err(format!("{store}:{}", guard.row.id));
                 }
             }
-            Op::Append { .. } | Op::Rename { .. } | Op::Derive { .. } | Op::Log { .. } | Op::UnlinkLinked { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } => {}
+            Op::Append { .. } | Op::Rename { .. } | Op::Derive { .. } | Op::Log { .. } | Op::UnlinkLinked { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } | Op::Pull { .. } => {}
         }
     }
     Ok(())
@@ -111,7 +111,7 @@ pub fn ino_of(p: &Path) -> Option<(u64, u64)> {
     std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
 }
 
-fn remove_if(env: &Env, store: &str, guard: &RegRow) -> Result<(), String> {
+fn remove_guarded(env: &Env, store: &str, guard: &RegRow) -> Result<(), String> {
     let st = MeshStore::open(&super::view::store_db(env.home, store)).map_err(|e| e.to_string())?;
     let c = st.reader().conn();
     let g = &guard.row;
@@ -148,8 +148,15 @@ fn upsert(env: &Env, store: &str, row: &RegistryRow, pre: &Option<Box<RegRow>>) 
             if now.map(Box::new) != *pre {
                 return Ok(false);
             }
-            c.prepare_cached(crate::sql::MESHW_REGISTRY_UPSERT)?
-                .execute(rusqlite::params![row.id, row.worktree_path, row.session_id, row.inbox_path, row.cursor_path, row.nudge_command, env.now])?;
+            c.prepare_cached(crate::sql::MESHW_REGISTRY_UPSERT)?.execute(rusqlite::params![
+                row.id,
+                row.worktree_path,
+                row.session_id,
+                row.inbox_path,
+                row.cursor_path,
+                row.nudge_command,
+                env.now
+            ])?;
             Ok(true)
         })();
         match r {
@@ -275,7 +282,7 @@ fn log_line(env: &Env, component: &str, op: &str, level: &str, msg: &str, ctx: &
     crate::meshw::clog::write_line(&env.log_dir(), &format!("{}\n", OVal::Obj(e).stringify()));
 }
 
-fn run_op(env: &Env, op: &Op) -> Result<(), String> {
+fn run_op(env: &Env, op: &Op, hook: &dyn Fn(&str)) -> Result<(), String> {
     let at = |rel: &str| env.home.join(rel);
     let mkparent = |p: &Path| p.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(|e| e.to_string());
     match op {
@@ -316,7 +323,7 @@ fn run_op(env: &Env, op: &Op) -> Result<(), String> {
             (Some(a), Some(b)) if a == b => std::fs::remove_file(at(rel)).map_err(|e| e.to_string()),
             _ => Err(defaults::render("devswarm_recon.msg_not_linked", &[("rel", rel), ("other", other)])),
         },
-        Op::Remove { store, guard } => remove_if(env, store, guard),
+        Op::Remove { store, guard } => remove_guarded(env, store, guard),
         Op::Derive { store } => {
             let st = MeshStore::open(&super::view::store_db(env.home, store)).map_err(|e| e.to_string())?;
             match crate::meshw::summary::derive_after_write(&st, &env.inv(), store) {
@@ -324,6 +331,7 @@ fn run_op(env: &Env, op: &Op) -> Result<(), String> {
                 Some(why) => Err(format!("derive:{why}")),
             }
         }
+        Op::Pull { id, cwd } => super::pull::apply_pull(env, id, cwd, hook),
         Op::Log { component, op, level, msg, ctx } => {
             log_line(env, component, op, level, msg, ctx);
             Ok(())
@@ -335,7 +343,7 @@ fn run_op(env: &Env, op: &Op) -> Result<(), String> {
 pub fn run(env: &Env, label: &str, ops: &[Op], hooks: &Hooks) -> Result<(), String> {
     for (i, op) in ops.iter().enumerate() {
         (hooks.at)(&format!("{label}:{i}:before"));
-        run_op(env, op)?;
+        run_op(env, op, hooks.at)?;
         (hooks.at)(&format!("{label}:{i}:after"));
     }
     Ok(())

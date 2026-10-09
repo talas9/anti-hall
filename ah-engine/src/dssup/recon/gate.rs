@@ -12,9 +12,9 @@
 //! weaker than Node, and an unwitnessed decision is not applied.
 use super::apply::{self, Env};
 use super::{Hooks, Unit, UnitEnd};
+use crate::defaults;
 use crate::dsact::runner::Runner;
 use crate::dssup::tick::Ctx;
-use crate::defaults;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -62,7 +62,12 @@ fn deferred(job: &Job, why: &str, verdict: Verdict) -> Outcome {
 }
 
 fn scratch_dir(ctx: &Ctx, label: &str) -> PathBuf {
-    ctx.home.join(defaults::text("devswarm_sup.witness_dir")).join(format!("{}{label}-{}-{}", defaults::text("devswarm_recon.scratch_prefix"), ctx.now, std::process::id()))
+    ctx.home.join(defaults::text("devswarm_sup.witness_dir")).join(format!(
+        "{}{label}-{}-{}",
+        defaults::text("devswarm_recon.scratch_prefix"),
+        ctx.now,
+        std::process::id()
+    ))
 }
 
 fn run_node(ctx: &Ctx, runner: &dyn Runner, home: &std::path::Path, calls: &[Value]) -> Result<Vec<Value>, String> {
@@ -135,7 +140,7 @@ fn witness(ctx: &Ctx, runner: &dyn Runner, job: &Job, m_node: &std::path::Path, 
             UnitEnd::Deferred(w) | UnitEnd::Failed(w) => return Verdict::MirrorFailed(format!("{}: {w}", u.label)),
         }
     }
-    let mut diffs = super::norm::diff(&super::norm::dump(m_node), &super::norm::dump(m_eng));
+    let mut diffs = super::norm::diff(&super::norm::dump_masked(m_node), &super::norm::dump_masked(m_eng));
     for (i, want) in job.expect.iter().enumerate() {
         if let Some(w) = want
             && theirs.get(i) != Some(w)

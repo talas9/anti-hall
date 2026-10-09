@@ -420,7 +420,7 @@ pub fn sampling_scope(ids: &[String]) -> Scope {
     let mut files: Vec<String> = ids.iter().filter(|i| is_safe_id_text(i)).map(|i| liveness_rel(i)).collect();
     files.push(sampling_state_rel());
     files.push(samples_rel());
-    Scope { files, dirs: Vec::new(), stores: Vec::new() }
+    Scope { files, ..Scope::default() }
 }
 
 /// `runSamplingPass(descriptors, {home, now, maxProbe, run})`: `ids` are the descriptors' ids in order, `probes` the answers of the
@@ -504,7 +504,7 @@ pub fn scope_for(rels: &[String]) -> Scope {
     for f in defaults::list("devswarm_recon.settings_files") {
         files.push(f.to_string());
     }
-    Scope { files, dirs: Vec::new(), stores: Vec::new() }
+    Scope { files, ..Scope::default() }
 }
 
 /// The path of the unit's files, for building a [`Scope`] (the targets of its Write/Unlink/Append/Rename ops).
@@ -525,7 +525,7 @@ pub fn touched(u: &Unit) -> Vec<String> {
                 out.push(rel.clone());
                 out.push(other.clone());
             }
-            Op::Upsert { .. } | Op::Derive { .. } | Op::Log { .. } | Op::Remove { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } | Op::RemoveRegistryIf { .. } | Op::Guard { .. } => {}
+            Op::Upsert { .. } | Op::Derive { .. } | Op::Log { .. } | Op::Remove { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } | Op::RemoveRegistryIf { .. } | Op::Guard { .. } | Op::Pull { .. } => {}
         }
     }
     out.sort();

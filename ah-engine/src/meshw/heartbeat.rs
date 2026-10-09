@@ -40,7 +40,7 @@ struct Pending {
 }
 
 /// `/^primary-[0-9a-f]{8}$/`: a Primary label id, which Node's `childLabelRefusal` examines.
-fn is_primary_label(id: &str) -> bool {
+pub(crate) fn is_primary_label(id: &str) -> bool {
     let hex = defaults::num("mesh_write.mesh_id_hex") as usize;
     id.strip_prefix(defaults::text("mesh_write.primary_prefix"))
         .is_some_and(|rest| rest.len() == hex && rest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
