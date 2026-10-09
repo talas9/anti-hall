@@ -102,7 +102,9 @@ impl Git<'_> {
         if !Path::new(wt).exists() {
             return None;
         }
-        let r = self.run(wt, &["branch", "-r", "--contains", head]);
+        let mut args: Vec<&str> = defaults::list("devswarm_act.git_pushed_args");
+        args.push(head);
+        let r = self.run(wt, &args);
         r.ok.then(|| !r.stdout.trim().is_empty())
     }
     /// `git status --porcelain`: `(clean, reason)` as Node's `cleanFact`.

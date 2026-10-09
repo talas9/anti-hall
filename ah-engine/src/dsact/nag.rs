@@ -40,8 +40,6 @@ pub fn take_pending(state_dir: &std::path::Path) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-const HOUR_MS: i64 = 3_600_000;
-
 impl Act<'_> {
     fn nag_state(&self) -> Value {
         std::fs::read_to_string(self.state_dir.join(defaults::text("devswarm_act.nag_state_file")))
@@ -75,7 +73,7 @@ impl Act<'_> {
         let mut state = self.nag_state();
         let mut per: serde_json::Map<String, Value> = state.get("ws").and_then(Value::as_object).cloned().unwrap_or_default();
         let mut sent: Vec<i64> = state.get("sent").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_i64).collect()).unwrap_or_default();
-        sent.retain(|t| now - t < HOUR_MS);
+        sent.retain(|t| now - t < defaults::num("devswarm_act.nag_hour_ms") as i64);
         let active = self.live.candidates();
         // a nagged workspace that is no longer open: the nag worked
         for id in per.keys().filter(|id| !active.contains(id)).cloned().collect::<Vec<_>>() {

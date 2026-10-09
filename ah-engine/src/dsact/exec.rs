@@ -229,7 +229,11 @@ impl<'a> Act<'a> {
         }
         let now = self.live.now_ms();
         let attempt = match self.ledger.begin(&key, kind, id, now) {
-            Begin::Claimed(n) => n,
+            Begin::Claimed(n) => {
+                // the commit point: from here Node must never run the same action in this process
+                crate::meshw::mark_committed();
+                n
+            }
             Begin::Refused(st) => {
                 let w = if st == KeyState::Done {
                     Word::Skipped

@@ -526,3 +526,13 @@ value = { kind = "gauge", unit = "ratio", labels = [] }
 [metric.dsx_nag_mistake_rate]
 doc = "Mistake signals per delivered nag since the engine started (gauge)."
 value = { kind = "gauge", unit = "ratio", labels = [] }
+
+[devswarm_act.nag_hour_ms]
+doc = "The rolling window of the nag hourly cap."
+value = 3600000
+min = 1000
+max = 86400000
+
+[devswarm_act.git_pushed_args]
+doc = "Git arguments (the HEAD is appended) that list the remote branches containing a commit: a non-empty answer means the workspace's HEAD is pushed."
+value = ["branch", "-r", "--contains"]
