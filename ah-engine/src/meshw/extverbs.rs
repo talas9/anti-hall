@@ -32,6 +32,8 @@ pub enum Ext {
     Relay,
     /// `archive-request <childId>` (lane l8c).
     ArchiveRequest,
+    /// `nudge <id>` (lane l8c).
+    Nudge,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -52,6 +54,8 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Relay)
     } else if is("devswarm_cli.verb_archive_request") {
         Some(Ext::ArchiveRequest)
+    } else if is("devswarm_cli.verb_nudge") {
+        Some(Ext::Nudge)
     } else {
         None
     }
@@ -59,7 +63,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest)
+    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge)
 }
 
 /// Run the verb.
@@ -72,5 +76,6 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::Primary => super::actverbs::primary(inv, a),
         Ext::Relay => super::actverbs::relay(inv, a),
         Ext::ArchiveRequest => super::actverbs::archive_request(inv, a),
+        Ext::Nudge => super::actverbs::nudge(inv, a),
     }
 }

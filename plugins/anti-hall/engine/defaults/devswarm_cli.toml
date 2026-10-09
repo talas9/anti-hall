@@ -1068,3 +1068,13 @@ value = "ambiguous mesh id {id} matches {n} workspaces — archived nothing; use
 [devswarm_cli.msg_ids_join]
 doc = "What separates the candidate ids in those refusals."
 value = ", "
+
+# ---- nudge (lane l8c) ---------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_nudge]
+doc = "The verb that pokes a stale workspace through its nudge command (or escalates it)."
+value = "nudge"
+
+[devswarm_cli.msg_nudge_no_descriptor]
+doc = "The refusal when no descriptor exists for the id; {id} is the id as JSON."
+value = "no descriptor for workspace {id}"

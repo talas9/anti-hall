@@ -567,3 +567,26 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
     }
     Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect: Effect::Row(hash) })
 }
+
+// ---- nudge --------------------------------------------------------------------------------------------------------------
+
+/// `nudge <id>`: the engine answers only the refusal for an id nothing is registered under. A workspace with a descriptor
+/// would have its nudge command fired (or be escalated), which only Node does.
+pub fn nudge(inv: &Inv, a: &Args) -> R<Answer> {
+    let id = a.positionals.get(1).map(String::as_str).unwrap_or("");
+    if !is_safe_id(id) {
+        return Ok(refusal(&[("error", s(defaults::text("devswarm_cli.msg_bad_id")))]));
+    }
+    if ident::read_descriptor(&inv.home, id).is_some() {
+        return defer("descriptor");
+    }
+    // a mesh label or registry id `send` would resolve may lead to a descriptor under another name
+    if let Some(repo_key) = ident::repo_key_for_worktree(&inv.cwd)? {
+        let st = common::open_store(inv, &repo_key)?;
+        let rows = rows_of(&st)?;
+        if rows.iter().any(|r| r.id == id) || !crate::meshw::send::mesh_candidates(&rows, Some(id))?.is_empty() {
+            return defer("resolvable-target");
+        }
+    }
+    Ok(refusal(&[("error", s(&defaults::render("devswarm_cli.msg_nudge_no_descriptor", &[("id", &quote(id))])))]))
+}
