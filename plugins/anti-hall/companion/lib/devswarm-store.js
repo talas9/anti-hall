@@ -1033,11 +1033,13 @@ function openSqlite(home, workspaceId, opts) {
       const hash = (m && m.hash != null) ? String(m.hash) : null;
       const ts = Number.isFinite(m && m.ts) ? m.ts : Date.now();
       const body = (m && m.body != null) ? String(m.body) : '';
+      // sender (additive): who the native message came from, resolved by the caller from its branch; NULL when unknown.
+      const sender = m && m.sender != null ? String(m.sender) : null;
       const stmt = db.prepare(
         'INSERT ' + (hash !== null ? 'OR IGNORE ' : '')
-        + 'INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);'
+        + 'INTO messages (workspace_id, ts, hash, body, sender) VALUES (?, ?, ?, ?, ?);'
       );
-      const r = stmt.run(String(m.workspaceId), ts, hash, body);
+      const r = stmt.run(String(m.workspaceId), ts, hash, body, sender);
       return { inserted: r.changes > 0 };
     },
     // appendMeshRow(m) -> {inserted, seq}. The mesh-aware insert (D3/D6/D7/D22) —
