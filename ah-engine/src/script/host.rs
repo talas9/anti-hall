@@ -31,7 +31,7 @@
 //! | `isDir(path)` | whether `path` is a directory (links followed) |
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
-//! | `lockAcquire(rel, group)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
+//! | `lockAcquire(rel, group, waitMs?)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
 //! | `memory()` | JSON `{available, total}` bytes of the machine: see [`memory`] |
 //! | `agents(path)` | the running agents of a transcript (id, description, launching input): see [`agents`] |
 //! | `repoContext(dir)` | JSON `{unsure, toplevel, root}` of the checkout around `dir`: see [`repo_context`] |
@@ -384,26 +384,25 @@ thread_local! {
 }
 
 /// `lockAcquire(rel, group, waitMs?)`: take the cross-process lock file `rel` (the scoped path rules of [`write_atomic`]) with the Node
-/// lock protocol of `companion/lib/lock.js`, timings from the defaults group `group` (`<group>.lock_*`). Returns a handle number,
-/// or `null` when the lock could not be taken (the script decides what that means; the swarm guard fails open). A lock still
-/// held when the script call ends is released by the host. At most `script.lock_max_held` locks are held at once.
+/// lock protocol of `companion/lib/lock.js`, timings from the defaults group `group` (`<group>.lock_*`), the wait replaced by `waitMs`
+/// when given (never past `script.lock_wait_max_ms`). Returns a handle number, or `null` when the lock could not be taken (the script
+/// decides what that means; the swarm guard fails open). A lock still held when the script call ends is released by the host. At most
+/// `script.lock_max_held` locks are held at once per call (a script that nests two takes them in one fixed order and releases the
+/// inner one first); the in-process serialization is taken by the first of them only.
 pub fn lock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -> rquickjs::Result<Option<f64>> {
     let Some(mut params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
         return Err(err("lockAcquire", defaults::render("script.msg_unknown_key", &[("key", &group)])));
     };
-    // a script may shorten or lengthen the wait (a test home asks for its own)
     if let Some(w) = wait_ms.filter(|w| w.is_finite() && *w >= 0.0) {
-        params.wait_ms = w as u64;
+        params.wait_ms = (w as u64).min(defaults::num("script.lock_wait_max_ms"));
     }
-    // nested locks (a window lock, then the metrics lock under it) are taken in the script's fixed order; how many a call may hold at
-    // once is `script.lock_max_held`
     let held_now = HELD.with(|h| h.borrow().len());
     if held_now as u64 >= defaults::num("script.lock_max_held") {
         return Ok(None);
     }
     let Some(path) = scoped_target(home, rel, 0, false)? else { return Ok(None) };
     let started = std::time::Instant::now();
-    let guard = if held_now == 0 { Some(IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner())) } else { None };
+    let guard = (held_now == 0).then(|| IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner()));
     let taken = crate::checks::guardkit::nodelock::acquire(&path.to_string_lossy(), params);
     credit_blocking(started);
     let Some(held) = taken else { return Ok(None) };

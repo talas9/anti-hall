@@ -13,8 +13,6 @@
 pub mod agent_scan;
 pub mod codex;
 pub mod compact_decl;
-pub mod devswarm_comms;
-pub mod devswarm_gates;
 pub mod devswarm_role;
 pub mod emit_dedupe;
 pub mod git;
@@ -213,7 +211,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::ENGINE_ROLE_GUARD,
         &scripted::ENGINE_ROLE_NOTE,
         &scripted::GH_RT_ADVISORY,
-        &devswarm_comms::DevswarmCommsGuard,
+        &scripted::DEVSWARM_COMMS_GUARD,
         &scripted::SWARM_GUARD,
         &scripted::JEV_WEEKLY_SCORECARD,
         &scripted::JEV_REVIEW_REMINDER,
@@ -229,11 +227,11 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::TASKLIST_GUARD,
         &scripted::DEVSWARM_PARENT_INBOX,
         &scripted::DEVSWARM_CHILD_TURN,
-        &devswarm_role::DevswarmChildRole,
-        &devswarm_role::DevswarmParentGate,
-        &devswarm_gates::DevswarmChildGate,
-        &devswarm_gates::DevswarmParentReplyTracker,
-        &devswarm_gates::DevswarmChildDrain,
+        &scripted::DEVSWARM_CHILD_ROLE,
+        &scripted::DEVSWARM_PARENT_GATE,
+        &scripted::DEVSWARM_CHILD_GATE,
+        &scripted::DEVSWARM_PARENT_REPLY_TRACKER,
+        &scripted::DEVSWARM_CHILD_DRAIN,
         &scripted::SIBLING_SWEEP,
         &scripted::HANDOVER_HYGIENE,
         &scripted::AGENT_REMINDERS,

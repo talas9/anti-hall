@@ -135,6 +135,48 @@ pub static VERIFY_FIRST_ORCH_CODEX: Scripted = Scripted::new("verify-first-orch-
 /// `task-tracker` (UserPromptSubmit).
 pub static TASK_TRACKER: Scripted = Scripted::new("task-tracker", "task_tracker.summary");
 
+/// `ship-it-guard` (PreToolUse on Edit, Write, MultiEdit; the opt-in plan gate).
+pub static SHIP_IT_GUARD: Scripted = Scripted::new("ship-it-guard", "ship_it.summary");
+
+/// `compact-declaration-guard` (PreToolUse).
+pub static COMPACT_DECLARATION_GUARD: Scripted = Scripted::new("compact-declaration-guard", "compact_decl.summary");
+
+/// `devswarm-parent-inbox` (UserPromptSubmit).
+pub static DEVSWARM_PARENT_INBOX: Scripted = Scripted::new("devswarm-parent-inbox", "devswarm_prompt.parent_summary");
+
+/// `devswarm-child-turn` (UserPromptSubmit).
+pub static DEVSWARM_CHILD_TURN: Scripted = Scripted::new("devswarm-child-turn", "devswarm_prompt.child_summary");
+
+/// `devswarm-child-gate` (Stop).
+pub static DEVSWARM_CHILD_GATE: Scripted = Scripted::new("devswarm-child-gate", "devswarm_gates.child_gate_summary");
+
+/// `devswarm-parent-reply-tracker` (PostToolUse on Bash).
+pub static DEVSWARM_PARENT_REPLY_TRACKER: Scripted = Scripted::new("devswarm-parent-reply-tracker", "devswarm_gates.reply_tracker_summary");
+
+/// `devswarm-child-drain` (PostToolUse).
+pub static DEVSWARM_CHILD_DRAIN: Scripted = Scripted::new("devswarm-child-drain", "devswarm_gates.child_drain_summary");
+
+/// `devswarm-child-role` (SessionStart).
+pub static DEVSWARM_CHILD_ROLE: Scripted = Scripted::new("devswarm-child-role", "devswarm_role.child_summary");
+
+/// `devswarm-parent-gate` (Stop).
+pub static DEVSWARM_PARENT_GATE: Scripted = Scripted::new("devswarm-parent-gate", "devswarm_role.gate_summary");
+
+/// `devswarm-comms-guard` (PreToolUse on SendMessage).
+pub static DEVSWARM_COMMS_GUARD: Scripted = Scripted::new("devswarm-comms-guard", "devswarm_comms.summary");
+
+/// `jev-weekly-scorecard` (SessionStart).
+pub static JEV_WEEKLY_SCORECARD: Scripted = Scripted::new("jev-weekly-scorecard", "jev_weekly.summary");
+
+/// `jev-review-reminder` (SessionStart).
+pub static JEV_REVIEW_REMINDER: Scripted = Scripted::new("jev-review-reminder", "jev_review.summary");
+
+/// `repair-on-reload` (SessionStart and UserPromptSubmit).
+pub static REPAIR_ON_RELOAD: Scripted = Scripted::new("repair-on-reload", "repair_reload.summary");
+
+/// `task-lifecycle-log` (TaskCreated and TaskCompleted).
+pub static TASK_LIFECYCLE_LOG: Scripted = Scripted::new("task-lifecycle-log", "task_lifecycle_log.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

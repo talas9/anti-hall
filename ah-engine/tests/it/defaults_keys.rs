@@ -108,11 +108,20 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             literals.insert(format!("tasklist_guard.{}", &c[1]));
         }
     }
-    // the task-tracker script reads its `task_tracker.*` keys through the helpers `ttT('short_name')` and `ttN('short_name')`
-    let tt_re = regex::Regex::new(r#"\btt[TN]\('([a-z][a-z0-9_]*)'\)"#).unwrap();
-    for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == "task-tracker.js")) {
-        for c in tt_re.captures_iter(&fs::read_to_string(f).unwrap()) {
-            literals.insert(format!("task_tracker.{}", &c[1]));
+    // scripts that read their keys through a one-argument helper `xT('short_name')` / `xN('short_name')`: (script, helper regex, section)
+    for (script, helper, section) in [
+        ("task-tracker.js", r"\btt[TN]\('([a-z][a-z0-9_]*)'\)", "task_tracker"),
+        ("task-lifecycle-log.js", r"\blc[TN]\('([a-z][a-z0-9_]*)'\)", "task_lifecycle_log"),
+        ("devswarm-comms-guard.js", r"\bdc[TN]\('([a-z][a-z0-9_]*)'\)", "devswarm_comms"),
+        ("jev-review-reminder.js", r"\bsg[TN]\('([a-z][a-z0-9_]*)'\)", "session_gates"),
+        ("jev-weekly-scorecard.js", r"\bsg[TN]\('([a-z][a-z0-9_]*)'\)", "session_gates"),
+        ("repair-on-reload.js", r"\bsg[TN]\('([a-z][a-z0-9_]*)'\)", "session_gates"),
+    ] {
+        let re = regex::Regex::new(helper).unwrap();
+        for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == script)) {
+            for c in re.captures_iter(&fs::read_to_string(f).unwrap()) {
+                literals.insert(format!("{section}.{}", &c[1]));
+            }
         }
     }
     let indirect = |k: &str| {
