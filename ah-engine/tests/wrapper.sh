@@ -1192,11 +1192,19 @@ run_signal_cleanup_case() {
     # machine: with the 10 s timeout the wrapper gave up first and answered its fail-closed exit 2 instead of the signal's 129/130
     # (seen under load; reproduced with a CPU-saturated host and a nice 19 test run).
     sc_timeout=$((poll_limit * 5)); sc_sleep=$((poll_limit * 6))
-    # job control so the background wrapper does not start with SIGINT ignored
-    set -m
-    TMPDIR="$sc_parent" AH_STARTED="$sc_started" AH_PIDFILE="$sc_pidfile" AH_SLEEP_S="$sc_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/empty.list" AH_HOOK_TIMEOUT_S="$sc_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >/dev/null 2>&1 &
+    # A non-interactive shell starts a background job with SIGINT ignored, and an ignored signal cannot be reset from a
+    # shell. `set -m` fixes that only with a controlling terminal (dash on a CI runner prints "can't access tty" and the INT
+    # case then waited out the wrapper's whole hook timeout: exit 2, not 130). perl resets the disposition and execs, so the
+    # wrapper is the same pid either way; job control stays the fallback where perl is missing.
+    sc_unint=
+    if command -v perl >/dev/null 2>&1; then
+      printf '$SIG{INT} = "DEFAULT"; exec @ARGV or exit 127;\n' >"$tmp/unint.pl"
+      sc_unint="perl $tmp/unint.pl"
+    fi
+    set -m 2>/dev/null || true
+    TMPDIR="$sc_parent" AH_STARTED="$sc_started" AH_PIDFILE="$sc_pidfile" AH_SLEEP_S="$sc_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/empty.list" AH_HOOK_TIMEOUT_S="$sc_timeout" $sc_unint sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >/dev/null 2>&1 &
     sc_pid=$!
-    set +m
+    set +m 2>/dev/null || true
     wait_for_file "$sc_started" "$poll_limit" && wait_for_nonempty_file "$sc_pidfile" "$poll_limit" || {
       kill_test_tree "$sc_pid"
       return 1
