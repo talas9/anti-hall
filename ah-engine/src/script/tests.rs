@@ -1198,3 +1198,23 @@ fn tail_entries_projects_parsed_lines_and_hands_back_what_its_parser_refused() {
     assert_eq!((r["dropped"].as_u64(), r["droppedUnread"].as_u64()), (Some(4), Some(1)));
     assert!(super::host::tail_entries(&p, 0.0, 120.0, "{}", 0.0).is_none(), "keep must be a list of paths");
 }
+
+/// The transcript-scanning Stop-time and prompt-time checks carry their own CPU-time limit in `script.time_limit_by_check`: a
+/// real transcript tail made the default limit interrupt them and defer a decision the script makes identically given the time.
+#[test]
+fn stop_time_checks_have_their_own_time_limit() {
+    let by = defaults::raw("script.time_limit_by_check");
+    for name in [
+        "tasklist-guard",
+        "task-guard",
+        "silent-agent-nudge",
+        "stale-agent-stop-note",
+        "auto-handover",
+        "auto-handover-pause-nag",
+        "compact-advice-guard",
+        "limit-conserve-inject",
+        "idle-agent-sweep",
+    ] {
+        assert!(by.get(name).and_then(defaults::V::as_integer).is_some_and(|ms| ms >= 500), "{name}");
+    }
+}
