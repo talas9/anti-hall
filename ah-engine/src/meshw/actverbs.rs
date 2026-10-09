@@ -190,11 +190,10 @@ pub fn done_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
             }
         }
     }
-    let Some(pm) = primary_mesh else {
+    if primary_mesh.is_none() {
         out.put("messageReason", s(defaults::text("devswarm_cli.done_reason_no_primary")));
         return Ok(answer(0, out.done()));
-    };
-    let _ = pm;
+    }
     let Some(target) = target else {
         out.put("messageReason", s(defaults::text("devswarm_cli.done_reason_unregistered")));
         return Ok(answer(0, out.done()));
@@ -614,4 +613,27 @@ pub fn nudge(inv: &Inv, a: &Args) -> R<Answer> {
         }
     }
     Ok(refusal(&[("error", s(&defaults::render("devswarm_cli.msg_nudge_no_descriptor", &[("id", &quote(id))])))]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_receipt_id_is_an_r_and_alphanumerics() {
+        assert!(is_receipt_id("r123abc"));
+        assert!(is_receipt_id("R9"));
+        assert!(!is_receipt_id("r"));
+        assert!(!is_receipt_id("12"));
+        assert!(!is_receipt_id("r1-2"));
+    }
+
+    #[test]
+    fn a_primary_label_is_primary_and_eight_lower_hex() {
+        defaults::init().unwrap();
+        assert!(is_primary_label("primary-0123abcd"));
+        assert!(!is_primary_label("primary-0123ABCD"));
+        assert!(!is_primary_label("primary-0123abc"));
+        assert!(!is_primary_label("child-1"));
+    }
 }

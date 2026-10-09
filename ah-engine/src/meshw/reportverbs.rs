@@ -175,7 +175,7 @@ fn build_daily(rows: &[OVal]) -> R<Vec<(String, Roll)>> {
             continue;
         }
         let Some(iso) = date::to_iso(ms) else { return defer("report-ts") };
-        let day = iso.chars().take(10).collect::<String>();
+        let day = iso.chars().take(defaults::num("devswarm_cli.sr_day_chars") as usize).collect::<String>();
         let i = match days.iter().position(|(x, _)| *x == day) {
             Some(i) => i,
             None => {
@@ -409,7 +409,7 @@ fn log_files(dir: &Path, base: &str) -> R<Vec<std::path::PathBuf>> {
             && rest.bytes().all(|b| b.is_ascii_digit())
         {
             // a generation number JavaScript would print in exponent form is not reproduced
-            if rest.len() > 15 {
+            if rest.len() > defaults::num("devswarm_cli.sr_gen_digits_max") as usize {
                 return defer("report-generation");
             }
             gens.push(js_number_of_str(rest));
@@ -455,8 +455,9 @@ fn gather(inv: &Inv, days_in: f64) -> R<Report> {
     let now = inv.now as f64;
     let start = now - (days - 1.0) * 86_400_000.0;
     let Some(iso) = date::to_iso(start) else { return defer("report-since") };
-    let since = iso.chars().take(10).collect::<String>();
-    if !(0..=9999).contains(&iso[..4].parse::<i64>().unwrap_or(-1)) || iso.starts_with(['+', '-']) {
+    let since = iso.chars().take(defaults::num("devswarm_cli.sr_day_chars") as usize).collect::<String>();
+    // a year outside 0000-9999 is printed with a sign: not reproduced
+    if iso.starts_with(['+', '-']) {
         return defer("report-since");
     }
     let logs = inv.home.join(defaults::text("mesh_write.dir_anti_hall")).join(defaults::text("mesh_write.dir_logs"));
@@ -680,7 +681,7 @@ fn format_report(r: &Report) -> String {
     ];
     let mut ws: Vec<&(String, f64)> = t.tokens_by_ws.0.iter().collect();
     ws.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ws.truncate(5);
+    ws.truncate(defaults::num("devswarm_cli.sr_top_workspaces") as usize);
     if !ws.is_empty() {
         let list = ws
             .iter()
@@ -1109,4 +1110,74 @@ pub fn retention(inv: &Inv, a: &Args) -> R<Answer> {
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(false)).put("error", s(t("devswarm_cli.ret_msg_usage")));
     Ok(answer(2, o.done()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn init() {
+        defaults::init().unwrap();
+    }
+
+    #[test]
+    fn rounding_is_javascripts_half_up() {
+        assert_eq!(round(2.5), 3.0);
+        assert_eq!(round(0.49999999999999994), 0.0);
+        assert_eq!(round(1.4), 1.0);
+        assert_eq!(rate(1.0, 3.0), Some(0.33));
+        assert_eq!(rate(2.0, 3.0), Some(0.67));
+        assert_eq!(rate(1.0, 0.0), None);
+    }
+
+    #[test]
+    fn the_median_is_the_lower_middle() {
+        assert_eq!(median(&[]), None);
+        assert_eq!(median(&[5.0]), Some(5.0));
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), Some(2.0));
+        assert_eq!(median(&[9.0, 1.0, 5.0]), Some(5.0));
+    }
+
+    #[test]
+    fn token_counts_print_like_the_node_formatter() {
+        init();
+        assert_eq!(fmt_tokens(900.0), "900");
+        assert_eq!(fmt_tokens(420_000.0), "420k");
+        assert_eq!(fmt_tokens(1_849_999.0), "1.8M");
+        assert_eq!(fmt_tokens(2_500_000.0), "2.5M");
+        assert_eq!(fmt_tokens(999.6), "1000");
+    }
+
+    #[test]
+    fn titles_normalise_like_the_sidebar_matcher() {
+        init();
+        // an ellipsis is NFKC'd to three dots and then dropped; case and white space do not matter
+        assert_eq!(norm_title("  Fix   THE gate\u{2026} "), "fix the gate");
+        assert_eq!(norm_title("Fix the gate..."), "fix the gate");
+        assert!(title_matches("Fix the gate\u{2026}", Some("Fix the gate and ship it")));
+        assert!(!title_matches("short\u{2026}", Some("short title that is longer")), "a prefix needs twelve shared characters");
+        assert!(title_matches("same", Some("SAME")));
+        assert!(!title_matches("", Some("x")));
+        assert!(!title_matches("x", None));
+    }
+
+    #[test]
+    fn store_names_are_plain_keys() {
+        init();
+        assert!(safe_store_name("proj-abcdef"));
+        assert!(!safe_store_name(".hidden"));
+        assert!(!safe_store_name("a/b"));
+        assert!(!safe_store_name(""));
+        assert!(!safe_store_name(&"x".repeat(81)));
+    }
+
+    #[test]
+    fn odd_keys_are_the_ones_javascript_orders_or_treats_specially() {
+        init();
+        assert!(odd_key("0"));
+        assert!(odd_key("12"));
+        assert!(odd_key("__proto__"));
+        assert!(!odd_key("ws-a"));
+        assert!(!odd_key("01"));
+    }
 }
