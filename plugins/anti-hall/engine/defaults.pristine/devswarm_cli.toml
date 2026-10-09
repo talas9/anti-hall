@@ -583,6 +583,10 @@ value = "devswarm-cli-verify"
 doc = "Files and directories under the home copied into the witness's scratch home before the engine writes: what Node reads or rewrites for these verbs, and what the summary projection reads."
 value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/stray", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/token-usage", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1", ".anti-hall/logs/devswarm-supervision.ndjson", ".anti-hall/logs/devswarm-supervision.ndjson.1", ".anti-hall/logs/devswarm-supervision.ndjson.2", ".anti-hall/logs/devswarm-supervision.ndjson.3", ".anti-hall/logs/devswarm-supervision.ndjson.4", ".anti-hall/logs/devswarm-supervision.ndjson.5", ".anti-hall/logs/devswarm-supervision-daily"]
 
+[devswarm_cli.witness_link_paths_with_store]
+doc = "Paths the witness's scratch home links to the real ones for the verbs that copy the store as well: inputs Node only reads (the session records the Primary's live-holder check asks about)."
+value = [".claude"]
+
 [devswarm_cli.witness_node_snippet]
 doc = "The Node program of the witness: pins the clock, then loads the real devswarm.js as the main module so its own main() prints and exits. Arguments: the CLI path, the clock, then the verb's argv."
 value = "const c=process.argv[1],n=Number(process.argv[2]);Date.now=()=>n;process.argv=[process.argv[0],c].concat(process.argv.slice(3));require('module')._load(c,null,true);"
@@ -2376,10 +2380,6 @@ value = "register-primary"
 [devswarm_cli.flag_force]
 doc = "The flag that registers the Primary over a live holder, or from a child workspace."
 value = "force"
-
-[devswarm_cli.reason_not_primary_checkout]
-doc = "The `reason` of the refusal to register a child workspace as the Primary."
-value = "not-primary-checkout"
 
 [devswarm_cli.reason_live_primary_conflict]
 doc = "The `reason` of the refusal to register over a live Primary session."

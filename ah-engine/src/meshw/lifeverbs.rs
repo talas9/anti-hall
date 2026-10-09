@@ -627,6 +627,9 @@ pub fn register_primary(inv: &Inv, a: &Args) -> R<Answer> {
             if app_readable {
                 return defer("app-session-check");
             }
+            // Node refuses inside the Primary id's lock (which leaves its lock directory behind)
+            let Some(lock) = idlock::acquire(&inv.home, &id) else { return defer("lock-busy") };
+            lock.release();
             let msg = crate::meshw::extverbs::tpl(
                 "devswarm_cli.msg_regprim_conflict",
                 &[("worktree", &quote(&worktree)), ("id", &quote(&id)), ("session", &quote(held))],

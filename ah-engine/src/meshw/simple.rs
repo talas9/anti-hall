@@ -814,6 +814,16 @@ fn prepare_into(inv: &Inv, with_store: bool, scratch: &Path) -> Option<PathBuf> 
         }
         std::fs::write(scratch.join("log-dir"), d).ok()?;
     }
+    if with_store {
+        for rel in defaults::list("devswarm_cli.witness_link_paths_with_store") {
+            let src = inv.home.join(rel);
+            if src.exists() {
+                let dst = home.join(rel);
+                std::fs::create_dir_all(dst.parent()?).ok()?;
+                std::os::unix::fs::symlink(&src, dst).ok()?;
+            }
+        }
+    }
     // a caller outside any project has no store to copy: the verb answers without one (a refusal), and Node meets none either
     if with_store && let Some(real) = super::real_store(inv).ok().filter(|r| r.is_file()) {
         let key = real.parent()?.file_name()?.to_string_lossy().to_string();
