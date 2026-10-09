@@ -954,3 +954,41 @@ value = "token-usage"
 [devswarm_cli.message_row_name]
 doc = "What the Node witness reports as different when the message row Node wrote is not the row the engine wrote."
 value = "messages"
+
+# ---- primary (lane l8c) -------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_primary]
+doc = "The verb that shows who holds the Primary seat of this worktree (and takes it over)."
+value = "primary"
+
+[devswarm_cli.sub_status]
+doc = "The `primary` subcommand that shows the seat (the default)."
+value = "status"
+
+[devswarm_cli.sub_takeover]
+doc = "The `primary` subcommand that takes the seat over for this session."
+value = "takeover"
+
+[devswarm_cli.action_primary_status]
+doc = "The `action` of a primary status result."
+value = "primary-status"
+
+[devswarm_cli.action_primary_takeover]
+doc = "The `action` of a primary takeover result."
+value = "primary-takeover"
+
+[devswarm_cli.seat_state_na]
+doc = "The seat state of a caller that is not in the project's Primary checkout (a child worktree, or no git worktree at all)."
+value = "n/a"
+
+[devswarm_cli.reason_not_primary_checkout]
+doc = "The reason a takeover is refused outside the Primary checkout."
+value = "not-primary-checkout"
+
+[devswarm_cli.msg_primary_takeover_na]
+doc = "The error of a takeover run outside the Primary checkout."
+value = "primary takeover must run in the project's Primary checkout"
+
+[devswarm_cli.msg_primary_unknown_sub]
+doc = "The error of an unknown `primary` subcommand; {sub} is the word as JSON."
+value = "primary: unknown subcommand {sub} (status|takeover)"

@@ -284,3 +284,30 @@ fn done_matches_node() {
     let cases = done_cases(&fx);
     check(&fx, &cases, &[], 8, 5);
 }
+
+// ---- primary -------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn primary_matches_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8cprimary");
+    let p = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "Primary");
+    let cases = vec![
+        p("primary-status-in-a-child", &["primary"], "child", true),
+        p("primary-status-word", &["primary", "status"], "child", true),
+        p("primary-status-with-a-session-flag", &["primary", "status", "--session", "sess-x"], "child", true),
+        p("primary-status-with-a-session-env", &["primary", "status"], "child", true).env("CLAUDE_CODE_SESSION_ID", "sess-env"),
+        p("primary-status-outside-a-repository", &["primary", "status"], "nongit", true),
+        p("primary-status-in-another-repository-main", &["primary", "status"], "other", false),
+        p("primary-takeover-in-a-child", &["primary", "takeover"], "child", true),
+        p("primary-takeover-outside-a-repository", &["primary", "takeover", "--session", "s"], "nongit", true),
+        p("primary-unknown-sub", &["primary", "frobnicate"], "child", true),
+        p("primary-empty-sub", &["primary", ""], "child", true),
+        p("primary-status-in-the-primary-checkout", &["primary", "status"], "main", false),
+        p("primary-takeover-in-the-primary-checkout", &["primary", "takeover", "--session", "s"], "main", false),
+    ];
+    check(&fx, &cases, &[], 8, 3);
+}
