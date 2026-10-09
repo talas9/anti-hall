@@ -10,7 +10,8 @@ use crate::defaults;
 use crate::reqenv::RequestEnv;
 
 /// What the port cannot decide exactly; the check then answers "defer" and Node decides.
-pub use crate::checks::codex::quota::Unsure;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unsure;
 
 /// One handover or snapshot file.
 #[derive(Debug, Clone, PartialEq)]

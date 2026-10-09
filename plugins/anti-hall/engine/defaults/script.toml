@@ -185,7 +185,7 @@ unit = "bytes"
 
 [script.includes]
 doc = "Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable."
-value = { git-audit = ["git"], verify-first-orch-codex = ["verify-first-orch"], devswarm-child-turn = ["devswarm-parent-inbox"], devswarm-parent-reply-tracker = ["devswarm-child-gate"], devswarm-child-drain = ["devswarm-child-gate", "devswarm-child-role"], devswarm-parent-gate = ["devswarm-child-role"], jev-weekly-scorecard = ["jev-review-reminder"], repair-on-reload = ["jev-review-reminder"] }
+value = { git-audit = ["git"], codex-quota-detect = ["codex-availability"], codex-nudge = ["codex-availability"], verify-first-orch-codex = ["verify-first-orch"], devswarm-child-turn = ["devswarm-parent-inbox"], devswarm-parent-reply-tracker = ["devswarm-child-gate"], devswarm-child-drain = ["devswarm-child-gate", "devswarm-child-role"], devswarm-parent-gate = ["devswarm-child-role"], jev-weekly-scorecard = ["jev-review-reminder"], repair-on-reload = ["jev-review-reminder"] }
 
 [script.lock_max_held]
 doc = "Most cross-process locks (`ah.state.lock`) a script may hold at once in one call. A script that nests two takes them in one fixed order and releases the inner one first."

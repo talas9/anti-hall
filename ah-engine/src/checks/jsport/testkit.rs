@@ -40,10 +40,6 @@ impl Sandbox {
         let f = std::fs::OpenOptions::new().write(true).open(self.root.join(rel)).unwrap();
         f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
     }
-
-    pub(crate) fn state(&self) -> Value {
-        serde_json::from_str(&std::fs::read_to_string(self.root.join("home/.anti-hall/codex-availability.json")).unwrap()).unwrap()
-    }
 }
 
 pub(crate) fn git(dir: &Path, args: &[&str]) {

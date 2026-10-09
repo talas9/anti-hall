@@ -11,7 +11,6 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod agent_scan;
-pub mod codex;
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
@@ -208,9 +207,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::JEV_WEEKLY_SCORECARD,
         &scripted::JEV_REVIEW_REMINDER,
         &scripted::REPAIR_ON_RELOAD,
-        &codex::availability::CodexAvailability,
-        &codex::detect::CodexQuotaDetect,
-        &codex::nudge::CodexNudge,
+        &scripted::CODEX_AVAILABILITY,
+        &scripted::CODEX_QUOTA_DETECT,
+        &scripted::CODEX_NUDGE,
         &scripted::PRECOMPACT_SNAPSHOT,
         &scripted::HANDOVER_RESUME,
         &scripted::TASK_LIFECYCLE_LOG,

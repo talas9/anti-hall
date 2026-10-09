@@ -174,6 +174,15 @@ pub static SCAN_THROTTLE: Scripted = Scripted::new("scan-throttle", "scan_thrott
 /// `merge-gate` (PreToolUse on Bash; opt-in).
 pub static MERGE_GATE: Scripted = Scripted::new("merge-gate", "merge_gate.summary");
 
+/// `codex-availability` (SessionStart).
+pub static CODEX_AVAILABILITY: Scripted = Scripted::new("codex-availability", "codex_handover.avail_summary");
+
+/// `codex-quota-detect` (PostToolUse on Agent; advisory only).
+pub static CODEX_QUOTA_DETECT: Scripted = Scripted::new("codex-quota-detect", "codex_handover.detect_summary");
+
+/// `codex-nudge` (Stop).
+pub static CODEX_NUDGE: Scripted = Scripted::new("codex-nudge", "codex_handover.nudge_summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 
