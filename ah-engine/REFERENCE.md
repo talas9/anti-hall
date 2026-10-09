@@ -3425,7 +3425,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `roles.bash_re` | `(?:^\|[\s;&\|(])(?:\S*/)?ah-engine(?:\s\|$)` |  |  | Finds an engine invocation in a Bash command (engine syntax); the words after the match are the verb and its arguments, up to the next shell operator. |
+| `roles.bash_re` | `(?:^\|[\s;&\|("'`])(?:\S*/)?ah-engine(?:[\s"'`)]\|$)` |  |  | Finds an engine invocation in a Bash command (engine syntax), also as the first word of a quoted script or a command substitution; the words after the match are the verb and its arguments, up to the next shell operator. A match inside quoted text counts only where the shell runs that text (roles.script_words). |
 | `roles.branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable that is non-empty in a DevSwarm workspace child (and empty in a Primary). |
 | `roles.builder_env` | `DEVSWARM_BUILDER_ID` |  |  | Environment variable holding the caller's own workspace id: what a workspace child may act on. |
 | `roles.cli_cmd` | `ah-engine {verb}` |  |  | How a verb is typed, for the skills. |
@@ -3448,6 +3448,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.note_max` | `900` |  |  | Longest role note, in characters; the verb list is shortened to fit. |
 | `roles.owner_roles` | `codex, main` |  |  | The roles allowed to run a verb with one of its owner_args. |
 | `roles.refuse_exit` | `77` |  |  | Exit status of the command line when the caller's role may not run the verb. |
+| `roles.script_words` | `eval` |  |  | Commands besides the shells of git.shell_verbs whose quoted argument is itself a script, so an engine call quoted there still counts for the role guard; any other quoted engine name (a commit message, an echo) is text. |
 | `roles.self_flags` | `--id, --workspace, --builder` |  |  | Command-line flags whose value names a workspace; a workspace child may only name itself there. |
 | `roles.skill_budget` | `2 entries` |  |  | Size limits of the generated skills, in bytes of SKILL.md: the main skill must stay tiny, a sub-skill bounded. A test fails when a generated skill is over its limit; shrink the area (split it into two) rather than raise the number. |
 | `roles.skill_frontmatter` | `---\nname: {name}\ndescription: "{description}"\n---\n\n` |  |  | Front matter of a generated skill. Placeholders: {name}, {description}. |

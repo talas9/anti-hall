@@ -310,6 +310,28 @@ fn the_pretooluse_guard_refuses_what_a_subagent_or_a_workspace_child_may_not_run
     assert_eq!(guard("ah-engine restore snap", json!({"agent_id": "a1"}), &[("ANTIHALL_ROLE_GUARD", "0")]).0, 0);
 }
 
+/// Replay idx 272: a subagent's commit message that names `ah-engine migrate` is text, not a call. A quoted engine call the shell
+/// runs (a shell's `-c` script, `eval`, a command substitution) still counts.
+#[test]
+fn the_guard_reads_quoted_text_as_text_and_a_quoted_script_as_a_call() {
+    let sub = json!({"agent_id": "a1", "agent_type": "general-purpose"});
+    let text = "git commit -q -m \"feat(engine): doctor and migrate move into ah-engine (D81)\n\nah-engine doctor and ah-engine migrate (the repair pass)\"";
+    assert_eq!(guard(text, sub.clone(), &[]).0, 0, "a commit message");
+    assert_eq!(guard("echo 'ah-engine restore x'", sub.clone(), &[]).0, 0, "a single-quoted echo");
+    for cmd in [
+        "sh -c \"ah-engine migrate\"",
+        "bash -c 'cd x; ah-engine migrate'",
+        "timeout 5 /bin/bash -c \"ah-engine stop\"",
+        "eval \"ah-engine migrate\"",
+        "echo \"$(ah-engine migrate)\"",
+        "echo \"`ah-engine migrate`\"",
+        "git commit -m \"x\" && ah-engine migrate",
+        "bash <<EOF\nit's\nah-engine migrate\nEOF",
+    ] {
+        assert_eq!(guard(cmd, sub.clone(), &[]).0, 2, "{cmd}");
+    }
+}
+
 #[test]
 fn the_codex_guard_sees_a_codex_subagent_as_a_subagent() {
     let cx = json!({"turn_id": "t1", "model": "gpt", "agent_id": "a1", "agent_type": "worker"});

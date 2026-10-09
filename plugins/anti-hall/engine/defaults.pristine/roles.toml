@@ -53,8 +53,12 @@ doc = "The engine's executable name, as an agent types it in a Bash command."
 value = "ah-engine"
 
 [roles.bash_re]
-doc = "Finds an engine invocation in a Bash command (engine syntax); the words after the match are the verb and its arguments, up to the next shell operator."
-value = "(?:^|[\\s;&|(])(?:\\S*/)?ah-engine(?:\\s|$)"
+doc = "Finds an engine invocation in a Bash command (engine syntax), also as the first word of a quoted script or a command substitution; the words after the match are the verb and its arguments, up to the next shell operator. A match inside quoted text counts only where the shell runs that text (roles.script_words)."
+value = "(?:^|[\\s;&|(\"'`])(?:\\S*/)?ah-engine(?:[\\s\"'`)]|$)"
+
+[roles.script_words]
+doc = "Commands besides the shells of git.shell_verbs whose quoted argument is itself a script, so an engine call quoted there still counts for the role guard; any other quoted engine name (a commit message, an echo) is text."
+value = ["eval"]
 
 [roles.refuse_exit]
 doc = "Exit status of the command line when the caller's role may not run the verb."
