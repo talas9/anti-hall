@@ -744,11 +744,14 @@ fn spawn_tick(tool: Tool, home: &Path, cwd: &Path, now: i64, env: &[(String, Str
         }
         Tool::Engine => {
             let mut c = Command::new(BIN);
-            c.arg("mesh").args(&argv).env("AH_ENGINE_MESH_NOW_MS", now.to_string());
+            c.arg("mesh").args(&argv);
             c
         }
     };
     c.current_dir(cwd).env_clear().envs(base_env(home, &home.join("state"), &e));
+    if tool == Tool::Engine {
+        c.env("AH_ENGINE_MESH_NOW_MS", now.to_string());
+    }
     c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     c.spawn().unwrap()
 }
@@ -808,11 +811,13 @@ const KILLS: &[Kill] = &[
 
 /// Everything that must be the same however the interrupted run and the next run are split between Node and the engine.
 fn settled(h: &Path, key: &str) -> (BTreeMap<String, String>, String) {
-    let mut t = tree(h);
-    // the stub's call log names the order of calls; the next run's count is the same on both sides
+    // the home was copied from the one the killed process ran in: both names are paths inside the descriptor and the summary
+    let name = regex::Regex::new(r"k[0-9]-(Node|Engine)(-then-(Node|Engine))?").unwrap();
+    let mut t: BTreeMap<String, String> = tree(h).into_iter().map(|(k, v)| (k, name.replace_all(&v, "K").into_owned())).collect();
     t.retain(|k, _| !k.ends_with("lock.pid"));
     let db = ds(h).join("store").join(key).join("devswarm.db");
-    (t, mask_dump(&raw_dump(&db)).replace(h.to_string_lossy().as_ref(), "<HOME>"))
+    let dump = mask_dump(&raw_dump(&db)).replace(h.to_string_lossy().as_ref(), "<HOME>");
+    (t, name.replace_all(&dump, "K").into_owned())
 }
 
 #[test]
@@ -830,8 +835,8 @@ fn a_kill_at_every_step_loses_and_duplicates_nothing_whoever_runs_next() {
             continue;
         }
         let mut finals: Vec<(String, (BTreeMap<String, String>, String))> = Vec::new();
-        for killer in [Tool::Node, Tool::Engine] {
-            let home = fx.root.join(format!("k{ki}-{killer:?}"));
+        for (killer, next) in [(Tool::Node, Tool::Node), (Tool::Node, Tool::Engine), (Tool::Engine, Tool::Node), (Tool::Engine, Tool::Engine)] {
+            let home = fx.root.join(format!("k{ki}-{killer:?}-then-{next:?}"));
             copy_tree(&fx.seed_home, &home);
             fs::create_dir_all(home.join(".anti-hall")).unwrap();
             fs::write(home.join(".anti-hall/settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
@@ -860,14 +865,17 @@ fn a_kill_at_every_step_loses_and_duplicates_nothing_whoever_runs_next() {
             // the write lock a hook took expires on its own
             std::thread::sleep(std::time::Duration::from_millis(5600));
             hc(&home, "read.hook", "true");
-            for next in [Tool::Node, Tool::Engine] {
-                let copy = fx.root.join(format!("k{ki}-{killer:?}-then-{next:?}"));
-                copy_tree(&home, &copy);
+            {
+                let copy = home.clone();
                 let r = run_tick(next, &copy, &fx.child, now, &env);
                 assert_eq!(r.code, 0, "{}: {killer:?} killed, {next:?} next: {} / {}", k.name, r.stdout, r.stderr);
+                if next == Tool::Engine {
+                    let log = last_log(&copy.join("state"));
+                    assert_eq!(log["result"], "native", "{}: {killer:?} killed, the engine must answer the next run itself: {log}", k.name);
+                }
                 let inbox_lines = read_inbox(&copy).lines().filter(|l| !l.trim().is_empty()).count();
                 let expected = if k.batch_survives { 2 } else { 0 };
-                assert_eq!(inbox_lines, expected, "{}: {killer:?} killed, {next:?} next: the inbox holds {inbox_lines} lines, not {expected}", k.name);
+                assert_eq!(inbox_lines, expected, "{}: {killer:?} killed, {next:?} next: the inbox holds {inbox_lines} lines, not {expected}; wal {:?} locks {:?} stdout {:?} stderr {:?}", k.name, wal_text(&copy), fs::read_dir(ds(&copy).join("locks")).unwrap().flatten().map(|e| (e.file_name(), fs::read_to_string(e.path()).unwrap_or_default())).collect::<Vec<_>>(), r.stdout, r.stderr);
                 let wal = wal_text(&copy);
                 if k.batch_survives {
                     assert_eq!(wal.matches("\"t\":\"batch\"").count(), 1, "{}: one batch in the log", k.name);
@@ -885,4 +893,44 @@ fn a_kill_at_every_step_loses_and_duplicates_nothing_whoever_runs_next() {
         }
         eprintln!("kill point {}: node/engine x node/engine all settle to the same state ({} lines in the inbox)", k.name, if k.batch_survives { 2 } else { 0 });
     }
+}
+
+// ---- the one deliberate difference: a date form the engine does not reproduce in a FRESH batch -------------------------------
+
+/// The batch is already read (destructive), so the engine cannot hand it to Node. It appends the rows to the inbox (no date is
+/// needed for that), leaves the store feed to Node and leaves the batch PENDING in the WAL; the next tick defers to Node, which
+/// replays it: nothing is lost, nothing is duplicated, and the store ends where Node's own pull would have left it.
+#[test]
+fn a_date_form_the_engine_does_not_reproduce_leaves_the_batch_pending_for_node() {
+    let Some((fx, w)) = setup_world("l8edate") else { return };
+    let tools = tools_path(&fx.root, true);
+    let stub = stub_dir(&fx.root);
+    let env: Vec<(String, String)> = vec![("PATH".into(), format!("{stub}:{tools}"))];
+    let reference = fx.root.join("ref");
+    let ours = fx.root.join("ours");
+    for h in [&reference, &ours] {
+        copy_tree(&fx.seed_home, h);
+        fs::create_dir_all(h.join(".anti-hall")).unwrap();
+        fs::write(h.join(".anti-hall/settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
+        base(&w, h, &[], &[]);
+        hc(h, "count", "1");
+        hc(h, "read", &msgs(&[("odd date", "2026-10-09 10:00")]));
+    }
+    let n = node_cli(&reference, &fx.child, &child(&["--quiet"]), NOW, &env);
+    let e = engine_cli(&ours, &fx.child, &child(&["--quiet"]), NOW, &env);
+    assert_eq!(e.stdout, n.stdout, "the tick prints the same count");
+    assert_eq!(last_log(&ours.join("state"))["result"], "native");
+    assert_eq!(read_inbox(&ours), read_inbox(&reference), "the inbox is the same");
+    assert!(wal_text(&ours).contains("\"t\":\"batch\"") && !wal_text(&ours).contains("\"t\":\"done\""), "the batch stays pending");
+    // the next tick: the engine defers (exit 75 without Node, else Node runs); Node replays and closes
+    let again = engine_cli(&ours, &fx.child, &child(&["--quiet"]), NOW, &env);
+    assert_eq!(last_log(&ours.join("state"))["result"], "defer", "{}", again.stderr);
+    assert_eq!(read_inbox(&ours).lines().count(), 1, "nothing duplicated");
+    assert!(wal_text(&ours).contains("\"t\":\"done\""), "Node closed the batch");
+    let key_db = |h: &Path| ds(h).join("store").join(&fx.repo_key).join("devswarm.db");
+    // the second tick (Node, real clock) ensured the registration once more, so only the message rows are compared
+    let norm = |h: &Path| {
+        mask_dump(&raw_dump(&key_db(h))).lines().filter(|l| l.contains("hash=t\"native:")).collect::<Vec<_>>().join("\n")
+    };
+    assert!(!norm(&ours).is_empty() && norm(&ours) == norm(&reference), "the store ends as Node's own pull leaves it: {}", first_diff(&norm(&reference), &norm(&ours)));
 }
