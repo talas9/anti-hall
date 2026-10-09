@@ -22,6 +22,7 @@ pub mod ingest;
 pub mod kill;
 pub mod liveness;
 pub mod recover;
+pub mod retention;
 pub mod tick;
 pub mod verdict;
 pub mod witness;
