@@ -5,6 +5,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const DIR = path.resolve(__dirname, '..', '..', '.github', 'scripts', 'moderation');
@@ -157,4 +158,30 @@ test('commit identity: allow-list passes, others fail with a masked email', () =
   assert.strictEqual(bad.length, 1);
   assert.strictEqual(bad[0].msg, 'commit c3c3c3c3c3 authored as m***@e***; re-author as the maintainer identity');
   assert.strictEqual(maskEmail('mo@tx.io'), 'm***@t***');
+});
+
+test('sanitize escapes all markup characters; comment and backslash payloads stay inert', () => {
+  for (const payload of ['<!-- x -->', '<!<!---->--', '<!-- open', 'a "q" & \'s\' <img src=x onerror=1>']) {
+    const out = L.sanitize(payload, cfg);
+    assert.ok(!/[<>"]/.test(out), `no raw markup chars in: ${out}`);
+    assert.ok(!out.includes('<!--'), out);
+  }
+  assert.strictEqual(L.escapeHtml(`&<>"'`), '&amp;&lt;&gt;&quot;&#39;');
+});
+
+test('stripHtmlComments leaves no comment opener for nested payloads', () => {
+  for (const p of ['<!<!---->-->', '<!-<!---->-', 'a<!-- b', '<!--<!-- x -->-->']) assert.ok(!L.stripHtmlComments(p).includes('<!--'), p);
+  assert.strictEqual(L.stripHtmlComments('a<!-- b -->c'), 'ac');
+});
+
+test('summary table cell escapes backslashes before pipes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mod-'));
+  const sum = path.join(dir, 'sum.md');
+  const old = { RUNNER_TEMP: process.env.RUNNER_TEMP, S: process.env.GITHUB_STEP_SUMMARY };
+  process.env.RUNNER_TEMP = dir; process.env.GITHUB_STEP_SUMMARY = sum;
+  try { L.record('t', { event: 'a\\|b', item: 'x' }); } finally {
+    if (old.RUNNER_TEMP === undefined) delete process.env.RUNNER_TEMP; else process.env.RUNNER_TEMP = old.RUNNER_TEMP;
+    if (old.S === undefined) delete process.env.GITHUB_STEP_SUMMARY; else process.env.GITHUB_STEP_SUMMARY = old.S;
+  }
+  assert.ok(fs.readFileSync(sum, 'utf8').includes('a\\\\\\|b'));
 });
