@@ -199,7 +199,7 @@ pub fn is_init_pid1(cmd: Option<&str>) -> bool {
 
 /// A pid as JavaScript's `Number.prototype.toString` prints it (the ids here are integers below 2^53).
 fn pid_text(pid: f64) -> String {
-    format!("{pid}")
+    crate::checks::jsport::num::to_js_string(pid)
 }
 
 /// A map keyed by a JavaScript number.

@@ -19,13 +19,14 @@
 // - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
 // A failure that must be seen goes through `crate::discard` instead.
 
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::settings::{get_bool, is_skipped};
 use crate::checks::guardkit::text::{collapse_ws, js_trim, slice_utf16};
 use crate::checks::replykit::Defer;
 use crate::checks::replykit::io::{home_of, js_id_string, read_window, safe_session, sha1_hex, truthy, utf16_len};
-use crate::checks::replykit::json::{js_number, quote, stringify_value};
+use crate::checks::replykit::json::{quote, stringify_value};
 use crate::checks::replykit::transcript::{parse_line, prop, tail_lines};
 use crate::checks::{Check, Verdict};
 use crate::defaults;
@@ -313,9 +314,9 @@ fn record_line(session: &str, hash: &str, tools: usize, msg_chars: usize, eviden
         quote(&iso_ms(crate::checks::replykit::io::now_ms() as u64)),
         quote(session),
         quote(hash),
-        js_number(tools as f64),
-        js_number(msg_chars as f64),
-        js_number(evidence_chars as f64),
+        to_js_string(tools as f64),
+        to_js_string(msg_chars as f64),
+        to_js_string(evidence_chars as f64),
         truncated,
         fl.join(",")
     )

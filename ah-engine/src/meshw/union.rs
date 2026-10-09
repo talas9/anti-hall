@@ -104,7 +104,7 @@ fn embedded_hash(line: &str) -> R<Option<String>> {
     match o.get(defaults::text("mesh_write.ndjson_hash_field")) {
         None | Some(OVal::Null) => Ok(None),
         Some(OVal::Str(s)) => Ok(Some(s.clone())),
-        Some(OVal::Num(n)) => Ok(Some(crate::checks::guardkit::ojson::js_number_text(*n))),
+        Some(OVal::Num(n)) => Ok(Some(crate::checks::jsport::num::to_js_string(*n))),
         Some(OVal::Bool(b)) => Ok(Some(b.to_string())),
         Some(_) => defer("ndjson-hash-shape"),
     }

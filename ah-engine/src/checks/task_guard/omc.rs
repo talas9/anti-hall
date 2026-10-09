@@ -82,7 +82,7 @@ fn js_text(v: &Js) -> R<String> {
     match v {
         Js::Str(s) => Ok(s.clone()),
         Js::Bool(b) => Ok(b.to_string()),
-        Js::Num(n) => Ok(crate::checks::guardkit::jsval::number_to_string(*n)),
+        Js::Num(n) => Ok(crate::checks::jsport::num::to_js_string(*n)),
         Js::Obj(_) => Ok(defaults::text("task_guard.js_object_text").to_string()),
         Js::Null | Js::Arr(_) => Err(Unsure),
     }

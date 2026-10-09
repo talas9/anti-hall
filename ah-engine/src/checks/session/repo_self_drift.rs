@@ -8,8 +8,9 @@
 // - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
 // A failure that must be seen goes through `crate::discard` instead.
 
+use crate::checks::jsport::num::to_js_string;
 use super::drift::{self, Cache};
-use super::jval::{J, js_num, obj};
+use super::jval::{J, obj};
 use super::time::{days_of_iso_date, iso_date};
 use super::{emit, home_of, is_session_start, join, judge_child, now_ms, plugin_root, read_text, skipped, switch_on, template_text};
 use crate::checks::git::util::Settings;
@@ -154,10 +155,10 @@ fn decide(opts: &Value, env: &RequestEnv) -> Verdict {
             if !advised {
                 let mut parts: Vec<String> = Vec::new();
                 if hooks_off {
-                    parts.push(render("session.drift_hooks_part", &[("claimed", &js_num(ch)), ("actual", &js_num(ah))]));
+                    parts.push(render("session.drift_hooks_part", &[("claimed", &to_js_string(ch)), ("actual", &to_js_string(ah))]));
                 }
                 if skills_off {
-                    parts.push(render("session.drift_skills_part", &[("claimed", &js_num(cs)), ("actual", &js_num(asks))]));
+                    parts.push(render("session.drift_skills_part", &[("claimed", &to_js_string(cs)), ("actual", &to_js_string(asks))]));
                 }
                 lines.push(render("session.drift_counts_line", &[("parts", &parts.join(defaults::text("session.parts_sep")))]));
             }
@@ -175,7 +176,7 @@ fn decide(opts: &Value, env: &RequestEnv) -> Verdict {
         let advised = sub("staleness").is_some_and(|c| drift::already_advised_key(&obj(vec![("lastAdvised", c.clone())]), &key));
         if !advised {
             let threshold = defaults::num("session.staleness_threshold_days").to_string();
-            lines.push(render("session.drift_stale_line", &[("date", &date), ("age", &js_num(age)), ("threshold", &threshold)]));
+            lines.push(render("session.drift_stale_line", &[("date", &date), ("age", &to_js_string(age)), ("threshold", &threshold)]));
         }
         stale_key = Some(key);
     }

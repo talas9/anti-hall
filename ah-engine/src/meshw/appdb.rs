@@ -121,7 +121,7 @@ fn text_of(v: ValueRef<'_>) -> R<Option<String>> {
         ValueRef::Null => Ok(None),
         ValueRef::Integer(i) if (i as f64).abs() <= defaults::num("mesh_write.app_max_exact_int") as f64 => Ok(Some(i.to_string())),
         ValueRef::Integer(_) | ValueRef::Blob(_) => defer("app-db-column-type"),
-        ValueRef::Real(f) => Ok(Some(crate::checks::guardkit::ojson::js_number_text(f))),
+        ValueRef::Real(f) => Ok(Some(crate::checks::jsport::num::to_js_string(f))),
         ValueRef::Text(t) => Ok(Some(String::from_utf8_lossy(t).into_owned())),
     }
 }

@@ -4,7 +4,7 @@
 //! `defaults/ctxbudget.toml` (`ctxbudget.ah_*`); a number is shown the way JavaScript concatenates it.
 use super::pct::{Label, Reading};
 use crate::checks::git::util::{Settings, path_join};
-use crate::checks::guardkit::jsval::number_to_string;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::handover::find::{self, Kind as FileKind};
 use crate::checks::jsport::fsx;
@@ -53,7 +53,7 @@ fn reset(pl: Platform) -> &'static str {
 
 /// `Math.round(x)` as JavaScript prints it.
 pub fn round_str(x: f64) -> String {
-    number_to_string(js_round(x))
+    to_js_string(js_round(x))
 }
 
 /// `Math.round`.
@@ -81,7 +81,7 @@ pub fn sanitize_session_id(raw: Option<&Value>) -> Result<String, ()> {
         None | Some(Value::Null) | Some(Value::Bool(false)) => String::new(),
         Some(Value::Bool(true)) => true.to_string(),
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(n)) => n.as_f64().filter(|f| *f != 0.0).map(number_to_string).unwrap_or_default(),
+        Some(Value::Number(n)) => n.as_f64().filter(|f| *f != 0.0).map(to_js_string).unwrap_or_default(),
         Some(_) => return Err(()),
     };
     let safe: String = s.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')).collect();
@@ -227,8 +227,8 @@ pub fn decisive_suffix(p: &Value, path: &str, fresh: Option<bool>, complete: boo
 /// `budgetLabel(budgetPct, max)`.
 fn budget_label(budget: f64, max: Option<f64>) -> String {
     let tok = max.filter(|m| m.is_finite() && *m > 0.0).map(|m| js_round(m * budget / 100.0 / 1000.0)).filter(|k| *k != 0.0 && !k.is_nan());
-    let tok = tok.map(|k| msg::render("ctxbudget.ah_budget_tokens", &[("k", &number_to_string(k))])).unwrap_or_default();
-    msg::render("ctxbudget.ah_budget", &[("b", &number_to_string(budget)), ("tok", &tok)])
+    let tok = tok.map(|k| msg::render("ctxbudget.ah_budget_tokens", &[("k", &to_js_string(k))])).unwrap_or_default();
+    msg::render("ctxbudget.ah_budget", &[("b", &to_js_string(budget)), ("tok", &tok)])
 }
 
 /// `buildGateDirective(result, latch, cfg, payload)`.
@@ -254,6 +254,6 @@ pub fn gate(r: &Reading, handover_pct: f64, budget: f64, p: &Value) -> String {
 /// `buildGateBackstop(pct, latch, cfg, payload)`.
 pub fn backstop(pct: f64, handover_pct: f64, budget: f64, p: &Value) -> String {
     let pl = platform(p);
-    let what = msg::render("ctxbudget.ah_backstop_what", &[("pct", &round_str(pct)), ("b", &number_to_string(budget)), ("hp", &round_str(handover_pct))]);
+    let what = msg::render("ctxbudget.ah_backstop_what", &[("pct", &round_str(pct)), ("b", &to_js_string(budget)), ("hp", &round_str(handover_pct))]);
     warn(&what, "", &msg::render("ctxbudget.ah_backstop_instead", &[("skill", skill(pl)), ("reset", reset(pl))]))
 }

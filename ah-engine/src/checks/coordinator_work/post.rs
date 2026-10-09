@@ -22,7 +22,8 @@ use crate::checks::guardkit::filelock;
 use crate::checks::guardkit::fsio::{state_dir, write_atomic};
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
-use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::ojson::OVal;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::settings::{get_bool, get_num, is_skipped};
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::{Verdict, coordinator_work};
@@ -149,7 +150,7 @@ impl State {
 
     /// `JSON.stringify(state)`.
     fn dump(&self) -> String {
-        let n = js_number_text;
+        let n = to_js_string;
         let ts = self.ts.iter().map(|t| n(*t)).collect::<Vec<_>>().join(",");
         let pre = self
             .pre
@@ -319,9 +320,9 @@ impl Metrics {
                 .map(|(v, o)| (v.clone(), OVal::Obj(version_keys().iter().zip(o).map(|(k, n)| (k.to_string(), OVal::Num(*n))).collect())))
                 .collect(),
         );
-        let mut s = format!("{{\"v\":1,\"nudges\":{},\"blocks\":{},\"byVersion\":{}", js_number_text(self.nudges), js_number_text(self.blocks), by.stringify());
+        let mut s = format!("{{\"v\":1,\"nudges\":{},\"blocks\":{},\"byVersion\":{}", to_js_string(self.nudges), to_js_string(self.blocks), by.stringify());
         if let Some(n) = self.max_session_blocks {
-            s.push_str(&format!(",\"maxSessionBlocks\":{}", js_number_text(n)));
+            s.push_str(&format!(",\"maxSessionBlocks\":{}", to_js_string(n)));
         }
         s.push('}');
         s
@@ -441,7 +442,7 @@ fn fold_stale(home: &str, now: f64, env: &RequestEnv) -> usize {
         }
         filelock::release(lock);
     }
-    crate::discard::harmless(write_atomic(&stamp, &format!("{{\"ts\":{}}}", js_number_text(now)))); // keep: a lost sweep stamp only repeats the sweep
+    crate::discard::harmless(write_atomic(&stamp, &format!("{{\"ts\":{}}}", to_js_string(now)))); // keep: a lost sweep stamp only repeats the sweep
     folded
 }
 

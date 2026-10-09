@@ -126,7 +126,7 @@ pub(crate) fn is_word(c: char) -> bool {
 pub(crate) fn template_text(v: &jval::J) -> Option<String> {
     match v {
         jval::J::Str(s) => Some(s.clone()),
-        jval::J::Num(n) => Some(jval::js_num(*n)),
+        jval::J::Num(n) => Some(crate::checks::jsport::num::to_js_string(*n)),
         jval::J::Bool(b) => Some(b.to_string()),
         jval::J::Null => Some("null".to_string()),
         _ => None,

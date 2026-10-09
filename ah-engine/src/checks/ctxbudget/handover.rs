@@ -438,7 +438,7 @@ fn recent_spawn(st: &Settings, tag: &str, now: f64) -> bool {
 fn js_string(v: &Value) -> Result<String, ()> {
     match v {
         Value::String(s) => Ok(s.clone()),
-        Value::Number(n) => Ok(crate::checks::guardkit::jsval::number_to_string(n.as_f64().unwrap_or(0.0))),
+        Value::Number(n) => Ok(crate::checks::jsport::num::to_js_string(n.as_f64().unwrap_or(0.0))),
         Value::Bool(b) => Ok(b.to_string()),
         Value::Null => Ok(defaults::text("ctxbudget.json_null").to_string()),
         _ => Err(()),

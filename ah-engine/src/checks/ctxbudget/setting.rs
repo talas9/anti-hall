@@ -144,7 +144,7 @@ fn coerce_value(e: &V, v: &Value) -> Option<Sv> {
             "bool" => coerce_json(v).map(Sv::Bool),
             "num" => n.as_f64().filter(|f| f.is_finite()).map(|f| Sv::Num(clamp(e, f))),
             // `String(n)`
-            "str" => n.as_f64().map(|f| Sv::Str(crate::checks::replykit::json::js_number(f))),
+            "str" => n.as_f64().map(|f| Sv::Str(crate::checks::jsport::num::to_js_string(f))),
             _ => None,
         },
         _ => None,

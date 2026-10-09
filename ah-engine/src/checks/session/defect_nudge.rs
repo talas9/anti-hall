@@ -11,8 +11,9 @@
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 
+use crate::checks::jsport::num::to_js_string;
 use super::drift::parse_semver;
-use super::jval::{J, Parsed, js_num, parse};
+use super::jval::{J, Parsed, parse};
 use super::time::days_of_iso_date;
 use super::{emit, home_of, is_session_start, join, judge_child, now_ms, read_text, skipped, switch_on};
 use crate::checks::git::util::Settings;
@@ -208,7 +209,7 @@ fn maintainer_line(defects: &[Defect], now: f64) -> Result<String, ()> {
     }
     let what = msg::render(
         "session.defect_maintainer_what",
-        &[("active", &active.len().to_string()), ("regressed", &regressed.to_string()), ("oldest", &js_num(oldest))],
+        &[("active", &active.len().to_string()), ("regressed", &regressed.to_string()), ("oldest", &to_js_string(oldest))],
     );
     Ok(msg::message(
         Kind::Tip,

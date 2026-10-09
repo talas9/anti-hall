@@ -11,8 +11,9 @@
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 
+use crate::checks::jsport::num::to_js_string;
 use super::scrub::scrub_secrets;
-use crate::checks::replykit::json::{js_number, quote};
+use crate::checks::replykit::json::{quote};
 use crate::defaults;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -109,7 +110,7 @@ pub fn maybe_warn_budget(home: &Path, watch: bool, usd_per_day: Option<f64>, cos
         warned = Some(today.clone());
     }
     let body =
-        format!("{{\"date\":{},\"spentUsd\":{},\"warnedDate\":{}}}", quote(&today), js_number(spent), warned.as_deref().map_or("null".to_string(), quote));
+        format!("{{\"date\":{},\"spentUsd\":{},\"warnedDate\":{}}}", quote(&today), to_js_string(spent), warned.as_deref().map_or("null".to_string(), quote));
     if let Some(d) = path.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write that follows fails too when the directory is missing
     }
@@ -216,7 +217,7 @@ fn pctile(sorted: &[f64], p: f64) -> String {
     if sorted.is_empty() {
         return "null".into();
     }
-    js_number(sorted[(sorted.len() - 1).min((p * sorted.len() as f64).floor() as usize)])
+    to_js_string(sorted[(sorted.len() - 1).min((p * sorted.len() as f64).floor() as usize)])
 }
 
 /// `buildDailyRollups`: per UTC day, the rollup JSON (without `generatedAt` and `complete`), keyed by the day.
@@ -298,7 +299,7 @@ pub fn build_daily_rollups(rows: &[Value]) -> Vec<(String, String)> {
                 .iter_mut()
                 .map(|g| {
                     g.ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-                    let cost = if g.cost_known { js_number((g.cost * 1e8 + 0.5).floor() / 1e8) } else { "null".into() };
+                    let cost = if g.cost_known { to_js_string((g.cost * 1e8 + 0.5).floor() / 1e8) } else { "null".into() };
                     format!(
                         "{{\"id\":{},\"backend\":{},\"mode\":{},\"n\":{},\"fresh\":{},\"changed\":{},\"timeouts\":{},\"failures\":{},\"fellBack\":{},\"costUsd\":{cost},\"p50Ms\":{},\"p95Ms\":{}}}",
                         quote(&g.id),

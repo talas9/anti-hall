@@ -118,7 +118,8 @@ fn the_memory_state_evicts_the_oldest_entry_past_its_cap() {
 
 #[test]
 fn ordered_json_keeps_the_key_order_and_number_text_javascript_writes() {
-    use super::ojson::{OVal, js_number_text};
+    use super::ojson::OVal;
+    use crate::checks::jsport::num::to_js_string;
     // insertion order, integer-like keys first ascending, a repeated key keeps its first place and takes the last value
     let v = OVal::parse(r#"{"z":1,"10":2,"a":{"y":[1,2.5,-0,1e21,1e-7],"b":null},"2":3,"01":4,"z":9}"#).unwrap();
     assert_eq!(v.stringify(), r#"{"2":3,"10":2,"z":9,"a":{"y":[1,2.5,0,1e+21,1e-7],"b":null},"01":4}"#);
@@ -133,7 +134,7 @@ fn ordered_json_keeps_the_key_order_and_number_text_javascript_writes() {
         (0.000001, "0.000001"),
         (0.1, "0.1"),
     ] {
-        assert_eq!(js_number_text(n), t, "{n}");
+        assert_eq!(to_js_string(n), t, "{n}");
     }
     assert!(OVal::parse("{nope").is_none() && OVal::parse("").is_none());
     let mut o = OVal::parse(r#"{"a":1}"#).unwrap();

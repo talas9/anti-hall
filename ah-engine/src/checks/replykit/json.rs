@@ -2,11 +2,12 @@
 //!
 //! `serde_json::Value` sorts object keys and prints numbers its own way, so it cannot reproduce what `JSON.parse` then
 //! `JSON.stringify` do to a state file (the key order stays, numbers print the ECMAScript way). [`Oj`] keeps the order of
-//! the keys; [`js_number`] and [`quote`] write numbers and strings the way `JSON.stringify` does.
+//! the keys; [`to_js_string`] and [`quote`] write numbers and strings the way `JSON.stringify` does.
 //!
 //! What the parser refuses on purpose ([`ParseError::Unsure`]): input `JSON.parse` would accept but a Rust string cannot
 //! hold (a lone surrogate escape), keys JavaScript reorders (array indices) and nesting deeper than the stack limit. A
 //! caller turns every `Unsure` into a deferral to Node, so it is never a silent difference.
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use serde_json::Value;
 
@@ -80,7 +81,7 @@ impl Oj {
         match self {
             Oj::Null => out.push_str("null"),
             Oj::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Oj::Num(n) => out.push_str(&if n.is_finite() { js_number(*n) } else { "null".to_string() }),
+            Oj::Num(n) => out.push_str(&if n.is_finite() { to_js_string(*n) } else { "null".to_string() }),
             Oj::Str(s) => out.push_str(&quote(s)),
             Oj::Arr(a) => {
                 out.push('[');
@@ -130,33 +131,6 @@ pub fn quote(s: &str) -> String {
     out
 }
 
-/// `String(n)` for a finite double (ECMAScript `Number::toString`): shortest round-trip digits, no exponent between
-/// 1e-6 and 1e21, `e+N` / `e-N` outside it, `0` for both zeros.
-pub fn js_number(n: f64) -> String {
-    if n == 0.0 {
-        return "0".to_string();
-    }
-    let sign = if n < 0.0 { "-" } else { "" };
-    let sci = format!("{:e}", n.abs());
-    let (mant, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
-    let exp: i32 = exp.parse().unwrap_or(0);
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let k = digits.len() as i32;
-    let point = exp + 1; // the decimal point sits after `point` digits
-    let body = if k <= point && point <= 21 {
-        format!("{digits}{}", "0".repeat((point - k) as usize))
-    } else if 0 < point && point <= 21 {
-        format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
-    } else if -6 < point && point <= 0 {
-        format!("0.{}{digits}", "0".repeat((-point) as usize))
-    } else {
-        let e = point - 1;
-        let es = format!("{}{}", if e < 0 { "-" } else { "+" }, e.abs());
-        if k == 1 { format!("{digits}e{es}") } else { format!("{}.{}e{es}", &digits[..1], &digits[1..]) }
-    };
-    format!("{sign}{body}")
-}
-
 /// `JSON.stringify` of a `serde_json::Value`, object keys in the map's (sorted) order. Numbers go through a double, as a
 /// JavaScript parse would have made them.
 pub fn stringify_value(v: &Value) -> String {
@@ -170,7 +144,7 @@ fn write_value(v: &Value, out: &mut String) {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => match n.as_f64().filter(|f| f.is_finite()) {
-            Some(f) => out.push_str(&js_number(f)),
+            Some(f) => out.push_str(&to_js_string(f)),
             None => out.push_str("null"),
         },
         Value::String(s) => out.push_str(&quote(s)),
@@ -454,7 +428,7 @@ mod tests {
             (5e-324, "5e-324"),
             (1.7976931348623157e308, "1.7976931348623157e+308"),
         ] {
-            assert_eq!(js_number(n), want, "{n:?}");
+            assert_eq!(to_js_string(n), want, "{n:?}");
         }
     }
 

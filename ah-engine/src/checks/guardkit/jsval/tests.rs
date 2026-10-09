@@ -316,12 +316,10 @@ fn date_parse_never_decides_a_form_it_does_not_own() {
 }
 
 #[test]
-fn number_to_string_is_ecmascript() {
+fn the_one_printer_gives_the_ecmascript_text_for_the_jsval_table() {
     for (n, want) in NUMS {
-        assert_eq!(number_to_string(*n), *want, "{n:e}");
+        assert_eq!(crate::checks::jsport::num::to_js_string(*n), *want, "{n:e}");
     }
-    assert_eq!(number_to_string(f64::NAN), "NaN");
-    assert_eq!(number_to_string(-0.0), "0");
 }
 
 #[test]

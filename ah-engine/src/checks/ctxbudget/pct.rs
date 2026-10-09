@@ -267,7 +267,7 @@ pub fn context_pct(st: &Settings, session_id: Option<&Value>, transcript: Option
 pub fn write_inferred(st: &Settings, session_id: Option<&Value>) {
     let Some(tag) = tag_of(session_id) else { return };
     let file = format!("{tag}{}", defaults::text("ctxbudget.inferred_suffix"));
-    let body = crate::checks::guardkit::msg::render("ctxbudget.inferred_json", &[("ts", &crate::checks::replykit::json::js_number(now_ms()))]);
+    let body = crate::checks::guardkit::msg::render("ctxbudget.inferred_json", &[("ts", &crate::checks::jsport::num::to_js_string(now_ms()))]);
     if crate::checks::guardkit::fsio::write_atomic(&state_path(st, defaults::text("ctxbudget.pct_dir"), &file), &body).is_err() {
         crate::discard::note("ctxbudget_inferred_write", "");
     }

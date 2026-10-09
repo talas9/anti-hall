@@ -232,11 +232,6 @@ fn js_number_text(s: &str) -> f64 {
     crate::checks::guardkit::settings::js_number(t).unwrap_or(f64::NAN)
 }
 
-/// `String(n)` of a time: an integer prints without a fraction.
-fn num_text(n: f64) -> String {
-    if n == n.trunc() && n.abs() < defaults::num("agent_scan.safe_int") as f64 { format!("{}", n as i64) } else { format!("{n}") }
-}
-
 /// The text the hook writes: `JSON.stringify({nudged, everNudged})`.
 fn render_state(nudged: &Pairs, ever: &[(String, f64)]) -> Result<String, Unsupported> {
     let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
@@ -256,7 +251,7 @@ fn render_state(nudged: &Pairs, ever: &[(String, f64)]) -> Result<String, Unsupp
         if *t != t.trunc() || t.abs() >= defaults::num("agent_scan.safe_int") as f64 {
             return Err(Unsupported);
         }
-        e.push_str(&format!("{}:{}", q(k), num_text(*t)));
+        e.push_str(&format!("{}:{}", q(k), to_js_string(*t)));
     }
     Ok(format!("{{\"{}\":{{{n}}},\"{}\":{{{e}}}}}", defaults::text("silent_nudge.nudged_key"), defaults::text("silent_nudge.ever_key")))
 }
@@ -315,7 +310,7 @@ fn transcript_candidates(transcript: &str, now: f64, threshold: f64) -> Result<V
             reference = resumed;
         }
         if resumed != 0.0 {
-            snapshot = format!("{snapshot}{}{}", defaults::text("silent_nudge.resume_mark"), num_text(resumed));
+            snapshot = format!("{snapshot}{}{}", defaults::text("silent_nudge.resume_mark"), to_js_string(resumed));
         }
         if now - reference < threshold {
             continue;
@@ -375,7 +370,7 @@ fn heartbeat_candidates(home: &str, now: f64, threshold: f64, session: &str) -> 
             key: format!("{}{id}", defaults::text("silent_nudge.key_heartbeat")),
             id: id.to_string(),
             resumed_at_ms: 0.0,
-            snapshot: num_text(ts),
+            snapshot: to_js_string(ts),
             label_src: step.to_string(),
             age: now - ts,
         });
@@ -452,7 +447,7 @@ pub fn decide(p: &Value, opts: &Value, env: &RequestEnv) -> Verdict {
     }
     let ever_key = |c: &Candidate| {
         let resume =
-            if c.resumed_at_ms != 0.0 { format!("{}{}", defaults::text("silent_nudge.resume_mark"), num_text(c.resumed_at_ms)) } else { String::new() };
+            if c.resumed_at_ms != 0.0 { format!("{}{}", defaults::text("silent_nudge.resume_mark"), to_js_string(c.resumed_at_ms)) } else { String::new() };
         format!("{session}{}{}{resume}", defaults::text("silent_nudge.ever_sep"), c.id)
     };
     let capped = |c: &&Candidate| !session.is_empty() && next_ever.iter().any(|(k, _)| *k == ever_key(c));

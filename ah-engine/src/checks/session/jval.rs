@@ -7,6 +7,7 @@
 //!
 //! Known limit (the same one the Node store has): an object key that is an array index (`"0"`, `"12"`) is ordered first
 //! in JavaScript; this type keeps file order. The state files never use such keys.
+use crate::checks::jsport::num::to_js_string;
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::fmt;
 
@@ -111,42 +112,6 @@ pub fn parse(text: &str) -> Parsed {
     }
 }
 
-/// `String(n)` for a finite number, exactly as ECMAScript's `Number::toString` writes it.
-pub fn js_num(n: f64) -> String {
-    if n == 0.0 {
-        return "0".into();
-    }
-    if !n.is_finite() {
-        return if n.is_nan() {
-            "NaN".into()
-        } else if n > 0.0 {
-            "Infinity".into()
-        } else {
-            "-Infinity".into()
-        };
-    }
-    let sign = if n < 0.0 { "-" } else { "" };
-    // `{:e}` writes the shortest digits that read back as the same number, like `d.ddde<exp>`.
-    let sci = format!("{:e}", n.abs());
-    let (mant, exp) = sci.split_once('e').unwrap_or((sci.as_str(), "0"));
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let e: i32 = exp.parse().unwrap_or(0);
-    let k = digits.len() as i32;
-    let point = e + 1; // the decimal point sits after this many digits
-    let body = if k <= point && point <= 21 {
-        format!("{digits}{}", "0".repeat((point - k) as usize))
-    } else if 0 < point && point <= 21 {
-        format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
-    } else if -6 < point && point <= 0 {
-        format!("0.{}{digits}", "0".repeat((-point) as usize))
-    } else {
-        let x = point - 1;
-        let xs = format!("{}{}", if x < 0 { "-" } else { "+" }, x.abs());
-        if k == 1 { format!("{digits}e{xs}") } else { format!("{}.{}e{xs}", &digits[..1], &digits[1..]) }
-    };
-    format!("{sign}{body}")
-}
-
 impl J {
     /// The field `key` of an object.
     pub fn get(&self, key: &str) -> Option<&J> {
@@ -198,7 +163,7 @@ impl J {
         match self {
             J::Null => out.push_str("null"),
             J::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            J::Num(n) => out.push_str(&if n.is_finite() { js_num(*n) } else { "null".to_string() }),
+            J::Num(n) => out.push_str(&if n.is_finite() { to_js_string(*n) } else { "null".to_string() }),
             J::Str(s) => out.push_str(&serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())),
             J::Arr(a) => {
                 out.push('[');

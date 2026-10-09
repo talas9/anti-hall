@@ -1,8 +1,9 @@
 //! Unit tests of the session-maintenance checks. The full comparison with the Node hooks is `tests/node_parity` (the Rust Node-parity test) (about
 //! 2,400 scenarios, exit code, stdout and state files); these tests pin the pieces and the ordering rules that matter most.
 //! Every test runs against its own temporary home directory, never the real one.
+use crate::checks::jsport::num::to_js_string;
 use super::drift::{self, Drift};
-use super::jval::{J, Parsed, js_num, parse};
+use super::jval::{J, Parsed, parse};
 use super::progress_prune::{blockquote_for_test, cwd_key_for_test};
 use super::time::{days_of_iso_date, iso_date, iso_string};
 use super::version_alert::semver_greater;
@@ -92,7 +93,7 @@ fn numbers_print_like_javascript() {
         (1234.5678e10, "12345678000000"),
     ];
     for (n, want) in cases {
-        assert_eq!(js_num(n), want, "{n:e}");
+        assert_eq!(to_js_string(n), want, "{n:e}");
     }
 }
 

@@ -53,11 +53,6 @@ pub fn parse_tasks(path: &str) -> R<TaskMap> {
     Ok(facts.tasks)
 }
 
-/// JavaScript's text for a finite number.
-fn js_number_text(n: f64) -> R<String> {
-    js_string(&serde_json::Number::from_f64(n).map(Value::Number).ok_or(Unsure)?).ok_or(Unsure)
-}
-
 /// The decision for one payload.
 pub fn decide(p: &Value, st: &Settings) -> Verdict {
     match decide_inner(p, st) {
@@ -93,7 +88,7 @@ fn decide_inner(p: &Value, st: &Settings) -> R<Verdict> {
     let mut out = String::new();
     let prune_after = get_number(st, defaults::raw("task_guard.prune_setting"));
     if prune_after.is_finite() && prune_after > 0.0 && completed as f64 > prune_after {
-        out.push_str(&defaults::render("task_guard.prune_advisory", &[("n", &completed), ("limit", &js_number_text(prune_after)?)]));
+        out.push_str(&defaults::render("task_guard.prune_advisory", &[("n", &completed), ("limit", &crate::checks::jsport::num::to_js_string(prune_after))]));
     }
     let open: Vec<&Task> = tasks.values().filter(|t| t.is_open()).collect();
     if open.is_empty() {
@@ -283,7 +278,7 @@ fn block_reason(p: &Value, st: &Settings, idle: bool, demand: &demand::Demand<'_
         let n = demand.dispatch.len();
         let more = if n > max { render("task_guard.more", &[("n", &(n - max).to_string())]) } else { String::new() };
         let cap = match demand.cap {
-            Some(c) if c != 0.0 => crate::checks::guardkit::jsval::number_to_string(c),
+            Some(c) if c != 0.0 => crate::checks::jsport::num::to_js_string(c),
             _ => defaults::text("task_guard.cap_formula").to_string(),
         };
         let ds = if open::any_live_children(st)? { render("task_guard.idle_devswarm", &[("upd", upd)]) } else { String::new() };

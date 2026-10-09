@@ -20,6 +20,7 @@
 // - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
 // A failure that must be seen goes through `crate::discard` instead.
 
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
@@ -27,7 +28,7 @@ use crate::checks::guardkit::settings::{get_bool, is_skipped};
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::replykit::Defer;
 use crate::checks::replykit::io::{home_of, prefix_utf16, suffix_utf16, utf16_len};
-use crate::checks::replykit::json::{js_number, quote, stringify_value};
+use crate::checks::replykit::json::{quote, stringify_value};
 use crate::checks::replykit::turn_gate::{GateInput, first_this_turn};
 use crate::checks::{Check, Exact, Verdict};
 use crate::defaults::{self, V};
@@ -354,7 +355,7 @@ fn decide_inner(payload: &Value, env: &RequestEnv, pending: &mut Option<PendingA
         bits.push(msg::render("output_verify.bit_fail", &[("hit", &quote(f))]));
     }
     if non_zero && let Some(code) = found.exit {
-        bits.push(msg::render("output_verify.bit_exit", &[("code", &js_number(code))]));
+        bits.push(msg::render("output_verify.bit_exit", &[("code", &to_js_string(code))]));
     }
     let sep = defaults::text("output_verify.bits_sep");
     if get_bool(&st, defaults::raw("output_verify.once_setting")) {

@@ -10,6 +10,7 @@
 //! date parser might read differently, a non-text reset value, a state file only Node's parser accepts, a relative
 //! transcript path. One deferral can come after the account-switch write, from emit-dedupe; that write is idempotent (the
 //! Node hook then finds the very state it would have written itself and writes nothing), so the end state is Node's.
+use crate::checks::jsport::num::to_js_string;
 use super::setting::get;
 use super::{Jf, judge_child, now_ms, read_json, settings_of, ups_empty};
 use crate::checks::Verdict;
@@ -17,7 +18,7 @@ use crate::checks::emit_dedupe::{self, Opts};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::guardkit::settings::is_skipped;
-use crate::checks::replykit::json::{js_number, quote};
+use crate::checks::replykit::json::{quote};
 use crate::defaults;
 use crate::reqenv::RequestEnv;
 use serde_json::Value;
@@ -123,7 +124,7 @@ fn mtime_ms(path: &str) -> Result<Option<f64>, ()> {
 fn write_account(path: &str, user: &str, mtime: Option<f64>) {
     let body = msg::render(
         "ctxbudget.lc_account_json",
-        &[("user", &quote(user)), ("mtime", &mtime.map_or_else(|| defaults::text("ctxbudget.json_null").to_string(), js_number))],
+        &[("user", &quote(user)), ("mtime", &mtime.map_or_else(|| defaults::text("ctxbudget.json_null").to_string(), to_js_string))],
     );
     let p = std::path::Path::new(path);
     let ok = p.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok()) && crate::atomic::write(p, body).is_ok();

@@ -24,6 +24,7 @@
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
@@ -31,7 +32,7 @@ use crate::checks::guardkit::settings::{get_bool, is_skipped};
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::replykit::Defer;
 use crate::checks::replykit::io::{home_of, js_id_string, prefix_utf16, prune_stale, read_window, safe_session, sha1_hex, truthy};
-use crate::checks::replykit::json::{self, Oj, ParseError, js_number, quote};
+use crate::checks::replykit::json::{self, Oj, ParseError, quote};
 use crate::checks::replykit::transcript::{last_assistant_text, tail_lines};
 use crate::checks::{Check, Exact, Verdict};
 use crate::defaults;
@@ -249,7 +250,7 @@ fn now_iso() -> String {
 
 /// The log line of one decision: `{"ts":..,"backend":..,"reason":..,"ms":..,"confidence":..,"regexVerdict":..,"verdict":..}`.
 fn judge_line(e: &JudgeEntry, verdict: &str) -> String {
-    let num = |v: Option<f64>| v.map_or("null".to_string(), js_number);
+    let num = |v: Option<f64>| v.map_or("null".to_string(), to_js_string);
     format!(
         "{{\"ts\":{},\"backend\":{},\"reason\":{},\"ms\":{},\"confidence\":{},\"regexVerdict\":{},\"verdict\":{}}}\n",
         quote(&now_iso()),
@@ -356,7 +357,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
                 project.as_deref(),
             );
         }
-        let cleared = format!("{{\"hash\":{},\"blocks\":{},\"pending\":null}}", quote(&prior.last_blocked), js_number(prior.blocks));
+        let cleared = format!("{{\"hash\":{},\"blocks\":{},\"pending\":null}}", quote(&prior.last_blocked), to_js_string(prior.blocks));
         crate::discard::logged("speculation_state_write", std::fs::create_dir_all(&state_dir).and_then(|()| crate::atomic::write(&state_file, cleared)));
     }
     if skipped {
@@ -469,7 +470,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
     let body = format!(
         "{{\"hash\":{},\"blocks\":{},\"pending\":{{\"h\":{},\"source\":{}}}}}",
         quote(&msg_hash),
-        js_number(prior.blocks + 1.0),
+        to_js_string(prior.blocks + 1.0),
         quote(&pending_h),
         quote(source)
     );

@@ -20,7 +20,8 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 use crate::checks::git::util::Settings;
-use crate::checks::guardkit::jsval::{DateParse, Js, date_parse, js_to_string, number_to_string, parse_line};
+use crate::checks::guardkit::jsval::{DateParse, Js, date_parse, js_to_string, parse_line};
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::settings::{get_bool, get_number};
 use crate::checks::guardkit::tail::read_tail;
 use crate::checks::{Check, Verdict};
@@ -521,7 +522,7 @@ pub fn session_of(p: &Value) -> Result<Option<String>, Defer> {
     match p.get("session_id") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(None),
         Some(Value::String(s)) => Ok((!s.is_empty()).then(|| s.clone())),
-        Some(Value::Number(n)) => Ok(n.as_f64().filter(|x| *x != 0.0 && !x.is_nan()).map(number_to_string)),
+        Some(Value::Number(n)) => Ok(n.as_f64().filter(|x| *x != 0.0 && !x.is_nan()).map(to_js_string)),
         Some(Value::Bool(true)) => Ok(Some("true".into())),
         Some(_) => Err(Defer),
     }

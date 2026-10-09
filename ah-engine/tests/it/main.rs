@@ -25,6 +25,7 @@ mod devswarm_wire;
 mod dssup;
 mod dssup_ingest;
 mod dssup_appsync;
+mod js_number_printers;
 mod dssup_deferred;
 mod dssup_kill;
 mod dssup_liveness;

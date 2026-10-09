@@ -177,7 +177,7 @@ proptest! {
 
     #[test]
     fn js_number_text_roundtrip(x in prop::num::f64::NORMAL | prop::num::f64::SUBNORMAL | prop::num::f64::ZERO) {
-        let t = jsval::number_to_string(x);
+        let t = ah_engine::checks::jsport::num::to_js_string(x);
         let y = jsval::to_number(&t);
         prop_assert!(y == x, "{x:e} -> {t:?} -> {y:e}");
     }
@@ -191,7 +191,7 @@ proptest! {
 
     #[test]
     fn js_integer_text_is_plain_digits(n in -9_007_199_254_740_991i64..=9_007_199_254_740_991) {
-        prop_assert_eq!(jsval::number_to_string(n as f64), n.to_string());
+        prop_assert_eq!(ah_engine::checks::jsport::num::to_js_string(n as f64), n.to_string());
     }
 }
 

@@ -8,7 +8,8 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - text that does not parse is the unrecognised shape (Node: `catch (_) { return { messages: [], recognized: false } }`)
 // - a field that is absent is the empty string in the hash (Node: `x != null ? String(x) : ''`)
-use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::ojson::OVal;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::jsport::date::{Parsed, parse as date_parse};
 use crate::defaults;
 use crate::meshw::idlock;
@@ -54,7 +55,7 @@ pub fn js_string(v: &OVal) -> String {
     match v {
         OVal::Null => "null".to_string(),
         OVal::Bool(b) => b.to_string(),
-        OVal::Num(n) => js_number_text(*n),
+        OVal::Num(n) => to_js_string(*n),
         OVal::Str(s) => s.clone(),
         OVal::Arr(a) => a.iter().map(|x| if matches!(x, OVal::Null) { String::new() } else { js_string(x) }).collect::<Vec<_>>().join(","),
         OVal::Obj(_) => defaults::text("devswarm_ingest.js_object_text").to_string(),

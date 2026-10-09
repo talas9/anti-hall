@@ -17,7 +17,8 @@ use super::{hazard, is_objectish, judge_child, now_ms, settings_of, subagent_by_
 use crate::checks::Verdict;
 use crate::checks::compact_decl::{contains_ci, read_tail, turn_texts};
 use crate::checks::emit_dedupe::sha1_hex;
-use crate::checks::guardkit::jsval::{Js, number_to_string};
+use crate::checks::guardkit::jsval::Js;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::guardkit::settings::is_skipped;
 use crate::checks::guardkit::text::js_trim;
@@ -142,13 +143,13 @@ fn judge(p: &Value, st: &crate::checks::git::util::Settings, path: &str, lines: 
     if inferred {
         write_inferred(st, p.get("session_id"));
     }
-    let body = msg::render("ctxbudget.ca_state_json", &[("hash", &quote(&hash)), ("at", &number_to_string(now_ms()))]);
+    let body = msg::render("ctxbudget.ca_state_json", &[("hash", &quote(&hash)), ("at", &to_js_string(now_ms()))]);
     let wrote = std::path::Path::new(&sp).parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok()) && crate::atomic::write(&sp, body).is_ok();
     if !wrote {
         return Ok(Verdict::Allow); // cannot record the block: never block (no loop)
     }
     let mut why = vec![match pct {
-        Some(x) => msg::render("ctxbudget.ca_why_pct", &[("pct", &super::text::round_str(x)), ("threshold", &number_to_string(threshold))]),
+        Some(x) => msg::render("ctxbudget.ca_why_pct", &[("pct", &super::text::round_str(x)), ("threshold", &to_js_string(threshold))]),
         None => defaults::text("ctxbudget.ca_why_unknown").to_string(),
     }];
     if recent && let Some(n) = turn.turns_since_compact {
@@ -159,7 +160,7 @@ fn judge(p: &Value, st: &crate::checks::git::util::Settings, path: &str, lines: 
         } else {
             "ctxbudget.ca_recent_n"
         };
-        why.push(msg::render(key, &[("n", &number_to_string(n))]));
+        why.push(msg::render(key, &[("n", &to_js_string(n))]));
     }
     let what = msg::render("ctxbudget.ca_what", &[("phrase", phrase), ("why", &why.join(defaults::text("ctxbudget.ca_why_join")))]);
     let ctx = match pct {

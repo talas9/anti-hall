@@ -21,6 +21,7 @@
 // - an absent or unreadable state file is "nothing blocked yet" (Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
@@ -29,7 +30,7 @@ use crate::checks::guardkit::text::{js_trim, js_trim_end};
 use crate::checks::jsport::text::len16;
 use crate::checks::replykit::Defer;
 use crate::checks::replykit::io::{home_of, js_id_string, read_window, safe_session, sha1_hex, truthy};
-use crate::checks::replykit::json::{self, Oj, ParseError, js_number, quote};
+use crate::checks::replykit::json::{self, Oj, ParseError, quote};
 use crate::checks::replykit::transcript::{last_assistant_text, tail_lines};
 use crate::checks::{Check, Exact, Verdict};
 use crate::defaults;
@@ -244,7 +245,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
     if verdict_word != Some(defaults::text("speculation_judge.decision_block")) {
         return Ok(Verdict::Allow);
     }
-    let body = format!("{{\"hash\":{},\"blocks\":{}}}", quote(&msg_hash), js_number(blocks + 1.0));
+    let body = format!("{{\"hash\":{},\"blocks\":{}}}", quote(&msg_hash), to_js_string(blocks + 1.0));
     if std::fs::create_dir_all(&state_dir).and_then(|()| crate::atomic::write(&state_file, body)).is_err() {
         return Ok(Verdict::Allow);
     }
