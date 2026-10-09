@@ -1763,3 +1763,37 @@ test('BLOCK (bypass probe): a STALE heartbeat file and no agent in the transcrip
     assert.match(r.json.reason || '', /NO background agent is live/);
   } finally { h.cleanup(); }
 });
+
+// Dogfood 2026-10-09: a single-job session (ONE user request) whose writes all land under the output path that request names
+// must not be told to keep a task list.
+function userPrompt(text) { return { type: 'user', message: { role: 'user', content: text } }; }
+function editAt(i, file) {
+  return { type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Write', id: 'toolu_w' + i, input: { file_path: file } }] } };
+}
+
+test('ALLOW: one user request, every write under the output folder it names', () => {
+  const h = makeHome();
+  try {
+    const out = '/Users/someone/reports/q3';
+    const lines = [userPrompt('Write the quarterly report files into ' + out + '/ please.')];
+    for (let i = 0; i < 5; i++) lines.push(editAt(i, out + '/part' + i + '.md'));
+    const tp = h.writeTranscript(lines);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('BLOCK: one request but writes land outside the named output, or a second request exists', () => {
+  const h = makeHome();
+  try {
+    const out = '/Users/someone/reports/q3';
+    const outside = [userPrompt('Write the report into ' + out + '/')];
+    for (let i = 0; i < 4; i++) outside.push(editAt(i, '/Users/someone/proj/src/f' + i + '.js'));
+    let r = testHook(HOOK, stopPayload(h.writeTranscript(outside), h.home), { home: h.home });
+    assert.ok(isBlock(r), `writes outside the named path still count; stdout: ${r.stdout}`);
+    const two = [userPrompt('Write the report into ' + out + '/'), userPrompt('and also tidy up')];
+    for (let i = 0; i < 4; i++) two.push(editAt(i, out + '/p' + i + '.md'));
+    r = testHook(HOOK, stopPayload(h.writeTranscript(two), h.home, 't2'), { home: h.home });
+    assert.ok(isBlock(r), `two requests: no exemption; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});

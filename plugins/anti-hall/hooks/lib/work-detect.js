@@ -129,11 +129,72 @@ function isUnderTmpRoot(p) {
   return resolved === root || resolved.startsWith(root + path.sep);
 }
 
+// Output paths named by a session's ONE user request (mirrors engine/logic/lib/72-workdetect.js requestedPaths; patterns are
+// workdetect.request_* in task_guards.toml). `lines` are the transcript lines; `complete` false (the window clipped the transcript)
+// means the request count is unknown, so nothing is exempt. Returns [{ raw, abs }]: [] with 0 or 2+ requests.
+const REQUEST_SKIP = ['<task-notification', '<system-reminder', '<command-', '<local-command', 'Caveat:', '[Request interrupted'];
+const REQUEST_PATH_RE = /(?:^|[\s"'`(=:,<>])(?:((?:~|\.{1,2})?\/[\w.@+~-]+(?:\/[\w.@+~-]+)*)|([\w.@+-]+(?:\/[\w.@+~-]+)+))/g;
+function singleRequestPaths(lines, cwd, complete) {
+  if (!complete || !Array.isArray(lines)) return [];
+  let count = 0;
+  const raws = [];
+  for (const line of lines) {
+    if (typeof line !== 'string' || line.indexOf('"user"') === -1) continue;
+    let e;
+    try { e = JSON.parse(line); } catch (_) { continue; }
+    if (!e || e.type !== 'user' || e.isMeta === true || !e.message) continue;
+    const c = e.message.content;
+    let txt = '';
+    let isResult = false;
+    if (typeof c === 'string') txt = c;
+    else if (Array.isArray(c)) {
+      for (const b of c) {
+        if (b && b.type === 'tool_result') isResult = true;
+        else if (b && b.type === 'text' && typeof b.text === 'string') txt += (txt ? '\n' : '') + b.text;
+      }
+    }
+    const head = txt.trim();
+    if (isResult || !head || REQUEST_SKIP.some((x) => head.indexOf(x) === 0)) continue;
+    count++;
+    REQUEST_PATH_RE.lastIndex = 0;
+    let m;
+    while ((m = REQUEST_PATH_RE.exec(txt)) !== null) {
+      let t = m[1] || m[2] || '';
+      while (t.length > 0 && ".,;:)>`'\"".indexOf(t.charAt(t.length - 1)) !== -1) t = t.slice(0, -1);
+      if (t.length > 1) raws.push(t);
+    }
+  }
+  if (count !== 1) return [];
+  const out = [];
+  for (const raw of raws) {
+    let abs;
+    try {
+      if (raw.charAt(0) === '/') abs = path.resolve(raw);
+      else if (raw.charAt(0) === '~') { if (raw.length > 1 && raw.charAt(1) !== '/') continue; abs = path.resolve(os.homedir() + raw.slice(1)); }
+      else if (typeof cwd === 'string' && path.isAbsolute(cwd)) abs = path.resolve(cwd, raw);
+      else continue;
+    } catch (_) { continue; }
+    if (abs === '/' || (typeof cwd === 'string' && path.isAbsolute(cwd) && (path.resolve(cwd) === abs || path.resolve(cwd).startsWith(abs + path.sep)))) continue;
+    out.push({ raw, abs });
+  }
+  return out;
+}
+
+// isInRequested(fp, opts) -> bool: fp is, or is inside, a path the single user request named (opts.requested from singleRequestPaths).
+function isInRequested(fp, opts) {
+  if (!opts || !Array.isArray(opts.requested) || opts.requested.length === 0) return false;
+  let abs;
+  try { abs = path.isAbsolute(fp) ? path.resolve(fp) : (typeof opts.cwd === 'string' && path.isAbsolute(opts.cwd) ? path.resolve(opts.cwd, fp) : null); } catch (_) { return false; }
+  if (abs === null) return false;
+  return opts.requested.some((r) => abs === r.abs || abs.startsWith(r.abs + path.sep));
+}
+
 // isExcludedWritePath(fp) -> bool: fp is the session scratchpad, a repo
 // .anti-hall/progress|history state dir, or a scratch copy under any tmp
 // root — none of these count as project work.
-function isExcludedWritePath(fp) {
+function isExcludedWritePath(fp, opts) {
   if (typeof fp !== 'string' || !fp) return false;
+  if (isInRequested(fp, opts)) return true;
   return SCRATCHPAD_PATH_RE.test(fp) || ANTIHALL_STATE_DIR_RE.test(fp) || isUnderTmpRoot(fp);
 }
 
@@ -161,11 +222,11 @@ function allPathsUnderScratchpad(neutralized) {
 // isExcludedWritePath (scratchpad OR repo .anti-hall state dir OR any tmp
 // root), so a command whose every path-looking token is one of those three
 // is excluded, not only literal-scratchpad-only commands.
-function allPathsExcluded(neutralized) {
+function allPathsExcluded(neutralized, opts) {
   const tokens = neutralized.split(/\s+/).filter(Boolean);
   for (const tok of tokens) {
     if (tok.indexOf('/') === -1) continue;
-    if (!isExcludedWritePath(tok)) return false;
+    if (!isExcludedWritePath(tok, opts)) return false;
   }
   return true;
 }
@@ -175,8 +236,9 @@ function allPathsExcluded(neutralized) {
 // all (e.g. `git commit -am "x"`) is never misclassified as "scratch-only" —
 // allPathsExcluded returns true vacuously on zero path tokens, so this hint
 // must find at least one real signal before that branch is trusted.
-function hasExcludedPathHint(cmd) {
+function hasExcludedPathHint(cmd, opts) {
   if (typeof cmd !== 'string' || !cmd) return false;
+  if (opts && Array.isArray(opts.requested) && opts.requested.some((r) => cmd.indexOf(r.raw) !== -1 || cmd.indexOf(r.abs) !== -1)) return true;
   if (SCRATCHPAD_PATH_RE.test(cmd) || ANTIHALL_STATE_DIR_RE.test(cmd)) return true;
   // A session whose working directory IS the scratchpad writes relative paths there (`python3 scan.py > out.tsv`): scratch, not project work.
   try { if (SCRATCHPAD_PATH_RE.test(process.cwd() + '/')) return true; } catch (_) { /* no cwd: no hint */ }
@@ -369,13 +431,13 @@ function collectToolUses(node) {
 // change, and to document the T4(b) requirement directly.
 const NEVER_WORK_TOOLS = new Set(['Agent', 'Task', 'CronCreate', 'CronDelete']);
 
-function isCountedWork(tu) {
+function isCountedWork(tu, opts) {
   if (!tu || typeof tu !== 'object') return false;
   const name = tu.name || '';
   if (NEVER_WORK_TOOLS.has(name)) return false;
   if (MUTATING_TOOLS.has(name)) {
     const fp = tu.input && typeof tu.input.file_path === 'string' ? tu.input.file_path : '';
-    return !isExcludedWritePath(fp);
+    return !isExcludedWritePath(fp, opts);
   }
   if (name === 'Bash') {
     const cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
@@ -383,8 +445,8 @@ function isCountedWork(tu) {
     if (isDevswarmHousekeepingOnly(cmd)) return false;
     const neutralized = neutralizeQuotedContents(cmd);
     if (!BASH_WORK_RE.test(neutralized)) return false;
-    const isScratchOnly = hasExcludedPathHint(cmd) && !ALWAYS_WORK_RE.test(neutralized)
-      && allPathsExcluded(neutralized);
+    const isScratchOnly = hasExcludedPathHint(cmd, opts) && !ALWAYS_WORK_RE.test(neutralized)
+      && allPathsExcluded(neutralized, opts);
     return !isScratchOnly;
   }
   return false;
@@ -406,4 +468,6 @@ module.exports = {
   neutralizeQuotedContents,
   collectToolUses,
   isCountedWork,
+  singleRequestPaths,
+  isInRequested,
 };

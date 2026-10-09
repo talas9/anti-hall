@@ -75,6 +75,9 @@ function tlScanWork(path, progressAbs, cx) {
   var out = { work: 0, lastWork: 0, lastProgressWrite: 0 };
   var lines = rp.lines(path, tlN('window_bytes'));
   if (lines === null) return out;
+  // a session with ONE user request: a write under a path that request names is the requested output (workdetect.request_path_re)
+  var size = ah.fs.size(path);
+  cx.requested = wd.requestedPaths(lines, cx, size !== null && size <= tlN('window_bytes'));
   for (var i = 0; i < lines.length; i++) {
     // only an entry that holds a tool use (or an escape that could spell one), and a bare `null`, can matter to the work count
     var raw = lines[i];
