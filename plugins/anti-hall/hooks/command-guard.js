@@ -1856,6 +1856,20 @@ const GH_MUTATING_SUBCOMMANDS = {
 };
 const GH_API_MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
+// One-line remote state changes (dogfood 2026-10-09): `gh pr merge 12`, `gh issue close 5`, `gh api -X PATCH repos/o/r/pulls/3 -f
+// state=closed` print a line or two and flood nothing, so forcing a subagent for them is noise. They are light when the whole
+// command is one short plain line (no newline, substitution or heredoc). Creation with a body, releases, repos, secrets, workflow
+// runs, graphql and DELETE stay heavy.
+const GH_ONELINER_SUBCOMMANDS = {
+  pr: new Set(['merge', 'close', 'edit', 'review', 'comment', 'ready', 'reopen']),
+  issue: new Set(['close', 'edit', 'comment', 'reopen']),
+};
+const GH_ONELINER_API_METHODS = new Set(['POST', 'PATCH', 'PUT']);
+const GH_ONELINER_MAX_CHARS = 600;
+function isOneLineCommand(command) {
+  return typeof command === 'string' && command.length <= GH_ONELINER_MAX_CHARS && !/[\n\r`]|\$\(|<<|<\(|>\(/.test(command);
+}
+
 // isReadOnlyGhGraphql(tokens, ghIdx) -> true only for a provably read-only
 // `gh api graphql` call (closed read set; anything unknown => false):
 // endpoint `graphql`|`/graphql`, fields only as separated -f/-F/--field/
@@ -1903,7 +1917,7 @@ function isReadOnlyGhGraphql(tokens, ghIdx) {
 // method). Gated on effectiveVerb(segment) === 'gh' first, same discipline
 // as isHeavyGitSegment, so `gh` appearing only as quoted DATA is never
 // misread as a real invocation.
-function isHeavyGhSegment(segment, command) {
+function isHeavyGhSegment(segment, command, strict) {
   if (effectiveVerb(segment) !== 'gh') return false;
   const tokens = tokenizeQuoted(segment);
   const ghIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'gh');
@@ -1911,6 +1925,8 @@ function isHeavyGhSegment(segment, command) {
   const group = (tokens[ghIdx + 1] || '').toLowerCase();
   const sub = (tokens[ghIdx + 2] || '').toLowerCase();
   if (group === 'workflow' && sub === 'run') return true;
+  const oneLine = !strict && isOneLineCommand(command); // inline code (strict) is never a plain one-liner
+  if (oneLine && GH_ONELINER_SUBCOMMANDS[group] && GH_ONELINER_SUBCOMMANDS[group].has(sub)) return false;
   if (GH_MUTATING_SUBCOMMANDS[group] && GH_MUTATING_SUBCOMMANDS[group].has(sub)) return true;
   if (group === 'api') {
     // The splitter cuts a segment AT a backtick, so a trailing `query=`\`cmd\``
@@ -1918,6 +1934,17 @@ function isHeavyGhSegment(segment, command) {
     if (isReadOnlyGhGraphql(tokens, ghIdx) && !(command || '').includes('`')) return false;
     // `gh api graphql` always POSTs: heavy unless proven a read above.
     if (tokens.slice(ghIdx + 2).some((t) => /^\/?graphql$/i.test(t))) return true;
+    if (oneLine) {
+      // an explicit POST/PATCH/PUT (or the implicit POST of a field flag) on one short line is light; DELETE and a body file are not
+      let method = '', body = false;
+      for (let i = ghIdx + 2; i < tokens.length; i++) {
+        const t = tokens[i];
+        if ((t === '-X' || t === '--method') && tokens[i + 1] !== undefined) method = tokens[i + 1].toUpperCase();
+        else if (/^--method=/.test(t)) method = t.slice(9).toUpperCase();
+        if (t === '--input' || /^--input=/.test(t)) body = true;
+      }
+      if (!body && (method === '' || GH_ONELINER_API_METHODS.has(method))) return false;
+    }
     for (let i = ghIdx + 2; i < tokens.length; i++) {
       const t = tokens[i];
       if (t === '-f' || t === '-F' || t === '--field' || t === '--raw-field') return true;
@@ -3487,12 +3514,25 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
   return true;
 }
 
+// `sed -n 'N,Mp' <scratch file>`: a bounded line range of a scratch/tmp file, read only (no -i, no w/e command).
+function isScratchSedRangeSegment(segment, ctx) {
+  if (effectiveVerb(segment) !== 'sed') return false;
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  const t = tokenizeQuoted(segment.trim());
+  if (t.length !== 4 || t[0] !== 'sed' || t[1] !== '-n') return false;
+  return /^(?:\d+)(?:,\d+)?p$/.test(t[2]) && !t[3].startsWith('-') && isScratchpadOrTmpPath(t[3], ctx);
+}
+
 // The command is one or more segments joined by `;`/`&&`/`|`, each either a
 // scratch-script segment or a bounded read sink (tail/head/wc/grep -c|-m N) —
 // the exact remedy shape the block text suggests (`script > out; wc -l out`).
 // At least one scratch-script segment is required; anything else refuses.
 function isBackgroundScratchScript(command, payload) {
-  if (!payload || !payload.tool_input || payload.tool_input.run_in_background !== true) return false;
+  if (!payload || !payload.tool_input) return false;
+  // Foreground too (dogfood 2026-10-09): `python3 -I scan.py > out.tsv; wc -l out.tsv; sed -n 1,5p out.tsv | head` floods nothing, because the
+  // script's stdout goes to a scratch file and every read is bounded. A foreground chain must redirect each script's stdout; a background
+  // one keeps the original, looser rule.
+  const background = payload.tool_input.run_in_background === true;
   if (typeof command !== 'string' || !command.trim()) return false;
   if (/#/.test(neutralizeQuotedContents(command))) return false;
   if (hasShellExpansionAnywhere(command)) return false;
@@ -3507,8 +3547,10 @@ function isBackgroundScratchScript(command, payload) {
     if (!BACKGROUND_CHAIN_DELIMS.has(delims[i])) return false;
     const seg = segments[i].trim();
     if (!seg) return false;
-    if (isBackgroundScratchScriptSegment(seg, ctx)) sawScript = true;
-    else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx)) return false;
+    if (isBackgroundScratchScriptSegment(seg, ctx)) {
+      if (!background && !/(^|[^0-9&<>])>>?\s*\S/.test(neutralizeQuotedContents(seg).replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return false; // foreground: stdout must go to a file
+      sawScript = true;
+    } else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx) && !isScratchSedRangeSegment(seg, ctx)) return false;
   }
   return sawScript;
 }
@@ -4113,7 +4155,7 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
     for (const m of body.matchAll(INLINE_GIT_GH_ARRAY_RE)) {
       cmds.push([m[2]].concat([...m[3].matchAll(/(['"])([^'"]*)\1/g)].map((x) => x[2])).join(' '));
     }
-    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c))) return { precise: true };
+    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c, true))) return { precise: true };
   }
   const sp = require('./lib/scratchpad.js');
   // 'tmp' (tmp/scratch), 'notes' (a coordinator-writable repo file), 'repo' (non-notes repo file) or 'outside'.

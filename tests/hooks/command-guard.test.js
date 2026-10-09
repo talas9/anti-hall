@@ -162,16 +162,13 @@ const BLOCK = [
   'node -e "process.binding(\'fs\').writeFile(\'x\')"',
   'node -e "require(\'fs\').cpSync(\'a\',\'b\')"',
   // (4) P2: gh mutating subcommands were never classified heavy at all.
-  'gh pr merge 123',
-  'gh pr merge 12',
-  'gh pr close 123',
-  'gh pr edit 123 --title x',
   'gh pr create --title x --body y',
-  'gh pr review 123 --approve',
+  // multi-line / substituted gh commands are not one-liners
+  'gh pr merge 12 $(cat ids)',
+  'gh api repos/o/r/pulls/3 -X PATCH --input body.json',
+  'gh api repos/o/r/git/refs/heads/x -X DELETE',
   'gh issue create --title x',
-  'gh issue close 5',
   'gh issue delete 5',
-  'gh issue edit 5 --title x',
   'gh release create v1.0.0',
   'gh release delete v1.0.0',
   'gh release edit v1.0.0 --title x',
@@ -181,9 +178,7 @@ const BLOCK = [
   'gh secret set FOO --body bar',
   'gh secret delete FOO',
   'gh workflow run build.yml',
-  'gh api repos/o/r/issues -X POST -f title=x',
   'gh api repos/o/r/issues --method DELETE',
-  'gh api repos/o/r/issues -f title=x',
   'gh api graphql -F query=x',
   // defect.js: only report/list/show/recurring/similar are exempt (append-only
   // or read). `backfill` writes history records and stays gated. `rule`
@@ -1534,3 +1529,12 @@ test('`;`-joined leading cd: block reason hints `cd <dir> &&`; the && form is al
     } finally { h.cleanup(); }
   } finally { require('node:fs').rmSync(dir, { recursive: true, force: true }); }
 });
+
+// One-line remote state changes are light (dogfood 2026-10-09): no subagent for `gh pr merge 12`.
+for (const c of ['gh pr merge 123 --squash', 'gh pr close 123', 'gh pr edit 123 --title x', 'gh pr review 123 --approve', 'gh issue close 5',
+  'gh issue edit 5 --title x', 'gh api repos/o/r/pulls/3 -X PATCH -f state=closed', 'gh api repos/o/r/issues -X POST -f title=x', 'gh api repos/o/r/issues -f title=x']) {
+  test('ALLOW one-line gh state change in the main thread: ' + c, () => {
+    const r = runCoord(c);
+    assert.strictEqual(r.status, 0, c + ' -> ' + r.stdout);
+  });
+}

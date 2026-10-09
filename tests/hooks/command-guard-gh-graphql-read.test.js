@@ -56,7 +56,7 @@ const BLOCKED = [
   `gh api graphql -f query='query{viewer{login}}' -f query='query{viewer{id}}'`,
   `gh api graphql -f query='query{viewer{login}}' --unknown-flag`,
   'gh api graphql -f',
-  'gh api repos/o/r -f name=x',
+  'gh api repos/o/r -X DELETE -f name=x',
 ];
 
 for (const cmd of BLOCKED) {

@@ -362,6 +362,10 @@ function cmdBuildTables() {
   t.wholeCliStart = new RegExp('^(?:' + t.wholeClis.map(cmdEsc).join('|') + ')\\s', 'i');
   t.ghMutating = {};
   Object.keys(ah.cfg('command.gh_mutating_subcommands')).forEach(function (g) { t.ghMutating[g] = new Set(ah.cfg('command.gh_mutating_subcommands')[g]); });
+  t.ghOneliner = {};
+  Object.keys(ah.cfg('command.gh_oneliner_subcommands')).forEach(function (g) { t.ghOneliner[g] = new Set(ah.cfg('command.gh_oneliner_subcommands')[g]); });
+  t.ghOnelinerApi = cmdSet('command.gh_oneliner_api_methods'); t.ghOnelinerMax = ah.cfgNum('command.gh_oneliner_max_chars');
+  t.ghOnelinerRe = new RegExp(ah.cfg('command.gh_oneliner_deny_re'));
   t.ghApiMethods = cmdSet('command.gh_api_mutating_methods'); t.ghGqlValue = cmdSet('command.gh_gql_value_flags'); t.ghGqlBool = cmdSet('command.gh_gql_bool_flags');
   t.ghField = cmdSet('command.gh_api_field_flags');
   t.timeoutPrefix = cmdRe(ah.cfg('command.timeout_prefix')); t.controlPrefix = cmdRe(ah.cfg('command.control_keyword_prefix'));
@@ -2305,7 +2309,7 @@ function isReadOnlyGhGraphql(tokens, ghIdx) {
 // method). Gated on effectiveVerb(segment) === 'gh' first, same discipline
 // as isHeavyGitSegment, so `gh` appearing only as quoted DATA is never
 // misread as a real invocation.
-function isHeavyGhSegment(segment, command) {
+function isHeavyGhSegment(segment, command, strict) {
   if (effectiveVerb(segment) !== 'gh') return false;
   const tokens = tokenizeQuoted(segment);
   const ghIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'gh');
@@ -2313,6 +2317,8 @@ function isHeavyGhSegment(segment, command) {
   const group = (tokens[ghIdx + 1] || '').toLowerCase();
   const sub = (tokens[ghIdx + 2] || '').toLowerCase();
   if (group === 'workflow' && sub === 'run') return true;
+  const oneLine = !strict && typeof command === 'string' && command.length <= T.ghOnelinerMax && !T.ghOnelinerRe.test(command);
+  if (oneLine && T.ghOneliner[group] && T.ghOneliner[group].has(sub)) return false;
   if (T.ghMutating[group] && T.ghMutating[group].has(sub)) return true;
   if (group === 'api') {
     // The splitter cuts a segment AT a backtick, so a trailing `query=`\`cmd\``
@@ -2320,6 +2326,17 @@ function isHeavyGhSegment(segment, command) {
     if (isReadOnlyGhGraphql(tokens, ghIdx) && !(command || '').includes('`')) return false;
     // `gh api graphql` always POSTs: heavy unless proven a read above.
     if (tokens.slice(ghIdx + 2).some((t) => RX44.test(t))) return true;
+    if (oneLine) {
+      // an explicit POST/PATCH/PUT (or the implicit POST of a field flag) on one short line is light; DELETE and a body file are not
+      let method = '', body = false;
+      for (let i = ghIdx + 2; i < tokens.length; i++) {
+        const t = tokens[i];
+        if ((t === '-X' || t === '--method') && tokens[i + 1] !== undefined) method = tokens[i + 1].toUpperCase();
+        else if (/^--method=/.test(t)) method = t.slice(9).toUpperCase();
+        if (t === '--input' || /^--input=/.test(t)) body = true;
+      }
+      if (!body && (method === '' || T.ghOnelinerApi.has(method))) return false;
+    }
     for (let i = ghIdx + 2; i < tokens.length; i++) {
       const t = tokens[i];
       if (t === '-f' || t === '-F' || t === '--field' || t === '--raw-field') return true;
@@ -3806,8 +3823,19 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
 // scratch-script segment or a bounded read sink (tail/head/wc/grep -c|-m N) —
 // the exact remedy shape the block text suggests (`script > out; wc -l out`).
 // At least one scratch-script segment is required; anything else refuses.
+// `sed -n 'N,Mp' <scratch file>`: a bounded line range of a scratch/tmp file, read only (no -i, no w/e command).
+function isScratchSedRangeSegment(segment, ctx) {
+  if (effectiveVerb(segment) !== 'sed') return false;
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  const t = tokenizeQuoted(segment.trim());
+  if (t.length !== 4 || t[0] !== 'sed' || t[1] !== '-n') return false;
+  return /^(?:\d+)(?:,\d+)?p$/.test(t[2]) && !t[3].startsWith('-') && isScratchpadOrTmpPath(t[3], ctx);
+}
+
 function isBackgroundScratchScript(command, payload) {
-  if (!payload || !payload.tool_input || payload.tool_input.run_in_background !== true) return false;
+  if (!payload || !payload.tool_input) return false;
+  // Foreground too (dogfood 2026-10-09): a foreground chain must redirect each script's stdout to a file; a background one keeps the looser rule.
+  const background = payload.tool_input.run_in_background === true;
   if (typeof command !== 'string' || !command.trim()) return false;
   if (RX82.test(neutralizeQuotedContents(command))) return false;
   if (hasShellExpansionAnywhere(command)) return false;
@@ -3822,8 +3850,10 @@ function isBackgroundScratchScript(command, payload) {
     if (!T.bgDelims.has(delims[i])) return false;
     const seg = segments[i].trim();
     if (!seg) return false;
-    if (isBackgroundScratchScriptSegment(seg, ctx)) sawScript = true;
-    else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx)) return false;
+    if (isBackgroundScratchScriptSegment(seg, ctx)) {
+      if (!background && !/(^|[^0-9&<>])>>?\s*\S/.test(neutralizeQuotedContents(seg).replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return false; // foreground: stdout must go to a file
+      sawScript = true;
+    } else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx) && !isScratchSedRangeSegment(seg, ctx)) return false;
   }
   return sawScript;
 }
@@ -4392,7 +4422,7 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
     for (const m of body.matchAll(INLINE_GIT_GH_ARRAY_RE)) {
       cmds.push([m[2]].concat([...m[3].matchAll(/(['"])([^'"]*)\1/g)].map((x) => x[2])).join(' '));
     }
-    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c))) return { precise: true };
+    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c, true))) return { precise: true };
   }
   const sp = require('./lib/scratchpad.js');
   // 'tmp' (tmp/scratch), 'notes' (a coordinator-writable repo file), 'repo' (non-notes repo file) or 'outside'.
