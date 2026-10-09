@@ -2485,7 +2485,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `stale_note.control_re` | `[\x00-\x1f\x7f-\u{9f}]` |  |  | Rust regex source of the control characters turned into spaces in a name. |
+| `stale_note.control_re` | `[\x00-\x1f\x7f-\x9f]` |  |  | Regex source (JavaScript and Rust syntax alike) of the control characters turned into spaces in a name. |
 | `stale_note.ellipsis` | `…` |  |  | Text appended to a name that was cut. |
 | `stale_note.guard_name` | `stale-stop` |  |  | The guard id this check shows in its advisory. |
 | `stale_note.msg_instead` | `advisory only; the stop is not blocked.` |  |  | What the advisory says about the stop. |

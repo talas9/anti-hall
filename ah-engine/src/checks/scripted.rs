@@ -93,6 +93,9 @@ pub static TASK_GUARD: Scripted = Scripted::new("task-guard", "task_guard.summar
 /// `tasklist-guard`.
 pub static TASKLIST_GUARD: Scripted = Scripted::new("tasklist-guard", "tasklist_guard.summary");
 
+/// `stale-agent-stop-note`.
+pub static STALE_AGENT_STOP_NOTE: Scripted = Scripted::new("stale-agent-stop-note", "stale_note.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 
