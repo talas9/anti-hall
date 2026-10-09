@@ -97,3 +97,40 @@ test('GUARD: "do not commit or push anything" research brief keeps the Explore a
   assert.match(advisory('research task', 'Investigate how the hooks read settings and report only. Do not commit or push anything.'), /read-only-shaped/);
   assert.match(advisory('research task', 'Find where the release tag is created. Report only; do not run git commit or git push.'), /read-only-shaped/);
 });
+
+// FIX (issue #55a): a brief that creates labels/issues, commits files and pushes is a writing brief even when it quotes "read-only".
+test('FIX: a triage brief that creates labels and issues, commits and pushes gets no Explore advisory', () => {
+  const brief = 'Research the open issues (read-only scan of the tracker), then create the missing labels with gh label create, file each finding with gh issue create, commit the policy files and push.';
+  assert.strictEqual(advisory('triage the tracker', brief), '');
+  assert.strictEqual(advisory('triage the tracker', 'Investigate the tracker (read-only listing). Label each issue by area; commits files and pushes.'), '');
+});
+// GUARD: negated write verbs keep a research brief read-only.
+test('GUARD: "do not create issues, never push" research brief keeps the Explore advisory', () => {
+  assert.match(advisory('research task', 'Investigate the tracker and report only. Do not create issues or labels; never push.'), /read-only-shaped/);
+});
+
+// (issue #55b) the deploy floor and an omitted model: the inherited session model decides.
+const fs = require('node:fs');
+const path = require('node:path');
+function deploySpawn(sessionModel) {
+  const h = makeHome();
+  try {
+    const tp = path.join(h.home, 't.jsonl');
+    const lines = sessionModel === null ? [] : [{ type: 'assistant', message: { role: 'assistant', model: sessionModel, content: [{ type: 'text', text: 'ok' }] } }];
+    fs.writeFileSync(tp, lines.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    const r = testHook('model-routing-guard.js', {
+      hook_event_name: 'PreToolUse', tool_name: 'Agent', session_id: 't', cwd: process.cwd(), transcript_path: tp,
+      tool_input: { subagent_type: 'general-purpose', description: 'enable the docs site', prompt: 'Enable GitHub Pages for the docs site and set the deploy secret in production; report the URL.' },
+    }, { home: h.home });
+    assert.strictEqual(r.status, 0, r.stdout);
+    return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+  } finally { h.cleanup(); }
+}
+test('FIX: deploy-shaped spawn with the model omitted in an opus or fable session -> no deploy-floor advisory', () => {
+  assert.strictEqual(deploySpawn('claude-opus-5-5'), '');
+  assert.strictEqual(deploySpawn('claude-fable-1'), '');
+});
+test('GUARD: deploy-shaped spawn with the model omitted in a haiku session (or an unknown one) -> deploy-floor advisory', () => {
+  assert.match(deploySpawn('claude-haiku-4-5'), /sets no explicit model/);
+  assert.match(deploySpawn(null), /sets no explicit model/);
+});
