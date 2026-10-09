@@ -228,10 +228,13 @@ function meshRoute(argv, segments) {
     var ROUTES = [
       { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'] },
       { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] }, { words: ['inbox', 'tick'] }, { words: ['inbox', 'read-primary'] },
+      { words: ['help'] }, { words: [], anyOf: ['-h', '--help'] }, { words: ['skip'] }, { words: ['archive-ignore'] },
+      { words: ['archive-unignore'] }, { words: ['gate-intent'] }, { words: ['notice'] },
     ];
     var routed = ROUTES.some(function (r) {
       return r.words.every(function (w, i) { return argv[i] === w; })
-        && (!r.flag || argv.some(function (a) { return a === r.flag || a.indexOf(r.flag + '=') === 0; }));
+        && (!r.flag || argv.some(function (a) { return a === r.flag || a.indexOf(r.flag + '=') === 0; }))
+        && (!r.anyOf || argv.some(function (a) { return r.anyOf.indexOf(a) >= 0; }));
     });
     if (!routed) return out;
     var fs = require('fs'), path = require('path'), os = require('os');

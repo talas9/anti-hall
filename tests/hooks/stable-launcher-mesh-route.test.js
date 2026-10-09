@@ -131,6 +131,24 @@ test('on: inbox read-primary is routed (the engine decides; a deferral runs Node
   assert.match(r2.trace, /engine mesh inbox read-primary w1[\s\S]*node inbox read-primary w1/);
 });
 
+test('on: help requests and the store-free verbs (skip, archive-ignore, archive-unignore, gate-intent, notice) are routed; a bare unknown verb stays in Node', () => {
+  const { run } = setup({ mode: 'on', engine: 'exit 0' });
+  for (const argv of [['help'], ['help', 'send', '--json'], ['-h'], ['--help'], ['--h'], ['inbox', 'x', '--help'], ['skip', 'edit-guard', '--ttl', '5'],
+    ['archive-ignore', 'w1'], ['archive-unignore', 'w1'], ['gate-intent', '--reason', 'r'], ['notice', '--list']]) {
+    const r = run(argv);
+    assert.strictEqual(r.code, 0, argv.join(' '));
+    assert.ok(r.trace.endsWith('engine mesh ' + argv.join(' ') + '\n'), argv.join(' ') + ' -> ' + r.trace);
+    assert.doesNotMatch(r.trace, /^node /m);
+  }
+  const u = run(['bogus-verb']);
+  assert.strictEqual(u.code, 3);
+  assert.doesNotMatch(u.trace, /engine mesh bogus-verb/);
+  assert.match(u.trace, /node bogus-verb stdin=\n$/);
+  const d = setup({ mode: 'on', engine: 'exit 75' }).run(['skip', 'g']);
+  assert.strictEqual(d.code, 3);
+  assert.match(d.trace, /engine mesh skip g\nnode skip g/);
+});
+
 test('on: inbox tick is routed; a deferral (exit 75) runs Node, a committed failure (exit 70) never reruns it', () => {
   const ok = setup({ mode: 'on', engine: 'exit 0' });
   assert.strictEqual(ok.run(['inbox', 'tick', 'w1', '--quiet']).code, 0);
