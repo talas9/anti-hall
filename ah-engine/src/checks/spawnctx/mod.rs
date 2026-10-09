@@ -9,7 +9,6 @@
 // - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
 // A failure that must be seen goes through `crate::discard` instead.
 
-pub mod orch_state;
 
 #[cfg(test)]
 mod tests;

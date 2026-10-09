@@ -1170,7 +1170,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guardkit.prune_stamp_key` | `lastSweep` |  |  | Key of the stamp file that holds the time of the last sweep. |
 | `guardkit.prune_throttle_ms` | `21600000` |  |  | Minimum time, in milliseconds, between two pruning sweeps of one state-file family (6 hours). |
 | `guardkit.prune_ttl_ms` | `604800000` |  |  | How old, in milliseconds, a per-session state file must be before the pruning sweep removes it (7 days). |
-| `guardkit.render_reserve` | `32` |  | bytes | Extra bytes reserved beyond a message template's length when its placeholders are filled (a capacity hint, not a limit). |
 | `guardkit.session_key_max` | `120` |  |  | Longest session key, in UTF-16 units, after the characters outside letters, digits, dot, underscore and hyphen are replaced (the Node state file name limit). |
 | `guardkit.settings_dir` | `.anti-hall` |  |  | The anti-hall directory under the home directory, where the legacy settings files live. |
 | `guardkit.settings_file` | `.anti-hall/settings.json` |  |  | Settings file, relative to the home directory. |
@@ -1445,9 +1444,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `orch_state.protocol_setting` | `7 entries` |  |  | Where the protocol level (compact or full) is read from (context.protocolLevel). |
 | `orch_state.setting` | `6 entries` |  |  | Where the orchestration on/off switch is read from (context.verifyFirstOrchestration, default on; it has no environment variable). |
 | `orch_state.skip_name` | `orch-on-spawn` |  |  | Name of the skip-file entry that turns the spawn-time delivery off. |
-| `orch_state.stamp_prefix` | `.prune-stamp-` |  |  | File-name prefix of the prune stamp (the prefix is appended). |
-| `orch_state.throttle_ms` | `21600000` |  | ms | Shortest time between two prune sweeps. |
-| `orch_state.ttl_ms` | `604800000` |  | ms | How old a marker or claim must be (by modification time) before the prune sweep removes it. |
 
 ### spawn_context.toml / phase_tracker
 

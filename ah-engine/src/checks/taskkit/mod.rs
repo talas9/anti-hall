@@ -7,7 +7,6 @@
 pub mod jsval;
 pub mod root;
 pub mod time;
-pub mod workdetect;
 
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{collapse_ws, js_trim, slice_utf16};

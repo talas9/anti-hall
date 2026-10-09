@@ -163,24 +163,6 @@ value = "orch-full"
 doc = "File-name prefix of every marker, claim and temporary file."
 value = "orch-full"
 
-[orch_state.stamp_prefix]
-doc = "File-name prefix of the prune stamp (the prefix is appended)."
-value = ".prune-stamp-"
-
-[orch_state.ttl_ms]
-doc = "How old a marker or claim must be (by modification time) before the prune sweep removes it."
-value = 604800000
-unit = "ms"
-min = 60000
-max = 31536000000
-
-[orch_state.throttle_ms]
-doc = "Shortest time between two prune sweeps."
-value = 21600000
-unit = "ms"
-min = 1000
-max = 604800000
-
 [orch_state.decisions]
 doc = "The decisions a marker may hold: the first is the one meaning the full text is still owed to the first spawn."
 value = ["pending", "none"]
