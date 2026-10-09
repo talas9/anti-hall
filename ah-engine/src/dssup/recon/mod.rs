@@ -24,6 +24,7 @@
 // - an unreadable optional file is the absent one (Node's try/catch, fail-open)
 // - the witness is advisory: a scratch file that cannot be removed only costs disk
 pub mod apply;
+pub mod fold;
 pub mod gate;
 pub mod heal;
 pub mod mirror;

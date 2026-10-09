@@ -100,6 +100,10 @@ value = { type = "enum", section = "devswarm", key = "housekeepingSweep", env = 
 doc = "Least time between two housekeeping sweeps. Node: devswarm.housekeepingSweepSec (floor 300)."
 value = { type = "number", section = "devswarm", key = "housekeepingSweepSec", env = "ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC", min = 300, max = 100000000, default = 3600 }
 
+[devswarm_sup.sweep_tail_mode]
+doc = "Who runs the mesh fold of the update sweep tail (foldMeshDuplicates and its helpers): `node` leaves it entirely to Node's scheduled functions; `engine` lets the engine plan each fold, witness it against Node's own function on a scratch copy and apply it only when both agree, handing anything it cannot prove back to Node. Engine-only setting (Node does not read it)."
+value = { type = "enum", section = "devswarm", key = "sweepTailMode", env = "ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE", values = ["node", "engine"], default = "node" }
+
 [devswarm_sup.set_max_recoveries]
 doc = "Most kill-and-resume recoveries of one workspace. Node: devswarm.maxRecoveries."
 value = { type = "number", section = "devswarm", key = "maxRecoveries", env = "ANTIHALL_DEVSWARM_MAX_RECOVERIES", min = 1, max = 20, default = 3 }
