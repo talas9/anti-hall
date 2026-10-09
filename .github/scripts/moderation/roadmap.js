@@ -1,7 +1,7 @@
 'use strict';
 // roadmap.yml: keeps the "anti-hall roadmap" board and labels consistent (labels and state win; every
 // correction is logged to the job summary), fills the live "Last update" and "Progress" fields,
-// nudges stale in-progress work by comment (never closes), writes the weekly digest to the private
+// labels stale in-progress work and, on other people's items, keeps one nudge comment (never closes), writes the weekly digest to the private
 // board as a project status update (job summary fallback; never a public issue), and reports the
 // weekly mistake rate of all the automation. Event runs touch only the item the event is about; the
 // 6-hourly and manual runs reconcile every open issue and PR.
@@ -118,7 +118,6 @@ async function activity(github, repo, numbers, cfg) {
       out[n] = {
         last: B.lastUpdate({ createdAt: x.createdAt, comments, refs, commitDate }),
         progress: B.progressFrom(comments, cfg),
-        nudged: comments.some((c) => (c.body || '').includes('<!-- stale-check -->')),
       };
     }
   }
@@ -285,7 +284,12 @@ async function apply({ github, context, core, getOctokit }) {
   }
   for (const n of stale.slice(0, 20)) {
     await act({ type: 'label', name: P.stale_label, target: { kind: 'issue', number: n } }, () => github.rest.issues.addLabels({ ...repo, issue_number: n, labels: [P.stale_label] }));
-    if (!acts[n].nudged) await act({ type: 'comment', target: { number: n } }, () => github.rest.issues.createComment({ ...repo, issue_number: n, body: L.render(L.template('stale-check'), { marker: '<!-- stale-check -->', hours: P.stale_hours }) }));
+    // ONE nudge sticky per item, edited in place; none on the owner's own items (the label is the signal).
+    const item = items.find((x) => x.number === n);
+    if (item && String(item.author || '').toLowerCase() !== String(repo.owner).toLowerCase()) {
+      await L.upsertSticky({ io: L.restSticky(github, repo, n), purpose: 'stale-nudge', body: L.render(L.template('stale-check'), { hours: P.stale_hours }), act })
+        .catch((e) => errors.push(`stale-nudge: ${L.isRateLimit(e) ? 'rate-limited' : (e.status || e.message)}`));
+    }
   }
   for (const n of resumed.slice(0, 20)) await act({ type: 'unlabel', name: P.stale_label, target: { kind: 'issue', number: n } }, () => github.rest.issues.removeLabel({ ...repo, issue_number: n, name: P.stale_label }));
 

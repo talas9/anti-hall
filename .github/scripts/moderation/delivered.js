@@ -1,7 +1,9 @@
 'use strict';
 // GitHub closes "Closes #n" issues only for PRs merged into the default branch (main). Work merges
 // into dev first, so the roadmap job closes those issues once the PR is merged into dev.
-// Idempotent: a hidden marker per (issue, PR) and the issue state both stop repeats.
+// Idempotent: the comment is an upsert (ah-bot:delivered-on-dev) and the issue state stops repeats.
+
+const L = require('./lib.js');
 
 const KEYWORD = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+([\w.-]+\/[\w.-]+)?#(\d+)/gi;
 
@@ -14,7 +16,7 @@ function closes(body) {
   return [...out];
 }
 
-const comment = (pr, sha) => `${marker(pr)}\nDelivered on dev in #${pr} (${String(sha).slice(0, 8)}); ships to main with the next release.`;
+const comment = (pr, sha) => `Delivered on dev in #${pr} (${String(sha).slice(0, 8)}); ships to main with the next release.`;
 
 // prs: [{number, body, merge_commit_sha}] merged into dev. issueState(n) -> {state, comments:[bodies]} | null
 function plan(prs, issueState) {
@@ -24,7 +26,7 @@ function plan(prs, issueState) {
       if (seen.has(n) || n === pr.number) continue;
       const st = issueState(n);
       if (!st || st.state !== 'open' || st.pull_request) continue;
-      if ((st.comments || []).some((c) => c.includes(marker(pr.number)))) continue;
+      if ((st.comments || []).some((c) => c.includes(marker(pr.number)) || (L.hasMarker('delivered-on-dev', c) && c.includes(`in #${pr.number} (`)))) continue;
       seen.add(n);
       out.push({ issue: n, pr: pr.number, body: comment(pr.number, pr.merge_commit_sha) });
     }
@@ -48,7 +50,7 @@ async function run({ github, repo, act, days = 7, max = 20, base = 'dev' }) {
   }
   for (const t of plan(prs, (n) => cache.get(n) || null).slice(0, max)) {
     await act({ type: 'deliver-close', issue: t.issue, pr: t.pr }, async () => {
-      await github.rest.issues.createComment({ ...repo, issue_number: t.issue, body: t.body });
+      await L.upsertSticky({ io: L.restSticky(github, repo, t.issue), purpose: 'delivered-on-dev', body: t.body });
       await github.rest.issues.update({ ...repo, issue_number: t.issue, state: 'closed', state_reason: 'completed' });
     });
     todo.push(t.issue);

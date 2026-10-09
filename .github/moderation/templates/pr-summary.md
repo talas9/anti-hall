@@ -1,4 +1,3 @@
-{{marker}}
 ### PR check (automated)
 
 | Check | Result |

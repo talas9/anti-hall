@@ -70,6 +70,7 @@ async function docsReview({ github, repo, cfg, state, model, act }) {
   if (state.drift.rule) lines.unshift(`- [ ] ${state.drift.user_count} user-facing file(s) changed since ${state.prev} with no CHANGELOG, docs/, README, skill or Codex-docs change (rules), e.g. ${state.drift.user.slice(0, 5).map((f) => '`' + f + '`').join(', ')}`);
   const body = [
     `<!-- docs-review:${it.tag} -->`,
+    L.botMarker('docs-review'),
     `Documentation review for release ${it.url ? `[${it.tag}](${it.url})` : it.tag} (automated).`,
     '', lines.join('\n') || '- (none)', '',
     model && model.data && model.data.summary ? `**Overview** (${model.provider}): ${L.sanitize(model.data.summary, cfg, 600)}` : `<sub>No model review (${(model && model.reason) || 'not run'}); rules only.</sub>`,
@@ -77,8 +78,10 @@ async function docsReview({ github, repo, cfg, state, model, act }) {
   const found = await github.rest.search.issuesAndPullRequests({ q: `repo:${repo.owner}/${repo.repo} is:issue in:title "${title}" author:app/github-actions` }).catch(() => null);
   const prev = found && found.data.items.find((i) => i.title === title);
   if (prev) {
-    if (prev.state === 'open') await act({ type: 'docs-review-update', number: prev.number }, () => github.rest.issues.update({ ...repo, issue_number: prev.number, body }));
-    return { issue: prev.number, updated: prev.state === 'open' };
+    // Edited in place, and only when the content changed (the "Updated" footer is not content).
+    const changed = prev.state === 'open' && L.stripFooter(prev.body) !== body.trim();
+    if (changed) await act({ type: 'docs-review-update', number: prev.number }, () => github.rest.issues.update({ ...repo, issue_number: prev.number, body: L.withUpdatedFooter(body) }));
+    return { issue: prev.number, updated: changed };
   }
   const ms = (await github.rest.issues.listMilestones({ ...repo, state: 'open', per_page: 100 }).catch(() => ({ data: [] }))).data.find((m) => m.title === cfg.triage.default_milestone);
   const created = await act({ type: 'docs-review-create', title }, () => github.rest.issues.create({ ...repo, title, body, labels: ['type:docs', cfg.participation.docs_inspector.issue_label, 'priority:P2', 'size:S', cfg.labels.triage], ...(ms ? { milestone: ms.number } : {}) }));

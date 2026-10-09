@@ -1,4 +1,3 @@
-{{marker}}
 ### Triage brief (automated)
 
 | | Suggestion |

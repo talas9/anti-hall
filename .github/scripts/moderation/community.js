@@ -10,7 +10,8 @@ const path = require('node:path');
 const L = require('./lib.js');
 const REL = require('./release.js');
 
-const MARK = { brief: '<!-- triage-brief -->', qa: '<!-- qa-answer -->', mod: '<!-- moderation -->', privacy: '<!-- privacy-scrub -->', explain: '<!-- explain -->', idea: '<!-- idea-accepted -->', converted: '<!-- idea-converted -->' };
+// Bot comment purposes (see lib.js PURPOSES): ONE sticky per purpose per item, edited in place.
+const PURPOSE = { brief: 'triage-brief', qa: 'qa-answer', mod: 'moderation-request', privacy: 'moderation-request', explain: 'explain-reply', idea: 'convert-reply', converted: 'convert-reply' };
 const LOG = 'community-log';
 
 async function discussionByNumber(github, repo, number) {
@@ -60,16 +61,21 @@ function commentItem(p, parent, kind) {
   };
 }
 
-async function existingComment(github, repo, item, marker) {
-  if (item.kind === 'discussion') {
-    const q = `query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){discussion(number:$n){comments(first:100){nodes{id body updatedAt author{login}}}}}}`;
-    const nodes = (await github.graphql(q, { o: repo.owner, r: repo.repo, n: item.number })).repository.discussion.comments.nodes;
-    const c = nodes.find((x) => x.author && x.author.login === 'github-actions' && x.body.includes(marker));
-    return c ? { id: c.id, body: c.body, updated_at: c.updatedAt } : null;
-  }
-  const all = await github.paginate(github.rest.issues.listComments, { ...repo, issue_number: item.number, per_page: 100 });
-  const c = all.find((x) => x.user && x.user.login === 'github-actions[bot]' && (x.body || '').includes(marker));
-  return c ? { id: c.id, body: c.body, updated_at: c.updated_at } : null;
+// The bot's own comments on an item as a sticky adapter (see lib.js upsertSticky).
+function stickyIo(github, repo, item) {
+  if (item.kind !== 'discussion') return L.restSticky(github, repo, item.number);
+  const q = `query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){discussion(number:$n){comments(first:100){nodes{id body updatedAt author{login}}}}}}`;
+  return {
+    list: async () => (await github.graphql(q, { o: repo.owner, r: repo.repo, n: item.number })).repository.discussion.comments.nodes
+      .filter((x) => x.author && x.author.login === 'github-actions')
+      .map((x) => ({ id: x.id, body: x.body || '', updated_at: x.updatedAt })),
+    create: (body) => github.graphql('mutation($d:ID!,$b:String!){addDiscussionComment(input:{discussionId:$d,body:$b}){clientMutationId}}', { d: item.node_id, b: body }),
+    update: (id, body) => github.graphql('mutation($c:ID!,$b:String!){updateDiscussionComment(input:{commentId:$c,body:$b}){clientMutationId}}', { c: id, b: body }),
+  };
+}
+
+async function existingComment(github, repo, item, purpose) {
+  return L.findSticky(stickyIo(github, repo, item), purpose);
 }
 
 async function similarIssues(github, repo, item, cfg) {
@@ -110,8 +116,11 @@ async function gate({ github, context, core }) {
   const force = dispatch && String(context.payload.inputs['force-model']) === 'true';
   const skip = force && item.user ? '' : L.skipReason(item.user, dispatch ? '' : owner, cfg);
   const isOwner = !dispatch && skip === 'owner';
+  // Rule: no bot comments on the owner's own items (comment events: the item's author, not the commenter).
+  const itemAuthor = item.parentUser || item.user;
+  const ownerItem = !dispatch && !!(itemAuthor && itemAuthor.login && String(itemAuthor.login).toLowerCase() === String(owner).toLowerCase());
   const text = item.comment ? item.comment.body : `${item.title || ''}\n${item.body || ''}`;
-  const state = { item: { kind: item.kind, number: item.number, node_id: item.node_id, comment: item.comment ? { id: item.comment.id, node_id: item.comment.node_id } : null, author: L.safeLogin(item.user && item.user.login), category: item.category || null, labels: item.labels || [], opened: !!item.opened, url: item.url || null, title: item.title, body: String(item.body || '').slice(0, 4000) }, skip, event: `${context.eventName}.${context.payload.action || ''}` };
+  const state = { item: { kind: item.kind, number: item.number, node_id: item.node_id, comment: item.comment ? { id: item.comment.id, node_id: item.comment.node_id } : null, author: L.safeLogin(item.user && item.user.login), category: item.category || null, labels: item.labels || [], opened: !!item.opened, owner_item: ownerItem, url: item.url || null, title: item.title, body: String(item.body || '').slice(0, 4000) }, skip, event: `${context.eventName}.${context.payload.action || ''}` };
 
   if (force) state.force = true;
   if (skip === 'bot' || skip === 'no-author') return finish(core, state, null);
@@ -145,13 +154,13 @@ async function gate({ github, context, core }) {
   if (!newItem && (state.command === 'triage') && (item.kind === 'issue' || isResearchCat)) {
     rerun = true; state.rerun = true; state.forced = true;
   } else if (!newItem && followup && item.kind === 'issue' && item.state === 'open') {
-    const prev = await existingComment(github, repo, item, MARK.brief);
+    const prev = await existingComment(github, repo, item, PURPOSE.brief);
     const age = prev ? (Date.now() - new Date(prev.updated_at)) / 36e5 : 0;
     rerun = !!prev && /\*\*Open questions/.test(prev.body) && age >= cfg.triage.research.rerun_min_hours;
     state.rerun = rerun;
   } else if (!newItem && followup && item.kind === 'discussion' && P.followup_categories.includes(item.category)) {
     // Q&A: answer again when the asker replies, at most once per cooldown (the sticky answer's age).
-    const prev = await existingComment(github, repo, item, MARK.qa);
+    const prev = await existingComment(github, repo, item, PURPOSE.qa);
     rerun = !!prev && (Date.now() - new Date(prev.updated_at)) / 36e5 >= P.cooldown_hours;
     state.rerun = rerun;
   }
@@ -185,7 +194,7 @@ async function gate({ github, context, core }) {
     const head = `${item.title || ''}\n${String(item.body || '').slice(0, 600)}`;
     const wants = item.comment ? (item.comment.created && mention.test(item.comment.body || '')) : (item.opened && (mention.test(head) || question.test(item.title || '') || question.test(head)));
     if (wants) {
-      const prev = await existingComment(github, repo, item, MARK.qa);
+      const prev = await existingComment(github, repo, item, PURPOSE.qa);
       if (!prev || (Date.now() - new Date(prev.updated_at)) / 36e5 >= P.cooldown_hours) {
         state.reply = true;
         call = { purpose: 'qa-answer', tools: 'read', max_turns: cfg.triage.research.max_turns, untrusted: `TITLE: ${item.title}\n\n${item.body || ''}${item.comment ? `\n\nCOMMENT THAT MENTIONED THE ASSISTANT:\n${item.comment.body}` : ''}`, context: '' };
@@ -326,21 +335,19 @@ async function apply({ github, context, core, getOctokit }) {
       }
     } catch (e) { errors.push(`label: ${L.isRateLimit(e) ? 'rate-limited' : (e.status || e.message)}`); }
   };
-  const postSticky = async (marker, body) => {
-    const prev = await existingComment(github, repo, item, marker).catch(() => null);
-    const full = marker + '\n' + body.replace(marker, '').trim() + '\n';
-    if (item.kind === 'discussion') {
-      return act({ type: prev ? 'comment-update' : 'comment', marker }, () => (prev
-        ? github.graphql('mutation($c:ID!,$b:String!){updateDiscussionComment(input:{commentId:$c,body:$b}){clientMutationId}}', { c: prev.id, b: full })
-        : github.graphql('mutation($d:ID!,$b:String!){addDiscussionComment(input:{discussionId:$d,body:$b}){clientMutationId}}', { d: item.node_id, b: full })));
+  // Every bot comment goes through here: an upsert keyed by purpose (create once, then edit). Owner-authored
+  // items get none unless a maintainer command asked for the reply (/triage, /explain, /convert).
+  const postSticky = async (purpose, body) => {
+    if (item.owner_item && !state.command) {
+      actions.push({ type: 'skip-owner-comment', purpose });
+      return null;
     }
-    return act({ type: prev ? 'comment-update' : 'comment', marker }, () => (prev
-      ? github.rest.issues.updateComment({ ...repo, comment_id: prev.id, body: full })
-      : github.rest.issues.createComment({ ...repo, issue_number: item.number, body: full })));
-  };
-  const once = async (marker, body) => {
-    const prev = await existingComment(github, repo, item, marker).catch(() => null);
-    if (!prev) await postSticky(marker, body);
+    try {
+      return await L.upsertSticky({ io: stickyIo(github, repo, item), purpose, body, act });
+    } catch (e) {
+      errors.push(`comment: ${L.isRateLimit(e) ? 'rate-limited' : (e.status || e.message)}`);
+      return null;
+    }
   };
   const minimize = (classifier) => act({ type: 'minimize', node: item.comment.node_id, classifier }, () =>
     github.graphql('mutation($s:ID!,$c:ReportedContentClassifiers!){minimizeComment(input:{subjectId:$s,classifier:$c}){clientMutationId}}', { s: item.comment.node_id, c: classifier }));
@@ -385,7 +392,7 @@ async function apply({ github, context, core, getOctokit }) {
     if (item.comment) await minimize('RESOLVED');
     else {
       await addLabels([cfg.labels.private]);
-      await once(MARK.privacy, L.render(L.template('privacy'), { marker: '', author: item.author, rules }));
+      await postSticky(PURPOSE.privacy, L.render(L.template('privacy'), { author: item.author, rules }));
     }
   }
 
@@ -400,7 +407,8 @@ async function apply({ github, context, core, getOctokit }) {
     }
   } else if (verdict === 'off-topic' || verdict === 'low-quality') {
     if (!item.comment) {
-      if (await reviewLabel()) await once(MARK.mod, L.render(L.template(verdict === 'off-topic' ? 'off-topic' : 'needs-info'), { author: item.author, reason: state.verdict.reason }));
+      // One moderation-request sticky: the privacy request (above) wins when both apply.
+      if (await reviewLabel() && !state.privacy.length) await postSticky(PURPOSE.mod, L.render(L.template(verdict === 'off-topic' ? 'off-topic' : 'needs-info'), { author: item.author, reason: state.verdict.reason }));
     } else if (verdict === 'off-topic') {
       await reviewLabel();
     }
@@ -451,7 +459,7 @@ async function apply({ github, context, core, getOctokit }) {
       const files = brief ? verifiedPaths(brief.files, root) : [];
       const docs = brief ? verifiedPaths(brief.docs, root, ['docs/', '*.md']) : [];
       const body = L.render(L.template('triage-brief'), {
-        marker: '', type: f.type, area: f.area, priority: f.priority, size: f.size,
+        type: f.type, area: f.area, priority: f.priority, size: f.size,
         estimate: f.estimate_hours ? `${f.estimate_hours} h` : 'n/a', milestone: milestone || 'n/a',
         applied: t ? `Labels applied where the form left them empty.` : '',
         related: rel.length ? rel.map((r) => `[#${r.number}](${ln(r.number)}) (${r.relation})`).join(', ') : 'none found',
@@ -462,26 +470,26 @@ async function apply({ github, context, core, getOctokit }) {
         rationale: brief ? L.sanitize(brief.rationale, cfg, 500) : L.sanitize((t && t.rationale) || (state.duplicate ? `Title closely matches #${state.duplicate}.` : ''), cfg, 500),
         provider: model.provider === 'none' ? `rules only (${model.reason})` : model.provider,
       });
-      await postSticky(MARK.brief, body);
+      await postSticky(PURPOSE.brief, body);
     }
   }
 
   // 4. Maintainer commands and the Ideas conversion offer.
   if (state.command === 'explain' && state.purpose === 'explain') {
     const sum = model.data && model.data.summary ? L.sanitize(model.data.summary, cfg, 1200) : null;
-    await postSticky(MARK.explain, sum ? `**Summary** (automated, ${model.provider}, requested by a maintainer)\n\n${sum}` : `<sub>No summary available (${model.reason}). Try \`/explain\` again later.</sub>`);
+    await postSticky(PURPOSE.explain, sum ? `**Summary** (automated, ${model.provider}, requested by a maintainer)\n\n${sum}` : `<sub>No summary available (${model.reason}). Try \`/explain\` again later.</sub>`);
   }
   if (state.dispatch_pr_check) {
     await act({ type: 'dispatch', workflow: 'pr-check.yml', pr: item.number }, () => github.rest.actions.createWorkflowDispatch({ ...repo, workflow_id: 'pr-check.yml', ref: context.payload.repository.default_branch, inputs: { 'pr-number': String(item.number), 'dry-run': 'false' } }));
   }
-  if (state.offer_convert) await once(MARK.idea, L.render(L.template('idea-accepted'), { marker: '' }));
+  if (state.offer_convert) await postSticky(PURPOSE.idea, L.render(L.template('idea-accepted'), {}));
   if (state.convert) {
-    const done = await existingComment(github, repo, item, MARK.converted).catch(() => null);
-    if (!done) {
+    const done = await existingComment(github, repo, item, PURPOSE.converted).catch(() => null);
+    if (!done || !/Opened a tracking issue/.test(done.body)) {
       const quote = L.sanitize(L.stripHtmlComments(item.body || ''), cfg, 3000).split('\n').map((l) => '> ' + l).join('\n');
       const url = item.url || `https://github.com/${repo.owner}/${repo.repo}/discussions/${item.number}`;
       const created = await act({ type: 'convert', discussion: item.number }, () => github.rest.issues.create({ ...repo, title: String(item.title).slice(0, 200), body: `Converted from discussion ${url} by a maintainer.\n\n${quote}`, labels: ['type:feature', cfg.labels.triage] }));
-      if (created) await postSticky(MARK.converted, `Opened a tracking issue: #${created.data.number}.`);
+      if (created) await postSticky(PURPOSE.converted, `Opened a tracking issue: #${created.data.number}.`);
     }
   }
 
@@ -505,7 +513,7 @@ async function qaAnswer({ cfg, model, item, root, postSticky }) {
   const links = [...new Set(docLinks.concat(ruleLinks))].slice(0, c.qa_max_links + 2);
   if (!data && !links.length) return;
   const answer = data ? L.sanitize(data.answer + (data.confident ? '' : '\n\n(Low confidence: please check the linked docs.)'), cfg) : 'These pages may help while a maintainer looks at your question:';
-  await postSticky(MARK.qa, L.render(L.template('qa-answer'), { marker: '', answer, links: links.map((u) => '- ' + u).join('\n') }));
+  await postSticky(PURPOSE.qa, L.render(L.template('qa-answer'), { answer, links: links.map((u) => '- ' + u).join('\n') }));
 }
 
 async function board({ getOctokit, core, cfg, item, final, act, actions }) {
