@@ -168,10 +168,11 @@ fn engine_plugin() -> &'static Path {
                     let end = v + text[v..].find('\n').unwrap();
                     text = format!("{}value = {cap}{}", &text[..v], &text[end..]);
                 }
-                // The real children of the "really signals" test must not look systemd-managed:                 // may sit in a `.service` control group, and the sweep then (correctly) leaves it alone. A path no pid has makes
+                // The real children of the "really signals" test must not look systemd-managed: on Linux a test process
+                // may sit in a `.service` control group, and the sweep then (correctly) leaves it alone. A path no pid has makes
                 // the control-group read find nothing; the fake-pid corpus has no /proc entry either way.
-                let key = "mcp_reaper.cgroup_path";
-                let at = text.find(&format!("[{key}]\n")).unwrap_or_else(|| panic!("{key} is not in mcp_reaper.toml"));
+                let key = "hostproc.cgroup_path";
+                let at = text.find(&format!("[{key}]\n")).unwrap_or_else(|| panic!("{key} is not in host_proc.toml"));
                 let v = at + text[at..].find("\nvalue = ").unwrap() + 1;
                 let end = v + text[v..].find('\n').unwrap();
                 text = format!("{}value = \"{}/no-cgroup/{{pid}}\"{}", &text[..v], root.display(), &text[end..]);
