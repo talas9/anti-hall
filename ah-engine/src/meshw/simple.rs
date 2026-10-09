@@ -51,6 +51,10 @@ pub enum Simple {
     GateIntent,
     /// `notice --list` (and its usage error); `--post` is Node's.
     Notice,
+    /// `wake-directive <id>` for a child workspace.
+    WakeDirective,
+    /// `logs [--repo --component --min-level --since --limit]`.
+    Logs,
 }
 
 /// The verb of a parsed argv, in the order `run()` meets them: a help request first (before any verb, whatever it names),
@@ -71,6 +75,10 @@ pub fn classify(a: &Args) -> Option<Simple> {
         Some(Simple::GateIntent)
     } else if is("devswarm_cli.verb_notice") {
         Some(Simple::Notice)
+    } else if is("devswarm_cli.verb_logs") {
+        Some(Simple::Logs)
+    } else if is("devswarm_cli.verb_wake_directive") {
+        Some(Simple::WakeDirective)
     } else if cmd.is_some_and(|c| defaults::list("devswarm_cli.verbs").contains(&c)) {
         None
     } else {
@@ -88,6 +96,8 @@ pub fn run(inv: &Inv, a: &Args, v: Simple) -> R<Answer> {
         Simple::ArchiveUnignore => ignore(inv, a, false),
         Simple::GateIntent => gate_intent(inv, a),
         Simple::Notice => notice(inv, a),
+        Simple::WakeDirective => wake_directive(inv, a),
+        Simple::Logs => logs(inv, a),
     }
 }
 
@@ -507,12 +517,260 @@ fn notice(inv: &Inv, a: &Args) -> R<Answer> {
     Ok(answer(0, o.done()))
 }
 
+// ---- logs ---------------------------------------------------------------------------------------------------------------
+
+/// `parseSinceDuration(raw)`: milliseconds of `30m`, `2h`, `1d`, `500` (ms) ...; `None` for text that is none of them.
+fn parse_since_duration(raw: Option<&str>) -> Option<f64> {
+    let t = js_trim(raw?);
+    let num_end = {
+        let int = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
+        if int == 0 {
+            return None;
+        }
+        match t[int..].strip_prefix('.') {
+            Some(rest) => {
+                let frac = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+                if frac == 0 { int } else { int + 1 + frac }
+            }
+            None => int,
+        }
+    };
+    let n: f64 = t[..num_end].parse().ok()?;
+    let unit = t[num_end..].trim_start_matches(is_js_space_char).to_ascii_lowercase();
+    let unit = if unit.is_empty() { defaults::text("devswarm_cli.since_default_unit") } else { unit.as_str() };
+    let mult = defaults::raw("devswarm_cli.since_units").get(unit)?.as_integer()?;
+    (n.is_finite() && n >= 0.0).then_some(n * mult as f64)
+}
+
+fn is_js_space_char(c: char) -> bool {
+    crate::checks::guardkit::text::is_js_space(c)
+}
+
+/// `parseLogFile(path)`: the entries of a JSONL log in file order, a missing file empty, a line that does not parse skipped.
+/// A line serde rejects that JavaScript might accept (a lone surrogate escape) defers.
+fn parse_log_file(p: &Path) -> R<Vec<OVal>> {
+    let Some(text) = read_text(p) else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        if js_trim(line).is_empty() {
+            continue;
+        }
+        match OVal::parse(line) {
+            Some(v @ OVal::Obj(_)) => out.push(v),
+            Some(_) => return defer("log-entry-shape"),
+            None if line.to_ascii_lowercase().contains("\\ud") => return defer("state-surrogate"),
+            None => {}
+        }
+    }
+    Ok(out)
+}
+
+/// `String(x)` of a scalar roll-up key; objects and arrays are not reproduced.
+fn rollup_key(v: Option<&OVal>) -> R<String> {
+    match v {
+        None | Some(OVal::Null) => Ok(defaults::text("devswarm_cli.log_none_label").to_string()),
+        Some(OVal::Str(t)) => Ok(t.clone()),
+        Some(OVal::Num(x)) => Ok(crate::checks::guardkit::ojson::js_number_text(*x)),
+        Some(OVal::Bool(b)) => Ok(b.to_string()),
+        Some(_) => defer("log-rollup-shape"),
+    }
+}
+
+fn bump(counts: &mut Vec<(String, f64)>, key: String) {
+    match counts.iter_mut().find(|(k, _)| *k == key) {
+        Some(slot) => slot.1 += 1.0,
+        None => counts.push((key, 1.0)),
+    }
+}
+
+fn logs(inv: &Inv, a: &Args) -> R<Answer> {
+    let levels = defaults::list("devswarm_cli.log_levels");
+    let repo = a.one(defaults::text("devswarm_cli.flag_repo"));
+    let component = a.one(defaults::text("devswarm_cli.flag_component"));
+    let min_level = a.one(defaults::text("devswarm_cli.flag_min_level"));
+    let min_rank = match min_level {
+        None => None,
+        // an unknown level skips the filter in Node, except names an object inherits (where the comparison is never true)
+        Some(l) => Some(levels.iter().position(|x| *x == l).map_or_else(|| defer("min-level"), Ok)?),
+    };
+    let now = inv.now as f64;
+    let since = parse_since_duration(a.one(defaults::text("devswarm_cli.flag_since"))).map(|d| now - d);
+    let mut limit = defaults::num("devswarm_cli.logs_default_limit") as f64;
+    if let Some(raw) = a.one(defaults::text("devswarm_cli.flag_limit")) {
+        let x = js_number_of_str(raw);
+        if x.is_finite() && x >= 0.0 {
+            limit = x.floor();
+        }
+    }
+    let home = home_str(inv)?;
+    let dir = match inv.env.get(defaults::text("devswarm_cli.env_log_dir")).filter(|v| !v.is_empty()) {
+        Some(d) => d.clone(),
+        None if inv.env.get(defaults::text("devswarm_cli.env_test_context")).is_some_and(|v| !v.is_empty()) => return defer("log-test-guard"),
+        None => path_join(&ah_dir(&home), defaults::text("mesh_write.dir_logs")),
+    };
+    let file = path_join(&dir, defaults::text("devswarm_cli.log_file"));
+    let rotated = path_join(&dir, defaults::text("devswarm_cli.log_rotated_file"));
+    let current = parse_log_file(Path::new(&file))?;
+    // `Date.parse` of an entry's `ts`: the strict ISO form, else Node
+    let ts_ms = |e: &OVal| -> R<Option<f64>> {
+        match e.get("ts") {
+            Some(OVal::Str(t)) => crate::checks::ctxbudget::limit::iso_ms(t).map_or_else(|| defer("log-ts"), |ms| Ok(Some(ms))),
+            Some(v) if !v.truthy() => Ok(None),
+            None => Ok(None),
+            Some(_) => defer("log-ts"),
+        }
+    };
+    let mut need_rotated = (current.len() as f64) < limit;
+    if let Some(cut) = since {
+        let earliest = match current.first() {
+            Some(e) => ts_ms(e)?,
+            None => None,
+        };
+        if current.is_empty() || earliest.is_none() || earliest.is_some_and(|t| t > cut) {
+            need_rotated = true;
+        }
+    }
+    let mut entries = if need_rotated {
+        let mut older = parse_log_file(Path::new(&rotated))?;
+        older.extend(current);
+        older
+    } else {
+        current
+    };
+    if let Some(r) = repo {
+        entries.retain(|e| matches!(e.get("repoKey"), Some(OVal::Str(x)) if x == r));
+    }
+    if let Some(c) = component {
+        entries.retain(|e| matches!(e.get("component"), Some(OVal::Str(x)) if x == c));
+    }
+    if let Some(min) = min_rank {
+        entries.retain(|e| matches!(e.get("level"), Some(OVal::Str(l)) if levels.iter().position(|x| x == l).is_some_and(|r| r >= min)));
+    }
+    if let Some(cut) = since {
+        let mut kept = Vec::new();
+        for e in entries {
+            if let Some(t) = ts_ms(&e)?
+                && t >= cut
+            {
+                kept.push(e);
+            }
+        }
+        entries = kept;
+    }
+    if (entries.len() as f64) > limit {
+        entries.drain(..entries.len() - limit as usize);
+    }
+    let mut by_component: Vec<(String, f64)> = Vec::new();
+    let mut by_level: Vec<(String, f64)> = Vec::new();
+    for e in &entries {
+        bump(&mut by_component, rollup_key(e.get("component"))?);
+        bump(&mut by_level, rollup_key(e.get("level"))?);
+    }
+    let counts = |c: Vec<(String, f64)>| OVal::Obj(c.into_iter().map(|(k, v)| (k, n(v))).collect());
+    let mut f = Obj::default();
+    f.put("repoKey", repo.map_or(OVal::Null, s))
+        .put("component", component.map_or(OVal::Null, s))
+        .put("minLevel", min_level.map_or(OVal::Null, s))
+        .put("sinceMs", since.map_or(OVal::Null, n))
+        .put("limit", n(limit));
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(true))
+        .put("action", s(defaults::text("devswarm_cli.action_logs")))
+        .put("logFile", s(&file))
+        .put("filters", f.done())
+        .put("count", n(entries.len() as f64))
+        .put("byComponent", counts(by_component))
+        .put("byLevel", counts(by_level))
+        .put("entries", OVal::Arr(entries));
+    Ok(answer(0, o.done()))
+}
+
+// ---- wake-directive -----------------------------------------------------------------------------------------------------
+
+/// `wake-directive <id>`: the SessionStart mailbox-wake directive, reprinted for the id asked about. A child workspace
+/// only: the Primary's drain command is worded differently and the engine does not word it.
+fn wake_directive(inv: &Inv, a: &Args) -> R<Answer> {
+    let id = a.positionals.get(1).map(String::as_str).unwrap_or("");
+    if !is_safe_id(id) {
+        return Ok(fail(defaults::text("devswarm_cli.msg_bad_id")));
+    }
+    let child = inv.env.get(defaults::text("devswarm_role.branch_env")).is_some_and(|v| !js_trim(v).is_empty());
+    if !child {
+        return defer("primary-directive");
+    }
+    let home = home_str(inv)?;
+    let env = crate::reqenv::RequestEnv::capture();
+    let Some(st) = crate::checks::devswarm_role::usable_settings(&env) else { return defer("settings") };
+    let Some(root) = defaults::root().and_then(|r| r.to_str().map(str::to_string)).and_then(|r| crate::checks::devswarm_role::node_root(&r)) else {
+        return defer("plugin-root");
+    };
+    // the stable launcher when it is a file, else the script where this plugin keeps it
+    let path_of = |key: &str| {
+        let l = defaults::raw(key);
+        let raw = posix_normalize(&format!("{root}/{}", l.str_field("target")));
+        let stable = posix_normalize(&format!("{home}/{}/{}", defaults::text("devswarm_role.bin_dir"), l.str_field("name")));
+        if std::fs::metadata(&stable).is_ok_and(|m| m.is_file()) { stable } else { raw }
+    };
+    let (cli, watcher) = (path_of("devswarm_role.launcher_cli"), path_of("devswarm_role.launcher_watcher"));
+    let agent_raw = inv.env.get(defaults::text("devswarm_role.agent_env")).map(String::as_str).unwrap_or("");
+    if !agent_raw.is_ascii() {
+        return defer("agent-name"); // JavaScript and Rust lower-case some non-ASCII letters differently
+    }
+    let agent = js_trim(agent_raw).to_ascii_lowercase();
+    let directive = crate::checks::devswarm_role::text::wake_part(&crate::checks::devswarm_role::text::Child {
+        cli: &cli,
+        watcher: &watcher,
+        agent: &agent,
+        id,
+        cron: &crate::checks::devswarm_role::settings::wake_cron(&st),
+        tick_only: crate::checks::guardkit::settings::get_bool(&st, defaults::raw("devswarm_role.sw_rearm")),
+    });
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(true))
+        .put("id", s(id))
+        .put("isChild", OVal::Bool(true))
+        .put("agent", if agent == defaults::text("devswarm_role.claude_agent") { s(&agent) } else { OVal::Null })
+        .put("directive", s(js_trim(&directive)));
+    Ok(answer(0, o.done()))
+}
+
 // ---- the Node witness ---------------------------------------------------------------------------------------------------
 
-/// Copy what Node reads or rewrites for these verbs into a scratch home; `None` when that fails (the call is then not
-/// verified).
-pub fn prepare(inv: &Inv) -> Option<PathBuf> {
+/// Every gate row of a store as text, oldest first (`None` when the store cannot be read).
+fn gates_dump(db: &Path) -> Option<String> {
+    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    c.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).ok()?;
+    let mut st = c.prepare(crate::sql::MESHW_GATES_DUMP).ok()?;
+    let mut rows = st.query([]).ok()?;
+    let mut out = String::new();
+    while let Some(r) = rows.next().ok()? {
+        for i in 0..5 {
+            out.push_str(&match r.get_ref(i).ok()? {
+                rusqlite::types::ValueRef::Null => "null".to_string(),
+                rusqlite::types::ValueRef::Integer(x) => x.to_string(),
+                rusqlite::types::ValueRef::Real(x) => x.to_string(),
+                rusqlite::types::ValueRef::Text(t) => serde_json::to_string(&String::from_utf8_lossy(t)).unwrap_or_default(),
+                rusqlite::types::ValueRef::Blob(b) => format!("blob:{}", b.len()),
+            });
+            out.push('|');
+        }
+        out.push('\n');
+    }
+    Some(out)
+}
+
+/// Copy what Node reads or rewrites for these verbs into a scratch home (the project's store as a consistent copy when
+/// `with_store`); `None` when that fails (the call is then not verified).
+pub fn prepare(inv: &Inv, with_store: bool) -> Option<PathBuf> {
     let scratch = crate::paths::dir().join(defaults::text("devswarm_cli.witness_dir")).join(format!("{}-{}", std::process::id(), now_ms()));
+    let built = prepare_into(inv, with_store, &scratch);
+    if built.is_none() {
+        crate::meshw::verify::discard_tree(&scratch);
+    }
+    built
+}
+
+fn prepare_into(inv: &Inv, with_store: bool, scratch: &Path) -> Option<PathBuf> {
     let home = scratch.join(defaults::text("mesh_write.shadow_home"));
     std::fs::create_dir_all(&home).ok()?;
     for rel in defaults::list("devswarm_cli.witness_copy_paths") {
@@ -525,7 +783,18 @@ pub fn prepare(inv: &Inv) -> Option<PathBuf> {
             std::fs::copy(&src, &dst).ok()?;
         }
     }
-    Some(scratch)
+    // a caller outside any project has no store to copy: the verb answers without one (a refusal), and Node meets none either
+    if with_store && let Some(real) = super::real_store(inv).ok().filter(|r| r.is_file()) {
+        let key = real.parent()?.file_name()?.to_string_lossy().to_string();
+        let dir = devswarm_root(&home).join(defaults::text("mesh_write.dir_store")).join(&key);
+        std::fs::create_dir_all(&dir).ok()?;
+        if let Ok(marker) = std::fs::read(real.parent()?.join(defaults::text("mesh.backend_marker"))) {
+            std::fs::write(dir.join(defaults::text("mesh.backend_marker")), marker).ok()?;
+        }
+        super::snapshot(&real, &dir.join(defaults::text("mesh_write.store_file"))).ok()?;
+        std::fs::write(scratch.join("snap-key"), &key).ok()?;
+    }
+    Some(scratch.to_path_buf())
 }
 
 /// After the engine answered: save what it printed and wrote, and start the detached witness.
@@ -538,6 +807,10 @@ pub fn launch(scratch: &Path, inv: &Inv, argv: &[String], ans: &Answer) {
         for (i, (rel, bytes)) in written.iter().enumerate() {
             std::fs::write(scratch.join(format!("expect-w{i}")), bytes)?;
             manifest.push(serde_json::json!([rel, format!("expect-w{i}")]));
+        }
+        if let Ok(key) = std::fs::read_to_string(scratch.join("snap-key")) {
+            let db = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
+            std::fs::write(scratch.join("expect-gates"), gates_dump(&db).unwrap_or_default())?;
         }
         std::fs::write(scratch.join("expect-manifest"), serde_json::Value::Array(manifest).to_string())
     };
@@ -593,6 +866,12 @@ pub fn run_witness(args: &[String]) -> i32 {
             for (rel, file) in &manifest {
                 if read(&scratch.join(file)) != read(&home.join(rel)) {
                     diff.push(rel.clone());
+                }
+            }
+            if let Ok(key) = std::fs::read_to_string(scratch.join("snap-key")) {
+                let db = devswarm_root(&home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
+                if gates_dump(&db).unwrap_or_default().as_bytes() != read(&scratch.join("expect-gates")).as_slice() {
+                    diff.push(defaults::text("devswarm_cli.gates_dump_table").to_string());
                 }
             }
             if node_stdout == want_stdout && node_code == want_code && diff.is_empty() {

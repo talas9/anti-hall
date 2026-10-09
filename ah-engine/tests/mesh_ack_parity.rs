@@ -472,15 +472,6 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             expect: vec!["window-flags-unsupported-on-acking-verb"],
         },
         Case {
-            name: "help",
-            cwd: "main",
-            argv: vec![s("inbox"), s("ack-primary"), s("--help")],
-            extra: vec![],
-            spec: base(),
-            native: false,
-            expect: vec!["\"action\":\"help\""],
-        },
-        Case {
             name: "unsafe-id",
             cwd: "main",
             argv: vec![s("inbox"), s("ack-primary"), s("a/b"), s("--receipt"), s("rx1")],

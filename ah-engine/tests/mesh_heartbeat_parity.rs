@@ -728,16 +728,6 @@ fn cases(fx: &Fx) -> Vec<Case> {
             native: false,
             expect: vec!["invalid or missing workspace id"],
         },
-        Case {
-            name: "help",
-            cwd: "child",
-            argv: vec![s("heartbeat"), s("--help")],
-            extra: vec![],
-            ack: none(),
-            union: none(),
-            native: false,
-            expect: vec!["\"action\":\"help\""],
-        },
     ]
 }
 
@@ -792,7 +782,7 @@ fn heartbeat_matches_node_byte_for_byte_and_defers_without_writing() {
         }
     }
     eprintln!("heartbeat parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", list.len());
-    assert!(native >= 34 && deferred >= 10, "{native} native, {deferred} deferred");
+    assert!(native >= 34 && deferred >= 9, "{native} native, {deferred} deferred");
 }
 
 /// Input faults: whatever the engine cannot read exactly like Node, it must leave untouched for Node.

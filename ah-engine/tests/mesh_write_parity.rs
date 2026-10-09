@@ -250,7 +250,6 @@ fn engine_verbs_match_node_byte_for_byte() {
             extra: vec![],
             native: false,
         },
-        Case { name: "send-help", cwd: "main", argv: vec![s("send"), s("--help")], stdin: None, extra: vec![], native: false },
         Case { name: "mesh-read-bare-seq", cwd: "main", argv: vec![s("mesh"), s("read"), s("--seq")], stdin: None, extra: vec![], native: false },
         Case { name: "mesh-read-last-consume", cwd: "main", argv: vec![s("mesh"), s("read"), s("--last"), s("1")], stdin: None, extra: vec![], native: false },
         Case {

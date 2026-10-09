@@ -131,10 +131,11 @@ test('on: inbox read-primary is routed (the engine decides; a deferral runs Node
   assert.match(r2.trace, /engine mesh inbox read-primary w1[\s\S]*node inbox read-primary w1/);
 });
 
-test('on: help requests and the store-free verbs (skip, archive-ignore, archive-unignore, gate-intent, notice) are routed; a bare unknown verb stays in Node', () => {
+test('on: help requests and the CLI verbs the engine answers (skip, archive-ignore, archive-unignore, gate-intent, notice, plan, scope, gate, workspaces, logs, wake-directive) are routed; a bare unknown verb stays in Node', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 0' });
   for (const argv of [['help'], ['help', 'send', '--json'], ['-h'], ['--help'], ['--h'], ['inbox', 'x', '--help'], ['skip', 'edit-guard', '--ttl', '5'],
-    ['archive-ignore', 'w1'], ['archive-unignore', 'w1'], ['gate-intent', '--reason', 'r'], ['notice', '--list']]) {
+    ['archive-ignore', 'w1'], ['archive-unignore', 'w1'], ['gate-intent', '--reason', 'r'], ['notice', '--list'], ['plan', 'show', 'w1'],
+    ['scope', 'add', 'w1', '--glob', 'a', '--note', 'n'], ['gate', 'w1', '--set', 'x'], ['workspaces', 'list'], ['logs', '--limit', '5'], ['wake-directive', 'w1']]) {
     const r = run(argv);
     assert.strictEqual(r.code, 0, argv.join(' '));
     assert.ok(r.trace.endsWith('engine mesh ' + argv.join(' ') + '\n'), argv.join(' ') + ' -> ' + r.trace);

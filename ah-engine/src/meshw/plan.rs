@@ -66,24 +66,37 @@ fn plan_file(inv: &Inv, key: &str) -> PathBuf {
     plans_dir(inv).join(format!("{key}{}", defaults::text("mesh_write.json_suffix")))
 }
 
-/// `planRefFor(home, id, ctx)` then the keys `findPlan` tries, in order: the worktree's mesh id, then the id.
-pub fn keys(inv: &Inv, id: &str) -> R<Vec<String>> {
-    let mut wt: Option<String> = ident::read_descriptor(&inv.home, id).and_then(|d| match d.get(defaults::text("mesh_write.field_worktree_path")) {
-        Some(OVal::Str(p)) if !p.is_empty() => Some(p.clone()),
-        _ => None,
-    });
+/// `planRefFor(home, id, ctx)`: the worktree path the descriptor names (or, for the caller's own id, the checkout it runs in).
+/// A truthy value that is no string is not reproduced.
+pub fn plan_ref(inv: &Inv, id: &str) -> R<Option<String>> {
+    let mut wt: Option<String> = None;
+    if let Some(d) = ident::read_descriptor(&inv.home, id) {
+        match d.get(defaults::text("mesh_write.field_worktree_path")) {
+            Some(OVal::Str(p)) if !p.is_empty() => wt = Some(p.clone()),
+            Some(v) if v.truthy() => return defer("plan-ref-shape"),
+            _ => {}
+        }
+    }
     if wt.is_none() && inv.env.get(defaults::text("mesh_write.env_builder_id")).map(String::as_str) == Some(id) {
         wt = ident::resolve_context(&inv.cwd, true)?.worktree_root;
     }
+    Ok(wt)
+}
+
+/// `planKeyForWorktree(wt)`: the worktree's mesh id, when it is a safe plan key.
+pub fn key_for_worktree(wt: &str) -> R<Option<String>> {
+    if wt.is_empty() {
+        return Ok(None);
+    }
+    let c = ident::resolve_context(wt, false)?;
+    Ok(c.worktree_root.map(|root| ident::mesh_id_for_real_path(&root)).filter(|k| is_safe_id(k)))
+}
+
+/// `planRefFor(home, id, ctx)` then the keys `findPlan` tries, in order: the worktree's mesh id, then the id.
+pub fn keys(inv: &Inv, id: &str) -> R<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
-    if let Some(w) = wt.filter(|w| !w.is_empty()) {
-        let c = ident::resolve_context(&w, false)?;
-        if let Some(root) = c.worktree_root {
-            let k = ident::mesh_id_for_real_path(&root);
-            if is_safe_id(&k) {
-                out.push(k);
-            }
-        }
+    if let Some(w) = plan_ref(inv, id)? {
+        out.extend(key_for_worktree(&w)?);
     }
     if is_safe_id(id) && !out.iter().any(|k| k == id) {
         out.push(id.to_string());
@@ -145,30 +158,30 @@ fn num_of(v: Option<&OVal>) -> R<f64> {
     })
 }
 
-fn remove(plan: &mut OVal, key: &str) {
+pub(crate) fn remove(plan: &mut OVal, key: &str) {
     if let OVal::Obj(v) = plan {
         v.retain(|(k, _)| k != key);
     }
 }
 
-fn steps_of(plan: &OVal) -> &[OVal] {
+pub(crate) fn steps_of(plan: &OVal) -> &[OVal] {
     match plan.get("steps") {
         Some(OVal::Arr(v)) => v,
         _ => &[],
     }
 }
 
-fn status_is(step: &OVal, word: &str) -> bool {
+pub(crate) fn status_is(step: &OVal, word: &str) -> bool {
     matches!(step.get("status"), Some(OVal::Str(x)) if x == word)
 }
 
 /// `stepsDone(plan)`.
-fn steps_done(plan: &OVal) -> usize {
+pub(crate) fn steps_done(plan: &OVal) -> usize {
     steps_of(plan).iter().filter(|x| status_is(x, defaults::text("mesh_write.plan_status_done"))).count()
 }
 
 /// `noteDoneDrop(plan, doneBefore)`.
-fn note_done_drop(plan: &mut OVal, before: usize) -> R<()> {
+pub(crate) fn note_done_drop(plan: &mut OVal, before: usize) -> R<()> {
     let now = steps_done(plan);
     if now < before {
         let prev = num_of(plan.get("regressed_from"))?;
@@ -296,7 +309,7 @@ fn step_number(step: &OVal) -> R<String> {
 }
 
 /// `finishLabel(plan, now)`.
-fn finish_label(plan: &OVal, now: f64) -> R<OVal> {
+pub(crate) fn finish_label(plan: &OVal, now: f64) -> R<OVal> {
     let steps = steps_of(plan);
     if steps.is_empty() {
         return Ok(OVal::Null);
@@ -469,6 +482,17 @@ pub fn compute(inv: &Inv, key: &str, id: &str, call: &Call<'_>, cur: Option<OVal
 /// `updatePlan(home, key, mutate)`: the plan's lock, the fresh plan, the mutation and an atomic write. `Ok(None)` is Node's
 /// `{ ok: false, lockBusy: true }`; otherwise what the mutation decided and the text written (`None`: nothing).
 pub fn update(inv: &Inv, key: &str, id: &str, call: &Call<'_>) -> R<Option<(Computed, Option<String>)>> {
+    update_with(inv, key, |cur| {
+        let c = compute(inv, key, id, call, cur)?;
+        let next = c.next.clone();
+        Ok((c, next))
+    })
+}
+
+/// `updatePlan(home, key, mutate)` for any mutation: `mutate` gets the fresh plan (`None` when the file holds none) and returns
+/// its own result plus the plan to write (`None` writes nothing). The write is the first thing the engine does on the plan, so a
+/// deferral inside `mutate` has written nothing; the caller marks the commit point after this returns.
+pub fn update_with<T>(inv: &Inv, key: &str, mutate: impl FnOnce(Option<OVal>) -> R<(T, Option<OVal>)>) -> R<Option<(T, Option<String>)>> {
     let path = plan_file(inv, key);
     let mut lock = path.as_os_str().to_os_string();
     lock.push(defaults::text("mesh_write.lock_suffix"));
@@ -483,13 +507,13 @@ pub fn update(inv: &Inv, key: &str, id: &str, call: &Call<'_>) -> R<Option<(Comp
         steal_dead: true,
     };
     let Some(held) = nodelock::acquire(&lock.to_string_lossy(), params) else { return Ok(None) };
-    let result = (|| -> R<(Computed, Option<String>)> {
+    let result = (|| -> R<(T, Option<String>)> {
         let cur = read_plan(&path)?;
-        let c = compute(inv, key, id, call, cur)?;
-        let Some(next) = &c.next else { return Ok((c, None)) };
+        let (out, next) = mutate(cur)?;
+        let Some(next) = &next else { return Ok((out, None)) };
         let text = next.stringify();
         write_atomic(&path, &text).map_err(|e| ident::Defer(format!("plan-write:{e}")))?;
-        Ok((c, Some(text)))
+        Ok((out, Some(text)))
     })();
     held.release();
     result.map(Some)

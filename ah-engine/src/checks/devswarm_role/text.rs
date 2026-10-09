@@ -50,21 +50,26 @@ pub struct Child<'a> {
     pub tick_only: bool,
 }
 
-/// The whole `additionalContext` a child workspace gets at SessionStart.
-pub fn child_context(c: &Child<'_>) -> String {
-    let mut out = fill_once(defaults::text("devswarm_role.msg_base"), &[("cli", c.cli)]);
+/// The mailbox-wake part of a child's directive (`wakeDirective`): empty when the agent is unknown.
+pub fn wake_part(c: &Child<'_>) -> String {
     if c.agent.is_empty() {
-        return out;
+        return String::new();
     }
     if c.agent == defaults::text("devswarm_role.claude_agent") {
         let expiry = defaults::text(if c.tick_only { "devswarm_role.msg_expiry_tick" } else { "devswarm_role.msg_expiry_inline" });
-        out.push_str(&fill_once(
+        fill_once(
             defaults::text("devswarm_role.msg_wake_claude"),
             &[("cli", c.cli), ("watcher", c.watcher), ("id", c.id), ("cron", c.cron), ("expiry", expiry)],
-        ));
+        )
     } else {
-        out.push_str(&fill_once(defaults::text("devswarm_role.msg_wake_other"), &[("cli", c.cli), ("id", c.id), ("agent", c.agent)]));
+        fill_once(defaults::text("devswarm_role.msg_wake_other"), &[("cli", c.cli), ("id", c.id), ("agent", c.agent)])
     }
+}
+
+/// The whole `additionalContext` a child workspace gets at SessionStart.
+pub fn child_context(c: &Child<'_>) -> String {
+    let mut out = fill_once(defaults::text("devswarm_role.msg_base"), &[("cli", c.cli)]);
+    out.push_str(&wake_part(c));
     out
 }
 

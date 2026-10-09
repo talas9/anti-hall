@@ -33,6 +33,10 @@ value = "archive-unignore"
 doc = "The verb that records a stated-intent signal for the Stop-hook parent gate."
 value = "gate-intent"
 
+[devswarm_cli.verb_wake_directive]
+doc = "The verb that reprints the SessionStart mailbox-wake directive (native for a child workspace)."
+value = "wake-directive"
+
 [devswarm_cli.verb_notice]
 doc = "The maintainer-notice verb (`--list` is native, `--post` is Node's)."
 value = "notice"
@@ -247,6 +251,325 @@ max = 1000
 doc = "The error for a notice with neither --post nor --list."
 value = "usage: notice --post \"<text>\" [--ttl 7d] | notice --list"
 
+
+# ---- plan / scope ---------------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_plan]
+doc = "The plan verb (`plan set|show <id>`)."
+value = "plan"
+
+[devswarm_cli.verb_scope]
+doc = "The scope verb (`scope add <id>`)."
+value = "scope"
+
+[devswarm_cli.action_plan]
+doc = "The `action` of a plan result."
+value = "plan"
+
+[devswarm_cli.action_scope]
+doc = "The `action` of a scope result."
+value = "scope"
+
+[devswarm_cli.sub_show]
+doc = "The plan subcommand that prints the plan."
+value = "show"
+
+[devswarm_cli.sub_set]
+doc = "The plan subcommand that writes the step list."
+value = "set"
+
+[devswarm_cli.sub_add]
+doc = "The scope subcommand that adds an extra."
+value = "add"
+
+[devswarm_cli.flag_steps]
+doc = "The plan flag carrying the numbered step list."
+value = "steps"
+
+[devswarm_cli.flag_steps_file]
+doc = "The plan flag naming a file that holds the step list."
+value = "steps-file"
+
+[devswarm_cli.flag_scope]
+doc = "The plan flag carrying the scope globs."
+value = "scope"
+
+[devswarm_cli.flag_glob]
+doc = "The scope flag carrying a glob (repeatable)."
+value = "glob"
+
+[devswarm_cli.flag_note]
+doc = "The scope flag carrying what the user asked for."
+value = "note"
+
+[devswarm_cli.plan_max_steps]
+doc = "Most steps a plan keeps (devswarm-plan.js MAX_STEPS)."
+value = 50
+min = 1
+max = 1000
+
+[devswarm_cli.plan_max_step_text]
+doc = "Longest step text kept, in UTF-16 units (MAX_STEP_TEXT)."
+value = 200
+min = 1
+max = 10000
+
+[devswarm_cli.plan_max_globs]
+doc = "Most scope globs a plan keeps (MAX_SCOPE_GLOBS)."
+value = 20
+min = 1
+max = 1000
+
+[devswarm_cli.plan_max_glob_len]
+doc = "Longest glob accepted, in UTF-16 units."
+value = 200
+min = 1
+max = 10000
+
+[devswarm_cli.plan_max_extras]
+doc = "Most extras a plan keeps (MAX_EXTRAS)."
+value = 50
+min = 1
+max = 1000
+
+[devswarm_cli.plan_max_note]
+doc = "Longest extra note kept, in UTF-16 units (MAX_NOTE)."
+value = 300
+min = 1
+max = 10000
+
+[devswarm_cli.plan_bullet_chars]
+doc = "The characters that may bullet a numbered step line (`- 1. text`)."
+value = "-*"
+
+[devswarm_cli.plan_number_seps]
+doc = "The characters that may follow a step number (`1.`, `1)`, `1:`)."
+value = ".):"
+
+[devswarm_cli.plan_step_word]
+doc = "The word that may precede a step number (`Step 1:`), matched without regard to ASCII case."
+value = "step"
+
+[devswarm_cli.plan_max_number_digits]
+doc = "Most digits of a step number."
+value = 3
+min = 1
+max = 9
+
+[devswarm_cli.plan_glob_seps]
+doc = "The characters (besides white space) that separate globs."
+value = ","
+
+[devswarm_cli.plan_source_set]
+doc = "The `source` of a plan written by `plan set`."
+value = "plan-set"
+
+[devswarm_cli.plan_source_scope]
+doc = "The `source` of a plan written by `scope add`."
+value = "scope-add"
+
+[devswarm_cli.plan_reason_none]
+doc = "The `reason` of `plan show` for a workspace without a plan."
+value = "no-plan"
+
+[devswarm_cli.plan_reason_busy]
+doc = "The `reason` when the plan file stays locked by another writer."
+value = "lock-busy"
+
+[devswarm_cli.plan_event_plan]
+doc = "The supervision event recorded when `plan set` creates a plan."
+value = "plan"
+
+[devswarm_cli.plan_event_extra]
+doc = "The supervision event recorded when `scope add` changes the extras."
+value = "extra"
+
+[devswarm_cli.msg_plan_bad_id]
+doc = "The error for a plan without a safe workspace id."
+value = "usage: devswarm.js plan set|show <id> …"
+
+[devswarm_cli.msg_plan_usage]
+doc = "The error for a plan subcommand that is neither set nor show (the backslash-n is two characters, as in Node)."
+value = "usage: devswarm.js plan set <id> --steps \"1. …\\n2. …\"|--steps-file <path> [--scope glob,glob] | plan show <id>"
+
+[devswarm_cli.msg_plan_no_steps]
+doc = "The error when no numbered list of at least two steps is found."
+value = "no numbered step list found — pass at least two steps as \"1. …\" \"2. …\" lines via --steps or --steps-file"
+
+[devswarm_cli.msg_plan_busy]
+doc = "The error when the plan file stays locked."
+value = "the plan file is locked by another writer — retry"
+
+[devswarm_cli.msg_scope_bad_id]
+doc = "The error for a scope without a safe workspace id."
+value = "usage: devswarm.js scope add <id> --glob <glob> --note TEXT"
+
+[devswarm_cli.msg_scope_usage]
+doc = "The error for a scope subcommand that is not add."
+value = "usage: devswarm.js scope add <id> --glob <glob> [--glob …] --note \"<what the user asked for>\""
+
+[devswarm_cli.msg_scope_glob_required]
+doc = "The error for a scope add without a glob."
+value = "--glob is required"
+
+[devswarm_cli.msg_scope_note_required]
+doc = "The error for a scope add without a note."
+value = "--note is required: say what the user asked for, so the Primary can check it"
+
+# ---- gate / workspaces list -----------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_gate]
+doc = "The gate verb (`gate <id> --set <csv> --clear <csv>`)."
+value = "gate"
+
+[devswarm_cli.verb_workspaces]
+doc = "The workspaces verb (`workspaces list`)."
+value = "workspaces"
+
+[devswarm_cli.action_gate]
+doc = "The `action` of a gate result."
+value = "gate"
+
+[devswarm_cli.action_workspaces]
+doc = "The `action` of a workspaces result."
+value = "workspaces"
+
+[devswarm_cli.sub_list]
+doc = "The workspaces subcommand (also what an empty one means)."
+value = "list"
+
+[devswarm_cli.flag_set]
+doc = "The gate flag naming the gates to set."
+value = "set"
+
+[devswarm_cli.flag_clear]
+doc = "The gate flag naming the gates to clear."
+value = "clear"
+
+[devswarm_cli.flag_by]
+doc = "The gate flag naming who set the gate."
+value = "by"
+
+[devswarm_cli.gate_set_by]
+doc = "Who a gate row says set it when --by is not given."
+value = "devswarm-cli"
+
+[devswarm_cli.gate_merged]
+doc = "The gate whose setting Node verifies against git (the merge ancestry proof); setting it is Node's."
+value = "merged"
+
+[devswarm_cli.flag_workspace]
+doc = "The workspaces flag naming a store partition directly."
+value = "workspace"
+
+[devswarm_cli.flag_worktree]
+doc = "The workspaces flag naming the worktree whose project to list."
+value = "worktree"
+
+[devswarm_cli.msg_gate_usage]
+doc = "The error for a gate with nothing to set or clear."
+value = "gate needs --set <csv> and/or --clear <csv>"
+
+[devswarm_cli.msg_workspaces_sub]
+doc = "The error for a workspaces subcommand other than list: `{sub}`."
+value = "unknown workspaces subcommand: {sub}"
+
+[devswarm_cli.reason_ctx_mismatch]
+doc = "The `reason` of a verb that names a workspace registered under another project."
+value = "project-context-mismatch"
+
+[devswarm_cli.msg_ctx_head]
+doc = "The start of the project-mismatch error: `{id}` and `{registered}` (both JSON-quoted)."
+value = "workspace {id} is registered under project {registered}"
+
+[devswarm_cli.msg_ctx_other]
+doc = "Said when the caller is in another project: `{caller}` (JSON-quoted)."
+value = ", but the current context resolves to a DIFFERENT project {caller}"
+
+[devswarm_cli.msg_ctx_none]
+doc = "Said when the caller's project cannot be resolved."
+value = ", but the current context could not resolve a project (non-git cwd?)"
+
+[devswarm_cli.msg_ctx_join]
+doc = "What joins the project-mismatch error and its remedy."
+value = " — "
+
+[devswarm_cli.msg_gate_tail]
+doc = "The remedy named by a gate refused for a project mismatch."
+value = "run this from within that project's worktree to gate it"
+
+[devswarm_cli.gates_dump_table]
+doc = "The label of the gates table in the witness's comparison record."
+value = "gates"
+
+# ---- logs -----------------------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_logs]
+doc = "The verb that reads the shared devswarm JSONL log."
+value = "logs"
+
+[devswarm_cli.action_logs]
+doc = "The `action` of a logs result."
+value = "logs"
+
+[devswarm_cli.flag_repo]
+doc = "The logs flag keeping the entries of one project."
+value = "repo"
+
+[devswarm_cli.flag_component]
+doc = "The logs flag keeping the entries of one component."
+value = "component"
+
+[devswarm_cli.flag_min_level]
+doc = "The logs flag keeping the entries at or above a level."
+value = "min-level"
+
+[devswarm_cli.flag_since]
+doc = "The logs flag keeping the entries of a recent window (`30m`, `2h`, `1d`, or milliseconds)."
+value = "since"
+
+[devswarm_cli.flag_limit]
+doc = "The logs flag capping how many entries come back (the newest ones)."
+value = "limit"
+
+[devswarm_cli.logs_default_limit]
+doc = "How many entries a logs call returns without --limit."
+value = 50
+min = 0
+max = 100000
+
+[devswarm_cli.log_levels]
+doc = "The log levels from the lowest rank to the highest (anti-hall-log.js LEVEL_RANK)."
+value = ["debug", "info", "warn", "error"]
+
+[devswarm_cli.log_file]
+doc = "The shared log file under the logs directory."
+value = "devswarm.jsonl"
+
+[devswarm_cli.log_rotated_file]
+doc = "The rotated shared log file under the logs directory."
+value = "devswarm.jsonl.1"
+
+[devswarm_cli.env_log_dir]
+doc = "The environment variable that moves the logs directory."
+value = "ANTI_HALL_LOG_DIR"
+
+[devswarm_cli.env_test_context]
+doc = "The environment variable Node's test runner sets; with it set and no log directory given, Node's reader refuses the real home."
+value = "NODE_TEST_CONTEXT"
+
+[devswarm_cli.log_none_label]
+doc = "The roll-up key of an entry without a component or a level."
+value = "(none)"
+
+[devswarm_cli.since_units]
+doc = "The milliseconds in each unit a --since duration may end in."
+value = { ms = 1, s = 1000, m = 60000, h = 3600000, d = 86400000 }
+
+[devswarm_cli.since_default_unit]
+doc = "The unit of a --since number with none."
+value = "ms"
+
 # ---- the Node witness ---------------------------------------------------------------------------------------------------
 
 [devswarm_cli.witness_flag]
@@ -258,8 +581,8 @@ doc = "Directory in the state directory that holds the scratch homes of pending 
 value = "devswarm-cli-verify"
 
 [devswarm_cli.witness_copy_paths]
-doc = "Files and directories under the home copied into the witness's scratch home before the engine writes (what Node reads or rewrites for these verbs)."
-value = [".anti-hall/skip.json", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl"]
+doc = "Files and directories under the home copied into the witness's scratch home before the engine writes: what Node reads or rewrites for these verbs, and what the summary projection reads."
+value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1"]
 
 [devswarm_cli.witness_node_snippet]
 doc = "The Node program of the witness: pins the clock, then loads the real devswarm.js as the main module so its own main() prints and exits. Arguments: the CLI path, the clock, then the verb's argv."

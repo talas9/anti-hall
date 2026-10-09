@@ -757,11 +757,24 @@ fn cases(fx: &Fx) -> Vec<Case> {
     if let Some(last) = v.last_mut() {
         last.cwd = "main";
     }
+    // `--limit` only moves the cap: a backlog within it is read exactly as without the flag
+    for (name, flag_args) in [
+        ("flag-limit-above-the-backlog", vec!["--limit", "5"]),
+        ("flag-limit-equal-to-the-backlog", vec!["--limit", "2"]),
+        ("flag-limit-not-a-number-is-ignored", vec!["--limit", "abc"]),
+        ("flag-limit-zero-is-ignored", vec!["--limit", "0"]),
+        ("flag-limit-negative-is-ignored", vec!["--limit=-3"]),
+        ("flag-limit-bare-is-ignored", vec!["--limit"]),
+        ("flag-limit-exponent", vec!["--limit", "1e3"]),
+    ] {
+        v.push(base(name, rp("child-1", &flag_args), ack(floors("child-1", 0, 0), d_store.clone()), nothing(), plain(), true, vec!["\"count\":2"]));
+    }
     // ---- deferrals: nothing may be written ----
     let defer_store = |name: &'static str, argv: Vec<String>, expect: Vec<&'static str>| {
         base(name, argv, ack(floors("child-1", 0, 0), d_store.clone()), nothing(), plain(), false, expect)
     };
     v.push(defer_store("flag-limit", rp("child-1", &["--limit", "1"]), vec!["\"count\":1"]));
+    v.push(defer_store("flag-limit-fraction-floors-to-one", rp("child-1", &["--limit", "0.5"]), vec!["\"count\":1", "truncated"]));
     v.push(defer_store("flag-since", rp("child-1", &["--since", "1"]), vec!["since"]));
     v.push(defer_store("flag-tail", rp("child-1", &["--tail", "1"]), vec!["tail"]));
     v.push(defer_store("flag-ack-as-owner", rp("child-1", &["--ack-as-owner"]), vec!["\"count\":2"]));
