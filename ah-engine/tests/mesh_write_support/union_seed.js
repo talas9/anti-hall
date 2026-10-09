@@ -13,7 +13,8 @@ const store = require(path.join(plugin, 'companion', 'lib', 'devswarm-store.js')
 const unread = require(path.join(plugin, 'companion', 'lib', 'devswarm-unread.js'));
 const [home, repoKey, specText] = process.argv.slice(2);
 if (!home || home === require('os').userInfo().homedir) { process.stderr.write('refusing: needs a scratch home\n'); process.exit(2); }
-const spec = JSON.parse(specText);
+// a spec of '-' is read from stdin: one argument is capped at 128 KiB on Linux (MAX_ARG_STRLEN), and a large spec exceeds it
+const spec = JSON.parse(specText === '-' ? fs.readFileSync(0, 'utf8') : specText);
 for (const f of spec.files || []) {
   const p = path.join(home, f.rel);
   fs.mkdirSync(path.dirname(p), { recursive: true });
