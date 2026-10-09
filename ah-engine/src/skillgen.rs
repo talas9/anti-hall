@@ -112,19 +112,19 @@ fn role_cell(r: &roles::Row) -> String {
 fn main_skill(host: &str) -> Skill {
     let m = defaults::raw("roles.main_skill");
     let mut o = frontmatter(&skill_name(host, m.str_field("name")), m.str_field("description"));
-    let _ = writeln!(o, "# anti-hall engine\n\n{}\n", m.str_field("intro")); // keep: formatting into a String cannot fail
-    let _ = writeln!(o, "## {}\n", label("areas_head")); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "# anti-hall engine\n\n{}\n", m.str_field("intro"))); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "## {}\n", label("areas_head"))); // keep: formatting into a String cannot fail
     for a in sub_areas() {
         let g = area(a);
-        let _ = writeln!(o, "- {} (`{}`): {}", g.str_field("title"), skill_ref(host, g.str_field("skill")), esc(g.str_field("brief"))); // keep: formatting into a String cannot fail
+        crate::discard::harmless(writeln!(o, "- {} (`{}`): {}", g.str_field("title"), skill_ref(host, g.str_field("skill")), esc(g.str_field("brief")))); // keep: formatting into a String cannot fail
     }
-    let _ = writeln!(o, "\n## {}\n", label("roles_head")); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "\n## {}\n", label("roles_head"))); // keep: formatting into a String cannot fail
     let desc = defaults::raw("roles.describe");
     for n in roles::names().iter().rev() {
-        let _ = writeln!(o, "- `{n}`: {}", desc.str_field(n)); // keep: formatting into a String cannot fail
+        crate::discard::harmless(writeln!(o, "- `{n}`: {}", desc.str_field(n))); // keep: formatting into a String cannot fail
     }
-    let _ = writeln!(o, "\n{}\n\n{}", label("roles_note"), label("more")); // keep: formatting into a String cannot fail
-    let _ = writeln!(o, "\n_{}_", label("generated")); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "\n{}\n\n{}", label("roles_note"), label("more"))); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "\n_{}_", label("generated"))); // keep: formatting into a String cannot fail
     Skill { name: skill_name(host, m.str_field("name")), path: skill_path(host, m.str_field("name")), text: o, main: true }
 }
 
@@ -157,13 +157,13 @@ fn sub_skill(host: &str, a: &str) -> Skill {
     let sub = g.str_field("skill");
     let name = skill_name(host, sub);
     let mut o = frontmatter(&name, &format!("Use when {}.", g.str_field("use_when")));
-    let _ = writeln!(o, "# {}\n\n{}\n", g.str_field("title"), g.str_field("brief")); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "# {}\n\n{}\n", g.str_field("title"), g.str_field("brief"))); // keep: formatting into a String cannot fail
     let verbs = area_verbs(a);
     if !verbs.is_empty() {
-        let _ = writeln!(o, "## {}\n\n{}", label("verbs_head"), label("table_head")); // keep: formatting into a String cannot fail
+        crate::discard::harmless(writeln!(o, "## {}\n\n{}", label("verbs_head"), label("table_head"))); // keep: formatting into a String cannot fail
         for (c, r) in &verbs {
             let owner = if r.owner_args.is_empty() { String::new() } else { format!(" ({}: {})", label("owner"), r.owner_args.join(", ")) };
-            let _ = writeln!(
+            crate::discard::harmless(writeln!(
                 // keep: formatting into a String cannot fail
                 o,
                 "| `{}` | `{}` {} | {}{} |",
@@ -172,29 +172,29 @@ fn sub_skill(host: &str, a: &str) -> Skill {
                 short(&c.doc),
                 role_cell(r),
                 owner
-            );
+            ));
         }
         o.push('\n');
     }
     let cs = area_checks(a);
     if !cs.is_empty() {
-        let _ = writeln!(o, "## {}\n", label("guards_head")); // keep: formatting into a String cannot fail
+        crate::discard::harmless(writeln!(o, "## {}\n", label("guards_head"))); // keep: formatting into a String cannot fail
         for (n, s) in cs {
-            let _ = writeln!(o, "- `{n}`: {}", short(s)); // keep: formatting into a String cannot fail
+            crate::discard::harmless(writeln!(o, "- `{n}`: {}", short(s))); // keep: formatting into a String cannot fail
         }
         o.push('\n');
     }
     let ss = area_settings(a);
     if !ss.is_empty() {
-        let _ = writeln!(o, "## {}\n", label("settings_head")); // keep: formatting into a String cannot fail
+        crate::discard::harmless(writeln!(o, "## {}\n", label("settings_head"))); // keep: formatting into a String cannot fail
         for e in ss {
             let (sec, key) = (e.value.str_field("section"), e.value.str_field("key"));
             let d = e.value.get("default").map(|v| v.to_json().to_string()).unwrap_or_default();
-            let _ = writeln!(o, "- `{sec}.{key}` = {d}: {}", short(e.doc)); // keep: formatting into a String cannot fail
+            crate::discard::harmless(writeln!(o, "- `{sec}.{key}` = {d}: {}", short(e.doc))); // keep: formatting into a String cannot fail
         }
         o.push('\n');
     }
-    let _ = writeln!(o, "_{}_", label("generated")); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "_{}_", label("generated"))); // keep: formatting into a String cannot fail
     Skill { name, path: skill_path(host, sub), text: o, main: false }
 }
 
