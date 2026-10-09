@@ -52,10 +52,59 @@ const SCRATCH_RE = new RegExp([
 ].join('|'), 'i');
 const SCRATCH_NEGATED_RE = /\b(?:not|no|without|instead\s+of)\s+(?:in\s+|a\s+|the\s+|any\s+)?scratch\b/i;
 const IN_PLACE_RE = /\bin\s+place\b|\bin\s+(?:the\s+)?(?:session\s+)?repo\b|\brepo\s+files\b|\b(?:session|main)\s+(?:checkout|working\s+tree)\b|\bin\s+the\s+(?:working\s+tree|checkout)\b|\bworking\s+copy\b|\bchecked[- ]out\s+(?:files?|tree|copy|branch)\b|\bon\s+main\b|\bmain\s+branch\b/i;
-function inScratch(inp) {
+// A brief that names its own working tree (a clone, worktree, checkout, cd, cwd or work-in target) at an absolute, ~ or $HOME
+// path outside the session's git tree and cwd works in another checkout: it shares no tree. Mirrors engine swarm_guard.re_named_tree*.
+const NAMED_TREE_RE = new RegExp(String.raw`\b(?:(?:a|an|the|your|its|their|own|scratch|separate|fresh|lane)\s+(?:clone|worktree|checkout)|worktree|cwd(?:\s+is)?|cd(?:\s+into)?|work(?:ing)?\s+(?:in|inside|from)|working\s+dir(?:ectory)?)\s*(?:(?:at|in|under|into|is|to)\s+)?[:=]?\s*[\x60'"]?(?:~|\$HOME)?\/[^\s\x60'",;)]+`, 'gi');
+const NAMED_TREE_PATH_RE = /(?:~|\$HOME)?\/[^\s\x60'",;)]+/;
+const NAMED_TREE_TRIM_RE = /[.:]+$/;
+const NAMED_TREE_HOME_RE = /^(?:~|\$HOME)/;
+
+function realOrNull(p) { try { return require('fs').realpathSync(p); } catch (_) { return null; } }
+
+// sessionTree(cwd) -> {dirs} (the cwd and its git toplevel, lexical and real) | null (no cwd: the named-tree reading is off).
+function sessionTree(cwd) {
+  if (!cwd || typeof cwd !== 'string') return null;
+  const path = require('path');
+  let top = null;
+  try { top = require('../../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { top = null; }
+  const dirs = [path.resolve(cwd)];
+  if (top) dirs.push(path.resolve(top));
+  for (const d of dirs.slice()) { const r = realOrNull(d); if (r && !dirs.includes(r)) dirs.push(r); }
+  return { dirs };
+}
+
+function inTree(abs, tree) {
+  const cands = [abs], r = realOrNull(abs);
+  if (r && r !== abs) cands.push(r);
+  return cands.some((a) => tree.dirs.some((d) => under(a, d)));
+}
+
+function under(abs, dir) {
+  if (!dir) return false;
+  const rel = require('path').relative(dir, abs);
+  return rel === '' || (rel !== '..' && !rel.startsWith('../') && !require('path').isAbsolute(rel));
+}
+
+function namesOtherTree(t, tree, home) {
+  if (!tree) return false;
+  const path = require('path');
+  for (const m of t.matchAll(NAMED_TREE_RE)) {
+    const at = NAMED_TREE_PATH_RE.exec(m[0]);
+    if (!at) continue;
+    let raw = at[0].replace(NAMED_TREE_TRIM_RE, '');
+    const tilde = NAMED_TREE_HOME_RE.exec(raw);
+    if (tilde) { if (!home) continue; raw = home + raw.slice(tilde[0].length); }
+    if (!path.isAbsolute(raw)) continue;
+    const abs = path.resolve(raw);
+    if (!inTree(abs, tree)) return true;
+  }
+  return false;
+}
+
+function inScratch(inp, tree, home) {
   const i = inp && typeof inp === 'object' ? inp : {};
   const t = String(i.prompt || '') + '\n' + String(i.description || '');
-  return SCRATCH_RE.test(t) && !SCRATCH_NEGATED_RE.test(t) && !IN_PLACE_RE.test(t);
+  return (SCRATCH_RE.test(t) || namesOtherTree(t, tree, home)) && !SCRATCH_NEGATED_RE.test(t) && !IN_PLACE_RE.test(t);
 }
 
 function isolated(inp) {
@@ -68,15 +117,16 @@ function sharedTreeNote(payload, opts) {
   try {
     if (!require('./settings.js').enabled('guards', 'sharedTreeAgentNote')) return '';
     const inp = payload && payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : null;
-    if (!inp || !writeCapable(inp) || isolated(inp) || inScratch(inp)) return '';
+    const home = (opts && opts.home) || require('os').homedir();
+    const tree = sessionTree(String(payload.cwd || process.cwd()));
+    if (!inp || !writeCapable(inp) || isolated(inp) || inScratch(inp, tree, home)) return '';
     const tp = payload.transcript_path;
     if (!tp || typeof tp !== 'string') return '';
     const agents = require('./agent-scan.js').runningAgents(tp);
     if (!Array.isArray(agents)) return '';
     // Another agent counts only when its own spawn input is known, write-capable and not isolated.
-    if (!agents.some((a) => a && a.spawnInput && writeCapable(a.spawnInput) && !isolated(a.spawnInput) && !inScratch(a.spawnInput))) return '';
-    const home = opts && opts.home;
-    const noWt = require('./dispatch-tier.js').repoDocsMatch(String(payload.cwd || process.cwd()), home, NO_WORKTREES_RE);
+    if (!agents.some((a) => a && a.spawnInput && writeCapable(a.spawnInput) && !isolated(a.spawnInput) && !inScratch(a.spawnInput, tree, home))) return '';
+    const noWt = require('./dispatch-tier.js').repoDocsMatch(String(payload.cwd || process.cwd()), opts && opts.home, NO_WORKTREES_RE);
     return require('./block-message.js').message({
       kind: 'warn',
       guard: 'shared-tree',

@@ -636,6 +636,35 @@ mod swarm {
         assert!(advisory(call(&h, &no_transcript, T0 + 100_000, Some(8.0 * GB), 16.0 * GB)).is_none());
     }
 
+    // issue #55: a brief that names its own clone or working directory outside the session's tree shares no tree
+    #[test]
+    fn a_brief_naming_another_clone_shares_no_tree() {
+        let h = swarm_home("sw-named");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str, t: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": t, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        for p in [
+            "Base: create a clone ~/work/wt-lane3 from origin/dev, branch lane3. Fix hooks/foo.js and commit.",
+            "cd /opt/build/other-checkout && fix hooks/foo.js, then commit.",
+            "Your working directory is the clone at $HOME/work/wt-x. Edit and commit there.",
+        ] {
+            assert!(note(p, &busy).is_none(), "named outside clone: {p}");
+        }
+        assert!(note("cd ~/proj/sub && fix hooks/foo.js and commit.", &busy).is_some(), "a path inside the session tree still warns");
+        assert!(note("git clone /srv/mirror.git for reference, then fix hooks/foo.js and commit.", &busy).is_some(), "a clone source is no tree");
+        assert!(note("Use the clone ~/work/wt-ref for reading; edit hooks/foo.js in the repo in place.", &busy).is_some(), "in place still warns");
+        // (transcript() rewrites the one transcript file: the running agent's brief changes last)
+        let other = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "Base: create a clone ~/work/wt-a from origin/dev; fix and commit."}));
+        assert!(note("fix it", &other).is_none(), "the running agent works in another clone");
+    }
+
     #[test]
     fn what_the_script_cannot_reproduce_defers_before_the_spawn_is_recorded() {
         let h = swarm_home("sw-defer");

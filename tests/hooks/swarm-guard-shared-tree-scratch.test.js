@@ -93,3 +93,44 @@ WORKTREE_FIX.forEach((prompt, n) => {
 test('GUARD: a relative worktree add inside the session repo still warns', () => {
   assert.match(run(launch('t1', A1, REPO), { ...REPO, prompt: 'Run git worktree add wt-here then fix hooks/foo.js in the repo in place.' }), /shared-tree:/);
 });
+
+// FIX (dogfood 2026-10-09, issue #55): a brief that names its own clone or working directory at an absolute or ~ path outside
+// the session's git tree shares no tree, and neither does a running agent whose brief names another clone.
+function runIn(entries, input) {
+  const h = makeHome();
+  try {
+    const proj = path.join(h.home, 'proj');
+    fs.mkdirSync(path.join(proj, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    const tp = path.join(h.home, 't.jsonl');
+    fs.writeFileSync(tp, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    const r = testHook('swarm-guard.js', {
+      hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: input, session_id: 't', transcript_path: tp, cwd: proj,
+    }, { home: h.home });
+    assert.strictEqual(r.status, 0);
+    return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+  } finally { h.cleanup(); }
+}
+const NAMED_FIX = [
+  'Base: create a clone ~/work/wt-lane3 from origin/dev, branch lane3. Fix hooks/foo.js and commit.',
+  'Work in your scratch clone ~/work/wt-triage; create labels and commit the policy file.',
+  'cd /opt/build/other-checkout && fix hooks/foo.js, then commit.',
+  'Your working directory is the clone at $HOME/work/wt-x. Edit and commit there.',
+];
+NAMED_FIX.forEach((prompt, n) => {
+  test('FIX: new spawn names its own clone outside the session tree -> silent #' + n, () => {
+    assert.strictEqual(runIn(launch('t1', A1, REPO), { ...REPO, prompt }), '');
+  });
+});
+test('FIX: the running agent works in another named clone -> silent', () => {
+  assert.strictEqual(runIn(launch('t1', A1, { ...REPO, prompt: 'Base: create a clone ~/work/wt-a from origin/dev; fix and commit.' }), REPO), '');
+});
+test('GUARD: a named path inside the session tree still warns', () => {
+  assert.match(runIn(launch('t1', A1, REPO), { ...REPO, prompt: 'cd ~/proj/sub && fix hooks/foo.js and commit.' }), /shared-tree:/);
+});
+test('GUARD: a git clone source is not the spawn\'s tree; in-repo edits still warn', () => {
+  assert.match(runIn(launch('t1', A1, REPO), { ...REPO, prompt: 'git clone /srv/mirror.git for reference, then fix hooks/foo.js and commit.' }), /shared-tree:/);
+});
+test('GUARD: a named clone plus an in-place statement still warns', () => {
+  assert.match(runIn(launch('t1', A1, REPO), { ...REPO, prompt: 'Use the clone ~/work/wt-ref for reading; edit hooks/foo.js in the repo in place.' }), /shared-tree:/);
+});

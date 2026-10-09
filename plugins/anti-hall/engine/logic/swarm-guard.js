@@ -39,16 +39,59 @@ function swgIsolated(inp) {
   return ah.cfg('swarm_guard.isolation_values').indexOf(v) >= 0;
 }
 
-function swgInScratch(inp) {
+// The session's working tree: {dirs} (its cwd and git toplevel, lexical and real), null when there is no cwd (the named-tree reading is then off), or 'unsure' (defer).
+function swgTree(cwd) {
+  if (!cwd || typeof cwd !== 'string') return null;
+  var ctx = ah.repo.context(cwd);
+  if (ctx.unsure) return 'unsure';
+  var dirs = [ah.path.resolveAbs(cwd)];
+  if (ctx.toplevel) dirs.push(ah.path.resolveAbs(ctx.toplevel));
+  dirs.slice().forEach(function (d) { var r = ah.fs.realpath(d); if (r && dirs.indexOf(r) < 0) dirs.push(r); });
+  return { dirs: dirs };
+}
+
+// True when `abs` (or, when it exists, its real path) lies inside one of the session tree's directories (lexical and real).
+function swgInTree(abs, tree) {
+  var cands = [abs], r = ah.fs.realpath(abs);
+  if (r && r !== abs) cands.push(r);
+  return cands.some(function (a) { return tree.dirs.some(function (d) { return swgUnder(a, d); }); });
+}
+
+function swgUnder(abs, dir) {
+  if (!dir) return false;
+  var rel = ah.path.relative(dir, abs);
+  return rel === '' || (rel !== '..' && rel.indexOf('../') !== 0 && !ah.path.isAbsolute(rel));
+}
+
+// True when the brief names its own working tree (a clone, worktree, cd or work-in target) at an absolute or ~ path outside the
+// session's tree: that agent works in another checkout, so it shares nothing with this one.
+function swgNamesOtherTree(t, tree) {
+  if (!tree) return false;
+  var hits = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree'), 'i', t), home = ah.home();
+  for (var i = 0; i < hits.length; i++) {
+    var m = t.slice(hits[i][0], hits[i][1]), at = ah.re.find(ah.cfg('swarm_guard.re_named_tree_path'), '', m);
+    if (!at) continue;
+    var raw = m.slice(at[0], at[1]), trim = ah.re.find(ah.cfg('swarm_guard.re_named_tree_trim'), '', raw);
+    if (trim) raw = raw.slice(0, trim[0]);
+    var tilde = ah.re.find(ah.cfg('swarm_guard.re_named_tree_home'), '', raw);
+    if (tilde) { if (!home) continue; raw = home + raw.slice(tilde[1]); }
+    if (!ah.path.isAbsolute(raw)) continue;
+    var abs = ah.path.resolveAbs(raw);
+    if (!swgInTree(abs, tree)) return true;
+  }
+  return false;
+}
+
+function swgInScratch(inp, tree) {
   var i = swgIsObj(inp) ? inp : {};
   var t = String(i.prompt || '') + '\n' + String(i.description || '');
   var path = ah.cfg('swarm_guard.scratch_path');
   var scratch = ah.cfg('swarm_guard.scratch_alternatives').map(function (a) { return a.split('{path}').join(path); }).join('|');
-  return ah.re.test(scratch, 'i', t) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
+  return (ah.re.test(scratch, 'i', t) || swgNamesOtherTree(t, tree)) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
     !ah.re.test(ah.cfg('swarm_guard.re_in_place'), 'i', t);
 }
 
-function swgSharesTree(inp) { return swgWriteCapable(inp) && !swgIsolated(inp) && !swgInScratch(inp); }
+function swgSharesTree(inp, tree) { return swgWriteCapable(inp) && !swgIsolated(inp) && !swgInScratch(inp, tree); }
 
 function swgDirname(d) { var i = d.lastIndexOf('/'); return i <= 0 ? '/' : d.slice(0, i); }
 
@@ -78,14 +121,16 @@ function swgRepoDocsMatch(dir0, re) {
 function swgSharedTreeNote(p) {
   if (!ah.settings.bool('swarm_guard.shared_tree_setting')) return '';
   var inp = swgIsObj(p.tool_input) ? p.tool_input : null;
-  if (!inp || !swgSharesTree(inp)) return '';
+  var tree = swgTree(p.cwd);
+  if (tree === 'unsure') return null;
+  if (!inp || !swgSharesTree(inp, tree)) return '';
   var tp = p.transcript_path;
   if (!tp || typeof tp !== 'string') return '';
   var scan = ah.transcript.agents(tp);
   if (scan === null) return '';
   if (scan.unsure) return null;
   // Another agent counts only when its own spawn input is known, write-capable and not isolated.
-  if (!scan.rows.some(function (a) { return a.spawnInput && swgSharesTree(a.spawnInput); })) return '';
+  if (!scan.rows.some(function (a) { return a.spawnInput && swgSharesTree(a.spawnInput, tree); })) return '';
   // `String(payload.cwd || process.cwd())`: the daemon cannot know the hook process's directory
   if (!p.cwd) return null;
   var noWt = swgRepoDocsMatch(String(p.cwd), ah.cfg('swarm_guard.re_no_worktrees'));
