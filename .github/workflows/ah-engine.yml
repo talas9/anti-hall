@@ -46,6 +46,8 @@ jobs:
         env:
           # Headroom for the script CPU limit on a loaded shared runner (the shipped default is sized for an idle machine).
           AH_ENGINE_SCRIPT_TIME_MS: "2000"
+          # Wall-clock tests (a transcript answered within the script limit) get the same headroom: 2000 ms x 3.
+          AH_TEST_TIME_SCALE: "3"
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings

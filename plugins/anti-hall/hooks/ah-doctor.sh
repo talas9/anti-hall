@@ -16,7 +16,7 @@ root=${AH_ENGINE_PLUGIN_ROOT:-}
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --quiet|--check) : ;;
-    --plugin-root) root=${2:-}; shift ;;
+    --plugin-root) root=${2:-}; [ "$#" -gt 1 ] && shift ;;
   esac
   shift
 done

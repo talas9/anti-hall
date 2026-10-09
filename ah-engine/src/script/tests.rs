@@ -772,7 +772,9 @@ mod sibling {
                 let took = started.elapsed();
                 assert!(is_adv(&v), "{tag} {event}: the reminder, not a script failure (which fails open): {v:?}");
                 if !cfg!(debug_assertions) {
-                    assert!(took.as_millis() < u128::from(defaults::num("script.time_limit_ms")), "{tag} {event}: {took:?}");
+                    // wall time, not CPU time: a loaded CI runner stretches it, so CI sets AH_TEST_TIME_SCALE (default 1)
+                    let scale: u128 = std::env::var("AH_TEST_TIME_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+                    assert!(took.as_millis() < u128::from(defaults::num("script.time_limit_ms")) * scale, "{tag} {event}: {took:?} (scale {scale})");
                 }
             }
         }
