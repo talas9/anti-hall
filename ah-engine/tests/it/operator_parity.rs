@@ -89,7 +89,11 @@ fn run(mut cmd: Command, home: &Path, cwd: &Path, extra: &[(&str, &str)], stdin:
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
         Err(e) => return Err(e.into()),
     }
-    Ok(Out { stdout: String::from_utf8_lossy(&out.stdout).into_owned(), stderr: String::from_utf8_lossy(&out.stderr).into_owned(), code: out.status.code().unwrap_or(-1) })
+    Ok(Out {
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: out.status.code().unwrap_or(-1),
+    })
 }
 
 fn mask(s: &str, homes: &[&Path]) -> String {
@@ -226,20 +230,63 @@ fn repo(dir: &Path) -> R {
 // ---- settings ---------------------------------------------------------------------------------------------------------
 
 fn settings_seed(root: &Path) -> R {
-    write(root, ".anti-hall/settings.json", r#"{"autoHandover":{"pct":70,"enabled":"off"},"jev":{"enabled":true,"semanticJudge":"yes","prices":{"m":{"inPerMTok":1,"outPerMTok":2}}},"jevIntegrations":{"triage":"shadow","modelRouting":"on"},"guards":{"stashGuard":true,"editGuardAllow":"docs/**,a.md"},"safety":{"gitGuard":false}}"#)?;
+    write(
+        root,
+        ".anti-hall/settings.json",
+        r#"{"autoHandover":{"pct":70,"enabled":"off"},"jev":{"enabled":true,"semanticJudge":"yes","prices":{"m":{"inPerMTok":1,"outPerMTok":2}}},"jevIntegrations":{"triage":"shadow","modelRouting":"on"},"guards":{"stashGuard":true,"editGuardAllow":"docs/**,a.md"},"safety":{"gitGuard":false}}"#,
+    )?;
     write(root, ".anti-hall/jev.json", r#"{"enabled":false,"triage":false,"integrations":{"speculation":"on"},"budget":{"usdPerDay":3}}"#)?;
-    write(root, ".claude/settings.json", r#"{"pluginConfigs":{"anti-hall@anti-hall":{"options":{"auto_handover_pct":60,"guards_model_routing":"advisory"}}}}"#)?;
+    write(
+        root,
+        ".claude/settings.json",
+        r#"{"pluginConfigs":{"anti-hall@anti-hall":{"options":{"auto_handover_pct":60,"guards_model_routing":"advisory"}}}}"#,
+    )?;
     Ok(())
 }
 
 const SETTINGS_CASES: &[&str] = &[
-    "show", "show --json", "show --section jev", "show --section jev --all --json", "show --section jevIntegrations", "show --section guards --all --json", "show --section nope", "show --section nope --json",
-    "get guards.modelRouting", "get nope.x --json", "get", "get autoHandover.pct", "get jev.budget.usdPerDay --json", "get guards.modelRouting --json",
-    "set autoHandover.pct 80", "set autoHandover.pct 80 --json", "set autoHandover.pct 200 --json", "set autoHandover.pct 200", "set autoHandover.pct abc", "set autoHandover.enabled off", "set autoHandover.enabled maybe",
-    "set guards.modelRouting bogus", "set guards.modelRouting advisory --json", "set autoHandover.pct", "set jev.prices x", "set guards.stashGuard false", "set guards.stashGuard false --confirmed", "set guards.editGuardAllow docs/**,b.md",
-    "set guards.editGuardAllow a.md", "set safety.gitGuard true", "set safety.gitGuard false --json", "set safety.gitGuard false --confirmed --json",
-    "reset autoHandover.pct", "reset autoHandover.pct --json", "reset nope.x", "reset guards.stashGuard", "reset guards.stashGuard --confirmed --json",
-    "judge status", "judge on", "judge off", "judge x", "bogus",
+    "show",
+    "show --json",
+    "show --section jev",
+    "show --section jev --all --json",
+    "show --section jevIntegrations",
+    "show --section guards --all --json",
+    "show --section nope",
+    "show --section nope --json",
+    "get guards.modelRouting",
+    "get nope.x --json",
+    "get",
+    "get autoHandover.pct",
+    "get jev.budget.usdPerDay --json",
+    "get guards.modelRouting --json",
+    "set autoHandover.pct 80",
+    "set autoHandover.pct 80 --json",
+    "set autoHandover.pct 200 --json",
+    "set autoHandover.pct 200",
+    "set autoHandover.pct abc",
+    "set autoHandover.enabled off",
+    "set autoHandover.enabled maybe",
+    "set guards.modelRouting bogus",
+    "set guards.modelRouting advisory --json",
+    "set autoHandover.pct",
+    "set jev.prices x",
+    "set guards.stashGuard false",
+    "set guards.stashGuard false --confirmed",
+    "set guards.editGuardAllow docs/**,b.md",
+    "set guards.editGuardAllow a.md",
+    "set safety.gitGuard true",
+    "set safety.gitGuard false --json",
+    "set safety.gitGuard false --confirmed --json",
+    "reset autoHandover.pct",
+    "reset autoHandover.pct --json",
+    "reset nope.x",
+    "reset guards.stashGuard",
+    "reset guards.stashGuard --confirmed --json",
+    "judge status",
+    "judge on",
+    "judge off",
+    "judge x",
+    "bogus",
 ];
 
 #[test]
@@ -269,7 +316,15 @@ fn settings_agree_with_node_under_environment_overrides() -> R {
     ];
     for env in envs {
         let c = Same { script: "scripts/settings.js", verb: "settings", seed: Some(seed.path()), cwd: None, env, stdin: "" };
-        for a in ["show --json", "show --section jev", "show --section jevIntegrations --json", "get autoHandover.pct --json", "reset autoHandover.pct --json", "judge status", "set autoHandover.pct 55 --json"] {
+        for a in [
+            "show --json",
+            "show --section jev",
+            "show --section jevIntegrations --json",
+            "get autoHandover.pct --json",
+            "reset autoHandover.pct --json",
+            "judge status",
+            "set autoHandover.pct 55 --json",
+        ] {
             same(&c, &a.split(' ').collect::<Vec<_>>())?;
         }
     }
@@ -293,12 +348,23 @@ fn trust_allowlists_agree_with_node() -> R {
     let work = Scratch::new("repo")?;
     let r = work.path().join("repo");
     repo(&r)?;
-    write(&r, ".anti-hall/command-allow.json", r#"{"patterns":["^npm test$","^ls ","^git status$|^rm -rf /$","^(.*)$","rm","^cat .*","^node [a-z]+\\.js$",5,"^x(","^a\\.b c$","^go build ./...$","^foo [^;]+$","^foo (?<n>x)$"]}"#)?;
+    write(
+        &r,
+        ".anti-hall/command-allow.json",
+        r#"{"patterns":["^npm test$","^ls ","^git status$|^rm -rf /$","^(.*)$","rm","^cat .*","^node [a-z]+\\.js$",5,"^x(","^a\\.b c$","^go build ./...$","^foo [^;]+$","^foo (?<n>x)$"]}"#,
+    )?;
     write(&r, ".anti-hall/edit-allow.json", r#"{"paths":["docs/**","*.md","/abs","../x","a\\b","**"," pad",7,"~/x","C:foo","a/../b",""]}"#)?;
     let c = Same { script: "scripts/settings.js", verb: "settings", seed: None, cwd: Some(&r), env: &[], stdin: "" };
     for a in [
-        "trust-command-allow", "trust-command-allow --json", "trust-command-allow --confirmed", "trust-command-allow --confirmed --json", "trust-edit-allow", "trust-edit-allow --json", "trust-edit-allow --confirmed",
-        "trust-command-allow /nonexistent-xyz", "trust-command-allow /nonexistent-xyz --json",
+        "trust-command-allow",
+        "trust-command-allow --json",
+        "trust-command-allow --confirmed",
+        "trust-command-allow --confirmed --json",
+        "trust-edit-allow",
+        "trust-edit-allow --json",
+        "trust-edit-allow --confirmed",
+        "trust-command-allow /nonexistent-xyz",
+        "trust-command-allow /nonexistent-xyz --json",
     ] {
         same(&c, &a.split(' ').collect::<Vec<_>>())?;
     }
@@ -309,7 +375,9 @@ fn trust_allowlists_agree_with_node() -> R {
 
 fn defect_seed(root: &Path) -> R {
     let rep = |sym: &str, cls: &str, sev: &str, proj: &str, v: &str, at: &str, extra: &str| {
-        format!(r#"{{"t":"report","at":"{at}","v":"{v}","proj":"{proj}","sid":"s1","class":"{cls}","sev":"{sev}","sym":"{sym}","repro":"r","claimed":"c","observed":"o"{extra}}}"#)
+        format!(
+            r#"{{"t":"report","at":"{at}","v":"{v}","proj":"{proj}","sid":"s1","class":"{cls}","sev":"{sev}","sym":"{sym}","repro":"r","claimed":"c","observed":"o"{extra}}}"#
+        )
     };
     let rule = |at: &str, status: &str, extra: &str| format!(r#"{{"t":"ruling","at":"{at}","status":"{status}"{extra}}}"#);
     let fp = |cls: &str, sym: &str| {
@@ -322,8 +390,22 @@ fn defect_seed(root: &Path) -> R {
     };
     let put = |cls: &str, sym: &str, lines: Vec<String>| write(root, &format!(".anti-hall/defects/{}.jsonl", fp(cls, sym)), &(lines.join("\n") + "\n"));
     put("doc", "open one", vec![rep("open one", "doc", "p2", "pa", "0.5.0", "2026-01-01T00:00:00.000Z", "")])?;
-    put("hook-crash", "acked crash", vec![rep("acked crash", "hook-crash", "p0", "pb", "0.5.0", "2026-01-02T00:00:00.000Z", ""), rule("2026-01-03T00:00:00.000Z", "ack", r#","note":"looking""#)])?;
-    put("guard-miss", "fixed old", vec![rep("fixed old", "guard-miss", "p1", "pa", "0.4.0", "2020-01-02T00:00:00.000Z", r#","component":"hooks/x","cause":"lock-or-race""#), rule("2020-01-03T00:00:00.000Z", "fixed", r#","fixedIn":"0.4.1","commit":"abc123","note":"done""#)])?;
+    put(
+        "hook-crash",
+        "acked crash",
+        vec![
+            rep("acked crash", "hook-crash", "p0", "pb", "0.5.0", "2026-01-02T00:00:00.000Z", ""),
+            rule("2026-01-03T00:00:00.000Z", "ack", r#","note":"looking""#),
+        ],
+    )?;
+    put(
+        "guard-miss",
+        "fixed old",
+        vec![
+            rep("fixed old", "guard-miss", "p1", "pa", "0.4.0", "2020-01-02T00:00:00.000Z", r#","component":"hooks/x","cause":"lock-or-race""#),
+            rule("2020-01-03T00:00:00.000Z", "fixed", r#","fixedIn":"0.4.1","commit":"abc123","note":"done""#),
+        ],
+    )?;
     put(
         "guard-miss",
         "regressed one",
@@ -334,18 +416,81 @@ fn defect_seed(root: &Path) -> R {
             rep("regressed one", "guard-miss", "p1", "pa", "0.3.0", "2026-02-05T00:00:00.000Z", ""),
         ],
     )?;
-    put("state-leak", "partial one", vec![rep("partial one", "state-leak", "p2", "pc", "0.5.0", "2026-03-01T00:00:00.000Z", ""), rule("2026-03-02T00:00:00.000Z", "partial", r#","fixedIn":"0.5.1","note":"half""#)])?;
-    put("doc", "torn", vec![rep("torn", "doc", "p2", "pa", "0.5.0", "2026-01-01T00:00:00.000Z", ""), r#"{"t":"report","at":"2026"#.into(), "[1,2]".into(), r#""str""#.into(), "null".into()])?;
-    put("other", "wontfix old", vec![rep("wontfix old", "other", "p2", "pa", "0.1.0", "2019-05-05T00:00:00.000Z", ""), rule("2019-05-06T00:00:00.000Z", "wontfix", r#","note":"n""#)])?;
-    write(root, ".anti-hall/defects/archive/2025-01/aaaaaaaaaaaa.jsonl", &format!("{}\n{}\n", rep("arch", "doc", "p2", "pa", "0.1.0", "2024-01-01T00:00:00.000Z", ""), rule("2024-01-02T00:00:00.000Z", "fixed", r#","fixedIn":"0.1.1""#)))?;
+    put(
+        "state-leak",
+        "partial one",
+        vec![
+            rep("partial one", "state-leak", "p2", "pc", "0.5.0", "2026-03-01T00:00:00.000Z", ""),
+            rule("2026-03-02T00:00:00.000Z", "partial", r#","fixedIn":"0.5.1","note":"half""#),
+        ],
+    )?;
+    put(
+        "doc",
+        "torn",
+        vec![
+            rep("torn", "doc", "p2", "pa", "0.5.0", "2026-01-01T00:00:00.000Z", ""),
+            r#"{"t":"report","at":"2026"#.into(),
+            "[1,2]".into(),
+            r#""str""#.into(),
+            "null".into(),
+        ],
+    )?;
+    put(
+        "other",
+        "wontfix old",
+        vec![rep("wontfix old", "other", "p2", "pa", "0.1.0", "2019-05-05T00:00:00.000Z", ""), rule("2019-05-06T00:00:00.000Z", "wontfix", r#","note":"n""#)],
+    )?;
+    write(
+        root,
+        ".anti-hall/defects/archive/2025-01/aaaaaaaaaaaa.jsonl",
+        &format!(
+            "{}\n{}\n",
+            rep("arch", "doc", "p2", "pa", "0.1.0", "2024-01-01T00:00:00.000Z", ""),
+            rule("2024-01-02T00:00:00.000Z", "fixed", r#","fixedIn":"0.1.1""#)
+        ),
+    )?;
     let bf = |sha: &str, at: &str, subj: &str, comp: &str, cause: &str, fixed: &str, cl: &str| {
-        format!(r#"{{"t":"backfill","at":"{at}","source":"backfill","status":"fixed","fixCommit":"{sha}","subject":"{subj}","component":"{comp}","cause":"{cause}","fixedIn":{fixed}{cl}}}"#)
+        format!(
+            r#"{{"t":"backfill","at":"{at}","source":"backfill","status":"fixed","fixCommit":"{sha}","subject":"{subj}","component":"{comp}","cause":"{cause}","fixedIn":{fixed}{cl}}}"#
+        )
     };
     let z = "0".repeat(28);
-    write(root, ".anti-hall/defects/history/1111111111aa.jsonl", &(bf(&format!("1111111111aa{z}"), "2026-01-10T00:00:00+00:00", "fix(hooks): lock race in settings", "hooks/x", "lock-or-race", r#""0.3.0""#, r#","changelog":"settings lock race""#) + "\n"))?;
-    write(root, ".anti-hall/defects/history/2222222222bb.jsonl", &(bf(&format!("2222222222bb{z}"), "2026-02-10T00:00:00+00:00", "fix: lock race again in hooks x", "hooks/x", "lock-or-race", r#""0.4.0""#, "") + "\n"))?;
-    write(root, ".anti-hall/defects/history/3333333333cc.jsonl", &(bf(&format!("3333333333cc{z}"), "2026-03-10T00:00:00+00:00", "fix: another lock race hooks x", "hooks/x", "lock-or-race", "null", "") + "\n"))?;
-    write(root, ".anti-hall/defects/history/4444444444dd.jsonl", &(bf(&format!("4444444444dd{z}"), "2026-03-11T00:00:00+00:00", "fix: parse regex in transcript", "hooks/t", "transcript-parse", r#""0.4.0""#, r#","changelog":"parse transcript regex""#) + "\n"))?;
+    write(
+        root,
+        ".anti-hall/defects/history/1111111111aa.jsonl",
+        &(bf(
+            &format!("1111111111aa{z}"),
+            "2026-01-10T00:00:00+00:00",
+            "fix(hooks): lock race in settings",
+            "hooks/x",
+            "lock-or-race",
+            r#""0.3.0""#,
+            r#","changelog":"settings lock race""#,
+        ) + "\n"),
+    )?;
+    write(
+        root,
+        ".anti-hall/defects/history/2222222222bb.jsonl",
+        &(bf(&format!("2222222222bb{z}"), "2026-02-10T00:00:00+00:00", "fix: lock race again in hooks x", "hooks/x", "lock-or-race", r#""0.4.0""#, "") + "\n"),
+    )?;
+    write(
+        root,
+        ".anti-hall/defects/history/3333333333cc.jsonl",
+        &(bf(&format!("3333333333cc{z}"), "2026-03-10T00:00:00+00:00", "fix: another lock race hooks x", "hooks/x", "lock-or-race", "null", "") + "\n"),
+    )?;
+    write(
+        root,
+        ".anti-hall/defects/history/4444444444dd.jsonl",
+        &(bf(
+            &format!("4444444444dd{z}"),
+            "2026-03-11T00:00:00+00:00",
+            "fix: parse regex in transcript",
+            "hooks/t",
+            "transcript-parse",
+            r#""0.4.0""#,
+            r#","changelog":"parse transcript regex""#,
+        ) + "\n"),
+    )?;
     Ok(())
 }
 
@@ -367,14 +512,50 @@ fn defect_reports_and_listings_agree_with_node() -> R {
         "report --class doc --sev p1 --sym x --proj pa --regression-of zz",
         "report --class doc --sev p1 --sym",
         "report --class doc --sev p1 --sym x",
-        "list", "list --json", "list --open", "list --unfinished --json", "list --mine --proj pa", "show nonexistent", "show", "rule", "rule 000000000000 --status ack", "archive", "archive --json", "bogus", "recurring", "recurring --json", "similar", "similar lock race", "similar lock race --json", "backfill --dry-run",
+        "list",
+        "list --json",
+        "list --open",
+        "list --unfinished --json",
+        "list --mine --proj pa",
+        "show nonexistent",
+        "show",
+        "rule",
+        "rule 000000000000 --status ack",
+        "archive",
+        "archive --json",
+        "bogus",
+        "recurring",
+        "recurring --json",
+        "similar",
+        "similar lock race",
+        "similar lock race --json",
+        "backfill --dry-run",
     ];
     for a in many {
         same(&c, &a.split(' ').collect::<Vec<_>>())?;
     }
     same(&c, &["report", "--class", "doc", "--sev", "p1", "--sym", &long_sym, "--proj", "p"])?;
     same(&c, &["report", "--class", "doc", "--sev", "p1", "--sym", "ansi\u{1b}[31mred\u{1b}[0m tab", "--proj", &long_proj])?;
-    same(&c, &["report", "--class", "doc", "--sev", "p1", "--sym", "long", "--proj", "pa", "--repro", &long, "--claimed", &"c".repeat(700), "--observed", &"o".repeat(700)])?;
+    same(
+        &c,
+        &[
+            "report",
+            "--class",
+            "doc",
+            "--sev",
+            "p1",
+            "--sym",
+            "long",
+            "--proj",
+            "pa",
+            "--repro",
+            &long,
+            "--claimed",
+            &"c".repeat(700),
+            "--observed",
+            &"o".repeat(700),
+        ],
+    )?;
     same(&c, &["report", "--class", "doc", "--sev", "p1", "--sym", "ünï", "--proj", "é"])?;
     Ok(())
 }
@@ -387,12 +568,34 @@ fn defect_state_changes_agree_with_node_on_a_seeded_store() -> R {
     let list = same(&c, &["list", "--json"])?;
     assert!(list.stdout.contains("regressed"), "the seed exercises the regression status");
     for a in [
-        "list", "list --open --json", "list --unfinished", "archive --json", "archive", "recurring", "recurring --json", "recurring --since 0.4.0", "recurring --since 2026-02-01", "recurring --top 1", "recurring --since v0.3.0 --json",
-        "similar lock race", "similar lock race --component hooks/x --top 2", "similar parse --json", "similar --component hooks/t",
-        "rule 061d5810bd0b --status ack --note hello", "rule 061d5810bd0b --status fixed --fixed-in 0.9.0 --commit deadbeef --note done --json", "rule 061d5810bd0b --status nope",
-        "rule 061d5810bd0b --status dup --superseded-by 123456789012", "rule 061d5810bd0b --status ack --component hooks/y.js --cause wrong-default --regression-of 061d5810bd0b", "rule 061d5810bd0b --status ack --cause nope", "rule 061d5810bd0b",
-        "report --class doc --sev p1 --sym open one --proj pa", "report --class guard-miss --sev p1 --sym regressed one --proj pa --v 0.9.9", "report --class guard-miss --sev p1 --sym regressed one --proj pa --v 0.1.0",
-        "report --class state-leak --sev p2 --sym partial one --proj pc", "report --class doc --sev p2 --sym torn --proj pa", "list --mine --json",
+        "list",
+        "list --open --json",
+        "list --unfinished",
+        "archive --json",
+        "archive",
+        "recurring",
+        "recurring --json",
+        "recurring --since 0.4.0",
+        "recurring --since 2026-02-01",
+        "recurring --top 1",
+        "recurring --since v0.3.0 --json",
+        "similar lock race",
+        "similar lock race --component hooks/x --top 2",
+        "similar parse --json",
+        "similar --component hooks/t",
+        "rule 061d5810bd0b --status ack --note hello",
+        "rule 061d5810bd0b --status fixed --fixed-in 0.9.0 --commit deadbeef --note done --json",
+        "rule 061d5810bd0b --status nope",
+        "rule 061d5810bd0b --status dup --superseded-by 123456789012",
+        "rule 061d5810bd0b --status ack --component hooks/y.js --cause wrong-default --regression-of 061d5810bd0b",
+        "rule 061d5810bd0b --status ack --cause nope",
+        "rule 061d5810bd0b",
+        "report --class doc --sev p1 --sym open one --proj pa",
+        "report --class guard-miss --sev p1 --sym regressed one --proj pa --v 0.9.9",
+        "report --class guard-miss --sev p1 --sym regressed one --proj pa --v 0.1.0",
+        "report --class state-leak --sev p2 --sym partial one --proj pc",
+        "report --class doc --sev p2 --sym torn --proj pa",
+        "list --mine --json",
     ] {
         same(&c, &a.split(' ').collect::<Vec<_>>())?;
     }
@@ -428,7 +631,11 @@ fn defect_identity_and_history_agree_with_node_in_a_repository() -> R {
             git(&r, &["tag", t])?;
         }
     }
-    write(&r, "CHANGELOG.md", "# Changelog\n\n## 0.3.0\n- Settings write: lock race fixed in the settings writer\n  continued line\n- parse regex for transcript crlf\n\n## v0.2.0\n- test flake timeout handled\n")?;
+    write(
+        &r,
+        "CHANGELOG.md",
+        "# Changelog\n\n## 0.3.0\n- Settings write: lock race fixed in the settings writer\n  continued line\n- parse regex for transcript crlf\n\n## v0.2.0\n- test flake timeout handled\n",
+    )?;
     git(&r, &["add", "-A"])?;
     git(&r, &["commit", "-q", "-m", "docs: changelog"])?;
     let repo_s = r.to_string_lossy().into_owned();
@@ -452,7 +659,12 @@ fn defect_identity_and_history_agree_with_node_in_a_repository() -> R {
     }
     // history queries over a backfilled store
     let store = Scratch::new("store")?;
-    let seeded = Command::new("node").arg(plugin_src().join("scripts/defect.js")).args(["backfill", "--repo", &repo_s]).env("HOME", store.path()).env("ANTIHALL_INGEST_DRY_RUN", "1").output()?;
+    let seeded = Command::new("node")
+        .arg(plugin_src().join("scripts/defect.js"))
+        .args(["backfill", "--repo", &repo_s])
+        .env("HOME", store.path())
+        .env("ANTIHALL_INGEST_DRY_RUN", "1")
+        .output()?;
     assert!(seeded.status.success());
     let c = Same { script: "scripts/defect.js", verb: "defect", seed: Some(store.path()), cwd: None, env: &[], stdin: "" };
     for a in ["recurring", "recurring --json", "similar lock race", "similar windows crash --json", "similar regex --component hooks/a", "list"] {
@@ -490,7 +702,13 @@ fn statusline_agrees_with_node() -> R {
     write(seed.path(), ".claude.json", r#"{"oauthAccount":{"emailAddress":" me@example.com "},"projects":{}}"#)?;
     write(seed.path(), ".anti-hall/version-check.json", r#"{"latest":"99.0.0"}"#)?;
     let started = ah_engine::checks::jsport::date::now_ms() as i64 - 2 * 3_600_000;
-    write(seed.path(), ".anti-hall/phase-state.json", &format!(r#"{{"code":"P2","desc":"build the api with a long description that is cut","done":2,"total":5,"started":{started},"agents":1,"step":"compiling a very long step text here"}}"#))?;
+    write(
+        seed.path(),
+        ".anti-hall/phase-state.json",
+        &format!(
+            r#"{{"code":"P2","desc":"build the api with a long description that is cut","done":2,"total":5,"started":{started},"agents":1,"step":"compiling a very long step text here"}}"#
+        ),
+    )?;
     let bare = Scratch::new("bare")?;
     write(bare.path(), ".claude.json", "{}")?;
     let inputs = [
@@ -498,7 +716,9 @@ fn statusline_agrees_with_node() -> R {
         r#"{"model":{"display_name":"Sonnet"},"context_window":{"used_percentage":95},"cost":{"total_cost_usd":0,"total_duration_ms":5000},"output_style":{"name":"thinking"}}"#,
         r#"{"context_window":{"remaining_percentage":10}}"#,
         r#"{"cost":{"total_cost_usd":"5"}}"#,
-        "{}", "not json", "",
+        "{}",
+        "not json",
+        "",
     ];
     for (seeded, dirs) in [(Some(seed.path()), vec![r.as_path(), sub.as_path()]), (Some(bare.path()), vec![r.as_path()]), (None, vec![work.path()])] {
         for cwd in dirs {
@@ -509,7 +729,8 @@ fn statusline_agrees_with_node() -> R {
         }
     }
     // colors off, base commands, consolidated base
-    let c = Same { script: "statusline/statusline.js", verb: "statusline", seed: Some(seed.path()), cwd: Some(&r), env: &[("NO_COLOR", "1")], stdin: inputs[0] };
+    let c =
+        Same { script: "statusline/statusline.js", verb: "statusline", seed: Some(seed.path()), cwd: Some(&r), env: &[("NO_COLOR", "1")], stdin: inputs[0] };
     statusline_pair(&c, &[])?;
     let base = Scratch::new("base")?;
     write(base.path(), ".anti-hall/base-statusline.json", r#"{"command":"printf 'BASE LINE\\n'"}"#)?;
@@ -537,11 +758,36 @@ fn statusline_agrees_with_node() -> R {
 // ---- phase ------------------------------------------------------------------------------------------------------------
 
 const PHASE_CASES: &[&[&str]] = &[
-    &["set", "P1", "build the api", "2", "5"], &["set"], &["set", "P", "x y", "abc", "3"], &["set", "P", "d", "-3", "+4"], &["set", "", "", "0", "0"], &["set", "P", "d", "1e3", "99999999999999999999"],
-    &["advance"], &["advance", "3"], &["advance", "abc"], &["advance", "0"], &["advance", "-2"], &["advance", "2.9"],
-    &["step", "a", "b", "c"], &["step"], &["step", "--json"], &["agents", "3"], &["agents", "abc"], &["agents"], &["agents", "-0"], &["agents", "007"],
-    &["update", "a=1", "b=x", "c=", "=5", "d=-7", "e=007", "f=1.5", "g", "h=a=b", "i=-0", "j=+4"], &["update"], &["update", "done=9", "step=hello"], &["update", "5=x"], &["update", "__proto__=1"],
-    &["clear"], &["bogus"], &[], &[""], &["SET", "P"],
+    &["set", "P1", "build the api", "2", "5"],
+    &["set"],
+    &["set", "P", "x y", "abc", "3"],
+    &["set", "P", "d", "-3", "+4"],
+    &["set", "", "", "0", "0"],
+    &["set", "P", "d", "1e3", "99999999999999999999"],
+    &["advance"],
+    &["advance", "3"],
+    &["advance", "abc"],
+    &["advance", "0"],
+    &["advance", "-2"],
+    &["advance", "2.9"],
+    &["step", "a", "b", "c"],
+    &["step"],
+    &["step", "--json"],
+    &["agents", "3"],
+    &["agents", "abc"],
+    &["agents"],
+    &["agents", "-0"],
+    &["agents", "007"],
+    &["update", "a=1", "b=x", "c=", "=5", "d=-7", "e=007", "f=1.5", "g", "h=a=b", "i=-0", "j=+4"],
+    &["update"],
+    &["update", "done=9", "step=hello"],
+    &["update", "5=x"],
+    &["update", "__proto__=1"],
+    &["clear"],
+    &["bogus"],
+    &[],
+    &[""],
+    &["SET", "P"],
 ];
 
 fn phase_seed(root: &Path, state: &str) -> R {
@@ -553,8 +799,16 @@ fn phase_agrees_with_node() -> R {
     let states: Vec<Option<&str>> = vec![
         None,
         Some(r#"{"code":"P","desc":"d","done":"7","total":5,"started":1,"agents":2,"step":"s","extra":{"a":[1,2]}}"#),
-        Some(r#"{"done":2.5,"agents":"x"}"#), Some(r#"{"done":[3]}"#), Some(r#"{"done":{}}"#), Some(r#"{"done":true}"#), Some(r#"{"done":null,"z":1,"a":2}"#), Some(r#"{"done":1e21}"#),
-        Some("{bad"), Some(""), Some("\u{feff}{}"), Some(r#"{"a":1,"a":2,"b":"\u00e9\ud83d\ude00"}"#),
+        Some(r#"{"done":2.5,"agents":"x"}"#),
+        Some(r#"{"done":[3]}"#),
+        Some(r#"{"done":{}}"#),
+        Some(r#"{"done":true}"#),
+        Some(r#"{"done":null,"z":1,"a":2}"#),
+        Some(r#"{"done":1e21}"#),
+        Some("{bad"),
+        Some(""),
+        Some("\u{feff}{}"),
+        Some(r#"{"a":1,"a":2,"b":"\u00e9\ud83d\ude00"}"#),
     ];
     for state in states {
         let seed = Scratch::new("seed")?;
@@ -826,7 +1080,12 @@ fn install_agrees_with_node_in_the_project_scope() -> R {
 #[test]
 fn uninstall_agrees_with_node() -> R {
     let ours = format!("node \"{}/statusline/statusline.js\"", plugin_src().display());
-    let sl = |cmd: &str| format!(r#"{{"keep":1,"statusLine":{{"type":"command","command":{},"padding":0,"refreshInterval":1}},"tail":[1,2]}}"#, serde_json::to_string(cmd).unwrap());
+    let sl = |cmd: &str| {
+        format!(
+            r#"{{"keep":1,"statusLine":{{"type":"command","command":{},"padding":0,"refreshInterval":1}},"tail":[1,2]}}"#,
+            serde_json::to_string(cmd).unwrap()
+        )
+    };
     let base = (".anti-hall/base-statusline.json", r#"{"command":"  echo original  "}"#);
     let bak = (".claude/settings.json.bak-antihall", r#"{"keep":2,"statusLine":{"type":"command","command":"echo from-backup"}}"#);
     let cases: Vec<Case> = vec![
@@ -878,11 +1137,28 @@ fn uninstall_agrees_with_node() -> R {
 fn install_then_uninstall_round_trips_like_node() -> R {
     let seed = home_with(Some(r#"{"keep":1,"statusLine":{"type":"command","command":"echo mine"}}"#), &[])?;
     let c = Inst { home: Some(seed.path()), cwd: None, env: &[] };
-    inst(&c, &[(INSTALL, "install-statusline", &[]), (UNINSTALL, "uninstall-statusline", &[]), (UNINSTALL, "uninstall-statusline", &[]), (INSTALL, "install-statusline", &["--consolidate"]), (UNINSTALL, "uninstall-statusline", &["--purge-base"])])?;
+    inst(
+        &c,
+        &[
+            (INSTALL, "install-statusline", &[]),
+            (UNINSTALL, "uninstall-statusline", &[]),
+            (UNINSTALL, "uninstall-statusline", &[]),
+            (INSTALL, "install-statusline", &["--consolidate"]),
+            (UNINSTALL, "uninstall-statusline", &["--purge-base"]),
+        ],
+    )?;
     let cwd = project_cwd(&[(".gitignore", "x\n")], None)?;
     let h = home_with(Some(r#"{"statusLine":{"type":"command","command":"echo user"}}"#), &[])?;
     let c = Inst { home: Some(h.path()), cwd: Some(cwd.path()), env: &[] };
-    inst(&c, &[(INSTALL, "install-statusline", &["--project"]), (INSTALL, "install-statusline", &["--project"]), (UNINSTALL, "uninstall-statusline", &["--project"]), (UNINSTALL, "uninstall-statusline", &["--project", "--purge-base"])])?;
+    inst(
+        &c,
+        &[
+            (INSTALL, "install-statusline", &["--project"]),
+            (INSTALL, "install-statusline", &["--project"]),
+            (UNINSTALL, "uninstall-statusline", &["--project"]),
+            (UNINSTALL, "uninstall-statusline", &["--project", "--purge-base"]),
+        ],
+    )?;
     Ok(())
 }
 
@@ -954,7 +1230,9 @@ fn wait_shadow_done(state: &Path) -> bool {
     for _ in 0..200 {
         std::thread::sleep(std::time::Duration::from_millis(100));
         let entries: Vec<_> = fs::read_dir(&d).map(|rd| rd.flatten().collect()).unwrap_or_default();
-        if entries.iter().all(|e| e.path().join("mismatch.txt").exists()) && !entries.iter().any(|e| e.path().join("job.json").exists() && !e.path().join("mismatch.txt").exists()) {
+        if entries.iter().all(|e| e.path().join("mismatch.txt").exists())
+            && !entries.iter().any(|e| e.path().join("job.json").exists() && !e.path().join("mismatch.txt").exists())
+        {
             return true;
         }
     }
@@ -1007,7 +1285,11 @@ fn engine_shadowed(home: &Path, cwd: &Path, node: Option<&Path>, extra: &[(&str,
         c.env(k, v);
     }
     let o = c.output()?;
-    Ok(Out { stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned(), code: o.status.code().unwrap_or(-1) })
+    Ok(Out {
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        code: o.status.code().unwrap_or(-1),
+    })
 }
 
 fn shadow_dirs(state: &Path) -> Vec<PathBuf> {
@@ -1018,7 +1300,13 @@ fn shadow_dirs(state: &Path) -> Vec<PathBuf> {
 fn a_sampled_phase_run_is_replayed_by_node_and_agrees() -> R {
     let home = Scratch::new("shadow-phase")?;
     let state = home.path().join("state");
-    for args in [vec!["phase", "set", "P1", "build", "1", "4"], vec!["phase", "advance", "2"], vec!["phase", "update", "a=1", "b=x"], vec!["phase", "clear"], vec!["phase", "bogus"]] {
+    for args in [
+        vec!["phase", "set", "P1", "build", "1", "4"],
+        vec!["phase", "advance", "2"],
+        vec!["phase", "update", "a=1", "b=x"],
+        vec!["phase", "clear"],
+        vec!["phase", "bogus"],
+    ] {
         let o = engine_shadowed(home.path(), home.path(), None, &[], &args)?;
         assert_eq!(o.code, 0, "{args:?}");
         assert!(wait_shadow_done(&state), "the comparison finished: {args:?}");
@@ -1035,7 +1323,15 @@ fn a_sampled_installer_run_is_replayed_on_a_scratch_copy_and_never_writes_twice(
     let state = home.path().join("state");
     let log = home.path().join("fake-node.log");
     // Node agrees (the real script, on the scratch copy), for the user and the project scope and for the uninstaller
-    for args in [vec!["install-statusline"], vec!["install-statusline", "--project"], vec!["install-statusline", "--consolidate"], vec!["uninstall-statusline"], vec!["uninstall-statusline", "--project", "--purge-base"], vec!["install-statusline"], vec!["install-statusline"]] {
+    for args in [
+        vec!["install-statusline"],
+        vec!["install-statusline", "--project"],
+        vec!["install-statusline", "--consolidate"],
+        vec!["uninstall-statusline"],
+        vec!["uninstall-statusline", "--project", "--purge-base"],
+        vec!["install-statusline"],
+        vec!["install-statusline"],
+    ] {
         let o = engine_shadowed(home.path(), cwd.path(), None, &[], &args)?;
         assert!(o.code == 0, "{args:?}: {} {}", o.stdout, o.stderr);
         assert!(wait_shadow_done(&state), "the comparison finished: {args:?}");

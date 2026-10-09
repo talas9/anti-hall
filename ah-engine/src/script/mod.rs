@@ -36,9 +36,9 @@
 pub mod host;
 pub mod host_b3;
 pub mod host_d;
+mod host_io;
 pub mod host_proc;
 pub mod host_ts;
-mod host_io;
 pub mod sysmem;
 
 use crate::checks::git::util::Settings;
@@ -325,26 +325,26 @@ fn limit_ms(name: &str, event: &str) -> u64 {
 /// The shared context with the entry `entry` of `own` registered under `key`, built (and the memory ceiling set) when the lib
 /// files or the entry's files changed since.
 fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprint, entry: &str) -> Result<Context, String> {
-        let libs_stale = pool.ctx.as_ref().is_none_or(|(fp, _)| fp != libs);
-        if libs_stale || pool.checks.get(key).is_none_or(|fp| fp != own) {
-            // a replaced context or entry goes before the new one is built, and its cycles are collected
-            pool.checks.remove(key);
-            if libs_stale {
-                pool.checks.clear();
-                pool.ctx = None;
-            }
-            pool.rt.set_memory_limit(0);
-            pool.rt.run_gc();
-            if pool.ctx.is_none() {
-                pool.ctx = Some((libs.clone(), load_libs(pool, libs)?));
-            }
-            let ctx = pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or("context")?;
-            load_check(&ctx, key, own, entry)?;
-            pool.checks.insert(key.to_string(), own.clone());
-            pool.rt.run_gc();
-            let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
-            pool.rt.set_memory_limit(base + defaults::num("script.call_memory_bytes") as usize);
+    let libs_stale = pool.ctx.as_ref().is_none_or(|(fp, _)| fp != libs);
+    if libs_stale || pool.checks.get(key).is_none_or(|fp| fp != own) {
+        // a replaced context or entry goes before the new one is built, and its cycles are collected
+        pool.checks.remove(key);
+        if libs_stale {
+            pool.checks.clear();
+            pool.ctx = None;
         }
+        pool.rt.set_memory_limit(0);
+        pool.rt.run_gc();
+        if pool.ctx.is_none() {
+            pool.ctx = Some((libs.clone(), load_libs(pool, libs)?));
+        }
+        let ctx = pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or("context")?;
+        load_check(&ctx, key, own, entry)?;
+        pool.checks.insert(key.to_string(), own.clone());
+        pool.rt.run_gc();
+        let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
+        pool.rt.set_memory_limit(base + defaults::num("script.call_memory_bytes") as usize);
+    }
     pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or_else(|| "context".to_string())
 }
 
@@ -487,17 +487,17 @@ mod golden;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-#[path = "host_tests/tests.rs"]
-mod tests_host;
-#[cfg(test)]
-#[path = "host_tests_e/tests.rs"]
-mod tests_host_e;
-#[cfg(test)]
-#[path = "host_tests_d/tests.rs"]
-mod tests_host_d;
-#[cfg(test)]
 #[path = "golden_d6/tests.rs"]
 mod tests_golden_d6;
 #[cfg(test)]
 #[path = "golden_e/tests.rs"]
 mod tests_golden_e;
+#[cfg(test)]
+#[path = "host_tests/tests.rs"]
+mod tests_host;
+#[cfg(test)]
+#[path = "host_tests_d/tests.rs"]
+mod tests_host_d;
+#[cfg(test)]
+#[path = "host_tests_e/tests.rs"]
+mod tests_host_e;

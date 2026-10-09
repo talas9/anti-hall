@@ -61,7 +61,9 @@ impl Host {
             // a shell or process under Rosetta reports x86_64 on an arm64 machine: the machine's own architecture decides
             arch = normalize_arch(defaults::text("doctor.apple_silicon_name"));
         }
-        let rosetta = os == defaults::text("doctor.macos_name") && arch == normalize_arch(defaults::text("doctor.apple_silicon_name")) && Path::new(defaults::text("doctor.rosetta_marker")).exists();
+        let rosetta = os == defaults::text("doctor.macos_name")
+            && arch == normalize_arch(defaults::text("doctor.apple_silicon_name"))
+            && Path::new(defaults::text("doctor.rosetta_marker")).exists();
         Host { os, arch, rosetta }
     }
 

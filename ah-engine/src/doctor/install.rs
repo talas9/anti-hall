@@ -111,7 +111,10 @@ pub fn classify(host: &Host, b: &Binary, root: Option<&Path>) -> Vec<Found> {
     if let Some(bin_os) = facts::header_os(&header)
         && bin_os != host.os
     {
-        out.push(stop(f(Level::Bad, defaults::render("doctor_msg.bin_wrong_os", &[("path", &path), ("bin_os", &bin_os), ("host_os", &host.os), ("bootstrap", &boot)]))));
+        out.push(stop(f(
+            Level::Bad,
+            defaults::render("doctor_msg.bin_wrong_os", &[("path", &path), ("bin_os", &bin_os), ("host_os", &host.os), ("bootstrap", &boot)]),
+        )));
         return out;
     }
     let archs: Vec<String> = match &header {
@@ -123,7 +126,8 @@ pub fn classify(host: &Host, b: &Binary, root: Option<&Path>) -> Vec<Found> {
         let x86 = facts::normalize_arch(defaults::text("doctor.intel_name"));
         let runnable_translated = host.apple_silicon() && archs.contains(&x86);
         let list = archs.join("/");
-        let args: &[(&str, &dyn std::fmt::Display)] = &[("path", &path), ("bin_arch", &list), ("host_os", &host.os), ("host_arch", &host.arch), ("bootstrap", &boot)];
+        let args: &[(&str, &dyn std::fmt::Display)] =
+            &[("path", &path), ("bin_arch", &list), ("host_os", &host.os), ("host_arch", &host.arch), ("bootstrap", &boot)];
         if runnable_translated && host.rosetta {
             out.push(f(Level::Warn, defaults::render("doctor_msg.bin_rosetta", args)));
         } else if runnable_translated {
@@ -140,7 +144,10 @@ pub fn classify(host: &Host, b: &Binary, root: Option<&Path>) -> Vec<Found> {
         out.push(q);
     }
     if b.mode & defaults::num("doctor.exec_bit") as u32 == 0 {
-        let mut e = f(Level::Bad, defaults::render("doctor_msg.bin_not_exec", &[("path", &path), ("mode", &format!("{:o}", b.mode & defaults::num("doctor.mode_mask") as u32))]));
+        let mut e = f(
+            Level::Bad,
+            defaults::render("doctor_msg.bin_not_exec", &[("path", &path), ("mode", &format!("{:o}", b.mode & defaults::num("doctor.mode_mask") as u32))]),
+        );
         e.fix = Some(Fix::MakeExecutable(b.path.clone()));
         out.push(e);
     }
@@ -154,7 +161,15 @@ pub fn engine_dir(home: &str) -> PathBuf {
 
 fn gather(path: &Path) -> Binary {
     use std::os::unix::fs::PermissionsExt;
-    let kind_of = |m: &std::fs::Metadata| if m.is_file() { Kind::File } else if m.is_dir() { Kind::Dir } else { Kind::Other };
+    let kind_of = |m: &std::fs::Metadata| {
+        if m.is_file() {
+            Kind::File
+        } else if m.is_dir() {
+            Kind::Dir
+        } else {
+            Kind::Other
+        }
+    };
     let (kind, mode) = match std::fs::metadata(path) {
         Ok(m) => (kind_of(&m), m.permissions().mode()),
         Err(_) if std::fs::symlink_metadata(path).is_ok() => (Kind::Dangling, 0),
@@ -270,7 +285,12 @@ pub fn section(doc: &mut Doc, fixes: &mut Vec<Fix>, ctx: &Ctx, root: Option<&Pat
             (Some((_, Some(want))), Ok(have)) if *want != have => {
                 doc.warnl(defaults::render(
                     "doctor_msg.bin_hash_differs",
-                    &[("path", &shown), ("have", &have.chars().take(defaults::num("doctor.hash_shown") as usize).collect::<String>()), ("want", &want.chars().take(defaults::num("doctor.hash_shown") as usize).collect::<String>()), ("bootstrap", &boot)],
+                    &[
+                        ("path", &shown),
+                        ("have", &have.chars().take(defaults::num("doctor.hash_shown") as usize).collect::<String>()),
+                        ("want", &want.chars().take(defaults::num("doctor.hash_shown") as usize).collect::<String>()),
+                        ("bootstrap", &boot),
+                    ],
                 ));
             }
             _ => {}

@@ -162,7 +162,10 @@ fn order_and_max_rules_decide_which_entries_run_and_how_their_answers_combine() 
     );
     assert_eq!(e.ran(), ["coordinator-work-guard:post", "merge-side-pick:post", "output-verify-guard"], "the cut entries never started");
     let log = e.log();
-    assert!(log.contains("dispatch_plan") && log.contains("skipped_max_rules=[git-guard:audit,devswarm-parent-reply-tracker,devswarm-child-drain,agent-reminders]"), "{log}");
+    assert!(
+        log.contains("dispatch_plan") && log.contains("skipped_max_rules=[git-guard:audit,devswarm-parent-reply-tracker,devswarm-child-drain,agent-reminders]"),
+        "{log}"
+    );
 }
 
 #[test]

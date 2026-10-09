@@ -26,7 +26,12 @@ fn parse(text: &str) -> Option<J> {
 
 /// `os.tmpdir()`
 pub fn tmpdir(env: &BTreeMap<String, String>) -> String {
-    let mut p = defaults::list("statusline.tmp_env").iter().filter_map(|k| env.get(*k)).find(|v| !v.is_empty()).cloned().unwrap_or_else(|| defaults::text("statusline.tmp_default").to_string());
+    let mut p = defaults::list("statusline.tmp_env")
+        .iter()
+        .filter_map(|k| env.get(*k))
+        .find(|v| !v.is_empty())
+        .cloned()
+        .unwrap_or_else(|| defaults::text("statusline.tmp_default").to_string());
     if p.len() > 1 && p.ends_with('/') {
         p.pop();
     }
@@ -90,7 +95,14 @@ fn render_level_bar(pct: f64, col: &str) -> String {
     let filled = num::js_round((pct.clamp(0.0, 100.0) / 100.0) * w);
     let clamped = filled.clamp(0.0, w) as usize;
     let empty = bar_width() - clamped;
-    format!("[{col}{}{}{}{}{}]", defaults::text("statusline.bar_fill").repeat(clamped), color("reset"), color("dim"), defaults::text("statusline.bar_empty").repeat(empty), color("reset"))
+    format!(
+        "[{col}{}{}{}{}{}]",
+        defaults::text("statusline.bar_fill").repeat(clamped),
+        color("reset"),
+        color("dim"),
+        defaults::text("statusline.bar_empty").repeat(empty),
+        color("reset")
+    )
 }
 
 fn level_color(pct: f64) -> &'static str {
@@ -296,7 +308,15 @@ fn activity_line(cx: &Ctx, input: &str) -> Option<String> {
     let plural = if count == 1 { "" } else { defaults::text("statusline.plural_s") };
     Some(defaults::render(
         "statusline.activity_template",
-        &[("cells", &cells), ("cyan", &color("cyan")), ("reset", &color("reset")), ("dim", &color("dim")), ("blue", &color("blue")), ("count", &count), ("plural", &plural)],
+        &[
+            ("cells", &cells),
+            ("cyan", &color("cyan")),
+            ("reset", &color("reset")),
+            ("dim", &color("dim")),
+            ("blue", &color("blue")),
+            ("count", &count),
+            ("plural", &plural),
+        ],
     ))
 }
 
@@ -330,7 +350,12 @@ fn persist_context_pct(cx: &Ctx, input: &str) {
         crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: best effort; the write below fails and is dropped the same way
     }
     let opt = |v: Option<f64>| v.map_or(J::Null, J::Num);
-    let body = json::stringify(&J::Obj(vec![("pct".into(), J::Num(pct)), ("usedTokens".into(), opt(used)), ("maxTokens".into(), opt(max)), ("ts".into(), J::Num(cx.now))]));
+    let body = json::stringify(&J::Obj(vec![
+        ("pct".into(), J::Num(pct)),
+        ("usedTokens".into(), opt(used)),
+        ("maxTokens".into(), opt(max)),
+        ("ts".into(), J::Num(cx.now)),
+    ]));
     let mut tmp = path.as_os_str().to_os_string();
     tmp.push(format!(".{}.{:08x}.tmp", std::process::id(), (cx.now as u64) ^ u64::from(std::process::id())));
     let tmp = PathBuf::from(tmp);

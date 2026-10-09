@@ -449,7 +449,12 @@ pub fn derive(cfg: &Cfg, inp: &Inputs<'_>, prev: &Snapshot) -> Snapshot {
             activity,
             unread: Field::new(unread, if unread.is_some() { Src::Mesh } else { Src::None }, now, String::new()),
             plan_step: Field::new(plan.clone(), if plan.is_some() { Src::Plan } else { Src::None }, now, String::new()),
-            last_activity_ms: Field::new(hb, if hb.is_some() { Src::Heartbeat } else { Src::None }, hb.unwrap_or(now), hb.map(|t| t.to_string()).unwrap_or_default()),
+            last_activity_ms: Field::new(
+                hb,
+                if hb.is_some() { Src::Heartbeat } else { Src::None },
+                hb.unwrap_or(now),
+                hb.map(|t| t.to_string()).unwrap_or_default(),
+            ),
             pr,
         };
         workspaces.insert(b.id.clone(), w);
@@ -485,7 +490,11 @@ pub fn diff(prev: &Snapshot, next: &Snapshot, cfg: &Cfg, generation: u64, now: i
             let items = [
                 pr(EdgeKind::Paused, render(&p.paused.value), render(&n.paused.value)),
                 pr(EdgeKind::Activity, render(&p.activity.value), render(&n.activity.value)),
-                pr(EdgeKind::Checks, p.pr.value.as_ref().map(|x| render(&x.checks)).unwrap_or_default(), n.pr.value.as_ref().map(|x| render(&x.checks)).unwrap_or_default()),
+                pr(
+                    EdgeKind::Checks,
+                    p.pr.value.as_ref().map(|x| render(&x.checks)).unwrap_or_default(),
+                    n.pr.value.as_ref().map(|x| render(&x.checks)).unwrap_or_default(),
+                ),
             ];
             for (k, f, t) in items {
                 debug_assert!(k.suppressed_when_finished());

@@ -342,7 +342,10 @@ mod tests {
             payload_sha1: None,
             deadline_ms: None,
         };
-        assert_eq!(evaluate(&meta, &p, &|_, _, _| {}).into_iter().filter(|(id, _)| id == "verify-first-subagent").map(|(_, a)| a).collect::<Vec<_>>(), vec![Answer::Defer]);
+        assert_eq!(
+            evaluate(&meta, &p, &|_, _, _| {}).into_iter().filter(|(id, _)| id == "verify-first-subagent").map(|(_, a)| a).collect::<Vec<_>>(),
+            vec![Answer::Defer]
+        );
     }
 
     #[test]

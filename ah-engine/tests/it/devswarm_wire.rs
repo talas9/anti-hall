@@ -489,7 +489,12 @@ fn the_role_matrix_lets_only_the_main_session_act() {
 #[test]
 fn a_subagent_calling_an_owner_action_is_refused_before_anything_is_read() {
     ah_engine::defaults::init().unwrap();
-    let p = |rest: &[&str]| Parsed { command: "devswarm".into(), json: true, rest: rest.iter().map(|s| s.to_string()).collect(), raw: rest.iter().map(|s| s.to_string()).collect() };
+    let p = |rest: &[&str]| Parsed {
+        command: "devswarm".into(),
+        json: true,
+        rest: rest.iter().map(|s| s.to_string()).collect(),
+        raw: rest.iter().map(|s| s.to_string()).collect(),
+    };
     let sub = env_of(&[("ANTIHALL_CALLER", "agent")]);
     for rest in [&["archive", "--id", "ws-1", "--request", "r1"][..], &["plan-prune", "--older-than", "7"], &["prune", "--confirm-ids", "a", "--plan", "n"]] {
         assert_eq!(cli::run_with(&p(rest), &sub), 64, "{rest:?}");

@@ -163,7 +163,8 @@ fn sub_skill(host: &str, a: &str) -> Skill {
         let _ = writeln!(o, "## {}\n\n{}", label("verbs_head"), label("table_head")); // keep: formatting into a String cannot fail
         for (c, r) in &verbs {
             let owner = if r.owner_args.is_empty() { String::new() } else { format!(" ({}: {})", label("owner"), r.owner_args.join(", ")) };
-            let _ = writeln!( // keep: formatting into a String cannot fail
+            let _ = writeln!(
+                // keep: formatting into a String cannot fail
                 o,
                 "| `{}` | `{}` {} | {}{} |",
                 defaults::render("roles.cli_cmd", &[("verb", &c.name)]),

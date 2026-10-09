@@ -4,8 +4,8 @@
 use super::phasebar::Ctx;
 use super::util::{floor_or, n, run_with_input, safe_label, text_of, trim, truthy};
 use crate::checks::guardkit::jsre;
-use crate::checks::jsport::json::{self, J};
 use crate::checks::jsport::fsx;
+use crate::checks::jsport::json::{self, J};
 use crate::defaults;
 use crate::migrate::{j_number, str_number};
 use crate::ops::js::Defer;
@@ -165,7 +165,12 @@ fn model_name(cwd: &str, cx: &Ctx, settings: &Option<J>) -> Result<String, ()> {
                     if let Some(w) = model_word(id) {
                         return Ok(w.to_string());
                     }
-                    return Ok(id.split('-').skip(defaults::num("statusline.model_id_skip") as usize).take(defaults::num("statusline.model_id_take") as usize).collect::<Vec<_>>().join(" "));
+                    return Ok(id
+                        .split('-')
+                        .skip(defaults::num("statusline.model_id_skip") as usize)
+                        .take(defaults::num("statusline.model_id_take") as usize)
+                        .collect::<Vec<_>>()
+                        .join(" "));
                 }
                 break;
             }
@@ -185,7 +190,11 @@ fn subagent_count(cx: &Ctx) -> usize {
         std::fs::read_dir(d).map(|rd| rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect()).unwrap_or_default()
     };
     let Ok(rd) = std::fs::read_dir(&cx.tmpdir) else { return 0 };
-    let claude_dirs: Vec<_> = rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) && e.file_name().to_string_lossy().starts_with(defaults::text("statusline.claude_dir_prefix"))).map(|e| e.path()).collect();
+    let claude_dirs: Vec<_> = rd
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) && e.file_name().to_string_lossy().starts_with(defaults::text("statusline.claude_dir_prefix")))
+        .map(|e| e.path())
+        .collect();
     let mut active = 0;
     for cdir in claude_dirs {
         for pdir in list(&cdir) {
@@ -232,7 +241,9 @@ fn ah_chip(cx: &Ctx, root: &str, c: &Colors) -> String {
     }) else {
         return String::new();
     };
-    let latest = read_json(&Path::new(&cx.home).join(defaults::text("paths.base_dir")).join(defaults::text("statusline.version_check"))).and_then(|o| match o.get("latest") {
+    let latest = read_json(&Path::new(&cx.home).join(defaults::text("paths.base_dir")).join(defaults::text("statusline.version_check"))).and_then(|o| match o
+        .get("latest")
+    {
         Some(J::Str(s)) => Some(s.clone()),
         _ => None,
     });
@@ -242,7 +253,14 @@ fn ah_chip(cx: &Ctx, root: &str, c: &Colors) -> String {
         "minor" => (c.c("yellow"), defaults::text("statusline.update_star")),
         _ => (c.c("dim"), ""),
     };
-    format!("  {}{}{}  {col}{prefix}{}{version}{}", c.c("dim"), defaults::text("statusline.sep"), c.c("reset"), defaults::text("statusline.chip_label"), c.c("reset"))
+    format!(
+        "  {}{}{}  {col}{prefix}{}{version}{}",
+        c.c("dim"),
+        defaults::text("statusline.sep"),
+        c.c("reset"),
+        defaults::text("statusline.chip_label"),
+        c.c("reset")
+    )
 }
 
 fn effort(data: &Option<J>) -> Option<String> {
@@ -274,7 +292,12 @@ fn effort(data: &Option<J>) -> Option<String> {
 fn run_base(cmd: &str, input: &str) -> Option<String> {
     let mut c = Command::new(defaults::text("statusline.shell"));
     c.arg(defaults::text("statusline.shell_flag")).arg(cmd);
-    let r = run_with_input(c, input.as_bytes(), Duration::from_millis(defaults::num("statusline.consolidated_timeout_ms")), defaults::num("statusline.base_max_buffer") as usize)?;
+    let r = run_with_input(
+        c,
+        input.as_bytes(),
+        Duration::from_millis(defaults::num("statusline.consolidated_timeout_ms")),
+        defaults::num("statusline.base_max_buffer") as usize,
+    )?;
     if !r.ok {
         return None;
     }
@@ -287,14 +310,17 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     let raw = trim(input_raw).to_string();
     let data: Option<J> = if raw.starts_with('{') { parse(&raw) } else { None };
     // consolidated base
-    let settings_base = crate::ops::settings::effective_text(defaults::text("statusline.section"), defaults::text("statusline.base_key"), "").unwrap_or_default();
+    let settings_base =
+        crate::ops::settings::effective_text(defaults::text("statusline.section"), defaults::text("statusline.base_key"), "").unwrap_or_default();
     let settings_base = trim(&settings_base).to_string();
     let consolidated = if !settings_base.is_empty() {
         Some(settings_base)
     } else {
-        read_json(&Path::new(&cx.home).join(defaults::text("paths.base_dir")).join(defaults::text("statusline.consolidated_file"))).and_then(|o| match o.get("command") {
-            Some(J::Str(s)) if !trim(s).is_empty() => Some(trim(s).to_string()),
-            _ => None,
+        read_json(&Path::new(&cx.home).join(defaults::text("paths.base_dir")).join(defaults::text("statusline.consolidated_file"))).and_then(|o| {
+            match o.get("command") {
+                Some(J::Str(s)) if !trim(s).is_empty() => Some(trim(s).to_string()),
+                _ => None,
+            }
         })
     };
     if let Some(base) = consolidated
@@ -305,7 +331,10 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     let g = git_info(cwd, env);
     let settings = read_json(&Path::new(cwd).join(defaults::text("statusline.claude_dir")).join(defaults::text("statusline.settings_file")))
         .filter(|v| truthy(Some(v)))
-        .or_else(|| read_json(&Path::new(cwd).join(defaults::text("statusline.claude_dir")).join(defaults::text("statusline.settings_local_file"))).filter(|v| truthy(Some(v))));
+        .or_else(|| {
+            read_json(&Path::new(cwd).join(defaults::text("statusline.claude_dir")).join(defaults::text("statusline.settings_local_file")))
+                .filter(|v| truthy(Some(v)))
+        });
     let display = data.as_ref().and_then(|d| d.get("model")).filter(|m| truthy(Some(m))).and_then(|m| m.get("display_name")).filter(|v| truthy(Some(v)));
     let model = match display {
         Some(v) => text_of(v),
@@ -357,7 +386,11 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     }
     if !g.branch.is_empty() {
         let icon = if g.is_worktree { defaults::text("statusline.tree_icon") } else { defaults::text("statusline.branch_icon") };
-        let label = if g.is_worktree && !g.worktree_name.is_empty() { format!("{}@{}", safe_label(&g.worktree_name)?, safe_label(&g.branch)?) } else { safe_label(&g.branch)? };
+        let label = if g.is_worktree && !g.worktree_name.is_empty() {
+            format!("{}@{}", safe_label(&g.worktree_name)?, safe_label(&g.branch)?)
+        } else {
+            safe_label(&g.branch)?
+        };
         h.push_str(&format!("{sep}{}{icon} {label}{}", c.c("brightBlue"), c.c("reset")));
         if g.modified + g.staged + g.untracked > 0 {
             let mut ind = String::new();
@@ -394,7 +427,13 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         h.push_str(&format!("{sep}{}{}{duration}{}", c.c("cyan"), defaults::text("statusline.clock_icon"), c.c("reset")));
     }
     if let Some(p) = used_pct.filter(|p| *p > 0.0) {
-        let col = if p >= defaults::num("statusline.level_red") as f64 { c.c("brightRed") } else if p >= defaults::num("statusline.level_yellow") as f64 { c.c("brightYellow") } else { c.c("brightGreen") };
+        let col = if p >= defaults::num("statusline.level_red") as f64 {
+            c.c("brightRed")
+        } else if p >= defaults::num("statusline.level_yellow") as f64 {
+            c.c("brightYellow")
+        } else {
+            c.c("brightGreen")
+        };
         h.push_str(&format!("{sep}{col}{}{}% ctx{}", defaults::text("statusline.ctx_mark"), n(p), c.c("reset")));
     }
     if cost_usd > 0.0 {
@@ -406,9 +445,11 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     h.push_str(&ah_chip(cx, root, &c));
     let no_email = crate::ops::settings::effective_bool(defaults::text("statusline.section"), defaults::text("statusline.no_email_key"));
     if !no_email
-        && let Some(email) = read_json(&Path::new(&cx.home).join(defaults::text("statusline.claude_json"))).and_then(|cfg| match cfg.get("oauthAccount").and_then(|o| o.get("emailAddress")) {
-            Some(J::Str(s)) if !trim(s).is_empty() => Some(trim(s).to_string()),
-            _ => None,
+        && let Some(email) = read_json(&Path::new(&cx.home).join(defaults::text("statusline.claude_json"))).and_then(|cfg| {
+            match cfg.get("oauthAccount").and_then(|o| o.get("emailAddress")) {
+                Some(J::Str(s)) if !trim(s).is_empty() => Some(trim(s).to_string()),
+                _ => None,
+            }
         })
     {
         h.push_str(&format!("{sep}{}{}{email}{}", c.c("dim"), defaults::text("statusline.email_icon"), c.c("reset")));
@@ -418,7 +459,9 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
 
 /// `getSessionStats()`: the duration from a local `session.json`.
 fn session_duration(cwd: &str, cx: &Ctx) -> Result<Option<String>, Defer> {
-    let Some(data) = read_json(&Path::new(cwd).join(defaults::text("statusline.claude_dir")).join(defaults::text("statusline.session_file"))) else { return Ok(None) };
+    let Some(data) = read_json(&Path::new(cwd).join(defaults::text("statusline.claude_dir")).join(defaults::text("statusline.session_file"))) else {
+        return Ok(None);
+    };
     let Some(start) = data.get("startTime").filter(|v| truthy(Some(v))) else { return Ok(None) };
     let J::Str(s) = start else { return Err(Defer) };
     let mins = match crate::checks::jsport::date::parse(s) {

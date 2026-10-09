@@ -7,8 +7,8 @@
 //! checks before it (a literal command word, no unbounded wildcard); the row it affects is informational, the trust record
 //! is the file's sha256 either way.
 use super::{err, out};
-use crate::checks::jsport::json::{self, J};
 use crate::checks::jsport::ident;
+use crate::checks::jsport::json::{self, J};
 use crate::defaults;
 use crate::reqenv::RequestEnv;
 use crate::setup::jsfmt::{js_string, pretty};
@@ -135,7 +135,11 @@ fn scan_pattern(src: &str) -> Scan {
                 j += 1;
             }
             let body = slice(&c, i + 1, j);
-            let spans_space = if body.starts_with('^') { !(body.contains(' ') || body.contains("\\s")) } else { body.contains("\\s") || body.contains("\\W") || body.contains("\\D") || body.contains(' ') };
+            let spans_space = if body.starts_with('^') {
+                !(body.contains(' ') || body.contains("\\s"))
+            } else {
+                body.contains("\\s") || body.contains("\\W") || body.contains("\\D") || body.contains(' ')
+            };
             if spans_space && unbounded(j + 1) && wildcard.is_none() {
                 wildcard = Some(slice(&c, i, j + 2));
             }
@@ -310,7 +314,13 @@ fn record_trust(home: &str, top: &str, hash: &str, kind: Kind) -> Result<(), Str
     tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = std::path::PathBuf::from(tmp);
     let text = pretty(&records) + "\n";
-    let written = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
     if let Err(e) = written {
         return Err(crate::migrate::node_err(&e, "open", &tmp));
     }
@@ -377,8 +387,12 @@ pub fn run_trust(kind: Kind, positional: &[String], json_out: bool, confirmed: b
     let (hash, patterns) = match file {
         Allow::Missing => return fail(json_out, &defaults::render("ops.trust_missing", &[("rel", &rel), ("top", &top)])),
         Allow::Symlink => return fail(json_out, &defaults::render("ops.trust_symlink", &[("rel", &rel), ("top", &top)])),
-        Allow::Unreadable => return fail(json_out, &defaults::render("ops.trust_state", &[("rel", &rel), ("top", &top), ("state", &defaults::text("ops.state_unreadable"))])),
-        Allow::InvalidJson => return fail(json_out, &defaults::render("ops.trust_state", &[("rel", &rel), ("top", &top), ("state", &defaults::text("ops.state_invalid_json"))])),
+        Allow::Unreadable => {
+            return fail(json_out, &defaults::render("ops.trust_state", &[("rel", &rel), ("top", &top), ("state", &defaults::text("ops.state_unreadable"))]));
+        }
+        Allow::InvalidJson => {
+            return fail(json_out, &defaults::render("ops.trust_state", &[("rel", &rel), ("top", &top), ("state", &defaults::text("ops.state_invalid_json"))]));
+        }
         Allow::Ok { hash, patterns } => (hash, patterns),
     };
     let rows: Vec<Row> = patterns

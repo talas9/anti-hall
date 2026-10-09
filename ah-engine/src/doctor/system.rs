@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 
 /// The first executable named `name` on `path` (a colon list), searched the way a shell does.
 pub fn which(name: &str, path: &str) -> Option<PathBuf> {
-    path.split(':').filter(|d| !d.is_empty()).map(|d| Path::new(d).join(name)).find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & defaults::num("doctor.exec_bit") as u32 != 0))
+    path.split(':')
+        .filter(|d| !d.is_empty())
+        .map(|d| Path::new(d).join(name))
+        .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & defaults::num("doctor.exec_bit") as u32 != 0))
 }
 
 /// Run `program args` bounded; its first stdout line, or why it failed.
@@ -20,7 +23,19 @@ fn probe(program: &Path, args: &[&str]) -> Result<String, String> {
         Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string()),
         Ok(o) => Err(defaults::render(
             "doctor_msg.why_exit",
-            &[("code", &o.status.code().unwrap_or(-1)), ("err", &String::from_utf8_lossy(&o.stderr).lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(defaults::num("doctor.why_max") as usize).collect::<String>())],
+            &[
+                ("code", &o.status.code().unwrap_or(-1)),
+                (
+                    "err",
+                    &String::from_utf8_lossy(&o.stderr)
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .chars()
+                        .take(defaults::num("doctor.why_max") as usize)
+                        .collect::<String>(),
+                ),
+            ],
         )),
         Err(crate::proc::Error::Timeout) => Err(defaults::text("doctor_msg.why_timeout").to_string()),
         Err(e) => Err(e.into_io().to_string()),
@@ -147,7 +162,8 @@ pub fn claude_section(doc: &mut Doc, ctx: &Ctx) {
     }
     let mut cmd = std::process::Command::new(&claude);
     cmd.arg(defaults::text("doctor.claude_sub"));
-    let out = crate::proc::run(cmd, defaults::text("doctor.probe_label"), defaults::millis("doctor.claude_timeout_ms"), defaults::millis("doctor.probe_poll_ms"));
+    let out =
+        crate::proc::run(cmd, defaults::text("doctor.probe_label"), defaults::millis("doctor.claude_timeout_ms"), defaults::millis("doctor.probe_poll_ms"));
     let (text, supported) = match out {
         Ok(o) if o.status.success() => {
             let t = String::from_utf8_lossy(&o.stdout).into_owned();
@@ -174,7 +190,12 @@ pub fn claude_section(doc: &mut Doc, ctx: &Ctx) {
         return;
     }
     let words = defaults::list("doctor.claude_problem_words");
-    let problems: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && words.iter().any(|w| l.to_lowercase().contains(w))).take(defaults::num("doctor.claude_max_lines") as usize).collect();
+    let problems: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && words.iter().any(|w| l.to_lowercase().contains(w)))
+        .take(defaults::num("doctor.claude_max_lines") as usize)
+        .collect();
     if problems.is_empty() {
         doc.ok(defaults::render("doctor_msg.claude_ok", &[("v", &ver)]));
     }
@@ -213,7 +234,10 @@ pub fn logs_section(doc: &mut Doc) {
             clean = false;
             doc.warnl(defaults::render("doctor_msg.log_huge", &[("file", &log.display()), ("mb", &mb(len)), ("cap_mb", &mb(cap))]));
         }
-        let bad = lines.iter().filter(|l| !l.is_empty() && !(l.splitn(4, '\t').count() == 4 && l.split('\t').next().is_some_and(|t| t.parse::<u64>().is_ok()))).count();
+        let bad = lines
+            .iter()
+            .filter(|l| !l.is_empty() && !(l.splitn(4, '\t').count() == 4 && l.split('\t').next().is_some_and(|t| t.parse::<u64>().is_ok())))
+            .count();
         if bad > 0 {
             clean = false;
             doc.warnl(defaults::render("doctor_msg.log_corrupt", &[("n", &bad), ("m", &lines.len()), ("file", &log.display())]));

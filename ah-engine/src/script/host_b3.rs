@@ -127,10 +127,17 @@ fn jev_ask(spec: &str) -> rquickjs::Result<Option<String>> {
         Some("advisory") => Trust::Advisory,
         _ => Trust::RelaxBlock,
     };
-    let mut req = AskRequest::new(s("id").unwrap_or_default(), question, s("state").unwrap_or_default(), trust, v.get("baseline").cloned().unwrap_or(serde_json::Value::Null));
+    let mut req = AskRequest::new(
+        s("id").unwrap_or_default(),
+        question,
+        s("state").unwrap_or_default(),
+        trust,
+        v.get("baseline").cloned().unwrap_or(serde_json::Value::Null),
+    );
     req.cache_key = s("cacheKey").map(str::to_string);
     // never past the time the client still waits
-    req.budget_ms = v.get("budgetMs").and_then(serde_json::Value::as_u64).map(|b| crate::deadline::clamp(std::time::Duration::from_millis(b)).as_millis() as u64);
+    req.budget_ms =
+        v.get("budgetMs").and_then(serde_json::Value::as_u64).map(|b| crate::deadline::clamp(std::time::Duration::from_millis(b)).as_millis() as u64);
     req.record_disagreement = v.get("recordDisagreement").and_then(serde_json::Value::as_bool).unwrap_or(false);
     req.session_id = s("sessionId").map(str::to_string);
     req.turn_ref = s("turnRefFrom").filter(|t| !t.is_empty()).and_then(crate::jev::shared::turn_ref_from_transcript);

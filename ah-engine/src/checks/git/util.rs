@@ -114,7 +114,6 @@ pub fn path_join(a: &str, b: &str) -> String {
     posix_normalize(&j)
 }
 
-
 /// Process environment plus home, read once per request; every switch the Node guard consults resolves through it.
 #[derive(Clone)]
 pub struct Settings {

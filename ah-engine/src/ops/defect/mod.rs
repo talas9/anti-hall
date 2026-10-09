@@ -152,7 +152,9 @@ fn read_version(run: &Run) -> String {
     let unknown = defaults::text("defect.unknown_word").to_string();
     let Some(root) = plugin_root(&run.env) else { return unknown };
     let path = std::path::Path::new(&root).join(defaults::text("migrate.plugin_manifest"));
-    let Some(pkg) = std::fs::read_to_string(path).ok().and_then(|t| json::parse(&t, defaults::num("setup.json_max_depth") as usize).ok()) else { return unknown };
+    let Some(pkg) = std::fs::read_to_string(path).ok().and_then(|t| json::parse(&t, defaults::num("setup.json_max_depth") as usize).ok()) else {
+        return unknown;
+    };
     match pkg.get("version") {
         Some(J::Str(s)) if !s.is_empty() => s.clone(),
         Some(J::Num(n)) if *n != 0.0 && !n.is_nan() => crate::checks::jsport::num::to_js_string(*n),
@@ -298,7 +300,11 @@ fn cmd_report(run: &Run, a: &Args) -> Result<i32, Defer> {
     let observed = if a.truthy("observed") { a.text("observed").unwrap_or_default() } else { String::new() };
     let proj = reporter_identity(run, a)?;
     let env_id = |k: &str| run.env.get(defaults::env_name(k)).filter(|v| !v.is_empty()).cloned();
-    let sid = if a.truthy("sid") { a.text("sid").unwrap_or_default() } else { env_id("claude_session_id").or_else(|| env_id("antihall_session_id")).unwrap_or_else(|| defaults::text("defect.unknown_word").to_string()) };
+    let sid = if a.truthy("sid") {
+        a.text("sid").unwrap_or_default()
+    } else {
+        env_id("claude_session_id").or_else(|| env_id("antihall_session_id")).unwrap_or_else(|| defaults::text("defect.unknown_word").to_string())
+    };
     let v = if a.truthy("v") { a.text("v").unwrap_or_default() } else { read_version(run) };
     let input = store::ReportInput {
         class: a.text("class"),

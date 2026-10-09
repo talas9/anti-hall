@@ -44,7 +44,14 @@ struct Stub {
 
 impl Stub {
     fn new() -> Stub {
-        Stub { sticky: RefCell::default(), once: RefCell::default(), log: RefCell::default(), used: Cell::new(0), headers: Cell::new(true), remaining: Cell::new(None) }
+        Stub {
+            sticky: RefCell::default(),
+            once: RefCell::default(),
+            log: RefCell::default(),
+            used: Cell::new(0),
+            headers: Cell::new(true),
+            remaining: Cell::new(None),
+        }
     }
 
     fn set(&self, kind: &'static str, status: u16, etag: &str, body: Value) {
@@ -108,7 +115,8 @@ fn reply(status: u16, headers: &[(&str, &str)], body: &str) -> Result<Resp, Fail
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let o = Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+    let o =
+        Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
     assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
 }
 
@@ -188,14 +196,20 @@ fn follows_a_repo_without_devswarm_and_turns_a_changed_etag_into_a_red_edge() {
     let r = fx.tick(&s, T0 + 1000);
     assert_eq!((r.polled, r.calls, r.edges), (1, 6, 0), "first sight: pulls, pull, reviews, rules, checks, runs; no edge without a baseline");
     let repo = fx.repo_state("r1");
-    assert_eq!((repo.slug.as_str(), repo.status["checks"].as_str(), repo.status["pr"].as_str(), repo.status["number"].as_u64()), ("acme/widgets", Some("running"), Some("open"), Some(7)));
+    assert_eq!(
+        (repo.slug.as_str(), repo.status["checks"].as_str(), repo.status["pr"].as_str(), repo.status["number"].as_u64()),
+        ("acme/widgets", Some("running"), Some("open"), Some(7))
+    );
     assert!(s.log.borrow().iter().all(|(_, e)| e.is_none()), "no ETag is known yet");
 
     s.set("checks", 200, "\"c2\"", json!({"check_runs": [{"name": "build", "status": "completed", "conclusion": "success"}, {"name": "test", "status": "completed", "conclusion": "failure"}]}));
     let before = s.calls();
     let r = fx.tick(&s, T0 + 1000 + 30_001);
     assert_eq!((r.polled, r.calls, r.edges), (1, 5, 1), "the rules are read once per rules_ms; the rest is conditional");
-    assert!(s.log.borrow()[before..].iter().filter(|(p, _)| kind_of(p) == "pulls").all(|(_, e)| e.as_deref() == Some("\"p1\"")), "the ETag of the first answer is sent back");
+    assert!(
+        s.log.borrow()[before..].iter().filter(|(p, _)| kind_of(p) == "pulls").all(|(_, e)| e.as_deref() == Some("\"p1\"")),
+        "the ETag of the first answer is sent back"
+    );
     let edges = poll::edges(&fx.cfg);
     assert_eq!((edges[0]["kind"].as_str(), edges[0]["slug"].as_str(), edges[0]["number"].as_u64()), (Some("ci_red"), Some("acme/widgets"), Some(7)));
     assert!(edges[0]["text"].as_str().unwrap_or("").contains("test"), "names the failing job: {}", edges[0]["text"]);
@@ -230,7 +244,11 @@ fn counting_304s_exhausts_the_budget_and_not_counting_them_does_not() {
         let s = Stub::new();
         s.headers.set(false);
         open_pr(&s);
-        let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.assumed_limit", json!(200)).with("github_rt.budget_pct", json!(10)).with("github_rt.count_304", json!(count));
+        let cfg = Cfg::shipped()
+            .in_dir(&fx.dir.join("state"))
+            .with("github_rt.assumed_limit", json!(200))
+            .with("github_rt.budget_pct", json!(10))
+            .with("github_rt.count_304", json!(count));
         poll::tick(&cfg, &s, T0 + 1000, false);
         for i in 1..=4u64 {
             poll::tick(&cfg, &s, T0 + 1000 + i * 31_000, true);
@@ -270,7 +288,11 @@ fn few_remaining_requests_hold_the_polling_until_the_limit_resets() {
     s.remaining.set(Some(50));
     fx.tick(&s, T0 + 1000);
     let st = fx.state();
-    assert_eq!((st.hold_reason.as_str(), st.hold_until_ms), ("budget", (T0 / 1000 + 3600) * 1000), "below min_remaining: nothing until the reset time the API gave");
+    assert_eq!(
+        (st.hold_reason.as_str(), st.hold_until_ms),
+        ("budget", (T0 / 1000 + 3600) * 1000),
+        "below min_remaining: nothing until the reset time the API gave"
+    );
 }
 
 #[test]
@@ -321,7 +343,10 @@ fn an_exhausted_primary_limit_waits_for_the_reset() {
     let s = Stub::new();
     open_pr(&s);
     let reset = (T0 / 1000 + 1800).to_string();
-    s.queue("pulls", reply(403, &[("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", &reset), ("x-ratelimit-limit", "5000")], r#"{"message":"API rate limit exceeded"}"#));
+    s.queue(
+        "pulls",
+        reply(403, &[("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", &reset), ("x-ratelimit-limit", "5000")], r#"{"message":"API rate limit exceeded"}"#),
+    );
     fx.tick(&s, T0 + 1000);
     let st = fx.state();
     assert_eq!((st.hold_reason.as_str(), st.hold_until_ms), ("budget", (T0 / 1000 + 1800) * 1000));
@@ -537,7 +562,12 @@ fn required_checks_come_from_the_branch_rules_and_are_reported_missing() {
     fx.repo("r1", Some(ACME));
     let s = Stub::new();
     open_pr(&s);
-    s.set("rules", 200, "\"r\"", json!([{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "build"}, {"context": "e2e"}]}}]));
+    s.set(
+        "rules",
+        200,
+        "\"r\"",
+        json!([{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "build"}, {"context": "e2e"}]}}]),
+    );
     fx.tick(&s, T0 + 1000);
     let st = fx.repo_state("r1").status;
     assert_eq!((st["required"].clone(), st["required_missing"].clone()), (json!(["build", "e2e"]), json!(["e2e"])));
@@ -609,14 +639,20 @@ fn a_whole_tick_through_the_shell_stub_ends_in_an_edge() {
     let d = fx.dir.join("scenario");
     std::fs::create_dir_all(&d).unwrap();
     let sha = String::from_utf8(Command::new("git").arg("-C").arg(fx.dir.join("r1")).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap();
-    let put = |ep: &str, etag: &str, body: &str| std::fs::write(d.join(ep.replace(['/', '?', '&', '=', ':'], "_")), format!("HTTP/2.0 200 OK\r\nEtag: {etag}\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 4000\r\nX-Ratelimit-Used: 1000\r\nX-Ratelimit-Reset: 4000000000\r\n\r\n{body}")).unwrap();
+    let put = |ep: &str, etag: &str, body: &str| {
+        std::fs::write(d.join(ep.replace(['/', '?', '&', '=', ':'], "_")), format!("HTTP/2.0 200 OK\r\nEtag: {etag}\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 4000\r\nX-Ratelimit-Used: 1000\r\nX-Ratelimit-Reset: 4000000000\r\n\r\n{body}")).unwrap()
+    };
     put("repos/acme/widgets/pulls?state=all&sort=updated&direction=desc&per_page=5&head=acme:main", "\"p\"", "[]");
     let checks = format!("repos/acme/widgets/commits/{}/check-runs?per_page=100", sha.trim());
     let runs = format!("repos/acme/widgets/actions/runs?head_sha={}&per_page=30", sha.trim());
     put(&checks, "\"c1\"", r#"{"check_runs":[{"name":"b","status":"in_progress","conclusion":null}]}"#);
     put(&runs, "\"w\"", r#"{"workflow_runs":[]}"#);
     let stub = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stub-gh");
-    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with_field("github_rt.gh", "argv", json!(["sh", stub.to_string_lossy(), d.to_string_lossy(), "api", "-i"]));
+    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with_field(
+        "github_rt.gh",
+        "argv",
+        json!(["sh", stub.to_string_lossy(), d.to_string_lossy(), "api", "-i"]),
+    );
     let run = GhRunner::new(&cfg);
     assert_eq!(poll::tick(&cfg, &run, T0 + 1000, false).polled, 1);
     put(&checks, "\"c2\"", r#"{"check_runs":[{"name":"b","status":"completed","conclusion":"failure"}]}"#);
@@ -665,7 +701,9 @@ fn advise(home: &Path, sid: &str, cwd: &str) -> crate::checks::Verdict {
 
 fn text_of(v: &crate::checks::Verdict) -> String {
     match v {
-        crate::checks::Verdict::Advisory(t) => serde_json::from_str::<Value>(t).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string(),
+        crate::checks::Verdict::Advisory(t) => {
+            serde_json::from_str::<Value>(t).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string()
+        }
         other => format!("{other:?}"),
     }
 }
@@ -684,7 +722,10 @@ fn an_edge_is_told_to_each_session_once_and_only_for_its_repo() {
     assert_eq!(advise(&fx.dir, "s3", "/work/other"), Allow, "a session in another repo is not");
     assert_eq!(advise(&fx.dir, "s4", "/work/r10"), Allow, "a sibling directory with the same prefix is not the repo");
     assert!(text_of(&advise(&fx.dir, "s3", "/work/r1")).contains("CI failed"), "its cursor did not move while it was elsewhere");
-    write_edges(&fx.dir, &[edge(1, "ci_red", "/work/r1", true, far, "old"), edge(2, "ci_green", "/work/r1", true, far, "CI passed on acme/widgets@main (abc1234)")]);
+    write_edges(
+        &fx.dir,
+        &[edge(1, "ci_red", "/work/r1", true, far, "old"), edge(2, "ci_green", "/work/r1", true, far, "CI passed on acme/widgets@main (abc1234)")],
+    );
     let t = text_of(&advise(&fx.dir, "s1", "/work/r1"));
     assert!(t.contains("CI passed") && !t.contains("old"), "only what is new: {t}");
 }
@@ -699,7 +740,12 @@ fn old_and_unlisted_edges_are_not_told_and_the_count_per_prompt_is_capped() {
     let many: Vec<Value> = (3..=8).map(|i| edge(i, "ci_red", "/r", true, far, &format!("edge {i}"))).collect();
     write_edges(&fx.dir, &many);
     let t = text_of(&advise(&fx.dir, "s1", "/r"));
-    assert_eq!(t.lines().skip(1).collect::<Vec<_>>(), ["edge 6", "edge 7", "edge 8"], "the newest {} only: {t}", fx.cfg.int("github_rt.advisory_max_per_prompt"));
+    assert_eq!(
+        t.lines().skip(1).collect::<Vec<_>>(),
+        ["edge 6", "edge 7", "edge 8"],
+        "the newest {} only: {t}",
+        fx.cfg.int("github_rt.advisory_max_per_prompt")
+    );
     assert_eq!(advise(&fx.dir, "s1", "/r"), Allow);
 }
 

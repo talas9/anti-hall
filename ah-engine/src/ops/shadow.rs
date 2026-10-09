@@ -116,7 +116,17 @@ pub fn begin(verb: &str, script_rel: &str, args: &[String], stdin: Option<&[u8]>
         crate::discard::harmless(std::fs::write(dir.join(defaults::text("ops.shadow_stdin_file")), b)); // keep: a missing input file makes the child skip
     }
     start_capture();
-    Some(Plan { dir, verb: verb.to_string(), script, args: args.to_vec(), cwd: std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), home, has_stdin, started: std::time::Instant::now(), real_cwd: None })
+    Some(Plan {
+        dir,
+        verb: verb.to_string(),
+        script,
+        args: args.to_vec(),
+        cwd: std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(),
+        home,
+        has_stdin,
+        started: std::time::Instant::now(),
+        real_cwd: None,
+    })
 }
 
 /// The paths replaced by a word before two outputs are compared: the real and the scratch home, and for the installers the
@@ -266,7 +276,9 @@ pub fn end(plan: Option<Plan>, code: i32) {
     let scratch_home = p.dir.join("home");
     let scratch_home_s = scratch_home.to_string_lossy().into_owned();
     let post = match &p.real_cwd {
-        Some(real_cwd) => digest_inst(Path::new(&p.home), Path::new(real_cwd), &Mk { home: &p.home, scratch_home: &scratch_home_s, cwd: real_cwd, scratch_cwd: &p.cwd }),
+        Some(real_cwd) => {
+            digest_inst(Path::new(&p.home), Path::new(real_cwd), &Mk { home: &p.home, scratch_home: &scratch_home_s, cwd: real_cwd, scratch_cwd: &p.cwd })
+        }
         None => digest_state(&p.home, &scratch_home_s, &base),
     };
     let job = serde_json::json!({
@@ -281,7 +293,15 @@ pub fn end(plan: Option<Plan>, code: i32) {
         return;
     }
     let Ok(exe) = std::env::current_exe() else { return };
-    let spawned = Command::new(exe).arg(defaults::text("ops.shadow_command")).arg(&p.dir).env(defaults::text("ops.shadow_child_env"), "1").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn();
+    let spawned = Command::new(exe)
+        .arg(defaults::text("ops.shadow_command"))
+        .arg(&p.dir)
+        .env(defaults::text("ops.shadow_child_env"), "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn();
     // the child outlives this process; dropping the handle without waiting leaves it to init
     drop(spawned);
 }
@@ -294,7 +314,8 @@ pub fn compare(dir: &Path) -> i32 {
     let (verb, home) = (s("verb"), s("home"));
     let scratch = dir.join("home");
     let scratch_s = scratch.to_string_lossy().into_owned();
-    let args: Vec<String> = job.get("args").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let args: Vec<String> =
+        job.get("args").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
     let mut cmd = Command::new(std::env::var_os(defaults::env_name("node")).unwrap_or_else(|| defaults::text("ops.shadow_node").into()));
     cmd.arg(s("script")).args(&args).current_dir(s("cwd")).env(defaults::env_name("home"), &scratch).env(defaults::text("ops.shadow_dry_env"), "1");
     for (k, v) in env_snapshot() {
@@ -307,7 +328,10 @@ pub fn compare(dir: &Path) -> i32 {
     } else {
         cmd.stdin(Stdio::null());
     }
-    let Ok(o) = crate::proc::run(cmd, defaults::text("ops.shadow_node"), defaults::millis("ops.shadow_timeout_ms"), defaults::millis("statusline.poll_ms")) else { return 1 };
+    let Ok(o) = crate::proc::run(cmd, defaults::text("ops.shadow_node"), defaults::millis("ops.shadow_timeout_ms"), defaults::millis("statusline.poll_ms"))
+    else {
+        return 1;
+    };
     let node_code = o.status.code().unwrap_or(-1);
     let want_code = job.get("code").and_then(serde_json::Value::as_i64).unwrap_or(-1) as i32;
     let real_cwd = job.get("real_cwd").and_then(|v| v.as_str()).map(str::to_string);
@@ -324,7 +348,13 @@ pub fn compare(dir: &Path) -> i32 {
     let norm = |t: &str| t.lines().collect::<Vec<_>>().join("\n");
     let mismatch = e_out != n_out || e_err != n_err || want_code != node_code || norm(&post_engine) != norm(&post_node);
     let micros = job.get("micros").and_then(serde_json::Value::as_u64).unwrap_or(0);
-    crate::telemetry::emit::event(crate::telemetry::emit::command_run(defaults::text("ops.shadow_event"), &verb, i32::from(mismatch), micros, u64::from(mismatch)));
+    crate::telemetry::emit::event(crate::telemetry::emit::command_run(
+        defaults::text("ops.shadow_event"),
+        &verb,
+        i32::from(mismatch),
+        micros,
+        u64::from(mismatch),
+    ));
     if mismatch {
         let report = defaults::render(
             "ops.shadow_report",
@@ -351,7 +381,9 @@ pub fn compare(dir: &Path) -> i32 {
 /// Keep only the newest `ops.shadow_keep` mismatch directories.
 fn prune(parent: Option<&Path>) {
     let Some(parent) = parent else { return };
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(parent).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.join(defaults::text("ops.shadow_report_file")).exists()).collect()).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(parent)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.join(defaults::text("ops.shadow_report_file")).exists()).collect())
+        .unwrap_or_default();
     dirs.sort();
     let keep = defaults::num("ops.shadow_keep") as usize;
     if dirs.len() > keep {
