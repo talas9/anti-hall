@@ -233,13 +233,16 @@ jobs:
       reason: ${{ steps.out.outputs.reason }}
       latency_ms: ${{ steps.out.outputs.latency_ms }}
     steps:
+      # Always checked out: the Copilot CLI install below needs .github/copilot-cli/package-lock.json.
+      # With tools 'none' only that folder is checked out (sparse), so the model sees no repo files.
       - name: Checkout the default branch (trusted)
-        if: inputs.tools != 'none'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           fetch-depth: 1
+          sparse-checkout: ${{ inputs.tools == 'none' && '.github/copilot-cli' || '' }}
+          sparse-checkout-cone-mode: false
 
       - name: Install Copilot CLI
         run: |
