@@ -207,7 +207,7 @@ jobs:
               if (res.api_error_status) text = `api_error_status ${res.api_error_status}`;
               if (res.is_error) await core.summary.addRaw(`Claude secondary error: HTTP ${res.api_error_status ?? 'n/a'}, cost ${res.total_cost_usd}, ${res.duration_ms} ms\n\n`, true).write();
               if (res.is_error && typeof res.result === 'string') {
-                text = res.result.slice(0, 300);
+                text += ' ' + res.result.slice(0, 300);
                 await core.summary.addRaw(`Claude secondary error result (HTTP ${res.api_error_status ?? 'n/a'}): ${String(res.result).slice(0, 200).replace(/[\r\n|]+/g, ' ')} (cost ${res.total_cost_usd}, ${res.duration_ms} ms)\n\n`, true).write();
               }
             } catch { /* no execution file */ }
