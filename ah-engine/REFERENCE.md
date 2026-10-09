@@ -4657,7 +4657,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.verify_nonce_col` | `11` |  |  | Index of the instance_nonce column in the row query of the background check (left out of the comparison). |
 | `mesh_write.verify_read_primary_copy_dirs` | `9 items` |  |  | Directories of the DevSwarm root copied into the scratch home before the engine writes a read receipt (what Node reads or writes for a read-primary). |
 | `mesh_write.verify_read_primary_node_snippet` | `const c=require(process.argv[1]);const a=process.argv.slice(3);Date.now=()=>N...` |  |  | The Node program of the read-primary verifier: runs the real devswarm.js `run()` with the engine's clock and reader nonce and prints what `main()` prints for the verb (the JSON, or the text rendering under `--format text` without `--json`). Arguments: the CLI path, the clock, then the verb's argv. |
-| `mesh_write.verify_roster_copy_dirs` | `7 items` |  |  | Directories of the DevSwarm root copied into the scratch home for the roster verifier (what Node reads for a roster). |
+| `mesh_write.verify_roster_copy_dirs` | `9 items` |  |  | Directories of the DevSwarm root copied into the scratch home for the roster verifier (what Node reads for a roster). |
+| `mesh_write.verify_roster_copy_files` | `hivecontrol-active.json, capabilities.json, hivecontrol-path.json` |  |  | Files of the DevSwarm root copied into the scratch home for the roster verifier: the supervisor's active-list cache and what the capability gate of hivecontrol reads. |
+| `mesh_write.verify_roster_home_links` | `.claude/projects, .claude/sessions, Library/Application Support/DevSwarm, .co...` |  |  | Paths under the home linked, not copied, into the scratch home for the roster verifier (read only): Claude's transcripts and session records, and the DevSwarm app's database directory on macOS and on Linux. |
 | `mesh_write.verify_roster_node_snippet` | `const p=require('path');const c=require(process.argv[1]);const a=process.argv...` |  |  | The Node program of the roster verifier: runs the real devswarm.js `run()` and prints what `main()` prints for a plain roster (the text table unless `--json`). Arguments: the CLI path, the clock, then the verb's argv. |
 | `mesh_write.verify_row_name` | `row` |  |  | The name the background check gives the appended mesh row when it differs. |
 | `mesh_write.verify_tick_copy_dirs` | `11 items` |  |  | Directories of the DevSwarm root copied into the scratch home before the engine writes for a tick (what Node reads or writes for it). |
@@ -6951,6 +6953,48 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.ret_sub_restore` | `restore` |  |  | The retention subcommand that restores archived bodies into their tombstoned rows. |
 | `devswarm_cli.ret_sub_run` | `run` |  |  | The retention subcommand that prunes (or, with --dry-run, reports what it would prune). |
 | `devswarm_cli.ret_sub_status` | `status` |  |  | The retention subcommand that shows the settings, phase, store sizes and archive size. |
+| `devswarm_cli.rr_active_list_file` | `hivecontrol-active.json` |  |  | The supervisor's cache of the app's active workspaces, under the DevSwarm root (devswarm-archived-cache.js CACHE_BASENAME). A roster that would have to read it goes to Node. |
+| `devswarm_cli.rr_app_live_cmd` | `hivecontrol workspace archive {target}` |  |  | The command that archives one workspace in the app. `{target}` is its branch (else its id). |
+| `devswarm_cli.rr_app_live_cmd_sep` | ` ; ` |  |  | What joins the archive commands in the message above. |
+| `devswarm_cli.rr_app_live_message` | `app still shows {count} workspace(s) you archived — run: {cmds}` |  |  | The message about workspaces the app still shows. `{count}` is how many, `{cmds}` the commands that archive them. |
+| `devswarm_cli.rr_day_ms` | `86400000` |  |  | Milliseconds in a day: the unit of the `idle Nd` hint. |
+| `devswarm_cli.rr_dir_retired` | `retired` |  |  | The directory of fold tombstones under the DevSwarm root (retired/<id>.json). |
+| `devswarm_cli.rr_env_hide_archived` | `ANTIHALL_ROSTER_HIDE_ARCHIVED` |  |  | The variable that, set to the value below, makes the roster text list archived rows too. |
+| `devswarm_cli.rr_env_idle_ms` | `ANTIHALL_DEVSWARM_IDLE_MS` |  |  | The environment variable that sets the wide idle window of a workspace whose transcript does not resolve (liveness.js idleThresholdMs). |
+| `devswarm_cli.rr_env_repo_id` | `DEVSWARM_REPO_ID` |  |  | The variable that scopes `hivecontrol workspace list children` to a repository; the trusted lookup runs without it. |
+| `devswarm_cli.rr_field_last_outbound` | `lastOutboundTs` |  |  | The liveness verdict field the `idle Nd` hint and the `last` column read. |
+| `devswarm_cli.rr_field_retired_to` | `retiredTo` |  |  | The tombstone field naming the id a retired label redirects to. |
+| `devswarm_cli.rr_ghost_label_re` | `^primary-[0-9a-f]{8}$` |  |  | The shape of a worktree label (`primary-<8 hex>`): only such a row can fold into its canonical row (devswarm-sender-alias.js rosterFoldTarget). |
+| `devswarm_cli.rr_hide_archived_off` | `0` |  |  | The value of that variable that shows archived rows. |
+| `devswarm_cli.rr_hint_app_live` | `app-live` |  |  | The hint of a workspace anti-hall archived that the app still shows. |
+| `devswarm_cli.rr_hint_archive_pending` | `archive-pending` |  |  | The second hint of a row whose child filed its done-report. |
+| `devswarm_cli.rr_hint_archived` | `archived` |  |  | The hint of an archived row. |
+| `devswarm_cli.rr_hint_done` | `done` |  |  | The first hint of a row whose child filed its done-report. |
+| `devswarm_cli.rr_hint_dormant` | `dormant` |  |  | The hint of a row whose session has been silent past its window. |
+| `devswarm_cli.rr_hint_idle` | `idle {days}d` |  |  | The hint of a row idle for some days. `{days}` is the whole number of days. |
+| `devswarm_cli.rr_hint_idle_alive` | `idle (alive)` |  |  | The hint of a row silent past its window whose session process is still running. |
+| `devswarm_cli.rr_hint_live_in_archived` | `live session in archived workspace` |  |  | The hint of an archived row whose session still sends heartbeats. |
+| `devswarm_cli.rr_hint_phantom` | `phantom` |  |  | The hint of a registered row that no live session and no fresh heartbeat stands behind. |
+| `devswarm_cli.rr_hint_split` | `instance-split` |  |  | The hint of a row whose id is used by two live processes at once. |
+| `devswarm_cli.rr_hint_worktree_gone` | `worktree-gone` |  |  | The hint of a row whose worktree no longer exists. |
+| `devswarm_cli.rr_idle_ms_default` | `21600000` |  |  | The wide idle window when the variable above is absent, not a number or not positive (liveness.js DEFAULT_ROSTER_IDLE_MS, 6 hours). |
+| `devswarm_cli.rr_repos_root_re` | `[\\/]\.devswarm[\\/]repos[\\/]` |  |  | The path segment under which the DevSwarm app keeps its worktrees (devswarm-archived-cache.js DEVSWARM_REPOS_ROOT_RE); only such a worktree can be archived by absence from the app's active list. |
+| `devswarm_cli.rr_set_dormant_ms` | `6 entries` |  |  | How long a workspace whose session transcript resolves may stay silent before the roster calls it dormant (Node: devswarm.dormantMs, a positive number; liveness.js dormantThresholdMs). A value of zero or below is not read by the engine (Node skips it); the roster then goes to Node. |
+| `devswarm_cli.rr_source_archived` | `archived` |  |  | The `source` of a roster row for an archived workspace. |
+| `devswarm_cli.rr_source_store` | `store` |  |  | The `source` of a roster row read from the store. |
+| `devswarm_cli.rr_split_gap_ms` | `60000` |  |  | Two instance nonces count as concurrent only when their activity is within this many milliseconds of each other (roster-diag.js INSTANCE_SPLIT_CONCURRENT_GAP_MS). |
+| `devswarm_cli.rr_text_active` | `active` |  |  | The status cell of a row without hints. |
+| `devswarm_cli.rr_text_dash` | `—` |  |  | The cell of an unknown value. |
+| `devswarm_cli.rr_text_header` | `\\| workspace \\| status \\| finish \\| unread \\| last \\|, \\|---\\|---\\|---\\|---\\|...` |  |  | The two header lines of the roster text table. |
+| `devswarm_cli.rr_text_hidden` | `+{n} archived (use --all to list them, --json for the full data)` |  |  | The roster text line that counts the archived rows it did not list. `{n}` is how many. |
+| `devswarm_cli.rr_text_hint_cut` | `:` |  |  | A hint is shown up to this character (the part before a colon). |
+| `devswarm_cli.rr_text_name` | `{name} ({short})` |  |  | A row's name cell when a name is known. `{name}` is the name, `{short}` the first characters of the id. |
+| `devswarm_cli.rr_text_pipe` | `\\|, \\\|` |  |  | The character of a name that the text table escapes, and its escape. |
+| `devswarm_cli.rr_text_row` | `\| {name} \| {status} \| {finish} \| {unread} \| {last} \|` |  |  | One row of the roster text table. `{name}`, `{status}`, `{finish}`, `{unread}` and `{last}` are the cells. |
+| `devswarm_cli.rr_text_status_max` | `3` |  |  | How many hints the status cell shows. |
+| `devswarm_cli.rr_text_status_sep` | `, ` |  |  | What joins the hints in the status cell. |
+| `devswarm_cli.rr_text_unread_bcast` | `{direct} (+{bcast} bcast)` |  |  | The unread cell of a row with unread broadcasts. `{direct}` and `{bcast}` are the counts. |
+| `devswarm_cli.rr_trusted_args` | `workspace, list, all` |  |  | The hivecontrol arguments of the trusted repository lookup (roster-diag.js fetchTrustedRepositoryId). |
 | `devswarm_cli.seat_state_na` | `n/a` |  |  | The seat state of a caller that is not in the project's Primary checkout (a child worktree, or no git worktree at all). |
 | `devswarm_cli.send_self_primary_suffix` | `-primary` |  |  | What --to-primary adds to `--to` in that refusal. |
 | `devswarm_cli.short_max` | `100` |  |  | Longest line of the short index, in UTF-16 units; a longer synopsis is cut and ends with the ellipsis. |

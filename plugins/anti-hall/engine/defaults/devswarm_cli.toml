@@ -1611,3 +1611,173 @@ value = "no-identity"
 [devswarm_cli.msg_done_no_identity]
 doc = "done's refusal when the caller's id cannot be resolved."
 value = "could not resolve this workspace's id"
+
+# ---- roster with rows (lane l8f): scripts/devswarm-lib/roster-diag.js cmdRoster, rosterHints, rosterHumanText -----------------
+
+[devswarm_cli.rr_set_dormant_ms]
+doc = "How long a workspace whose session transcript resolves may stay silent before the roster calls it dormant (Node: devswarm.dormantMs, a positive number; liveness.js dormantThresholdMs). A value of zero or below is not read by the engine (Node skips it); the roster then goes to Node."
+value = { type = "number", section = "devswarm", key = "dormantMs", env = "ANTIHALL_DEVSWARM_DORMANT_MS", exact = true, default = 1800000 }
+
+[devswarm_cli.rr_env_idle_ms]
+doc = "The environment variable that sets the wide idle window of a workspace whose transcript does not resolve (liveness.js idleThresholdMs)."
+value = "ANTIHALL_DEVSWARM_IDLE_MS"
+
+[devswarm_cli.rr_idle_ms_default]
+doc = "The wide idle window when the variable above is absent, not a number or not positive (liveness.js DEFAULT_ROSTER_IDLE_MS, 6 hours)."
+value = 21600000
+
+[devswarm_cli.rr_day_ms]
+doc = "Milliseconds in a day: the unit of the `idle Nd` hint."
+value = 86400000
+
+[devswarm_cli.rr_split_gap_ms]
+doc = "Two instance nonces count as concurrent only when their activity is within this many milliseconds of each other (roster-diag.js INSTANCE_SPLIT_CONCURRENT_GAP_MS)."
+value = 60000
+
+[devswarm_cli.rr_field_last_outbound]
+doc = "The liveness verdict field the `idle Nd` hint and the `last` column read."
+value = "lastOutboundTs"
+
+[devswarm_cli.rr_repos_root_re]
+doc = "The path segment under which the DevSwarm app keeps its worktrees (devswarm-archived-cache.js DEVSWARM_REPOS_ROOT_RE); only such a worktree can be archived by absence from the app's active list."
+value = '[\\/]\.devswarm[\\/]repos[\\/]'
+
+[devswarm_cli.rr_active_list_file]
+doc = "The supervisor's cache of the app's active workspaces, under the DevSwarm root (devswarm-archived-cache.js CACHE_BASENAME). A roster that would have to read it goes to Node."
+value = "hivecontrol-active.json"
+
+[devswarm_cli.rr_ghost_label_re]
+doc = "The shape of a worktree label (`primary-<8 hex>`): only such a row can fold into its canonical row (devswarm-sender-alias.js rosterFoldTarget)."
+value = '^primary-[0-9a-f]{8}$'
+
+[devswarm_cli.rr_dir_retired]
+doc = "The directory of fold tombstones under the DevSwarm root (retired/<id>.json)."
+value = "retired"
+
+[devswarm_cli.rr_field_retired_to]
+doc = "The tombstone field naming the id a retired label redirects to."
+value = "retiredTo"
+
+[devswarm_cli.rr_env_repo_id]
+doc = "The variable that scopes `hivecontrol workspace list children` to a repository; the trusted lookup runs without it."
+value = "DEVSWARM_REPO_ID"
+
+[devswarm_cli.rr_trusted_args]
+doc = "The hivecontrol arguments of the trusted repository lookup (roster-diag.js fetchTrustedRepositoryId)."
+value = ["workspace", "list", "all"]
+
+[devswarm_cli.rr_env_hide_archived]
+doc = "The variable that, set to the value below, makes the roster text list archived rows too."
+value = "ANTIHALL_ROSTER_HIDE_ARCHIVED"
+
+[devswarm_cli.rr_hide_archived_off]
+doc = "The value of that variable that shows archived rows."
+value = "0"
+
+[devswarm_cli.rr_source_store]
+doc = "The `source` of a roster row read from the store."
+value = "store"
+
+[devswarm_cli.rr_source_archived]
+doc = "The `source` of a roster row for an archived workspace."
+value = "archived"
+
+[devswarm_cli.rr_hint_worktree_gone]
+doc = "The hint of a row whose worktree no longer exists."
+value = "worktree-gone"
+
+[devswarm_cli.rr_hint_idle]
+doc = "The hint of a row idle for some days. `{days}` is the whole number of days."
+value = "idle {days}d"
+
+[devswarm_cli.rr_hint_archived]
+doc = "The hint of an archived row."
+value = "archived"
+
+[devswarm_cli.rr_hint_live_in_archived]
+doc = "The hint of an archived row whose session still sends heartbeats."
+value = "live session in archived workspace"
+
+[devswarm_cli.rr_hint_dormant]
+doc = "The hint of a row whose session has been silent past its window."
+value = "dormant"
+
+[devswarm_cli.rr_hint_idle_alive]
+doc = "The hint of a row silent past its window whose session process is still running."
+value = "idle (alive)"
+
+[devswarm_cli.rr_hint_phantom]
+doc = "The hint of a registered row that no live session and no fresh heartbeat stands behind."
+value = "phantom"
+
+[devswarm_cli.rr_hint_split]
+doc = "The hint of a row whose id is used by two live processes at once."
+value = "instance-split"
+
+[devswarm_cli.rr_hint_done]
+doc = "The first hint of a row whose child filed its done-report."
+value = "done"
+
+[devswarm_cli.rr_hint_archive_pending]
+doc = "The second hint of a row whose child filed its done-report."
+value = "archive-pending"
+
+[devswarm_cli.rr_hint_app_live]
+doc = "The hint of a workspace anti-hall archived that the app still shows."
+value = "app-live"
+
+[devswarm_cli.rr_app_live_message]
+doc = "The message about workspaces the app still shows. `{count}` is how many, `{cmds}` the commands that archive them."
+value = "app still shows {count} workspace(s) you archived — run: {cmds}"
+
+[devswarm_cli.rr_app_live_cmd]
+doc = "The command that archives one workspace in the app. `{target}` is its branch (else its id)."
+value = "hivecontrol workspace archive {target}"
+
+[devswarm_cli.rr_app_live_cmd_sep]
+doc = "What joins the archive commands in the message above."
+value = " ; "
+
+[devswarm_cli.rr_text_header]
+doc = "The two header lines of the roster text table."
+value = ["| workspace | status | finish | unread | last |", "|---|---|---|---|---|"]
+
+[devswarm_cli.rr_text_row]
+doc = "One row of the roster text table. `{name}`, `{status}`, `{finish}`, `{unread}` and `{last}` are the cells."
+value = "| {name} | {status} | {finish} | {unread} | {last} |"
+
+[devswarm_cli.rr_text_hidden]
+doc = "The roster text line that counts the archived rows it did not list. `{n}` is how many."
+value = "+{n} archived (use --all to list them, --json for the full data)"
+
+[devswarm_cli.rr_text_dash]
+doc = "The cell of an unknown value."
+value = "—"
+
+[devswarm_cli.rr_text_active]
+doc = "The status cell of a row without hints."
+value = "active"
+
+[devswarm_cli.rr_text_status_max]
+doc = "How many hints the status cell shows."
+value = 3
+
+[devswarm_cli.rr_text_status_sep]
+doc = "What joins the hints in the status cell."
+value = ", "
+
+[devswarm_cli.rr_text_hint_cut]
+doc = "A hint is shown up to this character (the part before a colon)."
+value = ":"
+
+[devswarm_cli.rr_text_unread_bcast]
+doc = "The unread cell of a row with unread broadcasts. `{direct}` and `{bcast}` are the counts."
+value = "{direct} (+{bcast} bcast)"
+
+[devswarm_cli.rr_text_pipe]
+doc = "The character of a name that the text table escapes, and its escape."
+value = ["|", "\\|"]
+
+[devswarm_cli.rr_text_name]
+doc = "A row's name cell when a name is known. `{name}` is the name, `{short}` the first characters of the id."
+value = "{name} ({short})"

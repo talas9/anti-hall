@@ -560,16 +560,24 @@ a failed cursor write is reported in `autoAck.cursorWriteFailures`, as Node repo
 background Node check runs the real verb on a scratch copy (a consistent copy of the store, the descriptors' NDJSON inbox and cursor files copied
 under the scratch home so a later ack cannot race it) and compares its output and its receipt with both random ids and both homes made equal.
 
-**Plain `roster` (`src/meshw/roster.rs`, `src/meshw/hivecontrol.rs`; Node: `cmdRoster`, `rosterHumanText`, `hcRun`).** Every roster row comes from
-the liveness, transcript, idle, plan, app-database, name and alias machinery, which the engine does not have, so the engine answers only a
-project whose roster has NO rows: no registered workspace (the shared summary projection is empty), no archived descriptor OWNED by the project
-(the archived directory is shared by every project; `ownerKey`, else `repoKey`, else the worktree's key decides), no split-brain fallback
-summary of the Primary, and no native child. Then it prints `no live workspaces` (or, with `--json`, the empty result with the summary's `recent`).
-The cheap checks run first, so a project that has rows defers before `hivecontrol` is started. `hivecontrol workspace list children` is one bounded
+**Plain `roster` (`src/meshw/roster.rs`, `src/meshw/rosterrows.rs`, `src/meshw/hivecontrol.rs`; Node: `cmdRoster`, `rosterHints`, `rosterHumanText`, `hcRun`; lane l8f).**
+The engine answers a project's roster with its rows, text table or `--json`, and writes nothing (Node's roster is a pure read: the summary projection, a read-only
+app database, no cache write). A row is the store's workspace plus its hints: `worktree-gone`, `idle Nd` (the persisted liveness verdict), `archived` (anti-hall's own
+marker or the app database's verdict) and `live session in archived workspace`, `dormant` / `idle (alive)` (the heartbeat, the transcript's modification time and
+the descriptor's registration time against `devswarm.dormantMs` or `ANTIHALL_DEVSWARM_IDLE_MS`, and a running session process), `phantom`, `instance-split`
+(two live nonces within `devswarm_cli.rr_split_gap_ms`), `done`/`archive-pending`, `app-live`. Archived descriptors of the project become rows; the app database
+adds `appArchived`, the title, the `app` object (rank, pinned, focused, finish, brief, builder type) and orders the rows by sidebar rank; `appStillLive` reports
+workspaces anti-hall archived that the app still shows; a `primary-<hash>` ghost row folds into its canonical row by alias, tombstone or the app's builder on
+its worktree. The texts and numbers are `devswarm_cli.rr_*` in the plugin's defaults.
+What stays Node's, decided before anything is printed (exit 75 to the wrapper, nothing written): a row whose session transcript exists (Node reads its tail to say
+whether the child waits on a human), a row with a step plan, a native `hivecontrol` child that is not already a store row, a child whose repository id disagrees
+with the trusted lookup (Node logs it), the split-brain fallback row, an archive marker a newer occupant of the id superseded (Node logs it), the supervisor's
+active-list cache when a row could depend on it, a dormancy window set to zero or below, an id JavaScript would order as an array index, and every odd value the shared
+readers defer on. `hivecontrol workspace list children` (and, for a child carrying a repository id, `workspace list all` without `DEVSWARM_REPO_ID`) is one bounded
 call (`mesh_write.hivecontrol_timeout_ms`; the child gets a closed stdin; more than `mesh_write.hivecontrol_max_stdout_bytes` of output fails it; a
 child that ignores the termination signal is killed after `mesh_write.hivecontrol_kill_grace_ms`, where Node would wait for it for ever); a missing
 binary, a spawn error, a timeout, a signal, a non-zero exit, an empty or unparsable answer are all "no children", as in Node's fail-open
-`fetchNativeChildren`, and a child it does report (an object or array element) is a row, so that defers. In front of the call sits Node's capability
+`fetchNativeChildren`. In front of the call sits Node's capability
 gate: the binary is found as Node finds it (`ANTIHALL_DEVSWARM_HIVECONTROL`, `PATH`, `hivecontrol-path.json`, the DevSwarm app's copy on macOS), its probe is read
 from `capabilities.json` (keyed by path, mtime and size), and a missing or stale probe, which makes Node spawn the binary and rewrite the cache with the
 clock in it, defers; a build whose `workspace --help` lacks `list` and whose dormant line Node already recorded is refused without a spawn, as Node does.

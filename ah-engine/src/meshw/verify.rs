@@ -130,6 +130,21 @@ fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
             }
         }
     }
+    if kind == Kind::Roster {
+        for f in defaults::list("mesh_write.verify_roster_copy_files") {
+            if root.join(f).is_file() {
+                std::fs::copy(root.join(f), sroot.join(f)).ok()?;
+            }
+        }
+        // what a roster reads under the home and the witness must see as the engine does (it only reads them)
+        for rel in defaults::list("mesh_write.verify_roster_home_links") {
+            let (src, dst) = (inv.home.join(rel), scratch.join(defaults::text("mesh_write.shadow_home")).join(rel));
+            if src.exists() {
+                std::fs::create_dir_all(dst.parent()?).ok()?;
+                std::os::unix::fs::symlink(&src, &dst).ok()?;
+            }
+        }
+    }
     if kind == Kind::ReadPrimary {
         // the `ackCommand` names the stable launcher under the home: the scratch home needs one, at the same relative place
         let rel = PathBuf::from(defaults::text("mesh_write.dir_anti_hall"))

@@ -105,7 +105,7 @@ fn finite(v: Option<&OVal>) -> Option<f64> {
     }
 }
 
-fn mtime_ms(md: &std::fs::Metadata) -> f64 {
+pub(crate) fn mtime_ms(md: &std::fs::Metadata) -> f64 {
     md.mtime() as f64 * 1000.0 + md.mtime_nsec() as f64 / 1e6
 }
 
@@ -114,7 +114,7 @@ fn path_of(home: &Path, dir_key: &str, id: &str) -> PathBuf {
 }
 
 /// `heartbeatTs(id)`: the record's finite `ts`, else the file's modification time, else `None`.
-fn heartbeat_ts(home: &Path, id: &str) -> Option<f64> {
+pub(crate) fn heartbeat_ts(home: &Path, id: &str) -> Option<f64> {
     let p = path_of(home, "mesh_write.dir_heartbeats", id);
     if let Some(j) = std::fs::read(&p).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
         && let Some(t) = finite(j.get(defaults::text("devswarm_sup.lv_field_ts")))
@@ -125,7 +125,7 @@ fn heartbeat_ts(home: &Path, id: &str) -> Option<f64> {
 }
 
 /// `isFreshBeat(ts, now, freshMs)`.
-fn is_fresh(ts: Option<f64>, now: f64, fresh_ms: f64) -> bool {
+pub(crate) fn is_fresh(ts: Option<f64>, now: f64, fresh_ms: f64) -> bool {
     ts.is_some_and(|t| t.is_finite() && t > 0.0 && t <= now && now - t <= fresh_ms)
 }
 
@@ -137,7 +137,7 @@ fn encode_worktree(wt: &str) -> String {
 }
 
 /// `transcriptMtime(projectDirFor(wt), sessionId)`.
-fn transcript_mtime(home: &Path, wt: &str, session: &str) -> R<Option<f64>> {
+pub(crate) fn transcript_mtime(home: &Path, wt: &str, session: &str) -> R<Option<f64>> {
     if session.is_empty() {
         return Ok(None);
     }
@@ -149,7 +149,7 @@ fn transcript_mtime(home: &Path, wt: &str, session: &str) -> R<Option<f64>> {
 }
 
 /// `descriptorRegistrationTs(id)`: the modification time of `workspaces/<id>.json`.
-fn registration_ts(home: &Path, id: &str) -> Option<f64> {
+pub(crate) fn registration_ts(home: &Path, id: &str) -> Option<f64> {
     std::fs::metadata(path_of(home, "mesh_write.dir_workspaces", id)).ok().map(|m| mtime_ms(&m)).filter(|t| t.is_finite())
 }
 
@@ -210,7 +210,7 @@ fn pid_is_alive(pid: f64, since_ms: Option<f64>) -> Option<bool> {
 }
 
 /// `isSessionAliveRow({ sessionId })`: a `~/.claude/sessions/*.json` record of this session names a live process.
-fn session_alive(home: &Path, session: &str) -> R<bool> {
+pub(crate) fn session_alive(home: &Path, session: &str) -> R<bool> {
     if session.is_empty() {
         return Ok(false);
     }

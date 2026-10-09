@@ -13,7 +13,7 @@
 //! * `on`: the engine runs the verb; wherever it cannot reproduce Node exactly (an [`ident::Defer`]) Node runs it.
 //!
 //! Ported verbs: `send` (direct, `--to-primary`, `--broadcast`), `mesh read` (consuming and `--peek`), `mesh history`,
-//! `roster --ack`, `inbox ack-primary`, the plain `heartbeat`, `inbox tick <id>`, the single-partition `inbox read-primary` and the empty-project plain `roster`; and the store-free verbs of [`simple`] (`help`, the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`, `gate-intent`, `notice --list`). Every other verb runs in Node whatever the switch says.
+//! `roster --ack`, `inbox ack-primary`, the plain `heartbeat`, `inbox tick <id>`, the single-partition `inbox read-primary` and the plain `roster`; and the store-free verbs of [`simple`] (`help`, the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`, `gate-intent`, `notice --list`). Every other verb runs in Node whatever the switch says.
 //!
 //! The exit-code contract (`mesh_write.exit_defer`, `mesh_write.exit_committed_failure`):
 //!
@@ -49,6 +49,7 @@ pub mod read;
 pub mod readprimary;
 pub mod reportverbs;
 pub mod roster;
+pub mod rosterrows;
 pub mod send;
 pub mod simple;
 pub mod store;
