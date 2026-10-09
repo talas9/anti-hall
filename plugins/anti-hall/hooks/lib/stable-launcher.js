@@ -116,11 +116,20 @@ function meshRoute(argv, segments) {
     var piped = argv.indexOf('--message-stdin') >= 0;
     var input;
     if (piped) { try { input = fs.readFileSync(0); } catch (_) { input = Buffer.alloc(0); } out.input = input; }
-    var spawnOpts = { stdio: [piped ? 'pipe' : 'inherit', 'inherit', 'inherit'], input: input, killSignal: 'SIGKILL' };
+    // the engine creates this file at its commit point: a stop at the time limit after that must not be followed by Node
+    var mark = path.join(os.tmpdir(), 'ah-commit-' + process.pid + '-' + Date.now());
+    var spawnOpts = { stdio: [piped ? 'pipe' : 'inherit', 'inherit', 'inherit'], input: input, killSignal: 'SIGKILL',
+      env: Object.assign({}, process.env, { AH_ENGINE_COMMIT_MARK: mark }) };
     if (!hit.unbounded) spawnOpts.timeout = ms;
     var r = require('child_process').spawnSync(bin, ['mesh'].concat(argv), spawnOpts);
+    var acted = false;
+    try { acted = fs.existsSync(mark); fs.unlinkSync(mark); } catch (_) {}
     var why = r.error ? String(r.error.code || r.error.message) : r.signal ? 'signal ' + r.signal : r.status === 127 ? 'exit 127' : r.status === 75 ? 'exit 75' : '';
     if (!why) return { done: r.status === null ? 1 : r.status };
+    if (acted && r.status !== 75 && r.status !== 127) {
+      process.stderr.write('anti-hall: the engine was stopped after it had acted (' + why + '); not re-running ' + argv[0] + ' in Node\n');
+      return { done: 70 };
+    }
     try {
       fs.mkdirSync(path.join(dir, 'ah-engine'), { recursive: true });
       fs.appendFileSync(path.join(dir, 'ah-engine', 'mesh-route.log'),

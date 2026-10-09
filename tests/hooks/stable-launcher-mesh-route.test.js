@@ -197,6 +197,17 @@ test('on, merge: the engine is waited for past the time limit (a second merge in
   assert.match(s.log, /ETIMEDOUT/);
 });
 
+test('on, a write verb stopped at the time limit AFTER its commit point is never re-done in Node; before it, Node runs', () => {
+  const acted = setup({ mode: 'on', engine: 'echo wrote >> "$(dirname "$0")/effects"; : >> "$AH_ENGINE_COMMIT_MARK"; sleep 8', timeoutMs: 2500 });
+  const r = acted.run(['send', '--to', 'w', '--message', 'hi']);
+  assert.strictEqual(r.code, 70);
+  assert.doesNotMatch(r.trace, /^node /m);
+  const before = setup({ mode: 'on', engine: 'sleep 3', timeoutMs: 500 });
+  const b = before.run(['send', '--to', 'w', '--message', 'hi']);
+  assert.strictEqual(b.code, 3);
+  assert.match(b.trace, /node send/);
+});
+
 test('on, --message-stdin: the body reaches the engine and, on fallback, Node', () => {
   const { run } = setup({ mode: 'on', engine: 'cat >> "$(dirname "$0")/body"; exit 127' });
   const r = run(['send', '--to', 'w', '--message-stdin'], 'the body');

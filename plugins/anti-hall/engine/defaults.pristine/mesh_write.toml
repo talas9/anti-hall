@@ -1984,3 +1984,7 @@ value = ["#inst-", "#nd-"]
 [mesh_write.app_col_branch]
 doc = "The `builders` branch column (the archive verb's branch fallback and its side-effect report)."
 value = "branchName"
+
+[mesh_write.env_commit_mark]
+doc = "The environment variable by which the stable launcher names a marker file; the engine creates it at its commit point, so a launcher that has to stop the engine (time limit) can tell that the verb already acted and must not be run again in Node."
+value = "AH_ENGINE_COMMIT_MARK"
