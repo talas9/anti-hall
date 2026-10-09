@@ -9,6 +9,9 @@
 # pull_request (not _target): read-only token, no secrets for forks. Nothing from the PR is executed:
 # the scanner script and gitleaks config come from the PR's base commit (a PR cannot weaken them);
 # the one exception is the PR that first adds them, which falls back to its own copy with a notice.
+# Trusted PRs (same-repo head, i.e. not a fork, AND head ref `dev` or author == repo owner) load them
+# from the HEAD commit instead, so a release PR dev->main carries its own allowlist; forks and
+# everyone else keep the base config. The log says which was used.
 # Labels and the PR comment come from pr-check.yml.
 name: Privacy scan
 
@@ -41,22 +44,28 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Checkout the rules from the base commit (pull requests)
+      - name: Checkout the rules (pull requests; head commit if trusted, else base commit)
         if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ (github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.head.ref == 'dev' || github.event.pull_request.user.login == github.repository_owner)) && github.event.pull_request.head.sha || github.event.pull_request.base.sha }}
           path: _rules
           persist-credentials: false
           sparse-checkout: .github
 
       - name: Pick the rules directory
         id: rules
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           if [ -f _rules/.github/scripts/moderation/privacy-scan.js ] && [ -f _rules/.github/gitleaks.toml ]; then echo "dir=_rules" >> "$GITHUB_OUTPUT"
           else
             echo "dir=." >> "$GITHUB_OUTPUT"
-            if [ -d _rules ]; then echo "::notice::Base commit has no privacy rules yet; using this commit's copy (bootstrap)."; fi
+            if [ -d _rules ]; then echo "::notice::Rules commit has no privacy rules yet; using this commit's copy (bootstrap)."; fi
+          fi
+          if [ -d _rules ]; then
+            if [ "$(git -C _rules rev-parse HEAD)" = "$PR_HEAD" ]; then echo "::notice::Using gitleaks config and rules from the PR HEAD commit (trusted: same-repo, dev or owner)."
+            else echo "::notice::Using gitleaks config and rules from the PR BASE commit (untrusted: fork or other author)."; fi
           fi
 
       - name: Range of new commits
@@ -117,8 +126,8 @@ jobs:
             echo "| privacy rules | ${PV} |"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -s "$RUNNER_TEMP/gitleaks.json" ]; then
-            jq -r '.[] | "| gitleaks | \(.RuleID) at `\(.File):\(.StartLine)` (commit \(.Commit[0:8])) |"' "$RUNNER_TEMP/gitleaks.json" | head -50 >> "$GITHUB_STEP_SUMMARY" || true
-            jq -r '.[] | "::error file=\(.File),line=\(.StartLine)::gitleaks \(.RuleID) (value redacted)"' "$RUNNER_TEMP/gitleaks.json" | head -50 || true
+            jq -r 'limit(50; .[]) | "| gitleaks | \(.RuleID) at `\(.File):\(.StartLine)` (commit \(.Commit[0:8])) |"' "$RUNNER_TEMP/gitleaks.json" >> "$GITHUB_STEP_SUMMARY" || true
+            jq -r 'limit(50; .[]) | "::error file=\(.File),line=\(.StartLine)::gitleaks \(.RuleID) (value redacted)"' "$RUNNER_TEMP/gitleaks.json" || true
           fi
           if [ "$GL" != "success" ] || [ "$PV" != "success" ]; then echo "privacy-scan failed: see the summary (values are never printed)."; exit 1; fi
 
