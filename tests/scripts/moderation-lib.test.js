@@ -152,12 +152,13 @@ test('model routing: classify is haiku, text jobs sonnet, unlisted jobs opus', (
 });
 
 test('commit identity: allow-list passes, others fail with a masked email', () => {
-  const ok = 'a1\ttalas9@gmail.com\tnoreply@github.com\nb2\t123+bot@users.noreply.github.com\t123+bot@users.noreply.github.com\n';
+  const me = cfg.privacy.commit_email_allow[0];
+  const ok = `a1\t${me}\tnoreply@github.com\nb2\t123+bot@users.noreply.github.com\t123+bot@users.noreply.github.com\n`;
   assert.deepStrictEqual(identityHits(ok, cfg), []);
-  const bad = identityHits('c3c3c3c3c3c3\tmohammed@example.org\ttalas9@gmail.com\n', cfg);
+  const bad = identityHits(`c3c3c3c3c3c3\tmohammed@example.org\t${me}\n`, cfg);
   assert.strictEqual(bad.length, 1);
   assert.strictEqual(bad[0].msg, 'commit c3c3c3c3c3 authored as m***@e***; re-author as the maintainer identity');
-  assert.strictEqual(maskEmail('mo@tx.io'), 'm***@t***');
+  assert.strictEqual(maskEmail('mo@tx.example.org'), 'm***@t***');
 });
 
 test('sanitize escapes all markup characters; comment and backslash payloads stay inert', () => {
