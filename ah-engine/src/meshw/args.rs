@@ -19,13 +19,15 @@ pub struct Args {
     pub positionals: Vec<String>,
     /// Flag name -> values.
     pub flags: HashMap<String, Vec<FlagVal>>,
+    /// The argv as given (`argv.includes('--json')` asks about the words themselves).
+    pub raw: Vec<String>,
 }
 
 /// `parseArgs(argv)`.
 pub fn parse(argv: &[String]) -> Args {
     let value_required = defaults::list("mesh_write.value_required_flags");
     let boolean_only = defaults::list("mesh_write.boolean_only_flags");
-    let mut a = Args::default();
+    let mut a = Args { raw: argv.to_vec(), ..Args::default() };
     let mut i = 0;
     while i < argv.len() {
         let tok = &argv[i];

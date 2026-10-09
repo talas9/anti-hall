@@ -63,6 +63,7 @@ files = [
     "devswarm_act.toml",
     "devswarm_wire.toml",
     "devswarm_sup.toml",
+    "devswarm_cli.toml",
     "realtime.toml",
     "github_rt.toml",
 ]

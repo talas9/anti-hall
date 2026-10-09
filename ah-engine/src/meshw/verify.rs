@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     // what the engine could not read, the witness cannot read either: an unreadable directory is copied as an empty one and
     // an unreadable file as an empty file, each with the permissions of the original
@@ -378,7 +378,7 @@ fn cap(b: &[u8]) -> String {
 /// `Command::output`, bounded: Node's own `spawnSync` waits for a child that ignores its termination signal for ever (a hung
 /// `hivecontrol`), and the witness must never be what holds a process or a scratch directory for ever. Node runs in a process
 /// group of its own, so the whole group is killed at the bound.
-fn bounded_output(c: &mut Command) -> std::io::Result<std::process::Output> {
+pub(crate) fn bounded_output(c: &mut Command) -> std::io::Result<std::process::Output> {
     use std::io::Read;
     c.stdout(Stdio::piped()).process_group(0);
     let mut child = c.spawn()?;

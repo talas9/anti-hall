@@ -4283,10 +4283,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `mesh_write.ack_command` | `node {cli} inbox ack-primary {id} --receipt {rid}` |  |  | The `ackCommand` of a read-primary result: `{cli}` is the JSON-quoted stable launcher path, `{id}` the workspace id, `{rid}` the receipt id. |
+| `mesh_write.ack_hint` | `read-only: nothing was acked. After you have consumed these messages run ackC...` |  |  | The `ackHint` of a read-primary result. |
 | `mesh_write.action_ack_primary` | `ack-primary` |  |  | The `action` of an ack-primary result. |
 | `mesh_write.action_heartbeat` | `heartbeat` |  |  | The `action` of a heartbeat result. |
 | `mesh_write.action_mesh_history` | `mesh-history` |  |  | `action` of a mesh history result. |
 | `mesh_write.action_mesh_read` | `mesh-read` |  |  | `action` of a mesh read result. |
+| `mesh_write.action_read_primary` | `read-primary` |  |  | The `action` of a read-primary result. |
 | `mesh_write.action_send` | `send` |  |  | `action` of a send result. |
 | `mesh_write.alias_file` | `sender-aliases.json` |  |  | The sender alias map under the DevSwarm state directory (devswarm-sender-alias.js). |
 | `mesh_write.alias_key` | `aliases` |  |  | The object of that file holding the aliases. |
@@ -4373,6 +4376,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.dur_ms_per_min` | `60000` |  |  | Milliseconds in the minute `dur()` counts in. |
 | `mesh_write.env_app_db` | `ANTIHALL_DEVSWARM_APP_DB` |  |  | The variable that points at (or, with `off`, disables) the DevSwarm app database. |
 | `mesh_write.env_builder_id` | `DEVSWARM_BUILDER_ID` |  |  | The variable DevSwarm sets to a workspace's builder id. |
+| `mesh_write.env_hivecontrol` | `ANTIHALL_DEVSWARM_HIVECONTROL` |  |  | The environment variable that names the hivecontrol binary explicitly (an absolute path to a file). |
 | `mesh_write.env_home` | `HOME` |  |  | The home directory variable (os.homedir() on POSIX). |
 | `mesh_write.env_jev` | `ANTIHALL_JEV` |  |  | The variable that forces Jev on (1) or off (0). |
 | `mesh_write.env_off_value` | `0` |  |  | Its off value. |
@@ -4408,6 +4412,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_broadcast` | `broadcast` |  |  | send's broadcast flag. |
 | `mesh_write.flag_cc_primary` | `cc-primary` |  |  | send's copy-the-Primary flag (Node only). |
 | `mesh_write.flag_dash_h` | `-h` |  |  | The `-h` word. |
+| `mesh_write.flag_format` | `format` |  |  | The rendering flag of read-primary (`--format text`). |
 | `mesh_write.flag_from` | `from` |  |  | send's redundant sender declaration. |
 | `mesh_write.flag_h` | `h` |  |  | Short help flag name (`--h`). |
 | `mesh_write.flag_help` | `help` |  |  | Help flag name. |
@@ -4435,6 +4440,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_urgency` | `urgency` |  |  | send's urgency flag. |
 | `mesh_write.flag_wip` | `wip` |  |  | The repeatable heartbeat flag for work in progress. |
 | `mesh_write.floor_reader` | `#floor` |  |  | The reader name of the floor row in `reader_cursors` (FLOOR). |
+| `mesh_write.format_text` | `text` |  |  | The value of `--format` that selects the plain-text rendering. |
+| `mesh_write.forward_prefix` | `[forwarded from archived ` |  |  | ARCHIVED_FORWARD_PREFIX_RE's literal start: a row whose body begins so is a forward whose original hash Node derives; the engine leaves such a row to Node. |
 | `mesh_write.gate_done` | `done` |  |  | The gate a child's `done` verb sets. |
 | `mesh_write.gate_merged_verified` | `merged_verified` |  |  | The report-only gate recording the merged ancestry check. |
 | `mesh_write.gate_owner` | `owner` |  |  | The journal `gate` of a cursor move of the caller's own partition. |
@@ -4458,6 +4465,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.held_partitions_option` | `` |  |  | Plugin option of devswarm.heldPartitions (it has none: empty). |
 | `mesh_write.held_partitions_option_default` | `` |  |  | Manifest default of that plugin option (unused while it has none). |
 | `mesh_write.history_seq` | `0` |  |  | The baseline `mesh history` reads from. |
+| `mesh_write.hivecontrol_bin` | `hivecontrol` |  |  | The hivecontrol executable, found on PATH. |
+| `mesh_write.hivecontrol_cache_file` | `capabilities.json` |  |  | The file under the DevSwarm root where the capability probe of the hivecontrol binary is cached. |
+| `mesh_write.hivecontrol_dormant_line` | `feature workspace.list is dormant: `hivecontrol workspace list` not in this b...` |  |  | The line Node records for `workspace list` when the build's --help does not list the verb. |
+| `mesh_write.hivecontrol_kill_grace_ms` | `500` |  |  | How long a hivecontrol call that ignored the termination signal at the timeout gets before it is killed (Node waits for it for ever). |
+| `mesh_write.hivecontrol_known_locations` | `/Applications/DevSwarm.app/Contents/Resources/cli/hivecontrol` |  |  | Where the DevSwarm app keeps its own hivecontrol on macOS. |
+| `mesh_write.hivecontrol_list_cap` | `workspace.list` |  |  | The capability name of that verb, under which a dormant line is recorded. |
+| `mesh_write.hivecontrol_list_verb` | `list` |  |  | The `workspace` verb the roster calls, as the probe lists it. |
+| `mesh_write.hivecontrol_max_stdout_bytes` | `1048576` |  |  | spawnSync's default maxBuffer: a call that prints more fails. |
+| `mesh_write.hivecontrol_path_file` | `hivecontrol-path.json` |  |  | The file under the DevSwarm root that saves the hivecontrol path (`{"hivecontrol": "/abs/path"}`). |
+| `mesh_write.hivecontrol_poll_ms` | `10` |  |  | How often the engine looks at a running hivecontrol call. |
+| `mesh_write.hivecontrol_read_chunk` | `8192` |  |  | How many bytes the engine reads from a hivecontrol pipe at a time. |
+| `mesh_write.hivecontrol_timeout_ms` | `5000` |  |  | LIST_CHILDREN_TIMEOUT_MS: how long one hivecontrol call may run before it is stopped. |
 | `mesh_write.id_lock_boot_slop_s` | `5` |  |  | Two boot times this close are one boot (lock.js BOOT_SLOP_S). |
 | `mesh_write.id_lock_budget_ms` | `2000` |  |  | How long one acquire keeps retrying a lock held by a live, fresh holder before the verb reports lockBusy (Node: 2000). |
 | `mesh_write.id_lock_reclaim_stale_ms` | `5000` |  |  | A takeover marker (`<lock>.reclaim`) older than this is abandoned (lock.js RECLAIM_STALE_MS). |
@@ -4465,6 +4484,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.id_lock_release_tries` | `5` |  |  | Attempts a release makes to take the takeover marker (lock.js RELEASE_SIDECAR_TRIES). |
 | `mesh_write.id_lock_stale_ms` | `900000` |  |  | A lock older than this is taken over whoever holds it (Node's LOCK_STALE_MS, 15 minutes). |
 | `mesh_write.id_lock_step_ms` | `25` |  |  | Pause between those retries, in milliseconds (Node: 25). |
+| `mesh_write.inbox_read_limit` | `2000` |  |  | DEFAULT_INBOX_READ_LIMIT: the most unread rows one read-primary returns; a larger backlog is truncated by Node's per-source cap, which the engine leaves to Node. |
 | `mesh_write.ingest_beat_prefix` | `ingest-` |  |  | File-name prefix of a project's ingest-daemon heartbeat (ingest-health.js ingestHeartbeatPath). |
 | `mesh_write.ingest_beat_stale_ms` | `180000` |  |  | An ingest heartbeat older than this is not fresh (ingest-health.js HEARTBEAT_STALE_MS, 3 minutes). |
 | `mesh_write.ingest_lock_prefix` | `ingest-project-` |  |  | File-name prefix of a project's ingest-daemon lock (ingest-health.js ingestProjectLockPath). |
@@ -4527,7 +4547,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.mtype_broadcast` | `broadcast` |  |  | The `mtype` of a broadcast (also `send --type broadcast`). |
 | `mesh_write.mtype_direct` | `direct` |  |  | The `mtype` of a direct message. |
 | `mesh_write.ndjson_created_field` | `createdAt` |  |  | The field of an NDJSON line that carries its creation time (second choice, the native pull shape). |
+| `mesh_write.ndjson_from_field` | `fromBranch` |  |  | The NDJSON line's sender field. |
 | `mesh_write.ndjson_hash_field` | `_h` |  |  | The field of an NDJSON inbox line that carries the content hash of a natively drained message. |
+| `mesh_write.ndjson_message_field` | `message` |  |  | The NDJSON line's body field. |
+| `mesh_write.ndjson_status_field` | `status` |  |  | The NDJSON line's status field. |
 | `mesh_write.ndjson_suffix` | `.ndjson` |  |  | Suffix of a journal file. |
 | `mesh_write.ndjson_ts_field` | `ts` |  |  | The field of an NDJSON line that carries its timestamp (first choice). |
 | `mesh_write.node_bin` | `node` |  |  | The Node binary the engine hands a verb to. |
@@ -4539,6 +4562,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.op_nd` | `nd` |  |  | The `k` of a read-receipt op that moves the NDJSON inbox cursor (Node's). |
 | `mesh_write.op_own` | `own` |  |  | The `k` of a read-receipt op that moves the caller's own partition cursor. |
 | `mesh_write.op_sibling` | `sibling` |  |  | The `k` of a read-receipt op that moves a sibling partition's cursor (Node's). |
+| `mesh_write.origin_ndjson` | `ndjson` |  |  | The `origin` of a row that came from the NDJSON inbox. |
+| `mesh_write.origin_store` | `store` |  |  | The `origin` of a store row in a union read. |
 | `mesh_write.pid_reuse_margin_ms` | `1000` |  |  | A process whose start time is later than the recorded one by more than this is a reused pid (PID_REUSE_MARGIN_MS). |
 | `mesh_write.plan_activity_keep` | `5` |  |  | How many recent activity signatures a plan keeps (ACTIVITY_KEEP). |
 | `mesh_write.plan_bad_status_text` | `--status must be one of {list}` |  |  | The error of `heartbeat --status S` when S is not an allowed status; `{list}` is the allowed statuses. |
@@ -4572,9 +4597,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.quiet_failed` | `send failed` |  |  | The {why} of a failed send with neither error nor reason. |
 | `mesh_write.quiet_ok` | `sent seq {seq} -> {to}, {bytes} bytes, ok` |  |  | `send --quiet` line of a delivered send. Placeholders: {seq}, {to}, {bytes}. |
 | `mesh_write.quiet_unknown` | `(unknown)` |  |  | The {to} of a send with no recipient in the quiet line. |
+| `mesh_write.read_primary_flags` | `format, json, session` |  |  | The flags `inbox read-primary` may carry for the engine to answer it; any other flag (a window, an ownership override, an immediate ack, a limit) is Node's. |
 | `mesh_write.reason_not_verified` | `send-not-verified` |  |  | `reason` of a send whose readback did not find the row. |
 | `mesh_write.receipt_id_prefix` | `r` |  |  | A read receipt id is this letter followed by lowercase letters and digits (readReadReceipt's /^r[a-z0-9]+$/). |
+| `mesh_write.receipt_keep_ms` | `604800000` |  |  | READ_RECEIPT_KEEP_MS: a read receipt file older than this is pruned by the next receipt written for the id; the engine leaves a pruning write to Node. |
 | `mesh_write.receipt_ttl_ms` | `86400000` |  |  | Age past which a read receipt can no longer be acked (READ_RECEIPT_TTL_MS, 24 hours). |
+| `mesh_write.receipt_version` | `1` |  |  | The `v` of a read receipt record. |
 | `mesh_write.repo_key_hex` | `6` |  |  | Hex characters of the common-dir hash in a repoKey. |
 | `mesh_write.repo_name_fallback` | `repo` |  |  | A repo name that sanitizes to nothing. |
 | `mesh_write.repo_name_max` | `40` |  |  | Length cap of a repo name in a repoKey (identity.js MAX_NAME_LEN). |
@@ -4586,6 +4614,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.required_gates_option_default` | `done,merged,tests_passed` |  |  | The plugin option's manifest default; a plugin option equal to it does not override (settings.js readPluginOption). |
 | `mesh_write.result_committed` | `committed-failure` |  |  | Log result of a call that failed after its write was committed. |
 | `mesh_write.retire_pin_age_ms` | `60000` |  |  | A foreign reader row must be this old before an ack looks for proof that its process ended (RETIRE_PIN_AGE_MS). |
+| `mesh_write.roster_children_args` | `workspace, list, children` |  |  | The hivecontrol arguments roster uses to list the native children (LIST_CHILDREN). |
+| `mesh_write.roster_children_key` | `children` |  |  | The wrapper key of a `hivecontrol workspace list` answer that is an object rather than a bare array. |
+| `mesh_write.roster_flag_all` | `all` |  |  | The roster flag that includes archived rows in the text rendering. |
+| `mesh_write.roster_flags` | `all, json` |  |  | The flags plain `roster` may carry for the engine to answer it; any other flag is Node's. |
+| `mesh_write.roster_none_text` | `no live workspaces` |  |  | What plain `roster` prints (text rendering) when there is no live workspace and nothing archived. |
 | `mesh_write.send_lock_attempts` | `3` |  |  | Whole lock acquisitions a direct send tries before reporting lockBusy (Node's SEND_LOCK_RETRY_ATTEMPTS). |
 | `mesh_write.send_lock_max_shift` | `8` |  |  | Cap on the backoff exponent (a guard; Node's 3 attempts never reach it). |
 | `mesh_write.send_lock_retry_base_ms` | `150` |  |  | Backoff base between those attempts: base * 2^attempt plus up to base of jitter (Node's SEND_LOCK_RETRY_BASE_MS). |
@@ -4619,12 +4652,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.supervision_log` | `devswarm-supervision.ndjson` |  |  | The supervision event log (one JSON line per plan step event), under the logs directory. |
 | `mesh_write.supervision_max_bytes` | `1048576` |  |  | Size above which Node rotates the supervision log before appending; the engine defers a plan write while the log is above it (rotation stays Node's). |
 | `mesh_write.synthetic_session_prefix` | `unclaimed:` |  |  | The same prefix as the routing code names it (SYNTHETIC_SESSION_PREFIX). |
+| `mesh_write.text_no_messages` | `(no messages)` |  |  | What `inbox read-primary --format text` prints for an empty inbox. |
+| `mesh_write.text_row` | `from: {from}\nseq: {seq}\n{body}\n` |  |  | One message of `inbox read-primary --format text`: `{from}`, `{seq}` and `{body}`. |
+| `mesh_write.text_row_sep` | `\n` |  |  | What joins the messages of `inbox read-primary --format text`. |
 | `mesh_write.tick_line` | `tick {id}: unread {unread}, known {known}, meshGap {gap}, watcherArmed {armed}` |  |  | The one line `inbox tick --quiet` prints (inboxTickQuietLine); `{id}`, `{unread}`, `{known}`, `{gap}` and `{armed}` are filled in. |
 | `mesh_write.tick_roster_env` | `ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY` |  |  | The environment variable of that setting. |
 | `mesh_write.tick_roster_setting` | `tickRosterEvery` |  |  | Name of the setting (devswarm.tickRosterEvery) that makes a quiet tick append the roster; any trace of it sends the tick to Node. |
 | `mesh_write.tick_settings_files` | `.anti-hall/settings.json, .claude/settings.json` |  |  | The settings files, relative to the home directory, in which a trace of the roster setting sends a tick to Node. |
 | `mesh_write.tick_tmp_suffix` | `.tick.tmp` |  |  | Suffix of the staged file a tick marker or heartbeat refresh is written to before the rename (after `.<pid>.<clock>`). |
 | `mesh_write.tmp_suffix` | `.tmp` |  |  | Suffix of a staged file before its rename. |
+| `mesh_write.truncated_body_hint` | `if this JSON looks shorter than `totalBodyBytes`/per-row `bodyLength` implies...` |  |  | The `truncatedBodyHint` of a read-primary result; `{id}` is the workspace id. |
 | `mesh_write.unclaimed_prefix` | `unclaimed:` |  |  | Prefix of a session id that no real session claimed yet (the seat ignores it). |
 | `mesh_write.urgency_default` | `normal` |  |  | send's urgency when none is given. |
 | `mesh_write.urgency_rank` | `low, normal, high, urgent` |  |  | Urgency words from lowest to highest (devswarm-store.js URGENCY_RANK); any other word is ignored. |
@@ -4636,6 +4673,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.verb_inbox` | `inbox` |  |  | The inbox verb. |
 | `mesh_write.verb_mesh` | `mesh` |  |  | The mesh verb. |
 | `mesh_write.verb_read` | `read` |  |  | Its read subcommand. |
+| `mesh_write.verb_read_primary` | `read-primary` |  |  | The read-primary subverb of `inbox`. |
 | `mesh_write.verb_roster` | `roster` |  |  | The roster verb (`roster --ack` is `mesh read`). |
 | `mesh_write.verb_send` | `send` |  |  | The send verb. |
 | `mesh_write.verb_tick` | `tick` |  |  | The tick subverb of `inbox`. |
@@ -4649,7 +4687,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.verify_match` | `match` |  |  | Log result of a verification whose Node output and written files equal the engine's. |
 | `mesh_write.verify_mismatch` | `mismatch` |  |  | Log result of a verification that found a difference. |
 | `mesh_write.verify_names_heartbeat` | `sameHeartbeat, sameVerdict, sameCache` |  |  | The names under which a heartbeat verification mismatch reports whether the heartbeat record, the liveness verdict and the app-state cache are equal. |
+| `mesh_write.verify_names_read_primary` | `sameReceipt` |  |  | The names under which a read-primary verification mismatch reports whether the receipt file is equal. |
+| `mesh_write.verify_names_roster` | `` |  |  | The names under which a roster verification mismatch reports further equalities (a roster writes nothing, so none). |
 | `mesh_write.verify_names_tick` | `sameHeartbeat, sameMarker, sameCronFound` |  |  | The names under which a tick verification mismatch reports whether the heartbeat record, the wake-tick marker and the cron-found-mail file are equal. |
+| `mesh_write.verify_node_poll_ms` | `20` |  |  | How often the background Node check looks at the running Node. |
 | `mesh_write.verify_node_snippet` | `const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Num...` |  |  | The Node program of the verifier: runs the real devswarm.js `run()` with the engine's clock, prints the result object the CLI would print. Arguments: the CLI path, the clock, then the verb's argv. |
 | `mesh_write.verify_nonce_col` | `11` |  |  | Index of the instance_nonce column in the row query of the background check (left out of the comparison). |
 | `mesh_write.verify_row_name` | `row` |  |  | The name the background check gives the appended mesh row when it differs. |
