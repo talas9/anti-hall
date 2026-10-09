@@ -523,7 +523,35 @@ value = ", +{n} more"
 
 [silent_nudge.msg_what]
 doc = "Headline of the nudge."
-value = "{count} of your own background subagent(s) have gone silent past the {min}m threshold: {shown}{more}."
+value = "{count} of your own {noun} have gone silent past the {min}m threshold: {shown}{more}."
+
+[silent_nudge.noun_agent]
+doc = "What the headline calls silent agents."
+value = "background subagent(s)"
+
+[silent_nudge.noun_shell]
+doc = "What the headline calls silent background shells."
+value = "background shell(s)"
+
+[silent_nudge.noun_mixed]
+doc = "What the headline calls silent agents and shells together."
+value = "background subagent(s)/shell(s)"
+
+[silent_nudge.shell_label_prefix]
+doc = "Put before a background shell's name in the nudge."
+value = "shell: "
+
+[silent_nudge.shell_task_type]
+doc = "The task_status taskType of a background shell (anything else adopted is an agent)."
+value = "local_bash"
+
+[silent_nudge.tasks_dir]
+doc = "The directory name that holds a session's task output files (<session id>/tasks/<id>.output)."
+value = "tasks"
+
+[silent_nudge.session_id_len]
+doc = "Length of a session id (the directory name that precedes tasks/ in an output file path)."
+value = 36
 
 [silent_nudge.msg_why]
 doc = "Why line of the nudge."

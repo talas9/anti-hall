@@ -524,7 +524,6 @@ pub(crate) fn opts() -> Opts {
     o.mode = Mode::Daemon;
     o.events = vec!["PreToolUse", "PostToolUse"];
     o.tools = vec!["*"];
-    o.dual = true;
     o.fallback_real = true;
     o.fallback_argv = vec![("PostToolUse", vec!["--post"])];
     o.state_files = Some(files);

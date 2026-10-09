@@ -123,6 +123,48 @@ pub static COMPACT_ADVICE_GUARD: Scripted = Scripted::new("compact-advice-guard"
 /// `session-end-mcp-reaper`.
 pub static SESSION_END_MCP_REAPER: Scripted = Scripted::new("session-end-mcp-reaper", "mcp_reaper.summary");
 
+/// `verify-first` (UserPromptSubmit).
+pub static VERIFY_FIRST: Scripted = Scripted::new("verify-first", "verify_first.summary");
+
+/// `verify-first-orch` (SessionStart, the Claude hook entry).
+pub static VERIFY_FIRST_ORCH: Scripted = Scripted::new("verify-first-orch", "verify_first_orch.summary");
+
+/// `verify-first-orch-codex` (SessionStart, the Codex hook entry).
+pub static VERIFY_FIRST_ORCH_CODEX: Scripted = Scripted::new("verify-first-orch-codex", "verify_first_orch.summary_codex");
+
+/// `task-tracker` (UserPromptSubmit).
+pub static TASK_TRACKER: Scripted = Scripted::new("task-tracker", "task_tracker.summary");
+
+/// `devswarm-child-gate` (Stop).
+pub static DEVSWARM_CHILD_GATE: Scripted = Scripted::new("devswarm-child-gate", "devswarm_gates.child_gate_summary");
+
+/// `devswarm-parent-reply-tracker` (PostToolUse on Bash).
+pub static DEVSWARM_PARENT_REPLY_TRACKER: Scripted = Scripted::new("devswarm-parent-reply-tracker", "devswarm_gates.reply_tracker_summary");
+
+/// `devswarm-child-drain` (PostToolUse).
+pub static DEVSWARM_CHILD_DRAIN: Scripted = Scripted::new("devswarm-child-drain", "devswarm_gates.child_drain_summary");
+
+/// `devswarm-child-role` (SessionStart).
+pub static DEVSWARM_CHILD_ROLE: Scripted = Scripted::new("devswarm-child-role", "devswarm_role.child_summary");
+
+/// `devswarm-parent-gate` (Stop).
+pub static DEVSWARM_PARENT_GATE: Scripted = Scripted::new("devswarm-parent-gate", "devswarm_role.gate_summary");
+
+/// `devswarm-comms-guard` (PreToolUse on SendMessage).
+pub static DEVSWARM_COMMS_GUARD: Scripted = Scripted::new("devswarm-comms-guard", "devswarm_comms.summary");
+
+/// `jev-weekly-scorecard` (SessionStart).
+pub static JEV_WEEKLY_SCORECARD: Scripted = Scripted::new("jev-weekly-scorecard", "jev_weekly.summary");
+
+/// `jev-review-reminder` (SessionStart).
+pub static JEV_REVIEW_REMINDER: Scripted = Scripted::new("jev-review-reminder", "jev_review.summary");
+
+/// `repair-on-reload` (SessionStart and UserPromptSubmit).
+pub static REPAIR_ON_RELOAD: Scripted = Scripted::new("repair-on-reload", "repair_reload.summary");
+
+/// `task-lifecycle-log` (TaskCreated and TaskCompleted).
+pub static TASK_LIFECYCLE_LOG: Scripted = Scripted::new("task-lifecycle-log", "task_lifecycle_log.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 
@@ -139,17 +181,14 @@ pub static SCAN_THROTTLE: Scripted = Scripted::new("scan-throttle", "scan_thrott
 /// `merge-gate` (PreToolUse on Bash; opt-in).
 pub static MERGE_GATE: Scripted = Scripted::new("merge-gate", "merge_gate.summary");
 
-/// `task-lifecycle-log` (TaskCreated, TaskCompleted).
-pub static TASK_LIFECYCLE_LOG: Scripted = Scripted::new("task-lifecycle-log", "task_lifecycle_log.summary");
+/// `codex-availability` (SessionStart).
+pub static CODEX_AVAILABILITY: Scripted = Scripted::new("codex-availability", "codex_handover.avail_summary");
 
-/// `jev-weekly-scorecard` (SessionStart).
-pub static JEV_WEEKLY_SCORECARD: Scripted = Scripted::new("jev-weekly-scorecard", "jev_weekly.summary");
+/// `codex-quota-detect` (PostToolUse on Agent; advisory only).
+pub static CODEX_QUOTA_DETECT: Scripted = Scripted::new("codex-quota-detect", "codex_handover.detect_summary");
 
-/// `jev-review-reminder` (SessionStart).
-pub static JEV_REVIEW_REMINDER: Scripted = Scripted::new("jev-review-reminder", "jev_review.summary");
-
-/// `repair-on-reload` (SessionStart and UserPromptSubmit).
-pub static REPAIR_ON_RELOAD: Scripted = Scripted::new("repair-on-reload", "repair_reload.summary");
+/// `codex-nudge` (Stop).
+pub static CODEX_NUDGE: Scripted = Scripted::new("codex-nudge", "codex_handover.nudge_summary");
 
 /// `ask-guard` (PreToolUse on AskUserQuestion).
 pub static ASK_GUARD: Scripted = Scripted::new("ask-guard", "ask_guard.summary");

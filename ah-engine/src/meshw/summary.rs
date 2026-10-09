@@ -302,7 +302,7 @@ fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, id: &str, nd: bool) 
 }
 
 /// `archiveCompleteIds(home)`: `archived/<id>.json` present and `workspaces/<id>.json` absent.
-fn archive_complete_ids(home: &Path) -> HashSet<String> {
+pub(crate) fn archive_complete_ids(home: &Path) -> HashSet<String> {
     let root = devswarm_root(home);
     let dir = root.join(defaults::text("mesh_write.dir_archived"));
     let mut out = HashSet::new();
@@ -327,7 +327,7 @@ fn archive_complete_ids(home: &Path) -> HashSet<String> {
 }
 
 /// `crossLinkedIdentity(a, b)` on (id, sessionId) pairs.
-fn cross_linked(a_id: &str, a_sess: Option<&str>, b_id: &str, b_sess: Option<&str>) -> bool {
+pub(crate) fn cross_linked(a_id: &str, a_sess: Option<&str>, b_id: &str, b_sess: Option<&str>) -> bool {
     if a_id.is_empty() || b_id.is_empty() || a_id == b_id {
         return false;
     }
@@ -601,6 +601,11 @@ fn csv_parts(v: &str) -> Vec<String> {
     v.split(defaults::text("mesh_write.csv_separator")).map(|p| js_trim(p).to_string()).filter(|p| !p.is_empty()).collect()
 }
 
+/// `heldPartitionIdsFrom(env)`: the partition ids the owner holds (the `devswarm.heldPartitions` setting).
+pub(crate) fn held_ids(inv: &Inv) -> R<HashSet<String>> {
+    Ok(csv_parts(&csv_setting(inv, &held_partitions_keys())?).into_iter().collect())
+}
+
 /// `jev-triage.js` `hashMessage(text)`.
 fn jev_hash(text: &str) -> String {
     let d = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
@@ -650,13 +655,23 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
         let total = st.reader().message_count(&d.id).or_else(|e| err("count", e))? as f64;
         let floor = floor_of(st, &mut cur, home, &d.id, false)?;
         let cursor = floor;
-        let unread = (total - cursor).max(0.0);
+        let mut unread = (total - cursor).max(0.0);
         if d.inbox_path.is_some() || d.cursor_path.is_some() {
             let nd_floor = floor_of(st, &mut cur, home, &d.id, true)?;
             let (known, lines) = ndjson_backlog(d.inbox_path.as_deref(), d.cursor_path.as_deref());
             if known && lines > nd_floor {
-                // the loss-free union (reader-cursors countFor over the NDJSON inbox) is Node's
-                return defer("summary-ndjson-union");
+                // the NDJSON side has unread lines: the summary counts the loss-free union at the floors (reader-cursors
+                // `countFor` with no reader), which `unionUnreadFor` reports when it is known
+                let u = crate::meshw::union::union_unread(&crate::meshw::union::UnionIn {
+                    inbox: d.inbox_path.as_deref(),
+                    cursor_file: d.cursor_path.as_deref(),
+                    id: &d.id,
+                    store: Some(st.reader()),
+                    store_base: floor,
+                    nd_base: nd_floor,
+                    now: inv.now,
+                })?;
+                unread = u.unread as f64;
             }
         }
         let (gate_vals, gate_by) = {
@@ -706,7 +721,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
                 {
                     let m = st.reader().needs_reply_previews(&d.id, &[*q as i64]).or_else(|e| err("previews", e))?;
                     if let Some(Value::String(b)) = m.values().next() {
-                        p.set(&crate::checks::guardkit::ojson::js_number_text(*q), s(b));
+                        p.set(&crate::checks::jsport::num::to_js_string(*q), s(b));
                     }
                 }
             }

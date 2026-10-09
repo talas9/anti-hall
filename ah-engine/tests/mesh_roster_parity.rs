@@ -272,10 +272,11 @@ fn cases(absent_native: bool) -> Vec<Case> {
         },
         Case { setup: unreadable_store, ..base("fault-the-store-file-is-unreadable", "empty", vec!["roster"], Some("echo '[]'"), false, vec![]) },
         Case { setup: store_not_a_database, ..base("fault-the-store-is-not-a-database", "empty", vec!["roster"], Some("echo '[]'"), false, vec![]) },
-        // ---- deferrals: nothing may be written, and hivecontrol must not even start ----
-        base("a-project-with-workspaces", "busy", vec!["roster"], Some("echo started >> \"$0.ran\"; echo '[]'"), false, vec!["| workspace |"]),
-        base("a-project-with-workspaces-json", "busy", vec!["roster", "--json"], Some("echo '[]'"), false, vec!["\"action\":\"roster\""]),
-        Case { setup: archived_descriptor, ..base("an-archived-descriptor-of-this-project", "empty", vec!["roster"], None, false, vec![]) },
+        // ---- rows (lane l8f: tests/devswarm_l8f_parity.rs holds the full table) ----
+        base("a-project-with-workspaces", "busy", vec!["roster"], Some("echo '[]'"), true, vec!["| workspace |"]),
+        base("a-project-with-workspaces-json", "busy", vec!["roster", "--json"], Some("echo '[]'"), true, vec!["\"action\":\"roster\""]),
+        Case { setup: archived_descriptor, ..base("an-archived-descriptor-of-this-project", "empty", vec!["roster", "--all"], None, absent_native, vec![]) },
+        // ---- deferrals: nothing may be written ----
         Case { setup: fallback_summary, ..base("a-fallback-summary-of-the-primary", "empty", vec!["roster"], None, false, vec![]) },
         base(
             "a-native-child-is-reported",
@@ -493,14 +494,10 @@ fn roster_matches_node_for_a_project_with_no_rows_and_defers_every_other() {
             assert!(d.stdout.is_empty(), "{}: nothing is printed on a deferral: {}", c.name, d.stdout);
             assert_eq!(last_log(&hd.join("state"))["result"], "defer", "{}", c.name);
             assert!(pre_tree == home_files(&hd) && pre_db == store_dump(&hd, &empty_key), "{}: deferral wrote", c.name);
-            if c.name == "a-project-with-workspaces" {
-                let ran = ran.unwrap();
-                assert!(!ran.exists(), "{}: a project with rows must defer BEFORE hivecontrol is started", c.name);
-            }
         }
     }
     eprintln!("roster parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", cases(true).len());
-    assert!(native >= 12 && deferred >= 14, "{native} native, {deferred} deferred");
+    assert!(native >= 15 && deferred >= 14, "{native} native, {deferred} deferred");
 }
 
 fn verify_line(state: &Path) -> Value {

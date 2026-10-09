@@ -11,6 +11,7 @@
 
 use crate::checks::guardkit::jsre;
 use crate::defaults;
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 /// Where the memory figures come from; a test supplies its own.
@@ -24,6 +25,7 @@ pub trait MemSource {
 /// This machine.
 pub struct HostMem;
 
+#[cfg(target_os = "macos")]
 /// Run `path` and return its standard output, or `None` when it fails, times out or prints non-UTF-8-lossy nothing.
 fn run_capture(path: &str, timeout: Duration) -> Option<String> {
     // bounded end to end, its group killed on timeout, spawn errors logged (review findings 7 and 8)

@@ -280,7 +280,9 @@ fn an_advisory_engine_only_check_never_blocks_when_its_script_fails() {
     for name in &engine_only {
         assert!(crate::checks::get(name).is_some(), "{name} is not a registered check");
         assert_eq!(super::failure_mode(name), "open", "{name}: every shipped engine-only check is advisory (fail open)");
-        for event in defaults::list("dispatch.guard_events").into_iter().chain(["SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStart", "PreCompact"]) {
+        for event in
+            defaults::list("dispatch.guard_events").into_iter().chain(["SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStart", "PreCompact"])
+        {
             assert_eq!(failed(name, event, "boom"), Verdict::Allow, "{name} on {event}: a check's own failure never blocks");
         }
     }
@@ -1169,7 +1171,9 @@ fn tail_entries_projects_parsed_lines_and_hands_back_what_its_parser_refused() {
     let big = "x".repeat(100);
     let lines = [
         r#"{"type":"user","isMeta":true,"message":{"content":"hi"},"toolUseResult":{"stdout":"BIG"}}"#.to_string(),
-        format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"t"}},{{"type":"tool_use","name":"Bash","input":{{"command":"ls","file":"{big}"}}}}]}}}}"#),
+        format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"t"}},{{"type":"tool_use","name":"Bash","input":{{"command":"ls","file":"{big}"}}}}]}}}}"#
+        ),
         String::new(),
         "[1,2]".to_string(),
         r#"{"type":"user","message":{"content":"\ud800"}}"#.to_string(),
@@ -1197,4 +1201,24 @@ fn tail_entries_projects_parsed_lines_and_hands_back_what_its_parser_refused() {
     assert_eq!(r["lines"].as_array().unwrap().len(), 3);
     assert_eq!((r["dropped"].as_u64(), r["droppedUnread"].as_u64()), (Some(4), Some(1)));
     assert!(super::host::tail_entries(&p, 0.0, 120.0, "{}", 0.0).is_none(), "keep must be a list of paths");
+}
+
+/// The transcript-scanning Stop-time and prompt-time checks carry their own CPU-time limit in `script.time_limit_by_check`: a
+/// real transcript tail made the default limit interrupt them and defer a decision the script makes identically given the time.
+#[test]
+fn stop_time_checks_have_their_own_time_limit() {
+    let by = defaults::raw("script.time_limit_by_check");
+    for name in [
+        "tasklist-guard",
+        "task-guard",
+        "silent-agent-nudge",
+        "stale-agent-stop-note",
+        "auto-handover",
+        "auto-handover-pause-nag",
+        "compact-advice-guard",
+        "limit-conserve-inject",
+        "idle-agent-sweep",
+    ] {
+        assert!(by.get(name).and_then(defaults::V::as_integer).is_some_and(|ms| ms >= 500), "{name}");
+    }
 }

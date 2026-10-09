@@ -86,10 +86,10 @@ fn inspect(path: &str) -> Option<Holder> {
 }
 
 /// True when the holder is old enough to take the lock over. Both stale limits of the callers are the same
-/// (`guardkit.lock_stale_ms`), so the holder's class (live, dead, unknown) does not matter.
+/// (`coordinator_work.lock_stale_ms`), so the holder's class (live, dead, unknown) does not matter.
 fn stealable(h: &Holder) -> bool {
     let age = h.ts.map_or(f64::INFINITY, |t| (now_ms() as f64 - t).max(0.0));
-    age > defaults::num("guardkit.lock_stale_ms") as f64
+    age > defaults::num("coordinator_work.lock_stale_ms") as f64
 }
 
 /// Move the judged holder's file aside and drop it when it is still the one judged; a fresh lock that was caught is put back.
@@ -153,7 +153,7 @@ pub fn acquire(path: &str, wait_ms: u64) -> Option<Lock> {
         if std::time::Instant::now() >= deadline {
             return None;
         }
-        std::thread::sleep(defaults::millis("guardkit.lock_step_ms"));
+        std::thread::sleep(defaults::millis("coordinator_work.lock_step_ms"));
     }
 }
 

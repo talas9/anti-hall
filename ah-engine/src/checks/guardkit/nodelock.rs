@@ -349,8 +349,13 @@ fn release_unguarded(path: &str, token: &str) -> bool {
 
 /// `shouldSteal` for the policies in use: the live-holder limit equals `stale_ms` in both callers, so a dead holder
 /// (with `steal_dead`) or any holder older than `stale_ms` is taken over.
-fn stealable(h: &Holder, p: &Params, respect_live: bool) -> bool {
-    if respect_live {
+fn stealable(h: &Holder, p: &Params, policy: Steal) -> bool {
+    if policy == Steal::StaleUnlessLive {
+        // the central log's rotate lock (`companion/lib/anti-hall-log.js`: staleMs only): taken over only when stale AND
+        // not held by a live process, a dead holder included only once it is stale
+        return h.age_ms > p.stale_ms as f64 && !(h.known && !h.dead);
+    }
+    if policy == Steal::RespectLive {
         // the ingest rule (`companion/devswarm-ingest.js` STEAL RULE): a holder whose pid is known to be dead is taken over
         // at once, an unknown one once it is stale, and a LIVE one never (stealing from a live consumer would split a
         // destructive queue between two readers)
@@ -362,16 +367,38 @@ fn stealable(h: &Holder, p: &Params, respect_live: bool) -> bool {
 
 /// `acquire(path, ...)`: `None` when the lock could not be taken (the caller fails open).
 pub fn acquire(path: &str, p: Params) -> Option<Held> {
-    acquire_with(path, p, false)
+    acquire_with(path, p, Steal::Default)
+}
+
+/// Whether `acquire_stale_unless_live` would find the lock held by someone it must respect: a lock file exists whose holder is
+/// alive, or too fresh to take over. Read-only (a lock that could be taken over, or no lock, is not held).
+pub fn held_by_other(path: &str, p: Params) -> bool {
+    inspect(path, &p).is_some_and(|h| !stealable(&h, &p, Steal::StaleUnlessLive))
+}
+
+/// Which holders a waiter may take over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Steal {
+    /// `lock.js` with `stealDead` per [`Params`] and every holder older than `stale_ms` taken over.
+    Default,
+    /// The ingest daemon's rule.
+    RespectLive,
+    /// Only a holder that is stale and not alive.
+    StaleUnlessLive,
+}
+
+/// `acquire` with the central log's rule: a holder is taken over only when it is stale and not a live process.
+pub fn acquire_stale_unless_live(path: &str, p: Params) -> Option<Held> {
+    acquire_with(path, p, Steal::StaleUnlessLive)
 }
 
 /// `acquire` with the ingest daemon's steal rule: a live holder is never taken over, however old its record (see
 /// `stealable`). The rest is the same protocol.
 pub fn acquire_respecting_live(path: &str, p: Params) -> Option<Held> {
-    acquire_with(path, p, true)
+    acquire_with(path, p, Steal::RespectLive)
 }
 
-fn acquire_with(path: &str, p: Params, respect_live: bool) -> Option<Held> {
+fn acquire_with(path: &str, p: Params, respect_live: Steal) -> Option<Held> {
     if let Some(i) = path.rfind('/')
         && i > 0
     {

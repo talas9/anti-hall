@@ -7,6 +7,7 @@
 //! must also have left the state exactly as it was seeded, so Node then sees what it would have seen alone.
 //! Timestamps within a minute of the run are normalized, since the two runs are not simultaneous.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+use crate::common::TempDir;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -108,11 +109,8 @@ fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
 }
 
-fn temp_home(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-spawnctx-{tag}-{}-{}", std::process::id(), HOME_ID.fetch_add(1, Ordering::Relaxed)));
-    ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
-    std::fs::create_dir_all(&d).unwrap();
-    d.canonicalize().unwrap()
+fn temp_home(tag: &str) -> TempDir {
+    TempDir::at(std::env::temp_dir().join(format!("ah-spawnctx-{tag}-{}-{}", std::process::id(), HOME_ID.fetch_add(1, Ordering::Relaxed))))
 }
 
 /// `$HOME` and `{NOW-n}` / `{NOW+n}` in a seed or payload.

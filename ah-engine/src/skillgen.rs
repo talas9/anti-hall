@@ -64,14 +64,17 @@ pub fn check_area(name: &str) -> &'static str {
     "guards"
 }
 
-/// The area a switch belongs to (`section.key`): the first whose `settings_prefixes` it starts with, else `guards`.
+/// The area a switch belongs to (`section.key`): the one with the longest of its `settings_prefixes` the key starts with (so a
+/// narrower area such as the DevSwarm supervisor's wins over `devswarm.`; the areas are a sorted table), else `guards`.
 pub fn setting_area(key: &str) -> &'static str {
+    let mut best: Option<(usize, &'static str)> = None;
     for a in areas() {
-        if area(a).get("settings_prefixes").is_some_and(|p| p.strings().iter().any(|x| key.starts_with(x))) {
-            return a;
+        let len = area(a).get("settings_prefixes").map_or(0, |p| p.strings().iter().filter(|x| key.starts_with(*x)).map(|x| x.len()).max().unwrap_or(0));
+        if len > 0 && best.is_none_or(|(l, _)| len > l) {
+            best = Some((len, a));
         }
     }
-    "guards"
+    best.map_or("guards", |(_, a)| a)
 }
 
 fn skill_name(host: &str, sub: &str) -> String {

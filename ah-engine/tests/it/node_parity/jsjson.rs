@@ -211,35 +211,9 @@ pub(crate) fn parse(text: &str) -> Option<J> {
     (p.i == p.b.len()).then_some(v)
 }
 
-/// `Number.prototype.toString` for a finite double.
+/// `Number.prototype.toString` for a finite double: the engine's one printer; `null` for a non-finite one (JSON).
 pub(crate) fn js_number(n: f64) -> String {
-    if n == 0.0 {
-        return "0".into();
-    }
-    if !n.is_finite() {
-        return "null".into();
-    }
-    let neg = n < 0.0;
-    let a = n.abs();
-    // shortest digits and the decimal exponent, from Rust's `{:e}` (shortest round-trip)
-    let e = format!("{a:e}");
-    let (mant, exp) = e.split_once('e').expect("exponent form");
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let exp: i32 = exp.parse().expect("exponent");
-    let k = digits.len() as i32;
-    let n10 = exp + 1; // the position of the decimal point relative to the digits
-    let body = if k <= n10 && n10 <= 21 {
-        format!("{digits}{}", "0".repeat((n10 - k) as usize))
-    } else if 0 < n10 && n10 <= 21 {
-        format!("{}.{}", &digits[..n10 as usize], &digits[n10 as usize..])
-    } else if -6 < n10 && n10 <= 0 {
-        format!("0.{}{digits}", "0".repeat((-n10) as usize))
-    } else {
-        let e = n10 - 1;
-        let sign = if e < 0 { '-' } else { '+' };
-        if k == 1 { format!("{digits}e{sign}{}", e.abs()) } else { format!("{}.{}e{sign}{}", &digits[..1], &digits[1..], e.abs()) }
-    };
-    if neg { format!("-{body}") } else { body }
+    if n.is_finite() { ah_engine::checks::jsport::num::to_js_string(n) } else { "null".into() }
 }
 
 fn quote(s: &str, out: &mut String) {

@@ -23,7 +23,10 @@ fn dir() -> PathBuf {
 
 pub fn load(check: &str) -> Vec<Value> {
     let text = std::fs::read_to_string(dir().join(format!("{check}.jsonl"))).unwrap_or_else(|e| panic!("golden {check}: {e}"));
-    text.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("golden {check}: {e}"))).collect()
+    let all: Vec<Value> =
+        text.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("golden {check}: {e}"))).collect();
+    // `"os": "macos"`: a case whose answer depends on a macOS-only service (launchd), replayed on macOS only
+    all.into_iter().filter(|c| c.get("os").and_then(Value::as_str).is_none_or(|os| os != "macos" || cfg!(target_os = "macos"))).collect()
 }
 
 /// The canonical plugin root.
@@ -135,6 +138,14 @@ pub struct Laid {
     pub vmask: Vec<String>,
 }
 
+/// The case's home lives in the temp dir: it goes with the laid-out case, or every run would leave one per case behind (the
+/// live6 replay found ~390,000 such dirs, and a Python probe that lists the temp dir then took tens of seconds).
+impl Drop for Laid {
+    fn drop(&mut self) {
+        crate::discard::harmless(std::fs::remove_dir_all(&self.home)); // keep: cleanup of a scratch directory
+    }
+}
+
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn lay(case: &Value) -> Laid {
@@ -146,9 +157,22 @@ pub fn lay_at(case: &Value, now: f64, pinned: bool) -> Laid {
     let mut times: Vec<(String, String)> = time_tokens(&case.to_string()).into_iter().map(|(tok, kind, off)| (time_text(&kind, now, off), tok)).collect();
     times.sort_by_key(|(t, _)| std::cmp::Reverse(t.len()));
     times.dedup();
-    let home = std::env::temp_dir().join(format!("ah-golden-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
+    // A request's temp root defaults to /tmp, and work under it is not counted as file-changing: a home inside /tmp (Linux) would
+    // silence every case that edits a file there, so it lives in /var/tmp instead.
+    let base = std::env::temp_dir();
+    let base = if base.starts_with("/tmp") && Path::new("/var/tmp").is_dir() { PathBuf::from("/var/tmp") } else { base };
+    let home = base.join(format!("ah-golden-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
     crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(&home).unwrap();
+    // The corpus was recorded where the temp dir sits behind a symlink (macOS /var -> /private/var), so `{HOME}` and `{HOMEREAL}`
+    // differ. Where it does not (Linux), make the home a symlink to a real directory so the two stay distinct.
+    if std::fs::canonicalize(&home).unwrap() == home {
+        let target = home.with_file_name(format!("{}-real", home.file_name().unwrap().to_string_lossy()));
+        crate::discard::harmless(std::fs::remove_dir_all(&target)); // keep: cleanup that raced; an absent dir is the goal state
+        std::fs::remove_dir(&home).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &home).unwrap();
+    }
     let real = std::fs::canonicalize(&home).unwrap().to_string_lossy().into_owned();
     let home = home.to_string_lossy().into_owned();
     if let Some(files) = case.get("files").and_then(Value::as_object) {
@@ -373,6 +397,7 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
         }
         *kinds.entry(got["v"].as_str().unwrap_or("").to_string()).or_insert(0) += 1;
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
+        crate::discard::harmless(std::fs::remove_dir_all(&l.real)); // keep: the canonical directory behind a symlinked home
     }
     kinds
 }
@@ -395,6 +420,22 @@ pub fn regenerate(check: &str, compiled: &dyn Fn(&Laid) -> Option<Verdict>) {
         out.push_str(&serde_json::to_string(&c).unwrap());
         out.push('\n');
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
+        crate::discard::harmless(std::fs::remove_dir_all(&l.real)); // keep: the canonical directory behind a symlinked home
     }
     std::fs::write(dir().join(format!("{check}.jsonl")), out).unwrap();
+}
+
+#[test]
+fn a_laid_case_takes_its_temp_home_with_it() {
+    // the leak check: every laid-out case used to leave its home in the temp dir
+    let homes: Vec<String> = (0..3)
+        .map(|i| {
+            let l = lay(&serde_json::json!({"files": {"{HOME}/.anti-hall/x.json": format!("{{\"n\":{i}}}")}}));
+            assert!(Path::new(&l.home).join(".anti-hall/x.json").is_file(), "the case is laid out");
+            l.home.clone()
+        })
+        .collect();
+    for h in homes {
+        assert!(!Path::new(&h).exists(), "{h} outlived its case");
+    }
 }

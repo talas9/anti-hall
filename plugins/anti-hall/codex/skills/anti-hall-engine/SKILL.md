@@ -11,6 +11,7 @@ The anti-hall engine (`ah-engine`) runs the guards and the state behind anti-hal
 
 - Agents and tasks (`$anti-hall-engine-agents`): Subagent, task-list, delegation and routing guards.
 - DevSwarm (`$anti-hall-engine-devswarm`): The DevSwarm role, gate and wake guards.
+- DevSwarm supervisor (`$anti-hall-engine-devswarm-supervisor`): The DevSwarm supervisor sweep: auto-archive, pokes, app sync, retention, reconcile and housekeeping.
 - Doctor and repair (`$anti-hall-engine-doctor`): Health check, repair, migrations and capability scans.
 - Git and GitHub (`$anti-hall-engine-github`): Git, merge and release guards.
 - Guards (`$anti-hall-engine-guards`): What the automatic guards check and how to read a block.

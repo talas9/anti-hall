@@ -26,14 +26,14 @@ dhat = { version = "0.3.3", optional = true }
 # off: no module loader, no async, pre-generated bindings. The runtime allocates through the Rust allocator
 # (`Runtime::new_with_alloc`, DECISIONS.md 1.111); QuickJS-NG checks `set_memory_limit` against its own count before calling it.
 rquickjs = { version = "0.14.0", default-features = false }
-# Process watch (orphans, resource use): the cross-platform process table (parent, start time, CPU %, memory, environ, exe) and memory/swap
-# without parsing ps/vm_stat. Exact pin; only the `system` feature (no network, user, component or disk code); disk free is libc::statvfs.
-sysinfo = { version = "=0.39.6", default-features = false, features = ["system"] }
-# File-change events for the realtime watch facility (src/watch): FSEvents on macOS, inotify on Linux. Default features off,
-# only the macOS FSEvents backend on (no kqueue, no serde). Pinned exactly: 9.x is still a release candidate. Added because the
-# poll backend measured 15 permille of a core at 250 ms (4.5 at 800 ms) on a realistic watch set against 0.009 for events
-# (DECISIONS.md, "Realtime watch backend"). Directories on 9p, drvfs, NFS, SMB and FUSE are still polled.
-notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
+# File-change events for the realtime watch facility (src/watch): inotify on Linux through this crate; macOS has its own kqueue backend
+# over libc (src/watch/kq.rs), because the crate's FSEvents backend links CoreServices and CoreFoundation (about a millisecond of dyld
+# work on every short-lived invocation) and its kqueue backend does not report writes to the files of a non-recursively watched
+# directory. Default features off. Pinned exactly: 9.x is still a release candidate. Added because the poll backend measured 15
+# permille of a core at 250 ms (4.5 at 800 ms) on a realistic watch set against 0.009 for events (DECISIONS.md, "Realtime watch
+# backend"). Directories on 9p, drvfs, NFS, SMB and FUSE are still polled.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+notify = { version = "=8.2.0", default-features = false }
 
 # Allocator that returns freed pages (the system allocators keep them, so RSS stayed at the largest transient). Only on the targets
 # the crate supports (see src/main.rs).

@@ -67,3 +67,7 @@ min = 1
 [realtime.mounts_file]
 doc = "The file that lists mounted filesystems with their types on Linux (including WSL2); the longest mount point that holds a watched directory names its filesystem type. macOS asks the system (statfs) instead."
 value = "/proc/self/mounts"
+
+[realtime.msg_too_many_files]
+doc = "Why a directory is polled instead of watched with events when more files than the cap match; {cap} is `realtime.max_entries`."
+value = "more than {cap} matching files"

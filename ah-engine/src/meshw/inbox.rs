@@ -139,12 +139,24 @@ fn clear_drain(inv: &Inv, id: &str) {
     crate::discard::harmless(std::fs::remove_file(p)); // keep: an absent marker is already cleared
 }
 
+/// What an ack has settled before it writes anything: the receipt (read from disk, or the one a read-primary is about to
+/// file), the moves it records and the store they go to.
+pub(crate) struct AckPlan {
+    st: crate::meshw::store::MeshStore,
+    id: String,
+    rid: String,
+    rec: OVal,
+    found_dir: String,
+    ops: Vec<OwnOp>,
+    reader: Option<String>,
+    repo_key: String,
+}
+
 /// Run `inbox ack-primary` (argv already parsed; `positionals` start with `inbox`, `ack-primary`).
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if a.is_help() {
         return defer("help");
     }
-    let home = &inv.home;
     let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else { return defer("bad-id") };
     // inboxWindowRejection: a window flag on an acking verb is Node's refusal
     if a.has(defaults::text("mesh_write.flag_tail")) || a.has(defaults::text("mesh_write.flag_since")) {
@@ -152,6 +164,16 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     common::seat_check(inv)?;
     let Some(rid) = a.one(defaults::text("mesh_write.flag_receipt")).filter(|r| receipt_id_ok(r)) else { return defer("receipt-argument") };
+    let plan = plan_ack(inv, id, rid, a.has(defaults::text("mesh_write.flag_ack_as_owner")), None)?;
+    // ---- commit: everything below writes, nothing below defers ----
+    let out = apply_ack(inv, plan);
+    Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect: Effect::None })
+}
+
+/// Everything `cmdInboxAckPrimary` checks before its first write: every refusal and every move the engine does not apply
+/// is a [`Defer`] here. `fresh` is the receipt a `read-primary --ack-after-print` is about to file (not on disk yet).
+pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh: Option<OVal>) -> R<AckPlan> {
+    let home = &inv.home;
     // resolveWorkspaceStoreForRead: the caller's project, the id's registered project, the re-home trigger
     let Some(repo_key) = ident::resolve_context(&inv.cwd, true)?.repo_key else { return defer("no-project") };
     let desc = ident::read_descriptor(home, id);
@@ -183,7 +205,12 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
             Some(_) => return defer("descriptor-worktree"),
         }
     }
-    let Some((rec, found_dir)) = read_receipt(home, id, rid, &dir_id) else { return defer("unknown-receipt") };
+    let Some((rec, found_dir)) = (match fresh {
+        Some(rec) => Some((rec, id.to_string())),
+        None => read_receipt(home, id, rid, &dir_id),
+    }) else {
+        return defer("unknown-receipt");
+    };
     if !matches!(rec.get("id"), Some(OVal::Str(r)) if r == id) {
         return defer("receipt-owner");
     }
@@ -201,7 +228,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         Some(OVal::Num(c)) if c.is_finite() && (inv.now as f64) - c <= defaults::num("mesh_write.receipt_ttl_ms") as f64 => {}
         _ => return defer("receipt-expired"),
     }
-    if !a.has(defaults::text("mesh_write.flag_ack_as_owner")) {
+    if !ack_as_owner {
         let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
         let own_entry = resolve_mesh_target(&rows, Some(caller.identity.as_str()))?;
         let owns = caller.identity == id
@@ -220,7 +247,13 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     // the summary refresh after the write must be one the engine can do (else Node runs the whole verb)
     crate::meshw::summary::check(&st, inv, None)?;
-    // ---- commit: everything below writes, nothing below defers ----
+    Ok(AckPlan { st, id: id.to_string(), rid: rid.to_string(), rec, found_dir, ops, reader, repo_key })
+}
+
+/// The writes of `cmdInboxAckPrimary` and its result: nothing defers from here, a failure is reported in the result.
+pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
+    let AckPlan { st, id, rid, rec, found_dir, ops, reader, repo_key } = plan;
+    let (id, rid, home) = (id.as_str(), rid.as_str(), &inv.home);
     mark_drain(inv, id);
     let mut procs = Procs::default();
     let mut failures: Vec<OVal> = Vec::new();
@@ -294,5 +327,5 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if !failures.is_empty() {
         out.put("cursorWriteFailures", OVal::Arr(failures)).put("cursorPersisted", OVal::Bool(false));
     }
-    Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect: Effect::None })
+    out
 }

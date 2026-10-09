@@ -89,13 +89,6 @@ value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "✅", update = "�
 doc = "Text between the icon and the guard name in every block or advisory message."
 value = " anti-hall · "
 
-[guardkit.render_reserve]
-doc = "Extra bytes reserved beyond a message template's length when its placeholders are filled (a capacity hint, not a limit)."
-value = 32
-unit = "bytes"
-min = 0
-max = 65536
-
 [guardkit.msg_labels]
 doc = "Labels of the optional lines of a block or advisory message."
 value = { why = "Why: ", instead = "Do instead: ", allowed = "Allowed here: ", override = "Override (only if the user explicitly asked): " }
@@ -345,14 +338,6 @@ value = ")(;{}|&`"
 [scan_throttle.unsafe_start_subst]
 doc = "Text that, at the position where the prefix would go, starts a command substitution and makes the position unsafe."
 value = "$("
-
-[scan_throttle.pattern_literal_chars]
-doc = "ASCII characters a user pattern may contain as plain literals for the engine to match it itself; a pattern with any other construct defers to the Node guard, whose regex engine is the authority."
-value = " !#%&',-/:;<=>@_\"~`ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-
-[scan_throttle.pattern_escapes]
-doc = "Characters that may follow a backslash in a user pattern the engine matches itself (escaped punctuation, class escapes, newline, tab)."
-value = ".-/\\()[]*+?|^$sSdDwWbBnt{}"
 
 [scan_throttle.msg_group_what]
 doc = "Advisory headline when the scan is not the first simple command."
@@ -1174,10 +1159,6 @@ doc = "How many pre-call verdicts (kept until the matching post-call) a window f
 value = 20
 min = 1
 
-[guardkit.lock_stale_ms]
-doc = "Age, in milliseconds, after which another process's lock on a window file or the metrics is considered abandoned and is taken over (the same limit for a live, a dead and an unknown holder)."
-value = 5000
-
 [coordinator_work.lock_wait_ms]
 doc = "How long a lock held by another process is waited for before the call is handed to the Node hook."
 value = 250
@@ -1220,11 +1201,6 @@ value = "ANTIHALL_COORDINATOR_WORK_LOCK_WAIT_MS"
 [coordinator_work.lock_isolation_env]
 doc = "The variable that marks an isolated test home (enables the lock wait override)."
 value = "ANTIHALL_TEST_HOME_ISOLATED"
-
-[guardkit.lock_step_ms]
-doc = "Pause between two attempts to take a held lock."
-value = 5
-min = 1
 
 [coordinator_work.lock_suffix]
 doc = "Suffix of a lock file next to the file it guards."
@@ -1620,3 +1596,18 @@ value = "DEVSWARM_SOURCE_BRANCH"
 [devswarm_prompt.mode_setting]
 doc = "Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset, as in hooks/lib/settings.js)."
 value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", manifest_default = "auto", values = ["auto", "on", "off"] }
+
+[guardkit.render_reserve]
+doc = "Extra bytes reserved beyond a message template's length when its placeholders are filled (a capacity hint, not a limit)."
+value = 32
+unit = "bytes"
+min = 0
+max = 65536
+
+[scan_throttle.pattern_literal_chars]
+doc = "ASCII characters a user pattern may contain as plain literals for the engine to match it itself; a pattern with any other construct defers to the Node guard, whose regex engine is the authority."
+value = " !#%&',-/:;<=>@_\"~`ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+[scan_throttle.pattern_escapes]
+doc = "Characters that may follow a backslash in a user pattern the engine matches itself (escaped punctuation, class escapes, newline, tab)."
+value = ".-/\\()[]*+?|^$sSdDwWbBnt{}"

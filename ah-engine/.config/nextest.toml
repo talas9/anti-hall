@@ -4,11 +4,30 @@
 # Flag a test as slow after 60 s; terminate it after 3 periods (180 s).
 slow-timeout = { period = "60s", terminate-after = 3 }
 fail-fast = false
+# The `soak` group (below) does not run by default: a release train runs it with `--profile soak`, and CI keeps it.
+default-filter = 'not test(/^memory_soak::/)'
 
 [profile.ci]
 inherits = "default"
 slow-timeout = { period = "60s", terminate-after = 5 }
 retries = 0
+default-filter = 'all()'
+
+# The soak run of a release train: everything, the soak group included. Run it with Node live so the Node goldens are checked
+# against the real hooks (tests/goldens/README.md): `AH_LIVE_NODE=1 cargo nextest run --release --profile soak`.
+[profile.soak]
+inherits = "default"
+default-filter = 'all()'
+slow-timeout = { period = "300s", terminate-after = 6 }
+
+# Recording Node goldens (AH_RECORD_NODE=1, tests/goldens/README.md) runs each lane twice with Node live: no timeout cut.
+[profile.record]
+inherits = "default"
+slow-timeout = { period = "300s", terminate-after = 24 }
+
+[[profile.record.overrides]]
+filter = 'all()'
+slow-timeout = { period = "300s", terminate-after = 24 }
 
 # The heavy sweeps: each drives a pool of 4-8 workers that spawn Node and the engine for thousands of scenarios. Run side by
 # side with every other sweep they oversubscribe the cores (load 18-25 on 16 cores) and their wall time is the machine's, not
@@ -18,8 +37,15 @@ retries = 0
 # and over 900 s on the 3-core macOS one, the memory soak 710 s locally); every other test keeps the 180 s default above.
 [test-groups]
 heavy-sweeps = { max-threads = 3 }
+# Long soaks that measure the machine: one at a time, outside the default run.
+soak = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'test(api_guard_matches_node) | test(codex_nudge_matches_node) | test(handover_resume_matches_node) | test(session_checks_match_node) | test(precompact_snapshot_matches_node) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz) | test(no_defaults_text_is_embedded) | test(the_sweep_selects_and_logs_exactly_what_node_does) | test(the_tracker_says_and_writes_exactly_what_node_does) | test(coordinator_post_matches_node) | test(git_audit_matches_node) | test(failure_nudge_matches_node) | test(edit_guard_matches_node) | test(codex_quota_detect_matches_node) | test(the_scan_matches_node_on_random_transcripts) | test(verify_first_through_the_dispatcher) | test(ctxbudget_checks_match_node) | test(the_store_free_cli_verbs_match_node) | test(tasklist_guard_matches_node) | test(/^memory_soak::/) | test(session_end_mcp_reaper_script_matches_the_compiled_port) | test(command_guard_matches_node) | test(node_and_engine_outputs_match_for_model_routing_table) | test(child_drain_allow_is_node_silence) | test(reply_tracker_allow_is_node_silence)'
+filter = 'test(/^memory_soak::/)'
+test-group = 'soak'
+slow-timeout = { period = "300s", terminate-after = 6 }
+
+[[profile.default.overrides]]
+filter = 'test(api_guard_matches_node) | test(codex_nudge_matches_node) | test(handover_resume_matches_node) | test(session_checks_match_node) | test(precompact_snapshot_matches_node) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz) | test(no_defaults_text_is_embedded) | test(the_sweep_selects_and_logs_exactly_what_node_does) | test(the_tracker_says_and_writes_exactly_what_node_does) | test(coordinator_post_matches_node) | test(git_audit_matches_node) | test(failure_nudge_matches_node) | test(edit_guard_matches_node) | test(codex_quota_detect_matches_node) | test(the_scan_matches_node_on_random_transcripts) | test(verify_first_through_the_dispatcher) | test(ctxbudget_checks_match_node) | test(the_store_free_cli_verbs_match_node) | test(tasklist_guard_matches_node) | test(session_end_mcp_reaper_script_matches_the_compiled_port) | test(command_guard_matches_node) | test(node_and_engine_outputs_match_for_model_routing_table) | test(child_drain_allow_is_node_silence) | test(reply_tracker_allow_is_node_silence)'
 test-group = 'heavy-sweeps'
 slow-timeout = { period = "300s", terminate-after = 6 }

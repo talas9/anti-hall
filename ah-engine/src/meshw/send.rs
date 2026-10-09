@@ -116,6 +116,16 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let heal = common::self_heal(inv)?;
     let mut out = cmd_send(inv, a)?;
+    // `logVerbOutcome('send', ...)`: a result that is not ok is logged. Before the first write that is a deferral when Node
+    // would not write the log at all
+    let failed = !matches!(out.0.iter().find(|(k, _)| k == "ok").map(|(_, v)| v), Some(OVal::Bool(true)));
+    if failed {
+        if !crate::meshw::COMMITTED.load(std::sync::atomic::Ordering::SeqCst) {
+            crate::meshw::clog::ready(inv)?;
+        }
+        log_failed_send(inv, a, &out);
+        crate::meshw::mark_committed();
+    }
     for (k, v) in heal {
         out.put(&k, v);
     }
@@ -128,6 +138,24 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     let quiet = a.has(defaults::text("mesh_write.flag_quiet")) && !inv_has_json(a);
     let line = if quiet { quiet_line(&res) } else { res.stringify() };
     Ok(Answer { code: if ok { 0 } else { 2 }, stdout: format!("{line}\n"), effect })
+}
+
+/// `logVerbOutcome('send', one(flags, 'to'), r, ctx)` for a result that is not ok.
+fn log_failed_send(inv: &Inv, a: &Args, out: &Obj) {
+    let text = |k: &str| match out.0.iter().find(|(x, _)| x == k).map(|(_, v)| v) {
+        Some(OVal::Str(t)) => Some(t.clone()),
+        _ => None,
+    };
+    let msg = text("error").or_else(|| text("reason")).unwrap_or_else(|| defaults::text("devswarm_cli.msg_log_not_ok").to_string());
+    let repo_key = ident::resolve_context(&inv.cwd, true).ok().and_then(|c| c.repo_key);
+    crate::meshw::clog::refusal(
+        inv,
+        defaults::text("mesh_write.action_send"),
+        repo_key.as_deref(),
+        a.one(defaults::text("mesh_write.flag_to")),
+        &msg,
+        text("reason").as_deref(),
+    );
 }
 
 fn inv_has_json(a: &Args) -> bool {
@@ -157,11 +185,32 @@ fn quiet_line(r: &OVal) -> String {
     defaults::render("mesh_write.quiet_fail", &[("why", &why)])
 }
 
-/// `cmdSend(flags, ctx)`: the successful path, else [`Defer`].
-fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
+/// A refusal `cmdSend` returns: `{ ok: false, ...fields }` in Node's key order. The caller logs it and prints it (exit 2).
+fn refused(fields: &[(&str, OVal)]) -> Obj {
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false));
+    for (k, v) in fields {
+        o.put(k, v.clone());
+    }
+    o
+}
+
+/// `JSON.stringify(text)` of a string, as Node's refusal texts quote their values.
+fn quote(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_default()
+}
+
+/// `cmdSend(flags, ctx)`: the successful path or a refusal Node logs, else [`Defer`].
+pub(crate) fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
     let home = &inv.home;
     let cwd = ident::project_cwd_for(home, &inv.env, &inv.cwd)?;
-    let Some(repo_key) = ident::repo_key_for_worktree(&cwd)? else { return defer("no-project") };
+    let Some(repo_key) = ident::repo_key_for_worktree(&cwd)? else {
+        return Ok(refused(&[
+            ("action", s(defaults::text("mesh_write.action_send"))),
+            ("reason", s(defaults::text("devswarm_cli.reason_no_project"))),
+            ("error", s(defaults::text("devswarm_cli.msg_send_no_project"))),
+        ]));
+    };
     // registrySnapshot opens the store as a writer; the engine opens it once, below, and refuses what Node would create
     let st = common::open_store(inv, &repo_key)?;
     let rows = ident::rows_of(&st.reader().roster().map_err(|e| Defer(format!("registry:{e}")))?);
@@ -179,7 +228,8 @@ fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
         && ff != from
         && Some(ff) != from_d.mesh_id.as_deref()
     {
-        return defer("from-mismatch");
+        let msg = defaults::render("devswarm_cli.msg_send_from_mismatch", &[("from_flag", &quote(ff)), ("from", &quote(&from))]);
+        return Ok(refused(&[("error", s(&msg))]));
     }
     let to_flag = a.one(defaults::text("mesh_write.flag_to"));
     let broadcast = a.has(defaults::text("mesh_write.flag_broadcast"))
@@ -187,7 +237,8 @@ fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
     let to_primary = a.has(defaults::text("mesh_write.flag_to_primary"));
     let modes = usize::from(to_flag.is_some()) + usize::from(broadcast) + usize::from(to_primary);
     if modes != 1 {
-        return defer("target-mode");
+        let key = if modes > 1 { "devswarm_cli.msg_send_target_many" } else { "devswarm_cli.msg_send_target_none" };
+        return Ok(refused(&[("error", s(defaults::text(key)))]));
     }
     if !broadcast
         && let Some(t) = to_flag
@@ -197,14 +248,19 @@ fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
     }
     let question = a.has(defaults::text("mesh_write.flag_question"));
     let answers = a.has(defaults::text("mesh_write.flag_answers"));
-    if broadcast && (question || answers) {
-        return defer("broadcast-question");
+    if broadcast && question {
+        return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_question_broadcast")))]));
+    }
+    if broadcast && answers {
+        return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_answers_broadcast")))]));
     }
     let m_flag = a.one(defaults::text("mesh_write.flag_message"));
     let m_file = a.one(defaults::text("mesh_write.flag_message_file"));
     let m_stdin = a.has(defaults::text("mesh_write.flag_message_stdin"));
-    if usize::from(m_flag.is_some()) + usize::from(m_file.is_some()) + usize::from(m_stdin) != 1 {
-        return defer("message-source");
+    let sources = usize::from(m_flag.is_some()) + usize::from(m_file.is_some()) + usize::from(m_stdin);
+    if sources != 1 {
+        let key = if sources > 1 { "devswarm_cli.msg_send_source_many" } else { "devswarm_cli.msg_send_source_none" };
+        return Ok(refused(&[("error", s(defaults::text(key)))]));
     }
     let message = if let Some(f) = m_file {
         match std::fs::read(f) {
@@ -220,11 +276,13 @@ fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
         m_flag.unwrap_or_default().to_string()
     };
     if message.is_empty() {
-        return defer("empty-message");
+        return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_empty")))]));
     }
     let urgency = a.one(defaults::text("mesh_write.flag_urgency")).unwrap_or(defaults::text("mesh_write.urgency_default")).to_string();
-    if !defaults::list("mesh_write.allowed_urgency").contains(&urgency.as_str()) {
-        return defer("urgency");
+    let allowed = defaults::list("mesh_write.allowed_urgency");
+    if !allowed.contains(&urgency.as_str()) {
+        let msg = defaults::render("devswarm_cli.msg_send_urgency", &[("allowed", &allowed.join("|"))]);
+        return Ok(refused(&[("error", s(&msg)), ("allowed", OVal::Arr(allowed.iter().map(|w| s(w)).collect()))]));
     }
     let mut primary_mesh: Option<String> = None;
     if to_primary {
@@ -235,7 +293,8 @@ fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
     if !broadcast {
         let self_target = if to_primary { primary_mesh.clone() } else { to_flag.map(str::to_string) };
         if self_target.as_deref() == Some(from.as_str()) || (from_d.mesh_id.is_some() && self_target == from_d.mesh_id) {
-            return defer("self-address");
+            let suffix = if to_primary { defaults::text("devswarm_cli.send_self_primary_suffix") } else { "" };
+            return Ok(refused(&[("error", s(&defaults::render("devswarm_cli.msg_send_self", &[("suffix", &suffix)])))]));
         }
     }
     let now = inv.now;

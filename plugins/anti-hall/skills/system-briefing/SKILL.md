@@ -14,7 +14,7 @@ operating anti-hall, or when a term or option is unclear); **(2) a live inventor
 `scripts/briefing.js` enumerates the hooks, helpers, skills and DevSwarm substrate this
 installed build actually ships, from `hooks.json` and the files on disk (never a
 hardcoded list). Run it via a Haiku subagent (command-guard keeps heavy commands off the
-main thread): `node "${CLAUDE_PLUGIN_ROOT}/scripts/briefing.js"` (or `--json`). For "do
+main thread): `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" briefing` (or `--json`). For "do
 the guards fire?", use `doctor`.
 
 ## Glossary

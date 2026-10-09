@@ -22,9 +22,9 @@ fn op_of(s: &str) -> rquickjs::Result<Op> {
         "write" => Op::Write,
         "after_reply" => Op::WriteAfterReply,
         "append" => Op::Append,
+        "rename" => Op::Rename,
         "mkdir" => Op::Mkdir,
         "remove" => Op::Remove,
-        "rename" => Op::Rename,
         _ => return Err(err("fileOp", defaults::render("script.msg_unknown_op", &[("op", &s)]))),
     })
 }

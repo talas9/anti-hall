@@ -43,11 +43,11 @@ Sets up the anti-hall two-line statusline:
    - "This repo / project only" → `--project`
 2. Run the installer. It is a `node` script (a state change), so **delegate it to a subagent** — do not run it inline in the coordinator (the command-guard blocks heavy commands on the main thread). Brief the subagent to run exactly:
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/statusline/install-statusline.js" [--user|--project]
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" install-statusline [--user|--project]
    ```
    and report its stdout verbatim.
 3. Tell the user: **restart Claude Code** in that scope for the statusline to take effect. The phase bar (line 2) appears once an orchestration phase writes `~/.anti-hall/phase-state.json`.
 
 ## Uninstall
 
-Delegate `node "${CLAUDE_PLUGIN_ROOT}/statusline/uninstall-statusline.js"` to a subagent; it restores the previous statusLine from the backup. Restart afterward.
+Delegate `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" uninstall-statusline` to a subagent; it restores the previous statusLine from the backup. Restart afterward.

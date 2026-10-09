@@ -23,7 +23,7 @@
 //! | `passwdHome()` | the user's home as the passwd database has it, or `null` |
 //! | `realpath(path)` | the canonical path (links resolved), or `null` when it does not exist |
 //! | `pathResolve(base, p)` | Node `path.resolve(base, p)` (posix) |
-//! | `writeAtomic(rel, text)` | the SCOPED write (`rel` is relative to the home directory, under the state directory): see [`write_atomic`] |
+//! | `writeAtomic(rel, text, leaveTemp?)` | the SCOPED write (`rel` is relative to the home directory, under the state directory; `leaveTemp`: a failed rename keeps the temporary file, as the Node writers do): see [`write_atomic`] |
 //! | `appendFile(rel, text)` | the SCOPED append (same path rules as `writeAtomic`; one `O_APPEND` write): see [`append_file`] |
 //! | `lstat(path)` | JSON `{kind,size,mtimeMs,mode}` of the path itself (links not followed), or `null`: see [`lstat`] |
 //! | `realpathEx(path)` | JSON `{path}` or `{error}`: the canonical path, or why there is none: see [`realpath_ex`] |
@@ -31,7 +31,7 @@
 //! | `isDir(path)` | whether `path` is a directory (links followed) |
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
-//! | `lockAcquire(rel, group)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
+//! | `lockAcquire(rel, group, waitMs?)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
 //! | `memory()` | JSON `{available, total}` bytes of the machine: see [`memory`] |
 //! | `agents(path)` | the running agents of a transcript (id, description, launching input): see [`agents`] |
 //! | `repoContext(dir)` | JSON `{unsure, toplevel, root}` of the checkout around `dir`: see [`repo_context`] |
@@ -186,8 +186,25 @@ fn refused(why: &str) -> Error {
 /// created as needed. The check and the write are separate steps, so a process that races a link into the tree between
 /// them is not excluded; the root is the owner's own state directory, so that is the owner racing themselves.
 pub fn write_atomic(home: &str, rel: &str, text: &str) -> rquickjs::Result<bool> {
-    let Some(cur) = scoped_target(home, rel, text.len(), false)? else { return Ok(false) };
-    let style = crate::atomic::Style { skip_sync: defaults::num("script.write_sync") == 0, ..crate::atomic::Style::default() };
+    write_atomic_with(home, rel, text, false)
+}
+
+/// [`write_atomic`] with the choice of what a failed rename leaves behind: `leave_temp` keeps the temporary file, as the Node
+/// writers do (a state writer whose parity suite compares the directory asks for it); otherwise it is removed.
+pub fn write_atomic_with(home: &str, rel: &str, text: &str, leave_temp: bool) -> rquickjs::Result<bool> {
+    let style = crate::atomic::Style {
+        skip_sync: defaults::num("script.write_sync") == 0,
+        leave_temp_on_rename_failure: leave_temp,
+        ..crate::atomic::Style::default()
+    };
+    let Some(cur) = scoped_target(home, rel, text.len(), false)? else {
+        // a directory where the file goes: the Node writers stage their temporary file and fail at the rename, which leaves it behind
+        let there = Path::new(home).join(rel);
+        if leave_temp && std::fs::symlink_metadata(&there).is_ok_and(|m| m.is_dir()) {
+            crate::discard::harmless(crate::atomic::write_styled(&there, text, style)); // keep: the rename is expected to fail
+        }
+        return Ok(false);
+    };
     Ok(crate::atomic::write_styled(&cur, text, style).is_ok())
 }
 
@@ -368,26 +385,25 @@ thread_local! {
 }
 
 /// `lockAcquire(rel, group, waitMs?)`: take the cross-process lock file `rel` (the scoped path rules of [`write_atomic`]) with the Node
-/// lock protocol of `companion/lib/lock.js`, timings from the defaults group `group` (`<group>.lock_*`). Returns a handle number,
-/// or `null` when the lock could not be taken (the script decides what that means; the swarm guard fails open). A lock still
-/// held when the script call ends is released by the host. At most `script.lock_max_held` locks are held at once.
+/// lock protocol of `companion/lib/lock.js`, timings from the defaults group `group` (`<group>.lock_*`), the wait replaced by `waitMs`
+/// when given (never past `script.lock_wait_max_ms`). Returns a handle number, or `null` when the lock could not be taken (the script
+/// decides what that means; the swarm guard fails open). A lock still held when the script call ends is released by the host. At most
+/// `script.lock_max_held` locks are held at once per call (a script that nests two takes them in one fixed order and releases the
+/// inner one first); the in-process serialization is taken by the first of them only.
 pub fn lock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -> rquickjs::Result<Option<f64>> {
     let Some(mut params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
         return Err(err("lockAcquire", defaults::render("script.msg_unknown_key", &[("key", &group)])));
     };
-    // a script may shorten or lengthen the wait (a test home asks for its own)
     if let Some(w) = wait_ms.filter(|w| w.is_finite() && *w >= 0.0) {
-        params.wait_ms = w as u64;
+        params.wait_ms = (w as u64).min(defaults::num("script.lock_wait_max_ms"));
     }
-    // nested locks (a window lock, then the metrics lock under it) are taken in the script's fixed order; how many a call may hold at
-    // once is `script.lock_max_held`
     let held_now = HELD.with(|h| h.borrow().len());
     if held_now as u64 >= defaults::num("script.lock_max_held") {
         return Ok(None);
     }
     let Some(path) = scoped_target(home, rel, 0, false)? else { return Ok(None) };
     let started = std::time::Instant::now();
-    let guard = if held_now == 0 { Some(IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner())) } else { None };
+    let guard = (held_now == 0).then(|| IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner()));
     let taken = crate::checks::guardkit::nodelock::acquire(&path.to_string_lossy(), params);
     credit_blocking(started);
     let Some(held) = taken else { return Ok(None) };
@@ -835,9 +851,9 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("pathResolve", Function::new(c.clone(), |a: String, b: String| paths::resolve(&a, &b))?)?;
     h.set(
         "writeAtomic",
-        Function::new(c.clone(), |rel: String, text: String| -> rquickjs::Result<bool> {
+        Function::new(c.clone(), |rel: String, text: String, leave_temp: Option<bool>| -> rquickjs::Result<bool> {
             let home = with_settings(|st| st.home.clone())?;
-            write_atomic(&home, &rel, &text)
+            write_atomic_with(&home, &rel, &text, leave_temp.unwrap_or(false))
         })?,
     )?;
     h.set(

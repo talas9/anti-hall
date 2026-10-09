@@ -70,14 +70,9 @@ pub fn js_string_of(v: &serde_json::Value) -> Option<String> {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Bool(b) => Some(b.to_string()),
         serde_json::Value::Null => Some("null".to_string()),
-        serde_json::Value::Number(n) => n.as_f64().map(js_number_string),
+        serde_json::Value::Number(n) => n.as_f64().map(crate::checks::jsport::num::to_js_string),
         _ => None,
     }
-}
-
-/// `String(n)` for a finite number: integers print without a fraction, as JavaScript does up to 1e21.
-fn js_number_string(n: f64) -> String {
-    if n == n.trunc() && n.abs() < 1e21 { format!("{}", n as i128) } else { format!("{n}") }
 }
 
 /// `Number(s)` for a JavaScript string: white space trimmed, empty is 0, `0x`/`0o`/`0b` prefixes, `Infinity`, decimal and

@@ -27,12 +27,13 @@ var ah = {
   // for a path outside it, a link below it or a text over the cap (the check then takes its failure policy); returns false
   // when the disk refuses.
   state: {
-    writeAtomic: function (rel, t) { return ahHost.writeAtomic(rel, ahWf(t)); },
+    // `o.leaveTemp`: a failed rename leaves the temporary file behind, as the Node writers do (for a writer whose parity suite compares the directory).
+    writeAtomic: function (rel, t, o) { return ahHost.writeAtomic(rel, ahWf(t), !!(o && o.leaveTemp)); },
     // The SCOPED append, same path rules; one O_APPEND write. false when the disk refuses.
     appendFile: function (rel, t) { return ahHost.appendFile(rel, ahWf(t)); },
     // The cross-process lock file `rel` (Node lock protocol) with the timings of the defaults group `group`: a handle, or null
-    // when it could not be taken. A few at once (script.lock_max_held), taken in the script's fixed order; a lock still held when the call ends is released by the engine.
-    // `waitMs` (optional) replaces the group's wait.
+    // when it could not be taken. A lock still held when the call ends is released by the engine.
+    // `waitMs` (optional) replaces the group's wait (never past script.lock_wait_max_ms). Up to script.lock_max_held at once; take nested ones in a fixed order.
     lock: function (rel, group, waitMs) { return ahNull(ahHost.lockAcquire(rel, group, waitMs === undefined ? null : waitMs)); },
     unlock: function (h) { return ahHost.lockRelease(h); },
     // The retention sweep of the state files of one writer prefix (stale ones go; `keep` stays).
@@ -44,7 +45,7 @@ var ah = {
     // first, capped by script.sweep_max_remove). Returns the number removed.
     sweep: function (dirRel, prefix, ageMs, max) { return ahHost.stateSweep(dirRel, prefix, ageMs, max); },
     // The scoped operations under any absolute `root` (the home directory, or a project root): `rel` must start with the state
-    // directory. op: 'write', 'after_reply' (atomic, landing only once the reply was delivered), 'append', 'mkdir', 'remove'.
+    // directory. op: 'write', 'after_reply' (atomic, landing only once the reply was delivered), 'append', 'mkdir', 'remove', 'rename' (the text is the destination, relative like `rel`).
     op: function (root, op, rel, t) { return ahHost.fileOp(root, rel, t === undefined ? '' : ahWf(t), op); },
     prune: function (prefix, keep) { ahHost.pruneState(prefix, keep === undefined ? null : keep); },
   },

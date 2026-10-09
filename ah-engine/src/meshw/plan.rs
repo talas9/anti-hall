@@ -16,7 +16,8 @@
 // - an unreadable optional file is the same as an absent one (Node's try/catch around readFileSync)
 // - the supervision log is best effort (Node's `record` never throws)
 use crate::checks::guardkit::nodelock;
-use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::ojson::OVal;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::js_number_of_str;
 use crate::defaults;
 use crate::meshw::common::{Inv, Obj, n, s};
@@ -129,6 +130,23 @@ fn validate(plan: &OVal) -> R<()> {
 /// `findPlan(home, planRefFor(home, id, ctx))`.
 pub fn find(inv: &Inv, id: &str) -> R<Option<Found>> {
     for key in keys(inv, id)? {
+        if let Some(plan) = read_plan(&plan_file(inv, &key))? {
+            return Ok(Some(Found { key, plan }));
+        }
+    }
+    Ok(None)
+}
+
+/// `findPlan(home, { id, worktreePath })` with the worktree given (not read from the descriptor).
+pub fn find_for(inv: &Inv, id: &str, wt: Option<&str>) -> R<Option<Found>> {
+    let mut keys: Vec<String> = Vec::new();
+    if let Some(w) = wt {
+        keys.extend(key_for_worktree(w)?);
+    }
+    if is_safe_id(id) && !keys.iter().any(|k| k == id) {
+        keys.push(id.to_string());
+    }
+    for key in keys {
         if let Some(plan) = read_plan(&plan_file(inv, &key))? {
             return Ok(Some(Found { key, plan }));
         }
@@ -284,11 +302,11 @@ fn record_summary(plan: &mut OVal, text: &str, stepped: bool, now: f64) -> R<()>
 }
 
 /// `dur(ms)`.
-fn dur(ms: f64) -> String {
+pub(crate) fn dur(ms: f64) -> String {
     let ms = if ms.is_nan() { 0.0 } else { ms };
     let m = (ms / defaults::num("mesh_write.dur_ms_per_min") as f64).floor().max(0.0);
     let per_hour = defaults::num("mesh_write.dur_min_per_hour") as f64;
-    let v = |x: f64| js_number_text(x);
+    let v = |x: f64| to_js_string(x);
     if m < per_hour {
         return defaults::render("mesh_write.dur_fmt_min", &[("v", &v(m))]);
     }
@@ -302,7 +320,7 @@ fn dur(ms: f64) -> String {
 /// A step's `n` as JavaScript prints it in a label.
 fn step_number(step: &OVal) -> R<String> {
     match step.get("n") {
-        Some(OVal::Num(x)) => Ok(js_number_text(*x)),
+        Some(OVal::Num(x)) => Ok(to_js_string(*x)),
         Some(OVal::Str(t)) => Ok(t.clone()),
         _ => defer("plan-shape"),
     }
@@ -350,7 +368,7 @@ pub(crate) fn finish_label(plan: &OVal, now: f64) -> R<OVal> {
         && *i >= 1.0
         && *i <= total as f64
     {
-        parts.push(defaults::render("mesh_write.lbl_inferred", &[("n", &js_number_text(*i))]));
+        parts.push(defaults::render("mesh_write.lbl_inferred", &[("n", &to_js_string(*i))]));
     }
     if let Some(r) = finite(plan.get("done_reported_at")) {
         parts.push(defaults::render("mesh_write.lbl_done_reported_part", &[("dur", &dur(now - r))]));
@@ -568,6 +586,11 @@ pub fn plan_rel(key: &str) -> String {
         defaults::text("mesh_write.dir_plans"),
         defaults::text("mesh_write.json_suffix")
     )
+}
+
+/// Record the supervision log as this verb left it (its whole content: the witness starts from a copy of the log).
+pub fn note_log(inv: &Inv) {
+    crate::meshw::set_written(&log_rel(), &std::fs::read(log_path(inv)).unwrap_or_default());
 }
 
 /// The supervision log's path under the home.

@@ -134,9 +134,25 @@ pub fn run_duty_w(name: &str, ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<
     if let Some(why) = not_due(ctx, d) {
         return (json!({"duty": name, "outcome": "skipped", "reason": why}), None);
     }
+    if name == "reconcile" && super::recon::sweep::engine_mode() && super::supervisor_enabled(ctx.st) {
+        let node_whole = || run_node_duty(name, d, ctx, runner);
+        return (super::recon::sweep::duty(ctx, runner, &super::recon::Hooks::none(), &node_whole), None);
+    }
     if runs_native(name, d) {
         if !super::supervisor_enabled(ctx.st) {
             return (json!({"duty": name, "outcome": "skipped", "reason": defaults::text("devswarm_sup.msg_disabled")}), None);
+        }
+        if name == "verdicts" {
+            return super::liveness::duty(ctx, runner);
+        }
+        if name == "deferred" {
+            return (super::deferred::duty(ctx, runner), None);
+        }
+        if name == "retention" {
+            return (super::retention::duty(ctx, runner), None);
+        }
+        if name == "app_sync" {
+            return (super::appsync::duty(ctx, runner), None);
         }
         let job = prepare_witness(name, ctx);
         let detail = match name {
@@ -146,16 +162,20 @@ pub fn run_duty_w(name: &str, ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<
         };
         return (json!({"duty": name, "outcome": "ran", "detail": detail}), job);
     }
+    (run_node_duty(name, d, ctx, runner), None)
+}
+
+/// A duty done by Node's own function in a bounded subprocess.
+fn run_node_duty(name: &str, d: &V, ctx: &Ctx, runner: &dyn Runner) -> Value {
     let owner = if ctx.engine_pokes { defaults::text("devswarm_sup.owner_engine") } else { defaults::text("devswarm_sup.owner_node") };
     let timeout = d.get("timeout_ms").and_then(V::as_integer).unwrap_or(0).max(1) as u64;
     let r = node(runner, ctx, d.str_field("snippet"), &[owner], timeout);
-    let rec = if r.ok {
+    if r.ok {
         json!({"duty": name, "outcome": "ran", "detail": parse(&r.stdout)})
     } else {
         let why = r.error.clone().unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { cut(&r.stderr) });
         json!({"duty": name, "outcome": "failed", "error": why, "status": r.status, "timedOut": r.timed_out})
-    };
-    (rec, None)
+    }
 }
 
 /// [`run_duty_w`] with the witness comparison finished at once (no lock to wait for).

@@ -11,26 +11,19 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod agent_scan;
-pub mod codex;
 pub mod compact_decl;
-pub mod devswarm_comms;
-pub mod devswarm_gates;
 pub mod devswarm_role;
 pub mod emit_dedupe;
 pub mod git;
 pub mod guardkit;
-pub mod handover;
 pub mod idle_agent_sweep;
 pub mod jsport;
 pub mod replykit;
 pub mod scripted;
 pub mod session;
 pub mod spawnctx;
-pub mod task_tracker;
 pub mod taskkit;
 pub mod taskstate;
-pub mod verify_first_orch;
-pub mod verify_first_prompt;
 
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
@@ -188,9 +181,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::INBOX_READ_GUARD,
         &scripted::PHASE_TRACKER,
         &scripted::ORCH_ON_SPAWN,
-        &verify_first_orch::VerifyFirstOrch,
-        &verify_first_orch::VerifyFirstOrchCodex,
-        &verify_first_prompt::VerifyFirst,
+        &scripted::VERIFY_FIRST_ORCH,
+        &scripted::VERIFY_FIRST_ORCH_CODEX,
+        &scripted::VERIFY_FIRST,
         &scripted::IDLE_AGENT_SWEEP,
         &scripted::EMIT_DEDUPE_RESET,
         &scripted::LIMIT_CONSERVE_INJECT,
@@ -216,14 +209,14 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::ENGINE_ROLE_GUARD,
         &scripted::ENGINE_ROLE_NOTE,
         &scripted::GH_RT_ADVISORY,
-        &devswarm_comms::DevswarmCommsGuard,
+        &scripted::DEVSWARM_COMMS_GUARD,
         &scripted::SWARM_GUARD,
         &scripted::JEV_WEEKLY_SCORECARD,
         &scripted::JEV_REVIEW_REMINDER,
         &scripted::REPAIR_ON_RELOAD,
-        &codex::availability::CodexAvailability,
-        &codex::detect::CodexQuotaDetect,
-        &codex::nudge::CodexNudge,
+        &scripted::CODEX_AVAILABILITY,
+        &scripted::CODEX_QUOTA_DETECT,
+        &scripted::CODEX_NUDGE,
         &scripted::PRECOMPACT_SNAPSHOT,
         &scripted::HANDOVER_RESUME,
         &scripted::TASK_LIFECYCLE_LOG,
@@ -232,18 +225,18 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::TASKLIST_GUARD,
         &scripted::DEVSWARM_PARENT_INBOX,
         &scripted::DEVSWARM_CHILD_TURN,
-        &devswarm_role::DevswarmChildRole,
-        &devswarm_role::DevswarmParentGate,
-        &devswarm_gates::DevswarmChildGate,
-        &devswarm_gates::DevswarmParentReplyTracker,
-        &devswarm_gates::DevswarmChildDrain,
+        &scripted::DEVSWARM_CHILD_ROLE,
+        &scripted::DEVSWARM_PARENT_GATE,
+        &scripted::DEVSWARM_CHILD_GATE,
+        &scripted::DEVSWARM_PARENT_REPLY_TRACKER,
+        &scripted::DEVSWARM_CHILD_DRAIN,
         &scripted::SIBLING_SWEEP,
         &scripted::HANDOVER_HYGIENE,
         &scripted::AGENT_REMINDERS,
         &crate::dswire::consume::RtAdvisory,
         &scripted::SESSION_END_MCP_REAPER,
         &scripted::PROCWATCH_ADVISORY,
-        &task_tracker::TaskTracker,
+        &scripted::TASK_TRACKER,
     ];
     &ALL
 }

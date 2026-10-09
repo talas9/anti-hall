@@ -212,22 +212,32 @@ fn a_tick_runs_the_duties_in_nodes_order_with_the_poke_owner_and_the_shared_lock
     let names: Vec<&str> = out["duties"].as_array().unwrap().iter().map(|d| d["duty"].as_str().unwrap()).collect();
     assert_eq!(names, ["log_rotate", "verdicts", "reconcile", "deferred", "app_sync", "retention", "housekeeping"]);
     let calls = rec.calls.lock().unwrap();
-    assert_eq!(calls.len(), 5, "log rotation and housekeeping are native, the other five are Node's functions");
-    for c in calls.iter() {
-        assert_eq!(c.bin.as_deref(), Some("node"));
+    // the liveness sweep, the deferred stage's tick (nothing deferred), app sync (no app database in the fixture), retention and
+    // housekeeping are native (the sweep asks git for the worktree's last commit); reconcile is Node's function
+    let node: Vec<&RunSpec> = calls.iter().filter(|c| c.bin.as_deref() == Some("node")).collect();
+    assert_eq!(node.len(), 1, "{calls:?}");
+    assert!(calls.iter().filter(|c| c.bin.as_deref() != Some("node")).all(|c| c.bin.as_deref() == Some("git")));
+    for c in node.iter() {
         assert_eq!(c.args[0], "-e");
         assert_eq!(c.args[2], f.root.to_string_lossy());
         assert_eq!(c.args[3], f.home.to_string_lossy());
         assert!(c.timeout_ms > 0 && c.timeout_ms <= 900_000);
     }
-    assert_eq!(calls[0].args[4], "engine", "the liveness sweep is told the engine pokes");
-    assert!(calls[0].args[1].contains("sweepOnce") && calls[1].args[1].contains("reconcileSweepIfDue"));
-    assert!(calls.iter().all(|c| !c.args[1].contains("housekeepingSweepIfDue")), "housekeeping is native: no worker for it");
+    assert!(node[0].args[1].contains("reconcileSweepIfDue"));
+    assert!(calls.iter().all(|c| c.args.len() < 2 || !c.args[1].contains("housekeepingSweepIfDue")), "housekeeping is native: no worker for it");
     drop(calls);
     assert!(!dev(&f).join("locks/sweep.lock").exists(), "the lock is released");
-    let rec2 = Rec::default();
-    tick::run(&ctx(&f, &st, false), Owner::Engine, &rec2);
-    assert_eq!(rec2.calls.lock().unwrap()[0].args[4], "node", "Node's poke step runs only when the engine does not own it");
+    // a workspace with a step plan is one Node has tail work for: the sweep is then told who pokes
+    put(
+        &dev(&f).join("plans/ws-1.json"),
+        &json!({"v": 1, "key": "ws-1", "id": "ws-1", "created_at": 1, "steps": [{"n": 1, "text": "a", "status": "doing", "ts": 1, "started_at": 1}]}),
+    );
+    let (rec_e, rec_n) = (Rec::default(), Rec::default());
+    tick::run(&ctx(&f, &st, true), Owner::Engine, &rec_e);
+    tick::run(&ctx(&f, &st, false), Owner::Engine, &rec_n);
+    let sweep_owner = |r: &Rec| r.calls.lock().unwrap().iter().find(|c| c.args.get(1).is_some_and(|a| a.contains("sweepOnce"))).map(|c| c.args[4].clone());
+    assert_eq!(sweep_owner(&rec_e).as_deref(), Some("engine"), "the tail sweep is told the engine pokes");
+    assert_eq!(sweep_owner(&rec_n).as_deref(), Some("node"), "Node's poke step runs only when the engine does not own it");
     assert!(f.home.join(".anti-hall/logs/devswarm-supervisor-engine.ndjson").exists(), "the engine's own tick log");
 }
 
@@ -356,7 +366,7 @@ fn the_node_duties_run_for_real_in_a_scratch_home_and_are_idempotent() {
     // the liveness sweep writes the verdict file of the descriptor
     let out = tick::run_duty("verdicts", &ctx(&f, &st, true), &sys);
     assert_eq!(out["outcome"], "ran", "{out}");
-    assert_eq!(out["detail"]["sweep"], 1);
+    assert_eq!(out["detail"]["native"], 1);
     let v1 = std::fs::read_to_string(dev(&f).join("liveness/ws-1.json")).unwrap();
     let parsed: Value = serde_json::from_str(&v1).unwrap();
     assert!(parsed.get("status").is_some(), "{v1}");
@@ -402,7 +412,7 @@ fn a_missing_node_fails_the_duty_and_not_the_tick() {
     let d = out["duties"].as_array().unwrap();
     assert_eq!(d[0]["outcome"], "ran", "the native duty does not need Node");
     for x in &d[1..] {
-        let native = x["duty"] == "housekeeping";
+        let native = ["housekeeping", "verdicts", "deferred", "app_sync", "retention"].contains(&x["duty"].as_str().unwrap());
         assert_eq!(x["outcome"] == "ran", native, "{x}: a native duty runs without Node, the others fail alone");
     }
 }

@@ -775,10 +775,11 @@ fn cases(fx: &Fx) -> Vec<Case> {
     };
     v.push(defer_store("flag-limit", rp("child-1", &["--limit", "1"]), vec!["\"count\":1"]));
     v.push(defer_store("flag-limit-fraction-floors-to-one", rp("child-1", &["--limit", "0.5"]), vec!["\"count\":1", "truncated"]));
-    v.push(defer_store("flag-since", rp("child-1", &["--since", "1"]), vec!["since"]));
-    v.push(defer_store("flag-tail", rp("child-1", &["--tail", "1"]), vec!["tail"]));
+    // `--since` / `--tail` are Node's refusal, which the engine answers and logs itself: tests/devswarm_l8d_parity.rs (this harness
+    // is built around the receipt a read files)
     v.push(defer_store("flag-ack-as-owner", rp("child-1", &["--ack-as-owner"]), vec!["\"count\":2"]));
-    v.push(defer_store("flag-ack-after-print", rp("child-1", &["--ack-after-print"]), vec!["autoAck"]));
+    // `--ack-after-print` alone is native (tests/devswarm_l8d_parity.rs); with the ownership override it is still Node's
+    v.push(defer_store("flag-ack-after-print-as-owner", rp("child-1", &["--ack-after-print", "--ack-as-owner"]), vec!["autoAck"]));
     v.push(defer_store("flag-legacy-ack-now", rp("child-1", &["--legacy-ack-now"]), vec!["\"acked\""]));
     v.push(defer_store("flag-unread", rp("child-1", &["--unread"]), vec!["\"count\":2"]));
     v.push(defer_store("flag-with-broadcasts", rp("child-1", &["--with-broadcasts"]), vec!["withBroadcastsIgnored"]));
@@ -801,7 +802,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
         vec!["child-1"],
     ));
     v.push(base(
-        "unclaimed-descriptor-session-is-promoted-by-node",
+        "unclaimed-descriptor-session-is-promoted",
         rp("child-1", &["--session", "real-session-1"]),
         ack(floors("child-1", 0, 0), {
             let wt = wt.clone();
@@ -809,7 +810,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
         }),
         nothing(),
         plain(),
-        false,
+        true,
         vec!["\"count\":2"],
     ));
     v.push(base(

@@ -48,6 +48,10 @@ What the automatic guards check and how to read a block.
 - `guards.allowAnthropicEnvKey` = false: The home-only switch that lets ANTHROPIC_API_KEY count as a key (guards.allowAnthropicEnvKey; no env, no plugin option)
 - `guards.pruneCompletedTasksAfter` = 10: How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)
 - `guards.handoverHygiene` = true: Where the on/off switch is read from (guards.handoverHygiene, default on)
+- `devswarm_sup.dryRun.retention` = false: Dry run of the native retention: it plans and compares with Node's planner, logs what it would tombstone and writes nothing (no archive,...
+- `devswarm_sup.dryRun.verdicts` = false: Dry run of the native liveness sweep: it computes every verdict and reports what it would write, but writes nothing and starts no Node work
+- `devswarm_sup_env.retention_budget_ms` = 5000: Time budget of one store's tombstoning batches (environment only, as in Node: ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS)
+- `devswarm_sup.retention.requireWitness` = true: Tombstone only when Node's planner ran and agreed
 - `devswarm_sup.witness` = "on": Run the non-acting Node witness for the native supervisor duties: on | off
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

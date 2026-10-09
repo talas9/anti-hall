@@ -534,11 +534,11 @@ fn a_stale_report_and_the_master_switch_are_silence_and_a_broken_script_is_never
     std::fs::write(&path, old.to_string()).expect("write old report");
     assert_eq!(advise(&env, "PreToolUse", &heavy), Verdict::Allow);
     publish(&mut disk_host(2.5), &h);
-    // a script that throws defers to the no-op fallback hook: silence, not a block, even on a guard event
+    // a script that throws is silence, not a block, even on a guard event: an engine-only check's own failure never blocks the agent
     std::fs::create_dir_all(h.join(".anti-hall/logic")).expect("logic dir");
     std::fs::write(h.join(".anti-hall/logic/procwatch-advisory.js"), "function decide(p){ throw new Error('bad'); }").expect("override");
     let broken = advise(&env, "PreToolUse", &heavy);
-    assert!(matches!(broken, Verdict::Defer), "a broken script must defer, got {broken:?}");
+    assert!(matches!(broken, Verdict::Allow), "a broken script must allow, got {broken:?}");
 }
 
 #[test]

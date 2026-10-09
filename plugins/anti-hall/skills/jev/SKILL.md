@@ -25,7 +25,7 @@ else.**
 
 ## Primary flow: "activate jev" / "enable jev" / "set up jev"
 
-1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" status` first.
+1. Run `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup status` first.
 2. **If a key is already present** (`key present: yes`, or the user says they
    already stored one through the plugin options): skip straight to step 5
    (enable) — don't ask for a key again.
@@ -60,7 +60,7 @@ else.**
    straight to `set-key`:
 
    ```
-   ! read -rs K && printf '%s' "$K" | node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" set-key --transport vercel && unset K
+   ! read -rs K && printf '%s' "$K" | sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup set-key --transport vercel && unset K
    ```
 
    (swap `--transport vercel` for `--transport typesafe` if that's what they
@@ -69,11 +69,11 @@ else.**
    reply**:
 
    ```
-   printf '%s' "<the key they pasted>" | node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" set-key --transport <vercel|typesafe>
+   printf '%s' "<the key they pasted>" | sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup set-key --transport <vercel|typesafe>
    ```
 
    Confirm only with the script's own output — never with the key itself.
-5. Enable: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" enable [--transport vercel|typesafe]`
+5. Enable: `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup enable [--transport vercel|typesafe]`
    (pass `--transport` again if the user picked typesafe, so it's recorded even on
    a repeat run).
 6. Test: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" test` — this makes
@@ -114,7 +114,7 @@ budget (a retry with under ~150 ms left is skipped; the primary is held back ~60
 After 3 consecutive eligible failures a per-vendor circuit breaker skips that vendor for 5 minutes, then probes it
 again (state: `~/.anti-hall/cache/jev-breaker.json`).
 
-- Set: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" enable --transport typesafe --fallback vercel`
+- Set: `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup enable --transport typesafe --fallback vercel`
   (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
 - Keys are VENDOR-BOUND: a key is never sent to a vendor it was not entered for. Store one per vendor: the
   `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
@@ -141,7 +141,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
 
 ## "disable jev"
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" disable`. Mention the
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup disable`. Mention the
 per-session alternative: `ANTIHALL_JEV=0` force-disables for one session without
 touching `jev.json`.
 
@@ -491,7 +491,7 @@ speculation: 6 changed/24h · 5 TP (3 human, 2 auto) · $0.02/TP · p50=120ms ·
 
 ## Per-integration modes
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" mode <integration> on|shadow|off`
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup mode <integration> on|shadow|off`
 — `on` lets Jev actually influence that integration's outcome (bounded by its own
 trust rule), `shadow` consults and logs Jev but never changes the result (useful to
 gather `jev report` data before trusting it), `off` skips it entirely. `speculation`
@@ -501,7 +501,7 @@ other integration defaults to `shadow` until promoted.
 **v0.108.4:** each of the integrations below (13 then; `postHandoverGate` added in v0.109.0) is also its own row/setting in the
 `jevIntegrations` settings-schema section (`jevIntegrations.<id>`, e.g.
 `jevIntegrations.modelRouting`) — its own table in `/anti-hall:settings`
-(`node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section jevIntegrations`)
+(`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --section jevIntegrations`)
 (it has no row in Claude Code's native `/config` panel, which carries only
 the headline switches). `jev-setup.js mode` writes the canonical
 `jevIntegrations.<id>` settings.json key (as well as `~/.anti-hall/jev.json` for

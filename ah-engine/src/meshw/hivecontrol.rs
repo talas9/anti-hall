@@ -12,7 +12,8 @@
 //! a limit, and anything but a clean exit 0 is "not ok" (a missing binary, a spawn error, a timeout, a signal, a non-zero
 //! exit, output past the buffer limit). Node waits for a child that ignores its termination signal for ever; the engine
 //! kills it after a short grace, so a hanging binary is never worse than a missing one.
-use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::ojson::OVal;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use crate::meshw::ident::Env;
@@ -86,7 +87,7 @@ fn cache_keys(bin: &Path) -> Vec<String> {
     let (sec, nsec) = (m.mtime() as f64, m.mtime_nsec() as f64);
     let fractional = sec * 1000.0 + nsec / 1e6;
     let whole = sec * 1000.0 + (m.mtime_nsec() / 1_000_000) as f64;
-    let mut keys: Vec<String> = [fractional, whole].iter().map(|ms| format!("{}|{}|{}", bin.to_string_lossy(), js_number_text(*ms), m.size())).collect();
+    let mut keys: Vec<String> = [fractional, whole].iter().map(|ms| format!("{}|{}|{}", bin.to_string_lossy(), to_js_string(*ms), m.size())).collect();
     keys.dedup();
     keys
 }
@@ -117,11 +118,29 @@ pub fn gate(env: &Env, home: &Path) -> Gate {
     }
 }
 
+/// What `companion/lib/devswarm-pull.js` `defaultRun` reports for one `spawnSync`.
+#[derive(Debug, Clone, Default)]
+pub struct Call {
+    /// A clean exit 0 (`res.ok`).
+    pub ok: bool,
+    /// The stdout: kept on a non-zero exit or a signal (a failed read can still carry what it popped), empty when the binary
+    /// never ran, was stopped at its timeout, or printed past the buffer limit (Node's `r.error` branch).
+    pub raw: String,
+    /// The call was stopped at its timeout (`timedOut`).
+    pub timed_out: bool,
+}
+
 /// The outcome of one call: the stdout of a clean exit 0, else `None` (`res.ok` false).
 pub fn run(args: &[&str], env: &Env) -> Option<String> {
+    let c = call(args, env, defaults::millis("mesh_write.hivecontrol_timeout_ms"));
+    c.ok.then_some(c.raw)
+}
+
+/// One call bounded by `timeout`, reporting what `defaultRun` reports (see [`Call`]).
+pub fn call(args: &[&str], env: &Env, timeout: std::time::Duration) -> Call {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
-    let mut child = Command::new(defaults::text("mesh_write.hivecontrol_bin"))
+    let Ok(mut child) = Command::new(defaults::text("mesh_write.hivecontrol_bin"))
         .args(args)
         .env_clear()
         .envs(env)
@@ -129,7 +148,9 @@ pub fn run(args: &[&str], env: &Env) -> Option<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .ok()?;
+    else {
+        return Call::default();
+    };
     let limit = defaults::num("mesh_write.hivecontrol_max_stdout_bytes") as usize;
     // both pipes are drained while the child runs, so a chatty child cannot block on a full pipe; the reader fills a shared
     // buffer chunk by chunk, so a grandchild that keeps the pipe open after the child is gone can never hold the verb up
@@ -165,13 +186,15 @@ pub fn run(args: &[&str], env: &Env) -> Option<String> {
             while matches!(e.read(&mut sink), Ok(n) if n > 0) {}
         });
     }
-    let deadline = Instant::now() + defaults::millis("mesh_write.hivecontrol_timeout_ms");
+    let deadline = Instant::now() + timeout;
     let poll = defaults::millis("mesh_write.hivecontrol_poll_ms");
     let grace = defaults::millis("mesh_write.hivecontrol_kill_grace_ms");
+    let mut timed_out = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break Some(st),
             Ok(None) if Instant::now() >= deadline || over.load(Ordering::SeqCst) => {
+                timed_out = !over.load(Ordering::SeqCst);
                 // SAFETY: terminating our own child by pid.
                 unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
                 let until = Instant::now() + grace;
@@ -186,15 +209,15 @@ pub fn run(args: &[&str], env: &Env) -> Option<String> {
             Err(_) => break None,
         }
     };
-    let st = status?;
+    let Some(st) = status else { return Call { ok: false, raw: String::new(), timed_out } };
     // the pipe closes with the child; give the reader a moment to take the last bytes
     let until = Instant::now() + grace;
     while !out_done.load(Ordering::SeqCst) && Instant::now() < until {
         std::thread::sleep(poll);
     }
     let bytes = out.lock().map(|b| b.clone()).unwrap_or_default();
-    if !st.success() || bytes.len() > limit {
-        return None;
+    if bytes.len() > limit {
+        return Call::default();
     }
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    Call { ok: st.success(), raw: String::from_utf8_lossy(&bytes).into_owned(), timed_out: false }
 }

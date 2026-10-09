@@ -108,6 +108,41 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             literals.insert(format!("tasklist_guard.{}", &c[1]));
         }
     }
+    // scripts that read their keys through a one-argument helper `xT('short_name')` / `xN('short_name')`: (script, helper regex, section)
+    for (script, helper, section) in [
+        ("task-tracker.js", r"\btt[TN]\('([a-z][a-z0-9_]*)'\)", "task_tracker"),
+        ("task-lifecycle-log.js", r"\blc[TN]\('([a-z][a-z0-9_]*)'\)", "task_lifecycle_log"),
+        ("devswarm-comms-guard.js", r"\bdc[TN]\('([a-z][a-z0-9_]*)'\)", "devswarm_comms"),
+        ("jev-review-reminder.js", r"\bsg[TN]\('([a-z][a-z0-9_]*)'\)", "session_gates"),
+        ("jev-weekly-scorecard.js", r"\bsg[TN]\('([a-z][a-z0-9_]*)'\)", "session_gates"),
+        ("repair-on-reload.js", r"\bsg[TN]\('([a-z][a-z0-9_]*)'\)", "session_gates"),
+        ("scan-throttle.js", r"\bst[TN]\('([a-z][a-z0-9_]*)'\)", "scan_throttle"),
+        ("merge-side-pick.js", r"\bmp[TN]\('([a-z][a-z0-9_]*)'\)", "merge_side_pick"),
+        ("merge-gate.js", r"\bmg[TN]\('([a-z][a-z0-9_]*)'\)", "merge_gate"),
+        ("coordinator-work-guard.js", r"\b(?:cw[TN]|cwNamed|g)\('([a-z][a-z0-9_]*)'\)", "coordinator_work"),
+        ("codex-availability.js", r"\bcx[TN]\('([a-z][a-z0-9_]*)'\)", "codex_handover"),
+        ("codex-quota-detect.js", r"\bcx[TN]\('([a-z][a-z0-9_]*)'\)", "codex_handover"),
+        ("codex-nudge.js", r"\bcx[TN]\('([a-z][a-z0-9_]*)'\)", "codex_handover"),
+        ("command.js", r"\bcm(?:C|Set|ReAny)\('([a-z][a-z0-9_]*)'", "command"),
+    ] {
+        let re = regex::Regex::new(helper).unwrap();
+        for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == script)) {
+            for c in re.captures_iter(&fs::read_to_string(f).unwrap()) {
+                literals.insert(format!("{section}.{}", &c[1]));
+            }
+        }
+    }
+    // a script that takes a lock names the defaults group holding its timings (`<group>.lock_*`); the host reads them by that name
+    let lock_re = regex::Regex::new(r"\.lock\(.*?,\s*'([a-z][a-z0-9_]*)'").unwrap();
+    for f in &js_files {
+        for c in lock_re.captures_iter(&fs::read_to_string(f).unwrap()) {
+            for k in
+                ["lock_stale_ms", "lock_wait_ms", "lock_step_ms", "lock_reclaim_stale_ms", "lock_release_tries", "lock_release_step_ms", "lock_boot_slop_s"]
+            {
+                literals.insert(format!("{}.{k}", &c[1]));
+            }
+        }
+    }
     let indirect = |k: &str| {
         k.starts_with("cmd.") // handlers are checked against the registry by cli::tests; planned commands have no handler
             || k.starts_with("protocol.") // documents the wire format; the request words are parsed in daemon.rs

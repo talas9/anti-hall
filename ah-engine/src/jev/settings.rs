@@ -103,6 +103,11 @@ impl Env {
         self.0.get(name).map(String::as_str)
     }
 
+    /// The snapshot as a map (for the settings layer, which reads a map).
+    pub fn to_map(&self) -> HashMap<String, String> {
+        self.0.clone()
+    }
+
     /// A stable SHA-256 digest (lowercase hex) of the whole environment, used to tell two sessions' environments apart.
     /// A digest, not the text: the memo that holds it never contains a key value.
     pub fn digest(&self) -> String {
