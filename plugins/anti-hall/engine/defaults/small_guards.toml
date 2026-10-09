@@ -1112,19 +1112,19 @@ value = { section = "safety", key = "commandGuard", env = "ANTIHALL_COMMAND_GUAR
 
 [coordinator_work.window_setting]
 doc = "Minutes of the work window (guards.coordinatorWorkWindowMinutes); 0 turns the window off."
-value = { section = "guards", key = "coordinatorWorkWindowMinutes", env = "ANTIHALL_COORDINATOR_WORK_WINDOW_MINUTES", default = 10, min = 0 }
+value = { section = "guards", key = "coordinatorWorkWindowMinutes", env = "ANTIHALL_COORDINATOR_WORK_WINDOW_MINUTES", default = 10, min = 0, reject_below_min = true }
 
 [coordinator_work.nudge_setting]
 doc = "Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory."
-value = { section = "guards", key = "coordinatorWorkNudgeAt", env = "ANTIHALL_COORDINATOR_WORK_NUDGE_AT", default = 4, min = 0 }
+value = { section = "guards", key = "coordinatorWorkNudgeAt", env = "ANTIHALL_COORDINATOR_WORK_NUDGE_AT", default = 4, min = 0, reject_below_min = true }
 
 [coordinator_work.block_setting]
 doc = "The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never."
-value = { section = "guards", key = "coordinatorWorkBlockAt", env = "ANTIHALL_COORDINATOR_WORK_BLOCK_AT", default = 7, min = 0 }
+value = { section = "guards", key = "coordinatorWorkBlockAt", env = "ANTIHALL_COORDINATOR_WORK_BLOCK_AT", default = 7, min = 0, reject_below_min = true }
 
 [coordinator_work.cap_setting]
 doc = "Safety cap on the stored window timestamps per session (guards.coordinatorWorkMaxEntries)."
-value = { section = "guards", key = "coordinatorWorkMaxEntries", env = "ANTIHALL_COORDINATOR_WORK_MAX_ENTRIES", default = 50, min = 1 }
+value = { section = "guards", key = "coordinatorWorkMaxEntries", env = "ANTIHALL_COORDINATOR_WORK_MAX_ENTRIES", default = 50, min = 1, reject_below_min = true }
 
 [coordinator_work.coordinator_entrypoints]
 doc = "CLAUDE_CODE_ENTRYPOINT values that mean the interactive main thread."

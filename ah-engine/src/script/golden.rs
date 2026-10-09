@@ -403,9 +403,9 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
 #[allow(dead_code)]
 pub fn regenerate(check: &str, compiled: &dyn Fn(&Laid) -> Option<Verdict>) {
     let mut out = String::new();
-    let real_now = crate::checks::replykit::io::now_ms();
     for c in load(check) {
-        let l = lay_at(&c, real_now);
+        // the clock is read per case: a long corpus must not age its own fixtures
+        let l = lay_at(&c, crate::checks::replykit::io::now_ms());
         let mut c = c;
         for _ in 1..repeat_of(&c) {
             let _ = compiled(&l);

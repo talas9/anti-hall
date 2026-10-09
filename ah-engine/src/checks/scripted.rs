@@ -183,6 +183,9 @@ pub static CODEX_QUOTA_DETECT: Scripted = Scripted::new("codex-quota-detect", "c
 /// `codex-nudge` (Stop).
 pub static CODEX_NUDGE: Scripted = Scripted::new("codex-nudge", "codex_handover.nudge_summary");
 
+/// `coordinator-work-guard` (PreToolUse and PostToolUse on Bash).
+pub static COORDINATOR_WORK_GUARD: Scripted = Scripted::new("coordinator-work-guard", "coordinator_work.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

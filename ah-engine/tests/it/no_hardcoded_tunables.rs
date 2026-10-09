@@ -169,7 +169,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "the length of `Math.random().toString(36).slice(2)` that the Node migration writes: a JavaScript format, compared byte for byte",
     ),
     ("src/checks/jsport/json.rs", "[0u8; 4]", "the encoding buffer of one UTF-8 character (at most 4 bytes)"),
-    ("src/checks/guardkit/filelock.rs", "[0u8; 256]", "the hostname buffer of gethostname (HOST_NAME_MAX is 255 on every supported system)"),
     ("src/checks/guardkit/nodelock.rs", "[0u8; 256]", "the hostname buffer of gethostname (HOST_NAME_MAX is 255 on every supported system)"),
     ("src/checks/guardkit/nodelock.rs", "out.len() < 11", "a base-36 u32 is at most 7 digits plus the separators of Node's lock name (a format)"),
     ("src/checks/jsport/home.rs", "16384", "the buffer of getpwuid_r, sized by the C library's recommendation"),

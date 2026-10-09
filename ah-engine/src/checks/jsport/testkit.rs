@@ -1,6 +1,5 @@
 //! Test support shared by the handover and Codex checks: a throw-away sandbox with its own home directory.
 use crate::reqenv::RequestEnv;
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 

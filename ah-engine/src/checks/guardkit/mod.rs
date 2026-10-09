@@ -7,7 +7,6 @@
 //! semantics differ from Rust's in a few places ([`jsre`]). Each of those is written once here and tested against the
 //! Node original, so a guard module holds only its own decision logic.
 pub mod mask;
-pub mod filelock;
 pub mod fsio;
 pub mod jsdiff;
 #[cfg(test)]

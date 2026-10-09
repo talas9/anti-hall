@@ -164,7 +164,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::MERGE_SIDE_PICK,
         &scripted::SHIP_IT_GUARD,
         &scripted::SCAN_THROTTLE,
-        &coordinator_work::CoordinatorWorkGuard,
+        &scripted::COORDINATOR_WORK_GUARD,
         &scripted::COMPACT_DECLARATION_GUARD,
         &command::CommandGuard,
         &scripted::MODEL_ROUTING,

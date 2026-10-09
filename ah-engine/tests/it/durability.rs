@@ -224,7 +224,6 @@ fn whole_file_state_is_written_atomically_outside_the_listed_exceptions() {
         ("src/checks/speculation_guard/mod.rs", "an append-only judge log cut at its cap, as Node does"),
         ("src/checks/sibling_sweep/mod.rs", "an append-only log cut at its cap, as Node does"),
         ("src/checks/guardkit/nodelock.rs", "a lock file (locks stay as they are)"),
-        ("src/checks/guardkit/filelock.rs", "a lock file (locks stay as they are)"),
         ("src/checks/phase_tracker/mod.rs", "the phase log is written in place so a symlinked log is written through, as Node does"),
         ("src/dispatch/mod.rs", "the empty done marker the wrapper tests for existence"),
         ("src/doctor/selftest.rs", "fixtures in the self-test's scratch home"),

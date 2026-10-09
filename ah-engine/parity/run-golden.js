@@ -2,6 +2,7 @@
 'use strict';
 // Replays a golden corpus (tests/golden/<check>.jsonl) against the Node hook, the oracle of a scripted check (D88).
 // Usage: node parity/run-golden.js <check> <hook relative to the plugin, e.g. hooks/api-guard.js> [hook args...]
+// A case may carry `"args": [...]`: extra arguments for that case only (e.g. the `--post` pass of a hook that serves two events).
 // A case the corpus expects to `defer` (or marks `"node": false`: a fixture Node cannot mirror) is skipped (Node decides it by definition); every other case must give the same
 // exit code, stdout and stderr as the stored answer. Exit 0 = no mismatch.
 const fs = require('fs'), os = require('os'), path = require('path'), cp = require('child_process');
@@ -43,7 +44,7 @@ for (const c of cases) {
   }
   const env = { PATH: process.env.PATH, ...sub(c.env || {}, home, real) };
   if (c.opts && c.opts.plugin_root) env.CLAUDE_PLUGIN_ROOT = sub(c.opts.plugin_root, home, real); else env.CLAUDE_PLUGIN_ROOT = plugin;
-  const run = () => cp.spawnSync(process.execPath, [path.join(plugin, hook), ...hookArgs], { input: JSON.stringify(sub(c.payload, home, real)), env, encoding: 'utf8' });
+  const run = () => cp.spawnSync(process.execPath, [path.join(plugin, hook), ...hookArgs, ...(c.args || [])], { input: JSON.stringify(sub(c.payload, home, real)), env, encoding: 'utf8' });
   for (let i = 1; i < (c.repeat || 1); i++) run(); // earlier runs only leave their state behind
   const r = run();
   const times = timeTokens(JSON.stringify(c)).sort((a, b) => b[1].length - a[1].length);

@@ -288,3 +288,8 @@ mod codex_nudge {
         assert!(n.nudged(&[]), "without that TMPDIR they are ordinary edits");
     }
 }
+
+#[test]
+fn coordinator_work_guard_script_matches_the_compiled_port() {
+    golden_report("coordinator-work-guard", 12);
+}

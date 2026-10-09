@@ -6,8 +6,15 @@
 // hooks/codex-nudge.js. Keys and texts: codex_handover.toml (codex_handover.*).
 'use strict';
 
-// `realpath` of the longest existing ancestor with the rest appended.
+// `realpath` of the longest existing ancestor with the rest appended (remembered for the rest of the run: the scratch and tree directories repeat per edit).
+var cxRealMemo = {};
 function cxRealOrSelf(p) {
+  if (Object.prototype.hasOwnProperty.call(cxRealMemo, p)) return cxRealMemo[p];
+  var v = cxRealOrSelf1(p);
+  cxRealMemo[p] = v;
+  return v;
+}
+function cxRealOrSelf1(p) {
   var r = ah.fs.realpath(p);
   if (r !== null) return r;
   var cur = p, suffix = [];
@@ -141,6 +148,7 @@ function cxMin() {
 }
 
 function decide(p) {
+  cxRealMemo = {};
   if (cxJudgeChild()) return 'allow';
   if (!ah.settings.bool('codex_handover.setting_nudge') || ah.settings.skipped(cxT('nudge_guard'))) return 'allow';
   var tp = jx.isObj(p) ? p.transcript_path : undefined;
