@@ -21,4 +21,4 @@
 # Batch 6 (lanes d88fb and d88fc, merged) moved the checks listed in DECISIONS 1.106 and 1.107 to scripts: 32.
 # Batch 7 (lane d88e) moves the last decision checks: stale-agent-stop-note 31, claim-ledger 30, idle-agent-sweep 29, auto-handover-pause-nag 28, compact-advice-guard 27, session-end-mcp-reaper 26.
 26
->>>>>>> theirs
+13
