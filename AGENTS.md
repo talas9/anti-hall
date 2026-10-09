@@ -287,8 +287,8 @@ feature/KB touches this area:
 - TaskCompleted+TaskCreated — task-lifecycle-log
 - UserPromptSubmit — verify-first [C], task-tracker [C], idle-agent-sweep [C], limit-conserve-inject [C], devswarm-parent-inbox [C], devswarm-child-turn [C], auto-handover [C]
 
-**Skills** — Claude `/anti-hall:<name>`: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `defects`, `devswarm`, `doctor`, `engine` (+10 area skills `engine-*`), `flutter-debug`, `handover`, `install-statusline`, `jev`, `orchestration`, `root-cause`, `settings`, `ship-it`, `simplify`, `system-briefing`, `update`.
-Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects, devswarm, doctor, engine (+10 area skills engine-*), flutter-debug, handover, install-statusline, jev, model-policy, omc, omx, orchestration, root-cause, settings, ship-it, simplify, system-briefing, update.
+**Skills** — Claude `/anti-hall:<name>`: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `defects`, `devswarm`, `doctor`, `engine` (+10 area skills `engine-*`), `handover`, `install-statusline`, `jev`, `orchestration`, `root-cause`, `settings`, `ship-it`, `simplify`, `system-briefing`, `update`.
+Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects, devswarm, doctor, engine (+10 area skills engine-*), handover, install-statusline, jev, model-policy, omc, omx, orchestration, root-cause, settings, ship-it, simplify, system-briefing, update.
 
 **CLI verbs**:
 - `scripts/devswarm.js`: `primary`, `register`, `ensure`, `heartbeat`, `inbox`, `workspaces`, `gate`, `done`, `nudge`, `archive`, `reap-orphans`, `reconcile-registry`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `register-primary`, `migrate`, `logs`, `migrate-owner-keys`, `send`, `relay`, `roster`, `wake-directive`, `app-state`, `sync-ui`, `app-sync`, `diagnose`, `plan`, `scope`, `supervision-report`, `respawn`, `correct`, `healthcheck`, `ready-check`, `mesh`, `reconcile`, `reap-stale`, `reconcile-active`, `spawn`, `merge`, `skip`, `auto-archive`, `prune-archived`, `gate-intent`, `retention`, `notice` (`help <verb>`).
