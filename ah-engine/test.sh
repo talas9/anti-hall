@@ -22,6 +22,8 @@ if cargo nextest --version >/dev/null 2>&1; then
   # with three Node sweeps did three times (CI run 37854799458), and the test asserts zero restarts. The reliability and spool
   # tests are timing-driven too (queue overflow, a 1.5 s client deadline, a state dir removed under a running daemon) and
   # each failed once on a loaded runner for a different reason (the schedule tests assert a 250 ms start latency), so they run alone as well.
+  # The memory soak is in the `soak` test group, which the default profile leaves out (its default-filter): locally it runs
+  # with `--profile soak` once per release train; the ci profile keeps it in this timed pass.
   timed='binary(telemetry_overhead) | binary(script_latency) | test(/^memory_soak::/) | test(/^reliability::/) | test(/^spool::/) | test(/^schedule::/)'
   cargo nextest run --release --profile "$profile" -E "not ($timed)" "$@"
   rc=$?
