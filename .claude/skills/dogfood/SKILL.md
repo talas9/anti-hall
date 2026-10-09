@@ -14,7 +14,7 @@ output. Judge it, record it, fix it. Never silently obey, dismiss or work around
 Blocks, advisories, nudges, tracker lines, stop-hook feedback, statusline segments, DevSwarm
 notices. Verdict: **true positive** / **false positive** (wrong about facts) / **noise** (right
 but useless or repeated) / **wrong wording**. Anything but a true positive gets one line in
-`.anti-hall/dogfood/ISSUES.md` (local, gitignored):
+`.anti-hall/history/dogfood/ISSUES.md` (local, gitignored):
 
 `- YYYY-MM-DD HH:MM | <check / event / source> | <verdict> | <message quote + contradicting fact> | open`
 
