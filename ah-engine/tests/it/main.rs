@@ -35,6 +35,7 @@ mod doctor_scenarios;
 mod dssup;
 mod dssup_ingest;
 mod dssup_kill;
+mod dssup_liveness;
 mod durability;
 mod e2e;
 mod fail_closed_matrix;

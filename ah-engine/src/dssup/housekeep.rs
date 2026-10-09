@@ -153,5 +153,6 @@ pub fn witness_prepare(ctx: &Ctx) -> Option<super::witness::Job> {
         duty: "housekeeping".to_string(),
         scratch: scratch.clone(),
         facts: json!({"days": windows, "names": names, "live": live_root.to_string_lossy(), "scratch": scratch_root.to_string_lossy()}),
+        live: false,
     })
 }
