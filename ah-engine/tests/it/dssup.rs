@@ -212,10 +212,10 @@ fn a_tick_runs_the_duties_in_nodes_order_with_the_poke_owner_and_the_shared_lock
     let names: Vec<&str> = out["duties"].as_array().unwrap().iter().map(|d| d["duty"].as_str().unwrap()).collect();
     assert_eq!(names, ["log_rotate", "verdicts", "reconcile", "deferred", "app_sync", "retention", "housekeeping"]);
     let calls = rec.calls.lock().unwrap();
-    // the liveness sweep and housekeeping are native (the sweep asks git for the worktree's last commit); the other four duties
-    // are Node's functions
+    // the liveness sweep, the deferred stage's tick (nothing deferred) and housekeeping are native (the sweep asks git for the
+    // worktree's last commit); reconcile, app sync and retention (not yet armed: Node's report phase) are Node's functions
     let node: Vec<&RunSpec> = calls.iter().filter(|c| c.bin.as_deref() == Some("node")).collect();
-    assert_eq!(node.len(), 4, "{calls:?}");
+    assert_eq!(node.len(), 3, "{calls:?}");
     assert!(calls.iter().filter(|c| c.bin.as_deref() != Some("node")).all(|c| c.bin.as_deref() == Some("git")));
     for c in node.iter() {
         assert_eq!(c.args[0], "-e");
@@ -412,7 +412,7 @@ fn a_missing_node_fails_the_duty_and_not_the_tick() {
     let d = out["duties"].as_array().unwrap();
     assert_eq!(d[0]["outcome"], "ran", "the native duty does not need Node");
     for x in &d[1..] {
-        let native = x["duty"] == "housekeeping" || x["duty"] == "verdicts";
+        let native = ["housekeeping", "verdicts", "deferred"].contains(&x["duty"].as_str().unwrap());
         assert_eq!(x["outcome"] == "ran", native, "{x}: a native duty runs without Node, the others fail alone");
     }
 }

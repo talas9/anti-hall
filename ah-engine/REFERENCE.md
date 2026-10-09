@@ -4795,14 +4795,26 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `devswarm_sup.detail_chars` | `600` |  |  | Most characters of a duty's output kept in the tick record. |
+| `devswarm_sup.ds_buckets_key` | `buckets` |  |  | The key of the resume marker that maps each store bucket to its archived ids still to do. |
+| `devswarm_sup.ds_cursor_key` | `nextStageIndex` |  |  | The cursor file's key: the index of the stage taken next. |
+| `devswarm_sup.ds_family_file` | `fold-archived-family-resume.json` |  |  | The archived-row fold's family resume marker under the DevSwarm state directory. |
+| `devswarm_sup.ds_ids_key` | `ids` |  |  | The key of the family resume marker that lists the ids still to do. |
+| `devswarm_sup.ds_pending_hashes` | `pendingHashes` |  |  | The key of a stage entry that lists the stores still to do. |
+| `devswarm_sup.ds_pending_version` | `pendingVersion` |  |  | The key of a stage entry that names the version a deferred pass is pending for. |
+| `devswarm_sup.ds_reason_no_marker` | `no-marker` |  |  | The answer of a tick whose stage has nothing deferred. |
+| `devswarm_sup.ds_resume_file` | `fold-archived-resume.json` |  |  | The archived-row fold's resume marker under the DevSwarm state directory. |
+| `devswarm_sup.ds_stage_keys` | `3 entries` |  |  | For the stages whose marker lives in the update sweep state: the key of the stage's entry there. |
+| `devswarm_sup.ds_stages` | `fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows` |  |  | The deferred post-update stages, in rotation order (Node: DEFERRED_SWEEP_STAGES). |
+| `devswarm_sup.ds_state_file` | `deferred-sweep-state.json` |  |  | The rotation cursor under the DevSwarm state directory (Node's deferred-sweep-state.json). |
+| `devswarm_sup.ds_update_state` | `.anti-hall/update-sweep-state.json` |  |  | The update sweep state, relative to the home directory (migrations.js update-sweep-state.json). |
 | `devswarm_sup.duties` | `7 items` |  |  | The duties of one tick, in order (the order of Node's main(): log rotation, the liveness sweep, reconcile, deferred stage, app sync, retention, housekeeping; auto-archive is the engine's own action layer and poke / escalate its action sweeps). |
 | `devswarm_sup.duty.app_sync` | `4 entries` |  |  | Sync the DevSwarm app state (archived flags, names, message gaps) into app-state.json and the descriptors. |
-| `devswarm_sup.duty.deferred` | `4 entries` |  |  | One stage of the deferred post-update sweep per tick (fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows, in rotation), only when its marker says work is pending. Node's deferred-sweep-state.json keeps the rotation cursor. |
+| `devswarm_sup.duty.deferred` | `6 entries` |  |  | One stage of the deferred post-update sweep per tick (fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows, in rotation), only when its marker says work is pending. The rotation cursor (deferred-sweep-state.json), the marker peek and the nothing-pending answer are native; a stage that has work runs as Node's own runDeferredStage (the store folds of update.js stay Node's). |
 | `devswarm_sup.duty.housekeeping` | `9 entries` |  |  | Disk hygiene: sweep the reaped-workspace logs and the child-gate files by the doctor's repair rules. Node's housekeeping-sweep-state.json keeps the cool-down. Native: removes only files older than the retention window, one directory level, only the sweep's own suffix. |
 | `devswarm_sup.duty.log_rotate` | `4 entries` |  |  | Rotate the supervisor log (and the engine's own tick log) to one .1 generation when it passes set_log_rotate_bytes. Native. Only the supervisor's own bounded log is touched. |
 | `devswarm_sup.duty.reconcile` | `7 entries` |  |  | The reconcile sweep: drain stranded per-worktree queues into the shared store (reconcile), fold duplicate mesh rows, probe the active workspace list for the app-side archive cache, and sample start-up. Node's state file reconcile-sweep-state.json keeps the cool-down, so either side finding it fresh does nothing. |
-| `devswarm_sup.duty.retention` | `4 entries` |  |  | Bounded growth of the message stores: archive-first tombstoning of old message bodies under Node's own retention rules, state and lock (retention-state.json, locks/retention.lock). No row is deleted. |
-| `devswarm_sup.duty.verdicts` | `4 entries` |  |  | The liveness sweep: compute and write every workspace's liveness verdict file, apply the suppressors (post-spawn grace, archive-ready, session alive, Primary row), force the parent notice for an urgent mesh unread, record straying and the Jev blocker label, and re-send parked escalation notices. When the engine owns poke and escalate it runs with Node's poke step switched off (the engine's action layer pokes). |
+| `devswarm_sup.duty.retention` | `9 entries` |  |  | Bounded growth of the message stores: archive-first tombstoning of old, fully read message bodies (never a row delete; positions and dedupe depend on every row staying), native in the armed state. The engine plans natively and writes only when Node's own planner, run read only on the same store, agrees on the exact rows; a disagreement or a witness that cannot run does nothing and is logged. The one-time dry-run report phase, the journal fold and the archive cap stay Node's own functions. |
+| `devswarm_sup.duty.verdicts` | `8 entries` |  |  | The liveness sweep: compute and write every workspace's liveness verdict file natively; a workspace that is stale, has a Jev blocker or a step plan, or that the engine cannot prove it decides like Node, goes to Node's own sweep (suppressors, the forced parent notice for an urgent mesh unread, straying and the Jev blocker label), and parked escalation notices are re-sent by Node. When the engine owns poke and escalate Node's poke step is switched off (the engine's action layer pokes). |
 | `devswarm_sup.engine_log` | `.anti-hall/logs/devswarm-supervisor-engine.ndjson` |  |  | The engine's own record of its ticks (one JSON line each), relative to the home directory. Kept apart from the Node log so the engine never trips its own guard. |
 | `devswarm_sup.env_disable` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | The environment variable that is the hard kill switch of every DevSwarm job (Node: DISABLE_ANTIHALL_DEVSWARM). |
 | `devswarm_sup.env_disable_on` | `1` |  |  | The value of the kill switch that disables. |
@@ -4849,6 +4861,29 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.lock_file` | `locks/sweep.lock` |  |  | The single-flight sweep lock, relative to the DevSwarm state directory: the Node supervisor's own file, taken the same way (a dead holder or one older than lock_stale_ms is taken over), so while a tick runs a Node sweep exits at once. |
 | `devswarm_sup.lock_stale_ms` | `300000` |  | ms | A sweep lock older than this is taken over (Node: SWEEP_LOCK_STALE_MS). |
 | `devswarm_sup.log_backup_suffix` | `.1` |  |  | The suffix of the one rotated generation of a log. |
+| `devswarm_sup.lv_encode_chars` | `/\:.` |  |  | The characters of a worktree path that become the replacement in the transcript directory's name (target-session.js encodeWorktreePath: slash, backslash, colon, dot). |
+| `devswarm_sup.lv_encode_to` | `-` |  |  | What each of those characters becomes. |
+| `devswarm_sup.lv_escalation_dir` | `escalation-pending` |  |  | Parked escalation notices, under the DevSwarm state directory (recovery.js escalation-pending). |
+| `devswarm_sup.lv_field_delivered` | `delivered` |  |  | The field of a parked notice that marks it delivered. |
+| `devswarm_sup.lv_field_parent` | `parentId` |  |  | The field of a parked notice that names the parent. |
+| `devswarm_sup.lv_field_pid` | `pid` |  |  | The field of a session record that holds the process id. |
+| `devswarm_sup.lv_field_row` | `row` |  |  | The field of a parked notice that holds the message row. |
+| `devswarm_sup.lv_field_ts` | `ts` |  |  | The field of a heartbeat record that holds its time. |
+| `devswarm_sup.lv_git_args` | `-C, {worktree}, log, -1, --format=%ct` |  |  | The arguments of the last-commit-time call; {worktree} is the workspace's worktree. |
+| `devswarm_sup.lv_git_bin` | `git` |  |  | The git executable (resolved on PATH). |
+| `devswarm_sup.lv_git_timeout_ms` | `4000` |  | ms | Bound of the git call that reads a worktree's last commit time (liveness.js GIT_TIMEOUT_MS). |
+| `devswarm_sup.lv_heartbeat_fresh_ms` | `900000` |  | ms | How recent a heartbeat must be to count as proof the workspace is alive (liveness.js DEFAULT_HEARTBEAT_FRESH_MS, 15 minutes). |
+| `devswarm_sup.lv_jev_key_sep` | `` |  |  | The separator in the keys of Jev's pending-labels file between the recipient and the sender (the key ends with this and the child id). |
+| `devswarm_sup.lv_keys` | `8 items` |  |  | The fields of a liveness verdict, in the order Node writes them: status, lastOutboundTs, staleSince, nudgeAttempts, nudgedAt, pending, notDraining, oldestUnreadAgeMs. |
+| `devswarm_sup.lv_log_cleared_action` | `cleared` |  |  | The recovery-log action when a sticky escalation is cleared because the session is alive. |
+| `devswarm_sup.lv_log_cleared_reason` | `session-alive` |  |  | The recovery-log reason of that action. |
+| `devswarm_sup.lv_ms_per_sec` | `1000` |  |  | Milliseconds in a second (the thresholds are set in seconds, the verdicts hold milliseconds). |
+| `devswarm_sup.lv_never_launched_ms` | `21600000` |  | ms | How long a registered workspace may have no transcript at all before it counts as never launched (liveness.js DEFAULT_NEVER_LAUNCHED_MS, 6 hours). |
+| `devswarm_sup.lv_projects_dir` | `projects` |  |  | The directory of the Claude session transcripts under ~/.claude (companion/lib/target-session.js projectDirFor). |
+| `devswarm_sup.lv_spec_file` | `spec.json` |  |  | The file in a witness scratch directory that holds the witness's inputs (the clock, the thresholds and each workspace's previous verdict text). |
+| `devswarm_sup.lv_status_alive` | `alive` |  |  | The verdict status of a workspace that is not stale. |
+| `devswarm_sup.lv_transcript_ext` | `.jsonl` |  |  | The extension of a session transcript file. |
+| `devswarm_sup.lv_witness_max_ids` | `500` |  |  | Most workspaces one witness comparison covers (the oldest verdicts first); a sweep with more is sampled, never skipped whole. |
 | `devswarm_sup.mode` | `witness` |  |  | Who owns the supervisor duties: witness (the Node supervisor job does; the engine runs none of them) \| engine (the engine's scheduler runs them, poke and escalate follow). Anything else reads as witness, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit. |
 | `devswarm_sup.mode_words` | `witness, engine` |  |  | The words of devswarm_sup.mode, in the order witness, engine. |
 | `devswarm_sup.msg_budget` | `tick budget spent` |  |  | The reason a duty was not started because the tick's time was spent. |
@@ -4888,15 +4923,82 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.recover_witness_timeout_ms` | `20000` |  | ms | Bound of the witness's target lookup. |
 | `devswarm_sup.recover_witness_veto` | `1` |  |  | 1: when Node's read-only target lookup does not confirm the process the engine would signal, the engine stands down (reason `witness-disagrees`) instead of signalling. 0: the witness only logs. A Node that cannot be run never vetoes. |
 | `devswarm_sup.recovery_log` | `recovery.log` |  |  | Node's recovery log (one JSON line per poke / escalation / recovery step), relative to the DevSwarm state directory. |
+| `devswarm_sup.rt_archive_dir` | `archive` |  |  | The archive of tombstoned bodies under the DevSwarm state directory. |
+| `devswarm_sup.rt_archive_ext` | `.ndjson.gz` |  |  | The extension of an archive month file. |
+| `devswarm_sup.rt_archived_at` | `archivedAt` |  |  | The field added to an archived row: when it was archived. |
+| `devswarm_sup.rt_backend_journal` | `journal` |  |  | The backend word of a journal store (retention skips it). |
+| `devswarm_sup.rt_backend_marker` | `BACKEND` |  |  | The file in a store directory that names its backend. |
+| `devswarm_sup.rt_base_marker` | `#base` |  |  | The infix of a partition's legacy base cursor file (<id>#base.json). |
+| `devswarm_sup.rt_batch_rows` | `500` |  |  | Rows archived and tombstoned per transaction. |
+| `devswarm_sup.rt_broadcast_partition` | `*mesh-broadcast*` |  |  | The id of the shared broadcast partition. |
+| `devswarm_sup.rt_busy_ms` | `3000` |  | ms | How long a store opened by the retention waits for another writer (Node: PRAGMA busy_timeout). |
+| `devswarm_sup.rt_cursors_dir` | `cursors` |  |  | The legacy cursor files under the DevSwarm state directory. |
+| `devswarm_sup.rt_day_ms` | `86400000` |  |  | Milliseconds in the retention window's day. |
+| `devswarm_sup.rt_db_file` | `devswarm.db` |  |  | A store's sqlite file name. |
+| `devswarm_sup.rt_ev_over_limit` | `over-limit` |  |  | The log event of a store still over its limit after a visit. |
+| `devswarm_sup.rt_ev_over_limit_protected` | `over-limit-protected` |  |  | The log event of a store over its limit with nothing more that may be pruned. |
+| `devswarm_sup.rt_ev_prune_batch` | `prune-batch` |  |  | The log event of one committed batch. |
+| `devswarm_sup.rt_gunzip_args` | `-d, -c` |  |  | Arguments that make gzip decompress stdin to stdout. |
+| `devswarm_sup.rt_gzip_args` | `-c, -n` |  |  | Arguments that make gzip compress stdin to stdout without a name or timestamp. |
+| `devswarm_sup.rt_gzip_bin` | `gzip` |  |  | The gzip executable (resolved on PATH). Without one the engine declines and Node's own function archives. |
+| `devswarm_sup.rt_hash_re_legacy` | `^[0-9a-fA-F]{8}$` |  |  | The shape of a legacy store directory name (eight hexadecimal digits). |
+| `devswarm_sup.rt_hash_re_repokey` | `^[a-z0-9-]{1,40}-[0-9a-f]{6}$` |  |  | The shape of a repoKey store directory name. |
+| `devswarm_sup.rt_hash_sep` | `#` |  |  | In a partition id, the character that marks a legacy cursor artefact (such an id has no legacy cursor files of its own). |
+| `devswarm_sup.rt_held_file` | `.anti-hall/logs/devswarm-retention-held.json` |  |  | When each store last had a comparison that held its tombstoning back (a JSON object store -> ms), relative to the home directory. |
+| `devswarm_sup.rt_inst_marker` | `#inst-` |  |  | The infix of a partition's legacy instance cursor files (<id>#inst-<short>.json). |
+| `devswarm_sup.rt_journal_dir` | `journal` |  |  | A store's legacy journal directory. |
+| `devswarm_sup.rt_journal_ext` | `.ndjson` |  |  | The extension of a raw journal file. |
+| `devswarm_sup.rt_lock_file` | `locks/retention.lock` |  |  | Retention's lock file under the DevSwarm state directory. |
+| `devswarm_sup.rt_lock_stale_ms` | `600000` |  | ms | A retention lock older than this is taken over (Node: LOCK_STALE_MS). |
+| `devswarm_sup.rt_log_file` | `.anti-hall/logs/devswarm-retention.ndjson` |  |  | Retention's event log, relative to the home directory (Node's file; the engine appends the same events). |
+| `devswarm_sup.rt_mb` | `1048576` |  |  | Bytes in a megabyte of the size limits. |
+| `devswarm_sup.rt_msg_cand_differ` | `the candidate rows differ at index` |  |  | Why a comparison failed: the candidate rows differ (followed by the first differing index and the two counts). |
+| `devswarm_sup.rt_msg_choice_differ` | `the rows chosen differ: engine {engine}, Node {node}` |  |  | Why a comparison failed: the counts chosen differ. {engine} and {node} are the two records. |
+| `devswarm_sup.rt_msg_no_witness` | `the witness could not run` |  |  | Why nothing was tombstoned: Node's planner could not run and the witness is required. |
+| `devswarm_sup.rt_msg_node_plan` | `Node's planner did not plan the store` |  |  | Why a comparison failed: Node's planner did not plan the store. |
+| `devswarm_sup.rt_msg_parts_differ` | `a partition's statistics differ from Node's` |  |  | Why a comparison failed: a partition's statistics differ. |
+| `devswarm_sup.rt_msg_unstable` | `the store changed during the comparison` |  |  | Why nothing was tombstoned: the store changed while the plan was compared. |
+| `devswarm_sup.rt_msg_witness_output` | `the witness output did not parse` |  |  | Why a witness answer was not used: its output did not parse. |
+| `devswarm_sup.rt_no_table_text` | `no such table` |  |  | The text of SQLite's error for a table an older store does not have yet (such a store has no reader cursors: no rows, not an error). |
+| `devswarm_sup.rt_phase_armed` | `armed` |  |  | The phase in which sweeps act. |
+| `devswarm_sup.rt_phase_dry` | `dry-run` |  |  | The phase of a machine's first run (a dry-run report only). |
+| `devswarm_sup.rt_reason_lock_busy` | `lock-busy` |  |  | The answer when another retention run holds the lock. |
+| `devswarm_sup.rt_recent_runs` | `51` |  |  | Runs of identical broadcasts at the end of the broadcast partition that stay readable (the store's recent-broadcast cap plus the boundary run). |
+| `devswarm_sup.rt_row_cols` | `14 items` |  |  | The columns of an archived row, in the order Node writes them. |
+| `devswarm_sup.rt_seen_marker` | `.seen-` |  |  | In a partition id, the marker of a legacy seen-file. |
+| `devswarm_sup.rt_short_len` | `6` |  |  | Length of the hexadecimal short id in a legacy instance cursor file name. |
+| `devswarm_sup.rt_size_rounds` | `3` |  |  | Most rounds of size-limit pruning in one visit of a store. |
+| `devswarm_sup.rt_state_file` | `retention-state.json` |  |  | Retention's state file under the DevSwarm state directory (Node's retention-state.json). |
+| `devswarm_sup.rt_state_holds` | `holds` |  |  | The state key that holds the restore holds. |
+| `devswarm_sup.rt_state_max_archived` | `maxArchivedId` |  |  | The store-record key that holds the highest archived row id. |
+| `devswarm_sup.rt_state_phase` | `phase` |  |  | The state key that holds the phase. |
+| `devswarm_sup.rt_state_stores` | `stores` |  |  | The state key that holds each store's last run. |
+| `devswarm_sup.rt_state_tombstoned` | `tombstoned` |  |  | The store-record key that counts the rows tombstoned in total. |
+| `devswarm_sup.rt_store_dir` | `store` |  |  | The stores directory under the DevSwarm state directory. |
+| `devswarm_sup.rt_store_min_interval_ms` | `21600000` |  | ms | A store is revisited by the sweep at most this often. |
+| `devswarm_sup.rt_text_types` | `text, null` |  |  | The SQLite storage types a message body may have for the engine to plan it (text, or NULL for a tombstone); any other type (a blob, a number) is a value Node would turn into text its own way, so the sweep is Node's. |
+| `devswarm_sup.rt_vacuum_ratio` | `0.2` |  |  | Reclaim space (VACUUM) when the freelist, or the bytes tombstoned this run, exceed this share of the file; always when enforcing the size limit. |
+| `devswarm_sup.rt_wal_suffix` | `-wal` |  |  | The suffix of a sqlite file's write-ahead log. |
 | `devswarm_sup.set_child_gate_days` | `5 entries` |  |  | Days a per-session child-gate state file is kept before the housekeeping sweep removes it. Node: devswarm.childGateRetentionDays. A value that is not a positive number reads as the default. |
+| `devswarm_sup.set_dry_run_retention` | `5 entries` |  |  | Dry run of the native retention: it plans and compares with Node's planner, logs what it would tombstone and writes nothing (no archive, no tombstone, no state). |
+| `devswarm_sup.set_dry_run_verdicts` | `5 entries` |  |  | Dry run of the native liveness sweep: it computes every verdict and reports what it would write, but writes nothing and starts no Node work. Use it to look at the engine's decisions before it acts. |
 | `devswarm_sup.set_grace_sec` | `{ type = "number", section = "devswarm", key = "graceSec", env = "ANTIHALL_DE...` |  |  | How long after SIGTERM the engine waits before it checks whether the process is still there. Node: devswarm.graceSec. |
 | `devswarm_sup.set_housekeeping_mode` | `6 entries` |  |  | Housekeeping sweep switch: auto / on / off. Node: devswarm.housekeepingSweep. |
 | `devswarm_sup.set_housekeeping_sec` | `7 entries` |  |  | Least time between two housekeeping sweeps. Node: devswarm.housekeepingSweepSec (floor 300). |
+| `devswarm_sup.set_idle_sec` | `7 entries` |  |  | How long a workspace's transcript and worktree must both be quiet before an unread mailbox makes it stale. Node: devswarm.idleSec (floor 60). |
 | `devswarm_sup.set_log_rotate_bytes` | `7 entries` |  |  | Size above which the supervisor log is rotated to its .1 copy. Node: devswarm.supervisorLogRotateBytes. |
 | `devswarm_sup.set_max_recoveries` | `7 entries` |  |  | Most kill-and-resume recoveries of one workspace. Node: devswarm.maxRecoveries. |
+| `devswarm_sup.set_nudge_window_sec` | `7 entries` |  |  | How long a poke stays in effect before the sweep decides again. Node: devswarm.nudgeWindowSec (floor 1). |
 | `devswarm_sup.set_reaped_days` | `5 entries` |  |  | Days a reaped-workspace log is kept before the housekeeping sweep removes it. Node: devswarm.reapedRetentionDays. A value that is not a positive number reads as the default. |
 | `devswarm_sup.set_reconcile_mode` | `6 entries` |  |  | Reconcile sweep switch: auto / on / off. Node: devswarm.reconcileSweep. |
 | `devswarm_sup.set_reconcile_sec` | `7 entries` |  |  | Least time between two reconcile sweeps. Node: devswarm.reconcileSweepSec (floor 300). |
+| `devswarm_sup.set_rt_archive` | `5 entries` |  |  | Write a body to the gzip archive before tombstoning it (restorable). Off means a tombstoned body is gone. Node: devswarm.retention.archive. |
+| `devswarm_sup.set_rt_archive_max_mb` | `7 entries` |  |  | Archive size cap in MB; 0 = never evict an archive month. Node: devswarm.retention.archiveMaxMB. |
+| `devswarm_sup.set_rt_budget_ms` | `7 entries` |  |  | Time budget of one store's tombstoning batches (environment only, as in Node: ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS). |
+| `devswarm_sup.set_rt_days` | `7 entries` |  |  | Days of message bodies kept before they are archived and tombstoned; 0 switches retention off. Node: devswarm.retention.days. |
+| `devswarm_sup.set_rt_keep` | `7 entries` |  |  | The newest messages of each partition that are never tombstoned (by age or by size). Node: devswarm.retention.keepPerPartition. |
+| `devswarm_sup.set_rt_max_store_mb` | `7 entries` |  |  | Store size limit in MB: above it the oldest eligible bodies are tombstoned whatever their age; 0 = no limit. Node: devswarm.retention.maxStoreMB. |
+| `devswarm_sup.set_rt_require_witness` | `5 entries` |  |  | Tombstone only when Node's planner ran and agreed. Turn off only when Node is decommissioned and the agreement record is proven; the engine then relies on its own two identical plans and its in-transaction checks. |
 | `devswarm_sup.set_witness` | `6 entries` |  |  | Run the non-acting Node witness for the native supervisor duties: on \| off. The witness only ever touches scratch copies; it costs one short Node run per duty per witness_every_ms. |
 | `devswarm_sup.status_escalated` | `escalated` |  |  | The verdict status after an escalation. |
 | `devswarm_sup.status_nudged` | `nudged` |  |  | The verdict status after a poke. |

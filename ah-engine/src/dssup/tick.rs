@@ -141,6 +141,9 @@ pub fn run_duty_w(name: &str, ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<
         if name == "verdicts" {
             return super::liveness::duty(ctx, runner);
         }
+        if name == "deferred" {
+            return (super::deferred::duty(ctx, runner), None);
+        }
         if name == "retention" {
             return (super::retention::duty(ctx, runner), None);
         }

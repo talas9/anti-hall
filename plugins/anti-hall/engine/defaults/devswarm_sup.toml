@@ -129,8 +129,8 @@ doc = "The reconcile sweep: drain stranded per-worktree queues into the shared s
 value = { kind = "node", gate = "cooldown", state = "reconcile-sweep-state.json", sec = "devswarm_sup.set_reconcile_sec", mode = "devswarm_sup.set_reconcile_mode", timeout_ms = 900000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const r=S.reconcileSweepIfDue({home:process.argv[2]});console.log(JSON.stringify(S.compactReconcileForLog(r,null).line))' }
 
 [devswarm_sup."duty.deferred"]
-doc = "One stage of the deferred post-update sweep per tick (fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows, in rotation), only when its marker says work is pending. Node's deferred-sweep-state.json keeps the rotation cursor."
-value = { kind = "node", gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.deferredSweepIfDue({home:process.argv[2]})))' }
+doc = "One stage of the deferred post-update sweep per tick (fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows, in rotation), only when its marker says work is pending. The rotation cursor (deferred-sweep-state.json), the marker peek and the nothing-pending answer are native; a stage that has work runs as Node's own runDeferredStage (the store folds of update.js stay Node's)."
+value = { kind = "node", native = true, gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.deferredSweepIfDue({home:process.argv[2]})))', stage_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const stage=process.argv[3];try{const budgetMs=S.resolveSupervisorSweepBudgetMs(process.env);const result=S.runDeferredStage(stage,{home:process.argv[2],env:process.env,budgetMs});console.log(JSON.stringify({stage,ran:true,budgetMs,result}))}catch(e){console.log(JSON.stringify({stage:null,ran:false,error:String(e&&e.message||e)}))}' }
 
 [devswarm_sup."duty.app_sync"]
 doc = "Sync the DevSwarm app state (archived flags, names, message gaps) into app-state.json and the descriptors."
@@ -960,3 +960,53 @@ value = "the store changed during the comparison"
 [devswarm_sup.rt_text_types]
 doc = "The SQLite storage types a message body may have for the engine to plan it (text, or NULL for a tombstone); any other type (a blob, a number) is a value Node would turn into text its own way, so the sweep is Node's."
 value = ["text", "null"]
+
+# ---- the deferred stage, native (src/dssup/deferred.rs) --------------------------------------------------------------------------
+
+[devswarm_sup.ds_stages]
+doc = "The deferred post-update stages, in rotation order (Node: DEFERRED_SWEEP_STAGES)."
+value = ["fold-all-stores", "heal-orphan-partitions", "fold-archived-rows", "heal-registry-rows"]
+
+[devswarm_sup.ds_stage_keys]
+doc = "For the stages whose marker lives in the update sweep state: the key of the stage's entry there."
+value = { fold-all-stores = "foldAllStores", heal-orphan-partitions = "healOrphanPartitions", heal-registry-rows = "healRegistry" }
+
+[devswarm_sup.ds_state_file]
+doc = "The rotation cursor under the DevSwarm state directory (Node's deferred-sweep-state.json)."
+value = "deferred-sweep-state.json"
+
+[devswarm_sup.ds_cursor_key]
+doc = "The cursor file's key: the index of the stage taken next."
+value = "nextStageIndex"
+
+[devswarm_sup.ds_update_state]
+doc = "The update sweep state, relative to the home directory (migrations.js update-sweep-state.json)."
+value = ".anti-hall/update-sweep-state.json"
+
+[devswarm_sup.ds_pending_version]
+doc = "The key of a stage entry that names the version a deferred pass is pending for."
+value = "pendingVersion"
+
+[devswarm_sup.ds_pending_hashes]
+doc = "The key of a stage entry that lists the stores still to do."
+value = "pendingHashes"
+
+[devswarm_sup.ds_resume_file]
+doc = "The archived-row fold's resume marker under the DevSwarm state directory."
+value = "fold-archived-resume.json"
+
+[devswarm_sup.ds_family_file]
+doc = "The archived-row fold's family resume marker under the DevSwarm state directory."
+value = "fold-archived-family-resume.json"
+
+[devswarm_sup.ds_buckets_key]
+doc = "The key of the resume marker that maps each store bucket to its archived ids still to do."
+value = "buckets"
+
+[devswarm_sup.ds_ids_key]
+doc = "The key of the family resume marker that lists the ids still to do."
+value = "ids"
+
+[devswarm_sup.ds_reason_no_marker]
+doc = "The answer of a tick whose stage has nothing deferred."
+value = "no-marker"

@@ -17,6 +17,7 @@
 // - an unreadable state file or log is the absent one (Node's try/catch parity): the duty is due, the log counts as not fresh
 // - an unparsable worker output is kept as text
 pub mod cli;
+pub mod deferred;
 pub mod housekeep;
 pub mod ingest;
 pub mod kill;
