@@ -398,6 +398,7 @@ mod tests {
                 "scan-throttle",
                 "api-guard",
                 "ship-it-guard",
+                "procwatch-advisory",
                 "engine-role-guard"
             ]
         );

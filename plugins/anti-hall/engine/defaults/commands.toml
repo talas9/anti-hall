@@ -74,6 +74,10 @@ value = { args = "<ask|status|scrub|evidence>", read_only = false, status = "imp
 doc = "The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions (plan, transcript, git, CI, mesh) and runs them through the evidence gate, writing its telemetry; takes no arguments and reads the home directory from the environment."
 value = { args = "", read_only = false, status = "implemented" }
 
+[cmd.agent_tick]
+doc = "The scheduled agent tracker tick (the `agent_tick` job): one tracker tick, the same as `agents tick`; prints its counts with --json."
+value = { args = "", read_only = false, status = "implemented" }
+
 [cmd.agents]
 doc = "The agent tracker (feature 21): `status` lists every tracked agent (main sessions, subagents and background tasks, DevSwarm workspaces) with tokens, progress, last output, state and flags, plus today's reminder and recovery totals; `tick` runs one tracker tick now (the scheduled job `agent_tick` does the same every minute). It never stops or kills an agent."
 value = { args = "<status|tick> [--json]", read_only = false, read_only_args = ["status"], status = "implemented" }

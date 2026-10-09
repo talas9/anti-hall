@@ -175,6 +175,7 @@ mod tests {
                 "scan-throttle",
                 "api-guard",
                 "ship-it-guard",
+                "procwatch-advisory",
                 "engine-role-guard"
             ],
             "the Bash entries a built-in check answers, in hooks.json order"
