@@ -272,7 +272,7 @@ test('state-prune: SessionStart prunes old orch-full markers and claims, keeps i
 });
 
 test('hooks.json: matcher resolves Agent, Task and Workflow (and not Bash) on the PreToolUse event; node flags present', () => {
-  const j = JSON.parse(fs.readFileSync(path.join(T.PLUGIN, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const j = JSON.parse(fs.readFileSync(path.join(T.PLUGIN, 'hooks', 'hooks.registry.json'), 'utf8')).hooks;
   const found = [];
   for (const [ev, groups] of Object.entries(j)) for (const g of groups) for (const x of g.hooks) if (/orch-on-spawn\.js/.test(x.command)) found.push({ ev, matcher: g.matcher, command: x.command });
   assert.strictEqual(found.length, 1);

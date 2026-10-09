@@ -1,0 +1,908 @@
+# ah-engine shipped defaults for the built-in `command` check (a port of the command-guard hook), D17 and D30.
+#
+# Every table, allowlist, wrapper grammar, heavy-command pattern, light exception and limit of the check lives here;
+# the Rust code in src/checks/command holds only the parsing logic. Format: see the header of engine.toml.
+# Regular expressions are Rust `regex` syntax, transcribed from the Node source with the same meaning on ASCII text
+# (the check defers every command that contains a non-ASCII character, so JavaScript's UTF-16 indexing, its wider
+# `\s` and its case folding never come into play). A JavaScript lookahead has no Rust equivalent: a trailing
+# `(?=\s|$)` is written as the consuming `(?:\s|$)` (same answer for a yes/no test), and a negative lookahead entry is
+# split into `head` / `end` / `not_after` (see `light_exceptions_neg`).
+
+# ---- what the engine decides, and when it hands the command to the Node hook -------------------------------------
+
+[command.check_summary]
+doc = "One-line description of the command check for the generated reference."
+value = "command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook."
+
+[command.max_classify_len]
+doc = "Commands longer than this many characters are deferred to the Node hook (command-guard.js MAX_CLASSIFY_LEN: the Node guard switches to a head/tail scan above it)."
+value = 65536
+
+[command.max_depth]
+doc = "Nesting depth of inline shells, eval and command substitutions the heavy and write scans follow (command-guard.js `d < 3`)."
+value = 3
+
+[command.devswarm_cli_verbs]
+doc = "If any segment the DevSwarm read/send guards scan has one of these as its effective verb, the engine defers (command-guard.js DEVSWARM_CLI_VERBS)."
+value = ["hivecontrol", "devswarm"]
+
+[command.wrappers]
+doc = "Words skipped when finding a segment's effective verb (command-guard.js WRAPPERS)."
+value = [
+  "command", "builtin", "exec", "sudo", "env", "nice", "nohup", "time", "timeout", "taskpolicy", "xargs", "then",
+  "do", "else", "if", "while", "until", "!",
+]
+
+[command.sudo_value_flags]
+doc = "sudo options that take a value (command-guard.js effectiveVerb SUDO_VAL)."
+value = [
+  "-u", "-g", "-p", "-C", "-r", "-t", "-U", "-h", "--user", "--group", "--prompt", "--close-from", "--role", "--type",
+  "--other-user", "--host",
+]
+
+[command.timeout_value_flags]
+doc = "timeout options that take a value (command-guard.js effectiveVerb)."
+value = ["-s", "--signal", "-k", "--kill-after"]
+
+[command.nice_value_flags]
+doc = "nice options that take a value (command-guard.js effectiveVerb)."
+value = ["-n", "--adjustment"]
+
+[command.taskpolicy_value_flags]
+doc = "taskpolicy options that take a value (command-guard.js effectiveVerb)."
+value = ["-c", "-t", "-p"]
+
+[command.shell_verbs]
+doc = "Shell programs whose `-c` argument or heredoc body is itself a script (lib/shell-scan.js SHELL_VERBS)."
+value = ["bash", "sh", "zsh", "dash", "ksh", "ash"]
+
+[command.test_keywords]
+doc = "Words after which a `[[` or `((` is at command position, so its `<`/`>` are comparisons, not redirects (command-guard.js TEST_KEYWORDS)."
+value = ["if", "while", "until", "then", "do", "elif", "else"]
+
+[command.pattern_first_verbs]
+doc = "Verbs whose first operand is a pattern, blanked before the heavy patterns run (command-guard.js PATTERN_FIRST_VERBS)."
+value = ["grep", "sed", "awk"]
+
+# ---- heavy commands -----------------------------------------------------------------------------------------------
+
+[command.heavy_verbs]
+doc = "Effective verbs that are always heavy in the main thread (command-guard.js HEAVY_VERBS)."
+value = [
+  "npm", "npx", "pnpm", "yarn", "bun", "pip", "pip3", "poetry", "uv", "conda", "make", "cmake", "gradle", "mvn", "ant",
+  "bazel", "buck", "ninja", "tsc", "swc", "esbuild", "rollup", "vite", "webpack", "turbo", "pytest", "jest", "vitest",
+  "mocha", "jasmine", "karma", "cypress", "playwright", "flutter", "go", "cargo", "dotnet", "firebase", "gcloud", "aws",
+  "az", "kubectl", "helm", "terraform", "pulumi", "serverless", "vercel", "netlify", "heroku", "psql", "mysql", "mongosh",
+  "redis-cli", "sqlite3", "prisma", "knex", "alembic", "flyway", "liquibase", "docker", "podman", "vagrant", "ansible",
+]
+
+[command.heavy_patterns]
+doc = "Patterns over the quote-neutralized segment that make it heavy (command-guard.js HEAVY_PATTERNS)."
+value = [
+  '(?i)\bnpm\s+run\s+(?:build|test|deploy|start|lint|typecheck|check)\b',
+  '(?i)\byarn\s+(?:run\s+)?(?:build|test|deploy|start|lint|typecheck|check)\b',
+  '(?i)\bpnpm\s+(?:run\s+)?(?:build|test|deploy|start|lint|typecheck|check)\b',
+  '(?i)\bgit\s+(?:push|pull|fetch|clone)\b',
+  '(?i)\bpython[23]?\s+\S+\.py\b',
+  '(?i)\bnode\s+\S+\.(?:js|mjs|cjs)\b',
+  '(?i)\bdeno\s+(?:run|task)\b',
+]
+
+[command.light_exceptions]
+doc = "Patterns over the raw segment (and the segment without a leading `timeout N`) that make it light (command-guard.js LIGHT_EXCEPTIONS, the entries without a negative lookahead; a trailing `(?=\\s|$)` is written as `(?:\\s|$)`)."
+value = [
+  '(?i)\bgit\s+(?:status|log|diff|show|branch(?:\s+--list)?|rev-parse|config\s+--get|config\s+--list|worktree\s+list|remote\s+-v|shortlog|stash\s+list|tag\s+-l|describe|ls-remote|ls-tree|merge-base|reflog\s+show)\b',
+  '(?i)\bnpm\s+(?:--version|-v|view|info|ls)\b',
+  '(?i)\bnode\s+(?:--version|-v)\b',
+  '(?i)\bflutter\s+--version\b',
+  '(?i)\bgo\s+version\b',
+  '(?i)\bcargo\s+(?:--version|version)\b',
+  '(?i)\bgit\s+(?:push|pull)\b[^\n]*\s--dry-run\b',
+  '(?i)\bdocker\s+(?:ps|images|inspect|logs|stats)\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]jev-setup\.js\s+(?:-\S+\s+)*status\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]settings\.js\s+(?:-\S+\s+)*(?:show|get)\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]defect\.js\s+(?:-\S+\s+)*(?:report|list|show|recurring|similar)\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?statusline[\\/]phase\.js\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?hooks[\\/]agent-watchdog\.js\b',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]devswarm\.js(?:\s|$)',
+  '''(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+["']?(?:\S*[\\/])?skills[\\/]update[\\/]scripts[\\/]update\.js["']?(?:\s|$)''',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?companion[\\/]install-devswarm-supervisor\.js(?:\s|$)',
+  '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?companion[\\/]install-devswarm-ingest\.js(?:\s|$)',
+]
+
+[command.light_exceptions_neg]
+doc = "LIGHT_EXCEPTIONS entries of the form HEAD`\\b(?![^\\n]*NOT)`: the segment is light when some match of `head` ends (at a word boundary, right after the text `end`) where `not_after` does not match before the end of that line (jev-report.js, doctor.js and `go env`)."
+value = [
+  { head = '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]jev-report\.js', end = "jev-report.js", not_after = '(?i)\b(?:label|prune-audit)\b' },
+  { head = '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?hooks[\\/]doctor\.js', end = "doctor.js", not_after = '(?i)--(?:repair|fix|repair-ingest-orphans|repair-test-stores|reclaim-ingest-lock)\b' },
+  { head = '(?i)\bgo\s+env', end = "env", not_after = '(?i)\s-w\b' },
+]
+
+[command.control_keyword_prefix]
+doc = "Leading shell keywords stripped before a segment is judged (command-guard.js CONTROL_KEYWORD_PREFIX_RE)."
+value = '^\s*(?:(?:do|then|else|if|while|until|!)\s+)+'
+
+[command.timeout_prefix]
+doc = "A leading `timeout [opts] N` stripped for the light-exception test (command-guard.js TIMEOUT_PREFIX_RE)."
+value = '^\s*timeout\s+(?:-[ks]\s+\S+\s+|-\S+\s+)*\d+[smhd]?\s+'
+
+[command.script_check_interpreter]
+doc = "Interpreters whose flagged script runs are heavy (command-guard.js SCRIPT_CHECK_INTERPRETER_RE)."
+value = '^(?:python[0-9.]*|node|ruby|perl|php)$'
+
+[command.node_script_ext]
+doc = "Script file extensions of node for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript)."
+value = '(?i)\.(?:js|mjs|cjs)$'
+
+[command.python_script_ext]
+doc = "Script file extension of the other interpreters for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript)."
+value = '(?i)\.py$'
+
+# ---- node -e payloads ---------------------------------------------------------------------------------------------
+
+[command.node_eval_flags]
+doc = "node options whose next word is inline code (command-guard.js isSafeNodeEval)."
+value = ["-e", "--eval"]
+
+[command.node_eval_deny]
+doc = "Patterns that make a `node -e` payload unsafe (command-guard.js NODE_EVAL_UNSAFE_RE, NODE_EVAL_BRACKET_ACCESS_RE and the inline denials of isSafeNodeEvalPayload)."
+value = [
+  '\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|unlink(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|mkdir(?:Sync)?|rename(?:Sync)?|truncate(?:Sync)?|chmod(?:Sync)?|chown(?:Sync)?|symlink(?:Sync)?|copyFile(?:Sync)?|spawn(?:Sync)?|exec(?:Sync)?|execFile(?:Sync)?|fork)\s*\(|child_process',
+  '''\[\s*['"]''',
+  '\bchild_process\b',
+  '\bfs/promises\b',
+  '\bprocess\s*\.\s*binding\s*\(',
+  '\beval\s*\(',
+  '\bFunction\s*\(',
+  '\bimport\s*\(',
+]
+
+[command.node_fs_method_call]
+doc = "An fs API call in a `node -e` payload; group 1 is the method (command-guard.js NODE_FS_METHOD_CALL_RE)."
+value = '''(?:\brequire\(\s*['"]fs['"]\s*\)|\bfs)\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\('''
+
+[command.node_fs_read_allowlist]
+doc = "fs methods a safe `node -e` payload may call (command-guard.js NODE_FS_READ_ALLOWLIST)."
+value = ["readFileSync", "readdirSync", "statSync", "existsSync", "lstatSync"]
+
+# ---- git ----------------------------------------------------------------------------------------------------------
+
+[command.git_global_value_opts]
+doc = "git global options that take a value (command-guard.js GIT_GLOBAL_VALUE_OPTS)."
+value = ["-c", "-C", "--namespace", "--super-prefix", "--exec-path", "--config-env", "--git-dir", "--work-tree"]
+
+[command.git_fetch_dangerous_flags]
+doc = "git fetch options that rewrite or delete local refs (command-guard.js GIT_FETCH_DANGEROUS_FLAGS)."
+value = ["--prune", "-p", "--prune-tags", "--force", "-f"]
+
+[command.git_heavy_subs]
+doc = "git subcommands that are always heavy (command-guard.js isHeavyGitSegment)."
+value = ["push", "pull", "clone"]
+
+# ---- sqlite3 ------------------------------------------------------------------------------------------------------
+
+[command.sqlite_dangerous]
+doc = "sqlite3 dot-commands and SQL that write despite -readonly (command-guard.js SQLITE_DANGEROUS_RE)."
+value = '(?i)(^|[\s;])\.(shell|system|output|once|import|save)\b|\bATTACH\b'
+
+# ---- cloud CLIs ---------------------------------------------------------------------------------------------------
+
+[command.cloud_binaries]
+doc = "Cloud CLIs with a read-only inspect exemption (command-guard.js CLOUD_BINARIES)."
+value = ["gcloud", "gh", "kubectl"]
+
+[command.cloud_readonly_verbs]
+doc = "First words after gh/kubectl that read only (command-guard.js CLOUD_READONLY_VERBS)."
+value = ["describe", "list", "get", "view"]
+
+[command.cloud_mutating_verbs]
+doc = "Words that disqualify the gh/kubectl read-only exemption (command-guard.js CLOUD_MUTATING_VERBS)."
+value = [
+  "deploy", "delete", "create", "update", "set", "patch", "apply", "rm", "remove", "scale", "rollout", "run", "exec",
+  "push", "merge", "close", "edit",
+]
+
+[command.gcloud_inspect_verbs]
+doc = "gcloud command-path verbs that read only (command-guard.js GCLOUD_INSPECT_VERBS)."
+value = ["describe", "list", "get", "view", "read"]
+
+[command.gcloud_refused_path]
+doc = "gcloud command-path words that refuse the read-only grammar (command-guard.js GCLOUD_REFUSED_PATH_RE)."
+value = '^(?:access|ssh|scp|run|sign|print-[^\n\r]*|attach-[^\n\r]*|detach-[^\n\r]*|add-[^\n\r]*|set-[^\n\r]*|remove-[^\n\r]*|(?:reset|suspend|resume|publish|call|execute|decrypt|encrypt|delete|create|update|deploy)(?:-[^\n\r]*)?)$'
+
+[command.gcloud_boolean_flags]
+doc = "gcloud flags without a value the read-only grammar accepts (command-guard.js GCLOUD_BOOLEAN_FLAGS)."
+value = ["--quiet", "--uri"]
+
+[command.gcloud_value_flags]
+doc = "gcloud flags whose separated value the whole-command read-only form accepts (command-guard.js GCLOUD_VALUE_FLAGS)."
+value = ["--project", "--region", "--zone", "--location", "--limit", "--freshness", "--page-size", "--sort-by"]
+
+[command.gcloud_logging_group]
+doc = "The only gcloud group whose `read` verb is read-only (command-guard.js `g.path[last] !== 'logging'`)."
+value = "logging"
+
+[command.whole_command_clis]
+doc = "CLIs whose whole-command read-only form (version query or gcloud read piped to a closed sink) is light (command-guard.js isWholeCommandReadOnlyForm and VERSION_CLI_RE)."
+value = ["firebase", "gcloud", "aws", "az", "kubectl", "helm", "terraform", "pulumi", "vercel", "netlify", "heroku", "serverless"]
+
+[command.gh_mutating_subcommands]
+doc = "gh group and subcommand pairs that are heavy (command-guard.js GH_MUTATING_SUBCOMMANDS, plus `workflow run`)."
+value = { pr = ["merge", "close", "edit", "create", "review"], issue = ["create", "close", "delete", "edit"], release = ["create", "delete", "edit", "upload"], repo = ["delete", "edit"], secret = ["set", "delete"], workflow = ["run"] }
+
+[command.gh_api_mutating_methods]
+doc = "gh api methods that are heavy (command-guard.js GH_API_MUTATING_METHODS)."
+value = ["POST", "PATCH", "PUT", "DELETE"]
+
+[command.gh_api_field_flags]
+doc = "gh api options that send a request body (command-guard.js isHeavyGhSegment and GH_GQL_FIELD_FLAGS)."
+value = ["-f", "-F", "--field", "--raw-field"]
+
+[command.gh_gql_value_flags]
+doc = "gh api graphql options that take a value (command-guard.js GH_GQL_VALUE_FLAGS)."
+value = ["--jq", "-q", "-H", "--header", "--hostname", "--cache", "-t", "--template"]
+
+[command.gh_gql_bool_flags]
+doc = "gh api graphql options without a value (command-guard.js GH_GQL_BOOL_FLAGS)."
+value = ["--paginate", "--slurp", "--silent", "-i", "--include", "--verbose"]
+
+# ---- Bash writes (the edit-guard parity scan) -----------------------------------------------------------------------
+
+[command.inline_verbs]
+doc = "Interpreters whose inline code is scanned for literal write targets (command-guard.js INLINE_VERBS)."
+value = ["python", "python3", "perl", "ruby", "node"]
+
+[command.inline_python_flags]
+doc = "The inline-code flag of the python interpreters (command-guard.js inlineCodeBody)."
+value = ["-c"]
+
+[command.inline_other_flags]
+doc = "The inline-code flags of perl, ruby and node (command-guard.js inlineCodeBody)."
+value = ["-e", "-E"]
+
+[command.inline_write_markers]
+doc = "If inline interpreter code contains any of these, it may name a literal write target and the engine defers (a superset of command-guard.js INLINE_OPEN_RE, INLINE_PERL_OPEN3_RE, INLINE_PERL_OPEN2_RE, INLINE_WRITEFILE_RE and INLINE_FILE_WRITE_RE, which all need one of them)."
+value = ["open", "File", "createWriteStream", ".write("]
+
+[command.write_target_unknowable]
+doc = "A write target containing one of these characters cannot be resolved and is skipped (command-guard.js resolveWriteTarget)."
+value = "$`*?[]{}"
+
+# ---- the main-thread decision (guard.rs, devswarm.rs, carve.rs, verify.rs, editpar.rs) ----------------------------------
+
+[command.guard_name]
+doc = "The guard id command-guard answers to in skip.json and in its messages."
+value = "command-guard"
+
+[command.edit_guard_name]
+doc = "The skip.json id of edit-guard, whose verdict the Bash edit parity applies."
+value = "edit-guard"
+
+[command.agent_markers]
+doc = "The payload fields that mark a subagent (coordinator-detect.js)."
+value = ["agent_id", "agent_type"]
+
+[command.child_env]
+doc = "The environment variable that marks a DevSwarm child workspace (devswarm-role.js isChildWorkspace)."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[command.heavy_default_label]
+doc = "The category label when a heavy command has no classification."
+value = "heavy"
+
+[command.heavy_pattern_label]
+doc = "The category label of a heavy command found by a pattern."
+value = "heavy-pattern"
+
+[command.claude_subagent]
+doc = "How the block messages name a worker on Claude."
+value = "a subagent"
+
+[command.codex_subagent]
+doc = "How the block messages name a worker on Codex (host-text.js CODEX_SUBAGENT)."
+value = "a sub-agent (spawn_agent)"
+
+[command.codex_cheap]
+doc = "How the block messages name the cheap worker on Codex (host-text.js CODEX_CHEAP)."
+value = "a sub-agent (spawn_agent, fast-tier model)"
+
+[command.msg_heavy_what]
+doc = "Heading of the heavy-command block ({kind} and {detail} are the next two texts)."
+value = "{kind}{detail} blocked in the main thread."
+
+[command.msg_heavy_remote]
+doc = "The kind of a state-changing remote command."
+value = "state-changing remote command"
+
+[command.msg_heavy_plain]
+doc = "The kind of any other heavy command."
+value = "heavy command"
+
+[command.msg_heavy_detail_verb]
+doc = "Detail of a block caused by a heavy verb."
+value = " (verb: {label})"
+
+[command.msg_heavy_detail_category]
+doc = "Detail of a block caused by a heavy pattern or category."
+value = " (category: {label})"
+
+[command.msg_heavy_why]
+doc = "Why a heavy command is blocked."
+value = "Raw output floods the main thread."
+
+[command.msg_heavy_delegate]
+doc = "What to do instead ({to} names the worker)."
+value = "delegate to {to} (it returns a short summary)"
+
+[command.msg_heavy_instead_tier]
+doc = "What to do instead for a DevSwarm Primary whose repo allows workspaces."
+value = "workspace-scale matter (feature/fix/deploy): `node scripts/devswarm.js spawn <branch> -p \"<brief>\"` (guard-exempt, run inline); a single command: {delegate}. Never hand a workspace-scale matter to {sub}."
+
+[command.msg_heavy_allowed]
+doc = "What stays allowed inline (first part)."
+value = "piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <n>`, `<cc> -fsyntax-only`, --check/--dry-run/--list"
+
+[command.msg_heavy_allowed_codex]
+doc = "End of the allowed text on Codex."
+value = "."
+
+[command.msg_heavy_allowed_claude]
+doc = "End of the allowed text on Claude (the scratchpad script path)."
+value = "; or a read-only scratchpad script (executable, absolute path, no VAR= prefix) run with run_in_background (never in the foreground)."
+
+[command.msg_heavy_cd_hint]
+doc = "Added when the same command joined with && would qualify for the inline check."
+value = " To run the check inline, use `cd <dir> &&`, not `;`."
+
+[command.msg_edit_what]
+doc = "Heading of the Bash edit parity block ({who} is the next text)."
+value = "Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write) blocked: the {who} does not touch files directly."
+
+[command.msg_edit_who_orch]
+doc = "Who is blocked when DevSwarm is active."
+value = "orchestrator"
+
+[command.msg_edit_who_coord]
+doc = "Who is blocked otherwise."
+value = "coordinator"
+
+[command.msg_edit_why]
+doc = "Why a Bash write is blocked."
+value = "Raw edits never happen in the main thread; the coordinator synthesizes a summary."
+
+[command.msg_edit_why_orch]
+doc = "Why a Bash write is blocked while DevSwarm is active."
+value = "Raw edits in the main thread flood it; a worker returns a tight summary instead."
+
+[command.msg_edit_instead]
+doc = "What to do instead ({sub} names the worker)."
+value = "spawn {sub} to make this edit and have it report a tight summary."
+
+[command.msg_edit_instead_tier]
+doc = "What to do instead for a DevSwarm Primary whose repo allows workspaces."
+value = "workspace-scale matter (feature/fix/deploy, own branch + review): `node scripts/devswarm.js spawn <branch> -p \"<brief>\"` (guard-exempt, run inline). Small scoped edit: spawn {sub} and have it report a tight summary. Never hand a workspace-scale matter to {sub}."
+
+[command.msg_edit_notes]
+doc = "What stays allowed (Claude)."
+value = "session notes/reports in .anti-hall/history/** or the scratchpad; repo docs need a subagent or a trusted .anti-hall/edit-allow.json"
+
+[command.msg_edit_notes_codex]
+doc = "What stays allowed (Codex)."
+value = "session notes/reports in .anti-hall/history/**; repo docs need {sub} or a trusted .anti-hall/edit-allow.json"
+
+[command.msg_edit_skip_cmd]
+doc = "The command that records consent to skip edit-guard ({cli} is the quoted devswarm CLI path)."
+value = "node {cli} skip edit-guard"
+
+[command.msg_edit_override]
+doc = "The override line ({skip} is the command above)."
+value = "{skip} (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry"
+
+[command.devswarm_cli_rel]
+doc = "The devswarm CLI, relative to the plugin root."
+value = "scripts/devswarm.js"
+
+[command.cd_delims]
+doc = "The delimiters after which a leading cd carries into the next segment (command-guard.js cdAwareContexts)."
+value = ["&&", ";", "||", "\n"]
+
+[command.pipeline_ends]
+doc = "The delimiters that end a pipeline in the bounded verification scan (command-guard.js PIPELINE_ENDS)."
+value = ["end", ";", "&&", "||", "\n"]
+
+[command.launcher_marker]
+doc = "A command without this text cannot name a stable launcher."
+value = ".anti-hall"
+
+[command.launcher_scripts]
+doc = "The stable launcher scripts under ~/.anti-hall/bin that are light (command-guard.js ANTI_HALL_CLI_PATTERNS)."
+value = ["devswarm.js", "wake-watch.js"]
+
+[command.tmp_env_names]
+doc = "The variables os.tmpdir() reads, in order."
+value = ["TMPDIR", "TMP", "TEMP"]
+
+[command.tmp_default]
+doc = "os.tmpdir() when none is set."
+value = "/tmp"
+
+[command.tmp_fixed_roots]
+doc = "The tmp roots added after os.tmpdir() (scratchpad.js tmpRoots)."
+value = ["/tmp", "/private/tmp"]
+
+[command.scratch_uid_prefix]
+doc = "Prefix of the per-user directory under a tmp root that holds session scratchpads."
+value = "claude-"
+
+[command.scratch_leaf]
+doc = "Name of the scratchpad directory of a session."
+value = "scratchpad"
+
+[command.check_flag_refused_verbs]
+doc = "Verbs that never get the --check/--dry-run/--list inline allowance (command-guard.js CHECK_FLAG_REFUSED_VERBS)."
+value = ["sh", "bash", "zsh", "ksh", "dash", "fish", "eval", "exec", "xargs", "env", "nohup", "time", "command", "builtin", "node", "perl", "ruby", "php", "deno", "bun"]
+
+[command.plugin_manifest_rel]
+doc = "The plugin manifest, relative to a plugin root."
+value = ".claude-plugin/plugin.json"
+
+[command.plugin_name]
+doc = "The name anti-hall's manifest carries."
+value = "anti-hall"
+
+[command.verify_syntax_only_compilers]
+doc = "Compilers whose -fsyntax-only run is an inline check."
+value = ["c++", "cc", "gcc", "clang", "clang++", "g++"]
+
+[command.verify_trivial_verbs]
+doc = "Verbs that are harmless in a verification chain."
+value = ["cd", "pwd", "true"]
+
+[command.allow_file_rel]
+doc = "The per-project command allowlist file."
+value = ".anti-hall/command-allow.json"
+
+[command.allow_list_key]
+doc = "The key of the command allowlist file that holds the patterns."
+value = "patterns"
+
+[command.allow_trust_file_rel]
+doc = "The record of trusted command allowlists, relative to the home directory."
+value = ".anti-hall/trusted-command-allow.json"
+
+[command.edit_file_rel]
+doc = "The per-project edit allowlist file."
+value = ".anti-hall/edit-allow.json"
+
+[command.edit_list_key]
+doc = "The key of the edit allowlist file that holds the paths."
+value = "paths"
+
+[command.edit_trust_file_rel]
+doc = "The record of trusted edit allowlists, relative to the home directory."
+value = ".anti-hall/trusted-edit-allow.json"
+
+[command.audit_state_dir]
+doc = "The anti-hall state directory under the home directory."
+value = ".anti-hall"
+
+[command.audit_logs_dir]
+doc = "The log directory under the state directory."
+value = "logs"
+
+[command.audit_file]
+doc = "The audit log of allowlisted commands."
+value = "command-allow.ndjson"
+
+[command.git_timeout_ms]
+doc = "How long a git question of the plain-push carve-out may take (command-guard.js: 5000 ms)."
+value = 5000
+unit = "ms"
+min = 100
+
+[command.background_script_interpreters]
+doc = "Interpreters of a background scratch script (command-guard.js BACKGROUND_SCRIPT_INTERPRETERS)."
+value = ["python3", "node", "sh", "bash"]
+
+[command.background_script_safe_flags]
+doc = "Per interpreter, the valueless flags that may sit between the interpreter and a background scratch script (`python3 -I probe.py`); none takes a value, loads code or changes which file runs (command-guard.js BACKGROUND_SCRIPT_SAFE_FLAGS)."
+value = { python3 = ["-I", "-B", "-u", "-E", "-s", "-S", "-O", "-OO", "-q"], node = ["--no-warnings", "--trace-warnings", "--enable-source-maps"] }
+
+[command.plain_read_git_kinds]
+doc = "classifyPlainGitChainSegment kinds that count as one read-only unit of a chain whose other units are whole read-only forms (command-guard.js isPlainReadGitSegment)."
+value = ["log", "status", "show", "revparse"]
+
+[command.background_chain_delims]
+doc = "Delimiters a background scratch script chain may use."
+value = [";", "&&", "|", "end"]
+
+[command.jq_safe_flags]
+doc = "jq flags the narrow gcloud read accepts."
+value = ["-r", "-c", "-e", "-S", "-M", "--raw-output", "--compact-output", "--sort-keys", "--monochrome-output"]
+
+[command.jq_refused_words]
+doc = "jq words the narrow gcloud read refuses in a filter (environment, input and import access)."
+value = ["env", "input", "inputs", "input_filename", "import", "include"]
+
+[command.gcloud_sink_verbs]
+doc = "Sinks the narrow gcloud read may pipe into besides jq."
+value = ["tail", "head", "wc", "grep"]
+
+[command.gcloud_read_verbs]
+doc = "The gcloud verbs of the narrow read-only access."
+value = ["describe", "list", "get-iam-policy", "read"]
+
+[command.curl_bare_flags]
+doc = "Valueless curl flags of the token-authorized silent GET."
+value = ["--silent", "--show-error", "--fail"]
+
+[command.gcloud_token_vars]
+doc = "Variable names the gcloud token prefix may use."
+value = ["T", "TOKEN", "ACCESS_TOKEN", "GCLOUD_TOKEN"]
+
+[command.stash_global_value_opts]
+doc = "git global options that take a value, skipped to find the subcommand (git-stash guard)."
+value = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]
+
+[command.stash_push_value_flags]
+doc = "git stash push flags that take a value."
+value = ["-m", "--message"]
+
+[command.stash_read_subs]
+doc = "git stash subcommands that never mutate."
+value = ["list", "show", "branch"]
+
+[command.stash_mutating_subs]
+doc = "git stash subcommands the guard blocks."
+value = ["push", "pop", "drop", "clear", "apply", "save"]
+
+[command.stash_marker_rel]
+doc = "The per-repository file that arms the stash guard, relative to the toplevel."
+value = ".anti-hall/protected-stashes"
+
+[command.file_read_verbs]
+doc = "Verbs that read file contents (the raw DevSwarm inbox read guard)."
+value = ["cat", "head", "tail", "less", "more", "od", "xxd", "strings", "nl", "grep", "sed", "awk"]
+
+[command.devswarm_root_rel]
+doc = "The DevSwarm state root under the home directory."
+value = ".anti-hall/devswarm"
+
+[command.devswarm_inbox_dir]
+doc = "The inbox directory under the DevSwarm root (a raw read is blocked)."
+value = "inbox"
+
+[command.devswarm_store_dir]
+doc = "The store directory under the DevSwarm root."
+value = "store"
+
+[command.store_deny_patterns]
+doc = "Paths under the store directory that are raw store files (lib/devswarm-inbox-paths.js isStoreDenyTarget). A raw store read depends on the store module being present, so the engine defers it."
+value = ["^[a-z0-9-]{1,40}-[0-9a-f]{6}/devswarm\\.db$", "^[a-z0-9-]{1,40}-[0-9a-f]{6}/devswarm\\.db-(wal|shm|journal)$", "^[a-z0-9-]{1,40}-[0-9a-f]{6}/journal/[^/]+\\.ndjson$", "^[0-9a-fA-F]{8}/devswarm\\.db$", "^[0-9a-fA-F]{8}/devswarm\\.db-(wal|shm|journal)$", "^[0-9a-fA-F]{8}/journal/[^/]+\\.ndjson$", "^devswarm\\.db$", "^devswarm\\.db-(wal|shm|journal)$", "^journal/[^/]+\\.ndjson$"]
+
+[command.dsread_guard]
+doc = "The skip id and message id of the DevSwarm destructive-read guard."
+value = "devswarm-read-guard"
+
+[command.dssend_guard]
+doc = "The skip id of the DevSwarm native-send guard."
+value = "devswarm-send-guard"
+
+[command.mailbox_guard]
+doc = "The skip id of the subagent mailbox guard."
+value = "devswarm-subagent-mailbox-guard"
+
+[command.stash_guard]
+doc = "The skip id and message id of the git stash guard."
+value = "git-stash-guard"
+
+[command.msg_send_guard]
+doc = "The message id of the native-send block."
+value = "devswarm-mesh-only"
+
+[command.msg_send_what]
+doc = "Heading of the native-send block."
+value = "`hivecontrol workspace {kind}` is blocked."
+
+[command.msg_send_why]
+doc = "Why a native send is blocked."
+value = "anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically."
+
+[command.msg_send_instead]
+doc = "What to do instead of a native send."
+value = "`node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status."
+
+[command.msg_send_override]
+doc = "The override of the native-send block."
+value = "set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely"
+
+[command.msg_mailbox_guard]
+doc = "The message id of the mailbox block."
+value = "devswarm-mailbox"
+
+[command.msg_mailbox_what]
+doc = "Heading of the subagent mailbox block."
+value = "a DevSwarm mailbox verb (inbox pull/ack/ack-primary/read/read-primary/drain-primary-legacy/tick, inbox messages --ack, mesh read, roster --ack, reap-orphans, register, archive, heartbeat) is blocked in a subagent."
+
+[command.msg_mailbox_why]
+doc = "Why a subagent may not touch the mailbox."
+value = "A subagent that acks or reads advances the shared cursor, so the main thread silently misses mail (defect f0958b13fe2b)."
+
+[command.msg_mailbox_instead]
+doc = "What to do instead."
+value = "report what you learned to your parent; the main thread drains the mailbox itself. Never delegate mailbox verbs."
+
+[command.msg_mailbox_allowed]
+doc = "What stays allowed."
+value = "`inbox count`, `inbox peek-primary`, `mesh read --peek`, plain `roster`."
+
+[command.msg_mailbox_override]
+doc = "The override of the mailbox block."
+value = "set ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1 to disable this guard entirely"
+
+[command.msg_stash_what]
+doc = "Heading of the git stash block ({sub} is the subcommand, {scope} the next two texts)."
+value = "`git stash {sub}` is blocked for {scope}."
+
+[command.msg_stash_scope_subagent]
+doc = "Scope text for a subagent."
+value = "a subagent (workers must never touch the coordinator's working tree via stash)"
+
+[command.msg_stash_scope_armed]
+doc = "Scope text for an armed repository."
+value = "this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1)"
+
+[command.msg_stash_why]
+doc = "Why a stash is blocked."
+value = "A stash can swallow another agent's protected WIP (defect b08b26566b92)."
+
+[command.msg_stash_instead]
+doc = "What to do instead of a stash."
+value = "commit the work (even as a WIP commit); never delegate a stash to a subagent."
+
+[command.msg_stash_allowed]
+doc = "What stays allowed."
+value = "`git stash list` (read-only)."
+
+[command.msg_rawread_inbox_guard]
+doc = "The message id of the raw inbox read block."
+value = "devswarm-inbox-read"
+
+[command.msg_rawread_inbox_what]
+doc = "Heading of the raw inbox read block."
+value = "a shell read of the raw DevSwarm inbox file is blocked."
+
+[command.msg_rawread_inbox_why]
+doc = "Why a raw inbox read is blocked."
+value = "It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped."
+
+[command.msg_rawread_inbox_instead]
+doc = "What to do instead of a raw inbox read."
+value = "`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`."
+
+[command.msg_rawread_override]
+doc = "The override of the raw read block."
+value = "set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely"
+
+[command.msg_dsread_monitor_what]
+doc = "Heading of the monitor block."
+value = "`hivecontrol workspace monitor` is blocked."
+
+[command.msg_dsread_monitor_why]
+doc = "Why monitor is blocked."
+value = "It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue."
+
+[command.msg_dsread_rm_what]
+doc = "Heading of the read-messages block."
+value = "`hivecontrol workspace read-messages` is blocked."
+
+[command.msg_dsread_rm_why]
+doc = "Why read-messages is blocked."
+value = "It mark-reads and drains the native queue, losing messages the durable inbox still needs."
+
+[command.msg_dsread_rm_allowed]
+doc = "What stays allowed."
+value = "`message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending."
+
+[command.msg_dsread_instead]
+doc = "What to do instead of a native read."
+value = "`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either."
+
+[command.msg_dsread_inbox_cmd_prefix]
+doc = "Added before the text above when a consumer-configured inbox command is set."
+value = "read via the configured ANTIHALL_DEVSWARM_INBOX_CMD, or "
+
+[command.msg_dsread_override]
+doc = "The override of the native read block."
+value = "set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely"
+
+# ---- settings the main-thread decision reads ---------------------------------------------------------------------------
+
+[command.allow_subagent_mailbox_setting]
+doc = "guards.allowSubagentMailbox: a one-off allow of the subagent mailbox verbs (default off)."
+value = { section = "guards", key = "allowSubagentMailbox", type = "boolean", env = "ANTIHALL_ALLOW_SUBAGENT_MAILBOX", aliases = [], option = "guards_allow_subagent_mailbox", default = false }
+
+[command.stash_guard_setting]
+doc = "guards.stashGuard: arms the git stash guard for every repository (default off)."
+value = { section = "guards", key = "stashGuard", type = "boolean", env = "ANTIHALL_STASH_GUARD", aliases = [], option = "guards_stash_guard", default = false }
+
+[command.inbox_cmd_setting]
+doc = "devswarm.inboxCmd: a consumer-configured command to read pending mesh messages (no default)."
+value = { section = "devswarm", key = "inboxCmd", env = "ANTIHALL_DEVSWARM_INBOX_CMD", aliases = [], option = "devswarm_inbox_cmd", default = "" }
+
+[command.setting_allow_read_only_verify]
+doc = "guards.allowReadOnlyVerify: the bounded single-target verification allowance (default on)."
+value = { section = "guards", key = "allowReadOnlyVerify", type = "boolean", env = "ANTIHALL_ALLOW_READ_ONLY_VERIFY", aliases = [], option = "guards_allow_read_only_verify", default = true }
+
+[command.setting_allow_read_only_verify_scripts]
+doc = "guards.allowReadOnlyVerifyScripts: the script form of that allowance (default on)."
+value = { section = "guards", key = "allowReadOnlyVerifyScripts", type = "boolean", env = "ANTIHALL_ALLOW_READ_ONLY_VERIFY_SCRIPTS", aliases = [], option = "guards_allow_read_only_verify_scripts", default = true }
+
+[command.setting_project_command_allow]
+doc = "guards.projectCommandAllow: the per-project command allowlist (default on)."
+value = { section = "guards", key = "projectCommandAllow", type = "boolean", env = "ANTIHALL_PROJECT_COMMAND_ALLOW", aliases = [], option = "guards_project_command_allow", default = true }
+
+[command.setting_allow_plain_push]
+doc = "guards.allowPlainPush: the plain git push chain allowance (default on)."
+value = { section = "guards", key = "allowPlainPush", type = "boolean", env = "ANTIHALL_ALLOW_PLAIN_PUSH", aliases = [], option = "guards_allow_plain_push", default = true }
+
+[command.setting_allow_bg_scratch]
+doc = "guards.allowBackgroundScratchScripts: the background scratch script allowance (default on)."
+value = { section = "guards", key = "allowBackgroundScratchScripts", type = "boolean", env = "ANTIHALL_ALLOW_BACKGROUND_SCRATCH_SCRIPTS", aliases = [], option = "guards_allow_background_scratch_scripts", default = true }
+
+[command.setting_allow_gcloud_reads]
+doc = "guards.allowGcloudReads: the narrow read-only Google Cloud access (default on)."
+value = { section = "guards", key = "allowGcloudReads", type = "boolean", env = "ANTIHALL_ALLOW_GCLOUD_READS", aliases = [], option = "guards_allow_gcloud_reads", default = true }
+
+[command.setting_bash_edit_parity]
+doc = "guards.bashEditParity: edit-guard's verdict applied to Bash writes (default on)."
+value = { section = "guards", key = "bashEditParity", type = "boolean", env = "ANTIHALL_BASH_EDIT_PARITY", aliases = [], option = "", default = true }
+
+[command.setting_project_edit_allow]
+doc = "guards.projectEditAllow: the per-project edit allowlist (default on)."
+value = { section = "guards", key = "projectEditAllow", type = "boolean", env = "ANTIHALL_PROJECT_EDIT_ALLOW", aliases = [], option = "guards_project_edit_allow", default = true }
+
+[command.eg_allow_setting]
+doc = "guards.editGuardAllow: extra file globs edit-guard allows (comma or colon separated, empty by default)."
+value = { section = "guards", key = "editGuardAllow", env = "ANTIHALL_EDIT_GUARD_ALLOW", aliases = [], option = "guards_edit_guard_allow", default = "" }
+
+[command.tier_repos_setting]
+doc = "jev.dispatchTierNoWorkspaceRepos: repositories where workspaces are off-limits (comma separated, empty by default)."
+value = { section = "jev", key = "dispatchTierNoWorkspaceRepos", env = "ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", aliases = [], option = "", default = "" }
+
+[command.tier_detect_setting]
+doc = "jev.dispatchTierDetectNoWorkspaces: also read CLAUDE.md and AGENTS.md for the no-workspaces rule (default on)."
+value = { section = "jev", key = "dispatchTierDetectNoWorkspaces", type = "boolean", env = "ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES", aliases = [], option = "", default = true }
+
+[command.tier_text_setting]
+doc = "devswarm.dispatchTierText: the DevSwarm Primary dispatch-tier text (default on)."
+value = { section = "devswarm", key = "dispatchTierText", type = "boolean", env = "ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT", aliases = [], option = "", default = true }
+
+[command.tier_doc_files]
+doc = "The repository docs searched for the no-workspaces rule."
+value = ["CLAUDE.md", "AGENTS.md"]
+
+[command.tier_doc_levels]
+doc = "How many directory levels the no-workspaces search climbs (dispatch-tier.js: 8)."
+value = 8
+
+[command.eg_default_allow]
+doc = "Files and globs edit-guard always allows (edit-guard.js DEFAULT_ALLOW)."
+value = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude/**", ".omc/**", ".anti-hall/**", "PLAN.md", "plan.md", "STATE.json", "**/.claude/projects/**/memory/**"]
+
+[command.eg_project_deny_segments]
+doc = "Path segments the per-project edit allowlist never reaches (edit-guard.js PROJECT_EDIT_DENY_SEGMENTS)."
+value = [".git", ".anti-hall", ".claude", ".codex", ".husky", ".githooks"]
+
+[command.eg_hooks_file]
+doc = "A file with this name is never allowed by the per-project edit allowlist."
+value = "hooks.json"
+
+[command.eg_claude_dir]
+doc = "The host's configuration directory under the home directory."
+value = ".claude"
+
+[command.eg_edit_allow_file]
+doc = "The repository-relative path of the edit allowlist, which no one edits through the guard."
+value = ".anti-hall/edit-allow.json"
+
+[command.eg_plans_rel]
+doc = "The host's plan directory under the home directory."
+value = ".claude/plans"
+
+[command.eg_plan_mode]
+doc = "The permission mode in which non-source files may be edited."
+value = "plan"
+
+[command.git_branch_argv]
+doc = "The git arguments that print the current branch (plain-push carve-out)."
+value = ["symbolic-ref", "--short", "HEAD"]
+
+[command.mailbox_flag_skip]
+doc = "Regex source: optional flags (with an optional value each) before a devswarm.js verb (command-guard.js FLAG_SKIP_SRC)."
+value = "(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*"
+
+[command.mailbox_js_prefix]
+doc = "Regex source: an invocation of the devswarm.js CLI (command-guard.js DEVSWARM_JS_PREFIX_SRC)."
+value = "(?:node\\s+)?(?:\\S*[\\\\/])?scripts[\\\\/]devswarm\\.js"
+
+[command.cd_contexts_max]
+doc = "Most working-directory possibilities kept per segment after a cd (command-guard.js cdAwareContexts)."
+value = 8
+
+[command.classify_push_subs]
+doc = "git subcommands that label a block a remote push."
+value = ["push"]
+
+[command.classify_pull_subs]
+doc = "git subcommands that label a block a remote pull or fetch."
+value = ["pull", "fetch"]
+
+[command.port_max]
+doc = "Largest TCP port a URL may carry."
+value = 65535
+
+[command.port_digits_max]
+doc = "Most digits a URL port may have."
+value = 5
+
+# ---- the command classifier and the scripted decision (engine/logic/command.js) -------------------------------------------
+
+[command.git_global_flag_opts]
+doc = "git global options without a value, skipped to find the subcommand (command-guard.js GIT_GLOBAL_FLAG_OPTS)."
+value = ["--no-pager", "-p", "-P", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs", "--no-optional-locks"]
+
+[command.git_always_work]
+doc = "git subcommands that always count as work for the coordinator work window (command-guard.js GIT_ALWAYS_WORK)."
+value = ["commit", "am", "revert", "merge", "rebase", "cherry-pick", "reset", "push", "pull", "restore", "rm", "mv"]
+
+[command.git_tag_value_flags]
+doc = "git tag options that take a value (command-guard.js GIT_TAG_VALUE_FLAGS)."
+value = ["-m", "--message", "-F", "--file", "-u", "--local-user", "--cleanup", "--sort", "--format", "--trailer"]
+
+[command.script_shells]
+doc = "Shells whose script run counts as work (command-guard.js SCRIPT_SHELLS)."
+value = ["sh", "bash", "zsh", "dash"]
+
+[command.script_interpreters]
+doc = "Interpreters whose script-file run is classified (command-guard.js SCRIPT_INTERPRETERS)."
+value = ["sh", "bash", "zsh", "dash", "node", "python", "python3", "ruby", "perl"]
+
+[command.script_not_a_run_flag]
+doc = "Per interpreter family, the flag pattern that means the command is not a script-file run: inline code, module, syntax check or stdin (command-guard.js SCRIPT_NOT_A_RUN_FLAG)."
+value = { shell = '^-[A-Za-z]*[cns]', python = '^-[A-Za-z]*[cm]', node = '^(?:-[A-Za-z]*[epc]|--(?:eval|print|check|interactive)(?:=|$))', rubyperl = '^-[A-Za-z]*[eEc]' }
+
+[command.script_value_flags]
+doc = "Interpreter options whose next word is their value, not the script (command-guard.js SCRIPT_VALUE_FLAGS)."
+value = ["-o", "+o", "-O", "+O", "-W", "-X", "-r", "--require", "--import", "--loader", "--experimental-loader", "-I"]
+
+[command.binary_magics]
+doc = "The first four bytes (hex) of a file that is a compiled binary, not a text script (command-guard.js BINARY_MAGICS)."
+value = ["7f454c46", "feedface", "feedfacf", "cafebabe", "cffaedfe", "cefaedfe", "bebafeca"]
+
+[command.home_managed_dirs]
+doc = "Directories under the home directory that hold managed tool installs: a script run from there is not work (command-guard.js HOME_MANAGED_DIRS)."
+value = [".nvm", ".pyenv", ".rbenv", ".cargo/bin", ".volta", ".asdf", "go/bin", ".dotnet/tools", ".bun/bin"]
+
+[command.home_personal_dirs]
+doc = "Directories under the home directory that hold personal tools: an old script run from there is not work (command-guard.js HOME_PERSONAL_DIRS)."
+value = [".local/bin", "Library", ".claude/plugins"]
+
+[command.anti_hall_cli_patterns]
+doc = "Segments that run anti-hall's own CLI (command-guard.js ANTI_HALL_CLI_PATTERNS, the plugin-relative devswarm.js entry; the stable launchers are built from the request's home directories)."
+value = ['(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]devswarm\.js(?=\s|$)']
+
+[command.tier_doc_pattern]
+doc = "The rule in a repository's CLAUDE.md or AGENTS.md that opts the repository out of workspaces (dispatch-tier.js NO_WS_RE)."
+value = '(?i)no\s+workspaces?\s+for\s+real\s+work'
+
+[command.plugin_walk_levels]
+doc = "How many directory levels above a script the plugin-manifest search climbs to tell a script of the anti-hall plugin (command-guard.js isInsideAntiHallPlugin)."
+value = 16
+min = 1
+
+[command.git_status_timeout_ms]
+doc = "How long the `git status` question about a script file may take (command-guard.js gitCleanTracked: 2000 ms)."
+value = 2000
+unit = "ms"
+min = 100

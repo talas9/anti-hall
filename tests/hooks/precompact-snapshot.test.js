@@ -195,8 +195,8 @@ test('never snapshots for a subagent payload', () => {
 
 test('registered on PreCompact in BOTH the Claude and Codex hooks.json, and in install-codex.js', () => {
   const root = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
-  const claude = JSON.parse(fs.readFileSync(path.join(root, 'hooks', 'hooks.json'), 'utf8'));
-  const codex = JSON.parse(fs.readFileSync(path.join(root, 'codex', 'hooks', 'hooks.json'), 'utf8'));
+  const claude = JSON.parse(fs.readFileSync(path.join(root, 'hooks', 'hooks.registry.json'), 'utf8'));
+  const codex = JSON.parse(fs.readFileSync(path.join(root, 'codex', 'hooks', 'hooks.registry.json'), 'utf8'));
   const has = (cfg) => (cfg.hooks.PreCompact || []).some((g) => g.hooks.some((x) => /precompact-snapshot\.js/.test(x.command)));
   assert.ok(has(claude), 'Claude hooks.json PreCompact');
   assert.ok(has(codex), 'Codex hooks.json PreCompact');

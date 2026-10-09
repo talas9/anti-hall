@@ -10,12 +10,12 @@ right and this document gets a fix.
 
 | Surface | Count | Source of truth |
 |---|---|---|
-| Settings keys | 264 in 14 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
+| Settings keys | 329 in 20 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
 | `devswarm.js` verbs | 47 | `plugins/anti-hall/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
-| Hook scripts | 62 (70 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.json` |
-| Codex hook scripts | 44 (47 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
-| Skills | 17 Claude, 20 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
+| Hook scripts | 62 (83 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
+| Codex hook scripts | 44 (59 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
+| Skills | 29 Claude, 32 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys
 
@@ -29,19 +29,25 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `autoHandover` | Auto Handover | 10 | `enabled`, `pct` |
 | `guards` | Guards | 74 | `modelRouting` |
 | `safety` | Safety Guards | 4 | `gitGuard`, `commandGuard`, `editGuard`, `swarmGuard` |
-| `context` | Context Injections | 11 | |
+| `context` | Context Injections | 22 | |
 | `maintenance` | Maintenance | 5 | |
+| `agents` | Agent tracker | 3 | |
 | `versionAlerts` | Version Alerts | 3 | |
 | `updates` | Updates / Maintenance | 5 | |
 | `limitConserve` | Limit Conservation | 3 | `mode` |
-| `jev` | Jev (semantic decision engine) | 31 | `enabled` |
+| `jev` | Jev (semantic decision engine) | 35 | `enabled` |
+| `jevCascade` | Jev cascade | 21 | |
 | `jevIntegrations` | Jev integration | 21 | |
-| `devswarm` | DevSwarm | 92 | `supervisorMode` |
+| `devswarm` | DevSwarm | 93 | `supervisorMode` |
 | `statusline` | Statusline | 2 | |
 | `codexNudge` | Codex Nudge | 2 | |
+| `procwatch` | Process watch | 8 | |
+| `resourceWatch` | Resource watch | 9 | |
+| `diskWatch` | Disk watch | 7 | |
+| `engine` | Engine | 1 | |
 | `defects` | Defects | 1 | |
 
-Of the 264 keys: 133 are `advanced` (hidden from `settings.js show` without `--all`), 185
+Of the 329 keys: 175 are `advanced` (hidden from `settings.js show` without `--all`), 250
 have an env override, 13 are `locked` (safety keys), 3 are `homeOnly`. The full list with
 defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 `tests/hygiene/docs-coverage.test.js` fails if any schema key is missing from it.
@@ -141,8 +147,8 @@ and so does the `unknown command:` error, so neither can drift from the dispatch
 each with `--apply`); their names are stable, their report text is not.
 `update.js --post-pull-only` is an internal re-exec handshake, not a public flag.
 
-**Skill names** are stable too: `/anti-hall:<name>` for the 17 Claude skills and
-`anti-hall-<name>` for the 20 Codex skills. Renaming or removing one is MAJOR.
+**Skill names** are stable too: `/anti-hall:<name>` for the 29 Claude skills and
+`anti-hall-<name>` for the 32 Codex skills. Renaming or removing one is MAJOR.
 
 ## 3. Hook contracts
 
@@ -252,7 +258,7 @@ Hooks marked "none (not toggleable)" are listed in `NOT_TOGGLEABLE`
   `compact-advice-guard`) also honour `stop_hook_active`.
 - **No network unless documented.** Hooks make no network calls except those listed in
   [`PRIVACY.md`](../PRIVACY.md): the update check (`git ls-remote --tags`, on by default),
-  and the opt-in Jev, semantic-judge and triage calls. A new outbound call is a MINOR
+  the one-time download of the optional `ah-engine` binary from the GitHub Release (sha256-pinned in `ah-engine.lock`; the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0` skips it), and the opt-in Jev, semantic-judge and triage calls. A new outbound call is a MINOR
   change that must land in `PRIVACY.md` in the same release; a new default-on one is MAJOR.
 - **No automated deletion.** Automatic paths (hooks, `update.js`, `doctor --repair`,
   the supervisor) never delete messages, user files or repo content. Deletion-class
@@ -281,7 +287,7 @@ Frozen per hook: its script name, event, matcher, the setting and skip name, and
 | `<repo>/.anti-hall/handovers/` | `INDEX.md` + `<date>/<session>/<name>` | `hooks/lib/auto-handover-text.js`, `hooks/lib/handover-find.js` |
 | `<repo>/.anti-hall/command-allow.json`, `edit-allow.json` | per-project allowlists (used only once trusted) | `hooks/lib/command-allow.js` |
 
-Everything else under `~/.anti-hall/` (`cache/`, `state/`, `agents/`, `bin/`, every
+Everything else under `~/.anti-hall/` (`cache/`, `state/`, `agents/`, `bin/`, `ah-engine/` (the optional engine's binary, state databases, local telemetry and last-known-good copies), every
 `*-state.json`, lock and marker files, the SQLite schema inside `devswarm.db`) is internal:
 its location and format may change in any release.
 
@@ -309,7 +315,8 @@ scripts** (`codex/hooks/hooks.json` points at `${PLUGIN_ROOT}/hooks/*.js`).
   version (`tests/hygiene/manifest-drift.test.js`).
 - **Hook set.** Every Claude hook is on Codex too, unless `CLAUDE_ONLY_ALLOWLIST` in
   `manifest-drift.test.js` gives a reason; stale allowlist entries also fail.
-- **Installer.** `install-codex.js` registers the same files as the Codex template
+- **Installer.** `install-codex.js` writes the generated Codex `hooks.json` (one wrapper call per event, built from
+  `plugins/anti-hall/engine/defaults/dispatch.toml`) with `${PLUGIN_ROOT}` resolved to the checkout
   (`tests/codex/codex-hook-parity.test.js`).
 - **Stop behaviour.** The shared Stop hooks run and fail open on a Codex-shaped payload
   (`tests/codex/codex-jev-hooks-parity.test.js`).

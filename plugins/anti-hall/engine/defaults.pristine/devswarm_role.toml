@@ -1,0 +1,294 @@
+# ah-engine shipped defaults for the DevSwarm role checks ported from Node: devswarm-child-role (SessionStart) and
+# devswarm-parent-gate (Stop). Every name, switch, pattern and message text of those two checks lives here (D17). Format: see the
+# header of engine.toml. The message templates are the exact text of hooks/devswarm-child-role.js and hooks/lib/devswarm-wake.js with
+# the run-time values replaced by {placeholders}; the parity test (tests/devswarm_role_parity.rs) compares them with the Node hook.
+
+[devswarm_role.child_summary]
+doc = "One-line description of the devswarm-child-role check in the generated reference."
+value = "SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace (port of devswarm-child-role.js); a Primary session, a stale stable launcher or anything else it cannot prove byte-identical defers to Node."
+
+[devswarm_role.gate_summary]
+doc = "One-line description of the devswarm-parent-gate check in the generated reference."
+value = "Stop: allows without running Node when the Node gate would exit silently before reading any mailbox (switch off, user skip, supervisor inactive, child workspace, judge child, or the model already continuing after a Stop block); every other session defers to the Node gate (port of devswarm-parent-gate.js, early exits only)."
+
+[devswarm_role.gate_guard]
+doc = "The skip-file name of the parent gate."
+value = "devswarm-parent-gate"
+
+[devswarm_role.judge_env]
+doc = "Environment variable that marks the claude -p judge child; hooks that load in it exit silently."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[devswarm_role.kill_env]
+doc = "Environment variable whose value 1 switches the DevSwarm integration off (checked before the supervisor mode)."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[devswarm_role.repo_env]
+doc = "Environment variable DevSwarm sets for a session under it; its presence is the auto-mode detection of an active supervisor."
+value = "DEVSWARM_REPO_ID"
+
+[devswarm_role.branch_env]
+doc = "Environment variable that tells a child workspace (non-empty) from a Primary (empty or unset)."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[devswarm_role.builder_env]
+doc = "Environment variable holding the workspace id the injected commands name."
+value = "DEVSWARM_BUILDER_ID"
+
+[devswarm_role.agent_env]
+doc = "Environment variable naming the workspace's agent (claude, codex, ...); only claude is told about the idle-wake cron and monitor tools."
+value = "DEVSWARM_AI_AGENT"
+
+[devswarm_role.claude_agent]
+doc = "The agent name that has the idle-wake cron and monitor tools."
+value = "claude"
+
+[devswarm_role.test_markers]
+doc = "Environment variables that mark a test run; with one of them set and the home equal to the real home the Node settings reader refuses, so the check defers rather than guess what Node does."
+value = ["ANTIHALL_TEST", "ANTIHALL_TEST_ISOLATION"]
+
+[devswarm_role.real_home_escape]
+doc = "Environment variable that lifts the real-home refusal of the Node settings reader (tests that need the real home)."
+value = "ANTIHALL_ALLOW_REAL_HOME_TEST"
+
+[devswarm_role.sw_child_role]
+doc = "Switch devswarm.childRole (default on): off makes the SessionStart hook a no-op."
+value = { section = "devswarm", key = "childRole", option = "devswarm_child_role", default = true }
+
+[devswarm_role.sw_parent_gate]
+doc = "Switch devswarm.parentGate (default on): off makes the Stop gate a no-op."
+value = { section = "devswarm", key = "parentGate", option = "devswarm_parent_gate", default = true }
+
+[devswarm_role.sw_stable_launcher]
+doc = "Switch devswarm.stableLauncher (default on): point the injected text at the version-independent launchers under the anti-hall bin directory instead of the plugin's own versioned path."
+value = { section = "devswarm", key = "stableLauncher", env = "ANTIHALL_DEVSWARM_STABLE_LAUNCHER", default = true }
+
+[devswarm_role.sw_rearm]
+doc = "Switch devswarm.rearmOnTickOnly (default on): re-arm a lapsed monitor only from the cron tick, never inline on the monitor's own expiry."
+value = { section = "devswarm", key = "rearmOnTickOnly", env = "ANTIHALL_DEVSWARM_REARM_ON_TICK_ONLY", option = "devswarm_rearm_on_tick_only", default = true }
+
+[devswarm_role.sw_supervisor_mode]
+doc = "Setting devswarm.supervisorMode (auto, on or off): force the supervisor context on or off, or detect it from the environment. default is also the manifest default the plugin option is compared with."
+value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", values = ["auto", "on", "off"] }
+
+[devswarm_role.sw_wake_cron]
+doc = "Setting devswarm.wakeCron: the cron schedule of the mailbox-wake job, untrusted text that is validated before it is injected."
+value = { section = "devswarm", key = "wakeCron", env = "ANTIHALL_DEVSWARM_WAKE_CRON", default = "7,37 * * * *" }
+
+[devswarm_role.cron_charset]
+doc = "The only characters a cron field may contain (anything else would let the setting inject text into the directive)."
+value = "0123456789*/,-"
+
+[devswarm_role.cron_fields]
+doc = "How many whitespace-separated fields a valid cron schedule has."
+value = 5
+min = 1
+max = 10
+
+[devswarm_role.id_extra_chars]
+doc = "Characters besides ASCII letters and digits that a workspace id may contain."
+value = "._-"
+
+[devswarm_role.id_placeholder]
+doc = "What the injected commands name when the workspace id is absent or unsafe."
+value = "<DEVSWARM_BUILDER_ID>"
+
+[devswarm_role.hooks_dir]
+doc = "The plugin's hooks directory, relative to the plugin root; the Node hooks resolve their own location from it (real path)."
+value = "hooks"
+
+[devswarm_role.bin_dir]
+doc = "The directory of the stable launchers, relative to the home directory."
+value = ".anti-hall/bin"
+
+[devswarm_role.launcher_cli]
+doc = "The stable launcher of the DevSwarm CLI: its file name under the bin directory and the script it resolves, relative to the plugin root."
+value = { name = "devswarm.js", target = "scripts/devswarm.js" }
+
+[devswarm_role.launcher_watcher]
+doc = "The stable launcher of the mailbox watcher: its file name under the bin directory and the script it resolves, relative to the plugin root."
+value = { name = "wake-watch.js", target = "companion/lib/devswarm-wake-watch.js" }
+
+[devswarm_role.out_prefix]
+doc = "The SessionStart hook output up to the directive text (host protocol; the text follows as a JSON string)."
+value = '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":'
+
+[devswarm_role.out_suffix]
+doc = "The SessionStart hook output after the directive text."
+value = '}}'
+
+[devswarm_role.msg_base]
+doc = "The mesh-only messaging directive of a child workspace (placeholder {cli}: the DevSwarm CLI path)."
+value = '''
+💡 anti-hall · devswarm-comms: anti-hall's shared mesh store is this workspace's ONLY messaging channel for DevSwarm coordination — native hivecontrol send commands (`workspace message-*`) are BLOCKED. Report status: `node {cli} heartbeat <id> --summary "<text>"`. Direct-message: `node {cli} send --to-primary --message-file <path>` (or `--to <meshId>`). Check in: `node {cli} roster`, `mesh read` (CONSUMES broadcasts — use `--peek` to check in without consuming), `inbox read-primary <id>` (read-only — then run the `ackCommand` it returns). RESTING state = keep polling the mesh — do not idle silently. Scope: COMMUNICATION ONLY; this never changes your assigned task. BLOCKED ON A DECISION? Never ask the human directly, never halt all work — a question parks ONE sub-task; keep working every other unblocked item. Send via `send --to-primary --question` (message = blocked/options/recommendation/DEFAULT you'll take/deadline). DEFAULT-AND-PROCEED: no reply by deadline -> take that default, proceed, and flag it LOUDLY as an explicit assumption in your report — never silently. Hard-stop ONLY for a destructive/irreversible action: park + report, do not guess a default. Ladder: child -> parent -> human, never child -> human. WHEN MERGED run `node {cli} done --summary "..."` once; auto-archived after. If you have been idle with no active task for a while, proactively run `node {cli} heartbeat <id> --summary "idle — reassign me a task or archive me"` so the parent orchestrator's task list stays honest instead of you sitting idle unnoticed.'''
+
+[devswarm_role.msg_wake_other]
+doc = "The mailbox-wake text of a workspace whose agent is not claude (placeholders {cli}, {id}, {agent})."
+value = '''
+ MAILBOX WAKE: this workspace runs `{agent}`, which has NO idle-wake primitive — once you go idle, nothing can wake you, so a message that lands after you stop waits for your next turn. Drain your mailbox at the START of every turn and again BEFORE you stop: first run `node {cli} inbox pull {id}` (cheap, inline — imports anything waiting in your native queue) then `node {cli} inbox count {id}` (both plain: no pipes/filters); if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true` AND `known` is NOT `false`, say so and stop — do NOT spawn a subagent; otherwise (either `unreadTotal` is greater than 0, or `meshGapWithheld` is `true`, or `known` is `false`), run `node {cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns) (delegate to a subagent only if the payload is large — its ackCommand is the cursor-advancing step, matching devswarm-child-turn.js's own mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the withheld gap) — if that reports `ok:false`, report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) in one line and stop (do not loop, do not spawn a subagent).'''
+
+[devswarm_role.msg_wake_claude]
+doc = "The mailbox-wake text of a claude workspace (placeholders {cli}, {watcher}, {id}, {cron}, {expiry})."
+value = '''
+ MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`. If ANY existing job already runs `inbox tick` for this workspace — any schedule, id, or partition UUID — that counts as present; do nothing, never create a second one. Only if ABSENT — never created, or auto-expired (recurring tasks self-delete 7 days after creation) — call `CronCreate` with schedule `{cron}` and a prompt that runs run `node {cli} inbox tick {id} --child --quiet` (run plain: no pipes/filters) (with `--child` it first imports anything waiting in your native queue, then prints one line with the SAME unread/meshGap/known signal `inbox count` reports, and writes a liveness marker + refreshes your heartbeat — one command instead of pull+count); If its `watcherArmed` reads `false` (your Monitor lapsed at its 30-min cap; not `idle-skip`/`limit-skip`), re-arm: `Monitor` with `node {watcher}` (persistent: true if supported, else max timeout_ms). if the printed line reads `unread 0` AND `meshGap false` AND `known` is NOT `false`, say so and stop — do NOT spawn a subagent; otherwise (either `unread` is greater than 0, or `meshGap` is `true`, or `known` is `false`), run `node {cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns) (delegate to a subagent only if the payload is large — this is the cursor-advancing verb, matching devswarm-child-turn.js's own mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the withheld gap) — if that reports `ok:false`, report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) in one line and stop (do not loop, do not spawn a subagent) and acts on anything unread. Cron jobs fire while this session is IDLE (each tick is a full turn) — this cron is now a 30-MINUTE FALLBACK cadence (cheaper than the pre-D13 5-minute default), NEVER disarmed — it is the only thing that will wake you to drain your mailbox once you go idle; a message that lands after you stop is otherwise never seen. ALSO arm the `Monitor` tool as your PRIMARY wake path (Cron above is the 30-minute FALLBACK — it still fires independently; Monitor is IN ADDITION, never instead): first check whether a mailbox-wake Monitor is already armed so you never arm a second one (double-arming causes duplicate wakes; the watcher script also self-guards with a lock, but do not rely on that alone). If none is armed, call `Monitor` with command `node {watcher}` and a description like "devswarm mailbox wake watcher": use `persistent: true` if your Monitor tool supports it, else max `timeout_ms`{expiry} — never two watchers at once. Every line it prints on stdout becomes a transcript event, waking this session even while fully idle, with far lower latency than the cron tick above. A first line starting `[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume you do; the cron job above is still your only wake path.'''
+
+[devswarm_role.msg_expiry_tick]
+doc = "The monitor-expiry clause when re-arming happens only from the cron tick."
+value = '''
+. Do NOT re-arm inline when it emits its final/expired event — reply in one line and stop; the next `inbox tick` cron turn re-arms it via `watcherArmed`'''
+
+[devswarm_role.msg_expiry_inline]
+doc = "The monitor-expiry clause when the monitor is also re-armed inline on its own expiry."
+value = '''
+ + re-arm on its final/expired event'''
+
+[devswarm_role.launcher_src]
+doc = "The source of a generated stable launcher (placeholders {segments}: the JSON array of the target's path parts, {fallback}: the JSON string of the target's absolute path at generation time). Compared byte for byte with the file on disk, never executed or written by the engine."
+value = '''
+#!/usr/bin/env node
+'use strict';
+// AUTO-GENERATED by anti-hall (hooks/lib/stable-launcher.js) — do not edit by hand,
+// it is overwritten (idempotently — only when content actually changes) at
+// SessionStart/Stop. Resolves the CURRENTLY REGISTERED anti-hall install
+// (installed_plugins.json -> marketplace clone -> the path baked in at
+// generation time) EVERY TIME THIS RUNS, and delegates to its real script
+// with full argv/exit-code passthrough — so a `node` command naming THIS
+// file never goes stale across an anti-hall update.
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const SEGMENTS = {segments};
+const FALLBACK = {fallback};
+
+function fileExists(p) {
+  try { return !!p && fs.statSync(p).isFile(); } catch (_) { return false; }
+}
+
+function fromInstalledJson() {
+  try {
+    const home = os.homedir();
+    const p = path.join(home, ".claude", "plugins", "installed_plugins.json");
+    const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    const reg = (data && typeof data === "object" && data.plugins && typeof data.plugins === "object")
+      ? data.plugins : data;
+    const entry = reg && reg["anti-hall@anti-hall"];
+    let pick = null;
+    if (Array.isArray(entry)) {
+      pick = entry.find(function (e) { return e && e.scope === "user" && typeof e.installPath === "string"; })
+        || entry.find(function (e) { return e && e.scope === "project" && typeof e.installPath === "string"; })
+        || entry.find(function (e) { return e && typeof e.installPath === "string"; });
+    } else if (entry && typeof entry === "object" && typeof entry.installPath === "string") {
+      pick = entry;
+    }
+    if (pick) {
+      const target = path.join.apply(path, [pick.installPath].concat(SEGMENTS));
+      if (fileExists(target)) return target;
+    }
+  } catch (_) { /* fall through */ }
+  return null;
+}
+
+function fromMarketplace() {
+  try {
+    const home = os.homedir();
+    const target = path.join.apply(path,
+      [home, ".claude", "plugins", "marketplaces", "anti-hall", "plugins", "anti-hall"].concat(SEGMENTS));
+    if (fileExists(target)) return target;
+  } catch (_) { /* fall through */ }
+  return null;
+}
+
+function resolveTarget() {
+  return fromInstalledJson() || fromMarketplace() || FALLBACK;
+}
+
+// ASYNC spawn + signal forwarding (not spawnSync) — field incident
+// 2026-09-26: a watcher spawned via a spawnSync-blocked launcher outlived
+// the launcher when the launcher itself was killed (SIGKILL cannot be
+// caught/forwarded either way, so the spawned target is ALSO expected to
+// self-detect its own orphaning — see devswarm-wake-watch.js's own
+// parentGone() check, which is the fix of record for that case). This
+// async form adds the belt-and-suspenders half: a GRACEFUL SIGTERM/SIGINT
+// to this launcher (not a SIGKILL) is now forwarded to the still-running
+// child instead of leaving it running while this wrapper exits.
+function main() {
+  const target = resolveTarget();
+  if (!target) {
+    process.stderr.write(
+      "anti-hall stable launcher: could not resolve an anti-hall install (checked installed_plugins.json, the marketplace clone, and the baked fallback)\n");
+    process.exit(1);
+  }
+function meshRoute(argv, segments) {
+  var out = { input: undefined };
+  try {
+    if (!segments || segments[1] !== 'devswarm.js') return out;
+    // ROUTES: the verbs `ah-engine mesh` can answer. Each row is the leading words of the argv, plus an optional flag that
+    // must also be present. A verb the engine decides it cannot answer is handed to Node by the engine itself, so a row
+    // here only says "ask the engine first".
+    var ROUTES = [
+      { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'] },
+      { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] }, { words: ['inbox', 'tick'] }, { words: ['inbox', 'read-primary'] },
+      { words: ['help'] }, { words: [], anyOf: ['-h', '--h', '--help'] }, { words: ['skip'] }, { words: ['archive-ignore'] },
+      { words: ['archive-unignore'] }, { words: ['gate-intent'] }, { words: ['notice'] }, { words: ['plan'] }, { words: ['scope'] },
+      { words: ['gate'] }, { words: ['workspaces'] }, { words: ['logs'] }, { words: ['wake-directive'] },
+      { words: ['ready-check'] }, { words: ['app-state'] }, { words: ['app-sync'] }, { words: ['done'] }, { words: ['primary'] }, { words: ['relay'] }, { words: ['archive-request'] }, { words: ['nudge'] }, { words: ['supervision-report'] }, { words: ['sync-ui'] }, { words: ['retention'] }, { words: ['reap-orphans'] }, { words: ['correct'] }, { words: ['register'] }, { words: ['ensure'] }, { words: ['migrate-owner-keys'] }, { words: ['unarchive'] },
+    ];
+    var routed = ROUTES.some(function (r) {
+      return r.words.every(function (w, i) { return argv[i] === w; })
+        && (!r.flag || argv.some(function (a) { return a === r.flag || a.indexOf(r.flag + '=') === 0; }))
+        && (!r.anyOf || argv.some(function (a) { return r.anyOf.indexOf(a) >= 0; }));
+    });
+    if (!routed) return out;
+    var fs = require('fs'), path = require('path'), os = require('os');
+    var dir = path.join(os.homedir(), '.anti-hall');
+    var m = null;
+    try { m = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).mesh; } catch (_) {}
+    if (!m || String(m.engine_writes).trim().toLowerCase() !== 'on') return out;
+    var bin = path.join(dir, 'ah-engine', 'bin', 'ah-engine');
+    try { fs.accessSync(bin, fs.constants.X_OK); } catch (_) { return out; }
+    var ms = Number(m.engine_timeout_ms);
+    if (!(ms > 0)) ms = 15000;
+    var piped = argv.indexOf('--message-stdin') >= 0;
+    var input;
+    if (piped) { try { input = fs.readFileSync(0); } catch (_) { input = Buffer.alloc(0); } out.input = input; }
+    var r = require('child_process').spawnSync(bin, ['mesh'].concat(argv), {
+      stdio: [piped ? 'pipe' : 'inherit', 'inherit', 'inherit'], input: input, timeout: ms, killSignal: 'SIGKILL',
+    });
+    var why = r.error ? String(r.error.code || r.error.message) : r.signal ? 'signal ' + r.signal : r.status === 127 ? 'exit 127' : r.status === 75 ? 'exit 75' : '';
+    if (!why) return { done: r.status === null ? 1 : r.status };
+    try {
+      fs.mkdirSync(path.join(dir, 'ah-engine'), { recursive: true });
+      fs.appendFileSync(path.join(dir, 'ah-engine', 'mesh-route.log'),
+        JSON.stringify({ ts: Date.now(), verb: argv.slice(0, 2).join(' '), fallback: 'node', why: why }) + '\n');
+    } catch (_) {}
+  } catch (_) {}
+  return out;
+}
+  const routed = meshRoute(process.argv.slice(2), SEGMENTS);
+  if (routed.done !== undefined) { process.exit(routed.done); return; }
+  const { spawn } = require("child_process");
+  let child;
+  try {
+    child = spawn(process.execPath, [target].concat(process.argv.slice(2)), { stdio: [routed.input === undefined ? "inherit" : "pipe", "inherit", "inherit"] });
+    if (routed.input !== undefined) child.stdin.end(routed.input);
+  } catch (e) {
+    process.stderr.write("anti-hall stable launcher: failed to run " + target + ": " + (e && e.message) + "\n");
+    process.exit(1);
+    return;
+  }
+  child.on("error", (e) => {
+    process.stderr.write("anti-hall stable launcher: failed to run " + target + ": " + (e && e.message) + "\n");
+    process.exit(1);
+  });
+  const forward = (sig) => { try { child.kill(sig); } catch (_) {} };
+  process.on("SIGTERM", () => forward("SIGTERM"));
+  process.on("SIGINT", () => forward("SIGINT"));
+  process.on("SIGHUP", () => forward("SIGHUP"));
+  child.on("exit", (code, signal) => {
+    if (signal) { process.exit(1); return; }
+    process.exit(code === null ? 0 : code);
+  });
+}
+
+main();
+'''

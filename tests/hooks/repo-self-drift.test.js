@@ -305,10 +305,10 @@ test('advisory text contains only computed numbers/dates, no file content', () =
 
 test('hooks.json: claude-cli-version.js and repo-self-drift.js registered on SessionStart, absent from Stop', () => {
   const claudeHooks = JSON.parse(fs.readFileSync(
-    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'hooks.json'), 'utf8'
+    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'hooks.registry.json'), 'utf8'
   ));
   const codexHooks = JSON.parse(fs.readFileSync(
-    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.json'), 'utf8'
+    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.registry.json'), 'utf8'
   ));
 
   for (const [label, hj] of [['claude', claudeHooks], ['codex', codexHooks]]) {

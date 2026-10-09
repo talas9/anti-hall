@@ -1,0 +1,17 @@
+# cargo-mutants config (run via scripts/mutants.sh; NOT part of the default gate). Scope: the guard logic under
+# src/checks/**, where a surviving mutant means a verdict could flip without any test noticing.
+# (The examined files are chosen by scripts/mutants.sh, always inside src/checks/**: cargo-mutants ADDS a command-line
+# --file to an examine_globs set here instead of narrowing it, so the scope cannot live in this file.)
+exclude_globs = [
+  "src/checks/**/tests.rs",
+  "src/checks/**/tests/**",
+]
+# Mutants that cannot change behaviour a test could observe: Debug/Display formatting.
+exclude_re = [
+  "impl (std::)?(fmt::)?(Debug|Display)",
+  "::fmt\\b",
+]
+# Slow end-to-end suites (tests/*.rs spawn daemons) are not run per mutant: scripts/mutants.sh runs `cargo test --lib`
+# filtered to the module under test, so each mutant costs one in-process test binary run.
+timeout_multiplier = 3.0
+minimum_test_timeout = 60

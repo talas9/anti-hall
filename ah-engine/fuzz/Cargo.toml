@@ -1,0 +1,36 @@
+[package]
+name = "ah-engine-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ah-engine = { path = ".." }
+
+# Own workspace: the fuzz crate needs the nightly toolchain and must never join (or be built by) the engine's stable build.
+[workspace]
+
+[[bin]]
+name = "heredoc"
+path = "fuzz_targets/heredoc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glob"
+path = "fuzz_targets/glob.rs"
+test = false
+doc = false
+bench = false

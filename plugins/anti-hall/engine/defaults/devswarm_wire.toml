@@ -1,0 +1,327 @@
+# ah-engine shipped defaults for the DevSwarm wiring (lane dswire, `src/dswire`): the daemon thread that keeps the realtime state
+# live from file events, the triggers of the DevSwarm actions, the consumers (advisory, statusline line, Jev dirty flags), the
+# per-action cutover switch and the role matrix of the owner verbs. Format: see the header of engine.toml. Every key can be
+# overridden in the `devswarm_wire` / `devswarm_rt` sections of settings.json.
+
+# ---- cutover: who runs each action ------------------------------------------------------------------------------------------
+# `engine` (the default for auto-archive, owner 2026-10-08: the engine is always live) runs the action in the daemon; poke and escalate default to `node`.
+# `node` leaves it to the Node supervisor (the engine stands down and counts it). `off` runs it nowhere. `auto` (poke and escalate)
+# is `engine` when devswarm_sup.mode is `engine`, else `node`. When the engine owns an action the Node supervisor job must be off
+# (see docs/AH-ENGINE.md, "DevSwarm supervisor cutover"); the double-run guard holds poke and escalate back while it is not.
+
+[devswarm_rt."act.auto_archive.executor"]
+doc = "Who runs the automatic archive of finished workspaces: engine | node | off. The engine honours the Node setting devswarm.autoArchive.{mode,idleMin,maxPerSweep,ignorePings} unchanged. With `engine` the Node supervisor's autoArchive must be switched off for the same machine (ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE=off in the supervisor job's environment); the durable auto-archived.json still stops either side from repeating an archive at one HEAD."
+value = "engine"
+
+[devswarm_rt."act.poke.executor"]
+doc = "Who pokes a stale workspace (its descriptor's nudgeCommand): auto | engine | node | off. Default auto: the engine once devswarm_sup.mode is `engine` (the engine owns every supervisor duty and the Node supervisor job is off), otherwise node. An explicit `engine` while the Node supervisor still runs is held back by the double-run guard (devswarm_sup.guard_ms)."
+value = "auto"
+
+[devswarm_rt."act.escalate.executor"]
+doc = "Who escalates a stale workspace once its pokes are used up (its descriptor's escalateCommand, once, and the one-time notice to the parent): auto | engine | node | off. Same default and guard as poke."
+value = "auto"
+
+[devswarm_wire.executor_auto]
+doc = "The executor word that follows devswarm_sup.mode (poke and escalate only; auto-archive has no auto word)."
+value = "auto"
+
+[devswarm_wire.executor_words]
+doc = "The words of the executor settings, in the order engine, node, off. Anything else reads as node (the engine stands down)."
+value = ["engine", "node", "off"]
+
+[devswarm_wire.act_kinds]
+doc = "The automatic action kinds that have an executor switch, in the order auto_archive, poke, escalate (the key segment under devswarm_rt.act)."
+value = ["auto_archive", "poke", "escalate"]
+
+# ---- the daemon thread ------------------------------------------------------------------------------------------------------
+
+[devswarm_wire.wait_ms]
+doc = "How long the DevSwarm thread waits for a file event before it checks whether the daemon is draining and whether the periodic reconcile is due."
+value = 500
+min = 10
+max = 60000
+unit = "ms"
+
+[devswarm_wire.act_min_gap_ms]
+doc = "The least time between two action sweeps (auto-archive, poke/escalate). An event burst triggers at most one sweep per gap; the periodic reconcile always triggers one."
+value = 5000
+min = 0
+max = 3600000
+unit = "ms"
+
+[devswarm_wire.act_edge_kinds]
+doc = "The kinds of state change that trigger an action sweep right away (the others wait for the periodic reconcile)."
+value = ["lifecycle", "activity", "pr", "unread"]
+
+[devswarm_wire.git_timeout_ms]
+doc = "Time limit of each git call that reads a workspace's facts (HEAD, status, merge proof). A call over the limit is killed and the fact counts as not proven."
+value = 4000
+min = 100
+max = 600000
+unit = "ms"
+
+[devswarm_wire.git_bin]
+doc = "The git executable the fact readers run."
+value = "git"
+
+[devswarm_wire.watch_state_dirs]
+doc = "Directories under the DevSwarm state directory whose changes are hints for a reconcile (each key is a mesh_write.* setting that names the directory)."
+value = ["mesh_write.dir_heartbeats", "mesh_write.dir_plans", "mesh_write.dir_workspaces", "mesh_write.dir_summaries", "mesh_write.dir_archived"]
+
+[devswarm_wire.watch_git_names]
+doc = "Files of a worktree's git directory whose change means a commit or a checkout happened (a Jev hint for that workspace)."
+value = ["HEAD", "index", "ORIG_HEAD", "FETCH_HEAD"]
+
+[devswarm_wire.git_dir_file]
+doc = "The file a linked worktree has in place of a .git directory, and the prefix of its one line."
+value = { file = ".git", prefix = "gitdir:" }
+
+[devswarm_wire.transcript_dir]
+doc = "Where Claude Code keeps session transcripts, relative to the home directory; a worktree's directory is its path with the characters in transcript_encode replaced by '-'."
+value = ".claude/projects"
+
+[devswarm_wire.transcript_encode]
+doc = "The characters of a worktree path replaced by '-' to name its transcript directory."
+value = "/\\:."
+
+[devswarm_wire.transcript_ext]
+doc = "The extension of a session transcript file."
+value = ".jsonl"
+
+# ---- consumers --------------------------------------------------------------------------------------------------------------
+
+[devswarm_wire.advisory_enabled]
+doc = "Inject a one-paragraph note of the DevSwarm workspace changes a session has not seen yet (the `devswarm-rt-advisory` hook check). Off turns the injection off; the state is still kept."
+value = true
+
+[devswarm_wire.advisory_max_chars]
+doc = "Most characters of one advisory; older changes are summarised as a count when it would be longer."
+value = 600
+min = 80
+max = 8000
+
+[devswarm_wire.advisory_max_edges]
+doc = "Most changes listed by name in one advisory."
+value = 8
+min = 1
+max = 100
+
+[devswarm_wire.advisory_kinds]
+doc = "The kinds of change an advisory mentions (lifecycle, paused, activity, unread, plan_step, pr, checks)."
+value = ["lifecycle", "paused", "activity", "pr", "checks"]
+
+[devswarm_wire.advisory_dir]
+doc = "The directory (under the engine state directory) holding, per session, the newest change generation that session was told about."
+value = "rt-advisory"
+
+[devswarm_wire.advisory_session_max]
+doc = "Longest session id (characters) used as a file name; a longer or unsafe id gets no advisory."
+value = 128
+min = 8
+max = 255
+
+[devswarm_wire.advisory_prune_ms]
+doc = "A session's seen-generation file untouched for this long is removed when the next advisory is written."
+value = 604800000
+min = 60000
+unit = "ms"
+
+[devswarm_wire.msg_advisory]
+doc = "The advisory text. {changes} is the list of changes, {more} the note about changes left out, {generation} the state generation."
+value = "DevSwarm: {changes}{more} (state generation {generation})"
+
+[devswarm_wire.msg_edge]
+doc = "One change in an advisory. {ws} the workspace label or id, {kind} what changed, {from} and {to} the old and new value."
+value = "{ws} {kind} {from} -> {to}"
+
+[devswarm_wire.msg_edge_new]
+doc = "One change whose old value is empty (a workspace appeared, a PR was linked)."
+value = "{ws} {kind} {to}"
+
+[devswarm_wire.msg_more]
+doc = "The note appended when changes were left out. {n} is how many."
+value = "; and {n} more"
+
+[devswarm_wire.msg_separator]
+doc = "Between two changes in an advisory."
+value = "; "
+
+[devswarm_wire.msg_line]
+doc = "The statusline segment. {active} workspaces in progress, {stuck} stuck, {unread} unread mail, {gen} state generation."
+value = "ws {active} active, {stuck} stuck, {unread} unread"
+
+[devswarm_wire.msg_line_stale]
+doc = "The statusline segment when the app database could not be read (the state is unknown, not empty)."
+value = "ws state unknown"
+
+[devswarm_wire.jev_dirty_kinds]
+doc = "The kinds of state change that mark a workspace's Jev data dirty and queue a sweep of just that workspace."
+value = ["plan_step", "activity", "pr", "checks"]
+
+[devswarm_wire.jev_dirty_file]
+doc = "The file (under the engine state directory) listing the workspaces whose Jev sweep is queued, so a restart does not lose the queue."
+value = "rt-jev-dirty.json"
+
+[devswarm_wire.jev_dirty_cap]
+doc = "Most workspaces held in the Jev dirty queue; past it the oldest entries are dropped (the slow scheduled sweep still covers them)."
+value = 256
+min = 1
+max = 100000
+
+# ---- owner verbs and roles --------------------------------------------------------------------------------------------------
+
+[devswarm_wire.owner_verbs]
+doc = "The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory, supervisor and ingest read the state; archive, plan-prune, prune and recover (kill and resume one session; Node's recovery code does the kill after the engine's refusals) act at the owner's request; wake-watch runs the idle-wake Monitor until the session ends. `create` and `merge` answer deferred (the Node verbs keep them, because the engine cannot reproduce their source-freshness and merge-gate checks yet)."
+value = ["status", "line", "advisory", "supervisor", "ingest", "archive", "plan-prune", "prune", "recover", "create", "merge", "wake-watch"]
+
+[devswarm_wire.compat_verbs]
+doc = "The `ah-engine devswarm <verb> <args>` verbs that take exactly the arguments of `node scripts/devswarm.js <verb>` and print its output (lane l8; ported in `src/meshw/simple.rs`). They run under the role matrix like the owner verbs, then through the same front as `ah-engine mesh <devswarm.js argv>`: `mesh.engine_writes` off sends them to Node, on makes the engine answer and Node the cases it defers (exit 75 only when Node cannot run either)."
+value = ["help", "skip", "archive-ignore", "archive-unignore", "gate-intent", "notice", "plan", "scope", "gate", "workspaces", "logs", "wake-directive", "ready-check", "app-state", "app-sync", "done", "primary", "relay", "archive-request", "nudge", "supervision-report", "sync-ui", "retention", "unarchive", "migrate-owner-keys", "ensure", "register", "correct", "reap-orphans"]
+
+[devswarm_wire.command_word]
+doc = "The registered name of the command (`ah-engine devswarm ...`), used to find the verb's own arguments on the process command line."
+value = "devswarm"
+
+[devswarm_wire.role_words]
+doc = "The roles a caller can have, in this order: main (the interactive main session), child (a DevSwarm workspace child), subagent (a spawned agent or any automated caller), codex (a Codex session)."
+value = ["main", "child", "subagent", "codex"]
+
+[devswarm_wire.role_matrix]
+doc = "Which roles may run each verb (the permission matrix). Reads are open to every role; the verbs that act (including skip, which switches a guard off, and the notice verb, whose --post is an act) are for the main session only."
+value = { status = ["main", "child", "subagent", "codex"], line = ["main", "child", "subagent", "codex"], supervisor = ["main", "child", "subagent", "codex"], ingest = ["main", "child", "subagent", "codex"], recover = ["main"], advisory = ["main", "child", "subagent", "codex"], archive = ["main"], plan-prune = ["main"], prune = ["main"], create = ["main"], merge = ["main"], help = ["main", "child", "subagent", "codex"], skip = ["main"], archive-ignore = ["main"], archive-unignore = ["main"], gate-intent = ["main"], notice = ["main"], plan = ["main", "child"], scope = ["main", "child"], gate = ["main", "child"], workspaces = ["main", "child", "subagent", "codex"], logs = ["main", "child", "subagent", "codex"], wake-directive = ["main", "child", "subagent", "codex"], ready-check = ["main", "child", "subagent", "codex"], app-state = ["main", "child", "subagent", "codex"], app-sync = ["main"], done = ["main", "child"], primary = ["main"], relay = ["main", "child"], archive-request = ["main"], nudge = ["main"], supervision-report = ["main", "child", "subagent", "codex"], sync-ui = ["main"], retention = ["main"], unarchive = ["main"], migrate-owner-keys = ["main"], ensure = ["main", "child"], register = ["main", "child"], correct = ["main"], reap-orphans = ["main"], wake-watch = ["main", "child"] }
+
+[devswarm_wire.role_codex_env]
+doc = "Environment variables whose presence marks a Codex session (empty: no Codex marker is known)."
+value = []
+
+[devswarm_wire.role_child_env]
+doc = "The environment variable whose non-blank value marks a DevSwarm workspace child."
+value = "ANTIHALL_DEVSWARM_SOURCE_BRANCH"
+
+[devswarm_wire.msg_role_refused]
+doc = "Printed when the caller's role may not run the verb. {verb} {role}."
+value = "devswarm {verb} is not allowed for the {role} role (main session only)"
+
+[devswarm_wire.msg_unknown_verb]
+doc = "Printed for an unknown verb. {verb}."
+value = "unknown devswarm verb {verb}"
+
+[devswarm_wire.msg_deferred]
+doc = "Printed for a verb the engine hands to Node. {verb}."
+value = "devswarm {verb} is run by scripts/devswarm.js (the engine cannot yet reproduce its checks)"
+
+[devswarm_wire.msg_missing_arg]
+doc = "Printed when a verb lacks a required flag. {flag}."
+value = "missing required flag {flag}"
+
+[devswarm_wire.msg_inert]
+doc = "Printed by the verbs that need the live state when DevSwarm is absent."
+value = "DevSwarm is not installed or the realtime layer is off"
+
+[devswarm_wire.request_flag]
+doc = "The flag that carries an owner request's own id (the idempotency key's last part)."
+value = "--request"
+
+[devswarm_wire.id_flag]
+doc = "The flag that names the workspace."
+value = "--id"
+
+[devswarm_wire.session_flag]
+doc = "The flag that names the session an advisory is for."
+value = "--session"
+
+[devswarm_wire.days_flag]
+doc = "The flag of plan-prune that sets the minimum archive age in days."
+value = "--older-than"
+
+[devswarm_wire.ids_flag]
+doc = "The flag of prune that lists the approved ids (comma separated)."
+value = "--confirm-ids"
+
+[devswarm_wire.plan_flag]
+doc = "The flag of prune that names the plan."
+value = "--plan"
+
+[devswarm_wire.usage_exit]
+doc = "Exit code for a refused or malformed owner verb."
+value = 64
+
+[devswarm_wire.deferred_exit]
+doc = "Exit code for a verb handed to Node (nothing was done)."
+value = 75
+
+# ---- fact readers (the archive, prune and poke decisions) -------------------------------------------------------------------
+
+[devswarm_wire.archive_log_name]
+doc = "Node's auto-archive log under the home directory's logs directory; the newest ok line for a workspace dates its archive."
+value = ".anti-hall/logs/devswarm-auto-archive.ndjson"
+
+[devswarm_wire.day_ms]
+doc = "Milliseconds in a day (archive age in whole days)."
+value = 86400000
+
+[devswarm_wire.desc_keys]
+doc = "The descriptor fields the fact readers use: worktree path, session id, nudge command, escalate command, id."
+value = { worktree = "worktreePath", session = "sessionId", nudge = "nudgeCommand", escalate = "escalateCommand", id = "id" }
+
+[devswarm_wire.nudge_state_file]
+doc = "The engine's own record of pokes made (attempts, last time, escalated), under the engine state directory."
+value = "rt-nudges.json"
+
+[metric.dswire_actions]
+doc = "DevSwarm actions the engine ran or declined from a state change, by kind and outcome."
+value = { kind = "counter", unit = "actions", labels = ["kind", "outcome"] }
+
+[metric.dswire_standdown]
+doc = "Action sweeps the engine skipped because the action's executor is not the engine."
+value = { kind = "counter", unit = "sweeps", labels = ["kind"] }
+
+[metric.dswire_advisory]
+doc = "Advisories injected into a session."
+value = { kind = "counter", unit = "advisories", labels = [] }
+
+[metric.dswire_jev_dirty]
+doc = "Workspaces marked dirty for a per-child Jev sweep."
+value = { kind = "counter", unit = "marks", labels = [] }
+
+[devswarm_wire.col_last_selected]
+doc = "The builders column holding when the owner last selected the workspace in the DevSwarm app (ISO text); the viewed gate of the auto-archive reads it."
+value = "lastSelectedAt"
+
+[devswarm_wire.check_summary]
+doc = "The one-line description of the devswarm-rt-advisory hook check in the generated reference."
+value = "Tells the main session which DevSwarm workspace changes (stuck, CI, PR, lifecycle) it has not seen yet; engine-only."
+
+[devswarm_wire.check_event]
+doc = "The hook event the devswarm-rt-advisory check answers."
+value = "UserPromptSubmit"
+
+[devswarm_wire.ctl_advisory]
+doc = "The control request the `advisory` verb sends the daemon. {session} is the session id."
+value = "devswarm advisory session={session}"
+
+[devswarm_wire.ctl_advisory_word]
+doc = "The first word of the control request that asks for an advisory (the other request is the state summary)."
+value = "advisory"
+
+[devswarm_wire.ctl_kv]
+doc = "How a control argument is introduced; {name} is the argument name."
+value = "{name}="
+
+[devswarm_wire.ctl_none]
+doc = "The control answer meaning 'nothing to say' (no advisory, or the layer is not running)."
+value = "-"
+
+[devswarm_wire.sql_last_selected]
+doc = "The statement that reads when a workspace was last selected in the app. {col} {table} {id} are the column, table and id column names."
+value = "SELECT {col} FROM {table} WHERE {id} = ?1"
+
+[devswarm_wire.label_chars]
+doc = "How many characters of a workspace id stand in for a missing label in an advisory."
+value = 8
+min = 1
+max = 64
+
+[devswarm_wire.check_script]
+doc = "The name of the plugin script (engine/logic/<name>.js) that decides the advisory."
+value = "devswarm-rt-advisory"

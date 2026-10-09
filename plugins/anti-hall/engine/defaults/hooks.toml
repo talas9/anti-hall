@@ -1,0 +1,224 @@
+# ah-engine hook configuration defaults (D87): how the dispatcher uses each event and each table entry. Format: see the header
+# of engine.toml.
+#
+# The configuration sections, written in the engine's user file (`config.toml` in the state directory) or in a project file
+# (`hooks.project_file` under the payload's cwd; the project file is below the user file and may not touch guard events):
+#
+#   [events.<Event>]                  one per Claude Code / Codex event
+#   enabled   = true                  false is the same as mode = "off"
+#   mode      = "on"                  "on" | "shadow" (run and log, never change the outcome) | "off" (skip the event, answer neutral)
+#   max_rules = 0                     most entries evaluated per occurrence (0 = all); the rest are skipped and counted
+#   budget_ms = 0                     wall budget of the whole event (0 = none)
+#   order     = ["id", ...]           entry ids that run (and combine) first, in this order; unknown ids are errors
+#
+#   [entries."<id>"]  or  [entries."<Event>/<id>"]     the table entry <id> (the second form: only on that event)
+#   enabled   = true
+#   mode      = "on"                  "on" | "shadow" | "off"
+#   when      = { ... }               overrides the entry's `when` predicate (see dispatch.toml and the `when` settings below)
+#
+# Guard events (dispatch.guard_events) can never be configured into a silent allow: on them `mode` "off" or "shadow" and
+# `enabled = false` are config errors for the event, `max_rules` must stay 0, and the same settings on an ENTRY are allowed only
+# for an entry that has a built-in check (its Node hook then still runs as the real decider: "off" skips only the engine's
+# check, "shadow" runs the check and logs whether it agrees with the Node hook). `when` may not be overridden on a guard entry.
+#
+# A shipped per-event or per-entry default that differs from the generic ones below goes in its own file
+# `defaults/hooks.d/<batch>.toml` as `[events.<Event>]` / `[entries."<id>"]` tables (each with `value` and `doc`, like any other
+# setting), so parallel lanes that add checks add files instead of editing a shared one. A new check is therefore a row in
+# dispatch.toml plus, when it needs a non-default, a file there.
+
+[hooks.event_enabled]
+doc = "Default of `enabled` in `[events.<Event>]`: whether the event is used at all (false is the same as mode = off)."
+value = true
+
+[hooks.event_mode]
+doc = "Default of `mode` in `[events.<Event>]`: on (the event's entries decide), shadow (they run and are logged but never change the outcome) or off (the event is skipped and answered with the neutral no-op)."
+value = "on"
+
+[hooks.event_max_rules]
+doc = "Default of `max_rules` in `[events.<Event>]`: the most entries evaluated per occurrence of the event (0 = all). The entries after the first max_rules, in order, are skipped and counted as skipped (max_rules). Not allowed above 0 on a guard event."
+value = 0
+min = 0
+max = 1000
+unit = "entries"
+
+[hooks.event_budget_ms]
+doc = "Default of `budget_ms` in `[events.<Event>]`: the wall budget of one occurrence of the event (0 = none). Once it has passed the engine starts no further entry, lets the ones already running finish within their own timeouts, and on a guard event (unless a hook that ran blocked) hands the event to the wrapper's Node hooks with dispatch.defer_exit while no Node hook has started and no built-in check has answered (a spent budget is a slow machine, not a verdict); once one has, the wrapper's rerun would repeat it, so the event fails closed instead."
+value = 0
+min = 0
+max = 600000
+unit = "ms"
+
+[hooks.event_order]
+doc = "Default of `order` in `[events.<Event>]`: entry ids that run and combine before the others, in this order (empty = the table's order). An id the event's table does not have is a config error."
+value = []
+
+[hooks.entry_enabled]
+doc = "Default of `enabled` in `[entries.<id>]`: whether the entry runs (false is the same as mode = off; on a guard entry only allowed when it has a built-in check)."
+value = true
+
+[hooks.entry_mode]
+doc = "Default of `mode` in `[entries.<id>]`: on, shadow (runs and is logged, never changes the outcome) or off (skipped). On a guard-event entry shadow and off are allowed only when the entry has a built-in check, whose Node hook then stays the real decider."
+value = "on"
+
+[hooks.entry_when]
+doc = "Default of `when` in `[entries.<id>]`: no predicate (the entry applies whenever its matcher does). A table row may carry its own `when`, and `[entries.<id>] when` overrides it (not on a guard entry)."
+value = {}
+
+[hooks.modes]
+doc = "The values `mode` may take, in `[events.<Event>]` and `[entries.<id>]`."
+value = ["on", "shadow", "off"]
+
+[hooks.project_file]
+doc = "The project-level hook configuration file, relative to the payload's cwd; read when it exists, below the user file in precedence. It may not configure guard events or guard entries."
+value = ".anti-hall/engine.toml"
+
+[hooks.when_kinds]
+doc = "The condition kinds a `when` predicate may be built from: the combinators all, any and not (over other conditions), and the leaf kinds tool (the payload's tool name), field (a JSON pointer into the payload), setting (a boolean or enum of the engine's loaded settings), env (a variable of the request environment) , session (per-session state the engine keeps in memory) and transcript (a fact of the transcript index)."
+value = ["all", "any", "not", "tool", "field", "setting", "env", "session", "transcript"]
+
+[hooks.when_ops]
+doc = "The tests a leaf condition may apply to its value (exactly one per condition): equals, in (a list), regex (unanchored), glob (`*` within a path segment, `**` across segments, `?` one character), exists (true or false), at_least and at_most (integers)."
+value = ["equals", "in", "regex", "glob", "exists", "at_least", "at_most"]
+
+[hooks.session_ops]
+doc = "The per-session counters a `session` condition may use: first (true the first time per session within the TTL), every (true on the 1st, then every Nth evaluation: a once-per-N-turns dedupe) and at_least (true once the evaluation count in the session reaches N)."
+value = ["first", "every", "at_least"]
+
+[hooks.session_ttl_s]
+doc = "How long the engine keeps a `session` condition's state after its last evaluation (a condition's own `ttl_s` overrides it)."
+value = 3600
+min = 1
+max = 604800
+unit = "s"
+
+[hooks.session_max_keys]
+doc = "The most session-condition counters kept at once; past it the oldest are dropped (a dropped counter starts again, which only makes its condition fire sooner)."
+value = 4096
+min = 16
+max = 1000000
+
+[hooks.transcript_facts]
+doc = "The transcript-index facts a `transcript` condition may read, with their types (int, bool or str). Only facts the index already computes: records, compact_boundaries, sidechain_rows, meta_rows (counts), has_last_prompt and has_last_assistant (whether the index holds them), last_tool (the newest tool use's name), terminal_agents (background agents with a terminal notification) and unresolved_agents (agents a compaction re-injected as live that no terminal notification closed)."
+value = { records = "int", compact_boundaries = "int", sidechain_rows = "int", meta_rows = "int", has_last_prompt = "bool", has_last_assistant = "bool", last_tool = "str", terminal_agents = "int", unresolved_agents = "int" }
+
+[hooks.msg_cfg_unknown_event]
+doc = "Config error detail: `[events.<Event>]` names an event neither host's table or thin trigger list has. Placeholder: {event}."
+value = "{event} is not an event of the dispatch table"
+
+[hooks.msg_cfg_unknown_entry]
+doc = "Config error detail: `[entries.<id>]` names an entry no host's table has. Placeholder: {id}."
+value = "{id} is not an entry of the dispatch table"
+
+[hooks.msg_cfg_unknown_order]
+doc = "Config error detail: `order` names an id the event's table does not have. Placeholders: {id}, {event}."
+value = "order names {id}, which the {event} table does not have"
+
+[hooks.msg_cfg_unknown_field]
+doc = "Config error detail: a section holds a field it does not have. Placeholders: {field}, {allowed}."
+value = "{field} is not a field here (allowed: {allowed})"
+
+[hooks.msg_cfg_bad_type]
+doc = "Config error detail: a field has the wrong type. Placeholders: {field}, {expected}."
+value = "{field} must be {expected}"
+
+[hooks.msg_cfg_bad_mode]
+doc = "Config error detail: `mode` is not one of hooks.modes. Placeholders: {value}, {allowed}."
+value = "mode {value} is not one of {allowed}"
+
+[hooks.msg_cfg_range]
+doc = "Config error detail: a number is outside its bounds. Placeholders: {field}, {value}, {min}, {max}."
+value = "{field} = {value} is outside {min} to {max}"
+
+[hooks.msg_cfg_guard_event]
+doc = "Config error detail: a guard event (PreToolUse, PermissionRequest, Stop, SubagentStop) was configured so a guard could silently allow. Placeholders: {event}, {what}."
+value = "{event} is a guard event and cannot be configured into a silent allow ({what})"
+
+[hooks.msg_cfg_guard_entry]
+doc = "Config error detail: an entry of a guard event has no built-in check, so its Node hook is its only decider and must keep running. Placeholders: {id}, {event}, {what}."
+value = "{id} decides on guard event {event} only through its Node hook, so {what} would silently allow"
+
+[hooks.msg_cfg_guard_when]
+doc = "Config error detail: a `when` override on a guard entry. Placeholders: {id}, {event}."
+value = "{id} is a guard entry of {event}: its `when` can only come from the dispatch table"
+
+[hooks.msg_cfg_project_guard]
+doc = "Config error detail: the project file names a guard event or guard entry. Placeholders: {what}."
+value = "a project file may not configure guard events or their entries ({what})"
+
+[hooks.msg_when_unknown_kind]
+doc = "Config error detail: a `when` condition names no condition kind, or more than one. Placeholders: {found}, {allowed}."
+value = "a condition needs exactly one of {allowed}, found: {found}"
+
+[hooks.msg_when_unknown_op]
+doc = "Config error detail: a leaf condition has no test, or more than one. Placeholders: {found}, {allowed}."
+value = "a condition needs exactly one test of {allowed}, found: {found}"
+
+[hooks.msg_when_bad_value]
+doc = "Config error detail: a condition holds a value it cannot use. Placeholders: {what}."
+value = "bad condition value: {what}"
+
+[hooks.msg_when_bad_pointer]
+doc = "Config error detail: a `field` condition's JSON pointer does not start with a slash. Placeholder: {pointer}."
+value = "the pointer {pointer} must start with /"
+
+[hooks.msg_when_bad_regex]
+doc = "Config error detail: a condition's regular expression does not compile. Placeholders: {pattern}, {err}."
+value = "the regex {pattern} is invalid: {err}"
+
+[hooks.msg_when_unknown_setting]
+doc = "Config error detail: a `setting` condition names a setting the engine's loaded settings do not have. Placeholder: {key}."
+value = "{key} is not a setting the engine has loaded"
+
+[hooks.msg_when_env_not_forwarded]
+doc = "Config error detail: an `env` condition names a variable the request environment does not carry (request_env.allow), so it could never be set. Placeholder: {name}."
+value = "{name} is not in request_env.allow, so the request never carries it"
+
+[hooks.msg_when_unknown_fact]
+doc = "Config error detail: a `transcript` condition names a fact the index does not expose. Placeholders: {name}, {allowed}."
+value = "{name} is not a transcript fact (allowed: {allowed})"
+
+[hooks.msg_when_bad_session]
+doc = "Config error detail: a `session` condition is malformed. Placeholders: {what}."
+value = "bad session condition: {what}"
+
+[hooks.msg_when_depth]
+doc = "Config error detail: a `when` predicate nests deeper than allowed. Placeholder: {max}."
+value = "a predicate may nest at most {max} levels"
+
+[hooks.outcomes]
+doc = "The words the telemetry uses for what happened to a table entry in one dispatch, in this order: ran, skipped_predicate (its `when` was false), skipped_max_rules (cut by max_rules), skipped_budget (the event's budget had passed), shadowed (ran, never changed the outcome) and off (configured off, or a guard entry's engine check turned off so its Node hook decides)."
+value = ["ran", "skipped_predicate", "skipped_max_rules", "skipped_budget", "shadowed", "off"]
+
+[hooks.when_max_depth]
+doc = "How deep combinators (all, any, not) may nest in one `when` predicate."
+value = 8
+min = 1
+max = 64
+
+[hooks.msg_plan_event]
+doc = "Event-log detail of a dispatch that skipped, shadowed or cut entries. Placeholders: {cfg} the config hash, {ran}, {predicate}, {max_rules}, {budget}, {shadowed}, {off}: comma lists of entry ids."
+value = "cfg={cfg} ran=[{ran}] skipped_predicate=[{predicate}] skipped_max_rules=[{max_rules}] skipped_budget=[{budget}] shadowed=[{shadowed}] off=[{off}]"
+
+[hooks.msg_shadow_event]
+doc = "Event-log detail when a shadowed built-in check's answer is compared with the Node hook that decided. Placeholders: {id}, {agree}, {engine}, {node}."
+value = "{id} agree={agree} engine_exit={engine} node_exit={node}"
+
+[hooks.msg_budget]
+doc = "Why a guard event is handed to the Node hooks (dispatch.defer_exit) when its budget_ms has passed before an entry could start. Placeholder: {id}."
+value = "the event's budget passed before {id} could run"
+
+[hooks.event_fields]
+doc = "The fields an `[events.<Event>]` section may hold."
+value = ["enabled", "mode", "max_rules", "budget_ms", "order"]
+
+[hooks.entry_fields]
+doc = "The fields an `[entries.<id>]` section may hold."
+value = ["enabled", "mode", "when"]
+
+[hooks.reasons]
+doc = "Short reasons the config errors above quote in their {what} placeholder."
+value = { guard_mode = "mode off or shadow, or enabled = false", guard_max_rules = "max_rules above 0 would skip guards", equals_value = "equals needs a string, number or boolean", in_values = "in lists strings, numbers or booleans", session_name = "session needs the counter's name", every_n = "every needs an integer of at least 1", at_least_n = "at_least needs an integer of at least 1", ttl_s = "ttl_s needs an integer of at least 1", tool_value = "tool takes a tool name or a list of names, and nothing else", field_value = "field needs a JSON pointer string", setting_value = "setting needs a name like guards.shipitGate", in_needs_list = "in needs a list", regex_needs_string = "regex needs a string", glob_needs_string = "glob needs a string", exists_needs_bool = "exists needs true or false", at_least_needs_int = "at_least needs an integer", at_most_needs_int = "at_most needs an integer", first_must_be_true = "first must be true", condition_table = "a condition must be a table", env_needs_name = "env needs a variable name", type_integer = "an integer", type_entry_list = "a list of entry ids", exactly_one_of = "exactly one of {ops}" }
+
+[hooks.cfg_default_label]
+doc = "The `cfg` label of the dispatch_entries metric when the hook configuration is the shipped default."
+value = "default"

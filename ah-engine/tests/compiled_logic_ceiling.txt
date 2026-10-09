@@ -1,0 +1,15 @@
+# D88 v1.0 gate: the most checks that may still decide in compiled Rust (see tests/compiled_logic_gate.rs).
+# Batch 1 (lane d88) took it from 62 to 55. The nodeonly lane then added three checks as compiled Rust (task-tracker,
+# session-end-mcp-reaper, verify-first-orch-codex): 58. Batch 2 (lane d88b2) moved ship-it-guard, compact-declaration-guard,
+# devswarm-parent-inbox and devswarm-child-turn to scripts and batch 5 (lane d88b5) git, git-audit, swarm-guard and
+# sibling-sweep: 50.
+# Lane d88fa moved task-lifecycle-log, the three session gates, merge-side-pick, scan-throttle and merge-gate to scripts: 43.
+# Lane d88fb moved dispatch-tier, model-routing, speculation-judge, speculation-guard, silent-agent-nudge, task-guard and tasklist-guard to scripts: 36.
+# Lane d88fc moved ask-guard, phase-tracker, failure-root-cause-nudge, output-verify-guard, the six session checks, emit-dedupe-reset,
+# precompact-snapshot, handover-resume, limit-conserve-inject and auto-handover to scripts: 21.
+# Lane d88fd moved command (command-guard, which is also the shared command classifier) and coordinator-work-guard to scripts: 19.
+# The dswire lane's devswarm-rt-advisory decides in a script (no net change).
+# Lane d88e (batch 7) moved stale-agent-stop-note, claim-ledger, idle-agent-sweep, auto-handover-pause-nag, compact-advice-guard and
+# session-end-mcp-reaper to scripts: 13 (the number the gate measures).
+# Lane d88f (live7) moved the last 13 (verify-first, verify-first-orch, verify-first-orch-codex, task-tracker, the DevSwarm gates and the three codex checks) to scripts: 0.
+0

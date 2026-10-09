@@ -1,0 +1,658 @@
+# ah-engine shipped defaults for the context-budget and handover gates ported from Node (limit-conserve-inject,
+# auto-handover, auto-handover-pause-nag, compact-advice-guard) and the helpers they share (D17, D30, D74).
+#
+# Every file name, setting name, limit and message of these checks lives here. The settings tables
+# (`ctxbudget.set_*`) describe one entry of hooks/lib/settings-schema.js each: `kind` is bool, num or enum; `env` and
+# `aliases` are the environment names; `option` is the plugin option name (empty: none); `manifest_default` is the text
+# a stored plugin option must equal to count as "never touched" (the default the plugin manifest or the schema carries);
+# `default` is the schema default; `min`/`max` clamp a number, `values` lists the words of an enum. Format of the file:
+# see the header of engine.toml.
+
+# ---- shared ---------------------------------------------------------------------------------------------------
+
+[ctxbudget.judge_child_env]
+doc = "Environment variable the judge child sets to 1 so that every hook is a no-op (hooks/lib/judge-child-exit.js)."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[ctxbudget.judge_child_on]
+doc = "The value of the judge child variable that turns the hooks into no-ops."
+value = "1"
+
+[ctxbudget.home_env]
+doc = "Environment variable that holds the home directory (Node's os.homedir() reads it first on POSIX)."
+value = "HOME"
+
+[ctxbudget.ups_empty]
+doc = "The exact stdout line of a UserPromptSubmit hook that injects nothing (an empty additionalContext), newline included."
+value = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n"
+
+[ctxbudget.skip_limit_conserve]
+doc = "The skip-file name of the limit-conserve-inject guard."
+value = "limit-conserve"
+
+[ctxbudget.skip_auto_handover]
+doc = "The skip-file name of the auto-handover and auto-handover-pause-nag guards."
+value = "auto-handover"
+
+[ctxbudget.skip_compact_advice]
+doc = "The skip-file name of the compact-advice-guard."
+value = "compact-advice-guard"
+
+[ctxbudget.tail_bytes]
+doc = "How many bytes of the end of a transcript the guards read (hooks/lib/transcript-tail.js MAX_TAIL_BYTES)."
+value = 1572864
+unit = "bytes"
+
+[ctxbudget.session_tag_max]
+doc = "Characters of a session id kept in a state file tag (hooks/lib/auto-handover-state.js sessionTag)."
+value = 64
+
+[ctxbudget.state_root]
+doc = "The directory under the home directory that holds the guards' state files."
+value = ".anti-hall"
+
+[ctxbudget.latch_dir]
+doc = "The directory under the state root that holds the per-session auto-handover latch files."
+value = "auto-handover"
+
+[ctxbudget.pct_dir]
+doc = "The directory under the state root that holds the statusline context readings (context-pct) and the inferred-window latches."
+value = "context-pct"
+
+[ctxbudget.inferred_suffix]
+doc = "File name suffix of the inferred one-million-token window latch next to a session's context reading."
+value = ".inferred-1m.json"
+
+[ctxbudget.context_window_env]
+doc = "Environment variable that overrides the context window size, in tokens (always wins over the other window sources)."
+value = "ANTIHALL_CONTEXT_WINDOW_TOKENS"
+
+[ctxbudget.pct_fresh_ms]
+doc = "How old a statusline context reading may be and still be used before the transcript is consulted instead."
+value = 600000
+unit = "ms"
+
+[ctxbudget.default_window]
+doc = "The context window assumed when no source states one, in tokens (the reading is then flagged as unknown)."
+value = 200000
+unit = "tokens"
+
+[ctxbudget.inferred_window]
+doc = "The window assumed once the observed usage has exceeded the default window, in tokens."
+value = 1000000
+unit = "tokens"
+
+[ctxbudget.token_count_marker]
+doc = "Substring that a Codex rollout line must hold to be parsed as a token_count reading."
+value = "token_count"
+
+[ctxbudget.usage_marker]
+doc = "Substring that a Claude transcript line must hold to be parsed as an assistant usage reading."
+value = '"usage"'
+
+# ---- limit-conserve-inject (hooks/limit-conserve-inject.js, hooks/limit-conserve.js) -------------------------
+
+[ctxbudget.summary_limit_conserve]
+doc = "One-line description of the limit-conserve-inject check in the generated reference."
+value = "UserPromptSubmit: injects the limit-conservation directive while conservation is on or a usage bucket is at the threshold (account-switch guard and emit-dedupe as in Node), else an empty context; defers only what JavaScript could read differently (port of limit-conserve-inject.js)."
+
+[ctxbudget.usage_cache]
+doc = "The OMC usage cache file, relative to the home directory."
+value = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json"
+
+[ctxbudget.usage_max_stale_ms]
+doc = "Snapshot age beyond which a bucket without a usable reset time counts as 0 percent (hooks/limit-conserve.js MAX_STALE_MS)."
+value = 21600000
+unit = "ms"
+
+[ctxbudget.set_limit_mode]
+doc = "The limitConserve.mode setting: force conservation on or off, or auto-detect from the usage cache."
+value = { section = "limitConserve", key = "mode", kind = "enum", values = ["auto", "on", "off"], env = "ANTIHALL_LIMIT_CONSERVE", aliases = [], option = "limit_conserve_mode", manifest_default = "auto", default = "auto" }
+
+[ctxbudget.set_limit_threshold]
+doc = "The limitConserve.threshold setting: the usage percent at which conservation starts."
+value = { section = "limitConserve", key = "threshold", kind = "num", env = "ANTIHALL_LIMIT_THRESHOLD", aliases = [], option = "limit_conserve_threshold", manifest_default = "85", default = 85, min = 1, max = 99 }
+
+[ctxbudget.set_limit_account_check]
+doc = "The limitConserve.accountCheck setting: hold a high usage reading stale after an account switch until the cache is refreshed."
+value = { section = "limitConserve", key = "accountCheck", kind = "bool", env = "ANTIHALL_LIMIT_ACCOUNT_CHECK", aliases = [], option = "", manifest_default = "", default = true }
+
+[ctxbudget.claude_json]
+doc = "The host file whose top-level userID names the logged-in account, relative to the home directory (read only that field)."
+value = ".claude.json"
+
+[ctxbudget.account_state]
+doc = "The account-switch state file of limit conservation, relative to the home directory (hooks/limit-conserve.js ACCOUNT_STATE_FILE)."
+value = ".anti-hall/limit-conserve-account.json"
+
+[ctxbudget.lc_account_json]
+doc = "The account-switch state file body as Node writes it; {user} is the JSON-quoted account id, {mtime} the cache mtime in ms (or null)."
+value = "{\"userID\":{user},\"usageCacheMtime\":{mtime}}"
+
+[ctxbudget.json_null]
+doc = "The JSON literal null."
+value = "null"
+
+[ctxbudget.lc_bucket_pct]
+doc = "The usage-cache fields holding each bucket percent, in the order the trips are listed."
+value = ["fiveHourPercent", "weeklyPercent", "sonnetWeeklyPercent"]
+
+[ctxbudget.lc_bucket_resets]
+doc = "The usage-cache fields holding each bucket reset time, parallel to lc_bucket_pct."
+value = ["fiveHourResetsAt", "weeklyResetsAt", "sonnetWeeklyResetsAt"]
+
+[ctxbudget.lc_bucket_trip]
+doc = "The name each tripped bucket has in the directive reason, parallel to lc_bucket_pct."
+value = ["5h", "weekly", "sonnetWeekly"]
+
+[ctxbudget.lc_reason_manual]
+doc = "The directive reason when the mode setting forces conservation on."
+value = "manual-on"
+
+[ctxbudget.lc_guard]
+doc = "The guard name the limit-conservation directive carries (hooks/lib/block-message.js guard)."
+value = "limit-conserve"
+
+[ctxbudget.lc_dedupe_key]
+doc = "The emit-dedupe key of the limit-conservation directive."
+value = "limit-conserve"
+
+[ctxbudget.lc_keepalive_turns]
+doc = "The emit-dedupe keepalive of the directive: an unchanged, delivered directive is re-sent after this many turns."
+value = 10
+unit = "turns"
+
+[ctxbudget.lc_what]
+doc = "The first line of the directive; {reason} is the tripped buckets joined with + (or the manual reason)."
+value = "limit conservation is active ({reason})."
+
+[ctxbudget.lc_why]
+doc = "The Why line of the directive."
+value = "Usage is near a plan limit."
+
+[ctxbudget.lc_instead]
+doc = "The start of the Do instead line of the directive (the reset clause and the downshift text follow)."
+value = "route execution to Codex (codex:codex-rescue, separate limit) and cheap Claude (Sonnet, or Haiku for trivial work, uses less of the shared Claude pool; no Claude model is a separate bucket); keep the MAIN agent on Claude and send hard reasoning to subagents; if Codex is unavailable or rate-limited degrade to Sonnet, never retry-loop (backoff)."
+
+[ctxbudget.lc_resets_at]
+doc = "The reset clause when a tripped bucket states its reset time ({at}, rounded per ctxbudget.lc_reset_round)."
+value = " Defer non-urgent heavy work until reset at {at}."
+
+[ctxbudget.lc_reset_round]
+doc = "The reset time in the reset clause is rounded to the nearest `ms` (a minute) and printed as an ISO time with a whole-minute `cut` replaced by `to`: the usage API reports the reset with millisecond jitter, which would change the directive every turn and defeat emit-dedupe. A reset time that is not a date is printed as written."
+value = { ms = 60000, cut = ":00.000Z", to = "Z" }
+
+[ctxbudget.lc_resets_next]
+doc = "The reset clause when no tripped bucket states a reset time."
+value = " Defer non-urgent heavy work until the next reset."
+
+[ctxbudget.lc_downshift]
+doc = "The main-model downshift text at the end of the directive (limit-conserve-inject.js DOWNSHIFT_DIRECTIVE)."
+value = "Main-model downshift: if the main agent is on the flagship model (Claude Opus or Codex frontier category), switch it to the cheaper 1M-context variant to use less of the shared Claude pool (a cheaper model draws it down more slowly) — Claude → Sonnet (1M context), Codex → the workhorse category's 1M-context model (resolve the slug from the live catalog; never pin one). NEVER downshift to a smaller-context model (e.g. a fast-category model may have well under 1M context) — check the catalog's context window first. Keep the flagship for delegated hard-reasoning subagents and on-demand escalation. The agent cannot self-switch models (/model is a user action) — SURFACE this recommendation to the user; under an orchestration layer that can set the model (OMC/OMX), route main accordingly."
+
+[ctxbudget.ups_line]
+doc = "The stdout line of a UserPromptSubmit hook that injects {text} (already JSON-quoted), newline included."
+value = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":{text}}}\n"
+
+# ---- auto-handover and auto-handover-pause-nag ----------------------------------------------------------------
+
+[ctxbudget.summary_auto_handover]
+doc = "One-line description of the auto-handover check in the generated reference."
+value = "UserPromptSubmit: the threshold fire, the soft advisory, the milestone nag, the latch re-arm and the post-handover gate with its backstop, latch and inferred-window writes as in Node; defers the gate on a prompt with text (Node logs a Jev decision row there) and what JavaScript could read differently (port of auto-handover.js)."
+
+[ctxbudget.summary_pause_nag]
+doc = "One-line description of the auto-handover-pause-nag check in the generated reference."
+value = "Stop: the Stop-side fire with the decisive good-point line, the pause nag (step, quiet window, open tasks, recent spawns, handover freshness) and the re-arm, latch writes as in Node; defers only what JavaScript could read differently (port of auto-handover-pause-nag.js)."
+
+[ctxbudget.env_pct_off]
+doc = "Environment variable that, when it parses to 0, disables auto-handover outright (the one rule the settings schema cannot express)."
+value = "ANTIHALL_AUTO_HANDOVER_PCT"
+
+[ctxbudget.set_ah_enabled]
+doc = "The autoHandover.enabled setting: write an automatic handover before the context runs out."
+value = { section = "autoHandover", key = "enabled", kind = "bool", env = "", aliases = [], option = "auto_handover_enabled", manifest_default = "true", default = true }
+
+[ctxbudget.set_ah_pct]
+doc = "The autoHandover.pct setting: the context percent that triggers the handover."
+value = { section = "autoHandover", key = "pct", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_PCT", aliases = [], option = "auto_handover_pct", manifest_default = "85", default = 85, min = 1, max = 99 }
+
+[ctxbudget.set_ah_max_tokens]
+doc = "The autoHandover.maxTokens setting: an absolute token ceiling that also triggers the handover (0 means none)."
+value = { section = "autoHandover", key = "maxTokens", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", aliases = [], option = "auto_handover_max_tokens", manifest_default = "0", default = 0, min = 0 }
+
+[ctxbudget.set_ah_nag]
+doc = "The autoHandover.nag setting: remind when a handover is due."
+value = { section = "autoHandover", key = "nag", kind = "bool", env = "", aliases = [], option = "auto_handover_nag", manifest_default = "true", default = true }
+
+[ctxbudget.set_ah_nag_step]
+doc = "The autoHandover.nagStepPct setting: the context points between two nags."
+value = { section = "autoHandover", key = "nagStepPct", kind = "num", env = "", aliases = [], option = "auto_handover_nag_step_pct", manifest_default = "5", default = 5, min = 1, max = 100 }
+
+[ctxbudget.set_ah_nag_quiet]
+doc = "The autoHandover.nagQuietMin setting: the minutes between two nags at a quiet pause."
+value = { section = "autoHandover", key = "nagQuietMin", kind = "num", env = "", aliases = [], option = "auto_handover_nag_quiet_min", manifest_default = "15", default = 15, min = 1 }
+
+[ctxbudget.ah_guard]
+doc = "The guard name every auto-handover message carries."
+value = "auto-handover"
+
+[ctxbudget.ah_skill_claude]
+doc = "How the Claude texts name the handover skill."
+value = "the /anti-hall:handover skill"
+
+[ctxbudget.ah_reset_claude]
+doc = "How the Claude texts name the reset commands."
+value = "/compact or /clear"
+
+[ctxbudget.ah_skill_codex]
+doc = "How the Codex texts name the handover skill."
+value = "the anti-hall-handover skill (pick it with /skills if it is not already loaded)"
+
+[ctxbudget.ah_reset_codex]
+doc = "How the Codex texts name the reset commands."
+value = "/compact or /new"
+
+[ctxbudget.ah_bloat]
+doc = "The sentence on why a large context hurts (BLOAT_SENTENCE)."
+value = "As context grows the model gets less efficient and more prone to hallucination, so compacting/clearing keeps answers accurate, not just under the limit."
+
+[ctxbudget.set_ah_gate]
+doc = "The autoHandover.gateNewWork setting: the post-handover new-work gate."
+value = { section = "autoHandover", key = "gateNewWork", kind = "bool", env = "", aliases = [], option = "auto_handover_gate_new_work", manifest_default = "true", default = true }
+
+[ctxbudget.set_ah_gate_budget]
+doc = "The autoHandover.gateBudgetPct setting: the context points a request may use after the handover, and the backstop step."
+value = { section = "autoHandover", key = "gateBudgetPct", kind = "num", env = "", aliases = [], option = "auto_handover_gate_budget_pct", manifest_default = "5", default = 5, min = 1, max = 50 }
+
+[ctxbudget.set_ah_decisive]
+doc = "The autoHandover.decisivePrompt setting: the decisive good-point line at a Stop once the handover exists."
+value = { section = "autoHandover", key = "decisivePrompt", kind = "bool", env = "", aliases = [], option = "auto_handover_decisive_prompt", manifest_default = "true", default = true }
+
+[ctxbudget.set_ah_markers]
+doc = "The autoHandover.gateHousekeepingMarkers setting: extra comma-separated housekeeping prompt markers (a text)."
+value = { section = "autoHandover", key = "gateHousekeepingMarkers", kind = "str", env = "", aliases = [], option = "", manifest_default = "", default = "" }
+
+[ctxbudget.ah_housekeeping]
+doc = "The built-in markers (case-insensitive substrings) of a scheduled housekeeping prompt that never gets the new-work gate (auto-handover-gate.js HOUSEKEEPING_MARKERS)."
+value = ["inbox tick", "peer check", "BROADCAST bug sweep"]
+
+[ctxbudget.ah_marker_seps]
+doc = "The characters that separate the extra housekeeping markers of the setting (csvToMarkers splits on each)."
+value = [",", ":"]
+
+[ctxbudget.ah_mtime_slack_ms]
+doc = "How much older than the fire a handover file may be and still count as this arm's handover (auto-handover-gate.js MTIME_SLACK_MS)."
+value = 2000
+unit = "ms"
+
+[ctxbudget.ah_spawn_log]
+doc = "The subagent spawn log, relative to the home directory (one `<ms> <session tag>` line per spawn)."
+value = ".anti-hall/agent-spawns.log"
+
+[ctxbudget.ah_spawn_activity_ms]
+doc = "How recent a logged subagent spawn must be to hold back the pause nag (statusline phase-bar ACTIVITY_MS)."
+value = 120000
+unit = "ms"
+
+[ctxbudget.ah_freshness_grace_ms]
+doc = "How much later than the handover file the last counted work may be and the handover still count as fresh (handover-freshness.js MTIME_GRACE_MS)."
+value = 1000
+unit = "ms"
+
+[ctxbudget.ah_open_statuses]
+doc = "The task statuses that count as open work and hold back the pause nag."
+value = ["pending", "in_progress"]
+
+[ctxbudget.ah_task_tools]
+doc = "The tool names whose calls the open-task scan reads: the list writer, the task creator, the task updater (in that order)."
+value = ["TodoWrite", "TaskCreate", "TaskUpdate"]
+
+[ctxbudget.ah_task_id_keys]
+doc = "The input fields a task update names its task by, in order."
+value = ["taskId", "id", "task_id"]
+
+[ctxbudget.ah_default_status]
+doc = "The status a task without one has."
+value = "pending"
+
+[ctxbudget.ah_heading_open]
+doc = "The handover section whose emptiness marks the task complete."
+value = "Open items"
+
+[ctxbudget.ah_heading_next]
+doc = "The handover section whose done-word marks the task complete."
+value = "Next action"
+
+[ctxbudget.ah_open_empty_words]
+doc = "The whole-section texts (an optional trailing dot allowed, any case) that say Open items is empty."
+value = ["none", "n/a", "-", "—", "(none)"]
+
+[ctxbudget.ah_next_done_words]
+doc = "The whole-section texts (an optional trailing dot allowed, any case) that say Next action is done."
+value = ["none", "done", "complete", "nothing"]
+
+[ctxbudget.ah_handover_dir_rel]
+doc = "The handovers directory relative to the repository, as the fire directive shows it."
+value = ".anti-hall/handovers"
+
+[ctxbudget.ah_handover_name]
+doc = "The name of a session's first handover file."
+value = "HANDOVER.md"
+
+[ctxbudget.ah_handover_name_n]
+doc = "The name of a session's n-th handover file ({n} from 2)."
+value = "HANDOVER-{n}.md"
+
+[ctxbudget.ah_what_tokens]
+doc = "The fire directive's first line for a token-ceiling crossing; {usedK} is the tokens in thousands, {ceiling} the ceiling clause."
+value = "context is ~{usedK}K tokens, past your autoHandover.maxTokens ceiling{ceiling}: write a handover now."
+
+[ctxbudget.ah_ceiling]
+doc = "The ceiling clause of the token fire line; {k} is the ceiling in thousands."
+value = " ({k}K)"
+
+[ctxbudget.ah_what_pct]
+doc = "The fire directive's first line for a percent crossing; {pct} is the rounded percent, {label} the estimate clause."
+value = "context is at ~{pct}%{label}: write a handover now."
+
+[ctxbudget.ah_label_inferred]
+doc = "The estimate clause when the window was inferred to be one million tokens."
+value = " (inferred 1M window: observed usage already exceeded the standard 200k, so this session is estimated against 1,000,000 tokens)"
+
+[ctxbudget.ah_label_estimated]
+doc = "The estimate clause for any other estimated window."
+value = " (ESTIMATED, assuming a standard 200k window; for a 1M-context session set ANTIHALL_CONTEXT_WINDOW_TOKENS or install the anti-hall statusline for an exact reading)"
+
+[ctxbudget.ah_fire_why]
+doc = "The Why line of the fire directive."
+value = "It preserves the session's work against auto-compact. Do it without asking the user first."
+
+[ctxbudget.ah_fire_step1]
+doc = "The start of the fire directive's instructions; {skill} names the handover skill."
+value = "(1) write an anti-hall session handover YOURSELF, following the contract of {skill} exactly (self-write mandate: never delegate it to a subagent, which never lived this session; use the Write/Edit tool for every handover file, never a Bash heredoc, since git-guard scans its body as shell)"
+
+[ctxbudget.ah_fire_main_file]
+doc = "The clause naming the expected main handover file ({path})."
+value = "; by the skill's own date/sequence rules its main file is {path}"
+
+[ctxbudget.ah_fire_step2]
+doc = "Step 2 of the fire directive."
+value = "; (2) tell the user it was done and list every path you saved under .anti-hall/handovers/**; "
+
+[ctxbudget.ah_fire_step3_codex]
+doc = "Step 3 of the fire directive on Codex."
+value = "(3) urge them to run /compact (or /new for a fresh chat) soon (Codex re-points the post-compaction context at the handover through the anti-hall SessionStart hook, source \"compact\", so a plain `/compact` is enough) and ask "
+
+[ctxbudget.ah_fire_step3_claude]
+doc = "Step 3 of the fire directive on Claude; {cmd} is the compact command to paste."
+value = "(3) urge them to compact (or /clear) soon and give them this exact command to paste: `{cmd}` (substitute the real path if you wrote the handover elsewhere), and ask "
+
+[ctxbudget.ah_fire_tail]
+doc = "The end of the fire directive's instructions; {bloat} is the bloat sentence."
+value = "whether they would like to reach a good stopping point first. {bloat} This fires once per session at this threshold; later reminders are brief."
+
+[ctxbudget.ah_compact_codex]
+doc = "The compact command on Codex."
+value = "/compact"
+
+[ctxbudget.ah_compact_claude]
+doc = "The compact command on Claude; {path} is the expected handover path."
+value = "/compact focus: continuation state is in {path}; keep pending tasks, the user's session rules, and unverified items"
+
+[ctxbudget.ah_compact_no_path]
+doc = "The compact command's path when no handover path is known."
+value = "<the HANDOVER*.md path you wrote>"
+
+[ctxbudget.ah_nag_what]
+doc = "The milestone nag's first line; {pct} is the rounded percent."
+value = "context is now ~{pct}% (handover already saved earlier this session)."
+
+[ctxbudget.ah_nag_instead]
+doc = "The milestone nag's instructions; {bloat} the bloat sentence, {reset} the reset commands."
+value = "{bloat} Mention {reset} to the user again when convenient."
+
+[ctxbudget.ah_soft_what]
+doc = "The soft advisory's first line; {pct} is the rounded percent."
+value = "context looks high (~{pct}%, ESTIMATED)."
+
+[ctxbudget.ah_soft_why]
+doc = "The soft advisory's Why line."
+value = "This session's exact context window could not be determined, so treat this as a soft heads-up, not a command."
+
+[ctxbudget.ah_soft_instead]
+doc = "The soft advisory's instructions; {bloat} the bloat sentence."
+value = "consider checking with the user about writing a handover and compacting/clearing soon. {bloat}"
+
+[ctxbudget.ah_pause_what]
+doc = "The pause nag's first line; {pct} is the rounded percent."
+value = "good stopping point: context is still ~{pct}% and a handover is already saved."
+
+[ctxbudget.ah_pause_instead]
+doc = "The pause nag's instructions; {bloat} the bloat sentence, {reset} the reset commands."
+value = "{bloat} Mention {reset} to the user now."
+
+[ctxbudget.ah_clear_claude]
+doc = "The command that starts a fresh session on Claude."
+value = "/clear"
+
+[ctxbudget.ah_clear_codex]
+doc = "The command that starts a fresh session on Codex."
+value = "/new"
+
+[ctxbudget.ah_suffix_no_path]
+doc = "The handover path the decisive line shows when none is known."
+value = "<the HANDOVER*.md path you saved>"
+
+[ctxbudget.ah_suffix_stale]
+doc = "The decisive suffix when the handover went stale; {line} is the good-point line."
+value = "\n\n⚠️ The saved handover is stale (work continued after it was written): refresh it now. Once it is saved, end your reply to the user with exactly this line, verbatim: {line} Only if you could not refresh it, say so plainly instead of that line."
+
+[ctxbudget.ah_suffix_unknown]
+doc = "The decisive suffix when the handover's freshness is unknown; {path} is the handover path."
+value = "\n\nEnd your reply to the user with exactly this line, verbatim: 📝 Handover saved at {path}. If you've continued working since, refresh it; then /compact."
+
+[ctxbudget.ah_suffix_fresh]
+doc = "The decisive suffix for a fresh handover; {line} is the good-point line."
+value = "\n\nEnd your reply to the user with exactly this line, verbatim: {line}"
+
+[ctxbudget.ah_line_complete]
+doc = "The good-point line when the task looks complete; {clear} the fresh-session command, {path} the handover path."
+value = "🟢 **GOOD POINT TO {clear} NOW**: handover saved at {path}. Task looks complete — {clear} starts fresh; /compact if you want to keep going in this session."
+
+[ctxbudget.ah_line_continue]
+doc = "The good-point line otherwise; {clear} the fresh-session command, {path} the handover path."
+value = "🟢 **GOOD POINT TO /compact NOW**: handover saved at {path}. /compact keeps working on the same task; {clear} if the next task is different."
+
+[ctxbudget.ah_budget]
+doc = "The budget label of the gate; {b} is the budget percent, {tok} the token clause."
+value = "~{b}% of the context window{tok}"
+
+[ctxbudget.ah_budget_tokens]
+doc = "The token clause of the budget label; {k} is the budget in thousands of tokens."
+value = " (~{k}K tokens)"
+
+[ctxbudget.ah_gate_ask_claude]
+doc = "How the gate asks on Claude."
+value = "ask the user with AskUserQuestion (two options)"
+
+[ctxbudget.ah_gate_ask_codex]
+doc = "How the gate asks on Codex."
+value = "ask the user to choose between two options"
+
+[ctxbudget.ah_gate_what]
+doc = "The gate's first line; {pct} context percent, {hp} handover percent, {budget} the budget label."
+value = "post-handover new-work gate (context ~{pct}%, handover saved at ~{hp}%; budget {budget})."
+
+[ctxbudget.ah_gate_why]
+doc = "The gate's Why line."
+value = "Before starting this request, judge YOURSELF whether it needs more than that budget."
+
+[ctxbudget.ah_gate_instead]
+doc = "The gate's instructions; {ask} how to ask, {reset} the reset commands."
+value = "if it is bigger than the budget, do not start it; {ask}: (a) add it to the task list and the handover, then start it after {reset}; (b) proceed now anyway."
+
+[ctxbudget.ah_gate_allowed]
+doc = "The gate's Allowed line."
+value = "a quick question, finishing the in-flight task the handover names, or spawning a DevSwarm workspace (it runs in its own context)."
+
+[ctxbudget.ah_gate_override]
+doc = "The gate's override line."
+value = "if the user has explicitly insisted on proceeding, proceed"
+
+[ctxbudget.ah_backstop_what]
+doc = "The backstop's first line; {pct} context percent, {b} budget, {hp} handover percent."
+value = "post-handover budget exceeded: context is ~{pct}%, more than {b} points past the ~{hp}% at which the handover was saved."
+
+[ctxbudget.ah_backstop_instead]
+doc = "The backstop's instructions; {skill} the handover skill, {reset} the reset commands."
+value = "refresh the handover now ({skill}: write the next HANDOVER-<n>.md) so it covers the work since, then offer the user to park the rest in the task list + handover and continue after {reset}. This reminder fires once per handover."
+
+[ctxbudget.ah_parts_sep]
+doc = "What joins the parts of one auto-handover context (backstop, gate, nag)."
+value = "\n\n"
+
+[ctxbudget.ah_via_stop_prefix]
+doc = "The prefix the Stop-side fire records in the latch's firedVia."
+value = "stop-"
+
+[ctxbudget.stop_block_line]
+doc = "The stdout line of a Stop hook that blocks with {reason} (already JSON-quoted), newline included."
+value = "{\"decision\":\"block\",\"reason\":{reason}}\n"
+
+[ctxbudget.ah_hash_tag_len]
+doc = "Hex digits of the transcript path's SHA-1 that tag a session without a usable id (auto-handover-state.js sessionTag)."
+value = 16
+
+[ctxbudget.ah_via_pct]
+doc = "The firedVia word of a percent crossing."
+value = "pct"
+
+[ctxbudget.ah_via_tokens]
+doc = "The firedVia word of a token-ceiling crossing."
+value = "tokens"
+
+[ctxbudget.ah_heading_mark]
+doc = "The Markdown mark that opens a handover section heading (followed by white space)."
+value = "##"
+
+[ctxbudget.ah_jev_id]
+doc = "The Jev integration the post-handover gate consults (detached, never changes the injected text)."
+value = "postHandoverGate"
+
+[ctxbudget.ah_jev_instructions]
+doc = "The question put to Jev about the user's request; {b} is the budget percent and {tok} the token estimate text."
+value = "The session is past its auto-handover threshold and a handover is saved. Does the user's request below fit in the remaining post-handover budget of about {b}% of the context window{tok} \u2014 e.g. a quick question, finishing the in-flight task, or spawning a separate workspace \u2014 rather than needing a fresh context?"
+
+[ctxbudget.ah_jev_tokens]
+doc = "Token estimate appended to the Jev question; {k} is thousands of tokens."
+value = " (about {k}K tokens)"
+
+[ctxbudget.ah_jev_true]
+doc = "The label of a Jev answer that the request fits."
+value = "fits in the remaining budget"
+
+[ctxbudget.ah_jev_false]
+doc = "The label of a Jev answer that the request needs more than the budget."
+value = "needs more than the remaining budget"
+
+[ctxbudget.ah_jev_state_chars]
+doc = "How much of the prompt, in UTF-16 units, the Jev question carries."
+value = 4000
+min = 100
+
+# ---- compact-advice-guard ------------------------------------------------------------------------------------
+
+[ctxbudget.summary_compact_advice]
+doc = "One-line description of the compact-advice-guard check in the generated reference."
+value = "Stop: blocks, once per declaration, a final reply that recommends compacting at low context or just after a compact (phrase analysis, latch exception and record as in Node); defers a text with a line terminator other than LF and what JavaScript could read differently (port of compact-advice-guard.js)."
+
+[ctxbudget.set_compact_advice_guard]
+doc = "The guards.compactAdviceGuard setting: block a /compact recommendation made at low context or just after a compact."
+value = { section = "guards", key = "compactAdviceGuard", kind = "bool", env = "", aliases = [], option = "guards_compact_advice_guard", manifest_default = "true", default = true }
+[ctxbudget.set_ca_margin]
+doc = "The guards.compactAdviceMarginPct setting: context points below autoHandover.pct at which a /compact recommendation counts as low-context."
+value = { section = "guards", key = "compactAdviceMarginPct", kind = "num", env = "", aliases = [], option = "", manifest_default = "", default = 10, min = 0, max = 50 }
+
+[ctxbudget.set_ca_recent]
+doc = "The guards.compactAdviceRecentTurns setting: a compact boundary within this many turns makes a /compact recommendation a block (0: off)."
+value = { section = "guards", key = "compactAdviceRecentTurns", kind = "num", env = "", aliases = [], option = "guards_compact_advice_recent_turns", manifest_default = "10", default = 10, min = 0, max = 100 }
+
+[ctxbudget.ca_guard]
+doc = "The guard name of the compact-advice block."
+value = "compact-advice-guard"
+
+[ctxbudget.ca_state_dir]
+doc = "The directory under the state root that holds the once-per-declaration records of the compact-advice guard."
+value = "compact-advice"
+
+[ctxbudget.ca_tokens_vias]
+doc = "The firedVia words of a token-ceiling fire, whose SAFE declaration is allowed even at a low percent."
+value = ["tokens", "stop-tokens"]
+
+[ctxbudget.ca_what]
+doc = "The block's first line; {phrase} is the recommendation, {why} the reasons."
+value = 'your reply recommends compacting ("{phrase}") but {why}.'
+
+[ctxbudget.ca_why_pct]
+doc = "The reason when the context is known; {pct} rounded, {threshold} the auto-handover threshold."
+value = "context is {pct}% (auto-handover threshold {threshold}%)"
+
+[ctxbudget.ca_why_unknown]
+doc = "The reason when the context is unknown."
+value = "context % is unknown"
+
+[ctxbudget.ca_recent_now]
+doc = "The reason when a compact happened in this very turn."
+value = "a compact happened earlier in this turn"
+
+[ctxbudget.ca_recent_one]
+doc = "The reason when a compact happened one turn ago ({n})."
+value = "a compact happened {n} turn ago"
+
+[ctxbudget.ca_recent_n]
+doc = "The reason when a compact happened {n} turns ago."
+value = "a compact happened {n} turns ago"
+
+[ctxbudget.ca_why_join]
+doc = "What joins the reasons."
+value = ", and "
+
+[ctxbudget.ca_why]
+doc = "The block's Why line."
+value = '"No background agents running" is necessary, not sufficient; only the auto-handover threshold directive (or genuinely high context) justifies a SAFE TO COMPACT line.'
+
+[ctxbudget.ca_instead]
+doc = "The block's instructions; {ctx} is the context clause."
+value = 'retract it in one line, e.g. "RETRACT SAFE TO COMPACT: context is {ctx}; no need to compact", then continue or end the turn.'
+
+[ctxbudget.ca_ctx_pct]
+doc = "The context clause of the instructions when the percent is known ({pct} rounded)."
+value = "{pct}%"
+
+[ctxbudget.ca_ctx_low]
+doc = "The context clause of the instructions when the percent is unknown."
+value = "low"
+
+[ctxbudget.advice_needs_safe]
+doc = "Words that, together with the word safe, can form a compact recommendation (safe to compact, safe to /clear, safe for a reset or /new); a final text with none of the pairs holds no recommendation."
+value = ["compact", "/clear", "reset", "/new"]
+
+[ctxbudget.advice_safe_word]
+doc = "The word that opens the safe-to and safe-for recommendation wordings."
+value = "safe"
+
+[ctxbudget.advice_slash_compact]
+doc = "The slash command whose mention alone can be a recommendation (run /compact, a standalone /compact line)."
+value = "/compact"
+
+[ctxbudget.advice_good_word]
+doc = "The word that opens the good-point-to recommendation wording."
+value = "good"
+
+[ctxbudget.advice_needs_good]
+doc = "Words that, together with the word good, can form a good-point-to recommendation (good point to compact, /clear or /new)."
+value = ["compact", "clear", "/new"]
+
+[ctxbudget.advice_prefilter]
+doc = "Substrings whose absence from the whole transcript tail (and from every unicode escape) proves that no assistant text of it can hold a compact recommendation."
+value = ["compact", "clear", "reset", "/new"]

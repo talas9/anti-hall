@@ -1,0 +1,12 @@
+{"code":"0","err":"","id":"raw-arr#0","in":"c5a66dbceda2b266","out":""}
+{"code":"0","err":"","id":"raw-bom#0","in":"618a8c6441ed861f","out":""}
+{"code":"0","err":"","id":"raw-deep#0","in":"27bf2fef389d6f80","out":""}
+{"code":"0","err":"","id":"raw-empty#0","in":"0f8ddee08273ec5c","out":""}
+{"code":"0","err":"","id":"raw-notjson#0","in":"1f29bc6e4b29764f","out":""}
+{"code":"0","err":"","id":"raw-nul#0","in":"71da0337ed8683c2","out":""}
+{"code":"0","err":"","id":"raw-num#0","in":"619103a3a5107bd9","out":""}
+{"code":"0","err":"","id":"raw-obj#0","in":"8b96ef9dc085d87c","out":""}
+{"code":"0","err":"","id":"raw-str#0","in":"9731d5608148e3b5","out":""}
+{"code":"0","err":"","id":"raw-tru#0","in":"ecbd046716ec015f","out":""}
+{"code":"0","err":"","id":"raw-truncated#0","in":"c9fb2c76a7ebbf7d","out":""}
+{"code":"0","err":"","id":"raw-ws#0","in":"ad64f4df9c36272d","out":""}

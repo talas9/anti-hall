@@ -1,0 +1,1760 @@
+# ah-engine shipped defaults for the operator command-line tools (L9a): `settings`, `defect` and `statusline` (the `src/ops/`
+# module). Format: see the header of engine.toml.
+#
+# The message texts are the Node tools' own, word for word, because the parity tests compare the commands' output with the
+# scripts' byte for byte. Generated once during the port; edit this file directly from now on.
+
+[ops.defer_exit]
+doc = "Exit code of an operator command that leaves the work to the Node tool because it cannot reproduce the Node behaviour exactly (nothing is written)."
+value = 75
+
+[ops.list_sep]
+doc = "Separator of the values listed in a settings message."
+value = ", "
+
+[ops.empty_value]
+doc = "How `settings` prints an empty or missing value."
+value = "(empty)"
+
+[ops.code_quote]
+doc = "The quote around an object value in the settings tables."
+value = "`"
+
+[ops.cell_sep]
+doc = "Between two cells of a settings table row."
+value = " | "
+
+[ops.rule_cell]
+doc = "One header-rule cell of a settings table."
+value = "---"
+
+[ops.heading_prefix]
+doc = "In front of a section label in `settings show`."
+value = "## "
+
+[ops.table_headers]
+doc = "The columns of a settings table."
+value = ["Setting", "Value", "Default", "Source", "Description"]
+
+[ops.table_headers_integrations]
+doc = "The columns of the Jev integrations table."
+value = ["Integration", "Effective", "Configured", "Source", "Logs to"]
+
+[ops.advanced_suffix]
+doc = "After the name of an advanced setting in the tables."
+value = " (advanced)"
+
+[ops.locked_suffix]
+doc = "After the name of a safety setting in the tables."
+value = " (safety: needs --confirmed)"
+
+[ops.advanced_label]
+doc = "Heading of the advanced settings table."
+value = "**Advanced:**"
+
+[ops.advanced_hidden]
+doc = "Line shown when a section has advanced settings and `--all` was not given. Placeholder: count."
+value = "_{count} advanced setting(s) hidden — rerun with `--all` to show them._"
+
+[ops.integrations_title]
+doc = "Heading of the Jev integrations table."
+value = "**Jev integrations — effective mode** (what the runtime applies, including the master switch and env kill switches):"
+
+[ops.not_toggleable_title]
+doc = "Heading of the list of parts without a switch."
+value = "## Not toggleable"
+
+[ops.not_toggleable_intro]
+doc = "Introduction of the list of parts without a switch."
+value = "These parts have no switch on purpose:"
+
+[ops.not_toggleable_line]
+doc = "One part without a switch. Placeholders: name, reason."
+value = "- `{name}`: {reason}"
+
+[ops.settings_sources]
+doc = "The label `settings` prints for each tier a value can come from."
+value = { "env" = "env", "file" = "file", "plugin-option" = "/config", "legacy" = "legacy", "default" = "default" }
+
+[ops.jev_section]
+doc = "The settings section of the Jev switches."
+value = "jev"
+
+[ops.jev_integrations_section]
+doc = "The settings section of the per-integration Jev modes."
+value = "jevIntegrations"
+
+[ops.jev_effective_key]
+doc = "The key of the effective-integrations list in `settings show --json`."
+value = "jevEffectiveIntegrations"
+
+[ops.mode_on]
+doc = "The word for an integration or switch that is on."
+value = "on"
+
+[ops.mode_off]
+doc = "The word for an integration or switch that is off."
+value = "off"
+
+[ops.logs_triage]
+doc = "Where the triage integration logs."
+value = "jev-triage.ndjson (+ outcome rows in jev-assist.ndjson)"
+
+[ops.logs_default]
+doc = "Where every other integration logs."
+value = "jev-assist.ndjson"
+
+[ops.undefined_word]
+doc = "What the Node tool prints for a missing argument."
+value = "undefined"
+
+[ops.settings_err]
+doc = "An error line of `settings`. Placeholder: error."
+value = "❌ anti-hall · settings: {error}"
+
+[ops.settings_unknown_section]
+doc = "Unknown `--section`. Placeholder: name."
+value = "❌ anti-hall · settings: unknown section: {name}"
+
+[ops.settings_unknown_setting]
+doc = "Unknown setting name. Placeholder: name."
+value = "❌ anti-hall · settings: unknown setting: {name} (expected section.key)"
+
+[ops.settings_usage_set]
+doc = "Usage of `settings set`."
+value = "💡 anti-hall · settings: usage: settings.js set <section.key> <value>"
+
+[ops.settings_usage_judge]
+doc = "Usage of `settings judge`."
+value = "💡 anti-hall · settings: usage: settings.js judge on|off|status"
+
+[ops.settings_usage]
+doc = "Usage of `settings`."
+value = "💡 anti-hall · settings: usage: settings.js <show|get|set|reset|judge|trust-command-allow|trust-edit-allow> [args] [--json]"
+
+[ops.get_line]
+doc = "Output of `settings get`. Placeholders: name, value, source, default."
+value = "{name} = {value} (source: {source}, default: {default})"
+
+[ops.set_line]
+doc = "Output of `settings set`. Placeholders: name, value."
+value = "{name} = {value}"
+
+[ops.reset_line]
+doc = "Output of `settings reset`. Placeholders: name, value."
+value = "{name} reset -> {value}"
+
+[ops.lock_busy]
+doc = "Said when another process holds the settings lock past the wait budget; the Node tool names the holder, so the command leaves the change to it."
+value = "settings.json is being written by another process; run the Node settings tool to see which and retry"
+
+[ops.set_err_object]
+doc = "Why a file-only setting cannot be set."
+value = "this setting is file-only (edit ~/.anti-hall/settings.json directly); it cannot be changed via set()"
+
+[ops.set_err_bool]
+doc = "Why a value is not a boolean. Placeholder: got (JSON text)."
+value = "expected a boolean (true/false/on/off/1/0), got {got}"
+
+[ops.set_err_number]
+doc = "Why a value is not a number. Placeholder: got (JSON text)."
+value = "expected a number, got {got}"
+
+[ops.set_err_min]
+doc = "A number below the minimum. Placeholder: bound."
+value = "must be >= {bound}"
+
+[ops.set_err_max]
+doc = "A number above the maximum. Placeholder: bound."
+value = "must be <= {bound}"
+
+[ops.set_err_exclusive_min]
+doc = "A number at or below the exclusive minimum. Placeholder: bound."
+value = "must be > {bound}"
+
+[ops.set_err_enum]
+doc = "A value outside the allowed words. Placeholder: values."
+value = "must be one of: {values}"
+
+[ops.safety_note_default]
+doc = "The consequence named when a safety setting has no note of its own."
+value = "this weakens a safety guard"
+
+[ops.safety_add]
+doc = "Warning for widening an allow list. Placeholders: list, note."
+value = "Adding {list} to edit-guard's allow list means {note}. Ask the user to confirm, then re-run with --confirmed."
+
+[ops.safety_change]
+doc = "Warning for re-targeting a bound credential. Placeholders: guard, note."
+value = "Changing {guard} means {note}. Ask the user to confirm, then re-run with --confirmed."
+
+[ops.safety_turn]
+doc = "Warning for turning a guard off or a bypass on. Placeholders: verb, guard, note."
+value = "Turning {verb} {guard} means {note}. Ask the user to confirm, then re-run with --confirmed."
+
+[ops.safety_verb_on]
+doc = "The verb of a warning about turning a bypass on."
+value = "on"
+
+[ops.safety_verb_off]
+doc = "The verb of a warning about turning a guard off."
+value = "off"
+
+[ops.judge_switch_key]
+doc = "The setting that switches the semantic judge."
+value = "semanticJudge"
+
+[ops.judge_model_key]
+doc = "The setting that names the judge model."
+value = "judgeModel"
+
+[ops.judge_model_default]
+doc = "The model alias `judge status` shows when none is set."
+value = "haiku"
+
+[ops.judge_backend_key]
+doc = "The setting that names how the judge reaches the model."
+value = "judgeBackend"
+
+[ops.judge_backend_default]
+doc = "The backend `judge` assumes when none is set."
+value = "api"
+
+[ops.judge_cli]
+doc = "The backend value that runs the local Claude CLI."
+value = "cli"
+
+[ops.judge_auto]
+doc = "The backend value that uses the API with a key and the CLI without."
+value = "auto"
+
+[ops.true_word]
+doc = "The value `judge on` stores."
+value = "true"
+
+[ops.false_word]
+doc = "The value `judge off` stores."
+value = "false"
+
+[ops.speculation_id]
+doc = "The Jev integration that decides the speculation backend."
+value = "speculation"
+
+[ops.backend_jev]
+doc = "Backend name when the speculation guard asks Jev."
+value = "jev"
+
+[ops.backend_api]
+doc = "Backend name when the paid API judge is used."
+value = "api"
+
+[ops.backend_lexical]
+doc = "Backend name when only the lexical guard runs."
+value = "lexical"
+
+[ops.judge_line]
+doc = "First line of `judge`. Placeholders: state, extra."
+value = "judge: {state}{extra}"
+
+[ops.judge_still_on]
+doc = "Added after `judge: on` when `judge off` finds it still on."
+value = " (still on via env ANTIHALL_SEMANTIC_JUDGE)"
+
+[ops.backend_line]
+doc = "The backend line of `judge`. Placeholders: backend, detail."
+value = "backend: {backend}{detail}"
+
+[ops.backend_jev_detail]
+doc = "Detail when the backend is Jev. Placeholder: tail."
+value = " (speculation-guard asks Jev; the paid API judge exits early{tail}"
+
+[ops.jev_detail_skipped]
+doc = "Tail of the Jev detail when the judge switch is on."
+value = ", API judge skipped)"
+
+[ops.jev_detail_plain]
+doc = "Tail of the Jev detail when the judge switch is off."
+value = ")"
+
+[ops.backend_api_cli]
+doc = "Detail when the judge calls the local CLI. Placeholder: backend."
+value = " (speculation-judge calls the local claude CLI, jev.judgeBackend={backend})"
+
+[ops.backend_api_api]
+doc = "Detail when the judge calls the Anthropic API."
+value = " (speculation-judge calls the Anthropic API)"
+
+[ops.backend_lexical_detail]
+doc = "Detail when only the lexical guard runs."
+value = " (lexical speculation-guard only)"
+
+[ops.key_found]
+doc = "The key line when an Anthropic key is visible."
+value = "key: found (value not shown)"
+
+[ops.key_missing]
+doc = "The key line when no key is visible."
+value = "key: not visible to this process"
+
+[ops.model_line]
+doc = "The model line of `judge status`. Placeholder: model."
+value = "model: {model}"
+
+[ops.judge_no_key_lines]
+doc = "Said by `judge on` when no key is visible and the API would be used."
+value = ["No key visible here. Add one so the judge can call the Anthropic API:", "  Claude Code: plugin options screen, anti-hall -> anthropic_api_key (visible to hooks only, so this CLI cannot confirm it).", "  Codex: set guards.allowAnthropicEnvKey to true in ~/.anti-hall/settings.json and export ANTHROPIC_API_KEY.", "Without a key the judge is fail-open (does nothing). Or use your Claude login instead of a key: settings.js set jev.judgeBackend cli"]
+
+[ops.cost_line]
+doc = "The cost line of `judge on`. Placeholder: cost."
+value = "Cost: {cost}."
+
+[ops.judge_cost_api]
+doc = "What the API judge costs."
+value = "about $0.0001–0.001 and 1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on eval/inference-bench.js (84 synthetic cases)"
+
+[ops.judge_cost_cli]
+doc = "What the CLI judge costs."
+value = "no API bill (your Claude login's usage) and about 5–6 s per turn end, measured; precision 0.78–0.81 and recall 1.0 measured on eval/inference-bench.js (84 synthetic cases)"
+
+[ops.kind_command]
+doc = "The name of the command allowlist kind."
+value = "command"
+
+[ops.kind_edit]
+doc = "The name of the edit allowlist kind."
+value = "edit"
+
+[ops.allow_kinds]
+doc = "Per allowlist kind: the file in the repository, the per-user trust record and the key of the list in the file."
+value = { "command" = { "rel" = ".anti-hall/command-allow.json", "trust_file" = "trusted-command-allow.json", "list_key" = "patterns" }, "edit" = { "rel" = ".anti-hall/edit-allow.json", "trust_file" = "trusted-edit-allow.json", "list_key" = "paths" } }
+
+[ops.pat_not_string]
+doc = "Why an allowlist entry is ignored: it is not a string."
+value = "not a string"
+
+[ops.pat_start]
+doc = "Why a command pattern is ignored."
+value = "must start with ^"
+
+[ops.pat_end]
+doc = "Why a command pattern is ignored."
+value = "must end with $"
+
+[ops.pat_word]
+doc = "Why a command pattern is ignored."
+value = "must begin with a literal command word after ^"
+
+[ops.pat_alt]
+doc = "Why a command pattern is ignored."
+value = "top-level | alternation"
+
+[ops.pat_wildcard]
+doc = "Why a command pattern is ignored. Placeholder: what (the wildcard)."
+value = "unbounded wildcard ({what})"
+
+[ops.pat_regex]
+doc = "Why a command pattern is ignored."
+value = "invalid regex"
+
+[ops.edit_empty]
+doc = "Why an edit path is ignored."
+value = "empty or padded with whitespace"
+
+[ops.edit_absolute]
+doc = "Why an edit path is ignored."
+value = "absolute path"
+
+[ops.edit_home]
+doc = "Why an edit path is ignored."
+value = "home-relative path"
+
+[ops.edit_backslash]
+doc = "Why an edit path is ignored."
+value = "backslash (use / separators)"
+
+[ops.edit_dotdot]
+doc = "Why an edit path is ignored."
+value = ".. path segment"
+
+[ops.edit_everything]
+doc = "Why an edit path is ignored."
+value = "matches every file"
+
+[ops.js_pattern_var]
+doc = "The name of the global the embedded interpreter receives a regex source in."
+value = "__ah_pattern"
+
+[ops.js_compile]
+doc = "The script that checks a regex source compiles, in the embedded interpreter."
+value = "new RegExp(globalThis.__ah_pattern)"
+
+[ops.row_indent]
+doc = "In front of an allowlist row."
+value = "  "
+
+[ops.row_ok]
+doc = "Between the indent and a valid allowlist entry."
+value = "  "
+
+[ops.row_bad]
+doc = "Between the indent and an ignored allowlist entry."
+value = "! "
+
+[ops.row_ignored]
+doc = "After an ignored allowlist entry. Placeholder: why."
+value = "   (ignored: {why})"
+
+[ops.state_unreadable]
+doc = "The allowlist file state."
+value = "unreadable"
+
+[ops.state_invalid_json]
+doc = "The allowlist file state."
+value = "not valid JSON"
+
+[ops.trust_unsure]
+doc = "Said when the repository layout cannot be classified exactly; the Node tool decides."
+value = "the repository layout needs the Node settings tool to classify; nothing was recorded"
+
+[ops.trust_not_git]
+doc = "No repository. Placeholder: target."
+value = "not inside a git repository: {target}"
+
+[ops.trust_missing]
+doc = "No allowlist file. Placeholders: rel, top."
+value = "no {rel} in {top}"
+
+[ops.trust_symlink]
+doc = "A symlinked allowlist. Placeholders: rel, top."
+value = "refusing a symlinked {rel} (or .anti-hall dir) in {top}"
+
+[ops.trust_state]
+doc = "An unusable allowlist file. Placeholders: rel, top, state."
+value = "{rel} in {top} is {state}"
+
+[ops.trust_what_command]
+doc = "What trusting a command allowlist allows."
+value = "Trusting lets the main thread run these commands in "
+
+[ops.trust_what_edit]
+doc = "What trusting an edit allowlist allows."
+value = "Trusting lets the main thread edit files matching these paths in "
+
+[ops.trust_warning]
+doc = "The confirmation request. Placeholders: what, repo, hash."
+value = "{what}{repo} without delegating them. Re-run with --confirmed to trust this exact file content (sha256 {hash})."
+
+[ops.trust_done]
+doc = "First line after a trust is recorded. Placeholders: repo, rel, hash."
+value = "trusted {repo}/{rel} (sha256 {hash}):"
+
+[ops.trust_write_failed]
+doc = "The trust record could not be written. Placeholders: path, error."
+value = "could not write {path}: {error}"
+
+[defect.dir]
+doc = "The defect store directory, under the base directory of the home."
+value = "defects"
+
+[defect.archive_dir]
+doc = "The archive of ruled, stale defects, inside the store directory."
+value = "archive"
+
+[defect.history_dir]
+doc = "Where `backfill` keeps the fixed bugs imported from git history, inside the store directory."
+value = "history"
+
+[defect.file_ext]
+doc = "The extension of a defect file."
+value = ".jsonl"
+
+[defect.class_enum]
+doc = "The defect classes a report may name."
+value = ["guard-false-positive", "guard-miss", "hook-crash", "state-leak", "messaging", "doc", "install", "other"]
+
+[defect.severity_enum]
+doc = "The severities a report may name."
+value = ["p0", "p1", "p2"]
+
+[defect.cause_enum]
+doc = "The root-cause taxonomy of the optional cause field."
+value = ["archived-or-held-state", "id-mismatch", "home-or-state-leak", "lock-or-race", "timing-or-load-flake", "transcript-parse", "blocking-hook-loop", "fail-open-missing", "stale-path-or-version", "platform-compat", "wrong-default", "other"]
+
+[defect.cause_other]
+doc = "The cause given when no rule matches."
+value = "other"
+
+[defect.ruling_status_enum]
+doc = "The statuses a ruling may set."
+value = ["ack", "fixed", "wontfix", "notabug", "dup", "partial"]
+
+[defect.closed_statuses]
+doc = "The derived statuses that mean a defect is finished."
+value = ["fixed", "wontfix", "notabug", "dup"]
+
+[defect.status_open]
+doc = "The status of a defect nobody has ruled on."
+value = "open"
+
+[defect.status_fixed]
+doc = "The status of a fixed defect."
+value = "fixed"
+
+[defect.status_regressed]
+doc = "The derived status of a fixed defect that reappeared in a build at or after the fix."
+value = "regressed"
+
+[defect.max_open_files]
+doc = "Most open defect files; a new defect past it is refused."
+value = 200
+
+[defect.max_file_bytes]
+doc = "Most bytes of one defect file."
+value = 65536
+
+[defect.max_report_lines]
+doc = "Most report lines of one defect."
+value = 20
+
+[defect.regression_extra]
+doc = "Extra report lines allowed past the cap when the defect is fixed or regressed."
+value = 3
+
+[defect.max_line_bytes]
+doc = "Most bytes of one NDJSON line."
+value = 4096
+
+[defect.max_archive_files]
+doc = "Most files in the archive across all month buckets."
+value = 1000
+
+[defect.archive_age_ms]
+doc = "How long a closed defect stays in the open directory after its last report (30 days), in milliseconds."
+value = 2592000000
+
+[defect.overflow_chunk_bytes]
+doc = "Bytes of one spilled overflow chunk, well under the line cap."
+value = 3200
+
+[defect.field_caps]
+doc = "The length caps, in UTF-16 units, of the narrative and identifying fields of a report or ruling."
+value = { "sym" = 200, "repro" = 1200, "claimed" = 600, "observed" = 600, "note" = 1200 }
+
+[defect.v_cap]
+doc = "Cap of the version fields."
+value = 40
+
+[defect.loose_cap]
+doc = "Cap of the project and session fields (bounds pathological input only)."
+value = 5000
+
+[defect.commit_cap]
+doc = "Cap of the commit field of a ruling."
+value = 64
+
+[defect.fp_len]
+doc = "Length of a fingerprint (and of the supersededBy field)."
+value = 12
+
+[defect.component_cap]
+doc = "Cap of the component field."
+value = 120
+
+[defect.identity_cap]
+doc = "Cap of a project identity."
+value = 64
+
+[defect.repo_name_cap]
+doc = "Cap of the readable repository name in a project key."
+value = 40
+
+[defect.repo_word]
+doc = "The repository name when nothing readable is left."
+value = "repo"
+
+[defect.history_subject_cap]
+doc = "Cap of a backfilled commit subject."
+value = 200
+
+[defect.history_changelog_cap]
+doc = "Cap of a backfilled changelog bullet."
+value = 600
+
+[defect.short_sha]
+doc = "Characters of a commit hash shown in the text reports."
+value = 7
+
+[defect.summary_cap]
+doc = "Characters of a summary shown by `similar`."
+value = 100
+
+[defect.default_top]
+doc = "How many rows the text reports show unless --top says otherwise."
+value = 10
+
+[defect.hotspot_component_min]
+doc = "Fixes of one component that make it a hotspot."
+value = 3
+
+[defect.hotspot_pair_min]
+doc = "Fixes of one component and cause that make a hotspot."
+value = 2
+
+[defect.regression_window]
+doc = "Releases within which a second fix of the same component and cause is a likely regression."
+value = 5
+
+[defect.extra_keys]
+doc = "The optional fields a record can carry; the last line with one wins."
+value = ["component", "cause", "regressionOf", "fixedIn", "fixCommit", "source", "subject"]
+
+[defect.valid_flags]
+doc = "The closed set of flags of each subcommand (the first word is the subcommand)."
+value = ["report class sev sym repro sym-file repro-file claimed observed proj sid v component cause regression-of json", "list mine open unfinished json", "show json", "rule status fixed-in commit note superseded-by component cause regression-of json", "archive json", "backfill repo dry-run json", "recurring since top json", "similar component top json"]
+
+[defect.component_steps]
+doc = "The steps that reduce a path to its module, each `regex => replacement` in order: separators, leading ./, the plugin directory, lib segments, the file extension."
+value = ["^\\.\\/ => ", "^plugins\\/anti-hall\\/ => ", "\\/lib\\/ => /", "\\.(c|m)?js$|\\.(sh|py|ts|json)$ => "]
+
+[defect.step_sep]
+doc = "Separates a regex from its replacement in a component step."
+value = " => "
+
+[defect.collation_symbols]
+doc = "The printable ASCII symbols in the order the root collation sorts them (before digits and letters)."
+value = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$"
+
+[defect.cause_rules]
+doc = "The keyword rules that classify a fix commit into a root cause: the cause, its patterns (JavaScript syntax, matched against the lower-cased subject and body) and its case-insensitive patterns. The highest score wins, ties go to the rule listed first."
+value = [{ "cause" = "archived-or-held-state", "patterns" = ["\\barchiv", "\\bheld\\b", "\\bheldpartition", "\\bunarchiv", "\\bretire", "\\bresurrect", "\\borphan", "\\bghost\\b", "\\breused id\\b"], "patterns_ci" = [] }, { "cause" = "lock-or-race", "patterns" = ["\\block\\b", "\\blocks\\b", "acquirelock", "\\brace\\b", "\\bracers?\\b", "toctou", "lost-update", "\\bconcurren", "\\batomic", "both win"], "patterns_ci" = [] }, { "cause" = "home-or-state-leak", "patterns" = ["\\bhome\\b", "\\bleak", "unbounded", "grow without limit", "real machine", "\\bpollut", "real launchd", "\\bisolat"], "patterns_ci" = [] }, { "cause" = "transcript-parse", "patterns" = ["transcript", "\\bpars(e|ing|er)\\b", "\\bregex", "\\bcrlf\\b", "\\bshapes?\\b", "quote-aware", "\\bescap", "line-ending", "\\btokeniz"], "patterns_ci" = [] }, { "cause" = "id-mismatch", "patterns" = ["\\bidentit", "\\bsession ?id\\b", "\\bsessionid", "\\bpartition", "\\brepokey", "\\balias", "\\btwin\\b", "\\bfamil(y|ies)\\b", "attribution", "\\bshortid", "builder_?id", "\\bmesh ?id", "\\bwrong row\\b", "\\bid\\b"], "patterns_ci" = ["builderType"] }, { "cause" = "timing-or-load-flake", "patterns" = ["\\bflak", "timeout", "timed out", "deadline", "contention", "\\bpacing\\b", "\\bpace\\b", "\\bttl\\b", "grace window", "\\bmtime\\b", "\\bslow\\b", "\\bbudget\\b"], "patterns_ci" = [] }, { "cause" = "platform-compat", "patterns" = ["\\bwindows\\b", "\\bwin32\\b", "cross-platform", "\\bmacos\\b", "\\blinux\\b", "\\bnode (18|20|22)\\b", "\\bcmux\\b", "8\\.3 short"], "patterns_ci" = [] }, { "cause" = "blocking-hook-loop", "patterns" = ["\\bblocks?\\b", "\\bblocking\\b", "\\bblocked\\b", "stop gate", "stop-gate", "\\bnag", "\\bescalat", "false[- ]positiv", "false-block", "\\bhard-block", "\\bloop\\b"], "patterns_ci" = [] }, { "cause" = "fail-open-missing", "patterns" = ["fail[- ]open", "fail[- ]closed", "\\bsilent", "\\binert\\b", "\\bswallow", "\\bcrash", "\\bthrows?\\b", "no silent", "\\bhonest"], "patterns_ci" = [] }, { "cause" = "stale-path-or-version", "patterns" = ["\\bstale\\b", "\\bpath\\b", "\\bpaths\\b", "\\bversion\\b", "\\bcache\\b", "\\bcached\\b", "\\bresolv", "\\brelative\\b", "re-register", "\\bre-exec"], "patterns_ci" = [] }, { "cause" = "wrong-default", "patterns" = ["\\bdefaults?\\b", "\\bopt-in\\b", "\\bopt-out\\b", "\\bto off\\b"], "patterns_ci" = [] }]
+
+[defect.source_ext]
+doc = "A file that can name a fix's component: shipped code."
+value = "\\.(c|m)?js$|\\.(sh|py|ts)$"
+
+[defect.nonsource_dir]
+doc = "Directories whose files never name a component."
+value = "(^|\\/)(tests?|__tests__|fixtures|docs|eval)\\/"
+
+[defect.test_file]
+doc = "A test file name."
+value = "\\.test\\.(c|m)?js$|\\.spec\\.(c|m)?js$"
+
+[defect.tested_module]
+doc = "A test file path; group 1 is the module it tests."
+value = "^tests\\/(.+?)(\\.[a-z0-9-]+)*\\.test\\.(c|m)?js$"
+
+[defect.skill_file]
+doc = "A skill document path."
+value = "(^|\\/)skills\\/[^/]+\\/SKILL\\.md$"
+
+[defect.skill_suffix]
+doc = "The skill document name removed to name its directory."
+value = "\\/SKILL\\.md$"
+
+[defect.fix_subject]
+doc = "A fix commit subject (case-insensitive); group 2 is the scope."
+value = "^fix(\\(([^)]*)\\))?!?:\\s*"
+
+[defect.subject_version]
+doc = "A fix subject that names its own release (case-insensitive); group 2 is the version."
+value = "^fix(\\([^)]*\\))?!?:\\s*v(\\d+\\.\\d+(?:\\.\\d+)?)\\b"
+
+[defect.tag_re]
+doc = "A release tag."
+value = "^v?\\d+\\.\\d+\\.\\d+$"
+
+[defect.version_re]
+doc = "A version given to --since."
+value = "^v?\\d+\\.\\d+\\.\\d+$"
+
+[defect.cl_heading]
+doc = "A changelog release heading; group 1 is the version."
+value = "^##\\s+v?(\\d+\\.\\d+\\.\\d+)\\b"
+
+[defect.cl_any_heading]
+doc = "Any changelog heading."
+value = "^#"
+
+[defect.cl_bullet]
+doc = "A changelog bullet; group 1 is its text."
+value = "^[-*]\\s+(.*)$"
+
+[defect.cl_continuation]
+doc = "A continuation line of a changelog bullet."
+value = "^\\s+\\S"
+
+[defect.changelog_file]
+doc = "The changelog read by `backfill`, at the repository root."
+value = "CHANGELOG.md"
+
+[defect.stop_words]
+doc = "Words ignored when matching a new bug against past fixes."
+value = "the and for not but with from into that this than then when what does never now its it's are was were has have had can could should would will all any one two out off via per fix fixes fixed only also still just more less new old instead again after before"
+
+[defect.git_bin]
+doc = "The git program `backfill` runs."
+value = "git"
+
+[defect.git_dir_flag]
+doc = "The git flag that names the repository directory."
+value = "-C"
+
+[defect.rs_char]
+doc = "Separates commits in the git log format."
+value = "\u001e"
+
+[defect.us_char]
+doc = "Separates the fields of a commit in the git log format."
+value = "\u001f"
+
+[defect.git_log_args]
+doc = "The arguments of the git log that lists the commits ({rs} and {us} are the two separators)."
+value = ["log", "--no-merges", "--no-renames", "--numstat", "--format={rs}%H{us}%aI{us}%s{us}%b{us}"]
+
+[defect.git_tag_args]
+doc = "The arguments of the git command that lists the tags."
+value = ["tag", "--list"]
+
+[defect.git_revlist_args]
+doc = "The arguments of the git command that lists the commits under a tag."
+value = ["rev-list", "{tag}"]
+
+[defect.git_spawn_failed]
+doc = "Why git could not run. Placeholder: bin."
+value = "spawnSync {bin} ENOENT"
+
+[defect.git_command_failed]
+doc = "First line of a git failure. Placeholder: cmd."
+value = "Command failed: {cmd}"
+
+[defect.backfill_failed]
+doc = "A history that could not be read. Placeholders: repo, msg."
+value = "❌ anti-hall · defect: backfill could not read git history at {repo}: {msg}"
+
+[defect.err_line]
+doc = "An error line of `defect`. Placeholder: e."
+value = "❌ anti-hall · defect: {e}"
+
+[defect.flag_valid_for]
+doc = "A flag typed against the wrong subcommand. Placeholders: k, others, cmd."
+value = "--{k} is valid for `{others}`, not `{cmd}`"
+
+[defect.others_sep]
+doc = "Between the subcommands named in a wrong-flag message."
+value = "`, `"
+
+[defect.flag_not_valid]
+doc = "An unknown flag. Placeholders: k, cmd."
+value = "--{k} is not a valid flag for `{cmd}`"
+
+[defect.valid_flags_line]
+doc = "Lists the flags a subcommand accepts. Placeholders: cmd, list."
+value = "valid flags for `{cmd}`: {list}"
+
+[defect.list_sep]
+doc = "Between items of a listed message."
+value = ", "
+
+[defect.usage_show]
+doc = "Usage of `defect show`."
+value = "💡 anti-hall · defect: usage: defect.js show <fp>"
+
+[defect.usage_rule]
+doc = "Usage of `defect rule`."
+value = "💡 anti-hall · defect: usage: defect.js rule <fp> --status ..."
+
+[defect.usage_similar]
+doc = "Usage of `defect similar`."
+value = "💡 anti-hall · defect: usage: defect.js similar <text...> [--component X] [--top N] [--json]"
+
+[defect.usage]
+doc = "Usage of `defect`."
+value = "💡 anti-hall · defect: usage: defect.js <report|list|show|rule|archive|backfill|recurring|similar> [...flags]"
+
+[defect.warn_identity]
+doc = "A project identity cut to its cap. Placeholders: label, n, cap."
+value = "⚠️ anti-hall · defect: {label} truncated to fit the identity cap: {n} chars -> cap {cap}"
+
+[defect.label_proj_flag]
+doc = "Names the --proj flag in a truncation warning."
+value = "--proj"
+
+[defect.label_proj_setting]
+doc = "Names the default-project setting in a truncation warning."
+value = "defects.defaultProj"
+
+[defect.warn_truncated]
+doc = "Fields cut to fit the schema. Placeholder: parts."
+value = "⚠️ anti-hall · defect: content was truncated to fit the defect schema: {parts}"
+
+[defect.trunc_part]
+doc = "One cut field. Placeholders: k, len, cap, marked."
+value = "{k} ({len} chars -> cap {cap}{marked})"
+
+[defect.marker_written]
+doc = "Added when a truncation marker was written into the value."
+value = ", marker written"
+
+[defect.deferred]
+doc = "Said when the input needs the Node tool to answer exactly; nothing was written."
+value = "this input needs the Node defect tool to answer exactly; nothing was written"
+
+[defect.true_word]
+doc = "How a bare flag reads as text."
+value = "true"
+
+[defect.unknown_word]
+doc = "The version or session when none is known."
+value = "unknown"
+
+[defect.no_repo]
+doc = "The project of a report filed outside any repository."
+value = "no-repo"
+
+[defect.null_word]
+doc = "How a missing value reads as text in a comparison."
+value = "null"
+
+[defect.proj_section]
+doc = "The settings section of the default project."
+value = "defects"
+
+[defect.proj_key]
+doc = "The setting that holds the default project."
+value = "defaultProj"
+
+[defect.notice_pointer]
+doc = "Prepended to the truncation marker when the cut tail was kept in overflow lines."
+value = " (rest continued in this record's overflow lines - see `defect show`)"
+
+[defect.notice]
+doc = "The marker appended to a truncated value. Placeholders: pointer, n."
+value = "{pointer} [truncated from {n} chars]"
+
+[defect.out_recorded]
+doc = "The outcome word `recorded`."
+value = "recorded"
+
+[defect.out_occurrence_appended]
+doc = "The outcome word `occurrence-appended`."
+value = "occurrence-appended"
+
+[defect.out_invalid_class]
+doc = "The outcome word `invalid-class`."
+value = "invalid-class"
+
+[defect.out_invalid_severity]
+doc = "The outcome word `invalid-severity`."
+value = "invalid-severity"
+
+[defect.out_invalid_cause]
+doc = "The outcome word `invalid-cause`."
+value = "invalid-cause"
+
+[defect.out_invalid_regression]
+doc = "The outcome word `invalid-regression-of`."
+value = "invalid-regression-of"
+
+[defect.out_invalid_status]
+doc = "The outcome word `invalid-status`."
+value = "invalid-status"
+
+[defect.out_registry_full]
+doc = "The outcome word `registry-full`."
+value = "registry-full"
+
+[defect.out_occurrence_capped]
+doc = "The outcome word `occurrence-capped`."
+value = "occurrence-capped"
+
+[defect.out_defect_full]
+doc = "The outcome word `defect-full`."
+value = "defect-full"
+
+[defect.out_too_large]
+doc = "The outcome word `too-large`."
+value = "too-large"
+
+[defect.out_write_unverified]
+doc = "The outcome word `write-unverified`."
+value = "write-unverified"
+
+[defect.out_not_found]
+doc = "The outcome word `not-found`."
+value = "not-found"
+
+[defect.out_found]
+doc = "The outcome word `found`."
+value = "found"
+
+[defect.out_ruled]
+doc = "The outcome word `ruled`."
+value = "ruled"
+
+[defect.out_exists]
+doc = "The outcome word `exists`."
+value = "exists"
+
+[defect.reason_too_recent]
+doc = "Why a closed defect was not archived."
+value = "too-recent"
+
+[defect.reason_archive_full]
+doc = "Why a closed defect was not archived."
+value = "archive-full"
+
+[defect.key_t]
+doc = "The record or result key `t`."
+value = "t"
+
+[defect.key_at]
+doc = "The record or result key `at`."
+value = "at"
+
+[defect.key_v]
+doc = "The record or result key `v`."
+value = "v"
+
+[defect.key_status]
+doc = "The record or result key `status`."
+value = "status"
+
+[defect.key_commit]
+doc = "The record or result key `commit`."
+value = "commit"
+
+[defect.key_fixed_in]
+doc = "The record or result key `fixedIn`."
+value = "fixedIn"
+
+[defect.key_fix_commit]
+doc = "The record or result key `fixCommit`."
+value = "fixCommit"
+
+[defect.key_component]
+doc = "The record or result key `component`."
+value = "component"
+
+[defect.key_for_type]
+doc = "The record or result key `forType`."
+value = "forType"
+
+[defect.key_seq]
+doc = "The record or result key `seq`."
+value = "seq"
+
+[defect.key_field]
+doc = "The record or result key `field`."
+value = "field"
+
+[defect.key_part]
+doc = "The record or result key `part`."
+value = "part"
+
+[defect.key_of]
+doc = "The record or result key `of`."
+value = "of"
+
+[defect.key_text]
+doc = "The record or result key `text`."
+value = "text"
+
+[defect.key_chunks]
+doc = "The record or result key `chunks`."
+value = "chunks"
+
+[defect.key_outcome]
+doc = "The record or result key `outcome`."
+value = "outcome"
+
+[defect.key_fp]
+doc = "The record or result key `fp`."
+value = "fp"
+
+[defect.key_overflow]
+doc = "The record or result key `overflow`."
+value = "overflow"
+
+[defect.key_truncated]
+doc = "The record or result key `truncated`."
+value = "truncated"
+
+[defect.t_report]
+doc = "The line type `report`."
+value = "report"
+
+[defect.t_ruling]
+doc = "The line type `ruling`."
+value = "ruling"
+
+[defect.t_backfill]
+doc = "The line type `backfill`."
+value = "backfill"
+
+[defect.t_overflow]
+doc = "The line type `overflow`."
+value = "overflow"
+
+[defect.source_reported]
+doc = "The source of a record that was reported, not backfilled."
+value = "reported"
+
+[defect.unclassified]
+doc = "The group of records with no component or cause."
+value = "(unclassified)"
+
+[defect.kind_component]
+doc = "The hotspot kind for one component."
+value = "component"
+
+[defect.kind_pair]
+doc = "The hotspot kind for a component and cause."
+value = "component+cause"
+
+[defect.pair_sep]
+doc = "Joins a component and cause into a grouping key."
+value = "\u0001"
+
+[defect.any_word]
+doc = "The cause shown for a component hotspot."
+value = "(any)"
+
+[defect.none]
+doc = "Shown under a report section with no rows."
+value = "none"
+
+[defect.dash]
+doc = "Shown for a missing value in the text reports."
+value = "-"
+
+[defect.indent]
+doc = "In front of every row of the text reports."
+value = "  "
+
+[defect.span_sep]
+doc = "Between the two ends of a version or date span."
+value = ".."
+
+[defect.pad_cut]
+doc = "Ends a column cut to its width."
+value = "~ "
+
+[defect.unreleased]
+doc = "The release of a fix not in any release."
+value = "unreleased"
+
+[defect.explicit_word]
+doc = "Marks an explicit regression."
+value = " (explicit)"
+
+[defect.rec_since]
+doc = "Added to the total line when --since was given. Placeholder: since."
+value = " since {since}"
+
+[defect.rec_total]
+doc = "First line of `recurring`. Placeholders: total, since."
+value = "{total} records{since} (reported + backfill)"
+
+[defect.rec_hotspots]
+doc = "Heading of the hotspots. Placeholders: component_min, pair_min."
+value = "HOTSPOTS (component fixed >= {component_min}x, or same component+cause >= {pair_min}x) — fix the class, not the instance"
+
+[defect.rec_regressions]
+doc = "Heading of the likely regressions. Placeholder: window."
+value = "LIKELY REGRESSIONS (same component+cause fixed again within {window} releases, or explicit regressionOf)"
+
+[defect.rec_more]
+doc = "More regressions than shown. Placeholder: n."
+value = "  ... {n} more (--top N / --json)"
+
+[defect.rec_by_component]
+doc = "Heading of the per-component table."
+value = "BY COMPONENT"
+
+[defect.rec_by_cause]
+doc = "Heading of the per-cause table."
+value = "BY CAUSE"
+
+[defect.sim_none]
+doc = "Said when `similar` finds nothing."
+value = "no similar past fixes found"
+
+[defect.col_count]
+doc = "The column heading `COUNT`."
+value = "COUNT"
+
+[defect.col_component]
+doc = "The column heading `COMPONENT`."
+value = "COMPONENT"
+
+[defect.col_cause]
+doc = "The column heading `CAUSE`."
+value = "CAUSE"
+
+[defect.col_versions]
+doc = "The column heading `VERSIONS`."
+value = "VERSIONS"
+
+[defect.col_dates]
+doc = "The column heading `DATES`."
+value = "DATES"
+
+[defect.col_top_cause]
+doc = "The column heading `TOP CAUSE`."
+value = "TOP CAUSE"
+
+[defect.col_components]
+doc = "The column heading `COMPONENTS`."
+value = "COMPONENTS"
+
+[defect.col_score]
+doc = "The column heading `SCORE`."
+value = "SCORE"
+
+[defect.col_commit]
+doc = "The column heading `COMMIT`."
+value = "COMMIT"
+
+[defect.col_version]
+doc = "The column heading `VERSION`."
+value = "VERSION"
+
+[defect.col_summary]
+doc = "The column heading `SUMMARY`."
+value = "SUMMARY"
+
+[env.claude_session_id]
+doc = "The session id the host exports; `defect report` files a report under it."
+value = "CLAUDE_SESSION_ID"
+
+[env.antihall_session_id]
+doc = "The session id anti-hall exports when the host does not."
+value = "ANTIHALL_SESSION_ID"
+
+[defect.rec_regression_row]
+doc = "One likely regression row. Placeholders: what, fixed, was, earlier, component, cause, explicit."
+value = "  {what} {fixed} re-fixes {was} {earlier} {component} [{cause}]{explicit}"
+
+[defect.repo_hash_hex]
+doc = "Hex digits of the hash in a project key."
+value = 6
+
+[defect.ansi_re]
+doc = "An ANSI control sequence."
+value = "\\x1b\\[[0-9;]*[a-zA-Z]"
+
+[defect.control_re]
+doc = "A control character."
+value = "[\\x00-\\x1f\\x7f]"
+
+[ops.verb_settings]
+doc = "The shadow name of the settings command."
+value = "settings"
+
+[ops.verb_defect]
+doc = "The shadow name of the defect command."
+value = "defect"
+
+[ops.verb_statusline]
+doc = "The shadow name of the status line."
+value = "statusline"
+
+[ops.script_settings]
+doc = "The Node settings script, relative to the plugin root."
+value = "scripts/settings.js"
+
+[ops.script_defect]
+doc = "The Node defect script, relative to the plugin root."
+value = "scripts/defect.js"
+
+[ops.script_statusline]
+doc = "The Node status line dispatcher, relative to the plugin root."
+value = "statusline/statusline.js"
+
+[ops.shadow_rate_statusline]
+doc = "How many runs in a thousand of the statusline command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one."
+value = 50
+env = "AH_ENGINE_SHADOW_RATE_STATUSLINE"
+min = 0
+max = 1000
+
+[ops.shadow_rate_settings]
+doc = "How many runs in a thousand of the settings command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one."
+value = 1000
+env = "AH_ENGINE_SHADOW_RATE_SETTINGS"
+min = 0
+max = 1000
+
+[ops.shadow_rate_defect]
+doc = "How many runs in a thousand of the defect command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one."
+value = 1000
+env = "AH_ENGINE_SHADOW_RATE_DEFECT"
+min = 0
+max = 1000
+
+[ops.shadow_dir]
+doc = "The shadow scratch directory, inside the engine state directory."
+value = "shadow"
+
+[ops.shadow_copy]
+doc = "The entries of ~/.anti-hall the Node shadow gets a private copy of (everything it may change); compared after both runs."
+value = ["settings.json", "jev.json", "defects", "update-sweep-state.json", "trusted-command-allow.json", "trusted-edit-allow.json", "phase-state.json"]
+
+[ops.shadow_skip]
+doc = "The entries of ~/.anti-hall the Node shadow never sees."
+value = ["context-pct", "ah-engine", "ah-node-shadow", "shadow"]
+
+[ops.shadow_link_home]
+doc = "The home entries the Node shadow reads through links."
+value = [".claude", ".claude.json"]
+
+[ops.shadow_lock_ext]
+doc = "Lock files are never linked into the shadow home."
+value = ".lock"
+
+[ops.shadow_ignore_ext]
+doc = "File name endings left out of the state comparison."
+value = [".lock", ".tmp"]
+
+[ops.shadow_copy_bytes]
+doc = "Most bytes copied into one shadow home."
+value = 16777216
+
+[ops.shadow_child_env]
+doc = "Set in the shadow child so it never starts a shadow of its own."
+value = "AH_ENGINE_SHADOW_CHILD"
+
+[ops.shadow_dry_env]
+doc = "The dry-run switch every Node script honours."
+value = "ANTIHALL_INGEST_DRY_RUN"
+
+[ops.shadow_command]
+doc = "The internal command that runs one comparison."
+value = "shadow-compare"
+
+[ops.shadow_event]
+doc = "The command name of the telemetry event a comparison leaves."
+value = "shadow"
+
+[ops.shadow_node]
+doc = "The Node program the shadow runs when AH_ENGINE_NODE is not set."
+value = "node"
+
+[ops.shadow_timeout_ms]
+doc = "Longest a Node shadow run may take."
+value = 20000
+
+[ops.shadow_keep]
+doc = "How many mismatching comparisons keep their files for review."
+value = 20
+
+[ops.shadow_home_word]
+doc = "Replaces the real and the scratch home in compared text."
+value = "HOME"
+
+[ops.shadow_job_file]
+doc = "The comparison job file."
+value = "job.json"
+
+[ops.shadow_engine_out]
+doc = "The engine stdout of a sampled run."
+value = "engine.out"
+
+[ops.shadow_engine_err]
+doc = "The engine stderr of a sampled run."
+value = "engine.err"
+
+[ops.shadow_stdin_file]
+doc = "The stdin of a sampled run."
+value = "stdin.bin"
+
+[ops.shadow_report_file]
+doc = "The report left by a mismatching comparison."
+value = "mismatch.txt"
+
+[ops.shadow_masks]
+doc = "Patterns replaced before comparing (`regex => replacement`): clock values and animation frames, and the engine-first status line command (the launcher form) read as the Node installer's own `node \"<dispatcher>\"`."
+value = ["[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z => TS", "corrupt-[0-9]+ => corrupt-N", "[◐◓◑◒] => S", "\\.[0-9]+\\.[0-9a-f]{8}\\.tmp => .tmp", "\"ts\":[0-9]+ => \"ts\":N", "\"started\":[0-9]+ => \"started\":N", "[0-9]+[hms]( |\\x1b|$) => D$1", 'sh \\"[^"]*/ah-run\.sh\\" --stdin statusline -- \\"([^"]*)\\" => node \"$1\"']
+
+[statusline.poll_ms]
+doc = "How often a bounded child is checked, in milliseconds."
+value = 2
+min = 1
+max = 100
+
+[statusline.read_grace_ms]
+doc = "Extra time to collect a finished child's output, in milliseconds."
+value = 200
+
+[statusline.stdin_watchdog_ms]
+doc = "Longest the status line waits for its input, in milliseconds."
+value = 3000
+
+[statusline.inner_timeout_ms]
+doc = "Longest a base command may run, in milliseconds."
+value = 2500
+
+[statusline.consolidated_timeout_ms]
+doc = "Longest a consolidated base command may run, in milliseconds."
+value = 3000
+
+[statusline.base_max_buffer]
+doc = "Most bytes a base command may print."
+value = 262144
+
+[statusline.git_timeout_ms]
+doc = "Longest one git question may take, in milliseconds."
+value = 1500
+
+[statusline.simple_git_timeout_ms]
+doc = "Longest the simple renderer waits for git, in milliseconds."
+value = 2000
+
+[statusline.git_max_buffer]
+doc = "Most bytes one git answer may have."
+value = 4194304
+
+[statusline.porcelain_cap]
+doc = "Most git status lines read."
+value = 500
+
+[statusline.git_bin]
+doc = "The git program."
+value = "git"
+
+[statusline.shell]
+doc = "The shell that runs a base command."
+value = "sh"
+
+[statusline.shell_flag]
+doc = "The shell flag that takes the command."
+value = "-c"
+
+[statusline.dir]
+doc = "The status line directory of the plugin."
+value = "statusline"
+
+[statusline.rich_file]
+doc = "The rich renderer file."
+value = "statusline-rich.js"
+
+[statusline.phase_file]
+doc = "The phase bar file."
+value = "phase-bar.js"
+
+[statusline.own_re]
+doc = "A base command that runs one of the plugin's own renderers."
+value = "^node\\s+\"?([^\"|;&<>]+?\\.js)\"?\\s*$"
+
+[statusline.base_file]
+doc = "The base status line configuration, in the base directory."
+value = "base-statusline.json"
+
+[statusline.consolidated_file]
+doc = "The consolidated base configuration, in the base directory."
+value = "consolidated-base.json"
+
+[statusline.version_check]
+doc = "The version check cache, in the base directory."
+value = "version-check.json"
+
+[statusline.phase_state_file]
+doc = "The phase state file."
+value = "phase-state.json"
+
+[statusline.tmp_dir]
+doc = "The phase state directory under the temp directory."
+value = "anti-hall"
+
+[statusline.tmp_default]
+doc = "The temp directory when no variable names one."
+value = "/tmp"
+
+[statusline.spawn_log]
+doc = "The agent spawn log, in the base directory."
+value = "agent-spawns.log"
+
+[statusline.pct_dir]
+doc = "Where the context figure is kept for the hooks, in the base directory."
+value = "context-pct"
+
+[statusline.claude_json]
+doc = "The host account file in the home directory."
+value = ".claude.json"
+
+[statusline.claude_dir]
+doc = "The host configuration directory name."
+value = ".claude"
+
+[statusline.settings_file]
+doc = "The project settings file."
+value = "settings.json"
+
+[statusline.settings_local_file]
+doc = "The local project settings file."
+value = "settings.local.json"
+
+[statusline.session_file]
+doc = "The local session file."
+value = "session.json"
+
+[statusline.gitmodules]
+doc = "The file that marks a monorepo."
+value = ".gitmodules"
+
+[ops.judge_verbs]
+doc = "The verbs of `settings judge`."
+value = ["on", "off", "status"]
+
+[ops.shadow_per]
+doc = "The sampling denominator of the shadow rates."
+value = 1000
+
+[ops.shadow_digest_bytes]
+doc = "Bytes of the content digest in the shadow state comparison."
+value = 8
+
+[ops.shadow_report]
+doc = "The report a mismatching comparison leaves. Placeholders: want, got, e_out, n_out, e_err, n_err, e_state, n_state."
+value = "engine exit {want}, node exit {got}\n--- engine stdout\n{e_out}\n--- node stdout\n{n_out}\n--- engine stderr\n{e_err}\n--- node stderr\n{n_err}\n--- engine state\n{e_state}\n--- node state\n{n_state}\n"
+
+[statusline.tmp_env]
+doc = "The variables that name the temp directory, first match wins."
+value = ["TMPDIR", "TMP", "TEMP"]
+
+[statusline.used_keys]
+doc = "The context_window fields that carry the used tokens."
+value = ["used_tokens", "tokens"]
+
+[statusline.max_keys]
+doc = "The context_window fields that carry the window size."
+value = ["max_tokens", "total_tokens", "context_size"]
+
+[statusline.phase_template]
+doc = "The phase bar line. Placeholders: bar yellow pct reset dim bold magenta code white desc cyan done total extra."
+value = "{bar} {yellow}{pct}%{reset} {dim}|{reset} {bold}{magenta}{code}{reset} {dim}-{reset} {white}{desc}{reset} {cyan}{done}/{total}{reset}{extra}"
+
+[statusline.context_template]
+doc = "The context gauge line. Placeholders: bar col pct reset dim tokens."
+value = "{bar} {col}{pct}%{reset} {dim}context{reset}{tokens}"
+
+[statusline.activity_template]
+doc = "The swarm activity line. Placeholders: cells cyan reset dim blue count plural."
+value = "[{cells}] {cyan}orchestrating{reset} {dim}·{reset} {blue}{count} agent{plural}{reset} {dim}active{reset}"
+
+[statusline.git_name_args]
+doc = "The git question for the user name."
+value = ["config", "user.name"]
+
+[statusline.git_status_args]
+doc = "The git question for branch and changes."
+value = ["status", "--porcelain=v2", "--branch"]
+
+[statusline.git_stash_args]
+doc = "The git question for the stash."
+value = ["stash", "list"]
+
+[statusline.git_dir_args]
+doc = "The git question for the git directory."
+value = ["rev-parse", "--absolute-git-dir"]
+
+[statusline.git_top_args]
+doc = "The git question for the project root."
+value = ["rev-parse", "--show-toplevel"]
+
+[statusline.git_branch_args]
+doc = "The git question the simple line asks for the branch."
+value = ["rev-parse", "--abbrev-ref", "HEAD"]
+
+[statusline.xy_offset]
+doc = "Where the staged and unstaged letters start in a git status line."
+value = 2
+
+[statusline.model_id_skip]
+doc = "Words skipped when a model id is shown as a name."
+value = 1
+
+[statusline.model_id_take]
+doc = "Words kept when a model id is shown as a name."
+value = 2
+
+[statusline.read_chunk]
+doc = "Bytes read at a time from a child process."
+value = 8192
+
+[statusline.section]
+doc = "The settings section of the status line."
+value = "statusline"
+
+[statusline.base_key]
+doc = "The setting that holds the base command."
+value = "base"
+
+[statusline.no_email_key]
+doc = "The setting that hides the account email."
+value = "noEmail"
+
+[statusline.no_color_env]
+doc = "The variable that turns colors off."
+value = "NO_COLOR"
+
+[statusline.compact_env]
+doc = "The auto-compact window variable."
+value = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+
+[statusline.compact_default]
+doc = "The auto-compact buffer, in percent, when no window is set."
+value = "16.5"
+
+[statusline.config_dir_env]
+doc = "The variable that moves the host configuration directory."
+value = "CLAUDE_CONFIG_DIR"
+
+[statusline.todos_dir]
+doc = "The todos directory inside the host configuration directory."
+value = "todos"
+
+[statusline.agent_infix]
+doc = "Marks a todo file of an agent."
+value = "-agent-"
+
+[statusline.in_progress]
+doc = "The status of the task in progress."
+value = "in_progress"
+
+[statusline.claude_dir_prefix]
+doc = "Temp directories of the host start with this."
+value = "claude-"
+
+[statusline.tasks_dir]
+doc = "The tasks directory of a session."
+value = "tasks"
+
+[statusline.output_ext]
+doc = "A task output file ends with this."
+value = ".output"
+
+[statusline.active_ms]
+doc = "How recently a task output must have changed to count as active, in milliseconds."
+value = 60000
+
+[statusline.phase_stale_ms]
+doc = "How old a phase state may be before it is ignored, in milliseconds."
+value = 1800000
+
+[statusline.phase_slow_secs]
+doc = "Seconds after which a phase's elapsed time turns yellow."
+value = 1200
+
+[statusline.activity_ms]
+doc = "How recent a spawn must be to count as active, in milliseconds."
+value = 120000
+
+[statusline.sweep_ms]
+doc = "Milliseconds the activity sweep stays on one cell."
+value = 400
+
+[statusline.bar_width]
+doc = "Cells of a bar."
+value = 20
+
+[statusline.level_red]
+doc = "Context percentage from which the gauge is red."
+value = 90
+
+[statusline.level_yellow]
+doc = "Context percentage from which the gauge is yellow."
+value = 70
+
+[statusline.desc_max]
+doc = "Longest phase description shown."
+value = 32
+
+[statusline.step_max]
+doc = "Longest phase step shown."
+value = 28
+
+[statusline.tag_max]
+doc = "Longest session tag."
+value = 64
+
+[statusline.pct_write_interval_ms]
+doc = "Least time between two writes of the context figure, in milliseconds."
+value = 30000
+
+[statusline.pct_min_delta]
+doc = "Smallest change of the context figure that is written before the interval has passed."
+value = 1
+
+[statusline.tofixed_limit]
+doc = "From this cost a number prints in exponent form, which the port leaves to Node."
+value = "1e21"
+
+[statusline.cwd_tag_prefix]
+doc = "Prefix of a session tag made from a directory."
+value = "cwd-"
+
+[statusline.ellipsis]
+doc = "Ends a cut label."
+value = "..."
+
+[statusline.plural_s]
+doc = "The plural ending."
+value = "s"
+
+[statusline.agent_one]
+doc = "The word after one agent."
+value = " agent"
+
+[statusline.agent_many]
+doc = "The word after several agents."
+value = " agents"
+
+[statusline.spinner]
+doc = "The spinner frames."
+value = ["◐", "◓", "◑", "◒"]
+
+[statusline.bar_fill]
+doc = "A filled bar cell."
+value = "█"
+
+[statusline.bar_empty]
+doc = "An empty bar cell."
+value = "─"
+
+[statusline.safe_osc]
+doc = "Operating-system command sequences removed from labels."
+value = "\\x1b\\][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)?"
+
+[statusline.safe_csi]
+doc = "Control sequences removed from labels."
+value = "\\x1b[@-_][0-?]*[ -/]*[@-~]?"
+
+[statusline.safe_esc_any]
+doc = "Any other escape pair removed from labels."
+value = "\\x1b."
+
+[statusline.safe_controls]
+doc = "Control characters removed from labels."
+value = "[\\x00-\\x1F\\x7F-\\x9F]"
+
+[statusline.safe_bidi]
+doc = "Bidirectional overrides removed from labels."
+value = "[\\u202a-\\u202e\\u2066-\\u2069]"
+
+[statusline.phase_colors]
+doc = "The colors of the phase bar."
+value = { "reset" = "\u001b[0m", "cyan" = "\u001b[36m", "green" = "\u001b[32m", "red" = "\u001b[31m", "dim" = "\u001b[2m", "bold" = "\u001b[1m", "yellow" = "\u001b[33m", "magenta" = "\u001b[35m", "white" = "\u001b[97m", "blue" = "\u001b[34m" }
+
+[statusline.rich_colors]
+doc = "The colors of the rich line."
+value = { "reset" = "\u001b[0m", "bold" = "\u001b[1m", "dim" = "\u001b[2m", "red" = "\u001b[0;31m", "green" = "\u001b[0;32m", "yellow" = "\u001b[0;33m", "blue" = "\u001b[0;34m", "purple" = "\u001b[0;35m", "cyan" = "\u001b[0;36m", "brightRed" = "\u001b[1;31m", "brightGreen" = "\u001b[1;32m", "brightYellow" = "\u001b[1;33m", "brightBlue" = "\u001b[1;34m", "brightPurple" = "\u001b[1;35m", "brightCyan" = "\u001b[1;36m", "brightWhite" = "\u001b[1;37m" }
+
+[statusline.simple_colors]
+doc = "The colors of the simple and monorepo lines."
+value = { "reset" = "\u001b[0m", "bold" = "\u001b[1m", "dim" = "\u001b[2m", "green" = "\u001b[32m", "yellow" = "\u001b[33m", "red" = "\u001b[31m", "blue" = "\u001b[34m", "orange" = "\u001b[38;5;208m", "boldred" = "\u001b[1;38;5;196m" }
+
+[statusline.simple_join]
+doc = "Between the segments of the simple line."
+value = " | "
+
+[statusline.simple_model]
+doc = "The model shown when the input names none."
+value = "Claude"
+
+[statusline.default_model]
+doc = "The model shown when nothing names one."
+value = "Claude Code"
+
+[statusline.default_user]
+doc = "The git user shown when none is configured."
+value = "user"
+
+[statusline.default_project]
+doc = "The project shown when the directory has no name."
+value = "project"
+
+[statusline.model_words]
+doc = "The model families recognised in a model id or setting, in priority order."
+value = [{ "seg" = "fable", "name" = "Fable" }, { "seg" = "opus", "name" = "Opus" }, { "seg" = "sonnet", "name" = "Sonnet" }, { "seg" = "haiku", "name" = "Haiku" }]
+
+[statusline.sep]
+doc = "Between the segments of the rich line."
+value = "│"
+
+[statusline.header_mark]
+doc = "Starts the rich line."
+value = "▊ "
+
+[statusline.user_mark]
+doc = "Before the git user."
+value = "● "
+
+[statusline.dir_icon]
+doc = "Before the sub-directory."
+value = "📂 "
+
+[statusline.tree_icon]
+doc = "Before a linked worktree's branch."
+value = "🌳"
+
+[statusline.branch_icon]
+doc = "Before a branch."
+value = "🌿"
+
+[statusline.up]
+doc = "Commits ahead."
+value = "↑"
+
+[statusline.down]
+doc = "Commits behind."
+value = "↓"
+
+[statusline.stash_icon]
+doc = "Before the stash count."
+value = "📦 "
+
+[statusline.agent_icon]
+doc = "Before the subagent count."
+value = "🤖 "
+
+[statusline.clock_icon]
+doc = "Before the duration."
+value = "⏱ "
+
+[statusline.ctx_mark]
+doc = "Before the context percentage."
+value = "● "
+
+[statusline.email_icon]
+doc = "Before the account email."
+value = "✉ "
+
+[statusline.update_star]
+doc = "Marks an available update."
+value = "★ "
+
+[statusline.chip_label]
+doc = "The version chip label."
+value = "AH: V"
+
+[statusline.branch_head]
+doc = "The git status line that names the branch."
+value = "# branch.head "
+
+[statusline.branch_ab]
+doc = "The git status line that counts commits ahead and behind."
+value = "# branch.ab "
+
+[statusline.detached]
+doc = "The branch name of a detached head."
+value = "(detached)"
+
+[statusline.ahead_behind_re]
+doc = "The ahead and behind counts."
+value = "\\+(\\d+)\\s+-(\\d+)"
+
+[statusline.worktree_re]
+doc = "A git directory of a linked worktree."
+value = "[/\\\\]\\.git[/\\\\]worktrees[/\\\\]"

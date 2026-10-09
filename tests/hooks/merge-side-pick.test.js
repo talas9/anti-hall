@@ -120,8 +120,8 @@ test('corrupt state fails open; old state files are pruned', () => {
 });
 
 test('registered on both ports; setting declared default-on', () => {
-  const claude = fs.readFileSync(path.join(PLUGIN, 'hooks', 'hooks.json'), 'utf8');
-  const codexCfg = fs.readFileSync(path.join(PLUGIN, 'codex', 'hooks', 'hooks.json'), 'utf8');
+  const claude = fs.readFileSync(path.join(PLUGIN, 'hooks', 'hooks.registry.json'), 'utf8');
+  const codexCfg = fs.readFileSync(path.join(PLUGIN, 'codex', 'hooks', 'hooks.registry.json'), 'utf8');
   for (const t of [claude, codexCfg]) {
     assert.match(t, /merge-side-pick\.js\\"",/);
     assert.match(t, /merge-side-pick\.js\\" --post/);

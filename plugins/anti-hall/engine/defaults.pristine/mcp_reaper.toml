@@ -1,0 +1,175 @@
+# ah-engine shipped defaults for the `session-end-mcp-reaper` check (hooks/session-end-mcp-reaper.js and companion/mcp-reaper.js):
+# the SessionEnd sweep that terminates orphaned MCP server processes a crashed earlier session left behind. Format: see the
+# header of engine.toml.
+#
+# Every selection rule of the Node hook is a setting here: which processes count as MCP servers, the age floor, the runners and
+# dev servers that are never reaped, the init names PID 1 must carry, the cap, and the grace period between the polite and the
+# forced signal. The decision is the plugin script `engine/logic/session-end-mcp-reaper.js` (D88); the process listing, the age and
+# service-manager probes, the bounded signal and the bounded sleep it calls are the generic `ah.proc.*` primitives, configured in
+# host_proc.toml. The engine kills exactly what the Node hook would and never more: a process is a candidate only when ALL of
+# these hold: the sweep reason is a real termination, PID 1 is an init process, the process is parented to PID 1, its command line
+# matches the MCP signature, it is not excluded by the user's pattern or the runner list, it is old enough, and the platform's
+# service manager does not own it. What the host cannot decide the way Node would (a probe it cannot read, an ambiguous local time)
+# is handed to the Node hook before anything is written or signalled.
+#
+# The regular expressions are JavaScript source (case-insensitive unless noted), the very ones the Node companion has.
+
+[mcp_reaper.summary]
+doc = "One-line description of the session-end-mcp-reaper check in the generated reference."
+value = "SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node (port of session-end-mcp-reaper.js)."
+
+[mcp_reaper.setting]
+doc = "Where the reaper's on/off switch is read from (maintenance.sessionEndReaper, default on; the deprecated environment alias is read too)."
+value = { section = "maintenance", key = "sessionEndReaper", env = "ANTIHALL_SESSION_END_REAPER", aliases = ["ANTI_HALL_SESSION_END_REAPER"], option = "maintenance_session_end_reaper", default = true }
+
+[mcp_reaper.match_setting]
+doc = "Where the user's extra MCP process pattern is read from (guards.reaperMatch, a JavaScript regular expression, empty = none)."
+value = { section = "guards", key = "reaperMatch", env = "ANTIHALL_REAPER_MATCH", default = "" }
+
+[mcp_reaper.exclude_setting]
+doc = "Where the user's exclusion pattern is read from (guards.reaperExclude, a JavaScript regular expression, empty = none): a process it matches is never reaped."
+value = { section = "guards", key = "reaperExclude", env = "ANTIHALL_REAPER_EXCLUDE", default = "" }
+
+[mcp_reaper.act_reasons]
+doc = "The SessionEnd reasons on which the sweep runs at all; any other reason (clear, resume, logout) does nothing and runs no process listing."
+value = ["prompt_input_exit", "other"]
+
+[mcp_reaper.reason_fields]
+doc = "The payload fields that carry the reason, in order: the measured wire field first, the documented one as a fallback."
+value = ["reason", "end_reason"]
+
+[mcp_reaper.min_age_env]
+doc = "The environment variable that sets the age floor in seconds (a number, read the way JavaScript's Number reads it; anything not a finite number of at least zero falls back to the default)."
+value = "ANTI_HALL_SESSION_END_REAPER_MIN_AGE_S"
+
+[mcp_reaper.min_age_default_s]
+doc = "The age floor in seconds: a process younger than this is never reaped."
+value = 60
+unit = "s"
+
+[mcp_reaper.max_env]
+doc = "The environment variable that sets the cap on processes reaped per sweep (read like the age floor)."
+value = "ANTI_HALL_SESSION_END_REAPER_MAX"
+
+[mcp_reaper.max_default]
+doc = "The cap on processes reaped per sweep."
+value = 16
+
+[mcp_reaper.grace_ms]
+doc = "How long the sweep waits between the polite signal and the re-check that decides who gets the forced one."
+value = 500
+unit = "ms"
+
+[mcp_reaper.log_max_bytes]
+doc = "The audit log stops growing past this size."
+value = 5242880
+unit = "bytes"
+
+[mcp_reaper.log_dir]
+doc = "The audit log directory under the base directory."
+value = "logs"
+
+[mcp_reaper.log_file]
+doc = "The audit log file name."
+value = "session-end-reaper.log"
+
+[mcp_reaper.mcp_self_re]
+doc = "JavaScript regex source (case-insensitive) of a command line that is never an MCP server: the reaper tooling itself."
+value = 'mcp-reaper'
+
+[mcp_reaper.runtime_re]
+doc = "JavaScript regex source (case-sensitive) of the program names (argv0 basename) that legitimately launch MCP servers."
+value = '^(node|nodejs|npx|npm|pnpm|yarn|deno|bun|python|python3|uvx|uv)$'
+
+[mcp_reaper.modelctx_re]
+doc = "JavaScript regex source (case-insensitive) of the @modelcontextprotocol package scope, always a match."
+value = '@?modelcontextprotocol\b'
+
+[mcp_reaper.token_re]
+doc = "JavaScript regex source (case-insensitive) of a boundary-anchored mcp-server or server-sequential-thinking token."
+value = '(^|[\s/])(mcp[-_]server|server-sequential-thinking)'
+
+[mcp_reaper.token_argv0_re]
+doc = "JavaScript regex source (case-insensitive) of a program name that is itself such a token."
+value = '^(mcp[-_]server|server-sequential-thinking)'
+
+[mcp_reaper.start_re]
+doc = "JavaScript regex source (case-insensitive) of `mcp start` as a discrete command token."
+value = '(^|\s)mcp\s+start(\s|$)'
+
+[mcp_reaper.start_program]
+doc = "The program name that may itself be the `mcp start` command."
+value = "mcp"
+
+[mcp_reaper.suffix_re]
+doc = "JavaScript regex source (case-insensitive) of a `<name>-mcp` package token, bounded on the left by the start, white space or a slash and on the right by white space, a slash or the end."
+value = '(^|[\s/])([a-z0-9][a-z0-9._-]*-mcp)(?=[\s/]|$)'
+
+[mcp_reaper.scoped_re]
+doc = "JavaScript regex source (case-insensitive) of an `@scope/mcp` package token."
+value = '(^|\s)@[a-z0-9][a-z0-9._-]*/mcp(?=[\s/]|$)'
+
+[mcp_reaper.suffix_argv0_re]
+doc = "JavaScript regex source (case-insensitive) of a program name that is itself a `<name>-mcp` binary."
+value = '-mcp$'
+
+[mcp_reaper.runner_exclude_res]
+doc = "JavaScript regex sources (case-insensitive) of test runners and dev servers that are never reaped, even when a file name merely looks like an MCP server."
+value = [
+  '(^|[\s/\\])vitest\b',
+  '(^|[\s/\\])jest(-worker)?\b',
+  '(^|[\s/\\])playwright\b',
+  '(^|[\s/\\])ts-node\b',
+  '(^|[\s/\\])tsx\b',
+  '(^|[\s/\\])next(-server\b|\s+dev\b)',
+  '(^|[\s/\\])webpack(-dev-server\b|\s+serve\b)',
+]
+
+[mcp_reaper.init_names]
+doc = "The program names PID 1 must carry for the sweep to run at all: in a container PID 1 is the entrypoint and every child of it is normal, not a leaked orphan."
+value = ["launchd", "systemd", "init"]
+
+[mcp_reaper.orphan_ppid]
+doc = "The parent pid that marks an orphan: the kernel reparents a process whose parent died to PID 1."
+value = 1
+
+[mcp_reaper.event_scan]
+doc = "The audit log event name of a completed scan."
+value = "scan"
+
+[mcp_reaper.event_skip]
+doc = "The audit log event name of a sweep that did not run."
+value = "skip"
+
+[mcp_reaper.action_skip]
+doc = "The audit log action of a candidate that was skipped."
+value = "skip"
+
+[mcp_reaper.action_term]
+doc = "The audit log action of the polite signal."
+value = "term"
+
+[mcp_reaper.action_kill]
+doc = "The audit log action of the forced signal."
+value = "kill"
+
+[mcp_reaper.reason_pid1]
+doc = "The audit log reason when PID 1 is not an init process."
+value = "pid1-not-init"
+
+[mcp_reaper.reason_launchd]
+doc = "The audit log reason for a candidate the macOS service manager owns."
+value = "launchd-managed"
+
+[mcp_reaper.reason_launchd_unverifiable]
+doc = "The audit log reason for every candidate when the service-manager listing failed."
+value = "launchd-unverifiable"
+
+[mcp_reaper.reason_systemd]
+doc = "The audit log reason for a candidate that is a systemd service."
+value = "systemd-service"
+
+[mcp_reaper.node_module]
+doc = "The Node companion module the hook reuses for its signature test, relative to the plugin root. The Node hook does nothing when it cannot load it, so the engine acts only where it is present."
+value = "companion/mcp-reaper.js"
+

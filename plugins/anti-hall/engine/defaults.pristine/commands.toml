@@ -1,0 +1,182 @@
+# ah-engine shipped command registry data (D50, D53). Format: see the header of engine.toml.
+#
+# Every command the binary understands has an entry here and a handler in code; a test keeps the two in step.
+# `read_only` marks a command that never changes state (an agent can run it freely; command-guard will
+# allowlist exactly these); `status` is `implemented` or `planned (D-n)` (a planned command is registered so the
+# generated reference lists it, and running it says so). `read_only_args` marks the read-only forms of a command that otherwise changes
+# state: the first non-flag arguments ("" = none) whose runs write nothing; `read_only_flags` does the same for a flag (`--db`). A read-only run also writes no telemetry, so it cannot create
+# the state directory. Every command accepts `--json`.
+
+[cmd.serve]
+doc = "Run the resident daemon in the foreground (the client starts it detached when needed)."
+value = { args = "", read_only = false, status = "implemented" }
+
+[cmd.hook]
+doc = "The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would."
+value = { args = "[--fallback <hook.js>] | --event <Event> [--tool <Tool>] [--host claude|codex] [--fallback-map <file>]", read_only = false, status = "implemented" }
+
+[cmd.status]
+doc = "Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did."
+value = { args = "[--memory]", read_only = true, status = "implemented" }
+
+[cmd.metrics]
+doc = "Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one resolution (minute, hour), optionally for the last --since seconds."
+value = { args = "[--check <name>] [--rollup <resolution> [--since <s>]]", read_only = true, status = "implemented" }
+
+[cmd.impact]
+doc = "Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77)."
+value = { args = "[--kind <kind>] [--project <hash>] [--window <7d>]", read_only = true, status = "implemented" }
+
+[cmd.telemetry]
+doc = "Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and spill events), `rollup` (move complete days into archive.db and apply the retention). Local only."
+value = { args = "[summary|events|rollup] [--window <7d>] [--kind <k>] [--limit <n>]", read_only = false, read_only_args = ["", "summary", "events", "rollup"], status = "implemented" }
+
+[cmd.docs]
+doc = "Print the generated reference: every command, setting, metric, impact kind, check and error code."
+value = { args = "[--format md]", read_only = true, status = "implemented" }
+
+[cmd.gen-hooks]
+doc = "Print a file generated from the dispatch table (D87): the thin hooks.json (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map, for one host."
+value = { args = "--host claude|codex [--kind hooks|registry|list|map]", read_only = true, status = "implemented" }
+
+[cmd.check]
+doc = "Run one built-in check in-process on a hook payload from stdin (used by the parity harness)."
+value = { args = "<name>", read_only = true, status = "implemented" }
+
+[cmd.version]
+doc = "Print the version this build reports."
+value = { args = "", read_only = true, status = "implemented" }
+
+[cmd.ctl]
+doc = "Send a control verb to the daemon: ping, reload, stop or status."
+value = { args = "<ping|reload|stop|status>", read_only = false, status = "implemented" }
+
+[cmd.stop]
+doc = "Ask the daemon to drain and exit."
+value = { args = "", read_only = false, status = "implemented" }
+
+[cmd.reset]
+doc = "Clear the client breaker, the crash-loop stop and the failure record."
+value = { args = "", read_only = false, status = "implemented" }
+
+[cmd.proj]
+doc = "Per-project state in hot.db: a mailbox (put, take, len) and key-value pairs (set, setex with a TTL in seconds, get); the partition is derived from the cwd."
+value = { args = "<cwd> <put|take|len|set|setex|get> [args]", read_only = false, status = "implemented" }
+
+[cmd.maintain]
+doc = "Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report."
+value = { args = "", read_only = false, status = "implemented" }
+[cmd.jev]
+doc = "The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line."
+value = { args = "<ask|status|scrub|evidence>", read_only = false, status = "implemented" }
+
+[cmd.jev_sweep]
+doc = "The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions (plan, transcript, git, CI, mesh) and runs them through the evidence gate, writing its telemetry; takes no arguments and reads the home directory from the environment."
+value = { args = "", read_only = false, status = "implemented" }
+
+[cmd.agent_tick]
+doc = "The scheduled agent tracker tick (the `agent_tick` job): one tracker tick, the same as `agents tick`; prints its counts with --json."
+value = { args = "", read_only = false, status = "implemented" }
+
+[cmd.agents]
+doc = "The agent tracker (feature 21): `status` lists every tracked agent (main sessions, subagents and background tasks, DevSwarm workspaces) with tokens, progress, last output, state and flags, plus today's reminder and recovery totals; `tick` runs one tracker tick now (the scheduled job `agent_tick` does the same every minute). It never stops or kills an agent."
+value = { args = "<status|tick> [--json]", read_only = false, read_only_args = ["status"], status = "implemented" }
+[cmd.gh]
+doc = "GitHub realtime (feature #20, independent of DevSwarm): `status` prints, from the state file with no network, what is followed (the repos of the working directories of live sessions, their pull request, review, CI and mergeability), the rate-limit budget, the hold in force (backoff, budget, gh missing, logged out or offline) and the measured rate-limit cost of 200 and 304 answers; `segment [--cwd <dir>]` prints the statusline piece for the repo that holds the directory (empty when there is nothing to say); `poll [--force]` runs one tick now."
+value = { args = "<status|segment|poll> [--cwd <dir>] [--force]", read_only = false, read_only_args = ["status", "segment"], status = "implemented" }
+
+[cmd.gh_poll]
+doc = "The scheduled GitHub realtime tick (the `gh_poll` job): notices pushes, polls the followed repos that are due inside the rate budget and records the edges; prints its counts with --json and always exits 0."
+value = { args = "", read_only = false, status = "implemented" }
+
+[cmd.migrate]
+doc = "The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state, gate-intent and auto-archive state forward-migrations, the settings.json migration from the legacy jev.json and the stored plugin options, the Jev triage cache repair, the lock scratch sweep and the retention sweeps, with Node's report; `--dry-run` previews and writes nothing. Steps that need the DevSwarm stores are left to the Node doctor while DevSwarm state is present."
+value = { args = "[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]", read_only = false, status = "implemented" }
+
+[cmd.doctor]
+doc = "The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON."
+value = { args = "[--check] [--repair|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]", read_only = false, status = "implemented" }
+
+[cmd.jev-setup]
+doc = "Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, and `mode <integration> on|shadow|off`; `test` and the review verbs stay in the Node script."
+value = { args = "<status|enable|disable|set-key|bind-generic-key|mode> [--transport vercel|typesafe] [--fallback vercel|typesafe|none] [--role fallback] [--vendor vercel|typesafe]", read_only = false, status = "implemented" }
+
+[cmd.capability-scan]
+doc = "A read-only gap report (D81, the port of scripts/capability-scan.js): for each opt-in capability of a plugin tree, whether it is shipped and whether it is active on this machine, and how to enable it; prints the JSON report, then one line per capability."
+value = { args = "[--root <plugin dir>]", read_only = true, status = "implemented" }
+
+[cmd.harvest]
+doc = "Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of scripts/harvest-debt.js), and flag the ones with no payback trigger or in files untouched for the stale window."
+value = { args = "[--dir <path>] [--stale-days <n>]", read_only = true, status = "implemented" }
+
+[cmd.briefing]
+doc = "A derived inventory of a plugin tree (D81, the port of scripts/briefing.js): every registered hook by event with the purpose from its own header comment, the skills, the DevSwarm substrate and the docs map."
+value = { args = "[--root <plugin dir>]", read_only = true, status = "implemented" }
+
+[cmd.settings]
+doc = "Show or change any anti-hall setting (L9a, the port of scripts/settings.js): `show [--section <key>] [--all]`, `get <section.key>`, `set <section.key> <value> [--confirmed]`, `reset <section.key> [--confirmed]`, `judge on|off|status`, and `trust-command-allow` / `trust-edit-allow [<repo>] [--confirmed]`; the settings.json file and the registry are the plugin's own."
+value = { args = "<show|get|set|reset|judge|trust-command-allow|trust-edit-allow> [args] [--json]", read_only = false, status = "implemented" }
+
+[cmd.jev-report]
+doc = "The Jev report of the /anti-hall:jev skill (the port of scripts/jev-report.js): per-integration calls, agreement, changed decisions, precision, cost and the KEEP / REVIEW / REMOVE verdict from the decision log, with `--json`, `--days`, `--window 24h|7d`, `--by project|session`, `--project`, `--weekly`, `--since`, `--until`, `--exclude-window`, `--exclude-project`; `label <hash> [tp|fp]` reads or records a human precision label and `prune-audit --days N` trims the audit snippets (the only two forms that write)."
+value = { args = "[--json] [--days N] [--window 24h|7d] [--by project|session] [--project <name>] [--weekly] | label <hash> [tp|fp] | prune-audit --days N", read_only = false, read_only_args = ["", "--json", "--days", "--window", "--by", "--project", "--weekly", "--since", "--until", "--exclude-window", "--exclude-project", "--home"], status = "implemented" }
+
+[cmd.defect]
+doc = "File, list, show and rule anti-hall defect reports and query the bug history (L9a, the port of scripts/defect.js): `report`, `list [--mine|--open|--unfinished]`, `show <fp>`, `rule <fp> --status ...`, `archive`, and the history verbs `backfill`, `recurring` and `similar`; the store is ~/.anti-hall/defects/."
+value = { args = "<report|list|show|rule|archive|backfill|recurring|similar> [flags] [--json]", read_only = false, status = "implemented" }
+
+[cmd.statusline]
+doc = "The two-line status line the host runs after each turn (L9a, the port of statusline/statusline.js and its renderers): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open."
+value = { args = "(session JSON on stdin)", read_only = false, status = "implemented" }
+
+[cmd.phase]
+doc = "Write or update the phase state the status line's phase bar shows (L9a, the port of statusline/phase.js): `set <code> <desc> <done> <total>`, `advance [n]`, `step <text>`, `agents <n>`, `update key=value ...`, `clear`; the state is ~/.anti-hall/phase-state.json. Fails open."
+value = { args = "<set|advance|step|agents|update|clear> [args]", read_only = false, status = "implemented" }
+
+[cmd.install-statusline]
+doc = "Put the anti-hall status line into the host's statusLine setting (L9a, the port of statusline/install-statusline.js): `--user` (default, ~/.claude/settings.json) or `--project` (./.claude/settings.local.json), `--consolidate` to merge an existing status line into one line. Wraps an existing statusLine as line 1, backs the settings up once, never clobbers other keys, a re-run changes nothing."
+value = { args = "[--user|--project] [--consolidate]", read_only = false, status = "implemented" }
+
+[cmd.uninstall-statusline]
+doc = "Take the anti-hall status line out of the host's settings (L9a, the port of statusline/uninstall-statusline.js): restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration."
+value = { args = "[--user|--project] [--purge-base]", read_only = false, status = "implemented" }
+
+[cmd.shadow-compare]
+doc = "Internal: the detached half of a Node shadow (L9a). Runs the Node version of a sampled operator command on a scratch home and logs a mismatch to telemetry; started by the engine, not by people."
+value = { args = "<scratch dir>", read_only = false, status = "implemented" }
+
+[cmd.schedule]
+doc = "The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json."
+value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, read_only_args = ["list", "history"], status = "implemented" }
+
+[cmd.config]
+doc = "Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the settings they lack from the pristine copy, also in a version-controlled checkout); versions, rollback and export are planned (D18, they need the config database)."
+value = { args = "[validate <file>|heal]", read_only = false, read_only_args = ["", "validate"], status = "implemented", planned_decision = "D18" }
+
+[cmd.backup]
+doc = "Make a consistent online snapshot of hot.db and archive.db with SQLite's backup API, scrubbed of secrets, in backups/<ms> or the given directory; prints its manifest."
+value = { args = "[--to <dir>]", read_only = false, status = "implemented" }
+
+[cmd.restore]
+doc = "Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then swap the databases."
+value = { args = "<snapshot-dir>", read_only = false, status = "implemented" }
+
+[cmd.devswarm]
+doc = "The DevSwarm realtime state and owner actions (lane dswire). `status` and `line` print the live workspace state and its statusline segment; `advisory --session <id>` prints the changes that session has not seen; `archive --id <ws> --request <id>`, `plan-prune --older-than <days>` and `prune --confirm-ids <a,b> --plan <nonce>` run the hivecontrol actions at the owner's request, with Node's preconditions, ledger and confirmations. `ingest` prints who drains the native queue (devswarm_ingest.mode), the projects and each project's lock and heartbeat (read-only). Roles (devswarm_wire.role_matrix): reads are open; the acting verbs are for the main session only. `create` and `merge` are left to scripts/devswarm.js (exit 75). The devswarm.js verbs `help`, `skip`, `archive-ignore`, `archive-unignore`, `gate-intent`, `notice --list`, `plan set|show`, `scope add`, `gate`, `workspaces list`, `logs`, `wake-directive` (a child workspace), `ready-check`, `app-state`, `app-sync`, `done`, `primary`, `relay`, `archive-request`, `nudge`, `supervision-report`, `sync-ui`, `retention`, `unarchive`, `migrate-owner-keys`, `ensure`, `register`, `correct` and `reap-orphans` are native too: `devswarm <verb> <the devswarm.js arguments>` prints what `node scripts/devswarm.js <verb> ...` prints (Node answers what the engine defers). `supervisor` prints who owns the supervisor duties (devswarm_sup.mode), whether the Node supervisor is still running and each duty's gate; `recover --id <ws> --request <id>` kills and resumes ONE session on demand (never from a sweep): the engine refuses an automated caller, an unsafe id, a repeated request, a workspace without a worktree and session and one already recovered the most times allowed, then Node's devswarm-recover.js `run` does the kill with its exactly-one-target, identity and working-directory confirmations. Roles (devswarm_wire.role_matrix): reads are open; the acting verbs are for the main session only. `create` and `merge` are left to scripts/devswarm.js (exit 75). Inert (exit 64) where DevSwarm is absent. `wake-watch [--auto]` is the idle-wake Monitor the plugin runs for the whole session: it prints one line per event (armed, new mail, a persistent read error, a newer build) and runs until the session ends, on the realtime watch layer (OS events, polling where there are none) and the Node watcher's own tick; it reads plain files only and consumes nothing; roles: main session and workspace child. It answers exit 75 (nothing printed or written) for what only Node can decide, and the launcher then runs the Node watcher."
+value = { args = "<status|line|supervisor|ingest|recover --id <ws> --request <id>|advisory --session <id>|archive --id <ws> --request <id>|plan-prune --older-than <days>|prune --confirm-ids <ids> --plan <nonce>|help [<verb>]|skip <guard> [--ttl <min>]|archive-ignore <id>|archive-unignore <id>|gate-intent --reason <text>|notice --list|plan set|show <id>|scope add <id> --glob <g> --note <t>|gate <id> --set <csv> --clear <csv>|workspaces list|logs [--limit <n>]|wake-directive <id>|ready-check <sha> [--base <ref>]|app-state [--json]|app-sync [--dry-run]|done [--summary <text>]|primary [status|takeover] [--session <id>]|relay <seq> --to <id> [--note-file <path>]|archive-request <childId> [--reason <text>]|nudge <id>|supervision-report [--days <n>] [--json]|sync-ui --titles-json <file> [--yes]|retention status|run [--dry-run] [--store <key>]|unarchive <id>|migrate-owner-keys|ensure <id> [--worktree <p> --session <s>]|register <id> --worktree <p> --session <s> [--nudge <word>]|correct <id> [--dry-run]|reap-orphans [--apply --max <n>]|wake-watch [--auto]>", read_only = false, read_only_args = ["status", "line"], status = "implemented" }
+
+[cmd.mesh]
+doc = "DevSwarm mesh store (D45). With `--db`: the read-only S0 reader (stage S0): `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node; the store is opened read-only and never created, and a journal-backed store is refused. Without `--db` (stage 2): the words after `mesh` are a `scripts/devswarm.js` argv, run per the `mesh.engine_writes` switch: off (default) hands it to Node; shadow lets Node act and replays it on a scratch copy of the store, logging the comparison (mesh_write.shadow_log); on answers `send`, `mesh read`, `mesh history` and `roster --ack` in the engine (same output, exit code, store rows and locks as Node) and hands everything it cannot reproduce exactly, and every other verb, to Node."
+value = { args = "<roster|unread|read|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>] | <devswarm.js argv>", read_only = false, read_only_flags = ["--db"], status = "implemented" }
+
+[cmd.update]
+doc = "Update anti-hall (D81, lane L9b, the port of skills/update/scripts/update.js): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP, offline fails open), a copy of the plugin into a new version-pinned cache directory, the harness's own `claude plugin update` when its registry is behind (bounded, never answering a confirmation; installed_plugins.json is only read), the changelog delta, then one JSON status line and a human summary. `--check` only compares versions. The DevSwarm store sweeps and the settings migration still run by the plugin's own update.js --post-pull-only and are merged into the status."
+value = { args = "[--check] [--post-pull-only]", read_only = false, status = "implemented" }
+
+[cmd.install-codex]
+doc = "Install the anti-hall hooks for Codex (D81, lane L9b, the port of codex/install-codex.js): merge the generated hook registration into .codex/hooks.json (project, or --global for the home directory), replacing only anti-hall's own groups, and enable the hooks feature in config.toml. A changed file is copied to <file>.bak-<time> first; --dry-run writes nothing."
+value = { args = "[--global] [--dry-run] [--root <plugin dir>]", read_only = false, status = "implemented" }
+
+[cmd.handovers]
+doc = "The handover brief tree: `index` rebuilds the root brief and the per-day briefs (BRIEF.md plus a typed BRIEF.json) of the changed days under .anti-hall/handovers (`--registered` walks every project the SessionStart check has seen, `--force` rebuilds all days), `check` reports unindexed or stale handovers, missing briefs, malformed handovers and broken references without writing (exit 3 when there are any), `search <words> [date:..] [session:..] [decision:..] [file:..]` ranks entries from the sidecars. Never edits a handover file and never deletes. The logic is the plugin script handover-hygiene.js; the scheduled job `handovers` runs `index --registered`."
+value = { args = "<index|check|search> [query] [--project <dir>] [--registered] [--force] [--limit <n>]", read_only = false, status = "implemented" }

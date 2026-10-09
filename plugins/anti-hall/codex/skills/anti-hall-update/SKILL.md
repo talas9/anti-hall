@@ -32,8 +32,8 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 Use the existing pure-Node update helper:
 
 ```bash
-node "$ANTI_HALL_ROOT/skills/update/scripts/update.js" --check
-node "$ANTI_HALL_ROOT/skills/update/scripts/update.js"
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" update --check
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" update
 ```
 
 This is already the STALE-VERSION-SAFE path — `$ANTI_HALL_ROOT` is derived
@@ -49,13 +49,13 @@ freshly-pulled version's own copy internally as a second line of defense.
 For Codex, also re-run the Codex hook installer after a successful update:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/install-codex.js"
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex
 ```
 
 or for global Codex hooks:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/install-codex.js" --global
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex --global
 ```
 
 Do not force-pull, rebase, or delete plugin cache directories. If the update helper reports a dirty tree, diverged branch, offline state, or missing marketplace clone, surface that result and stop.
@@ -147,7 +147,7 @@ call to make progress on those stages.
 After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
 
 ```bash
-node "$ANTI_HALL_ROOT/scripts/capability-scan.js"
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" capability-scan
 ```
 
 Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js`, statusline, pending state migrations) as `{name, available, active, how}`. Present a concise available-vs-active summary:

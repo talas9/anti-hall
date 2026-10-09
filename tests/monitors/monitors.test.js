@@ -78,7 +78,7 @@ test('the devswarm-wake-watch command resolves to a REAL file on disk in this pl
   const parsed = JSON.parse(RAW);
   const entry = parsed.find((m) => m.name === 'devswarm-wake-watch');
   assert.ok(entry, 'devswarm-wake-watch entry must be present');
-  const resolvedCommand = entry.command.replace('${CLAUDE_PLUGIN_ROOT}', PLUGIN_ROOT);
+  const resolvedCommand = entry.command.split('${CLAUDE_PLUGIN_ROOT}').join(PLUGIN_ROOT); // every occurrence: the launcher path comes first
   const watcherPath = path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-wake-watch.js');
   // Normalize separators before comparing: monitors.json's command string
   // always uses forward slashes, but PLUGIN_ROOT/watcherPath are built with

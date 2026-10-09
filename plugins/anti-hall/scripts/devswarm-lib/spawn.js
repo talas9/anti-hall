@@ -856,13 +856,13 @@ function parseSubmoduleWorktreeFailures(res, cwd) {
 // repairSubmoduleWorktrees(failures, text, branch, cwd) -> { repaired, remaining }
 // (0.120.8, a downstream project field defect, 3rd occurrence). ROOT CAUSE (proven from the
 // DevSwarm app's own source + its log): `workspace create` starts the
-// `worktreeInclude` copy (`.devswarm/config.json`, e.g. `skyflutter/.env`) in
+// `worktreeInclude` copy (`.devswarm/config.json`, e.g. `appflutter/.env`) in
 // the BACKGROUND (`copyUntrackedFiles`, not awaited) and then runs
 // `git worktree add -b <branch> <wt>/<sub> <sha>` per submodule. The copy does
 // `mkdir -p <wt>/<sub>` + `cp -Rp`, so the submodule dir is NON-EMPTY when
 // `worktree add` runs -> git refuses ("'<path>' already exists"). Only a
-// submodule that has an include file present is hit (skyflutter/.env exists;
-// skyinform/.env.local and skywebsite/.env did not). A later workspace setup
+// submodule that has an include file present is hit (appflutter/.env exists;
+// mailerapp/.env.local and appwebsite/.env did not). A later workspace setup
 // step may remove the dir, which is why it can look "missing" afterwards while
 // the branch (created by the failed attempt chain) remains. The fix belongs to
 // DevSwarm (await the copy / skip gitlink paths); this is the loss-free

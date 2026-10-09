@@ -1,0 +1,593 @@
+# ah-engine shipped defaults for the per-event dispatcher (D58, D87): `ah-engine hook --event <Event>` runs every hook
+# entry of the table below that applies to the event and payload, built-in checks in the engine and the rest as their Node
+# hooks, then combines the results the way the host combines separate hooks. Format: see the header of engine.toml.
+#
+# D87: THIS FILE IS THE TABLE OF RECORD, edited by hand. The plugin's `hooks.json` files (one thin trigger per event) and
+# the wrapper's fallback list and map are generated FROM it by `ah-engine gen-hooks` and kept equal to it by
+# tests/hooks_files.rs. A new hook or check is one row in the table of its host and event (plus, where it needs one, a
+# `[entries.<id>]` default in hooks.toml); nothing else lists hooks.
+#
+# How the host combines hooks (the model the dispatcher reproduces):
+# - Claude Code: "All matching hooks run in parallel"; exit 2 blocks and "even a JSON permissionDecision of allow
+#   can't override it"; "When several hooks return additionalContext for the same event, Claude receives all of the
+#   values"; "When multiple PreToolUse hooks return different decisions, precedence is deny > defer > ask > allow"
+#   (code.claude.com/docs/en/hooks, sections Hook handler types, Exit code 2, Add context for Claude, PreToolUse
+#   decision control).
+# - Codex: "Multiple matching command hooks for the same event are launched concurrently, so one hook can't prevent
+#   another matching hook from starting"; "Codex evaluates each matching handler independently"
+#   (developers.openai.com/codex/hooks).
+# One process returns one exit code and one stdout, so several values are joined into one in hooks.json order; see
+# docs/AH-ENGINE.md (Dispatcher) for what that cannot express and when the dispatcher defers instead.
+
+[dispatch.in_process]
+doc = "Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default)."
+value = 0
+env = "AH_ENGINE_DISPATCH_IN_PROCESS"
+min = 0
+max = 1
+
+[dispatch.default_host]
+doc = "The host whose table is used when `--host` is not given."
+value = "claude"
+
+[dispatch.root_vars]
+doc = "Per host, the environment variables that hold the plugin root, first set one wins; the host exports them to hook commands, a command naming an unset one cannot run, and a built-in check gets the root as its plugin_root."
+value = { claude = ["CLAUDE_PLUGIN_ROOT"], codex = ["PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT"] }
+
+[dispatch.shell]
+doc = "The shell a Node hook command runs under, with its command flag (hooks.json commands are shell-form strings)."
+value = ["/bin/sh", "-c"]
+
+[dispatch.rerun_reserve_ms]
+doc = "The least host time that must be left (the event's longest hooks.json timeout minus the time the dispatcher has used) for a spent budget to defer to the wrapper's Node rerun (dispatch.defer_exit). With less left the rerun would be killed by the host, which treats a timed-out hook as an allow, so a guard event fails closed instead."
+value = 5000
+unit = "ms"
+
+[dispatch.default_timeout_s]
+doc = "The timeout of a Node hook whose hooks.json entry has none (0 in the table): the host's own default for a command hook (600 s on Claude per docs/KB-claude-code-hooks.md; Codex's default is not verified here, so the same bound is used). Never zero: a zero timeout would kill the hook at its first poll."
+value = 600
+unit = "s"
+min = 1
+max = 86400
+
+[dispatch.max_timeout_s]
+doc = "An upper bound on any Node hook's timeout, whatever its hooks.json entry says (the default is above every real timeout, so it changes nothing; tests lower it to exercise a hook that never exits)."
+value = 86400
+unit = "s"
+env = "AH_ENGINE_DISPATCH_MAX_TIMEOUT_S"
+min = 1
+max = 86400
+
+[dispatch.poll_ms]
+doc = "How often the dispatcher checks whether its Node hooks have finished."
+value = 2
+unit = "ms"
+min = 1
+max = 100
+
+[dispatch.read_ms]
+doc = "How long the dispatcher waits for a finished Node hook's output pipes to drain."
+value = 2000
+unit = "ms"
+min = 10
+max = 30000
+
+[dispatch.matcher_mode]
+doc = "Per host, how a matcher is read: exact_or_regex (Claude: only letters, digits and the exact_chars is an exact name or a list split on | and comma, anything else an unanchored regex) or regex (Codex: always an unanchored regex)."
+value = { claude = "exact_or_regex", codex = "regex" }
+
+[dispatch.exact_chars]
+doc = "Besides letters and digits, the characters a Claude matcher may contain and still be an exact name or list."
+value = "_- ,|"
+
+[dispatch.list_separators]
+doc = "Characters that separate the names of an exact-list matcher."
+value = "|,"
+
+[dispatch.payload_hash_checks]
+doc = "Built-in checks whose Node hook derives something from the exact stdin bytes (verify-first rotates its reminder by the SHA-1 of the whole payload): the dispatcher hands these the SHA-1 of the raw payload, computed only when one of them is selected."
+value = ["verify-first"]
+
+[dispatch.match_all]
+doc = "Matcher values that match every occurrence of the event."
+value = ["", "*"]
+
+[dispatch.matcher_field]
+doc = "Per event, the payload field a matcher is tested against; on an event not listed here the matcher is ignored."
+value = { PreToolUse = "tool_name", PostToolUse = "tool_name", PostToolUseFailure = "tool_name", PermissionRequest = "tool_name", SessionStart = "source", SubagentStart = "agent_type", SubagentStop = "agent_type", PreCompact = "trigger", PostCompact = "trigger" }
+
+[dispatch.tool_aliases]
+doc = "Per host, extra names a tool also answers to when matching (Codex: matcher values Edit and Write also match apply_patch)."
+value = { claude = {}, codex = { apply_patch = ["Edit", "Write"] } }
+
+[dispatch.decision_precedence]
+doc = "PreToolUse permissionDecision values, strongest first: the combined decision is the strongest any hook returned (Claude docs: deny > defer > ask > allow)."
+value = ["deny", "defer", "ask", "allow"]
+
+[dispatch.blocking_decisions]
+doc = "JSON fields and values that block without exit 2: a top-level decision, or a hookSpecificOutput permissionDecision."
+value = { decision = ["block"], permissionDecision = ["deny"] }
+
+[dispatch.context_joiner]
+doc = "Text placed between the additionalContext values of several hooks when they are joined into one."
+value = "\n\n"
+
+[dispatch.plain_context_events]
+doc = "Events on which plain-text stdout (exit 0) is context for the model (docs/KB-claude-code-hooks.md: UserPromptSubmit, UserPromptExpansion, SessionStart, PostModelSwitch). When the dispatcher must deliver such text next to a hook's JSON it folds it into the merged additionalContext instead of moving it to stderr, where the model would not see it."
+value = ["UserPromptSubmit", "UserPromptExpansion", "SessionStart", "PostModelSwitch"]
+
+[dispatch.reason_joiner]
+doc = "Text placed between the block reasons of several hooks that block the same event, when they are joined into the one block the dispatcher answers (the host shows the model every hook's block reason; Claude Code gives each Stop/SubagentStop block its own message)."
+value = "\n\n"
+
+[dispatch.message_joiner]
+doc = "Text placed between the systemMessage values of several hooks when they are joined into one."
+value = "\n"
+
+[dispatch.context_cap]
+doc = "Per host, the characters of one hook's additionalContext the host delivers inline (Claude: 10000, documented at code.claude.com/docs/en/hooks; over it the host spills the whole value to a file and leaves a ~2000 character preview). The dispatcher joins several hooks' contexts into one value, so a join over the cap is logged as dispatch_context_over_cap; the host then spills it the way it spills any over-cap hook output, and nothing is cut by the engine. Codex documents its cap in tokens; the same count is a conservative proxy."
+value = { claude = 10000, codex = 10000 }
+
+[dispatch.msg_context_over_cap]
+doc = "Event-log detail when the joined additionalContext of an event is over the host's inline cap."
+value = "joined context is {len} characters, over the {cap} the host delivers inline"
+
+[dispatch.guard_events]
+doc = "Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call (Claude ignores exit 2 on PermissionRequest, so a fail-closed exit 2 there is harmless, and the event stays listed so a hook registered on it later is guarded from the start), Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74)."
+value = ["PreToolUse", "PermissionRequest", "Stop", "SubagentStop"]
+
+[dispatch.stop_events]
+doc = "Guard events whose exit 2 keeps the agent running instead of denying one call (Stop, SubagentStop). A fail-closed block there must be bounded, or an agent whose hooks cannot run could never finish: the payload's stop_hook_active true fails open, and so do more than dispatch.stop_block_cap consecutive fail-closed blocks in one session (the Node Stop hooks make the same stop_hook_active check)."
+value = ["Stop", "SubagentStop"]
+
+[dispatch.stop_block_cap]
+doc = "How many consecutive fail-closed blocks a Stop or SubagentStop may answer in one session before every later one fails open with a log (the count resets when the guards run fine again)."
+value = 2
+min = 0
+max = 100
+
+[dispatch.stop_state_dir]
+doc = "The directory under the state dir holding one consecutive-block counter file per event and session."
+value = "stop-blocks"
+
+[dispatch.stop_state_max_age_days]
+doc = "Counter files of the Stop block counter older than this many days are removed (a session that ended while its guards were failing leaves one behind)."
+value = 7
+unit = "days"
+min = 1
+max = 365
+
+[dispatch.stop_unknown_session]
+doc = "Counter key for a Stop whose payload names no session (unreadable or cut off)."
+value = "unknown"
+
+[dispatch.spool_stale_s]
+doc = "Age at which a named raw-payload stdin spool file from an older build or unlink failure is considered stale and removed. Keep this larger than the longest hook timeout."
+value = 1800
+unit = "s"
+min = 1
+max = 86400
+
+[dispatch.msg_stop_active]
+doc = "Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the host says a Stop hook already blocked this turn (stop_hook_active). Placeholders: {event}, {why}."
+value = "anti-hall: the engine could not run the guards for {event} ({why}), and a Stop hook already held this turn, so the agent is let finish rather than looped. Repair the install (`doctor --repair`)."
+
+[dispatch.msg_stop_capped]
+doc = "Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed once more than dispatch.stop_block_cap times in a row. Placeholders: {event}, {cap}, {why}."
+value = "anti-hall: the engine could not run the guards for {event} ({why}) {cap} times in a row, so the agent is let finish rather than looped. Repair the install (`doctor --repair`)."
+
+[dispatch.msg_stop_uncounted]
+doc = "Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the consecutive-block count cannot be recorded, so the loop could not be bounded. Placeholders: {event}, {why}."
+value = "anti-hall: the engine could not run the guards for {event} ({why}) and cannot count its blocks, so the agent is let finish rather than risk a loop. Repair the install (`doctor --repair`)."
+
+[dispatch.defer_exit]
+doc = "Exit code with which the dispatcher asks its wrapper to run the event's Node hooks one by one, as the host does (the joined output could not be delivered faithfully). EX_TEMPFAIL; the host reads it as a non-blocking hook error and shows stderr, so without a wrapper the deferral is visible, never silent."
+value = 75
+min = 1
+max = 255
+
+[dispatch.msg_infra_defer]
+doc = "Printed on stderr with dispatch.defer_exit when an infrastructure fault (a hook the OS would not start, an unreadable payload or fallback map, a usage error, the event's budget spent) keeps the dispatcher from deciding: the wrapper then runs the Node hooks. Placeholders: {event}, {why}."
+value = "anti-hall: the engine could not dispatch {event} ({why}); the Node hooks decide"
+
+[dispatch.msg_fail_closed]
+doc = "Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}."
+value = "anti-hall: the engine could not run the guards for {event} ({why}). The call is blocked rather than allowed unguarded; repair the install (`doctor --repair`) or retry."
+
+[dispatch.msg_fail_closed_stop]
+doc = "Printed on stderr (exit 2) when a Stop or SubagentStop cannot run its guards and the block is still within dispatch.stop_block_cap. Placeholders: {event}, {why}."
+value = "anti-hall: the engine could not run the guards for {event} ({why}). The agent is held from finishing rather than let go unguarded; repair the install (`doctor --repair`) or retry (it is let finish after a few attempts)."
+
+[dispatch.msg_panic]
+doc = "Deferral reason (event log and stderr) when the dispatcher panicked on a guard event: the Node hooks answer instead of a block."
+value = "the dispatcher hit an internal error: the Node hooks decide"
+
+[dispatch.msg_defer_separately]
+doc = "Printed on stderr with dispatch.defer_exit when the joined output is over the host's cap. Placeholders: {event}, {len}, {cap}."
+value = "anti-hall: the joined {event} context is {len} characters, over the {cap} the host delivers inline; the hooks must run separately"
+
+[dispatch.msg_skipped_entry]
+doc = "Event-log detail when a non-guard event goes on without an entry that has no runnable Node command. Placeholder: {id}."
+value = "entry {id} skipped: no runnable Node command"
+
+[dispatch.msg_skipped_entry_stderr]
+doc = "Printed on stderr when a non-guard event goes on without an entry that has no runnable Node command. Placeholders: {event}, {id}."
+value = "anti-hall: skipped {event} Node hook {id}: no runnable Node command"
+
+[dispatch.msg_defer]
+doc = "Event-log detail when the dispatcher cannot answer an event and defers the whole call."
+value = "dispatcher deferred the whole call: {why}"
+
+[dispatch.msg_no_fallback]
+doc = "Reason logged when a deferred hook entry has no runnable Node command."
+value = "entry {id} deferred with no runnable Node command"
+
+[dispatch.msg_conflict]
+doc = "Reason logged when several hooks returned output one hook output cannot combine."
+value = "hooks {ids} returned outputs that cannot be combined into one"
+
+[dispatch.msg_unknown_host]
+doc = "Error printed when `--host` names a host the dispatch table does not have."
+value = "unknown host {host}: the dispatch table has {hosts}"
+
+[dispatch.msg_bad_map]
+doc = "Error printed when the `--fallback-map` file cannot be read as a JSON object of events to hook ids to commands."
+value = "cannot read the fallback map {path}: {err}"
+
+[protocol.dispatch]
+doc = "The built-in checks of one event's dispatch table, evaluated by the daemon; the client runs the other entries and every deferral as their Node hooks."
+value = { request = "D <client-version>\n<meta JSON: host, event, tool, root>\n<hook payload JSON>", reply = "OK <JSON array of [id, verdict, text]> | BUSY | ERR <reason>" }
+
+[dispatch.msg_hook_timeout]
+doc = "Event-log detail when a Node hook was still running at its timeout and was killed with its group (the host discards such a hook, so the call goes on)."
+value = "the hook ran past its timeout and was killed; the host discards a timed-out hook"
+
+[dispatch.msg_hook_died]
+doc = "Event-log detail when a Node hook was killed by a signal or could not be waited for."
+value = "the hook was killed by a signal or could not be waited for"
+
+[dispatch.msg_hook_spawn]
+doc = "Event-log detail when a Node hook's command could not be started (the event code is the hook id). Placeholders: {errno} (os<n>, the OS error number), {err} (its text)."
+value = "the hook's command could not be started: {errno} {err}"
+
+[dispatch.msg_why_spawn]
+doc = "Reason in dispatch.msg_infra_defer when a guard event's Node hook could not be started (EAGAIN, EMFILE, ENOMEM: the Node hooks then decide). Placeholder: {id}."
+value = "hook {id} could not be started"
+
+[dispatch.msg_why_died]
+doc = "Reason in dispatch.msg_fail_closed when a guard event's Node hook was killed by a signal. Placeholder: {id}."
+value = "hook {id} was killed before it could answer"
+
+[dispatch.msg_why_incomplete]
+doc = "Reason in dispatch.msg_fail_closed when a guard event's Node hook finished but a process it left behind kept its output open, so the output is incomplete. Placeholder: {id}."
+value = "hook {id} finished with incomplete output"
+
+[dispatch.msg_stdin_over_cap]
+doc = "Event-log detail when the payload on stdin is longer than client.max_stdin and is sent to Node hooks through an anonymous open file. Placeholder: {max}."
+value = "the hook payload is larger than {max} bytes; built-in checks are skipped and Node hooks receive the full payload from an anonymous spool file"
+
+[dispatch.msg_spool_sweep]
+doc = "Event-log detail when stale named raw-payload spool files were removed. Placeholder: {n}."
+value = "removed {n} stale dispatch stdin spool file(s)"
+
+[dispatch.thin_command]
+doc = "The command of each event's thin trigger in the generated hooks.json (D87). Placeholders: {var} the host's plugin-root variable (the first of dispatch.root_vars), {event} the event, {extra} the host's dispatch.thin_host_args."
+value = 'sh "${{var}}/hooks/ah-hook.sh" {event}{extra}'
+
+[dispatch.thin_host_args]
+doc = "Per host, the extra arguments of the thin trigger's command: the wrapper reads the host's table and fallback list from `--host` (Claude is the wrapper's default)."
+value = { claude = "", codex = " --host codex" }
+
+[dispatch.thin_timeout_s]
+doc = "The timeout of the thin trigger of an event the table has no entry for (an event with entries takes the longest timeout among them)."
+value = 10
+unit = "s"
+min = 1
+max = 3600
+
+# D87: the events every host gets a thin trigger for, whether or not the table has an entry for them yet: the engine decides
+# per event from the table and the config what to run, and answers the host with the neutral no-op when nothing applies.
+# Claude: all 33 events of the official hooks reference (docs/KB-claude-code-hooks.md section 1) EXCEPT WorktreeCreate and
+# WorktreeRemove (decision D87 exception, 1.43): a WorktreeCreate hook REPLACES the default worktree creation (it must create
+# the worktree and print its path) and a non-zero exit on either event fails the operation, so a silent trigger would break
+# worktree creation in every project; no neutral pass-through exists for an event whose hook is the operation. They get a
+# trigger when the engine implements worktree create/remove itself, with tests.
+# Codex: the events the Codex hooks reference lists (docs/KB-codex-platform-hooks-plugins.md).
+[dispatch.thin_events]
+doc = "Per host, the events that get a thin trigger in the generated hooks.json besides the events the table has entries for (D87; WorktreeCreate and WorktreeRemove are excluded on Claude because a hook there replaces the operation and cannot be a silent trigger)."
+value = { claude = ["SessionStart", "Setup", "UserPromptSubmit", "UserPromptExpansion", "PreToolUse", "PermissionRequest", "PermissionDenied", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "Stop", "StopFailure", "TeammateIdle", "InstructionsLoaded", "ConfigChange", "CwdChanged", "DirectoryAdded", "FileChanged", "PreCompact", "PostCompact", "PreModelSwitch", "PostModelSwitch", "Notification", "MessageDisplay", "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted", "Elicitation", "ElicitationResult", "SessionEnd"], codex = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact", "SubagentStart", "SubagentStop", "Stop"] }
+
+[dispatch.generated_files]
+doc = "Per host and kind of generated file (hooks, registry, list, map), its path relative to the repository root. `tests/hooks_files.rs` requires each committed file to equal what `gen-hooks` prints and `ah-gen-fallback-list` writes them."
+value = { claude = { hooks = "plugins/anti-hall/hooks/hooks.json", registry = "plugins/anti-hall/hooks/hooks.registry.json", list = "plugins/anti-hall/hooks/ah-fallback.list", map = "plugins/anti-hall/hooks/ah-fallback.map.json" }, codex = { hooks = "plugins/anti-hall/codex/hooks/hooks.json", registry = "plugins/anti-hall/codex/hooks/hooks.registry.json", list = "plugins/anti-hall/hooks/ah-fallback.codex.list", map = "plugins/anti-hall/hooks/ah-fallback.codex.map.json" } }
+
+[dispatch.gen_default_kind]
+doc = "The file `gen-hooks` prints when `--kind` is not given."
+value = "hooks"
+
+[dispatch.msg_unknown_kind]
+doc = "Error printed by `gen-hooks` when `--kind` names a file it does not generate. Placeholder: {kind}."
+value = "unknown kind {kind}: gen-hooks prints hooks, registry, list or map"
+
+[dispatch.list_banner]
+doc = "The first line of the generated fallback list."
+value = "# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are: @Event<TAB>timeout[<TAB>empty]; hook rows are: matcher<TAB>timeout<TAB>command."
+
+[dispatch.list_empty_word]
+doc = "The word that marks an event row of the fallback list whose event has no table entry (a thin trigger only): the wrapper answers it with the neutral no-op."
+value = "empty"
+
+[dispatch.list_event_mark]
+doc = "The mark that starts an event row of the generated fallback list (the wrapper reads the same mark)."
+value = "@"
+
+[dispatch.list_comment_mark]
+doc = "The mark that starts a comment line of the generated fallback list."
+value = "#"
+
+[dispatch.fallback_lists]
+doc = "Per host, the wrapper's fallback list relative to the plugin root (the same files as dispatch.generated_files): a defaults load is rejected when a list runs hooks for an event the table has no row for, and the dispatcher answers an event without a row with the neutral no-op only when this list marks it as a thin trigger."
+value = { claude = "hooks/ah-fallback.list", codex = "hooks/ah-fallback.codex.list" }
+
+[dispatch.msg_no_row]
+doc = "Deferral reason when the dispatch table has no well-formed row for an event the fallback list does not mark as a thin trigger. Placeholders: {host}, {event}."
+value = "the dispatch table has no well-formed row for {host} {event}: the Node hooks decide"
+
+# ---- THE TABLE (hand-maintained, D87) ----
+# One key per host and event: dispatch.hooks_<host>_<Event>. Each value lists the hook entries in the order the dispatcher
+# combines their results in (the order the old per-hook hooks.json registered them):
+#   id       stable name of the entry within its event (script, then its arguments; "#n" for a repeat); keys the fallback
+#            map and `[entries.<id>]` in the config
+#   matcher  which occurrences of the event the entry applies to ("" = every one), read the host's way (dispatch.matcher_mode)
+#   command  the Node hook the dispatcher runs when no built-in check answers
+#   timeout  the timeout in seconds (the host discards a hook that runs longer); the thin trigger of the event takes the
+#            longest of its entries
+#   check    the built-in check that answers this entry in the engine ("" = always the Node hook)
+#   when     (optional) a declarative predicate over the payload, the settings, the request environment, the session and
+#            the transcript facts; an entry whose predicate is false is skipped. Absent = always applies. See hooks.toml.
+
+# The `sibling-sweep` rows are ENGINE-ONLY: the check has no Node twin (zero new Node), so the command a deferral or a downed
+# engine falls back to is `hooks/sibling-sweep`, a shell no-op that does nothing; it exists so the entry keeps an id and a
+# readable script like every other entry (the wrapper refuses a plugin-root command whose file is missing) and the
+# unset-plugin-root behaviour every other entry has.
+
+# ---- claude ----
+
+[dispatch.hooks_claude_UserPromptSubmit]
+doc = "The claude UserPromptSubmit hook entries, in dispatch order."
+value = [
+  { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "verify-first" },
+  { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "task-tracker" },
+  { id = "idle-agent-sweep", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
+  { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "limit-conserve-inject" },
+  { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "devswarm-parent-inbox" },
+  { id = "devswarm-rt-advisory", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"", timeout = 10, check = "devswarm-rt-advisory" },
+  { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "devswarm-child-turn" },
+  { id = "repair-on-reload", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
+  { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },
+  { id = "procwatch-advisory", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "agent-reminders", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
+  { id = "gh-rt-advisory", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/gh-rt-advisory\"", timeout = 10, check = "gh-rt-advisory" },
+]
+
+[dispatch.hooks_claude_TaskCreated]
+doc = "The claude TaskCreated hook entries, in dispatch order."
+value = [
+  { id = "task-lifecycle-log", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"", timeout = 10, check = "task-lifecycle-log" },
+]
+
+[dispatch.hooks_claude_TaskCompleted]
+doc = "The claude TaskCompleted hook entries, in dispatch order."
+value = [
+  { id = "task-lifecycle-log", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"", timeout = 10, check = "task-lifecycle-log" },
+]
+
+[dispatch.hooks_claude_SubagentStart]
+doc = "The claude SubagentStart hook entries, in dispatch order."
+value = [
+  { id = "verify-first-subagent", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\"", timeout = 10, check = "verify-first-subagent" },
+  { id = "engine-role-note", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note\"", timeout = 10, check = "engine-role-note" },
+]
+
+[dispatch.hooks_claude_SubagentStop]
+doc = "The claude SubagentStop hook entries, in dispatch order."
+value = [
+  { id = "sibling-sweep", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"", timeout = 10, check = "sibling-sweep" },
+]
+
+[dispatch.hooks_claude_SessionStart]
+doc = "The claude SessionStart hook entries, in dispatch order."
+value = [
+  { id = "verify-first-full", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-full.js\"", timeout = 10, check = "verify-first-full" },
+  { id = "verify-first-orch:host=claude", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-orch.js\" --host=claude", timeout = 10, check = "verify-first-orch" },
+  { id = "devswarm-child-role", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-role.js\"", timeout = 10, check = "devswarm-child-role" },
+  { id = "version-alert", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/version-alert.js\"", timeout = 10, check = "version-alert" },
+  { id = "fable-availability", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/fable-availability.js\"", timeout = 10, check = "fable-availability" },
+  { id = "codex-availability", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-availability.js\"", timeout = 10, check = "codex-availability" },
+  { id = "devswarm-version", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-version.js\"", timeout = 10, check = "devswarm-version" },
+  { id = "claude-cli-version", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/claude-cli-version.js\"", timeout = 10, check = "claude-cli-version" },
+  { id = "repo-self-drift", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repo-self-drift.js\"", timeout = 10, check = "repo-self-drift" },
+  { id = "progress-prune", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/progress-prune.js\"", timeout = 10, check = "progress-prune" },
+  { id = "handover-resume", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-resume.js\"", timeout = 10, check = "handover-resume" },
+  { id = "handover-hygiene", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-hygiene\"", timeout = 10, check = "handover-hygiene" },
+  { id = "jev-weekly-scorecard", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"", timeout = 10, check = "jev-weekly-scorecard" },
+  { id = "jev-review-reminder", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-review-reminder.js\"", timeout = 10, check = "jev-review-reminder" },
+  { id = "emit-dedupe-reset", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"", timeout = 10, check = "emit-dedupe-reset" },
+  { id = "defect-nudge", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js\"", timeout = 10, check = "defect-nudge" },
+  { id = "repair-on-reload", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
+  { id = "procwatch-advisory", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "engine-role-note", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note\"", timeout = 10, check = "engine-role-note" },
+]
+
+[dispatch.hooks_claude_Stop]
+doc = "The claude Stop hook entries, in dispatch order."
+value = [
+  { id = "task-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js\"", timeout = 30, check = "task-guard" },
+  { id = "tasklist-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js\"", timeout = 30, check = "tasklist-guard" },
+  { id = "speculation-guard", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-guard.js\"", timeout = 30, check = "speculation-guard" },
+  { id = "speculation-judge", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-judge.js\"", timeout = 30, check = "speculation-judge" },
+  { id = "claim-ledger", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/claim-ledger.js\"", timeout = 30, check = "claim-ledger" },
+  { id = "codex-nudge", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-nudge.js\"", timeout = 30, check = "codex-nudge" },
+  { id = "devswarm-parent-gate", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-gate.js\"", timeout = 30, check = "devswarm-parent-gate" },
+  { id = "devswarm-child-gate", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-gate.js\"", timeout = 30, check = "devswarm-child-gate" },
+  { id = "auto-handover-pause-nag", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js\"", timeout = 30, check = "auto-handover-pause-nag" },
+  { id = "silent-agent-nudge", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"", timeout = 30, check = "silent-agent-nudge" },
+  { id = "compact-advice-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-advice-guard.js\"", timeout = 30, check = "compact-advice-guard" },
+  { id = "sibling-sweep", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"", timeout = 10, check = "sibling-sweep" },
+]
+
+[dispatch.hooks_claude_PreToolUse]
+doc = "The claude PreToolUse hook entries, in dispatch order."
+value = [
+  { id = "compact-declaration-guard", matcher = "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Bash", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-declaration-guard.js\"", timeout = 10, check = "compact-declaration-guard" },
+  { id = "git-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\"", timeout = 10, check = "git" },
+  { id = "command-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/command-guard.js\"", timeout = 10, check = "command" },
+  { id = "coordinator-work-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\"", timeout = 10, check = "coordinator-work-guard" },
+  { id = "merge-side-pick", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\"", timeout = 10, check = "merge-side-pick" },
+  { id = "merge-gate", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-gate.js\"", timeout = 10, check = "merge-gate" },
+  { id = "scan-throttle", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scan-throttle.js\"", timeout = 10, check = "scan-throttle" },
+  { id = "api-guard", matcher = "Write|Edit|MultiEdit|Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/api-guard.js\"", timeout = 45, check = "api-guard" },
+  { id = "ship-it-guard", matcher = "Write|Edit|MultiEdit|Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ship-it-guard.js\"", timeout = 10, check = "ship-it-guard" },
+  { id = "edit-guard", matcher = "Write|Edit|MultiEdit|NotebookEdit", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/edit-guard.js\"", timeout = 10, check = "edit-guard" },
+  { id = "inbox-read-guard", matcher = "Read", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/inbox-read-guard.js\"", timeout = 10, check = "inbox-read-guard" },
+  { id = "model-routing-guard", matcher = "Agent", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"", timeout = 10, check = "model-routing" },
+  { id = "swarm-guard", matcher = "Agent", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"", timeout = 10, check = "swarm-guard" },
+  { id = "phase-tracker", matcher = "Agent", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"", timeout = 10, check = "phase-tracker" },
+  { id = "model-routing-guard#2", matcher = "Task", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"", timeout = 10, check = "model-routing" },
+  { id = "swarm-guard#2", matcher = "Task", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"", timeout = 10, check = "swarm-guard" },
+  { id = "phase-tracker#2", matcher = "Task", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"", timeout = 10, check = "phase-tracker" },
+  { id = "orch-on-spawn", matcher = "Agent|Task|Workflow", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/orch-on-spawn.js\"", timeout = 10, check = "orch-on-spawn" },
+  { id = "devswarm-comms-guard", matcher = "SendMessage", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js\"", timeout = 10, check = "devswarm-comms-guard" },
+  { id = "ask-guard", matcher = "AskUserQuestion", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js\"", timeout = 10, check = "ask-guard" },
+  { id = "stale-agent-stop-note", matcher = "TaskStop", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"", timeout = 10, check = "stale-agent-stop-note" },
+  { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "engine-role-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
+]
+
+[dispatch.hooks_claude_PostToolUse]
+doc = "The claude PostToolUse hook entries, in dispatch order."
+value = [
+  { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "merge-side-pick" },
+  { id = "git-guard:audit", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "git-audit" },
+  { id = "output-verify-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/output-verify-guard.js\"", timeout = 10, check = "output-verify-guard" },
+  { id = "devswarm-parent-reply-tracker", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"", timeout = 10, check = "devswarm-parent-reply-tracker" },
+  { id = "devswarm-child-drain", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"", timeout = 10, check = "devswarm-child-drain" },
+  { id = "coordinator-work-guard:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\" --post", timeout = 10, check = "coordinator-work-guard" },
+  { id = "codex-quota-detect", matcher = "Agent", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-quota-detect.js\"", timeout = 10, check = "codex-quota-detect" },
+  { id = "dispatch-tier", matcher = "TaskCreate|TaskUpdate", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-tier.js\"", timeout = 10, check = "dispatch-tier" },
+  { id = "agent-reminders", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
+]
+
+[dispatch.hooks_claude_PostToolUseFailure]
+doc = "The claude PostToolUseFailure hook entries, in dispatch order."
+value = [
+  { id = "failure-root-cause-nudge", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/failure-root-cause-nudge.js\"", timeout = 10, check = "failure-root-cause-nudge" },
+]
+
+[dispatch.hooks_claude_PreCompact]
+doc = "The claude PreCompact hook entries, in dispatch order."
+value = [
+  { id = "precompact-snapshot", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/precompact-snapshot.js\"", timeout = 10, check = "precompact-snapshot" },
+]
+
+[dispatch.hooks_claude_SessionEnd]
+doc = "The claude SessionEnd hook entries, in dispatch order."
+value = [
+  { id = "session-end-mcp-reaper", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js\"", timeout = 5, check = "session-end-mcp-reaper" },
+]
+
+# ---- codex ----
+
+[dispatch.hooks_codex_SessionStart]
+doc = "The codex SessionStart hook entries, in dispatch order."
+value = [
+  { id = "verify-first-full", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-full.js\"", timeout = 10, check = "verify-first-full" },
+  { id = "verify-first-orch", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-orch.js\"", timeout = 10, check = "verify-first-orch-codex" },
+  { id = "devswarm-child-role", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-child-role.js\"", timeout = 10, check = "devswarm-child-role" },
+  { id = "version-alert", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/version-alert.js\"", timeout = 10, check = "version-alert" },
+  { id = "codex-availability", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/codex-availability.js\"", timeout = 10, check = "codex-availability" },
+  { id = "devswarm-version", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-version.js\"", timeout = 10, check = "devswarm-version" },
+  { id = "claude-cli-version", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/claude-cli-version.js\"", timeout = 10, check = "claude-cli-version" },
+  { id = "repo-self-drift", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/repo-self-drift.js\"", timeout = 10, check = "repo-self-drift" },
+  { id = "progress-prune", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/progress-prune.js\"", timeout = 10, check = "progress-prune" },
+  { id = "handover-resume", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/handover-resume.js\"", timeout = 10, check = "handover-resume" },
+  { id = "handover-hygiene", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/handover-hygiene\"", timeout = 10, check = "handover-hygiene" },
+  { id = "jev-weekly-scorecard", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"", timeout = 10, check = "jev-weekly-scorecard" },
+  { id = "jev-review-reminder", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/jev-review-reminder.js\"", timeout = 10, check = "jev-review-reminder" },
+  { id = "emit-dedupe-reset", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"", timeout = 10, check = "emit-dedupe-reset" },
+  { id = "defect-nudge", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/defect-nudge.js\"", timeout = 10, check = "defect-nudge" },
+  { id = "repair-on-reload", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
+  { id = "procwatch-advisory", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "engine-role-note", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/engine-role-note\"", timeout = 10, check = "engine-role-note" },
+]
+
+[dispatch.hooks_codex_UserPromptSubmit]
+doc = "The codex UserPromptSubmit hook entries, in dispatch order."
+value = [
+  { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "verify-first" },
+  { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "task-tracker" },
+  { id = "idle-agent-sweep", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
+  { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "limit-conserve-inject" },
+  { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "devswarm-parent-inbox" },
+  { id = "devswarm-rt-advisory", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"", timeout = 10, check = "devswarm-rt-advisory" },
+  { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "devswarm-child-turn" },
+  { id = "repair-on-reload", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
+  { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },
+  { id = "procwatch-advisory", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "agent-reminders", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
+  { id = "gh-rt-advisory", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/gh-rt-advisory\"", timeout = 10, check = "gh-rt-advisory" },
+]
+
+[dispatch.hooks_codex_PreToolUse]
+doc = "The codex PreToolUse hook entries, in dispatch order."
+value = [
+  { id = "git-guard", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/git-guard.js\"", timeout = 10, check = "git" },
+  { id = "command-guard", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/command-guard.js\"", timeout = 10, check = "command" },
+  { id = "merge-side-pick", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\"", timeout = 10, check = "merge-side-pick" },
+  { id = "merge-gate", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/merge-gate.js\"", timeout = 10, check = "merge-gate" },
+  { id = "compact-declaration-guard", matcher = "Bash", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/compact-declaration-guard.js\"", timeout = 10, check = "compact-declaration-guard" },
+  { id = "orch-on-spawn", matcher = "^(?:collaboration)?spawn_agent$", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/orch-on-spawn.js\"", timeout = 10, check = "orch-on-spawn" },
+  { id = "api-guard", matcher = "apply_patch|Bash", command = "node \"${PLUGIN_ROOT}/hooks/api-guard.js\"", timeout = 45, check = "api-guard" },
+  { id = "ship-it-guard", matcher = "apply_patch|Bash", command = "node \"${PLUGIN_ROOT}/hooks/ship-it-guard.js\"", timeout = 10, check = "ship-it-guard" },
+  { id = "edit-guard", matcher = "apply_patch", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/edit-guard.js\"", timeout = 10, check = "edit-guard" },
+  { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "engine-role-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
+]
+
+[dispatch.hooks_codex_Stop]
+doc = "The codex Stop hook entries, in dispatch order."
+value = [
+  { id = "task-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-guard.js\"", timeout = 30, check = "task-guard" },
+  { id = "tasklist-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/tasklist-guard.js\"", timeout = 30, check = "tasklist-guard" },
+  { id = "speculation-guard", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/speculation-guard.js\"", timeout = 30, check = "speculation-guard" },
+  { id = "speculation-judge", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/speculation-judge.js\"", timeout = 30, check = "speculation-judge" },
+  { id = "claim-ledger", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/claim-ledger.js\"", timeout = 30, check = "claim-ledger" },
+  { id = "devswarm-parent-gate", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-gate.js\"", timeout = 30, check = "devswarm-parent-gate" },
+  { id = "devswarm-child-gate", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-child-gate.js\"", timeout = 30, check = "devswarm-child-gate" },
+  { id = "auto-handover-pause-nag", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js\"", timeout = 30, check = "auto-handover-pause-nag" },
+  { id = "silent-agent-nudge", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"", timeout = 30, check = "silent-agent-nudge" },
+  { id = "compact-advice-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/compact-advice-guard.js\"", timeout = 30, check = "compact-advice-guard" },
+  { id = "sibling-sweep", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\"", timeout = 10, check = "sibling-sweep" },
+]
+
+[dispatch.hooks_codex_SubagentStop]
+doc = "The codex SubagentStop hook entries, in dispatch order."
+value = [
+  { id = "sibling-sweep", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\"", timeout = 10, check = "sibling-sweep" },
+]
+
+[dispatch.hooks_codex_PreCompact]
+doc = "The codex PreCompact hook entries, in dispatch order."
+value = [
+  { id = "precompact-snapshot", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/precompact-snapshot.js\"", timeout = 10, check = "precompact-snapshot" },
+]
+
+[dispatch.hooks_codex_PostToolUse]
+doc = "The codex PostToolUse hook entries, in dispatch order."
+value = [
+  { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "merge-side-pick" },
+  { id = "git-guard:audit", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "git-audit" },
+  { id = "devswarm-parent-reply-tracker", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"", timeout = 10, check = "devswarm-parent-reply-tracker" },
+  { id = "devswarm-child-drain", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"", timeout = 10, check = "devswarm-child-drain" },
+  { id = "agent-reminders", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
+]

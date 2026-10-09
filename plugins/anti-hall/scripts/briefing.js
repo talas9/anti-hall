@@ -125,7 +125,7 @@ try { briefing.version = JSON.parse(readText(path.join(ROOT, '.claude-plugin', '
 
 // Hooks — derive strictly from hooks.json (event -> [files]) + a purpose per file.
 let hooksCfg = null;
-try { hooksCfg = JSON.parse(readText(path.join(HOOKS_DIR, 'hooks.json'))); } catch (_) {}
+try { hooksCfg = JSON.parse(readText(path.join(HOOKS_DIR, 'hooks.registry.json'))); } catch (_) {}
 const registered = new Set();
 if (hooksCfg && hooksCfg.hooks) {
   for (const [event, groups] of Object.entries(hooksCfg.hooks)) {

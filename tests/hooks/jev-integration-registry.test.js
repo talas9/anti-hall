@@ -43,7 +43,7 @@ function callSiteIds() {
 
 test('call-site discovery is non-vacuous (finds the known framed + routing ids)', () => {
   const ids = callSiteIds();
-  for (const id of ['speculation', 'speculationFramed', 'modelRouting', 'dispatchTier', 'devswarmStepMap']) {
+  for (const id of ['speculation', 'speculationFramed', 'modelRouting', 'dispatchTier', 'devswarmOnBrief']) {
     assert.ok(ids.has(id), `discovery missed ${id}`);
   }
   assert.ok(ids.size >= 15, `only ${ids.size} ids discovered`);

@@ -1,7 +1,7 @@
 'use strict';
 // devswarm-subagent-mailbox-guard (command-guard.js PreToolUse Bash branch).
 //
-// Defect f0958b13fe2b (P0, field-measured by SkyCrew 2026-09-08): inside a
+// Defect f0958b13fe2b (P0, field-measured by DemoApp 2026-09-08): inside a
 // DevSwarm child workspace, the child's OWN subagents ran
 // `devswarm.js inbox pull <id> && ... inbox ack <id>` — each ack advanced the
 // shared mailbox cursor so the workspace's own MAIN THREAD silently missed

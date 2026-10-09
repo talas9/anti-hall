@@ -1,0 +1,115 @@
+# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are: @Event<TAB>timeout[<TAB>empty]; hook rows are: matcher<TAB>timeout<TAB>command.
+@PostToolUse	10
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js" --post
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js" --audit
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/output-verify-guard.js"
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js"
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-drain.js"
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js" --post
+Agent	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/codex-quota-detect.js"
+TaskCreate|TaskUpdate	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-tier.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders"
+@PostToolUseFailure	10
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/failure-root-cause-nudge.js"
+@PreCompact	10
+*	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/precompact-snapshot.js"
+@PreToolUse	45
+Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Bash	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/compact-declaration-guard.js"
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js"
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/command-guard.js"
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js"
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js"
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/merge-gate.js"
+Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/scan-throttle.js"
+Write|Edit|MultiEdit|Bash	45	node "${CLAUDE_PLUGIN_ROOT}/hooks/api-guard.js"
+Write|Edit|MultiEdit|Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/ship-it-guard.js"
+Write|Edit|MultiEdit|NotebookEdit	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/edit-guard.js"
+Read	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/inbox-read-guard.js"
+Agent	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js"
+Agent	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js"
+Agent	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js"
+Task	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js"
+Task	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js"
+Task	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js"
+Agent|Task|Workflow	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/orch-on-spawn.js"
+SendMessage	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js"
+AskUserQuestion	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js"
+TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js"
+Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
+Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard"
+@SessionEnd	5
+*	5	node "${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js"
+@SessionStart	10
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-full.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-orch.js" --host=claude
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-role.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/version-alert.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/fable-availability.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/codex-availability.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-version.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/claude-cli-version.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/repo-self-drift.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/progress-prune.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/handover-resume.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/handover-hygiene"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/jev-review-reminder.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note"
+@Stop	30
+*	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js"
+*	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js"
+*	30	node "${CLAUDE_PLUGIN_ROOT}/hooks/speculation-guard.js"
+*	30	node "${CLAUDE_PLUGIN_ROOT}/hooks/speculation-judge.js"
+*	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/claim-ledger.js"
+*	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/codex-nudge.js"
+*	30	node "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-gate.js"
+*	30	node "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-gate.js"
+*	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js"
+*	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/silent-agent-nudge.js"
+*	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/compact-advice-guard.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep"
+@SubagentStart	10
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note"
+@SubagentStop	10
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep"
+@TaskCompleted	10
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js"
+@TaskCreated	10
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js"
+@UserPromptSubmit	10
+*	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js"
+*	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js"
+*	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js"
+*	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-rt-advisory"
+*	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js"
+*	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js"
+*	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/gh-rt-advisory"
+@Setup	10	empty
+@UserPromptExpansion	10	empty
+@PermissionRequest	10	empty
+@PermissionDenied	10	empty
+@PostToolBatch	10	empty
+@StopFailure	10	empty
+@TeammateIdle	10	empty
+@InstructionsLoaded	10	empty
+@ConfigChange	10	empty
+@CwdChanged	10	empty
+@DirectoryAdded	10	empty
+@FileChanged	10	empty
+@PostCompact	10	empty
+@PreModelSwitch	10	empty
+@PostModelSwitch	10	empty
+@Notification	10	empty
+@MessageDisplay	10	empty
+@Elicitation	10	empty
+@ElicitationResult	10	empty

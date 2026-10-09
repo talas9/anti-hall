@@ -1,0 +1,73 @@
+# ah-engine shipped defaults for the realtime layer's watch facility (the `watch` module). Format: see the header of engine.toml.
+#
+# The watcher is generic: it knows directories and file names, nothing about GitHub, DevSwarm or anything else that consumes it.
+# It turns "something in these directories changed" into small coalesced batches (or one rescan signal when it fell behind); a
+# consumer always re-reads its source and compares a signature, so an event is only a hint. Each key can be overridden in the
+# `realtime` section of settings.json (and by its env variable where one is listed).
+
+[realtime.backend]
+doc = "How a watched directory is observed: auto (OS file events: FSEvents on macOS, inotify on Linux; a directory on a filesystem listed in fs_poll_types, or one the OS refuses to watch, is polled instead) or poll (always compare file signatures every poll_ms). An unknown word is read as auto."
+value = "auto"
+
+[realtime.poll_ms]
+doc = "How often a polled directory is listed and its watched files stat'ed, in milliseconds. Only directories that cannot use OS events are polled (9p, drvfs, NFS, SMB, FUSE, a directory that does not exist yet, backend = poll), so this is the detection latency of those: at most this plus debounce_ms. Polling costs CPU in proportion to the files watched divided by this interval."
+value = 750
+min = 20
+max = 60000
+unit = "ms"
+env = "AH_ENGINE_RT_POLL_MS"
+
+[realtime.debounce_ms]
+doc = "A changed file is reported once it has been quiet this long, so a burst of writes becomes one report."
+value = 100
+min = 0
+max = 60000
+unit = "ms"
+env = "AH_ENGINE_RT_DEBOUNCE_MS"
+
+[realtime.max_delay_ms]
+doc = "A file that keeps changing is still reported at least this often (the ceiling on debounce_ms), so a busy source is never starved."
+value = 1000
+min = 1
+max = 600000
+unit = "ms"
+env = "AH_ENGINE_RT_MAX_DELAY_MS"
+
+[realtime.queue_cap]
+doc = "The most distinct changed files held before they are reported. Past it the held changes are dropped and ONE rescan signal is sent instead (the consumer reconciles everything), so the queue and its output stay bounded however large the storm."
+value = 512
+min = 1
+max = 1000000
+
+[realtime.max_entries]
+doc = "The most matching files one watched directory is tracked for. A directory with more reports a rescan signal when it changes, so a huge directory cannot grow the watcher's memory."
+value = 2048
+min = 1
+max = 1000000
+
+[realtime.fs_poll_types]
+doc = "Filesystem types whose watched directories are always polled because OS change events do not arrive there (WSL2 /mnt drives report 9p or drvfs; network and FUSE filesystems report no events). A trailing or leading * matches any text."
+value = ["9p", "drvfs", "nfs", "nfs4", "smbfs", "cifs", "afpfs", "webdav", "fuse*", "*fuse", "fusefs*", "ceph", "glusterfs", "lustre"]
+
+[realtime.sqlite_suffixes]
+doc = "Suffixes of the files SQLite keeps beside a database (write-ahead log, shared memory, rollback journal). Watching a database name also watches the name plus each suffix, because a commit lands in the -wal file and a checkpoint can truncate it."
+value = ["-wal", "-shm", "-journal"]
+
+[realtime.latency_target_ms]
+doc = "The detection latency (change to report) the watcher must stay within at the 95th percentile, for OS events and for polled directories alike; the benchmark test and the rollout gate compare against it."
+value = 1000
+min = 1
+unit = "ms"
+
+[realtime.cpu_budget_permille]
+doc = "The CPU the idle watcher may use, in thousandths of one core (5 means 0.5 percent); the benchmark test and the rollout gate compare against it."
+value = 5
+min = 1
+
+[realtime.mounts_file]
+doc = "The file that lists mounted filesystems with their types on Linux (including WSL2); the longest mount point that holds a watched directory names its filesystem type. macOS asks the system (statfs) instead."
+value = "/proc/self/mounts"
+
+[realtime.msg_too_many_files]
+doc = "Why a directory is polled instead of watched with events when more files than the cap match; {cap} is `realtime.max_entries`."
+value = "more than {cap} matching files"

@@ -1,8 +1,12 @@
 'use strict';
-// anti-hall :: devswarm-supervision-jev — the five Jev integrations behind
-// DevSwarm straying supervision (Meeseeks P2). Called ONLY from the supervisor
+// anti-hall :: devswarm-supervision-jev — the two Jev integrations behind
+// DevSwarm straying supervision that still live in Node (Meeseeks P2).
+// devswarmWaitKind, devswarmLoop and devswarmStepMap moved to the engine
+// (zero-new-Node): its `jev_sweep` job gathers their facts (plan, transcript,
+// git, CI, mesh) and puts them through the evidence gate (`ah-engine jev
+// sweep`, engine/defaults/jev_sweep.toml + jev_evidence.toml). Called ONLY from the supervisor
 // sweep (companion/lib/devswarm-supervision.js evaluateChild), never from a
-// per-turn hook. All five default to "on" = RECOMMENDATION (owner, 0.117.0):
+// per-turn hook. Both default to "on" = RECOMMENDATION (owner, 0.117.0):
 // Jev's verdict + confidence ride on the straying warning ("Jev: off-brief
 // (0.88)") in the Primary's STRAYING line and the roster; the Primary makes
 // the final call. Jev never suppresses a deterministic warning, never blocks,
@@ -10,11 +14,6 @@
 //
 //   devswarmOnBrief         over `off-scope`: is this work off the brief?
 //   devswarmExtraSanctioned over `off-scope`: did the user ask for this extra work?
-//   devswarmWaitKind        over `idle`/`stall`: stuck, or waiting on CI/owner/peer?
-//   devswarmLoop            over `burn`/`stall` (or its own advisory `loop`): looping?
-//                           (asked when the step is older than 2x stepStallMin or
-//                           a `burn` warning fired; the burn figure is an input)
-//   devswarmStepMap         advisory: which step does a summary without --step describe?
 //
 // CADENCE (same idea as supervisorBlockerLabel): a question is asked with
 // jevAssist.askDetached (zero latency, the worker logs to jev-assist.ndjson and
@@ -26,9 +25,7 @@
 //
 // EFFECT: mode "on" AND the cached answer clears its threshold -> a
 // recommendation note on the signal (sig.jev = [{integration, verdict,
-// confidence, supports}]). devswarmLoop with no warning to annotate adds its
-// own advisory `loop` signal; devswarmStepMap fills an inferred `~N` step.
-// Otherwise (off, shadow, no answer yet, low confidence, any error) the
+// confidence, supports}]). Otherwise (off, shadow, no answer yet, low confidence, any error) the
 // deterministic signals stand unchanged. Inputs are capped and scrubbed.
 // Mode "off" (the whole of Jev disabled included) costs one config read: no
 // log row, no spawn, no state write.
@@ -40,12 +37,11 @@ const planLib = require('./devswarm-plan.js');
 const metrics = require('./devswarm-supervision-metrics.js');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
 
-const IDS = ['devswarmOnBrief', 'devswarmExtraSanctioned', 'devswarmWaitKind', 'devswarmLoop', 'devswarmStepMap'];
-const CAPS = { devswarmOnBrief: 1500, devswarmExtraSanctioned: 1000, devswarmWaitKind: 800, devswarmLoop: 1200, devswarmStepMap: 1000 };
+const IDS = ['devswarmOnBrief', 'devswarmExtraSanctioned'];
+const CAPS = { devswarmOnBrief: 1500, devswarmExtraSanctioned: 1000 };
 // Design thresholds; the configured jev.confidenceThreshold (default 0.85) is
 // the floor for the three that the design pins at "the existing threshold".
-const MIN_THRESHOLD = { devswarmLoop: 0.9, devswarmExtraSanctioned: 0.9 };
-const STEPMAP_THRESHOLD = 0.8;
+const MIN_THRESHOLD = { devswarmExtraSanctioned: 0.9 };
 const DEFAULT_REASK_MS = 6 * 60 * 60 * 1000;
 const GIT_TIMEOUT_MS = 3000;
 
@@ -244,72 +240,6 @@ function jevAdjust(ctx) {
       }
       if (effective(extra, Math.max(extra ? extra.threshold : 1, MIN_THRESHOLD.devswarmExtraSanctioned)) && typeof extra.answer === 'boolean') {
         note(offSig, 'devswarmExtraSanctioned', extra, extra.answer ? 'not requested by the user' : 'the user asked for this', extra.answer);
-      }
-    }
-
-    if (has('idle') || has('stall')) {
-      const wait = consult(c, {
-        id: 'devswarmWaitKind', trust: 'relax-block', baseline: true,
-        question: { type: 'noul', instructions: 'A child workspace has shown no step progress for a while. Is it genuinely STUCK, rather than legitimately waiting on CI, the owner or a peer?',
-          criteria: { true: 'stuck', false: 'legitimately waiting on CI, the owner or a peer' } },
-        state: stepLine + '\nlast summary: ' + (summaries[summaries.length - 1] || '(none)')
-          + '\nsignals: ' + signals.filter((s) => s.signal === 'idle' || s.signal === 'stall').map((s) => s.reason).join('; '),
-        stable: stepLine + '\u0001' + (summaries[summaries.length - 1] || '') + '\u0001'
-          + signals.filter((s) => s.signal === 'idle' || s.signal === 'stall').map((s) => s.key).join(','),
-        agree: (a) => a === true,
-      });
-      if (effective(wait, wait && wait.threshold) && typeof wait.answer === 'boolean') {
-        for (const sg of signals) if (sg.signal === 'idle' || sg.signal === 'stall') note(sg, 'devswarmWaitKind', wait, wait.answer ? 'stuck' : 'waiting on CI/owner/peer, not stuck', wait.answer);
-      }
-    }
-
-    const since = Number.isFinite(cur.started_at) ? cur.started_at : plan.created_at;
-    if ((ctx.verdict && ctx.verdict.status === 'alive' && Number.isFinite(since) && ctx.now - since > 2 * ctx.stallMs) || has('burn')) {
-      const loop = consult(c, {
-        id: 'devswarmLoop', trust: 'add-block', baseline: false,
-        question: { type: 'noul', instructions: 'Is this child workspace LOOPING: repeating the same work without getting closer to finishing its current step?',
-          criteria: { true: 'looping', false: 'making real progress' } },
-        state: stepLine + '\ntime on step: ' + planLib.dur(ctx.now - since)
-          + (ctx.usage ? '\ntokens since the step last moved: ' + require('./devswarm-token-usage.js').fmt(ctx.usage.sinceStep) : '')
-          + '\nrecent summaries: ' + summaries.join(' | ')
-          + '\nfiles changed in 3+ of the last 10 commits: ' + git.churn.map((x) => x.file + ' x' + x.n).join(', '),
-        stable: stepLine + '\u0001' + since + '\u0001' + summaries.join('|') + '\u0001' + git.churn.map((x) => x.file + x.n).join(','),
-        agree: (a) => a === false,
-      });
-      if (effective(loop, Math.max(loop ? loop.threshold : 1, MIN_THRESHOLD.devswarmLoop)) && typeof loop.answer === 'boolean') {
-        const host = signals.find((s) => s.signal === 'burn') || signals.find((s) => s.signal === 'stall');
-        if (host) note(host, 'devswarmLoop', loop, loop.answer ? 'looping' : 'not looping', loop.answer);
-        else if (loop.answer === true && !has('loop')) {
-          // No deterministic warning to annotate: Jev's own advisory `loop`
-          // recommendation (capped like every other signal).
-          const sg = { signal: 'loop', step: cur.n, key: 'loop:' + cur.n + ':' + since, reason: 'Jev thinks it is looping on the step (' + planLib.dur(ctx.now - since) + ')' };
-          note(sg, 'devswarmLoop', loop, 'looping', true);
-          signals = signals.concat([sg]);
-        }
-      }
-    }
-
-    const last = Array.isArray(plan.summaries) && plan.summaries.length ? plan.summaries[plan.summaries.length - 1] : null;
-    if (last && last.stepped === false && plan.steps.length <= 30) {
-      const criteria = {};
-      for (const s of plan.steps) criteria[String(s.n)] = cap(s.text, 60);
-      criteria.unknown = 'none of these steps';
-      const map = consult(c, {
-        id: 'devswarmStepMap', trust: 'advisory', baseline: null,
-        question: { type: 'choice', instructions: 'Which numbered step of the plan does this progress summary describe?', criteria },
-        state: 'summary: ' + last.text,
-        agree: (a) => String(a) === String(cur.n),
-      });
-      const n = map && Number(map.answer);
-      if (effective(map, STEPMAP_THRESHOLD) && Number.isInteger(n) && n >= 1 && n <= plan.steps.length && plan.inferred_step !== n) {
-        // Never overrides the child's own report: finishLabel shows ~N only
-        // while no step was ever reported. Written under the plan lock on the
-        // fresh plan, so a concurrent heartbeat --step is never lost.
-        planLib.updatePlan(ctx.home, ctx.key, (fresh) => {
-          if (!fresh || fresh.inferred_step === n) return null;
-          fresh.inferred_step = n;
-          return fresh;
-        });
       }
     }
 

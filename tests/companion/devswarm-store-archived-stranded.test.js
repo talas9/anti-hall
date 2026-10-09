@@ -92,7 +92,7 @@ for (const B of backends) {
     const home = tmpHome();
     try {
       const s = open(home);
-      const wt = path.join(home, 'wt-live');
+      const wt = path.join(home, 'wt-active');
       fs.mkdirSync(wt, { recursive: true });
       writeDescriptor(home, 'workspaces', 'live-orphan', { worktreePath: wt, sessionId: 'sess-x' });
       seedUnread(s, 'live-orphan', 1); // descriptor on disk but NO registry row -> orphan

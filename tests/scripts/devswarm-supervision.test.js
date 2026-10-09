@@ -224,10 +224,11 @@ function stallFixture(home) {
   seed(home, 'ch-j', ['read', 'fix'], (p, now) => {
     planLib.applyStep(p, 1, 'doing', now - 45 * MIN);
     planLib.recordSummary(p, 'waiting for CI on PR 12', true, now - 45 * MIN);
+    p.scope_globs = ['src/**'];
   });
-  return { id: 'ch-j', worktreePath: null };
+  return { id: 'ch-j', worktreePath: path.join(home, 'no-such-worktree') };
 }
-const jevDeps = (asked) => ({ readyCheck: () => null, jev: { askDetached: (o) => asked.push(o), gitRecent: () => ({ subjects: [], churn: [] }), recentUserPrompts: () => [] } });
+const jevDeps = (asked) => ({ readyCheck: () => ({ ok: true, outside_allowed: ['docs/a.md'] }), jev: { askDetached: (o) => asked.push(o), gitRecent: () => ({ subjects: [], churn: [] }), recentUserPrompts: () => [] } });
 function withEnv(env, fn) {
   const saved = {};
   for (const k of Object.keys(env)) { saved[k] = process.env[k]; if (env[k] == null) delete process.env[k]; else process.env[k] = env[k]; }
@@ -238,7 +239,7 @@ test('jev off: deterministic signals only — no ask, no Jev state, no jev-assis
   const home = tmpHome();
   try {
     const asked = [];
-    const r = sup.evaluateChild(stallFixture(home), { status: 'alive' }, { home, env: JEV_ENV, deps: jevDeps(asked) });
+    const r = sup.evaluateChild(stallFixture(home), { status: 'alive' }, { home, env: JEV_ENV, deps: Object.assign(jevDeps(asked), { readyCheck: () => null }) });
     assert.deepStrictEqual(r.signals.map((s) => s.signal), ['stall']);
     assert.strictEqual(asked.length, 0);
     assert.ok(!fs.existsSync(supJev.statePath(home, 'ch-j')));
@@ -254,27 +255,27 @@ test('jev (default on = recommendation): asked once per input; the answer annota
     const asked = [];
     const now = Date.now();
     const a = sup.evaluateChild(d, { status: 'alive' }, { home, env: JEV_ENV, now, deps: jevDeps(asked) });
-    assert.deepStrictEqual(a.signals.map((s) => s.signal), ['stall']);
-    const wait = asked.filter((o) => o.id === 'devswarmWaitKind');
+    assert.deepStrictEqual(a.signals.map((s) => s.signal), ['stall', 'off-scope']);
+    const wait = asked.filter((o) => o.id === 'devswarmOnBrief');
     assert.strictEqual(wait.length, 1, 'asked detached once');
-    assert.ok(wait[0].state.length <= 800, 'input cap');
+    assert.ok(wait[0].state.length <= 1500, 'input cap');
     sup.evaluateChild(d, { status: 'alive' }, { home, env: JEV_ENV, now: now + 90000, deps: jevDeps(asked) });
-    assert.strictEqual(asked.filter((o) => o.id === 'devswarmWaitKind').length, 1, 'same input inside the re-ask window -> no second ask');
+    assert.strictEqual(asked.filter((o) => o.id === 'devswarmOnBrief').length, 1, 'same input inside the re-ask window -> no second ask');
 
     // Simulate the detached worker's cache fill: Jev says "not stuck" (confident).
-    const p = jevAssist.prepare({ id: 'devswarmWaitKind', home, trust: 'relax-block', baseline: true, cacheKey: wait[0].cacheKey, state: wait[0].state });
+    const p = jevAssist.prepare({ id: 'devswarmOnBrief', home, trust: 'relax-block', baseline: true, cacheKey: wait[0].cacheKey, state: wait[0].state });
     assert.strictEqual(p.mode, 'on', 'default mode is on');
     fs.mkdirSync(path.dirname(jevAssist.cachePath(home)), { recursive: true });
     fs.writeFileSync(jevAssist.cachePath(home), JSON.stringify({ [p.hash]: { answer: false, confidence: 0.92, _seq: 1 } }));
     const c = sup.evaluateChild(d, { status: 'alive' }, { home, env: JEV_ENV, now: now + 180000, deps: jevDeps(asked) });
-    assert.deepStrictEqual(c.signals.map((s) => s.signal), ['stall'], 'never suppresses the deterministic warning');
-    assert.deepStrictEqual(c.signals[0].jev, [{ integration: 'devswarmWaitKind', verdict: 'waiting on CI/owner/peer, not stuck', confidence: 0.92, supports: false }]);
+    assert.deepStrictEqual(c.signals.map((s) => s.signal), ['stall', 'off-scope'], 'never suppresses the deterministic warning');
+    assert.deepStrictEqual(c.signals[1].jev, [{ integration: 'devswarmOnBrief', verdict: 'on-brief', confidence: 0.92, supports: false }]);
     const active = planLib.readStray(home, 'ch-j').active;
-    assert.strictEqual(active[0].jev[0].verdict, 'waiting on CI/owner/peer, not stuck');
-    assert.match(sup.strayingLine([{ id: 'ch-j', step: 1, reason: active[0].reason, jev: active[0].jev }]), /\(Jev: waiting on CI\/owner\/peer, not stuck 0\.92\)/);
+    assert.strictEqual(active.find((x) => x.signal === 'off-scope').jev[0].verdict, 'on-brief');
+    assert.match(sup.strayingLine([{ id: 'ch-j', step: 1, reason: active.find((x) => x.signal === 'off-scope').reason, jev: active.find((x) => x.signal === 'off-scope').jev }]), /\(Jev: on-brief 0\.92\)/);
     const j = events(home).filter((e) => e.type === 'jev');
     assert.strictEqual(j.length, 1);
-    assert.deepStrictEqual([j[0].integration, j[0].mode, j[0].agree], ['devswarmWaitKind', 'on', false]);
+    assert.deepStrictEqual([j[0].integration, j[0].mode, j[0].agree], ['devswarmOnBrief', 'on', false]);
     sup.evaluateChild(d, { status: 'alive' }, { home, env: JEV_ENV, now: now + 270000, deps: jevDeps(asked) });
     assert.strictEqual(events(home).filter((e) => e.type === 'jev').length, 1, 'one jev event per answered input');
 
@@ -282,16 +283,16 @@ test('jev (default on = recommendation): asked once per input; the answer annota
     const cor = cli.cmdCorrect('ch-j', {}, { home, env: JEV_ENV, cwd: os.tmpdir(), now: now + 300000, io: { send: () => ({ code: 0, result: { ok: true } }) } });
     assert.strictEqual(cor.ok, true);
     const ce = events(home).find((e) => e.type === 'correction');
-    assert.deepStrictEqual(ce.jev, [{ integration: 'devswarmWaitKind', supports: false }]);
+    assert.deepStrictEqual(ce.jev, [{ integration: 'devswarmOnBrief', supports: false }]);
     const rep = metrics.report(home, { days: 1 });
-    assert.strictEqual(rep.jev.devswarmWaitKind.overridden, 1);
-    assert.strictEqual(rep.jev.devswarmWaitKind.followRate, 0);
+    assert.strictEqual(rep.jev.devswarmOnBrief.overridden, 1);
+    assert.strictEqual(rep.jev.devswarmOnBrief.followRate, 0);
 
     // shadow: logged and cached, but nothing is shown on the warning.
-    fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ jevIntegrations: { devswarmWaitKind: 'shadow' } }));
+    fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ jevIntegrations: { devswarmOnBrief: 'shadow' } }));
     const sh = sup.evaluateChild(d, { status: 'alive' }, { home, env: JEV_ENV, now: now + 300000 + 31 * MIN, deps: jevDeps(asked) });
-    assert.deepStrictEqual(sh.signals.map((s) => s.signal), ['stall']);
-    assert.strictEqual(sh.signals[0].jev, undefined);
+    assert.deepStrictEqual(sh.signals.map((s) => s.signal), ['stall', 'off-scope']);
+    assert.strictEqual(sh.signals[1].jev, undefined);
   } finally { rm(home); }
 }));
 
@@ -311,10 +312,10 @@ test('jev scrubs secrets and caps every input', () => withEnv({ ANTIHALL_JEV: nu
     plan.scope_globs = ['src/**']; planLib.savePlan(home, 'ch-s', plan);
     sup.evaluateChild({ id: 'ch-s', worktreePath: path.join(home, 'no-such-worktree') }, { status: 'alive' }, { home, env: JEV_ENV, deps });
     const ids = asked.map((o) => o.id).sort();
-    assert.deepStrictEqual(ids, ['devswarmExtraSanctioned', 'devswarmLoop', 'devswarmOnBrief', 'devswarmStepMap', 'devswarmWaitKind']);
+    assert.deepStrictEqual(ids, ['devswarmExtraSanctioned', 'devswarmOnBrief'], 'WaitKind, Loop and StepMap are asked by the engine sweep, never by Node');
     for (const o of asked) {
       assert.ok(!/abcdef123456|SECRETVALUE/.test(o.state), o.id + ' leaks: ' + o.state);
-      assert.ok(o.state.length <= { devswarmOnBrief: 1500, devswarmExtraSanctioned: 1000, devswarmWaitKind: 800, devswarmLoop: 1200, devswarmStepMap: 1000 }[o.id]);
+      assert.ok(o.state.length <= { devswarmOnBrief: 1500, devswarmExtraSanctioned: 1000 }[o.id]);
     }
   } finally { rm(home); }
 }));

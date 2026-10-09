@@ -26,9 +26,9 @@ the API keys. Every other setting lives in `~/.anti-hall/settings.json`, grouped
 (section). When the user says "anti-hall settings" / "change my settings":
 
 1. Run the grouped overview, one table per category, and tell them which categories exist:
-   `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show`
+   `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show`
 2. Then show only the category they care about:
-   `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section <category> [--all]`
+   `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --section <category> [--all]`
 3. Change with `set <section.key> <value>`, undo with `reset <section.key>` (below).
 
 A non-default value set in Claude Code's plugin options in earlier versions is copied into
@@ -43,7 +43,7 @@ When the user names a setting and a value ("turn off the merge gate", "set auto-
 to 80%", "disable Jev", "hide the statusline email"), resolve it to a `section.key` and
 value and apply it:
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" set <section.key> <value>
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings set <section.key> <value>
 ```
 then confirm with the single-key line from `get <section.key>`. Never print the full
 table for a direct change. A validation failure (out-of-range number, unknown enum value)
@@ -99,8 +99,8 @@ thread run inline. Because that file lives in the working tree, a cloned repo co
 ship one — so it applies ONLY after the user trusts that exact file content with `trust-command-allow`:
 
 ```
-node <plugin-root>/scripts/settings.js trust-command-allow [<repo>]              # print patterns, record nothing
-node <plugin-root>/scripts/settings.js trust-command-allow [<repo>] --confirmed  # record the trust
+sh <plugin-root>/scripts/ah-run.sh settings trust-command-allow [<repo>]              # print patterns, record nothing
+sh <plugin-root>/scripts/ah-run.sh settings trust-command-allow [<repo>] --confirmed  # record the trust
 ```
 
 Trust is a sha256 of the file bytes stored OUTSIDE the repo in
@@ -121,8 +121,8 @@ delegating them. It uses the same trust model as the command allowlist and appli
 only after the user trusts that exact file content with `trust-edit-allow`:
 
 ```
-node <plugin-root>/scripts/settings.js trust-edit-allow [<repo>]              # print paths, record nothing
-node <plugin-root>/scripts/settings.js trust-edit-allow [<repo>] --confirmed  # record the trust
+sh <plugin-root>/scripts/ah-run.sh settings trust-edit-allow [<repo>]              # print paths, record nothing
+sh <plugin-root>/scripts/ah-run.sh settings trust-edit-allow [<repo>] --confirmed  # record the trust
 ```
 
 Trust lives in `~/.anti-hall/trusted-edit-allow.json`, and any edit to the file revokes
@@ -137,7 +137,7 @@ Kill-switch: `guards.projectEditAllow=false`.
 The opt-in speculation-judge (`jev.semanticJudge`, off by default) has a one-line switch:
 
 ```bash
-node <plugin-root>/scripts/settings.js judge on|off|status
+sh <plugin-root>/scripts/ah-run.sh settings judge on|off|status
 ```
 
 `on` sets the flag, then says whether an Anthropic key is visible to the CLI (never the key
@@ -195,7 +195,7 @@ Settings are read when each hook runs, so a change applies from the next hook ca
 Only when the user explicitly asks to see settings ("show my anti-hall settings", "what
 are my settings"), run:
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show            # or: show --section <key> [--all]
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show            # or: show --section <key> [--all]
 ```
 and present the output as-is (per-section markdown tables; the Source column says
 which tier answered — `plugin-option` (a stored plugin option), `file`, `env`, `legacy`, `default`).
@@ -268,9 +268,19 @@ new prompt, the Stop hook delivers the directive once instead. Before every comp
 `precompact-snapshot.js` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
 next to the handovers (it never blocks compaction).
 
+## Engine settings (the optional `ah-engine`)
+
+The per-hook switches above (`guards.*`, `safety.*`, `context.*`, ...) are honoured by the engine and by the Node hooks alike, so
+`set` works the same with or without the engine. The engine's own tunables (limits, texts, rules, dispatch rows, `telemetry.enabled`,
+`telemetry.retention_days`, per-entry `mode` on/shadow/off) are NOT `settings.js` keys: they are plain files in the plugin's
+`engine/` directory plus the engine's `config.toml`. Show them with `ah-engine config --json` (each value with its source),
+validate an edit with `ah-engine config validate <file>`, restore a missing key with `ah-engine config heal`. A bad edit falls back
+to the last-known-good copy, then the pristine copy, then Node. Never edit `engine/defaults.pristine/`. Skipping the engine
+download is the setting `engine.bootstrap` (boolean, default true; `settings.js set engine.bootstrap false`), or the env var `AH_ENGINE_BOOTSTRAP=0`, which overrides the setting.
+
 ## Resetting a setting
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" reset <section.key>` removes the
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings reset <section.key>` removes the
 settings.json override for that one key, so the stored plugin option (if the key has a
 `pluginOption`), the legacy source, or the schema default takes over again.
 
@@ -278,10 +288,10 @@ settings.json override for that one key, so the stored plugin option (if the key
 
 Every subcommand takes `--json` for machine-readable output:
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section jev --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" get jev.enabled --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" set limitConserve.threshold 90 --json
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --json
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --section jev --json
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings get jev.enabled --json
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings set limitConserve.threshold 90 --json
 ```
 
 `show --section jev` (and `--section jevIntegrations`) also prints **Jev integrations —

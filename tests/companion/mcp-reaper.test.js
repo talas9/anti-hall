@@ -358,10 +358,10 @@ test('truncation-safety: partial list with a dropped non-pid-1 parent yields NO 
 // completely untouched by any of this.
 // =====================================================================
 
-const BROKER_CWD = '/Users/talas9/.devswarm/repos/0/11f7ff9d/fix-roster-image-only-message/skyflutter';
+const BROKER_CWD = '/Users/dev/.devswarm/repos/0/11f7ff9d/fix-roster-image-only-message/appflutter';
 const REAL_BROKER_CMD =
-  '/Users/talas9/.nvm/versions/node/v24.14.0/bin/node ' +
-  '/Users/talas9/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs ' +
+  '/Users/dev/.nvm/versions/node/v24.14.0/bin/node ' +
+  '/Users/dev/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs ' +
   'serve --endpoint unix:/var/folders/x/T/cxc-abc/broker.sock ' +
   `--cwd ${BROKER_CWD} ` +
   '--pid-file /var/folders/x/T/cxc-abc/broker.pid';
@@ -422,7 +422,7 @@ test('hasLiveOwnerAtCwd: true when a live claude/codex process has that cwd (or 
 
 test('hasLiveOwnerAtCwd: false when no claude/codex process has that cwd', () => {
   const procs = [{ pid: 500, ppid: 1, cmd: '/opt/homebrew/bin/claude' }];
-  const cwdOf = () => '/Users/talas9/some/other/project';
+  const cwdOf = () => '/Users/dev/some/other/project';
   assert.strictEqual(m.hasLiveOwnerAtCwd(BROKER_CWD, procs, cwdOf, { realpathSync: identityRealpath }), false);
 });
 
@@ -442,12 +442,12 @@ test('hasLiveOwnerAtCwd: fail-soft true when the broker\'s own cwd cannot be rea
 });
 
 // BLOCKER (2026-09-25): the real field case has the broker's --cwd INSIDE a git
-// submodule (`<workspace>/skyflutter`) while the owning Claude session's cwd is the
+// submodule (`<workspace>/appflutter`) while the owning Claude session's cwd is the
 // workspace ROOT — an ANCESTOR of the broker's --cwd, not the same dir or a
 // descendant. A descendant-only check would have reaped that live broker.
 test('hasLiveOwnerAtCwd: true when the owner is at an ANCESTOR dir (workspace root) of a submodule broker', () => {
-  const workspaceRoot = '/Users/talas9/.devswarm/repos/0/11f7ff9d/fix-roster-image-only-message';
-  const submoduleBrokerCwd = workspaceRoot + '/skyflutter';
+  const workspaceRoot = '/Users/dev/.devswarm/repos/0/11f7ff9d/fix-roster-image-only-message';
+  const submoduleBrokerCwd = workspaceRoot + '/appflutter';
   const procs = [{ pid: 500, ppid: 1, cmd: '/opt/homebrew/bin/claude' }];
   const cwdOf = (pid) => (pid === 500 ? workspaceRoot : null);
   assert.ok(
@@ -559,12 +559,12 @@ test('findAbandonedCodexBrokers: a LIVE broker (PPID 1, live claude owns its cwd
 });
 
 test('findAbandonedCodexBrokers: end-to-end submodule case — owner at the workspace root is NOT listed', () => {
-  const workspaceRoot = '/Users/talas9/.devswarm/repos/0/11f7ff9d/fix-roster-image-only-message';
+  const workspaceRoot = '/Users/dev/.devswarm/repos/0/11f7ff9d/fix-roster-image-only-message';
   const submoduleBrokerCmd =
-    '/Users/talas9/.nvm/versions/node/v24.14.0/bin/node ' +
-    '/Users/talas9/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs ' +
+    '/Users/dev/.nvm/versions/node/v24.14.0/bin/node ' +
+    '/Users/dev/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs ' +
     'serve --endpoint unix:/var/folders/x/T/cxc-abc/broker.sock ' +
-    `--cwd ${workspaceRoot}/skyflutter ` +
+    `--cwd ${workspaceRoot}/appflutter ` +
     '--pid-file /var/folders/x/T/cxc-abc/broker.pid';
   const procs = [
     { pid: 500, ppid: 1, cmd: '/opt/homebrew/bin/claude' }, // owning session cwd = workspace ROOT
@@ -605,7 +605,7 @@ test('findAbandonedCodexBrokers: cwd exists but no owner process, and old enough
     minAgeS: 1800,
     getAgesForPids: agesOf(new Map([[2000, 3600]])), // 1h, past the 30min floor
     existsSync: () => true,
-    cwdOf: () => '/Users/talas9/some/unrelated/project', // no claude/codex process owns it
+    cwdOf: () => '/Users/dev/some/unrelated/project', // no claude/codex process owns it
     ...RP,
   });
   assert.strictEqual(abandoned.length, 1);

@@ -178,9 +178,9 @@ its own purposes).
    never reach cache sync).
 
 Modes:
-- `node "${CLAUDE_PLUGIN_ROOT}/skills/update/scripts/update.js" --check` — `git fetch` + compare local vs remote
+- `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" update --check` — `git fetch` + compare local vs remote
   `plugin.json` version. **No pull, no writes.** Answers "is anti-hall up to date?".
-- `node "${CLAUDE_PLUGIN_ROOT}/skills/update/scripts/update.js"` — the full update above.
+- `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" update` — the full update above.
 
 ## Steps
 
@@ -195,8 +195,8 @@ Modes:
    handed to a cheaper model. command-guard allows exactly this invocation
    (optionally piped to a bounded sink). Run exactly one of:
    ```
-   node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js" --check
-   node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js"
+   sh "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/scripts/ah-run.sh" update --check
+   sh "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/scripts/ah-run.sh" update
    ```
    Never spawn a subagent for it (model-routing-guard blocks an update spawn;
    `guards.updateInSession`).
@@ -250,7 +250,7 @@ Modes:
    the opt-in `migrate-state.js --restore-planning --dir <worktree>`. Owner
    decision (2026-07-03): `.anti-hall/` is the intended destination for
    progress/handover state across all projects going forward.
-7. Run the capability scan (`node plugins/anti-hall/scripts/capability-scan.js`)
+7. Run the capability scan (`sh plugins/anti-hall/scripts/ah-run.sh capability-scan`)
    to find what's missing on **this machine** vs what this build **ships**.
    Read-only — it never installs anything. It reports each opt-in capability
    (companions under `companion/install-*.js`, statusline, pending state

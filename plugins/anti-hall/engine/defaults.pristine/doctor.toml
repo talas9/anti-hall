@@ -1,0 +1,2125 @@
+# ah-engine shipped defaults for `ah-engine doctor` (D81): the health check and repair of anti-hall as the engine runs it. The
+# finding texts are the Node doctor's (`hooks/doctor.js`), byte for byte, for every check the engine also makes, so the two
+# reports can be read side by side (tests/doctor_parity.rs compares them). Format: see the header of engine.toml.
+
+[doctor.plugin_root_envs]
+doc = "Environment variables that name the plugin root, first set one wins, after the engine's own and the --plugin-root flag."
+value = ["CLAUDE_PLUGIN_ROOT", "CODEX_PLUGIN_ROOT"]
+
+[doctor.hooks_dir]
+doc = "The hooks directory under the plugin root."
+value = "hooks"
+
+[doctor.hooks_json]
+doc = "The generated hook registration file under the hooks directory."
+value = "hooks.json"
+
+[doctor.hooks_registry]
+doc = "The per-hook registry under the hooks directory, which lists the hook scripts the thin triggers hand to the engine."
+value = "hooks.registry.json"
+
+[doctor.script_re]
+doc = "The name pattern of a hook script in the registry."
+value = "[\\w-]+\\.js"
+
+[doctor.workflow_patterns]
+doc = "The names of the saved Workflow templates the doctor looks for (case-insensitive patterns)."
+value = ["(?i)^deadly-loop.*\\.js$", "(?i)^ship-it.*\\.js$"]
+
+[doctor.workflow_dir]
+doc = "The directory of saved Workflow templates under the home directory and under the project (relative to each)."
+value = ".claude/workflows"
+
+[doctor.statusline_scopes]
+doc = "Where a statusLine command may be configured, in order: label and file relative to the project (a leading ~ means the home directory)."
+value = [
+  { label = "project-local", file = ".claude/settings.local.json", home = false },
+  { label = "project", file = ".claude/settings.json", home = false },
+  { label = "user", file = ".claude/settings.json", home = true },
+]
+
+[doctor.statusline_marker]
+doc = "A statusLine command that contains this is the anti-hall dispatcher."
+value = "statusline.js"
+
+[doctor.statusline_shown]
+doc = "How many UTF-16 units of a custom statusLine command the doctor shows."
+value = 48
+
+[doctor.unhandled_flags]
+doc = "Flags of the Node doctor that the engine doctor does not handle yet; each is reported and the run continues."
+value = ["--prune-cache", "--reclaim-ingest-lock", "--logs"]
+
+[doctor.selftest_home_prefix]
+doc = "The name prefix of the throwaway home the live self-tests run against."
+value = "anti-hall-doctor-"
+
+[doctor.decision_block_re]
+doc = "The pattern of a Stop hook's block decision in what a guard prints."
+value = "\"decision\"\\s*:\\s*\"block\""
+
+[doctor.version_alert_re]
+doc = "The pattern of the version nudge in what the version-alert check prints; {stale} is the cached newer version, already escaped."
+value = "\"additionalContext\"\\s*:\\s*\"[^\"]*version-alert: v{stale} is available \\(you are running v"
+
+[doctor.node_timeout_ms]
+doc = "How long a Node hook gets in a live self-test before it is killed and the self-test fails."
+value = 30000
+unit = "ms"
+
+[doctor.max_hook_output]
+doc = "The most bytes of a Node hook's output a live self-test keeps."
+value = 1048576
+unit = "bytes"
+
+[doctor.node_default]
+doc = "The Node binary a live self-test runs a deferred hook with when the engine's own variable for it is not set."
+value = "node"
+
+[doctor.version_alert_script]
+doc = "The Node hook that answers the version-alert self-test when the engine defers it."
+value = "version-alert.js"
+
+[doctor.version_check_file]
+doc = "The cached latest-version file the version-alert self-test seeds, under the anti-hall directory."
+value = "version-check.json"
+
+[doctor.stale_version]
+doc = "The version the version-alert self-test caches as newer than the running one."
+value = "999.0.0"
+
+# ---- the live self-tests: each runs a built-in check on a crafted payload and expects a block or an allow --------------------------
+
+[doctor.selftests]
+doc = "The live self-tests. Each runs the named built-in check in-process (when the engine defers the payload, as the dispatcher would, its Node hook `script` is run instead) on the payload with the given environment (HOME is always the throwaway home) and expects: block (the guard denies: exit 2), allow (it does not), stop-block (a Stop decision of block), or alert-stale (see version-alert). `ok` and `bad` are the findings; `warn` is used instead of `bad` when set."
+value = [
+  { check = "git", script = "git-guard.js", want = "block", payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git push --force origin main\"}}", ok = "git-guard blocks `git push --force`", bad = "git-guard did NOT block force-push" },
+  { check = "git", script = "git-guard.js", want = "block", payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit -m \\\"x\\n\\nCo-Authored-By: Claude <noreply@anthropic.com>\\\"\"}}", ok = "git-guard blocks AI self-credit trailer", bad = "git-guard did NOT block AI self-credit" },
+  { check = "git", script = "git-guard.js", want = "allow", payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}", ok = "git-guard allows `git status`", bad = "git-guard wrongly blocked `git status`" },
+  { check = "command", script = "command-guard.js", want = "block", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm run build\"}}", ok = "command-guard blocks heavy cmd in coordinator", bad = "command-guard did NOT block heavy cmd in coordinator" },
+  { check = "command", script = "command-guard.js", want = "allow", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm run build\"},\"agent_id\":\"test-agent\",\"agent_type\":\"general-purpose\"}", ok = "command-guard ALLOWS heavy cmd in subagent (payload agent_id)", bad = "command-guard wrongly blocked a subagent — delegation would deadlock" },
+  { check = "command", script = "command-guard.js", want = "allow", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}", ok = "command-guard allows light cmd in coordinator", bad = "command-guard wrongly blocked a light cmd" },
+  { check = "command", script = "command-guard.js", want = "block", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status && npm run build\"}}", ok = "command-guard blocks heavy SECOND segment (`git status && npm run build`)", bad = "command-guard MISSED heavy second segment — per-segment fix regressed" },
+  { check = "command", script = "command-guard.js", want = "block", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd app && npm test\"}}", ok = "command-guard blocks heavy cmd after `cd` (`cd app && npm test`)", bad = "command-guard MISSED heavy cmd after cd — per-segment fix regressed" },
+  { check = "command", script = "command-guard.js", want = "block", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo \\\"$(npm run build)\\\"\"}}", ok = "command-guard blocks heavy cmd in $(...) substitution (`echo \"$(npm run build)\"`)", bad = "command-guard MISSED heavy cmd in command substitution — recursive-parse fix regressed" },
+  { check = "command", script = "command-guard.js", want = "block", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c \\\"npm run build\\\"\"}}", ok = "command-guard blocks heavy `bash -c \"npm run build\"` payload", bad = "command-guard MISSED heavy bash -c payload — recursive-parse fix regressed" },
+  { check = "command", script = "command-guard.js", want = "allow", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo \\\"$(date)\\\"\"}}", ok = "command-guard allows benign substitution (`echo \"$(date)\"` — date is not heavy)", bad = "command-guard wrongly blocked benign `echo \"$(date)\"` — over-blocking substitutions" },
+  { check = "command", script = "command-guard.js", want = "block", env = ["CLAUDE_CODE_ENTRYPOINT=cli", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"hivecontrol workspace monitor\"}}", ok = "command-guard blocks `hivecontrol workspace monitor` under DevSwarm (blocking long-poll)", bad = "command-guard did NOT block hivecontrol monitor under DevSwarm — destructive-read redirect regressed" },
+  { check = "command", script = "command-guard.js", want = "allow", env = ["CLAUDE_CODE_ENTRYPOINT=cli", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x"], payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"grep -n 'hivecontrol workspace monitor' docs/KB.md\"}}", ok = "command-guard allows grep of quoted hivecontrol DATA under DevSwarm (no false-positive)", bad = "command-guard wrongly blocked a grep of quoted hivecontrol data — destructive-read redirect over-blocks" },
+  { check = "edit-guard", script = "edit-guard.js", want = "block", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"src/x.js\",\"old_string\":\"a\",\"new_string\":\"b\"}}", ok = "edit-guard blocks coordinator edit", bad = "edit-guard did NOT block coordinator edit" },
+  { check = "edit-guard", script = "edit-guard.js", want = "allow", env = ["CLAUDE_CODE_ENTRYPOINT=cli"], payload = "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"src/x.js\",\"old_string\":\"a\",\"new_string\":\"b\"},\"agent_id\":\"test-agent\",\"agent_type\":\"general-purpose\"}", ok = "edit-guard ALLOWS subagent edit", bad = "edit-guard wrongly blocked a subagent edit — delegation would deadlock" },
+  { check = "speculation-guard", script = "speculation-guard.js", want = "stop-block", event = "Stop", transcript = ["{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"That change should be fine.\"}]}}"], payload = "{\"transcript_path\":\"{TRANSCRIPT}\",\"session_id\":\"doctor-spec-{NOW}\"}", ok = "speculation-guard flags \"should be fine\" (hedge w/o evidence)", bad = "speculation-guard did NOT flag \"should be fine\"" },
+  { check = "tasklist-guard", script = "tasklist-guard.js", want = "stop-block", event = "Stop", transcript = ["{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"id\":\"toolu_e0\",\"input\":{\"file_path\":\"/x/f0\"}}]}}", "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"id\":\"toolu_e1\",\"input\":{\"file_path\":\"/x/f1\"}}]}}", "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"id\":\"toolu_e2\",\"input\":{\"file_path\":\"/x/f2\"}}]}}", "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"id\":\"toolu_e3\",\"input\":{\"file_path\":\"/x/f3\"}}]}}"], payload = "{\"transcript_path\":\"{TRANSCRIPT}\",\"cwd\":\"{CWD}\",\"session_id\":\"doctor-tl-{NOW}\"}", ok = "tasklist-guard blocks untracked work (4 edits, no tasks, no progress file)", bad = "tasklist-guard did NOT block untracked work" },
+  { check = "codex-nudge", script = "codex-nudge.js", want = "stop-block", event = "Stop", transcript = ["{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"id\":\"toolu_a.ts\",\"input\":{\"file_path\":\"/x/a.ts\"}}]}}", "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"id\":\"toolu_b.ts\",\"input\":{\"file_path\":\"/x/b.ts\"}}]}}", "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"id\":\"toolu_c.ts\",\"input\":{\"file_path\":\"/x/c.ts\"}}]}}"], payload = "{\"transcript_path\":\"{TRANSCRIPT}\",\"session_id\":\"doctor-cx-{NOW}\"}", ok = "codex-nudge flags substantial code change with no Codex review", bad = "codex-nudge did NOT flag uncovered code change" },
+  { check = "model-routing", script = "model-routing-guard.js", want = "block", payload = "{\"tool_name\":\"Agent\",\"tool_input\":{\"model\":\"opus\",\"subagent_type\":\"general-purpose\",\"description\":\"fetch and download the build artifacts\",\"prompt\":\"fetch and download the build artifacts from the CI bucket\"}}", ok = "model-routing-guard blocks mechanical task pinned to flagship model (opus + fetch/download)", bad = "model-routing-guard did NOT block mechanical+flagship spawn — routing guard not firing" },
+  { check = "model-routing", script = "model-routing-guard.js", want = "allow", payload = "{\"tool_name\":\"Agent\",\"tool_input\":{\"description\":\"summarise the findings from the last round\",\"prompt\":\"summarise the findings from the last round\"}}", ok = "model-routing-guard allows benign spawn with no model and no mechanical signals", bad = "model-routing-guard wrongly blocked a benign spawn" },
+  { check = "swarm-guard", script = "swarm-guard.js", want = "allow", payload = "{\"tool_name\":\"Agent\",\"tool_input\":{}}", ok = "swarm-guard allows a spawn under normal memory", warn = "swarm-guard returned exit {code} (blocked) — check memory pressure" },
+]
+
+# ---- finding texts ----------------------------------------------------------------------------------------------------------------
+
+[doctor_msg.title]
+doc = "The first line of the report. Placeholder: {version}."
+value = "anti-hall doctor v{version}"
+
+[doctor_msg.verdict_ok]
+doc = "The verdict when nothing failed. Placeholder: {pass}."
+value = "✅ anti-hall · doctor: active, {pass} checks passed"
+
+[doctor_msg.verdict_warn]
+doc = "Appended to the passing verdict when there are warnings. Placeholder: {warn}."
+value = ", {warn} warning(s)"
+
+[doctor_msg.verdict_fail]
+doc = "The verdict when something failed. Placeholders: {fail}, {pass}, {warn}."
+value = "❌ anti-hall · doctor: {fail} failure(s), {pass} passed, {warn} warning(s)"
+
+[doctor_msg.platform]
+doc = "The platform finding. Placeholders: {platform}, {arch}."
+value = "Platform {platform} / {arch}"
+
+[doctor_msg.plugin_version]
+doc = "The plugin version finding. Placeholder: {version}."
+value = "anti-hall plugin version {version}"
+
+[doctor_msg.engine_version]
+doc = "The engine version finding. Placeholder: {version}."
+value = "ah-engine {version}"
+
+[doctor_msg.daemon_up]
+doc = "The engine daemon is running. Placeholder: {reply}."
+value = "the engine daemon is running ({reply})"
+
+[doctor_msg.daemon_down]
+doc = "The engine daemon is not running, which is normal until the first hook call."
+value = "the engine daemon is not running (it starts on the first hook call)"
+
+[doctor_msg.no_plugin_root]
+doc = "The doctor could not find the plugin root, so the checks that read the plugin's files were skipped."
+value = "plugin root not found (pass --plugin-root <dir> or set AH_ENGINE_PLUGIN_ROOT): the checks that read the plugin's own files were skipped"
+
+[doctor_msg.hooks_valid]
+doc = "hooks.json and its registry parse. Placeholder: {n}."
+value = "hooks.json is valid JSON ({n} hook script(s) registered)"
+
+[doctor_msg.hooks_invalid]
+doc = "hooks.json or its registry does not parse. Placeholder: {error}."
+value = "hooks.json invalid or unreadable: {error}"
+
+[doctor_msg.hook_present]
+doc = "A registered hook script is on disk. Placeholder: {file}."
+value = "{file} present"
+
+[doctor_msg.hook_missing]
+doc = "A registered hook script is not on disk. Placeholder: {file}."
+value = "{file} — REGISTERED BUT MISSING"
+
+[doctor_msg.deferred]
+doc = "A live self-test the engine could not decide itself: the check defers this payload to its Node hook. Placeholder: {check}."
+value = "{check}: the engine defers this self-test to its Node hook, so it was not exercised here"
+
+[doctor_msg.statusline_installed]
+doc = "The statusline is the anti-hall dispatcher. Placeholder: {label}."
+value = "statusline installed ({label}) -> anti-hall dispatcher"
+
+[doctor_msg.statusline_set]
+doc = "A custom statusline is configured. Placeholders: {label}, {command}."
+value = "statusline set ({label}) -> {command}…"
+
+[doctor_msg.statusline_none]
+doc = "No statusLine is configured."
+value = "no statusLine configured — run the install-statusline skill (then restart)"
+
+[doctor_msg.workflow_found]
+doc = "Saved Workflow templates exist. Placeholder: {files}."
+value = "saved workflow template(s) found: {files}"
+
+[doctor_msg.workflow_missing]
+doc = "No saved deadly-loop or ship-it Workflow template exists."
+value = "no saved deadly-loop/ship-it Workflow template found in ~/.claude/workflows/ or <cwd>/.claude/workflows/ -- running via the inline SKILL path means the Critic seat is unenforced LLM guidance and can silently degrade to Opus; save the workflow template via /workflows so the seat census (deadSeats/degraded blocking converged) is mechanically enforced instead of LLM-followed guidance"
+
+[doctor_msg.repair_heading]
+doc = "The heading of the repair section."
+value = "Repair"
+
+[doctor_msg.repair_heading_dry]
+doc = "The heading of the repair section in a preview."
+value = "Repair (dry-run — no changes written)"
+
+[doctor_msg.repair_none]
+doc = "The repair pass found no rows and nothing failed."
+value = "nothing to repair"
+
+[doctor_msg.repair_read_only]
+doc = "The note under the repair heading when no repair was asked for."
+value = "read-only run — nothing was changed. Run with --repair to apply the safe repairs (--dry-run previews them)."
+
+[doctor_msg.repair_fixed]
+doc = "A repair row that fixed something. Placeholders: {id}, {msg}."
+value = "FIXED [{id}] {msg}"
+
+[doctor_msg.repair_failed]
+doc = "A repair row that failed. Placeholders: {id}, {msg}."
+value = "FAILED [{id}] {msg}"
+
+[doctor_msg.repair_gated]
+doc = "A repair row held back by a gate. Placeholders: {id}, {msg}."
+value = "GATED [{id}] {msg}"
+
+[doctor_msg.repair_skipped]
+doc = "A repair row that did nothing. Placeholders: {id}, {msg}."
+value = "skipped [{id}] {msg}"
+
+[doctor_msg.unhandled_flag]
+doc = "A flag of the Node doctor that the engine doctor does not handle. Placeholder: {flag}."
+value = "{flag} is not handled by the engine doctor yet (D81); run the Node doctor for it"
+
+[doctor_msg.head_environment]
+doc = "The heading of the environment section."
+value = "Environment"
+
+[doctor_msg.head_engine]
+doc = "The heading of the engine section."
+value = "Engine"
+
+[doctor_msg.head_hooks]
+doc = "The heading of the hooks section."
+value = "Hooks (present)"
+
+[doctor_msg.head_guards]
+doc = "The heading of the live self-test section."
+value = "Guard behavior (live self-tests)"
+
+[doctor_msg.head_statusline]
+doc = "The heading of the statusline section."
+value = "Statusline"
+
+[doctor_msg.head_workflows]
+doc = "The heading of the Workflow templates section."
+value = "Workflow templates (deadly-loop / ship-it)"
+
+[doctor_msg.head_unhandled]
+doc = "The heading of the section that lists flags the engine doctor does not handle."
+value = "Not handled by the engine doctor"
+
+[doctor_msg.version_alert_ok]
+doc = "The version-alert self-test passed."
+value = "version-alert nudges on a stale cached version and stays silent when current"
+
+[doctor_msg.version_alert_bad]
+doc = "The version-alert self-test failed."
+value = "version-alert did NOT behave correctly for stale-vs-current cache"
+
+[doctor_msg.unknown_version]
+doc = "The version shown when the plugin manifest cannot be read."
+value = "(unknown)"
+
+[doctor_msg.row_prefix_info]
+doc = "The marker in front of an informational finding."
+value = "i"
+
+[doctor_msg.row_ok]
+doc = "The marker in front of a passing finding."
+value = "✅"
+
+[doctor_msg.row_bad]
+doc = "The marker in front of a failing finding."
+value = "❌"
+
+[doctor_msg.row_warn]
+doc = "The marker in front of a warning."
+value = "⚠️"
+
+[doctor_msg.not_json]
+doc = "A plugin file that does not parse as JSON. Placeholder: {file}."
+value = "{file} is not valid JSON"
+
+[doctor_msg.hook_timeout]
+doc = "A Node hook did not finish a live self-test in time. Placeholder: {script}."
+value = "{script} did not finish within the self-test time limit"
+
+[doctor_msg.capture_failed]
+doc = "The thread that captured a Node hook's output failed. Placeholder: {script}."
+value = "the output of {script} could not be captured"
+
+[doctor.platform_names]
+doc = "Node's name for each operating system and architecture Rust names differently (process.platform and process.arch)."
+value = { macos = "darwin", aarch64 = "arm64", x86_64 = "x64" }
+
+[doctor.passthrough_env]
+doc = "The process environment variables a live self-test keeps (the rest of its environment is the test's own)."
+value = ["PATH", "TMPDIR"]
+
+[doctor.default_event]
+doc = "The hook event a self-test payload is evaluated as when it names none."
+value = "PreToolUse"
+
+[doctor.transcript_file]
+doc = "The file name of the throwaway transcript a Stop self-test reads."
+value = "t.jsonl"
+
+[doctor.version_alert_payload]
+doc = "The SessionStart payload of the version-alert self-test; {SID} is a unique session id."
+value = "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"{SID}\"}"
+
+[doctor.version_alert_env]
+doc = "Environment pairs of the version-alert self-test (the off switch is cleared so an inherited one cannot fake a pass)."
+value = ["ANTIHALL_VERSION_ALERT="]
+
+[doctor.version_alert_sessions]
+doc = "Session id prefixes of the stale-cache and current-cache version-alert runs."
+value = ["doctor-va-stale", "doctor-va-current"]
+
+[doctor.poll_ms]
+doc = "How often a live self-test checks whether its Node hook has finished."
+value = 20
+unit = "ms"
+
+# ---- install-health checks (doctor lane): the engine binary, daemon, state directory, configuration, plugin registry, toolchain, logs, witness ----
+
+[doctor.exec_bit]
+doc = "Permission bits that mean 'executable' (octal 0111)."
+value = 73
+
+[doctor.owner_exec_bit]
+doc = "The owner-execute permission bit (octal 0100)."
+value = 64
+
+[doctor.mode_mask]
+doc = "Mask of the permission bits shown for a file mode (octal 0777)."
+value = 511
+
+[doctor.others_mask]
+doc = "Mask of the group and other permission bits (octal 0077): a private directory has none."
+value = 63
+
+[doctor.mb]
+doc = "Bytes in a megabyte, for the sizes the report shows."
+value = 1048576
+
+[doctor.min_free_mb]
+doc = "A state directory on a volume with less free space than this (MB) is reported as nearly full."
+value = 100
+
+[doctor.hash_chunk]
+doc = "Bytes read at a time when hashing a file."
+value = 65536
+
+[doctor.hash_shown]
+doc = "How many leading characters of a sha256 the report shows."
+value = 12
+
+[doctor.header_read_bytes]
+doc = "How many leading bytes of the engine binary are read to tell what kind of executable it is."
+value = 512
+
+[doctor.tail_bytes]
+doc = "How many trailing bytes of a log are sampled for unparsable lines."
+value = 262144
+
+[doctor.log_warn_factor]
+doc = "A log or inbox larger than its cap times this is reported as not being trimmed."
+value = 2
+
+[doctor.node_min_major]
+doc = "The oldest Node major version the fallback hooks support."
+value = 22
+
+[doctor.probe_timeout_ms]
+doc = "How long a probe of another program (node, git, the installed engine, ps) may run."
+value = 5000
+
+[doctor.probe_poll_ms]
+doc = "How often a running probe is polled."
+value = 20
+
+[doctor.passwd_buf]
+doc = "Buffer size for the user database lookup of the account's home."
+value = 4096
+
+[doctor.why_max]
+doc = "How many characters of a failing program's first message the report shows."
+value = 160
+
+[doctor.shadow_log_warn_mb]
+doc = "A Node witness log larger than this many MB is reported."
+value = 256
+
+[doctor.shadow_stale_days]
+doc = "A registered Node witness whose log has not changed for this many days is reported as silent."
+value = 7
+
+[doctor.day_s]
+doc = "Seconds in a day."
+value = 86400
+
+[doctor.elf_machine_offset]
+doc = "Byte offset of the machine field in an ELF header."
+value = 18
+
+[doctor.elf_data_offset]
+doc = "Byte offset of the byte-order field in an ELF header (2 means big-endian)."
+value = 5
+
+[doctor.macho_cpu_offset]
+doc = "Byte offset of the CPU type in a thin 64-bit Mach-O header (little-endian)."
+value = 4
+
+[doctor.fat_count_offset]
+doc = "Byte offset of the entry count in a universal Mach-O header (big-endian)."
+value = 4
+
+[doctor.fat_first_offset]
+doc = "Byte offset of the first entry in a universal Mach-O header."
+value = 8
+
+[doctor.fat_entry_size]
+doc = "Size in bytes of one entry in a universal Mach-O header."
+value = 20
+
+[doctor.fat_max_entries]
+doc = "How many entries of a universal Mach-O header are read."
+value = 8
+
+[doctor.exe_min_bytes]
+doc = "A file shorter than this that is not a script cannot be an executable."
+value = 32
+
+[doctor.macos_name]
+doc = "The OS name the engine and the release assets use for macOS."
+value = "macos"
+
+[doctor.linux_name]
+doc = "The OS name the engine and the release assets use for Linux."
+value = "linux"
+
+[doctor.apple_silicon_name]
+doc = "The architecture name of Apple Silicon and 64-bit ARM."
+value = "aarch64"
+
+[doctor.intel_name]
+doc = "The architecture name of 64-bit Intel/AMD."
+value = "x86_64"
+
+[doctor.rosetta_sysctl]
+doc = "The macOS sysctl that is 1 on an Apple-Silicon machine, even for a process Rosetta translates."
+value = "hw.optional.arm64"
+
+[doctor.rosetta_marker]
+doc = "A file that exists when Rosetta is installed."
+value = "/Library/Apple/usr/libexec/oah/libRosettaRuntime"
+
+[doctor.quarantine_attr]
+doc = "The extended attribute macOS Gatekeeper sets on a downloaded file."
+value = "com.apple.quarantine"
+
+[doctor.exe_magic_script]
+doc = "Leading bytes (hex) of an interpreter script: '#!'."
+value = "2321"
+
+[doctor.exe_magic_elf]
+doc = "Leading bytes (hex) of an ELF executable."
+value = "7f454c46"
+
+[doctor.exe_magic_macho64]
+doc = "Leading bytes (hex) of a thin 64-bit little-endian Mach-O executable."
+value = "cffaedfe"
+
+[doctor.exe_magic_fat]
+doc = "Leading bytes (hex) of a universal (fat) Mach-O executable."
+value = "cafebabe"
+
+[doctor.sqlite_magic]
+doc = "The text a SQLite database file starts with."
+value = "SQLite format 3"
+
+[doctor.bin_dir]
+doc = "The directory of the installed engine binary, under the engine state directory."
+value = "bin"
+
+[doctor.bin_name]
+doc = "The file name of the installed engine binary."
+value = "ah-engine"
+
+[doctor.bin_label]
+doc = "The name a run of the installed engine is logged under."
+value = "ah-engine version"
+
+[doctor.version_arg]
+doc = "The argument that makes the engine print its version."
+value = "version"
+
+[doctor.probe_label]
+doc = "The name a probe of another program is logged under."
+value = "doctor probe"
+
+[doctor.marker_file]
+doc = "The file the bootstrap writes after an install: '<version> <asset sha256> <binary sha256>'."
+value = "bootstrap.installed"
+
+[doctor.lock_file]
+doc = "The plugin's pin of the engine release, relative to the plugin root."
+value = "ah-engine.lock"
+
+[doctor.bootstrap_script]
+doc = "The engine bootstrap, relative to the plugin root (shown in fixes)."
+value = "hooks/ah-engine-bootstrap.sh"
+
+[doctor.wrapper_file]
+doc = "The hook wrapper, relative to the plugin root."
+value = "hooks/ah-hook.sh"
+
+[doctor.claude_hooks_file]
+doc = "The Claude hooks file, relative to a plugin's root."
+value = "hooks/hooks.json"
+
+[doctor.plugin_prefix]
+doc = "The registry key prefix of anti-hall plugin installs."
+value = "anti-hall@"
+
+[doctor.registry_file]
+doc = "The host's plugin registry, relative to the home directory."
+value = ".claude/plugins/installed_plugins.json"
+
+[doctor.claude_settings]
+doc = "The host's user settings file, relative to the home directory."
+value = ".claude/settings.json"
+
+[doctor.proc_version]
+doc = "The kernel version text on Linux; mentions Microsoft on WSL."
+value = "/proc/version"
+
+[doctor.toml_ext]
+doc = "The extension of a defaults file."
+value = ".toml"
+
+[doctor.header_re]
+doc = "A table header line of a defaults file; group 1 is the key."
+value = "^\\[([^\\]\\n]+)\\]\\s*$"
+
+[doctor.wsl_mount_re]
+doc = "A path on a Windows drive mounted into WSL."
+value = "^/mnt/[a-zA-Z](/|$)"
+
+[doctor.shadow_dir]
+doc = "The Node witness kit's directory, under the base directory."
+value = "ah-node-shadow"
+
+[doctor.shadow_script]
+doc = "The Node witness script."
+value = "node-shadow.sh"
+
+[doctor.shadow_skip]
+doc = "The witness's list of hooks it never runs (without it the witness runs nothing)."
+value = "node-shadow.skip"
+
+[doctor.shadow_root]
+doc = "The file naming the plugin root the witness follows."
+value = "root"
+
+[doctor.shadow_log]
+doc = "The witness's comparison log."
+value = "node-shadow.ndjson"
+
+[doctor.wsl_markers]
+doc = "Words (lowercase) in the kernel version text that mean WSL."
+value = ["microsoft", "wsl"]
+
+[doctor.core_dirs]
+doc = "System directories a usable PATH has at least one of."
+value = ["/usr/bin", "/bin"]
+
+[doctor.db_files]
+doc = "Database files in the state directory that must be real SQLite files."
+value = ["hot.db", "archive.db"]
+
+
+[doctor.stat_gnu_args]
+doc = "Arguments that only GNU/busybox stat accepts, to tell the userland flavour."
+value = ["-c", "%s", "/"]
+
+[doctor.required_tools]
+doc = "Programs the hook wrapper and bootstrap need on PATH."
+value = ["sh", "ps", "tr", "sed", "awk", "od", "find", "tar", "uname", "id", "kill", "mkdir", "mv", "date", "head", "tail", "wc", "cut", "grep"]
+
+[doctor.arch_aliases]
+doc = "Machine names mapped to the architecture names the release assets use."
+value = { arm64 = "aarch64", amd64 = "x86_64" }
+
+[doctor.triples]
+doc = "The release asset triple per OS ({cpu} is the architecture; Linux leaves the libc open)."
+value = { macos = "{cpu}-apple-darwin", linux = "{cpu}-unknown-linux-" }
+
+[doctor.elf_machines]
+doc = "ELF machine codes (hex) to architecture names."
+value = { "3e" = "x86_64", "b7" = "aarch64" }
+
+[doctor.macho_cpus]
+doc = "Mach-O CPU type codes (hex) to architecture names."
+value = { "100000c" = "aarch64", "1000007" = "x86_64" }
+
+[doctor.hooks_files]
+doc = "The hooks files that must be the thin form, per host, relative to the plugin root."
+value = [
+  { host = "claude", file = "hooks/hooks.json" },
+  { host = "codex", file = "codex/hooks/hooks.json" },
+]
+
+[doctor.settings_scopes]
+doc = "The settings files that carry enabledPlugins, in precedence order (later wins); home = relative to the home directory, else to the project."
+value = [
+  { file = ".claude/settings.json", home = true },
+  { file = ".claude/settings.json", home = false },
+  { file = ".claude/settings.local.json", home = false },
+]
+
+# ---- install-health finding texts ----
+
+[doctor_msg.head_install]
+doc = "Section heading."
+value = "Engine install"
+
+[doctor_msg.head_state]
+doc = "Section heading."
+value = "State directory"
+
+[doctor_msg.head_config]
+doc = "Section heading."
+value = "Configuration"
+
+[doctor_msg.head_plugin]
+doc = "Section heading."
+value = "Plugin registration"
+
+[doctor_msg.head_thin]
+doc = "Section heading."
+value = "Hooks wiring (thin form)"
+
+[doctor_msg.head_toolchain]
+doc = "Section heading."
+value = "Toolchain and environment"
+
+[doctor_msg.head_logs]
+doc = "Section heading."
+value = "Logs and telemetry"
+
+[doctor_msg.head_witness]
+doc = "Section heading."
+value = "Node witness"
+
+[doctor_msg.bin_missing]
+doc = "BIN-01. Placeholders: {path}, {bootstrap}."
+value = "engine binary not installed at {path} (hooks use ah-engine on PATH, else the Node hooks) - Fix: sh {bootstrap} -v"
+
+[doctor_msg.bin_not_file]
+doc = "BIN-02. Placeholders: {path}, {kind}, {bootstrap}."
+value = "{path} is not a regular file ({kind}) - Fix: move it aside, then run: sh {bootstrap} -v"
+
+[doctor_msg.bin_unreadable]
+doc = "The binary cannot be read. Placeholders: {path}, {err}, {bootstrap}."
+value = "{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: sh {bootstrap} -v"
+
+[doctor_msg.bin_not_exec]
+doc = "BIN-03. Placeholders: {path}, {mode}."
+value = "{path} is not executable (mode {mode}) - Fix: chmod u+x {path} (ah-engine doctor --repair does this)"
+
+[doctor_msg.bin_corrupt]
+doc = "BIN-04. Placeholders: {path}, {why}, {bootstrap}."
+value = "{path} is not a runnable program ({why}) - Fix: reinstall: sh {bootstrap} -v"
+
+[doctor_msg.why_empty]
+doc = "BIN-04 reason."
+value = "empty file"
+
+[doctor_msg.why_truncated]
+doc = "BIN-04 reason."
+value = "truncated header"
+
+[doctor_msg.why_unknown]
+doc = "BIN-04 reason."
+value = "unrecognised header"
+
+[doctor_msg.bin_wrong_os]
+doc = "BIN-05. Placeholders: {path}, {bin_os}, {host_os}, {bootstrap}."
+value = "{path} was built for {bin_os} but this machine runs {host_os} - Fix: reinstall: sh {bootstrap} -v"
+
+[doctor_msg.bin_wrong_arch]
+doc = "BIN-06a. Placeholders: {path}, {bin_arch}, {host_os}, {host_arch}, {bootstrap}."
+value = "{path} was built for {bin_arch} but this {host_os} machine is {host_arch}; it cannot run - Fix: reinstall: sh {bootstrap} -v"
+
+[doctor_msg.bin_rosetta]
+doc = "BIN-06b. Same placeholders."
+value = "{path} is an {bin_arch} build running under Rosetta on this {host_arch} Mac (slower) - Fix: sh {bootstrap} -v installs the native build"
+
+[doctor_msg.bin_no_rosetta]
+doc = "BIN-06c. Same placeholders."
+value = "{path} is an {bin_arch} build and Rosetta is not installed on this {host_arch} Mac; it will not start - Fix: softwareupdate --install-rosetta --agree-to-license, or sh {bootstrap} -v for the native build"
+
+[doctor_msg.bin_quarantined]
+doc = "BIN-11. Placeholder: {path}."
+value = "{path} is quarantined by macOS Gatekeeper (com.apple.quarantine); it will not run - Fix: xattr -d com.apple.quarantine {path} (ah-engine doctor --repair does this for the build the bootstrap verified)"
+
+[doctor_msg.bin_not_bootstrapped]
+doc = "BIN-08. Placeholder: {path}."
+value = "{path} was not installed by the bootstrap (a local build); the bootstrap leaves it alone"
+
+[doctor_msg.bin_hash_differs]
+doc = "BIN-07. Placeholders: {path}, {have}, {want}, {bootstrap}."
+value = "{path} differs from the build the bootstrap installed (sha256 {have}... vs {want}...): a local build, or damaged - Fix: to restore the pinned build: mv {path} {path}.local && sh {bootstrap} -v"
+
+[doctor_msg.bin_version_differs]
+doc = "BIN-09. Placeholders: {have}, {want}, {bootstrap}."
+value = "engine {have} is installed but the plugin pins {want} - Fix: it updates at the next session start, or run: sh {bootstrap} -v"
+
+[doctor_msg.bin_no_run]
+doc = "BIN-12. Placeholders: {path}, {why}, {bootstrap}."
+value = "{path} does not run: {why} - Fix: reinstall: sh {bootstrap} -v"
+
+[doctor_msg.bin_ok]
+doc = "BIN-14. Placeholders: {path}, {triple}, {ver}."
+value = "engine binary {path} ({triple}) runs and reports {ver}"
+
+[doctor_msg.bin_other_engine]
+doc = "BIN-13. Placeholders: {running}, {installed}."
+value = "this doctor is engine {running}; the installed engine reports {installed}"
+
+[doctor_msg.lock_unreadable]
+doc = "BIN-15. Placeholders: {path}, {err}."
+value = "ah-engine.lock is missing or unreadable at {path} ({err}); the bootstrap cannot verify or update the engine - Fix: reinstall the plugin"
+
+[doctor_msg.lock_no_version]
+doc = "The lock has no version."
+value = "the lock has no version"
+
+[doctor_msg.lock_no_asset]
+doc = "BIN-10. Placeholder: {triple}."
+value = "the plugin's ah-engine.lock has no build for {triple}; the Node hooks stay in use - Fix: none, this platform is not released yet"
+
+[doctor_msg.why_signal]
+doc = "A program died of a signal. Placeholders: {sig}, {err}."
+value = "killed by signal {sig} {err}"
+
+[doctor_msg.why_exit]
+doc = "A program exited non-zero. Placeholders: {code}, {err}."
+value = "exit {code} {err}"
+
+[doctor_msg.why_timeout]
+doc = "A program did not finish in time."
+value = "timed out"
+
+[doctor_msg.enotdir]
+doc = "The OS error for a path component that is a file."
+value = "Not a directory (os error 20)"
+
+[doctor_msg.state_not_dir]
+doc = "ST-02. Placeholders: {path}, {err}."
+value = "{path} is a file where the state directory (or a parent) should be ({err}) - Fix: mv {path} {path}.old, then run: ah-engine doctor --repair"
+
+[doctor_msg.state_missing]
+doc = "ST-01. Placeholder: {dir}."
+value = "state directory {dir} does not exist yet; it is created on first use (ah-engine doctor --repair creates it now)"
+
+[doctor_msg.state_uncreatable]
+doc = "ST-01b. Placeholders: {dir}, {err}."
+value = "state directory {dir} cannot be created ({err}) - Fix: make the parent directory writable for your user"
+
+[doctor_msg.no_write_in]
+doc = "Reason. Placeholder: {parent}."
+value = "{parent} is not writable"
+
+[doctor_msg.no_parent]
+doc = "Reason."
+value = "no parent directory exists"
+
+[doctor_msg.state_unwritable]
+doc = "ST-03. Placeholders: {dir}, {err}."
+value = "state directory {dir} is not writable ({err}) - Fix: chmod u+w {dir}, or remount the volume read-write"
+
+[doctor_msg.no_write]
+doc = "Reason."
+value = "write permission denied or read-only volume"
+
+[doctor_msg.state_owner]
+doc = "ST-05. Placeholders: {dir}, {owner}, {uid}."
+value = "{dir} is owned by uid {owner}, not you (uid {uid}) - Fix: sudo chown -R \"$(id -un)\" {dir}"
+
+[doctor_msg.state_open]
+doc = "ST-06. Placeholders: {dir}, {mode}."
+value = "{dir} is accessible to others (mode {mode}) - Fix: chmod 700 {dir} (ah-engine doctor --repair does this)"
+
+[doctor_msg.state_disk_full]
+doc = "ST-04. Placeholders: {dir}, {free_mb}."
+value = "no space left on the volume of {dir} ({free_mb} MB free); the engine cannot log or keep state - Fix: free disk space"
+
+[doctor_msg.state_low_space]
+doc = "ST-04b. Placeholders: {dir}, {free_mb}, {min_mb}."
+value = "only {free_mb} MB free on the volume of {dir} (limit {min_mb}) - Fix: free disk space"
+
+[doctor_msg.state_windows_mount]
+doc = "ST-07. Placeholders: {dir}, {mount}."
+value = "{dir} is on a Windows drive ({mount}); file locks and sockets are unreliable there - Fix: keep HOME on the Linux filesystem"
+
+[doctor_msg.private_dir_owner]
+doc = "ST-08. Placeholders: {dir}, {owner}."
+value = "private socket directory {dir} is owned by uid {owner}, not you - Fix: remove or rename it as that user; the daemon recreates it"
+
+[doctor_msg.db_bad]
+doc = "ST-09. Placeholder: {file}."
+value = "{file} is not a SQLite database (bad header) - Fix: mv {file} {file}.bad (the engine creates a new one)"
+
+[doctor_msg.state_ok]
+doc = "State directory healthy. Placeholder: {dir}."
+value = "state directory {dir} is usable"
+
+[doctor_msg.daemon_other_version]
+doc = "DMN-01b. Placeholders: {daemon}, {engine}."
+value = "the daemon runs engine {daemon}, this binary is {engine}; the daemon hands over on the next hook call"
+
+[doctor_msg.sock_not_socket]
+doc = "DMN-05. Placeholders: {sock}, {kind}."
+value = "{sock} exists but is not a socket ({kind}); the daemon cannot start - Fix: mv {sock} {sock}.old"
+
+[doctor_msg.daemon_hung]
+doc = "DMN-03. Placeholders: {lock}, {pid}, {sock}."
+value = "a daemon holds {lock} (pid {pid}) but does not answer on {sock}; it is hung - Fix: ah-engine stop; if it stays, kill {pid} (the next hook starts a fresh daemon)"
+
+[doctor_msg.unknown_pid]
+doc = "A pid that is not known."
+value = "unknown"
+
+[doctor_msg.sock_stale]
+doc = "DMN-04. Placeholder: {sock}."
+value = "socket {sock} exists but no daemon holds the lock; a leftover from a crash - Fix: none needed, the next daemon replaces it"
+
+[doctor_msg.pid_gone]
+doc = "DMN-07. Placeholders: {file}, {pid}."
+value = "{file} names pid {pid}, which is gone; the next daemon takes it over"
+
+[doctor_msg.pid_reused]
+doc = "DMN-06. Placeholders: {file}, {pid}, {cmd}."
+value = "{file} names pid {pid}, which is now another program ({cmd}), not the engine; a stale file, nothing signals that process - Fix: none needed; do NOT kill pid {pid}"
+
+[doctor_msg.daemons_many]
+doc = "DMN-10. Placeholders: {n}, {pids}, {sock}."
+value = "{n} engine daemons are running; the extra ones (pids {pids}) do not serve {sock} - Fix: ah-engine stop, then kill the extra pids; the next hook starts one"
+
+
+[doctor_msg.crashloop]
+doc = "DMN-08. Placeholders: {secs}, {reason}."
+value = "daemon crash-looping: restarts halted for {secs}s more ({reason}) - Fix: read ah-engine status, fix the cause, then run: ah-engine reset"
+
+[doctor_msg.breaker]
+doc = "DMN-09. Placeholders: {secs}, {reason}."
+value = "client circuit breaker open for {secs}s more ({reason}); hooks use the Node fallback meanwhile - Fix: after fixing the cause: ah-engine reset"
+
+[doctor_msg.failure_recorded]
+doc = "DMN-11. Placeholders: {class}, {reason}, {hint}."
+value = "last recorded failure ({class}): {reason} {hint}"
+
+[doctor_msg.config_fell_back]
+doc = "CF-02. Placeholders: {file}, {detail}, {layer}, {code}."
+value = "{file}: {detail}; using the {layer} copy instead - Fix: correct the edit, or restore the file from engine/defaults.pristine/"
+
+[doctor_msg.config_missing_keys]
+doc = "CF-03. Placeholders: {file}, {n}, {keys}."
+value = "{file} lacks {n} setting(s) the engine reads ({keys}); the shipped value is used - Fix: ah-engine config heal (ah-engine doctor --repair does this)"
+
+[doctor_msg.config_no_pristine]
+doc = "CF-04. Placeholder: {dir}."
+value = "{dir} is missing; a broken edit of the defaults would have no last-resort copy - Fix: update or reinstall the plugin"
+
+[doctor_msg.config_unknown]
+doc = "CF-05. Placeholders: {file}, {keys}."
+value = "{file}: unknown setting(s) {keys} (a typo?); they are ignored"
+
+[doctor_msg.config_user_broken]
+doc = "CF-06. Placeholders: {path}, {err}."
+value = "{path}: {err}; ignored, the plugin defaults apply - Fix: correct the file or move it aside"
+
+[doctor_msg.config_settings_bad]
+doc = "CF-07. Placeholders: {path}, {err}."
+value = "{path} is unreadable ({err}); anti-hall settings fall back to defaults - Fix: correct the file or move it aside"
+
+[doctor_msg.config_ok]
+doc = "CF-01. Placeholder: {n}."
+value = "configuration: {n} settings read from the plugin's defaults"
+
+[doctor_msg.plugin_json_bad]
+doc = "PL-09. Placeholders: {file}, {err}."
+value = "{file} is not valid JSON ({err}); plugin enablement could not be checked - Fix: correct the file"
+
+[doctor_msg.plugin_no_registry]
+doc = "No registry file. Placeholder: {file}."
+value = "no plugin registry at {file} (a manual or Codex install); plugin enablement was not checked"
+
+[doctor_msg.plugin_not_registered]
+doc = "PL-02. Placeholder: {file}."
+value = "no anti-hall plugin is registered in {file}; the hooks do not run - Fix: /plugin install anti-hall@anti-hall"
+
+[doctor_msg.plugin_moved]
+doc = "PL-07. Placeholders: {key}, {path}."
+value = "{key} is registered at {path}, which does not exist (moved or pruned) - Fix: claude plugin update {key}, or reinstall it"
+
+[doctor_msg.plugin_double]
+doc = "PL-04. Placeholders: {n}, {keys}."
+value = "{n} anti-hall plugins are enabled ({keys}); every hook runs twice - Fix: disable all but one: /plugin disable <key>"
+
+[doctor_msg.plugin_old_node]
+doc = "PL-05. Placeholders: {key}, {version}."
+value = "enabled plugin {key} (v{version}) still wires Node hooks directly; it runs beside the engine - Fix: claude plugin update {key}, or disable it"
+
+[doctor_msg.plugin_disabled]
+doc = "PL-03. Placeholders: {key}, {file}."
+value = "anti-hall ({key}) is installed but disabled in {file}; no hook runs - Fix: /plugin enable {key}"
+
+[doctor_msg.plugin_reload]
+doc = "PL-06. Placeholders: {registered}, {running}."
+value = "the plugin registry says {registered} but this session runs {running} - Fix: /reload-plugins"
+
+[doctor_msg.plugin_registry_behind]
+doc = "PL-06. Placeholders: {registered}, {running}."
+value = "the plugin registry still says {registered} but {running} is running - Fix: claude plugin update anti-hall@anti-hall"
+
+[doctor_msg.plugin_ok]
+doc = "PL-08. Placeholders: {key}, {version}."
+value = "plugin {key} v{version} is registered and enabled"
+
+[doctor_msg.wrapper_missing]
+doc = "HK-03. Placeholder: {file}."
+value = "{file} is missing; every hook command fails (non-blocking) - Fix: reinstall the plugin"
+
+[doctor_msg.thin_missing]
+doc = "HK-01. Placeholder: {file}."
+value = "{file} is missing - Fix: reinstall the plugin"
+
+[doctor_msg.thin_ok]
+doc = "Thin hooks file. Placeholder: {file}."
+value = "{file} is the thin form"
+
+[doctor_msg.thin_not]
+doc = "HK-01. Placeholders: {file}, {n}, {first}, {host}."
+value = "{file} is not the thin form: {n} event(s) differ (first: {first}) - Fix: ah-engine gen-hooks --host {host} > {file}"
+
+[doctor_msg.no_entry]
+doc = "Stands for an event with no entry."
+value = "(no entry)"
+
+[doctor_msg.home_unset]
+doc = "EV-01."
+value = "HOME is not set; the engine cannot find its state (~/.anti-hall) - Fix: export HOME=<your home directory>"
+
+[doctor_msg.home_relative]
+doc = "EV-02. Placeholder: {home}."
+value = "HOME is \"{home}\", a relative path; state would land under the current directory - Fix: export HOME=<absolute path>"
+
+[doctor_msg.home_not_dir]
+doc = "EV-03. Placeholder: {home}."
+value = "HOME \"{home}\" is not a directory - Fix: export HOME=<your home directory>"
+
+[doctor_msg.home_differs]
+doc = "EV-04. Placeholders: {home}, {pw}."
+value = "HOME ({home}) differs from the account's home ({pw}) and is not yours; state goes to HOME - Fix: run without sudo, or export HOME={pw}"
+
+[doctor_msg.path_empty]
+doc = "EV-08."
+value = "PATH is empty; no tool can be found - Fix: export PATH=/usr/bin:/bin:..."
+
+[doctor_msg.path_empty_entry]
+doc = "Words for an empty PATH entry."
+value = "an empty"
+
+[doctor_msg.path_relative]
+doc = "EV-08. Placeholder: {entry}."
+value = "PATH has {entry} entry, resolved against the current directory - Fix: remove it from PATH"
+
+[doctor_msg.path_lacks]
+doc = "EV-08. Placeholder: {dirs}."
+value = "PATH lacks {dirs}; the hook wrapper may not find its tools - Fix: add them to PATH"
+
+[doctor_msg.tools_missing]
+doc = "EV-10. Placeholder: {tools}."
+value = "required tool(s) missing from PATH: {tools} - Fix: install coreutils/procps, or fix PATH"
+
+[doctor_msg.userland]
+doc = "EV-11. Placeholder: {flavour}."
+value = "userland: {flavour} stat"
+
+[doctor_msg.userland_gnu]
+doc = "Flavour."
+value = "GNU/busybox"
+
+[doctor_msg.userland_bsd]
+doc = "Flavour."
+value = "BSD"
+
+[doctor_msg.wsl]
+doc = "EV-09. Placeholder: {release}."
+value = "WSL detected ({release})"
+
+[doctor_msg.git_missing]
+doc = "EV-05."
+value = "git is not on PATH; git-aware guards and project detection are off - Fix: install git"
+
+[doctor_msg.git_broken]
+doc = "EV-06. Placeholder: {why}."
+value = "git is on PATH but does not run ({why}) - Fix: xcode-select --install (macOS) or reinstall git"
+
+[doctor_msg.gh_missing]
+doc = "EV-07."
+value = "gh is not on PATH; only the optional PR/CI helpers need it"
+
+[doctor_msg.node_missing]
+doc = "ND-01. Placeholder: {min}."
+value = "node is not on PATH; the Node fallback hooks cannot run (if the engine is down, guards fail closed) - Fix: install Node >= {min}"
+
+[doctor_msg.no_engine_no_node]
+doc = "ND-04."
+value = "neither a working engine nor node is available; every guard fails closed - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v) or install Node"
+
+[doctor_msg.node_broken]
+doc = "ND-03. Placeholder: {why}."
+value = "node does not run: {why} - Fix: reinstall Node"
+
+[doctor_msg.node_ok]
+doc = "ND-05. Placeholders: {v}, {min}. The Node doctor's text."
+value = "Node {v} (>= {min}) — hooks can run"
+
+[doctor_msg.node_old]
+doc = "ND-02. Placeholders: {v}, {min}. The Node doctor's text."
+value = "Node {v} is < {min} — plugin.json requires Node.js >= {min} on PATH; hooks may silently no-op. Install Node >= {min}."
+
+[doctor_msg.log_huge]
+doc = "LG-01. Placeholders: {file}, {mb}, {cap_mb}."
+value = "{file} is {mb} MB (cap {cap_mb} MB); the engine's trim is not running - Fix: ah-engine maintain"
+
+[doctor_msg.log_corrupt]
+doc = "LG-02. Placeholders: {n}, {m}, {file}."
+value = "{n} of the last {m} lines of {file} are not event lines"
+
+[doctor_msg.inbox_huge]
+doc = "LG-03. Placeholders: {file}, {mb}, {cap_mb}."
+value = "{file} is {mb} MB (cap {cap_mb} MB) - Fix: ah-engine maintain"
+
+[doctor_msg.inbox_corrupt]
+doc = "LG-04. Placeholders: {n}, {m}, {file}."
+value = "{n} of the last {m} lines of {file} are not JSON"
+
+[doctor_msg.spool_quarantined]
+doc = "LG-05. Placeholders: {n}, {dir}."
+value = "{n} spool file(s) were quarantined in {dir} - Fix: inspect them; they are kept"
+
+[doctor_msg.logs_ok]
+doc = "Logs fine."
+value = "event log and telemetry inbox look healthy"
+
+[doctor_msg.witness_absent]
+doc = "SH-01."
+value = "Node witness not installed (optional)"
+
+[doctor_msg.witness_script_gone]
+doc = "SH-06. Placeholder: {cmd}."
+value = "settings.json runs {cmd}, which does not exist - Fix: node-shadow.sh --install, or remove the entries"
+
+[doctor_msg.witness_no_skip]
+doc = "SH-03. Placeholder: {dir}."
+value = "{dir} has no node-shadow.skip; the witness runs nothing - Fix: node-shadow.sh --install"
+
+[doctor_msg.witness_root_gone]
+doc = "SH-04. Placeholder: {root}."
+value = "the witness root {root} does not exist - Fix: node-shadow.sh --install"
+
+[doctor_msg.witness_log_huge]
+doc = "SH-05. Placeholders: {file}, {mb}."
+value = "{file} is {mb} MB - Fix: rotate it"
+
+[doctor_msg.witness_stale]
+doc = "SH-07. Placeholder: {days}."
+value = "the witness log has not changed for {days} days - Fix: check that node is on PATH and node-shadow.skip exists"
+
+[doctor_msg.witness_ok]
+doc = "SH-02. Placeholders: {mb}, {n}."
+value = "Node witness installed ({n} hook entries, log {mb} MB)"
+
+[doctor_msg.fix_exec]
+doc = "Repair row. Placeholder: {path}."
+value = "made {path} executable"
+
+[doctor_msg.fix_quarantine]
+doc = "Repair row. Placeholder: {path}."
+value = "removed the quarantine attribute from {path}"
+
+[doctor_msg.fix_mkdir]
+doc = "Repair row. Placeholder: {dir}."
+value = "created the private state directory {dir}"
+
+[doctor_msg.fix_private]
+doc = "Repair row. Placeholder: {dir}."
+value = "set {dir} to mode 700"
+
+[doctor_msg.fix_heal_dry]
+doc = "Dry-run repair row. Placeholder: {n}."
+value = "would add the missing settings to {n} defaults file(s)"
+
+[doctor_msg.fix_heal_nothing]
+doc = "Repair row."
+value = "no defaults to heal"
+
+[doctor_msg.repair_would]
+doc = "Dry-run repair row. Placeholders: {id}, {msg}."
+value = "{id}: would have {msg}"
+
+[doctor.max_daemon_probes]
+doc = "How many of the most recent daemon start events the two-daemons check looks at."
+value = 16
+
+[doctor.start_event]
+doc = "The kind of event log line a daemon writes when it starts."
+value = "start"
+
+[doctor.start_pid_re]
+doc = "Finds the daemon's pid in the detail of a start event (group 1)."
+value = "\\bpid (\\d+)"
+
+[doctor.claude_bin]
+doc = "The Claude Code CLI program name."
+value = "claude"
+
+[doctor.claude_sub]
+doc = "The Claude Code subcommand that checks its installation."
+value = "doctor"
+
+[doctor.claude_marker]
+doc = "Text that `claude doctor` prints first; without it the subcommand is not the installation check (an older version)."
+value = "Claude Code doctor"
+
+[doctor.claude_clean]
+doc = "Text `claude doctor` prints when it found nothing."
+value = "No installation issues found"
+
+[doctor.claude_problem_words]
+doc = "Lowercase words that mark a line of `claude doctor` output as a problem worth surfacing."
+value = ["warning", "issue", "error", "invalid", "problem", "missing", "failed", "conflict"]
+
+[doctor.claude_max_lines]
+doc = "How many problem lines of `claude doctor` are shown."
+value = 10
+
+[doctor.claude_timeout_ms]
+doc = "How long `claude doctor` may run before the sub-check is abandoned."
+value = 20000
+
+[doctor.claude_cache]
+doc = "File in the state directory remembering, per Claude Code version, whether `claude doctor` exists."
+value = "claude-doctor.version"
+
+[doctor.claude_yes]
+doc = "Cache word: the subcommand exists."
+value = "yes"
+
+[doctor.claude_no]
+doc = "Cache word: the subcommand does not exist."
+value = "no"
+
+[doctor_msg.head_claude]
+doc = "Section heading."
+value = "Claude Code (claude doctor)"
+
+[doctor_msg.claude_missing]
+doc = "The claude CLI is not on PATH; the optional sub-check is skipped."
+value = "the claude CLI is not on PATH; Claude Code's own `claude doctor` was skipped"
+
+[doctor_msg.claude_unsupported]
+doc = "Placeholder: {v}."
+value = "Claude Code {v} has no usable `claude doctor`; skipped"
+
+[doctor_msg.claude_timeout]
+doc = "Placeholder: {v}."
+value = "`claude doctor` (Claude Code {v}) did not finish in time; skipped"
+
+[doctor_msg.claude_ok]
+doc = "Placeholder: {v}."
+value = "claude doctor (Claude Code {v}): no installation issues found"
+
+[doctor_msg.claude_problem]
+doc = "A problem line from `claude doctor`. Placeholder: {line}."
+value = "claude doctor: {line} (see `claude doctor` for details)"
+
+[doctor.cpu_other]
+doc = "The name shown for a CPU type that is not in the tables above."
+value = "other"
+
+[doctor_msg.kind_dir]
+doc = "What a path turned out to be."
+value = "a directory"
+
+[doctor_msg.kind_file]
+doc = "What a path turned out to be."
+value = "a regular file"
+
+[doctor_msg.kind_dangling]
+doc = "What a path turned out to be."
+value = "a symlink to nothing"
+
+[doctor_msg.kind_other]
+doc = "What a path turned out to be."
+value = "not a file"
+
+# ---- the statusline render check ----------------------------------------------------------------------------------------------------
+
+[doctor.statusline_dispatcher]
+doc = "The statusline dispatcher script, relative to the plugin root; the render check requires it to be installed."
+value = "statusline/statusline.js"
+
+[doctor.statusline_rich]
+doc = "The line-1 renderer script, relative to the plugin root."
+value = "statusline/statusline-rich.js"
+
+
+[doctor.statusline_sample]
+doc = "The session payload the render check pipes to the statusline; {cwd} is the working directory as a JSON string."
+value = "{\"workspace\":{\"current_dir\":{cwd}},\"cwd\":{cwd},\"model\":{\"display_name\":\"doctor-test\"},\"context_window\":{\"used_percentage\":50}}"
+
+[doctor.statusline_min_lines]
+doc = "How many lines the statusline must print for the render check to pass (line 1 plus the context gauge on line 2)."
+value = 2
+min = 1
+
+[doctor.statusline_timeout_ms]
+doc = "How long the render check lets the statusline run before it warns (CPU contention under parallel runs is the usual cause)."
+value = 30000
+unit = "ms"
+min = 1
+
+[doctor.statusline_max_bytes]
+doc = "The most bytes of statusline output the render check keeps."
+value = 1048576
+unit = "bytes"
+min = 1
+
+[doctor.statusline_script_env]
+doc = "Test-only: the environment variable that names a stand-in script (run under Node) for the render check instead of the engine's own statusline."
+value = "ANTIHALL_DOCTOR_SL_SCRIPT"
+
+[doctor.statusline_timeout_env]
+doc = "Test-only: the environment variable that shortens the render check's timeout, in milliseconds."
+value = "ANTIHALL_DOCTOR_SL_TIMEOUT_MS"
+
+[doctor.node_check_flag]
+doc = "The Node flag that checks a script's syntax without running it."
+value = "--check"
+
+[doctor_msg.statusline_dispatcher_missing]
+doc = "The statusline dispatcher script is not installed."
+value = "statusline.js dispatcher missing"
+
+[doctor_msg.statusline_renders]
+doc = "The statusline printed both lines. Placeholder: {n}."
+value = "statusline renders {n} lines (line 1 + live context gauge on line 2)"
+
+[doctor_msg.statusline_one_line]
+doc = "The statusline printed only one line although the payload carried a context window."
+value = "statusline rendered only 1 line — line 2 (context gauge) did NOT render despite context_window in the payload"
+
+[doctor_msg.statusline_timeout]
+doc = "The statusline did not finish within the render check's timeout."
+value = "statusline.js timed out under load (30s) — likely CPU contention, not a real failure; re-run outside contention to confirm"
+
+[doctor_msg.statusline_no_output]
+doc = "The statusline printed nothing, or failed. Placeholder: {code}."
+value = "statusline.js produced no output (exit {code})"
+
+[doctor_msg.statusline_rich_ok]
+doc = "The line-1 renderer script is present and its syntax is valid."
+value = "statusline-rich.js (line-1 renderer) present, syntax valid"
+
+[doctor_msg.statusline_rich_bad]
+doc = "The line-1 renderer script is missing or invalid."
+value = "statusline-rich.js missing/invalid — line 1 falls back to the simple renderer"
+
+# ---- OMC, Codex and other plugins ---------------------------------------------------------------------------------------------------
+
+[doctor.omc_probe_session]
+doc = "The session id the OMC loop probe presents (a loop pinned to another session does not count)."
+value = "doctor-omc-probe"
+
+[doctor.codex_double_backslash]
+doc = "Two backslashes in a row: the doctor reads them as one slash when it falls back to the coarse Codex registration test."
+value = "\\\\"
+
+[doctor.codex_coarse_marker]
+doc = "The text a Codex hooks.json holds when anti-hall hooks are registered in it (the coarse test, used only when the plugin has no Codex registration to compare)."
+value = "/plugins/anti-hall/hooks/"
+
+[doctor.codex_hooks_enabled_re]
+doc = "A Codex config.toml whose [features] table sets hooks = true."
+value = "(?m)\\[features\\][\\s\\S]*?^\\s*hooks\\s*=\\s*true"
+
+[doctor.foreign_script_re]
+doc = "The script name a foreign hook command runs (its first .js, .mjs or .cjs token); only this name is ever shown, never the command."
+value = "[A-Za-z0-9_-]+\\.(?:js|mjs|cjs)"
+
+[doctor.foreign_non_script]
+doc = "What is shown for a foreign hook whose command names no script."
+value = "(non-script hook)"
+
+[doctor.foreign_bash]
+doc = "A foreign PreToolUse matcher that contains this (any case) counts as matching the shell tool."
+value = "bash"
+
+[doctor.foreign_pre]
+doc = "The hook event whose foreign shell hooks compete with the guards."
+value = "PreToolUse"
+
+[doctor.foreign_stop]
+doc = "The hook event whose foreign hooks sit beside the Stop guards."
+value = "Stop"
+
+[doctor.foreign_additive]
+doc = "The hook events where a foreign hook only adds to anti-hall's (reported as information)."
+value = ["UserPromptSubmit", "SessionStart"]
+
+[doctor.foreign_max_bytes]
+doc = "The largest settings or hook registration file read when scanning other plugins."
+value = 524288
+
+[doctor.installed_max_bytes]
+doc = "The largest plugin registry file read when scanning other plugins."
+value = 4194304
+
+[doctor.skills_dir]
+doc = "The skills directory of a plugin, relative to its root."
+value = "skills"
+
+[doctor.self_plugin_key]
+doc = "The enabledPlugins key of anti-hall itself, left out of the scan of other plugins."
+value = "anti-hall@anti-hall"
+
+[doctor.installed_plugins_rel]
+doc = "The host's registry of installed plugins, relative to the home directory."
+value = ".claude/plugins/installed_plugins.json"
+
+[doctor.claude_settings_local_rel]
+doc = "A project's local host settings file, relative to the project."
+value = ".claude/settings.local.json"
+
+[doctor_msg.head_omc]
+doc = "The heading of the oh-my-claudecode section."
+value = "OMC (oh-my-claudecode) — detected"
+
+[doctor_msg.omc_none]
+doc = "oh-my-claudecode is not enabled."
+value = "OMC (oh-my-claudecode) not detected — skipped"
+
+[doctor_msg.omc_enabled]
+doc = "oh-my-claudecode is enabled. Placeholder: {key}."
+value = "OMC plugin enabled in settings (enabledPlugins[\"{key}\"])"
+
+[doctor_msg.omc_loop_active]
+doc = "An oh-my-claudecode autonomous loop is active."
+value = "an OMC autonomous loop is ACTIVE right now — anti-hall task-guard/tasklist-guard defer to it (no double-block)"
+
+[doctor_msg.omc_loop_idle]
+doc = "No oh-my-claudecode loop is active."
+value = "no active OMC autonomous loop detected — anti-hall Stop-hook guards run normally"
+
+[doctor_msg.head_codex]
+doc = "The heading of the Codex section."
+value = "Codex / OMX port — detected"
+
+[doctor_msg.codex_none]
+doc = "No Codex configuration was found."
+value = "Codex / OMX not detected — no <cwd>/.codex or ~/.codex config.toml — skipped"
+
+[doctor_msg.codex_label_project]
+doc = "The label of the project's Codex directory."
+value = "project"
+
+[doctor_msg.codex_label_global]
+doc = "The label of the home directory's Codex directory."
+value = "global"
+
+[doctor_msg.codex_hooks_on]
+doc = "The Codex config enables hooks. Placeholder: {label}."
+value = "Codex config.toml ({label}) has the hooks feature enabled"
+
+[doctor_msg.codex_hooks_off]
+doc = "The Codex config does not enable hooks. Placeholder: {label}."
+value = "Codex config.toml ({label}) found but [features] hooks is not enabled"
+
+[doctor_msg.codex_wired]
+doc = "The Codex hooks file registers anti-hall's hooks. Placeholder: {label}."
+value = "Codex hooks.json ({label}) has anti-hall hooks registered"
+
+[doctor_msg.codex_unwired]
+doc = "The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}."
+value = "Codex hooks.json ({label}) present but no anti-hall hooks found — run plugins/anti-hall/codex/install-codex.js"
+
+[doctor_msg.codex_missing]
+doc = "There is no Codex hooks file. Placeholder: {label}."
+value = "Codex hooks.json ({label}) missing — run plugins/anti-hall/codex/install-codex.js"
+
+[doctor_msg.head_foreign]
+doc = "The heading of the other-plugins section."
+value = "Foreign skill/hook conflict scan"
+
+[doctor_msg.foreign_none]
+doc = "No other enabled plugin conflicts."
+value = "no foreign hook/skill conflicts detected among enabled plugins"
+
+[doctor_msg.foreign_pre]
+doc = "Another plugin hooks the shell tool before it runs. Placeholders: {plugin}, {script}, {matcher}."
+value = "foreign PreToolUse hook on Bash: plugin \"{plugin}\" registers {script} (matcher {matcher}) — may compete with anti-hall's own allow/deny (git-guard/command-guard/edit-guard)"
+
+[doctor_msg.foreign_stop]
+doc = "Another plugin has a Stop hook. Placeholders: {plugin}, {script}, {tail}."
+value = "foreign Stop hook: plugin \"{plugin}\" registers {script}{tail}"
+
+[doctor_msg.foreign_stop_tail]
+doc = "Appended when anti-hall has its own Stop hook."
+value = " — a second Stop hook alongside anti-hall's own"
+
+[doctor_msg.foreign_additive]
+doc = "Another plugin hooks the same event without competing. Placeholders: {event}, {plugin}, {script}."
+value = "additive {event} overlap: plugin \"{plugin}\" also registers {script} (both run; non-competing)"
+
+[doctor_msg.foreign_skill]
+doc = "Another plugin ships a skill with the same name. Placeholders: {plugin}, {skill}."
+value = "skill-name collision: plugin \"{plugin}\" also ships a skill named \"{skill}\" (anti-hall ships one too)"
+
+[doctor_msg.head_integrations]
+doc = "The heading of the notes about companions that are not installed (oh-my-claudecode, the Codex port)."
+value = "Integrations"
+
+[doctor.omc_time_fields]
+doc = "The timestamp fields of an oh-my-claudecode loop state file; the loop counts as active when any of them is within the freshness window."
+value = ["last_checked_at", "updated_at", "started_at"]
+
+[doctor.no_exit_code]
+doc = "What the render check shows as the exit code when the statusline was ended by a signal or never started."
+value = "null"
+
+# ---- ingest orphans (loaded in the scheduler, explained by nothing on disk) -------------------------------------------------------------
+
+[doctor.os_darwin]
+doc = "The platform name of macOS in the scheduler checks."
+value = "darwin"
+
+[doctor.os_linux]
+doc = "The platform name of Linux in the scheduler checks."
+value = "linux"
+
+[doctor.ingest_label]
+doc = "The launchd label prefix of the DevSwarm ingest daemon."
+value = "com.anti-hall.devswarm-ingest"
+
+[doctor.ingest_unit]
+doc = "The systemd unit name prefix of the DevSwarm ingest daemon."
+value = "anti-hall-devswarm-ingest"
+
+[doctor.orphans_no_pid]
+doc = "What `launchctl list` prints as the pid of a loaded label that is not running."
+value = "-"
+
+[doctor.service_ext]
+doc = "The extension of a systemd unit file."
+value = ".service"
+
+[doctor.plist_ext]
+doc = "The extension of a launchd property list."
+value = ".plist"
+
+[doctor.launchd_dir]
+doc = "The user LaunchAgents directory, as path segments under the home directory."
+value = ["Library", "LaunchAgents"]
+
+[doctor.systemd_dir]
+doc = "The user systemd unit directory, as path segments under the home directory."
+value = [".config", "systemd", "user"]
+
+[doctor.unit_hash_re]
+doc = "The suffix of a legacy per-worktree unit name: eight hexadecimal digits."
+value = "^([0-9a-fA-F]{8})$"
+
+[doctor.unit_key_re]
+doc = "The suffix of a per-project unit name: a project key."
+value = "^([a-z0-9-]{1,40}-[0-9a-f]{6})$"
+
+[doctor.kind_base]
+doc = "The kind of a unit whose name has no suffix."
+value = "legacy-base"
+
+[doctor.kind_hash]
+doc = "The kind of a unit named for a worktree hash."
+value = "hash"
+
+[doctor.kind_key]
+doc = "The kind of a unit named for a project key."
+value = "repoKey"
+
+[doctor.kind_unknown]
+doc = "The kind of a unit whose name is in no known shape (it is never touched)."
+value = "unknown"
+
+[doctor.class_no_plist]
+doc = "The class of a loaded unit with no unit file on disk (the only class that may be unloaded)."
+value = "orphan-no-plist"
+
+[doctor.class_path_gone]
+doc = "The class of a loaded unit whose unit file exists but whose directory is gone."
+value = "orphan-path-gone"
+
+[doctor.class_unknown]
+doc = "The class of a loaded unit that cannot be proven dead or alive."
+value = "unknown"
+
+[doctor.class_healthy]
+doc = "The class of a loaded unit that is in use."
+value = "healthy"
+
+[doctor.class_duplicate]
+doc = "The class of two loaded units for one project."
+value = "duplicate-label-same-project"
+
+[doctor.heartbeat_dir]
+doc = "The directory of the ingest daemons' heartbeat files under the DevSwarm directory."
+value = "heartbeats"
+
+[doctor.lock_dir]
+doc = "The directory of the ingest daemons' lock files under the DevSwarm directory."
+value = "locks"
+
+[doctor.ingest_file]
+doc = "The heartbeat file name of an ingest daemon. Placeholder: {key}."
+value = "ingest-{key}.json"
+
+[doctor.ingest_lock_file]
+doc = "The lock file name of a legacy per-worktree ingest daemon. Placeholder: {key}."
+value = "ingest-{key}.lock"
+
+[doctor.project_lock_file]
+doc = "The lock file name of a per-project ingest daemon. Placeholder: {key}."
+value = "ingest-project-{key}.lock"
+
+[doctor.heartbeat_stale_ms]
+doc = "How old an ingest heartbeat may be and still prove the daemon is running."
+value = 180000
+
+[doctor.orphans_timeout_ms]
+doc = "How long a scheduler or crontab listing may take."
+value = 5000
+
+[doctor.orphans_launchctl_list]
+doc = "The command that lists what launchd has loaded."
+value = ["launchctl", "list"]
+
+[doctor.orphans_systemctl_list]
+doc = "The command that lists the user systemd units."
+value = ["systemctl", "--user", "list-units", "--all", "--no-legend", "--plain"]
+
+[doctor.orphans_crontab]
+doc = "The command that prints the user crontab."
+value = ["crontab", "-l"]
+
+[doctor.orphans_bootout]
+doc = "The command that unloads a launchd label. Placeholders: {uid}, {label}."
+value = ["launchctl", "bootout", "gui/{uid}/{label}"]
+
+[doctor.orphans_stop]
+doc = "The command that stops a user systemd unit. Placeholder: {unit}."
+value = ["systemctl", "--user", "stop", "{unit}.service"]
+
+[doctor.orphans_table_cap]
+doc = "How many orphan rows the report lists before it summarises the rest."
+value = 10
+
+[doctor.yes_short]
+doc = "The short yes of the orphan rows."
+value = "y"
+
+[doctor.no_short]
+doc = "The short no of the orphan rows."
+value = "n"
+
+[doctor.dash]
+doc = "What an orphan row shows for a value it does not have."
+value = "-"
+
+[doctor.unknown_name]
+doc = "What an orphan row shows for an entry with no name."
+value = "(unknown)"
+
+[doctor.ingest_dry_env]
+doc = "The environment variable that makes every scheduler command a no-op (scratch homes and tests set it)."
+value = "ANTIHALL_INGEST_DRY_RUN"
+
+[doctor.tmpdir_env]
+doc = "The environment variable that names the temp directory."
+value = "TMPDIR"
+
+[doctor.tmpdir_default]
+doc = "The temp directory when the variable is not set."
+value = "/tmp"
+
+[doctor.exit_word]
+doc = "The word before an exit code in a failure reason."
+value = "exit"
+
+[doctor.repair_orphans_id]
+doc = "The row id of the orphan repair when there is nothing to do."
+value = "repair-ingest-orphans"
+
+[doctor.repair_orphan_id]
+doc = "The row id of the orphan repair of one entry. Placeholder: {name}."
+value = "repair-ingest-orphan-{name}"
+
+[doctor.pair_sep]
+doc = "The separator inside a pair in a list of replacements."
+value = "|"
+
+[doctor.xml_unescape]
+doc = "The XML entities a property list value is read back through, in order, as `entity|text`."
+value = ["&lt;|<", "&gt;|>", "&quot;|\"", "&apos;|'", "&amp;|&"]
+
+[doctor.plist_wd_re]
+doc = "The working directory of a launchd property list."
+value = "<key>WorkingDirectory</key>\\s*<string>([\\s\\S]*?)</string>"
+
+[doctor.plist_args_re]
+doc = "The program arguments of a launchd property list."
+value = "<key>ProgramArguments</key>\\s*<array>([\\s\\S]*?)</array>"
+
+[doctor.plist_string_re]
+doc = "One string of a property list array."
+value = "<string>([\\s\\S]*?)</string>"
+
+[doctor.service_wd_re]
+doc = "The working directory of a systemd unit file."
+value = "(?m)^WorkingDirectory=(.*)$"
+
+[doctor.service_exec_re]
+doc = "The command of a systemd unit file."
+value = "(?m)^ExecStart=(.*)$"
+
+[doctor.service_quoted_re]
+doc = "A double-quoted word of a systemd command."
+value = "\"((?:[^\"\\\\]|\\\\.)*)\""
+
+[doctor.cron_marker]
+doc = "The start of a managed crontab marker comment."
+value = "# "
+
+[doctor.cron_cd_re]
+doc = "The `cd 'dir' &&` prefix of a managed crontab command."
+value = "cd\\s+('((?:[^'\\\\]|\\\\.)*)')\\s*&&"
+
+[doctor.cron_assign_re]
+doc = "The `NAME=value` assignments before the command of a managed crontab line."
+value = "^\\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:'(?:[^'\\\\]|\\\\.)*'|[^\\s']*)\\s+)*"
+
+[doctor.cron_quoted_re]
+doc = "A single-quoted word of a managed crontab command."
+value = "'((?:[^'\\\\]|\\\\.)*)'"
+
+[doctor_msg.head_orphans]
+doc = "The heading of the report of orphaned ingest registrations."
+value = "Orphaned launchd/systemd ingest registrations"
+
+[doctor_msg.orphans_summary]
+doc = "How many loaded ingest entries are not healthy. Placeholders: {n}, {total}."
+value = "{n} loaded label(s) not classified 'healthy' (of {total} total). Run doctor --repair-ingest-orphans to preview a repair plan."
+
+[doctor_msg.orphan_row]
+doc = "One orphaned entry. Placeholders: {name}, {pid}, {script}, {plist}, {path}, {class}."
+value = "{name}  pid={pid}  script={script}  plist={plist}  path={path}  class={class}"
+
+[doctor_msg.orphans_more]
+doc = "How many more entries the report did not list. Placeholder: {n}."
+value = "+{n} more (run doctor --repair-ingest-orphans for the full plan)"
+
+[doctor_msg.orphans_platform]
+doc = "The orphan repair on a platform without launchd or systemd. Placeholder: {platform}."
+value = "{platform}: no launchd/systemd orphan class on this platform — nothing to repair"
+
+[doctor_msg.orphans_none_loaded]
+doc = "No ingest entry is loaded."
+value = "no loaded ingest label found — nothing to repair"
+
+[doctor_msg.orphans_none_eligible]
+doc = "Entries are loaded but none may be unloaded. Placeholder: {n}."
+value = "zero eligible orphans ({n} loaded label(s), none eligible) — nothing to repair"
+
+[doctor_msg.orphans_cmd_darwin]
+doc = "The unload command the dry run shows on macOS. Placeholder: {name}."
+value = "launchctl bootout gui/$(id -u)/{name}"
+
+[doctor_msg.orphans_cmd_linux]
+doc = "The stop command the dry run shows on Linux. Placeholder: {name}."
+value = "systemctl --user stop {name}.service"
+
+[doctor_msg.orphans_would]
+doc = "The dry run of one unload. Placeholders: {cmd}, {class}."
+value = "[dry-run] would run: {cmd} (class {class})"
+
+[doctor_msg.orphans_unloaded]
+doc = "One entry unloaded. Placeholders: {name}, {class}."
+value = "unloaded {name} (class {class})"
+
+[doctor_msg.orphans_failed]
+doc = "One unload that failed. Placeholders: {name}, {class}, {why}."
+value = "failed to unload {name} (class {class}) — {why}"
+
+# ---- leaked test-fixture stores and the explicit repair flags -----------------------------------------------------------------------
+
+[doctor.store_backend_env]
+doc = "The environment variable that forces a DevSwarm store backend."
+value = "ANTIHALL_DEVSWARM_STORE_BACKEND"
+
+[doctor.backend_journal]
+doc = "The name of the journal store backend."
+value = "journal"
+
+[doctor.backend_sqlite]
+doc = "The name of the SQLite store backend."
+value = "sqlite"
+
+[doctor.backend_marker]
+doc = "The file in a store directory that pins its backend."
+value = "BACKEND"
+
+[doctor.store_db]
+doc = "The SQLite database file of a store."
+value = "devswarm.db"
+
+[doctor.registry_query]
+doc = "The query that reads the worktree path of every registry row of a store."
+value = "SELECT worktree_path FROM registry ORDER BY id ASC"
+
+[doctor.tmp_prefixes]
+doc = "Path prefixes that mark a worktree as a temporary fixture, besides the temp directory itself."
+value = ["/private/var/folders/", "/var/folders/", "/tmp/"]
+
+[doctor.leaks_examples]
+doc = "How many leaked stores the report names."
+value = 5
+
+[doctor.repair_stores_id]
+doc = "The row id of the leaked-store repair when it has nothing to do."
+value = "repair-test-stores"
+
+[doctor.repair_store_id]
+doc = "The row id of the repair of one leaked store. Placeholder: {hash}."
+value = "repair-test-store-{hash}"
+
+[doctor.stores_aside_dir]
+doc = "The directory under the DevSwarm directory that leaked stores are moved into."
+value = "stores-aside"
+
+[doctor.repair_resurrected_id]
+doc = "The row id of the resurrected-rows repair."
+value = "repair-resurrected"
+
+[doctor.explicit_flags]
+doc = "The explicit repair flags, in the order their sections run."
+value = ["--repair-ingest-orphans", "--repair-test-stores", "--repair-resurrected"]
+
+[doctor.apply_flag]
+doc = "The flag that makes an explicit repair act instead of only previewing."
+value = "--apply"
+
+[doctor_msg.head_leaks]
+doc = "The heading of the report of leaked test-fixture stores."
+value = "leaked test-fixture stores"
+
+[doctor_msg.leak_example]
+doc = "One leaked store. Placeholders: {hash}, {worktree}."
+value = "{hash} -> {worktree}"
+
+[doctor_msg.leak_more]
+doc = "How many more leaked stores are not listed. Placeholder: {n}."
+value = ", +{n} more"
+
+[doctor_msg.leak_summary]
+doc = "The leaked stores. Placeholders: {count}, {shown}, {more}."
+value = "(warn) leaked test-fixture stores: {count} (run doctor --repair-test-stores to preview a repair plan). Examples: {shown}{more}."
+
+[doctor_msg.stores_none]
+doc = "No leaked test-fixture store."
+value = "no leaked test-fixture stores found — nothing to repair"
+
+[doctor_msg.stores_would]
+doc = "The dry run of moving a leaked store aside. Placeholders: {dir}, {worktree}."
+value = "[dry-run] would move {dir} aside (worktreePath {worktree} no longer exists)"
+
+[doctor_msg.stores_changed]
+doc = "A store that no longer matches when the repair runs."
+value = "no longer eligible at apply time (registry changed or worktree reappeared) — left untouched"
+
+[doctor_msg.stores_moved]
+doc = "A leaked store moved aside. Placeholders: {dir}, {dest}, {worktree}."
+value = "moved {dir} aside to {dest} (worktreePath {worktree} no longer exists); nothing was deleted"
+
+[doctor_msg.stores_failed]
+doc = "A leaked store that could not be moved. Placeholders: {dir}, {error}."
+value = "failed to move {dir} aside — {error}"
+
+[doctor_msg.stores_uninspected]
+doc = "Stores the engine does not read. Placeholder: {n}."
+value = "{n} store(s) use the journal backend, which the engine doctor does not inspect; run node hooks/doctor.js --repair-test-stores for them"
+
+[doctor_msg.resurrected_none]
+doc = "No store exists, so no row can be resurrected."
+value = "no resurrected registry rows found — nothing to repair"
+
+[doctor_msg.resurrected_deferred]
+doc = "Stores exist; the engine doctor leaves the resurrected-row repair to the Node doctor."
+value = "the resurrected-row repair needs the Node doctor (node hooks/doctor.js --repair-resurrected [--apply]); the engine doctor did not touch the stores"
+
+[doctor_msg.repair_head_explicit]
+doc = "The heading of an explicit repair section. Placeholders: {title}, {mode}, {flag}."
+value = "{title}{mode} [explicit {flag}]"
+
+[doctor_msg.repair_mode_apply]
+doc = "The heading suffix of an explicit repair that acts."
+value = " [--apply]"
+
+[doctor_msg.repair_mode_dry]
+doc = "The heading suffix of an explicit repair that only previews."
+value = " (dry-run — no changes written)"
+
+[doctor_msg.repair_title_orphans]
+doc = "The title of the ingest-orphan repair section."
+value = "Repair ingest orphans"
+
+[doctor_msg.repair_title_stores]
+doc = "The title of the leaked-store repair section."
+value = "Repair test stores"
+
+[doctor_msg.repair_title_resurrected]
+doc = "The title of the resurrected-rows repair section."
+value = "Repair resurrected registry rows"
+
+[doctor_msg.explicit_nothing]
+doc = "An explicit repair with no rows."
+value = "nothing to repair"
+
+[doctor_msg.explicit_unloaded]
+doc = "The mark of an unloaded orphan."
+value = "UNLOADED "
+
+[doctor_msg.explicit_moved]
+doc = "The mark of a leaked store moved aside."
+value = "MOVED ASIDE "
+
+[doctor_msg.explicit_retired]
+doc = "The mark of a re-retired resurrected row."
+value = "RE-RETIRED "
+
+[doctor_msg.explicit_failed]
+doc = "The mark of a failed explicit repair."
+value = "FAILED "
+
+[doctor_msg.explicit_gated]
+doc = "The mark of an explicit repair the engine doctor defers."
+value = "DEFERRED "
+
+[doctor_msg.explicit_skipped]
+doc = "The mark of an explicit repair row that changed nothing."
+value = "skipped "
+
+# ---- the DevSwarm supervisor section ----------------------------------------------------------------------------------------------
+
+[doctor.ds_supervisor_files]
+doc = "The supervisor's own scripts (relative to the plugin root) that must parse; a present file that does not is a failure."
+value = ["hooks/lib/devswarm-detect.js", "companion/lib/target-session.js", "companion/lib/liveness.js", "companion/lib/recovery.js", "companion/lib/doctor-devswarm.js", "companion/lib/doctor-descriptors.js", "companion/lib/doctor-runtime.js", "companion/devswarm-supervisor.js", "companion/install-devswarm-supervisor.js", "companion/install-devswarm-ingest.js", "companion/devswarm-ingest.js"]
+
+[doctor.ds_label]
+doc = "The launchd label of the DevSwarm liveness supervisor."
+value = "com.anti-hall.devswarm-supervisor"
+
+[doctor.ds_unit]
+doc = "The systemd unit name of the DevSwarm liveness supervisor."
+value = "anti-hall-devswarm-supervisor"
+
+[doctor.timer_ext]
+doc = "The extension of a systemd timer file."
+value = ".timer"
+
+[doctor.ds_inbox_dir]
+doc = "The directory of workspace inbox files under the DevSwarm directory."
+value = "inbox"
+
+[doctor.ds_inbox_ext]
+doc = "The extension of a workspace inbox file."
+value = ".ndjson"
+
+[doctor.ds_cursor_dir]
+doc = "The directory of workspace cursor files under the DevSwarm directory."
+value = "cursor"
+
+[doctor.ds_wt_dir]
+doc = "The directory the self-test workspaces' worktree paths are under."
+value = "wt"
+
+[doctor.ds_session_prefix]
+doc = "The prefix of a self-test workspace's session id."
+value = "sess-"
+
+[doctor.ds_heartbeat_dir]
+doc = "The directory of heartbeat files under the DevSwarm directory."
+value = "heartbeats"
+
+[doctor.ds_summaries_dir]
+doc = "The directory of the shared project summaries under the DevSwarm directory."
+value = "summaries"
+
+[doctor.ds_label_turn]
+doc = "The scratch directory label of the child-turn self-test."
+value = "ds-turn"
+
+[doctor.ds_label_cgate]
+doc = "The scratch directory label of the child-gate self-test."
+value = "ds-cgate"
+
+[doctor.ds_label_inbox]
+doc = "The scratch directory label of the parent-inbox self-test."
+value = "ds-inbox"
+
+[doctor.ds_label_pgate]
+doc = "The scratch directory label of the parent-gate self-test."
+value = "ds-pgate"
+
+[doctor.ds_script_turn]
+doc = "The Node hook behind the child-turn self-test (run when the engine defers)."
+value = "devswarm-child-turn.js"
+
+[doctor.ds_script_cgate]
+doc = "The Node hook behind the child-gate self-test."
+value = "devswarm-child-gate.js"
+
+[doctor.ds_script_inbox]
+doc = "The Node hook behind the parent-inbox self-test."
+value = "devswarm-parent-inbox.js"
+
+[doctor.ds_script_pgate]
+doc = "The Node hook behind the parent-gate self-test."
+value = "devswarm-parent-gate.js"
+
+[doctor.ds_child_env]
+doc = "The environment of a DevSwarm child workspace in the self-tests: supervisor forced on, a source branch set."
+value = ["DISABLE_ANTIHALL_DEVSWARM=", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x", "DEVSWARM_SOURCE_BRANCH=feature-x"]
+
+[doctor.ds_primary_env]
+doc = "The environment of a DevSwarm Primary in the self-tests: supervisor forced on, no source branch."
+value = ["DISABLE_ANTIHALL_DEVSWARM=", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x", "DEVSWARM_SOURCE_BRANCH="]
+
+[doctor.ds_payload_turn]
+doc = "The prompt payload of the child-turn self-test."
+value = "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"ct\",\"prompt\":\"hi\"}"
+
+[doctor.ds_payload_stop]
+doc = "The Stop payload of the gate self-tests; {SID} is a fresh session id."
+value = "{\"hook_event_name\":\"Stop\",\"session_id\":\"{SID}\"}"
+
+[doctor.ds_payload_inbox]
+doc = "The prompt payload of the parent-inbox self-test; {CWD} is the working directory."
+value = "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"pi\",\"prompt\":\"hi\",\"cwd\":\"{CWD}\"}"
+
+[doctor.ds_turn_re]
+doc = "What a child-turn reminder contains."
+value = "devswarm-child-workspace"
+
+[doctor.ds_builder_id]
+doc = "The id of the self-test child workspace."
+value = "cg-self-test-child"
+
+[doctor.ds_builder_env]
+doc = "The environment variable that names a child's workspace id."
+value = "DEVSWARM_BUILDER_ID"
+
+[doctor.ds_summary_json]
+doc = "The shared summary the parent-inbox self-test publishes: one workspace with three unread messages."
+value = "{\"workspaces\":{\"wsA\":{\"total\":3,\"cursor\":0,\"unread\":3,\"directUnread\":3}}}"
+
+[doctor.ds_inbox_re]
+doc = "What the parent-inbox notice names."
+value = "devswarm-parent-inbox"
+
+[doctor.ds_inbox_re2]
+doc = "What the parent-inbox notice says about the backlog."
+value = "3 unread"
+
+[doctor.ds_workspace_id]
+doc = "The id of the neglected workspace in the parent-gate self-test."
+value = "wsA"
+
+[doctor.ds_inbox_lines]
+doc = "The unread messages in the parent-gate self-test's workspace."
+value = ["{\"m\":1}", "{\"m\":2}"]
+
+[doctor.ds_log_cron_found]
+doc = "The log of cron ticks that found mail while a watcher was armed."
+value = "cron-found-mail.jsonl"
+
+[doctor.ds_log_not_draining]
+doc = "The log of suppressed \"child not draining\" nudges."
+value = "not-draining-suppressed.jsonl"
+
+[doctor.ds_log_rearm]
+doc = "The log of wake-watch re-arm decisions."
+value = "rearm-cues.jsonl"
+
+[doctor.ds_log_cron_missing]
+doc = "The log of \"mailbox cron missing\" warnings."
+value = "cron-missing-warned.jsonl"
+
+[doctor.ds_trigger_idle]
+doc = "The re-arm log trigger of a Primary with no live children."
+value = "idle-skip"
+
+[doctor.ds_trigger_limit]
+doc = "The re-arm log trigger of a deferred re-arm under limit conservation."
+value = "limit-skip"
+
+[doctor_msg.head_devswarm]
+doc = "The heading of the DevSwarm supervisor section."
+value = "DevSwarm liveness supervisor (optional)"
+
+[doctor_msg.ds_syntax]
+doc = "A supervisor script that does not parse. Placeholders: {file}, {error}."
+value = "supervisor lib SYNTAX ERROR: {file} — {error}"
+
+[doctor_msg.ds_turn_ok]
+doc = "The child-turn hook still works."
+value = "devswarm-child-turn writes a turn-authored heartbeat + reminds the child to update its parent"
+
+[doctor_msg.ds_turn_bad]
+doc = "The child-turn hook failed. Placeholders: {said}, {beat}."
+value = "devswarm-child-turn did NOT heartbeat/remind a child session (said={said}, heartbeat={beat})"
+
+[doctor_msg.ds_cgate_ok]
+doc = "The child-gate hook still works."
+value = "devswarm-child-gate forces a child to self-report to its parent before stopping"
+
+[doctor_msg.ds_cgate_bad]
+doc = "The child-gate hook failed."
+value = "devswarm-child-gate did NOT force a child heartbeat at Stop"
+
+[doctor_msg.ds_inbox_ok]
+doc = "The parent-inbox hook still works."
+value = "devswarm-parent-inbox surfaces a workspace unread backlog to the Primary"
+
+[doctor_msg.ds_inbox_bad]
+doc = "The parent-inbox hook failed."
+value = "devswarm-parent-inbox did NOT surface unread backlog to the Primary"
+
+[doctor_msg.ds_inbox_skip]
+doc = "The parent-inbox self-test does not apply here. Placeholder: {cwd}."
+value = "devswarm-parent-inbox self-test SKIPPED: repoKey unresolvable for {cwd} (not a git worktree?)"
+
+[doctor_msg.ds_pgate_ok]
+doc = "The parent-gate hook still works."
+value = "devswarm-parent-gate blocks the Primary turn while a child inbox is unread"
+
+[doctor_msg.ds_pgate_bad]
+doc = "The parent-gate hook failed."
+value = "devswarm-parent-gate did NOT block on a neglected child at Stop"
+
+[doctor_msg.ds_scheduler_launchd]
+doc = "The name of the macOS scheduler in the installed line."
+value = "launchd"
+
+[doctor_msg.ds_scheduler_systemd]
+doc = "The name of the Linux scheduler in the installed line."
+value = "systemd"
+
+[doctor_msg.ds_installed]
+doc = "The background supervisor is installed. Placeholder: {kind}."
+value = "supervisor companion INSTALLED ({kind} background sweep)"
+
+[doctor_msg.ds_not_installed]
+doc = "The background supervisor is not installed."
+value = "supervisor companion not installed — background auto-recovery is off; the in-session checks below (if any) still run"
+
+[doctor_msg.ds_runtime_deferred]
+doc = "A DevSwarm session is active; the runtime checks the engine doctor does not make yet. Placeholder: {n}."
+value = "DevSwarm is active ({n} workspace descriptor(s)); the per-workspace liveness verdicts, the app-database view, the delivery log, the wake monitor and the other DevSwarm runtime checks are not made by the engine doctor yet - run node hooks/doctor.js for them"
+
+[doctor_msg.ds_cron_found]
+doc = "Cron ticks that found mail while a watcher was armed. Placeholder: {n}."
+value = "cron ticks that found mail while a watcher was armed: {n} (cron-found-mail.jsonl — empty after a week of normal use means this cron fallback is removable; see docs/KB-claude-monitor-tool.md §7)"
+
+[doctor_msg.ds_not_draining]
+doc = "Suppressed \"child not draining\" nudges. Placeholder: {n}."
+value = "CHILD NOT DRAINING nudges suppressed by the repeat cap: {n} (not-draining-suppressed.jsonl)"
+
+[doctor_msg.ds_idle_skips]
+doc = "Idle skips of the wake watch. Placeholder: {n}."
+value = "wake-watch idle-skips: {n} (rearm-cues.jsonl, trigger idle-skip — a Primary with 0 live children declining to arm)"
+
+[doctor_msg.ds_limit_skips]
+doc = "Limit skips of the wake watch. Placeholder: {n}."
+value = "wake-watch limit-skips: {n} (rearm-cues.jsonl, trigger limit-skip — LIMIT CONSERVATION active, re-arm deliberately deferred)"
+
+[doctor_msg.ds_cron_missing]
+doc = "\"Mailbox cron missing\" warnings shown. Placeholder: {n}."
+value = "mailbox-cron-missing warnings shown: {n} (cron-missing-warned.jsonl — a cron that keeps going missing after restores may need a supervisor-level recreate instead of relying on the per-session Stop-gate nudge)"

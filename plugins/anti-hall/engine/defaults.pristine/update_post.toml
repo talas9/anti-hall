@@ -1,0 +1,102 @@
+# ah-engine shipped defaults for the native post-pull stages of `update` (the stages update.js runs after the pull).
+# Format: see the header of engine.toml. Every text and shape here is update.js's own, word for word; tests/it/update_parity.rs
+# compares the command with the script on seeded scratch homes.
+
+[update_post.stages]
+doc = """The post-pull stages in the order update.js runs them. `name` is the progress name, `key` the status key, `fn` the exported Node stage function the engine runs (a bounded subprocess) when it cannot answer the stage itself. `budget`: the overall post-pull budget defers the stage. `files`: plugin files the stage needs (relative to the plugin dir); if one is missing Node answers. `gate`: the stage is DevSwarm-session-only; `gate_json` is the answer with the gate closed. `state`: keys of update-sweep-state.json that must all hold completedVersion == the new version for the one-time stage to be done; `done_json` is the answer then (`{version}` in its detail). `passes`: the options handed to the Node function (`version`, `hashes` = the store hashes ordered smallest first, `deadline` = the post-pull deadline)."""
+value = [
+  { name = "reconcile", key = "reconcile", fn = "reconcilePostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = [], passes = [], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — reconcile skipped (gate closed)"}', done_json = '' },
+  { name = "fold", key = "fold", fn = "foldMeshPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = [], passes = [], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — fold skipped (gate closed)"}', done_json = '' },
+  { name = "fold-all-stores", key = "foldAllStores", fn = "foldAllStoresPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js", "companion/lib/devswarm-store.js"], state = ["foldAllStores"], passes = ["version", "hashes", "deadline"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — fold-all-stores skipped (gate closed)"}', done_json = '{"attempted":true,"stores":0,"retired":0,"forwarded":0,"folded":0,"errors":0,"skippedAlreadyDone":true,"detail":"fold-all-stores: already completed for {version} — skipped (one-time per-version migration)"}' },
+  { name = "heal-orphan-partitions", key = "healOrphanPartitions", fn = "healOrphanPartitionsPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js", "companion/lib/devswarm-store.js"], state = ["healOrphanPartitions"], passes = ["version", "hashes", "deadline"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — heal-orphan-partitions skipped (gate closed)"}', done_json = '{"attempted":true,"stores":0,"adopted":0,"forwarded":0,"unhealable":0,"skipped":0,"errors":0,"unhealableSample":[],"skippedAlreadyDone":true,"detail":"heal-orphan-partitions: already completed for {version} — skipped (one-time per-version migration)"}' },
+  { name = "fold-archived-rows", key = "foldArchivedRows", fn = "foldArchivedRowsPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = ["foldArchivedRows", "foldArchivedFamilyDescriptors"], passes = ["version", "deadline"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — fold-archived-rows skipped (gate closed)"}', done_json = '{"attempted":true,"retired":0,"forwarded":0,"left":0,"errors":0,"skippedAlreadyDone":true,"detail":"fold-archived-rows: already completed for {version} — skipped (one-time per-version migration)"}' },
+  { name = "re-retire-resurrected", key = "reRetireResurrected", fn = "reRetireResurrectedPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = ["reRetireResurrected"], passes = ["version"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — re-retire-resurrected skipped (gate closed)"}', done_json = '{"attempted":true,"candidates":0,"unhealable":0,"errors":0,"skippedAlreadyDone":true,"detail":"re-retire-resurrected: report already shown for {version} — skipped (one-time per-version report)"}' },
+  { name = "promote-unclaimed", key = "promoteUnclaimed", fn = "promoteUnclaimedPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = [], passes = [], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — promote-unclaimed skipped (gate closed)"}', done_json = '' },
+  { name = "owner-key-migrate", key = "ownerKeyMigrate", fn = "ownerKeyMigratePostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = ["ownerKeyMigrate"], passes = ["version"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — ownerKey migrate skipped (gate closed)"}', done_json = '{"attempted":true,"scanned":0,"backfilled":0,"rehomed":0,"errors":0,"skippedAlreadyDone":true,"detail":"ownerKey migrate: already completed for {version} — skipped (one-time per-version migration)"}' },
+  { name = "reply-state-migrate", key = "replyStateMigrate", fn = "", lib = "scripts/migrate-state.js", lib_fn = "migrateReplyState", label = "reply-state migrate", out = ["scanned", "migrated", "alreadyAppendOnly", "errors"], detail = "reply-state migrate: scanned {scanned}, migrated {migrated}, already-append-only {alreadyAppendOnly}{errors}", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/migrate-state.js"], state = [], passes = [], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — reply-state migrate skipped (gate closed)"}', done_json = '' },
+  { name = "cursor-hygiene", key = "cursorHygiene", fn = "cursorHygienePostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = ["cursorHygiene"], passes = ["version"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — cursor hygiene skipped (gate closed)"}', done_json = '{"attempted":true,"scanned":0,"deleted":0,"evicted":0,"kept":0,"errors":0,"skippedAlreadyDone":true,"detail":"cursor hygiene: already completed for {version} — skipped (one-time per-version migration)"}' },
+  { name = "merge-split-backend-stores", key = "mergeSplitBackendStores", fn = "mergeSplitBackendStoresPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = ["mergeSplitBackendStores"], passes = ["version"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session - split-store merge skipped (gate closed)"}', done_json = '{"attempted":true,"stores":0,"splitStores":0,"messagesMerged":0,"registryMerged":0,"errors":0,"skippedAlreadyDone":true,"detail":"split-store merge: already completed for {version} - skipped (one-time per-version migration)"}' },
+  { name = "reader-cursors-import", key = "readerCursorsImport", fn = "readerCursorsImportPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = ["readerCursorsImport"], passes = ["version"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session - reader-cursors import skipped (gate closed)"}', done_json = '{"attempted":true,"stores":0,"partitions":0,"imported":0,"errors":0,"skippedAlreadyDone":true,"detail":"reader-cursors import: already completed for {version} - skipped (one-time per-version migration)"}' },
+  { name = "reader-floor-repair", key = "readerFloorRepair", fn = "readerFloorRepairPostUpdate", budget = true, gate = false, files = ["scripts/devswarm.js"], state = ["repairReaderFloors"], passes = ["version"], gate_json = '', done_json = '{"attempted":true,"stores":0,"partitions":0,"repaired":0,"retired":0,"errors":0,"skippedAlreadyDone":true,"detail":"reader-floor repair: already completed for {version} - skipped (one-time per-version migration)"}' },
+  { name = "app-archived-markers", key = "appArchivedMarkers", fn = "markAppArchivedPostUpdate", budget = true, gate = false, files = ["scripts/devswarm.js"], state = ["markAppArchived"], passes = ["version"], gate_json = '', done_json = '{"attempted":true,"scanned":0,"marked":0,"errors":0,"skippedAlreadyDone":true,"detail":"app-archived markers: already completed for {version} - skipped (one-time per-version migration)"}' },
+  { name = "child-sender-labels", key = "childSenderLabels", fn = "childSenderLabelsPostUpdate", budget = true, gate = false, files = ["scripts/devswarm.js"], state = ["repairChildSenderLabels"], passes = ["version"], gate_json = '', done_json = '{"attempted":true,"labels":0,"aliased":0,"retired":0,"forwarded":0,"errors":0,"skippedAlreadyDone":true,"detail":"child-sender-labels: already completed for {version} - skipped (one-time per-version migration)"}' },
+  { name = "dual-partition-acks", key = "dualPartitionAcks", fn = "dualPartitionAcksPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js"], state = ["reconcileDualPartitionAcks"], passes = ["version"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session - dual-partition-acks skipped (gate closed)"}', done_json = '{"attempted":true,"stores":0,"raised":0,"rows":0,"errors":0,"skippedAlreadyDone":true,"detail":"dual-partition-acks: already completed for {version} - skipped (one-time per-version migration)"}' },
+  { name = "gate-intents-migrate", key = "gateIntentsMigrate", fn = "", lib = "scripts/migrate-state.js", lib_fn = "migrateGateIntents", label = "gate-intents migrate", out = ["scanned", "migrated", "alreadyCurrent", "errors"], detail = "gate-intents migrate: scanned {scanned}, migrated {migrated}, already-current {alreadyCurrent}{errors}", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/migrate-state.js"], state = [], passes = [], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — gate-intents migrate skipped (gate closed)"}', done_json = '' },
+  { name = "auto-archived-state-migrate", key = "autoArchivedStateMigrate", fn = "autoArchivedStateMigratePostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/migrate-state.js"], state = [], passes = [], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — auto-archived-state migrate skipped (gate closed)"}', done_json = '' },
+  { name = "settings-migrate", key = "settingsMigrate", fn = "settingsMigratePostUpdate", budget = true, gate = false, files = [], state = [], passes = ["version"], gate_json = '', done_json = '' },
+  { name = "heal-registry-rows", key = "healRegistryRows", fn = "healRegistryPostUpdate", budget = true, gate = true, files = ["hooks/lib/devswarm-detect.js", "scripts/devswarm.js", "companion/lib/devswarm-store.js"], state = ["healRegistry"], passes = ["version", "hashes"], gate_json = '{"attempted":false,"detail":"not a DevSwarm session — heal-registry-rows skipped (gate closed)"}', done_json = '{"attempted":true,"checked":0,"healed":0,"rehomed":0,"stores":[],"skippedAlreadyDone":true,"detail":"heal-registry-rows: already completed for {version} — skipped (one-time per-version migration)"}' },
+  { name = "wake-monitor", key = "wakeMonitor", fn = "wakeMonitorPostUpdate", budget = false, gate = true, files = ["hooks/lib/devswarm-detect.js"], state = [], passes = [], gate_json = '{"attempted":false,"shipped":false,"live":false,"detail":"not a DevSwarm session — wake-monitor skipped (gate closed)"}', done_json = '' },
+  { name = "codex-graphify-hooks-migrate", key = "codexGraphifyHooksMigrate", fn = "codexGraphifyHooksMigratePostUpdate", budget = false, gate = false, files = [], state = [], passes = [], gate_json = '', done_json = '' },
+]
+
+[update_post.ingest_files]
+doc = "Plugin files the ingest-daemon heal inspects (relative to the plugin dir); if one is missing Node answers."
+value = ["companion/install-devswarm-ingest.js", "hooks/lib/doctor-repair.js", "hooks/lib/devswarm-detect.js"]
+
+[update_post.ingest_gate_json]
+doc = "The ingest heal answer when this is not a DevSwarm session and the cache was synced (healIngestDaemon's gate)."
+value = '{"attempted":false,"healed":false,"detail":"not a DevSwarm session — ingest heal skipped (gate closed)"}'
+
+[update_post.ingest_idle_json]
+doc = "The ingest heal answer when nothing was synced and the unit does not need healing."
+value = '{"attempted":false,"healed":false,"detail":"no cache sync this run and the installed ingest unit classifies ok — nothing to heal"}'
+
+[update_post.deferred_json]
+doc = "A stage deferred by the overall post-pull budget. Placeholders: name, budget."
+value = '{"attempted":false,"deferred":true,"detail":"{name}: deferred — overall post-pull budget ({budget}ms) exhausted before this stage started; it runs on the NEXT update/doctor pass (idempotent/resumable, nothing lost)"}'
+
+[update_post.node_failed_json]
+doc = "A stage whose Node function could not be run or printed nothing usable (the stage functions never throw, so this is the engine's own fail-open answer). Placeholders: name, why."
+value = '{"attempted":false,"detail":"{name} skipped: the Node stage could not run ({why})"}'
+
+[update_post.node_args]
+doc = "Arguments of the Node subprocess that runs one stage function: the code, then the plugin dir, the function name and the options (JSON) as arguments."
+value = ["-e"]
+
+[update_post.stage_snippet]
+doc = "Runs one exported stage function of update.js with the paths resolved like its main(), and prints its answer as one JSON line. Arguments: plugin dir, function name, options JSON."
+value = 'const u=require(process.argv[1]+"/skills/update/scripts/update.js");const o=JSON.parse(process.argv[3]);o.paths=u.resolvePaths(process.env,require("os").homedir());console.log(JSON.stringify(u[process.argv[2]](o)))'
+
+[update_post.hashes_snippet]
+doc = "The store hashes, ordered smallest first, as runUpdate computes them once for the store stages. Arguments: plugin dir."
+value = 'const os=require("os");const u=require(process.argv[1]+"/skills/update/scripts/update.js");const d=require(process.argv[1]+"/companion/lib/devswarm-store.js");console.log(JSON.stringify(u.orderStoreHashesBySize(d,os.homedir(),d.listStoreHashes(os.homedir())||[],undefined)))'
+
+[update_post.lib_snippet]
+doc = "Runs one exported function of a plugin library with the home as its option and prints {r: answer}, {__nofn: true} or {__err: message}. Arguments: plugin dir, library file, function name."
+value = 'let o;try{const m=require(process.argv[1]+"/"+process.argv[2]);const f=process.argv[3];o=typeof m[f]!=="function"?{__nofn:true}:{r:m[f]({home:require("os").homedir()})||{}}}catch(e){o={__err:String(e&&e.message?e.message:e)}}console.log(JSON.stringify(o))'
+
+[update_post.lib_nofn]
+doc = "A library without the function a stage needs. Placeholders: label, fn."
+value = "{label} skipped: this build has no {fn}"
+
+[update_post.lib_raised]
+doc = "A library call that threw. Placeholders: label, why."
+value = "{label} raised: {why}"
+
+[update_post.lib_errors]
+doc = "The detail suffix when the library counted errors. Placeholder: n."
+value = " ({n} error(s), fail-open)"
+
+[update_post.hash_files]
+doc = "Plugin files that must be there for the shared store-hash listing."
+value = ["hooks/lib/devswarm-detect.js", "companion/lib/devswarm-store.js"]
+
+[update_post.stage_timeout_ms]
+doc = "Upper bound of one Node stage subprocess, in ms, besides the post-pull budget plus margins."
+value = 300000
+
+[update_post.marker_file]
+doc = "The one-time stage markers, relative to the home directory."
+value = ".anti-hall/update-sweep-state.json"
+
+[update_post.ingest_needs_fn]
+doc = "The exported Node function that says whether an installed ingest unit needs a heal when nothing was synced."
+value = "ingestUnitNeedsHeal"
+
+[update_post.ingest_heal_fn]
+doc = "The exported Node function that heals the ingest daemon."
+value = "healIngestDaemon"
+
+[update_post.status_order]
+doc = "The order of the stage keys in the status object (the script's object literal; it differs from the order the stages run in)."
+value = ["ingestHeal", "reconcile", "fold", "foldAllStores", "healOrphanPartitions", "foldArchivedRows", "reRetireResurrected", "promoteUnclaimed", "ownerKeyMigrate", "cursorHygiene", "mergeSplitBackendStores", "readerCursorsImport", "readerFloorRepair", "appArchivedMarkers", "childSenderLabels", "dualPartitionAcks", "replyStateMigrate", "gateIntentsMigrate", "autoArchivedStateMigrate", "settingsMigrate", "healRegistryRows", "wakeMonitor", "codexGraphifyHooksMigrate"]

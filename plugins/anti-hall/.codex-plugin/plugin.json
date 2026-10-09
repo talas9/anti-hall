@@ -1,6 +1,6 @@
 {
   "name": "anti-hall",
-  "version": "0.203.4",
+  "version": "0.300.0",
   "description": "Verify-first guardrails for Codex: an installer for the Codex hook subset (shell-command guards, Stop guards, task discipline, speculation checks, session nudges) plus Codex-native skills including session handover. Pure Node (>= 22), macOS and Linux.",
   "author": {
     "name": "Mohammed Talas",
