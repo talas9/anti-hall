@@ -46,7 +46,7 @@ function wakeCoverage(opts) {
     // Positive proof only: held / archive-ignored children are not live, and an
     // undeterminable answer is `unknown` (never a live child).
     const lc = require('./devswarm-live-children.js').liveChildState(home, o.cwd || process.cwd(),
-      { env: o.env, excludeHeldIgnored: true, ...(o.liveChildOpts || {}) });
+      { env: o.env, excludeHeldIgnored: true, excludeWaitingOnUser: true, ...(o.liveChildOpts || {}) });
     if (!lc.known) return unknown;
     const liveChildren = lc.live;
 

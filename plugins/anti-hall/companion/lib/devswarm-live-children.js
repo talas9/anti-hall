@@ -40,7 +40,49 @@ const fs = require('fs');
 //   excludeHeldIgnored } — all injectable for tests. excludeHeldIgnored also
 // skips children that are held (devswarm.heldPartitions) or archive-ignored,
 // matching the parent gate's `archived || held || ignored` policy.
+// excludeWaitingOnUser also skips a child that is idle on an unanswered prompt to the OWNER (a live session
+// blocked on AskUserQuestion / ExitPlanMode): it cannot message anyone until the owner answers, so it is no
+// reason to nag about a missing wake path.
 function liveChildState(home, cwd, opts) {
+  const o = opts || {};
+  const d = descriptorLiveChildState(home, cwd, o);
+  if (d.known && d.live) return d;
+  // SECOND SOURCE (spawn-lag fix): the DevSwarm app's own workspace list, the source `roster` reports. A child that
+  // was just spawned has no descriptor until its session registers itself, so the descriptor read alone said "no live
+  // child workspaces" (and the watcher idle-skipped) while the roster already showed it active. POSITIVE proof only:
+  // an unreadable app DB changes nothing.
+  try { if (appHasLiveChild(home, cwd, o)) return { live: true, known: true }; } catch (_) { /* fail-open: the descriptor answer stands */ }
+  return d;
+}
+
+// appHasLiveChild(home, cwd, o) -> bool. An ACTIVE, non-primary app workspace of this Primary's own repository that is
+// not this Primary's checkout (and, with excludeHeldIgnored, not held / archive-ignored / marker-archived).
+function appHasLiveChild(home, cwd, o) {
+  const appDb = o.appDb || require('./devswarm-app-db.js');
+  const snap = o.appSnapshot !== undefined ? o.appSnapshot : appDb.snapshot({ home, env: o.env });
+  if (!snap || !Array.isArray(snap.workspaces)) return false;
+  const repo = appDb.repositoryForWorktree(snap, cwd);
+  if (!repo || repo.id == null) return false;
+  const self = appDb.workspaceFor(snap, { worktreePath: cwd });
+  const rowEligibility = o.rowEligibility || require('./row-eligibility.js').rowEligibility;
+  for (const w of snap.workspaces) {
+    if (!w || !w.active || w.archived || w.builderType === 'primary') continue;
+    if (String(w.repositoryId) !== String(repo.id)) continue;
+    if (self && w.id === self.id) continue;
+    let skip = false;
+    try {
+      const projected = rowEligibility({ id: w.id, worktreePath: w.worktreePath, sessionId: w.sessionId || null },
+        { home, env: o.env, fsi: o.fsi || fs, ...(o.excludeWaitingOnUser ? { liveness: true } : {}) });
+      skip = !!(projected && (projected.markerArchived
+        || (o.excludeHeldIgnored && (projected.held || projected.ignored))
+        || (o.excludeWaitingOnUser && projected.waitingOnUser)));
+    } catch (_) { skip = false; }
+    if (!skip) return true;
+  }
+  return false;
+}
+
+function descriptorLiveChildState(home, cwd, opts) {
   const o = opts || {};
   const F = o.fsi || fs;
   try {
@@ -74,10 +116,11 @@ function liveChildState(home, cwd, opts) {
       try {
         const projected = rowEligibility(
           { id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId, repoKey: dKey },
-          { home, env: o.env, fsi: F },
+          { home, env: o.env, fsi: F, ...(o.excludeWaitingOnUser ? { liveness: true } : {}) },
         );
         archived = !!(projected && (projected.archived
-          || (o.excludeHeldIgnored && (projected.held || projected.ignored))));
+          || (o.excludeHeldIgnored && (projected.held || projected.ignored))
+          || (o.excludeWaitingOnUser && projected.waitingOnUser)));
       } catch (_) { archived = true; }
       if (!archived) return { live: true, known: true };
     }

@@ -87,11 +87,11 @@ test('Primary spawn with no watcher and no tick -> warnings carries the full NO 
   } finally { rm(f); }
 });
 
-test('only one path missing -> the shorter line for just that one', () => {
+test('only the cron missing -> the short NO MAILBOX TICK line (a lapsed watcher under a live cron is not warned about)', () => {
   const f = fixture();
   try {
     writeTick(f, 5);
-    assert.ok(spawn(f, 'child-b', CLAUDE).warnings[0].startsWith('NO MAILBOX WATCHER'));
+    assert.strictEqual(spawn(f, 'child-b', CLAUDE).warnings, undefined, 'a lapsed watcher under a live cron is re-armed by the tick: no warning');
   } finally { rm(f); }
   const f2 = fixture();
   try {
