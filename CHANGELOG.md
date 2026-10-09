@@ -6,7 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.203.0 (2026-10-09)
+
+### Highlights
+
+- **Leaner injected context.** The SubagentStart worker core, the task-tracker reminder and the DevSwarm workspace table all re-send less (measured per-turn and per-spawn reductions below).
+- **Accurate limit advisory.** The limit-conservation text no longer claims a Claude model has its own weekly bucket.
+- **Language-agnostic.** The Flutter-specific `flutter-debug` skill and agent are removed.
+- **Alias-based model routing.** The Jev judge and all plugin code route by model alias, never a pinned model version.
+- **Guard and DevSwarm fixes.** git-guard heredoc handling and self-credit messages, command-guard read-only chains, one canonical DevSwarm workspace-id resolver, spawn-time submodule fetch, and auto-archive records that no longer stay pending.
+
+### Changed
+
+- git-guard: a data heredoc is no longer vetoed by read-only neighbouring commands or a literal `$VAR` target, and the self-credit block names the command that carries the credit.
+- command-guard: a `gcloud` read inside a read-only chain and `python3 -I` scratch scripts are no longer treated as heavy.
+- edit-guard: a handover written outside the project gets a specific redirect to the project path.
+- Jev judge and plugin code route models by alias (haiku/sonnet/opus), with a guard test against pinned slugs.
+- DevSwarm: one canonical workspace-id resolver (meshId/uuid/prefix) across unarchive, send, gate and the other id-taking verbs; spawn fetches a missing pinned submodule commit before create and surfaces every submodule failure in warnings; an auto-archive record without `doneHead` no longer stays pending forever (already-written entries are repaired).
+- limit-conserve: reset time renders at minute precision so emit-dedupe matches across jitter; turn-gate pruning uses the correct `tg` family; jev-report keeps triage-derived rows out of Jev totals; eval trace extraction counts assistant usage once per message id.
 
 - Fixed the limit-conservation advisory (`limit-conserve-inject.js`, Codex `anti-hall-context-conserve` skill) claiming Sonnet draws on a "SEPARATE weekly bucket" or that a downshift preserves a "flagship weekly bucket". Per-model weekly buckets are not documented, and the usage screen shows only "All models" and "Fable only". The text now says only that Codex has its own limit and that cheaper models or fewer agents use less of the shared Claude pool, and makes no claim about Fable's relation to "All models". A test fails if the advisory ever again calls Sonnet, Opus or Haiku a separate bucket.
 - Removed the Flutter-specific `flutter-debug` skill and agent; anti-hall is language-agnostic. The removed code remains in git history.
