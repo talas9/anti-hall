@@ -53,7 +53,6 @@ type Setup = Box<dyn Fn(&Path)>;
 struct W {
     repo_key: String,
     child: PathBuf,
-    root: PathBuf,
 }
 
 struct Lc {
@@ -78,6 +77,10 @@ impl Lc {
     }
     fn setup(mut self, f: impl Fn(&Path) + 'static) -> Lc {
         self.setup = Box::new(f);
+        self
+    }
+    fn cwd(mut self, c: &'static str) -> Lc {
+        self.cwd = c;
         self
     }
     fn no_hc(mut self) -> Lc {
@@ -330,7 +333,7 @@ fn setup_world(tag: &str) -> Option<(Fx, W)> {
         return None;
     }
     let fx = fixture(tag);
-    let w = W { repo_key: fx.repo_key.clone(), child: fx.child.clone(), root: fx.root.clone() };
+    let w = W { repo_key: fx.repo_key.clone(), child: fx.child.clone() };
     Some((fx, w))
 }
 
@@ -635,5 +638,251 @@ fn pending_wal(w: &W, created: &'static str, inbox_done: bool) -> impl Fn(&Path)
         }
         let _ = read_inbox;
         let _ = wal_file;
+    }
+}
+
+// ---- slice 2: the auto-ensure REGISTERS a workspace that has no descriptor ----------------------------------------------------
+
+/// The floor rows and the watcher lock of a workspace that has no descriptor yet (the descriptor is what the pull creates).
+fn unregistered(w: &W, h: &Path) {
+    let floor = |ns: &str, v: i64| json!({"partition": "child-1", "ns": ns, "reader": "#floor", "value": v, "updatedAt": NOW - 1000});
+    run_seed("ack_seed.js", h, &w.repo_key, &json!({"rows": [floor("store", 2), floor("nd", 0)]}));
+    wake_lock(h);
+}
+
+/// A daemon that reads as healthy (a fresh heartbeat and a live lock of the same pid), so the self-heal neither warns nor spawns.
+fn healthy_daemon(w: &W, h: &Path) {
+    let pid = std::process::id();
+    put(h, &format!("heartbeats/ingest-{}.json", w.repo_key), &json!({"ts": NOW, "pid": pid}).to_string());
+    put(h, &format!("locks/ingest-project-{}.lock", w.repo_key), &json!({"pid": pid, "ts": NOW}).to_string());
+}
+
+/// A Claude harness session record for this test process, so the callers (Node and the engine alike) have a reader key.
+fn harness_session(h: &Path) {
+    let pid = std::process::id();
+    let p = h.join(".claude/sessions").join(format!("{pid}.json"));
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(p, json!({"pid": pid, "startedAt": 1_790_000_000_000_i64}).to_string()).unwrap();
+}
+
+#[test]
+fn child_tick_registers_a_workspace_without_a_descriptor_like_node() {
+    let Some((fx, w)) = setup_world("l8ereg") else { return };
+    let un = {
+        let w = w.clone();
+        move |h: &Path| unregistered(&w, h)
+    };
+    let cases = vec![
+        case("register-under-the-builder-id", &["--quiet"], true, un.clone()).env("DEVSWARM_BUILDER_ID", "child-1"),
+        case("register-under-the-builder-id-json", &["--json"], true, un.clone()).env("DEVSWARM_BUILDER_ID", "child-1"),
+        case("register-with-a-repo-id-and-a-healthy-daemon", &["--quiet"], true, {
+            let (w, un) = (w.clone(), un.clone());
+            move |h| {
+                un(h);
+                healthy_daemon(&w, h);
+            }
+        })
+        .env("DEVSWARM_BUILDER_ID", "child-1")
+        .env("DEVSWARM_REPO_ID", "repo-7"),
+        case("register-declares-the-caller-as-a-reader", &["--quiet"], true, {
+            let un = un.clone();
+            move |h| {
+                un(h);
+                harness_session(h);
+            }
+        })
+        .env("DEVSWARM_BUILDER_ID", "child-1"),
+        case("register-while-a-declared-row-is-retired-is-not-needed-without-a-session", &["--quiet"], true, un.clone()).env("DEVSWARM_BUILDER_ID", "child-1"),
+        case("register-with-a-native-message-queued", &["--quiet"], true, {
+            let un = un.clone();
+            move |h| {
+                un(h);
+                hc(h, "count", "1");
+                hc(h, "read", &msgs(&[("welcome", "2026-10-09T10:00:00Z")]));
+            }
+        })
+        .env("DEVSWARM_BUILDER_ID", "child-1"),
+        case("defer-register-unclaimed-without-a-builder-id", &["--quiet"], false, un.clone()),
+        case("defer-register-an-archived-twin-exists", &["--quiet"], false, {
+            let un = un.clone();
+            move |h| {
+                un(h);
+                put(h, "archived/child-1.json", "{\"id\":\"child-1\"}");
+            }
+        })
+        .env("DEVSWARM_BUILDER_ID", "child-1"),
+        case("defer-register-from-the-primary-checkout-a-row-of-that-worktree-exists", &["--quiet"], false, un.clone()).env("DEVSWARM_BUILDER_ID", "child-1").cwd("main"),
+        case("defer-register-declares-but-a-legacy-instance-cursor-maps", &["--quiet"], false, {
+            let un = un.clone();
+            move |h| {
+                un(h);
+                harness_session(h);
+                put(h, "cursors/child-1#inst-abcdef.json", "3");
+            }
+        })
+        .env("DEVSWARM_BUILDER_ID", "child-1"),
+    ];
+    run_cases(&fx, &w, &cases, 5, 4);
+}
+
+// ---- crash safety: a kill between the destructive read and the end of the import ----------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Tool {
+    Node,
+    Engine,
+}
+
+fn spawn_tick(tool: Tool, home: &Path, cwd: &Path, now: i64, env: &[(String, String)]) -> std::process::Child {
+    let e: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let argv = child(&["--quiet"]);
+    let mut c = match tool {
+        Tool::Node => {
+            let mut c = Command::new("node");
+            c.arg("-e").arg(SNIPPET).arg(plugin_root().join("scripts").join("devswarm.js")).arg(now.to_string()).args(&argv);
+            c
+        }
+        Tool::Engine => {
+            let mut c = Command::new(BIN);
+            c.arg("mesh").args(&argv).env("AH_ENGINE_MESH_NOW_MS", now.to_string());
+            c
+        }
+    };
+    c.current_dir(cwd).env_clear().envs(base_env(home, &home.join("state"), &e));
+    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    c.spawn().unwrap()
+}
+
+fn run_tick(tool: Tool, home: &Path, cwd: &Path, now: i64, env: &[(String, String)]) -> Out {
+    match tool {
+        Tool::Node => node_cli(home, cwd, &child(&["--quiet"]), now, env),
+        Tool::Engine => engine_cli(home, cwd, &child(&["--quiet"]), now, env),
+    }
+}
+
+fn wait_until(what: &str, f: impl Fn() -> bool) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !f() {
+        assert!(std::time::Instant::now() < end, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// The kill points. Each names the state the process is in when it is killed (the wait condition) and the hook the stub runs
+/// right after the destructive read.
+struct Kill {
+    name: &'static str,
+    hook: &'static str,
+    at: fn(&Path) -> bool,
+    /// What the interrupted state looks like to the next run, and whether the batch survives the kill.
+    batch_survives: bool,
+}
+
+fn wal_text(h: &Path) -> String {
+    fs::read_to_string(wal_file(h)).unwrap_or_default()
+}
+
+const KILLS: &[Kill] = &[
+    Kill {
+        // the stub is still running: the batch exists only in the pipe between hivecontrol and the pull (the documented residual window)
+        name: "between-the-destructive-read-and-the-wal-write",
+        hook: "sleep 6",
+        at: |h| h.join("hc/read.consumed").exists(),
+        batch_survives: false,
+    },
+    Kill {
+        // the WAL holds the batch (fsynced); the inbox is a named pipe, so the append never happens
+        name: "after-the-wal-write-before-the-inbox-append",
+        hook: "rm -f \"$HOME/.anti-hall/devswarm/inbox/child-1.ndjson\"; mkfifo \"$HOME/.anti-hall/devswarm/inbox/child-1.ndjson\"",
+        at: |h| wal_text(h).contains("\"t\":\"batch\""),
+        batch_survives: true,
+    },
+    Kill {
+        // the inbox holds the rows (fsynced); the store is write-locked, so the feed and the closing record never happen
+        name: "after-the-inbox-append-before-the-store-feed-and-the-closing-record",
+        hook: "db=$(ls \"$HOME\"/.anti-hall/devswarm/store/*/devswarm.db | head -1); ( ( echo 'BEGIN IMMEDIATE;'; sleep 5 ) | sqlite3 \"$db\" ) </dev/null >/dev/null 2>&1 &\nsleep 0.6",
+        at: |h| read_inbox(h).matches('\n').count() >= 2 && wal_text(h).contains("\"t\":\"batch\"") && !wal_text(h).contains("\"t\":\"done\""),
+        batch_survives: true,
+    },
+];
+
+/// Everything that must be the same however the interrupted run and the next run are split between Node and the engine.
+fn settled(h: &Path, key: &str) -> (BTreeMap<String, String>, String) {
+    let mut t = tree(h);
+    // the stub's call log names the order of calls; the next run's count is the same on both sides
+    t.retain(|k, _| !k.ends_with("lock.pid"));
+    let db = ds(h).join("store").join(key).join("devswarm.db");
+    (t, mask_dump(&raw_dump(&db)).replace(h.to_string_lossy().as_ref(), "<HOME>"))
+}
+
+#[test]
+fn a_kill_at_every_step_loses_and_duplicates_nothing_whoever_runs_next() {
+    let Some((fx, w)) = setup_world("l8ekill") else { return };
+    let tools = tools_path(&fx.root, true);
+    let stub = stub_dir(&fx.root);
+    let env: Vec<(String, String)> = vec![("PATH".into(), format!("{stub}:{tools}"))];
+    let now = NOW + 7;
+    let raw = msgs(&[("first task", "2026-10-09T10:00:00.000Z"), ("second task", "2026-10-09T10:01:00.000Z")]);
+    let sqlite_cli = Command::new("sqlite3").arg("-version").output().is_ok_and(|o| o.status.success());
+    for (ki, k) in KILLS.iter().enumerate() {
+        if !sqlite_cli && ki == 2 {
+            eprintln!("SKIPPED {}: no sqlite3 command", k.name);
+            continue;
+        }
+        let mut finals: Vec<(String, (BTreeMap<String, String>, String))> = Vec::new();
+        for killer in [Tool::Node, Tool::Engine] {
+            let home = fx.root.join(format!("k{ki}-{killer:?}"));
+            copy_tree(&fx.seed_home, &home);
+            fs::create_dir_all(home.join(".anti-hall")).unwrap();
+            fs::write(home.join(".anti-hall/settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
+            base(&w, &home, &[], &[]);
+            hc(&home, "count", "2");
+            hc(&home, "read", &raw);
+            hc(&home, "read.hook", k.hook);
+            let mut c = spawn_tick(killer, &home, &fx.child, now, &env);
+            wait_until(k.name, || (k.at)(&home));
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            c.kill().unwrap();
+            c.wait().unwrap();
+            // the dead process left its pull lock behind; it is old enough to be taken over by the next run
+            let lock = ds(&home).join("locks/pull-child-1.lock");
+            if lock.exists() {
+                let mut rec: Value = serde_json::from_str(&fs::read_to_string(&lock).unwrap()).unwrap();
+                rec["ts"] = json!(1);
+                fs::write(&lock, rec.to_string()).unwrap();
+            }
+            // what a real crash leaves of the named pipe is the file it replaced
+            let inbox = ds(&home).join("inbox/child-1.ndjson");
+            if fs::metadata(&inbox).is_ok_and(|m| !m.is_file()) {
+                fs::remove_file(&inbox).unwrap();
+                fs::write(&inbox, "").unwrap();
+            }
+            // the write lock a hook took expires on its own
+            std::thread::sleep(std::time::Duration::from_millis(5600));
+            hc(&home, "read.hook", "true");
+            for next in [Tool::Node, Tool::Engine] {
+                let copy = fx.root.join(format!("k{ki}-{killer:?}-then-{next:?}"));
+                copy_tree(&home, &copy);
+                let r = run_tick(next, &copy, &fx.child, now, &env);
+                assert_eq!(r.code, 0, "{}: {killer:?} killed, {next:?} next: {} / {}", k.name, r.stdout, r.stderr);
+                let inbox_lines = read_inbox(&copy).lines().filter(|l| !l.trim().is_empty()).count();
+                let expected = if k.batch_survives { 2 } else { 0 };
+                assert_eq!(inbox_lines, expected, "{}: {killer:?} killed, {next:?} next: the inbox holds {inbox_lines} lines, not {expected}", k.name);
+                let wal = wal_text(&copy);
+                if k.batch_survives {
+                    assert_eq!(wal.matches("\"t\":\"batch\"").count(), 1, "{}: one batch in the log", k.name);
+                    assert_eq!(wal.matches("\"t\":\"done\"").count(), 1, "{}: closed exactly once", k.name);
+                }
+                finals.push((format!("{killer:?}-killed-{next:?}-next"), settled(&copy, &w.repo_key)));
+            }
+        }
+        let (first_name, first) = &finals[0];
+        for (name, f) in &finals[1..] {
+            for key in f.0.keys().chain(first.0.keys()) {
+                assert!(f.0.get(key) == first.0.get(key), "{}: {name} differs from {first_name} at {key}:\n {:?}\n {:?}", k.name, f.0.get(key), first.0.get(key));
+            }
+            assert!(f.1 == first.1, "{}: {name} store differs from {first_name}: {}", k.name, first_diff(&first.1, &f.1));
+        }
+        eprintln!("kill point {}: node/engine x node/engine all settle to the same state ({} lines in the inbox)", k.name, if k.batch_survives { 2 } else { 0 });
     }
 }
