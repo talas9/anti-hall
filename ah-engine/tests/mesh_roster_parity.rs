@@ -406,7 +406,7 @@ fn roster_matches_node_for_a_project_with_no_rows_and_defers_every_other() {
             None => base.display().to_string(),
         };
         // what Node's capability probe has cached for the stub, identically in all three homes
-        if stub.is_some() && c.prime != Prime::No {
+        if let Some(stub_dir) = stub.as_ref().filter(|_| c.prime != Prime::No) {
             prime_cache(&hn, &path_with(&tools), c.prime == Prime::Dormant);
             let cache = hn.join(".anti-hall/devswarm/capabilities.json");
             for h in [&he, &hd] {
@@ -419,10 +419,10 @@ fn roster_matches_node_for_a_project_with_no_rows_and_defers_every_other() {
             }
             if let Some(mode) = c.stub_mode {
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(stub.as_ref().unwrap().join("hivecontrol"), fs::Permissions::from_mode(mode)).unwrap();
+                fs::set_permissions(stub_dir.join("hivecontrol"), fs::Permissions::from_mode(mode)).unwrap();
             }
             if c.stale {
-                let f = stub.as_ref().unwrap().join("hivecontrol");
+                let f = stub_dir.join("hivecontrol");
                 let mut t = fs::read_to_string(&f).unwrap();
                 t.push_str("# edited after the probe was cached\n");
                 fs::write(&f, t).unwrap();

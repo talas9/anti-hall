@@ -92,9 +92,9 @@ pub fn judge(event: &str, payload: Option<&Value>, why: &str) -> Verdict {
         .parent()
         .filter(|d| crate::limits::ensure_private_dir(d).is_ok())
         .and_then(|_| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(crate::paths::lock_for(&path)).ok());
-    // SAFETY: the descriptor belongs to `lock`, which outlives the call; flock takes only it and a flag.
     let _held = lock.as_ref().is_some_and(|f| {
         lock_ex(|| {
+            // SAFETY: the descriptor belongs to `lock`, which outlives the call; flock takes only it and a flag.
             if unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(f), libc::LOCK_EX) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
         })
     });
