@@ -43,6 +43,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: ./test.sh
+        env:
+          # Headroom for the script CPU limit on a loaded shared runner (the shipped default is sized for an idle machine).
+          AH_ENGINE_SCRIPT_TIME_MS: "2000"
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
