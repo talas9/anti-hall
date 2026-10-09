@@ -231,7 +231,7 @@ function meshRoute(argv, segments) {
       { words: ['help'] }, { words: [], anyOf: ['-h', '--h', '--help'] }, { words: ['skip'] }, { words: ['archive-ignore'] },
       { words: ['archive-unignore'] }, { words: ['gate-intent'] }, { words: ['notice'] }, { words: ['plan'] }, { words: ['scope'] },
       { words: ['gate'] }, { words: ['workspaces'] }, { words: ['logs'] }, { words: ['wake-directive'] },
-      { words: ['ready-check'] }, { words: ['app-state'] }, { words: ['app-sync'] },
+      { words: ['ready-check'] }, { words: ['app-state'] }, { words: ['app-sync'] }, { words: ['done'] },
     ];
     var routed = ROUTES.some(function (r) {
       return r.words.every(function (w, i) { return argv[i] === w; })

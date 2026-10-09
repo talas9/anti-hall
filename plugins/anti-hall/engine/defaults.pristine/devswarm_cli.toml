@@ -582,7 +582,7 @@ value = "devswarm-cli-verify"
 
 [devswarm_cli.witness_copy_paths]
 doc = "Files and directories under the home copied into the witness's scratch home before the engine writes: what Node reads or rewrites for these verbs, and what the summary projection reads."
-value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1"]
+value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/token-usage", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1"]
 
 [devswarm_cli.witness_node_snippet]
 doc = "The Node program of the witness: pins the clock, then loads the real devswarm.js as the main module so its own main() prints and exits. Arguments: the CLI path, the clock, then the verb's argv."
@@ -858,3 +858,99 @@ value = "merge-base"
 [devswarm_cli.ready_is_ancestor]
 doc = "The merge-base option that asks whether the first commit is an ancestor of the second."
 value = "--is-ancestor"
+
+# ---- done (lane l8c) ----------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_done]
+doc = "The child verb that reports the work finished: sets the `done` gate and messages the Primary."
+value = "done"
+
+[devswarm_cli.action_done]
+doc = "The `action` of a done result."
+value = "done"
+
+[devswarm_cli.done_gate]
+doc = "The gate the done report sets."
+value = "done"
+
+[devswarm_cli.done_set_by_prefix]
+doc = "The `set_by` of the done gate row when the worktree head is known; the head follows (auto-archive honours the report only while that head is current)."
+value = "devswarm-done@"
+
+[devswarm_cli.done_set_by]
+doc = "The `set_by` of the done gate row when the worktree head cannot be read."
+value = "devswarm-done"
+
+[devswarm_cli.done_rev_parse]
+doc = "The git subcommand that names the worktree head."
+value = "rev-parse"
+
+[devswarm_cli.done_head]
+doc = "The git revision that is the worktree head."
+value = "HEAD"
+
+[devswarm_cli.done_git_timeout_ms]
+doc = "How long the head lookup may take before the report is made without a head."
+value = 10000
+min = 100
+max = 600000
+
+[devswarm_cli.done_marker]
+doc = "The machine-readable marker that starts a done report message."
+value = "[[ANTIHALL_DONE]]"
+
+[devswarm_cli.done_msg_reports]
+doc = "The words after the workspace id in a done report."
+value = " reports done"
+
+[devswarm_cli.done_msg_colon]
+doc = "What joins the done report to the child's own summary."
+value = ": "
+
+[devswarm_cli.done_msg_tail]
+doc = "The closing words of a done report."
+value = " — auto-archive retires it once the merge is proven and it is clean, read and idle."
+
+[devswarm_cli.done_hash_prefix]
+doc = "The prefix of a done report's message hash (the hash names the workspace and its head, so a repeat on the same head inserts nothing)."
+value = "done:"
+
+[devswarm_cli.done_hash_nohead]
+doc = "What stands for the head in a done report's hash when none could be read."
+value = "nohead"
+
+[devswarm_cli.done_kind]
+doc = "The `kind` of a done result that messaged the Primary."
+value = "done"
+
+[devswarm_cli.done_reason_no_primary]
+doc = "The reason a done report went to no Primary: the project has no Primary worktree."
+value = "no-primary-worktree"
+
+[devswarm_cli.done_reason_unregistered]
+doc = "The reason a done report went to no Primary: the Primary is not registered in the project's mesh."
+value = "primary-unregistered"
+
+[devswarm_cli.done_reason_prefix]
+doc = "The start of the reason a done report was not delivered (the delivery status follows)."
+value = "primary-"
+
+[devswarm_cli.done_status_busy]
+doc = "The delivery status when the Primary's partition lock was held by another operation."
+value = "busy"
+
+[devswarm_cli.done_status_gone]
+doc = "The delivery status when the Primary's registry row moved away."
+value = "gone"
+
+[devswarm_cli.done_event]
+doc = "The supervision event a plan's first done report records."
+value = "done"
+
+[devswarm_cli.done_tokens_dir]
+doc = "The directory under the DevSwarm root that keeps each workspace's token usage state."
+value = "token-usage"
+
+[devswarm_cli.message_row_name]
+doc = "What the Node witness reports as different when the message row Node wrote is not the row the engine wrote."
+value = "messages"

@@ -28,6 +28,7 @@
 // - the shadow is advisory: a failure to copy, compare or log never changes what Node did (it is logged when it can be)
 // - text that does not parse or decode is the absent value (Node JSON.parse catch parity)
 // A failure that must be seen goes through `crate::discard` instead.
+pub mod actverbs;
 pub mod appdb;
 pub mod appverbs;
 pub mod args;
@@ -87,6 +88,16 @@ pub fn note_written(rel: &str, bytes: &[u8]) {
     if let Ok(mut w) = WRITTEN.lock() {
         match w.0.iter_mut().find(|(k, _)| k == rel) {
             Some((_, b)) => b.extend_from_slice(bytes),
+            None => w.0.push((rel.to_string(), bytes.to_vec())),
+        }
+    }
+}
+
+/// Remember that `rel` now holds exactly `bytes` (a file the verb rewrote, possibly more than once): the last write wins.
+pub fn set_written(rel: &str, bytes: &[u8]) {
+    if let Ok(mut w) = WRITTEN.lock() {
+        match w.0.iter_mut().find(|(k, _)| k == rel) {
+            Some((_, b)) => *b = bytes.to_vec(),
             None => w.0.push((rel.to_string(), bytes.to_vec())),
         }
     }

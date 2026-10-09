@@ -24,6 +24,8 @@ pub enum Ext {
     AppState,
     /// `app-sync [--dry-run]`.
     AppSync,
+    /// `done [<id>] [--summary TEXT]` (lane l8c).
+    Done,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -36,14 +38,16 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::AppState)
     } else if is("devswarm_cli.verb_app_sync") {
         Some(Ext::AppSync)
+    } else if is("devswarm_cli.verb_done") {
+        Some(Ext::Done)
     } else {
         None
     }
 }
 
 /// Whether the verb reads the project's store (the witness then copies it).
-pub fn needs_store(_v: Ext) -> bool {
-    false
+pub fn needs_store(v: Ext) -> bool {
+    matches!(v, Ext::Done)
 }
 
 /// Run the verb.
@@ -52,5 +56,6 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::ReadyCheck => super::gitverbs::ready_check(inv, a),
         Ext::AppState => super::appverbs::app_state(inv, a),
         Ext::AppSync => super::appverbs::app_sync(inv, a),
+        Ext::Done => super::actverbs::done(inv, a),
     }
 }

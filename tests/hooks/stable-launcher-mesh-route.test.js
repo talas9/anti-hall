@@ -135,7 +135,7 @@ test('on: help requests and the CLI verbs the engine answers (skip, archive-igno
   const { run } = setup({ mode: 'on', engine: 'exit 0' });
   for (const argv of [['help'], ['help', 'send', '--json'], ['-h'], ['--help'], ['--h'], ['inbox', 'x', '--help'], ['skip', 'edit-guard', '--ttl', '5'],
     ['archive-ignore', 'w1'], ['archive-unignore', 'w1'], ['gate-intent', '--reason', 'r'], ['notice', '--list'], ['plan', 'show', 'w1'],
-    ['scope', 'add', 'w1', '--glob', 'a', '--note', 'n'], ['gate', 'w1', '--set', 'x'], ['workspaces', 'list'], ['logs', '--limit', '5'], ['wake-directive', 'w1'], ['ready-check', 'abc'], ['app-state', '--json'], ['app-sync', '--dry-run']]) {
+    ['scope', 'add', 'w1', '--glob', 'a', '--note', 'n'], ['gate', 'w1', '--set', 'x'], ['workspaces', 'list'], ['logs', '--limit', '5'], ['wake-directive', 'w1'], ['ready-check', 'abc'], ['app-state', '--json'], ['app-sync', '--dry-run'], ['done', '--summary', 'x']]) {
     const r = run(argv);
     assert.strictEqual(r.code, 0, argv.join(' '));
     assert.ok(r.trace.endsWith('engine mesh ' + argv.join(' ') + '\n'), argv.join(' ') + ' -> ' + r.trace);

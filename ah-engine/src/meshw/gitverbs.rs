@@ -143,7 +143,13 @@ pub fn ready_check_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
     let mut list: Vec<String> = Vec::new();
     let (mut gitlinks, mut diff_known) = (0u32, false);
     let mut deleted: Vec<String> = Vec::new();
-    if let Some(p) = git(runner, cwd, &[defaults::text("devswarm_cli.ready_diff"), defaults::text("devswarm_cli.ready_raw"), defaults::text("devswarm_cli.ready_no_renames"), &range]).filter(|p| p.status == 0) {
+    if let Some(p) = git(
+        runner,
+        cwd,
+        &[defaults::text("devswarm_cli.ready_diff"), defaults::text("devswarm_cli.ready_raw"), defaults::text("devswarm_cli.ready_no_renames"), &range],
+    )
+    .filter(|p| p.status == 0)
+    {
         diff_known = true;
         for line in p.stdout.split('\n') {
             if line.is_empty() {
