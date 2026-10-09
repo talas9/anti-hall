@@ -24,8 +24,9 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 /// Scenario id prefixes whose deferral is expected (the answer needs the hook's own working directory, or text the engine
-/// does not read as JavaScript does).
-pub(crate) const ALLOWED_DEFER: &[&str] = &["defer-"];
+/// does not read as JavaScript does). `write-dschild-`: a DevSwarm child workspace is a worker (hooks/lib/devswarm-role.js
+/// `isChildWorker` reads the descriptor and the DevSwarm install from disk), so the script hands a child's Bash write to Node.
+pub(crate) const ALLOWED_DEFER: &[&str] = &["defer-", "write-dschild-"];
 
 fn git(dir: &Path, args: &[&str]) {
     let mut c = Command::new("git");
