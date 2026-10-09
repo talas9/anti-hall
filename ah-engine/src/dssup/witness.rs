@@ -56,7 +56,7 @@ pub fn due(ctx: &Ctx, duty: &str) -> bool {
     if let Some(d) = p.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the witness is advisory
     }
-    crate::discard::harmless(std::fs::write(&p, Value::Object(state).to_string())); // keep: a lost stamp only repeats a comparison
+    crate::discard::harmless(crate::atomic::write(&p, Value::Object(state).to_string())); // keep: a lost stamp only repeats a comparison
     true
 }
 
@@ -77,7 +77,8 @@ pub fn mirror_dir(src: &Path, dst: &Path, cap: usize, mut keep: impl FnMut(&str,
         for e in std::fs::read_dir(&d).ok().into_iter().flatten().flatten() {
             let Ok(md) = std::fs::metadata(e.path()) else { continue };
             if md.is_dir() {
-                if depth < defaults::num("devswarm_sup.hk_max_depth") {
+                // the sweep never follows a link to a directory, so neither does the mirror
+                if depth < defaults::num("devswarm_sup.hk_max_depth") && !std::fs::symlink_metadata(e.path()).is_ok_and(|l| l.file_type().is_symlink()) {
                     stack.push((e.path(), depth + 1));
                 }
             } else {

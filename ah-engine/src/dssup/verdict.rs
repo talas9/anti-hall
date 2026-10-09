@@ -17,7 +17,7 @@ pub fn path(home: &Path, id: &str) -> Option<PathBuf> {
 }
 
 fn default_of(field: &str) -> Value {
-    if field == "recoveries" { Value::from(0) } else { Value::Null }
+    if defaults::list("devswarm_sup.verdict_zero_fields").contains(&field) { Value::from(0) } else { Value::Null }
 }
 
 /// `Object.assign({status}, preserved, extra)` as ordered pairs: a key set again keeps its place, a new key goes last.
@@ -50,11 +50,7 @@ pub fn persist(home: &Path, id: &str, status: &str, extra: &[(&str, Value)]) -> 
     if let Some(d) = p.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports the failure
     }
-    let mut tmp = p.clone().into_os_string();
-    tmp.push(defaults::text("devswarm_sup.verdict_tmp_suffix"));
-    let tmp = PathBuf::from(tmp);
-    if std::fs::write(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &p)).is_err() {
-        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: a staged temp must not leak
+    if crate::atomic::write(&p, &text).is_err() {
         return None;
     }
     Some(text)
@@ -67,7 +63,8 @@ pub fn log_line(now: i64, fields: &[(&str, Value)]) -> String {
     stringify(&pairs)
 }
 
-fn append_log(home: &Path, now: i64, fields: &[(&str, Value)]) {
+/// Append one line to the recovery log (best effort).
+pub fn append_log(home: &Path, now: i64, fields: &[(&str, Value)]) {
     use std::io::Write;
     let p = super::root(home).join(defaults::text("devswarm_sup.recovery_log"));
     if let Some(d) = p.parent() {

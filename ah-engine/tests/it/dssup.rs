@@ -578,15 +578,15 @@ fn recover_refuses_before_it_touches_anything() {
     put(&f.home.join(".anti-hall/settings.json"), &json!({"devswarm": {"maxRecoveries": 5}}));
     let (r, _) = do_recover(&f, &st, &rec, "ws-1", "r1");
     assert_eq!(r["outcome"], "handled", "with a limit of 5 and 3 done it may run: {r}");
-    assert_eq!(rec.n(), 1);
+    assert_eq!(r["result"]["action"], "abstain", "the stub process table has no such session: nothing is signalled");
     assert!(!f.state.join("none").exists());
-    // none of the refusals ran Node or wrote the ledger (only the last, allowed, request did)
+    // none of the refusals started anything or wrote the ledger (only the last, allowed, request did)
     let ledger = std::fs::read_to_string(f.state.join("rt-recover.ndjson")).unwrap();
     assert_eq!(ledger.lines().count(), 1);
 }
 
 #[test]
-fn recover_runs_nodes_cli_once_per_request_with_the_one_id() {
+fn the_rollback_hands_the_kill_to_nodes_recover_cli_with_exactly_the_one_id() {
     let f = fx("rec-ok", true);
     let st = settings(&f, &[]);
     struct Cli(Mutex<Vec<RunSpec>>);
@@ -602,7 +602,8 @@ fn recover_runs_nodes_cli_once_per_request_with_the_one_id() {
         }
     }
     let cli = Cli(Mutex::new(vec![]));
-    let (r, code) = do_recover(&f, &st, &cli, "ws-1", "req-1");
+    let place = recover::Place { home: &f.home, root: &f.root, state_dir: &f.state };
+    let (r, code) = recover::run_node(&place, &st, &cli, "ws-1", "req-1", now());
     assert_eq!((r["outcome"].as_str(), code), (Some("handled"), 0), "{r}");
     assert_eq!(r["node"]["result"]["action"], "abstain");
     let calls = cli.0.lock().unwrap();
@@ -615,9 +616,6 @@ fn recover_runs_nodes_cli_once_per_request_with_the_one_id() {
         "exactly the one id, nothing else"
     );
     drop(calls);
-    let (again, code) = do_recover(&f, &st, &cli, "ws-1", "req-1");
-    assert_eq!((again["outcome"].as_str(), code), (Some("refused"), 64), "the same request never runs twice");
-    assert_eq!(cli.0.lock().unwrap().len(), 1);
     // a failing Node is reported, not hidden
     struct Bad;
     impl Runner for Bad {
@@ -625,8 +623,19 @@ fn recover_runs_nodes_cli_once_per_request_with_the_one_id() {
             RunResult { ok: false, status: Some(1), stderr: "boom".into(), ..RunResult::default() }
         }
     }
-    let (r, code) = do_recover(&f, &st, &Bad, "ws-1", "req-2");
+    let (r, code) = recover::run_node(&place, &st, &Bad, "ws-1", "req-2", now());
     assert_eq!((r["outcome"].as_str(), code), (Some("failed"), 1));
+}
+
+#[test]
+fn a_recover_request_runs_once() {
+    let f = fx("rec-once", true);
+    let st = settings(&f, &[]);
+    let rec = Rec::default();
+    let (r, code) = do_recover(&f, &st, &rec, "ws-1", "req-1");
+    assert_eq!((r["outcome"].as_str(), code), (Some("handled"), 0), "{r}");
+    let (again, code) = do_recover(&f, &st, &rec, "ws-1", "req-1");
+    assert_eq!((again["outcome"].as_str(), code), (Some("refused"), 64), "the same request never runs twice");
 }
 
 #[test]
@@ -639,7 +648,8 @@ fn recover_against_real_node_abstains_on_a_session_that_is_not_running() {
     let (r, code) = do_recover(&f, &st, &System::configured(), "ws-1", "real-1");
     assert_eq!(code, 0, "{r}");
     assert_eq!(r["outcome"], "handled");
-    assert_eq!(r["node"]["result"]["action"], "abstain", "no process matches the session: nothing is killed: {r}");
+    assert_eq!(r["result"]["action"], "abstain", "no process matches the session: nothing is killed: {r}");
+    assert_eq!(r["result"]["reason"], "no-candidate");
 }
 
 #[test]
@@ -692,6 +702,12 @@ fn aged(f: &Fx, rel: &str, age_days: f64, at: i64) {
     std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(t).unwrap();
 }
 
+fn aged_abs(p: &Path, age_days: f64, at: i64) {
+    std::fs::write(p, "x").unwrap();
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_millis((at as f64 - age_days * DAY_MS as f64) as u64);
+    std::fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(t).unwrap();
+}
+
 fn seed_housekeeping(f: &Fx, at: i64) {
     aged(f, "reaped/old.ndjson", 40.0, at);
     aged(f, "reaped/new.ndjson", 2.0, at);
@@ -706,6 +722,10 @@ fn seed_housekeeping(f: &Fx, at: i64) {
     aged(f, "child-gate/session-edge-out.json", 14.5, at);
     aged(f, "child-gate/session-edge-in.json", 13.5, at);
     aged(f, "child-gate/old-other.log", 90.0, at);
+    // a link to a directory that holds old files of the right name: the sweep never follows it
+    std::fs::create_dir_all(f.home.join("elsewhere")).unwrap();
+    aged_abs(&f.home.join("elsewhere/precious.ndjson"), 400.0, at);
+    std::os::unix::fs::symlink(f.home.join("elsewhere"), dev(f).join("reaped/linked-dir")).unwrap();
     // files that are not the sweeps' business, however old
     aged(f, "liveness/ws-1.json", 400.0, at);
     aged(f, "locks/x.lock", 400.0, at);
@@ -745,6 +765,10 @@ fn native_housekeeping_removes_exactly_what_nodes_sweep_removes_and_nothing_else
     assert_eq!(eng["outcome"], "ran", "{eng}");
     assert_eq!(node["ran"], true, "{node}");
     // the same files survive in both homes, byte for byte the same tree
+    // the tree is the same in both homes, EXCEPT that Node follows the link and removes the file it points to; the engine does not
+    assert!(a.home.join("elsewhere/precious.ndjson").exists(), "the engine never follows a directory link");
+    std::fs::remove_file(b.home.join("elsewhere/precious.ndjson")).ok();
+    std::fs::write(b.home.join("elsewhere/precious.ndjson"), "x").unwrap();
     assert_eq!(tree(&a), tree(&b));
     let gone: Vec<String> = [
         "reaped/old.ndjson",
@@ -783,6 +807,7 @@ fn native_housekeeping_removes_exactly_what_nodes_sweep_removes_and_nothing_else
             .unwrap()
             .values()
             .flat_map(|r| r.as_array().unwrap().iter())
+            .filter(|r| !r["file"].as_str().unwrap().contains("linked-dir")) // Node follows the link, the engine does not (checked above)
             .map(|r| {
                 (r["status"].as_str().unwrap().to_string(), Path::new(r["file"].as_str().unwrap()).strip_prefix(base).unwrap().to_string_lossy().into_owned())
             })
