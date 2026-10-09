@@ -61,6 +61,9 @@ fn coerce(entry: &V, raw: &str) -> Option<Value> {
         let known = entry.get("values").map(V::strings).unwrap_or_default().contains(&w.as_str());
         return known.then_some(Value::String(w));
     }
+    if ty == defaults::text("devswarm_act.type_string") {
+        return Some(Value::String(t.to_string()));
+    }
     if ty == defaults::text("devswarm_act.type_bool") {
         return crate::checks::guardkit::settings::token(t).map(Value::Bool);
     }

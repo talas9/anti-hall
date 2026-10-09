@@ -205,3 +205,47 @@ value = "panel_resumable"
 [devswarm_rt.paused_evidence]
 doc = "The evidence text shown with `paused?`. Placeholders: {n}, {panel}."
 value = "{n} open terminal(s), every panel status is {panel}"
+
+# ---- the workspace dashboard segment of the statusline (feature 1) ----------------------------------------------------
+# The daemon writes a compact copy of the live snapshot after every reconcile; the statusline reads only that file (never the
+# DevSwarm database). Settings: `statusline.devswarm.{enabled,format,max_chars,stale_ms}` in ~/.anti-hall/settings.json or the env.
+
+[devswarm_rt.line_file]
+doc = "The compact snapshot copy the statusline segment reads (engine state directory). Written atomically by the daemon after each reconcile."
+value = "devswarm-line.json"
+
+[devswarm_rt.set_line_enabled]
+doc = "Show the DevSwarm workspace dashboard segment in the statusline (on by default; it shows nothing when DevSwarm is absent or no workspace is active)."
+value = { type = "bool", section = "statusline", key = "devswarm.enabled", env = "ANTIHALL_STATUSLINE_DEVSWARM", option = "statusline_devswarm_enabled", default = true }
+
+[devswarm_rt.set_line_format]
+doc = "The segment text. `{parts}` is replaced by the non-empty counts (see devswarm_rt.line_parts), in the order of devswarm_rt.line_order."
+value = { type = "string", section = "statusline", key = "devswarm.format", env = "ANTIHALL_STATUSLINE_DEVSWARM_FORMAT", option = "statusline_devswarm_format", default = "ws {parts}" }
+
+[devswarm_rt.set_line_max_chars]
+doc = "The segment is cut to this many characters (an ellipsis marks the cut)."
+value = { type = "number", section = "statusline", key = "devswarm.max_chars", env = "ANTIHALL_STATUSLINE_DEVSWARM_MAX_CHARS", option = "statusline_devswarm_max_chars", min = 4, max = 200, default = 40 }
+
+[devswarm_rt.set_line_stale_ms]
+doc = "A snapshot (or one workspace's activity) observed longer ago than this is shown as `?` instead of a guess."
+value = { type = "number", section = "statusline", key = "devswarm.stale_ms", env = "ANTIHALL_STATUSLINE_DEVSWARM_STALE_MS", option = "statusline_devswarm_stale_ms", min = 1000, max = 86400000, default = 180000 }
+
+[devswarm_rt.line_order]
+doc = "The order of the parts in the segment: working, stuck, ci (waiting on CI), done_open (done but the workspace is still open), unknown (no source, or stale)."
+value = ["working", "stuck", "ci", "done_open", "unknown"]
+
+[devswarm_rt.line_parts]
+doc = "The text of each part; `{n}` is the count. A part with count 0 is left out."
+value = { working = "▶{n}", stuck = "⚠{n}", ci = "⏳{n}", done_open = "✓{n} open", unknown = "?{n}" }
+
+[devswarm_rt.line_stale_text]
+doc = "The whole segment when the snapshot copy is older than the stale limit or the app database was unreadable."
+value = "ws ?"
+
+[devswarm_rt.line_ellipsis]
+doc = "Marks a segment cut to max_chars."
+value = "…"
+
+[devswarm_rt.line_colors]
+doc = "The color (a name from statusline.rich_colors) of each part."
+value = { working = "brightGreen", stuck = "brightRed", ci = "brightYellow", done_open = "brightCyan", unknown = "dim" }

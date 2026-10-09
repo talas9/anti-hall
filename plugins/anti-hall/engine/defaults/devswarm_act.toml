@@ -241,6 +241,10 @@ max = 6
 doc = "The `type` word of an enum setting entry in this file."
 value = "enum"
 
+[devswarm_act.type_string]
+doc = "The `type` word of a free-text setting entry (used by the other engine lanes that reuse this resolver)."
+value = "string"
+
 [devswarm_act.type_bool]
 doc = "The `type` word of a boolean setting entry in this file."
 value = "bool"

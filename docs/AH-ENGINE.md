@@ -609,6 +609,13 @@ The engine keeps the live state of every DevSwarm workspace in one atomically sw
 - **GitHub facts.** PR and CI facts come through the `GithubState` trait when the GitHub realtime feature supplies them; otherwise from the app database's `pull_requests.checkStatus`, whose freshness is its `lastSyncedAt`.
 - **Shadow.** The comparison reads the Node witness's scratch-home tree (liveness verdicts, app-state cache), never the live Node files, and appends differences to `rt-shadow.ndjson`.
 
+**Statusline dashboard.** After every reconcile the daemon writes a compact copy of the snapshot (`devswarm-line.json` in the state
+directory: per open workspace its activity and when that was observed). The statusline's DevSwarm segment reads only that file, never
+the DevSwarm database, and shows the counts by state (`ws ▶2 ⚠1 ⏳1 ✓2 open`: working, stuck, waiting on CI, done but still open). A copy older
+than the stale limit, an unreadable app database, or one workspace's activity observed too long ago shows `?` instead of a guess. The
+segment is on by default and is advisory only. Settings (`~/.anti-hall/settings.json`, `statusline.devswarm.*`, or the env named in
+`devswarm_rt.toml`): `enabled`, `format` (`{parts}`), `max_chars`, `stale_ms`; the part texts, order and colors are `devswarm_rt.line_*`.
+
 ## DevSwarm wiring and the Node cutover (lane dswire)
 
 The daemon starts the DevSwarm layer only where DevSwarm exists (the app database or a workspace descriptor) and `devswarm_rt.mode` is not `off`; otherwise no thread, watcher or file is created. One thread (`ah-dswire`) owns the file watcher over the app database directory and its `-wal`, the DevSwarm state directories, each active workspace's mesh store directory, transcript directory and git directory. A change is only a hint: the state is always re-derived from the sources. A watcher overflow is a full reconcile, and the scheduler job `devswarm_reconcile` (`devswarm_rt.reconcile_ms`) is the safety net; what it finds that events missed counts in `rt_reconcile_repairs`.
