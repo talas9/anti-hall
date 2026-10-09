@@ -420,8 +420,11 @@ pub(crate) fn run_lane(hooks: &Path, scenarios: &[Sc], mutate: bool) -> Report {
             }
             continue;
         }
-        if sc.defers {
-            rep.mismatches.push(format!("--- {}: expected a deferral, engine answered code={} out={}", sc.id, e.out.code, clip(&e.out.out, 300)));
+        // a scripted check runs in a UTF-16 interpreter: a lone surrogate the compiled port could not hold is held, so the engine
+        // may answer where it once deferred, as long as the answer is Node's
+        let answered_like_node = (n.out.code.clone(), nout.clone(), norm(&n.out.err, &root)) == (e.out.code.clone(), norm(&e.out.out, &root), norm(&e.out.err, &root));
+        if sc.defers && !answered_like_node {
+            rep.mismatches.push(format!("--- {}: expected a deferral (or Node's own answer), engine answered code={} out={}", sc.id, e.out.code, clip(&e.out.out, 300)));
             continue;
         }
         let nr = (n.out.code.clone(), nout, norm(&n.out.err, &root));

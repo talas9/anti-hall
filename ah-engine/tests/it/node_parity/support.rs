@@ -84,6 +84,17 @@ impl Out {
     }
 }
 
+/// The test build's script limits (`.cargo/config.toml`: a debug interpreter is about 4 times slower than the release one the shipped
+/// 50 ms limit is sized for) are the one thing a cleared environment must still carry, or the engine defers on a limit that only the
+/// debug build misses. Node ignores both names.
+pub fn forward_test_scale(c: &mut Command) {
+    for k in ["AH_ENGINE_SCRIPT_TIME_MS", "AH_ENGINE_SCRIPT_EXEC_SCALE"] {
+        if let Ok(v) = std::env::var(k) {
+            c.env(k, v);
+        }
+    }
+}
+
 /// Run `cmd args` with exactly `env` (nothing inherited), `input` on stdin, in `cwd`; killed after 60 seconds.
 pub fn run(cmd: &str, args: &[String], input: &[u8], env: &Env, cwd: &str) -> Out {
     let mut c = Command::new(cmd);
@@ -93,6 +104,7 @@ pub fn run(cmd: &str, args: &[String], input: &[u8], env: &Env, cwd: &str) -> Ou
             c.env(k, v);
         }
     }
+    forward_test_scale(&mut c);
     let mut child = match c.spawn() {
         Ok(ch) => ch,
         Err(e) => return Out { code: "spawn-failed".into(), out: String::new(), err: e.to_string() },

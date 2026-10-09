@@ -373,9 +373,13 @@ pub(crate) fn run_fx(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
                 // The Node hook starts detached workers whose files land asynchronously: only the deferral itself is checked.
                 if deferred {
                     st.deferred += 1;
+                } else if n1.code == e1.code && n1.out.trim() == e1.out.trim() && n1.err.trim() == e1.err.trim() {
+                    // a scripted check runs in a UTF-16 interpreter: the lone surrogate the compiled port could not hold is held, so the
+                    // engine may answer where it once deferred, as long as the answer is Node's byte for byte
+                    st.same += 1;
                 } else {
                     st.mismatch += 1;
-                    mism.lock().unwrap_or_else(|e| e.into_inner()).push(note("expected a deferral"));
+                    mism.lock().unwrap_or_else(|e| e.into_inner()).push(note("expected a deferral (or Node's own answer)"));
                 }
                 continue;
             }
