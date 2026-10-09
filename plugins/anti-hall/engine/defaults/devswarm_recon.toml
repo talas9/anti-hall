@@ -5,7 +5,7 @@
 
 [devswarm_recon.node_snippet]
 doc = "What Node runs for the witness: a dispatcher over the recorded calls, each run in order against the scratch mirror with Date.now pinned to the engine's clock and HOME, USERPROFILE and the central log directory pointed into the mirror. Arguments: the plugin root, the mirror home, the pinned clock, the calls as JSON. It prints the list of return values."
-value = 'const NOW=Number(process.argv[3]);Date.now=()=>NOW;const root=process.argv[1],home=process.argv[2],calls=JSON.parse(process.argv[4]);process.env.HOME=home;process.env.USERPROFILE=home;process.env.ANTI_HALL_LOG_DIR=home+"/.anti-hall/logs";const fs=require("fs"),path=require("path");const L=(m)=>require(root+"/"+m);const run=(c)=>{const a=c.args||{};switch(c.fn){case "sweepState":L("companion/devswarm-supervisor.js").writeReconcileSweepState(home,fs,{lastRunAt:a.lastRunAt});return null;case "resumeWrite":L("scripts/devswarm-lib/reconcile.js").writeReconcileResume(home,a.repoKey,a.ids);return null;case "nameWrite":return L("companion/lib/devswarm-names.js").writeName(home,a.id,a.name,a.now);case "repoUnknownRecord":return L("companion/lib/devswarm-repo-unknown.js").record(home,a.repoKey,a.scope,a.reason,a.now);case "repoUnknownClear":L("companion/lib/devswarm-repo-unknown.js").clear(home,a.repoKey,a.scope);return null;case "activeCache":{process.env.ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT=String(a.floorPct);const r=L("companion/lib/devswarm-archived-cache.js").writeActiveCache({home,byRepoKey:a.byRepoKey,now:a.now,env:process.env});return r===null?null:path.relative(home,r)}case "sampling":{const S=L("companion/lib/devswarm-startup-sampling.js");return S.runSamplingPass(a.ids.map((id)=>({id})),{home,env:process.env,now:a.now,maxProbe:a.maxProbe,run:(id)=>a.probes[id]||{ok:false,error:"no probe"}})}case "healRegistry":return L("scripts/devswarm-lib/fold.js").healRegistry(home,a.repoKey,{});case "healRows":{const F=L("scripts/devswarm-lib/fold.js");return a.ids.map((id)=>F.rehomeMiskeyedRow(home,id,a.repoKey,{}))}case "foldRekey":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{return F.rekeySubdirRegistryRows(s,home,false)}finally{s.close()}}case "foldGroup":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{const by=new Map(s.listRegistry().map((r)=>[String(r.id),r]));const r=F.foldGroupIntoSurvivor(s,home,a.survivor,a.ids.map((i)=>by.get(i)).filter(Boolean),{});return {retired:r.retired,left:r.left,forwardFailed:r.forwardFailed,forwarded:r.forwarded,skipped:r.skipped}}finally{s.close()}}case "foldDerive":{const C=L("scripts/devswarm-lib/core.js");const s=C.store.openStore({home,hash:a.repoKey});try{C.store.deriveSummary(s,{home});return null}finally{s.close()}}case "ghosts":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{const by=new Map(s.listRegistry().map((r)=>[String(r.id),r]));return F.ghostRegistryRows(s,home,a.ids.map((i)=>by.get(i)).filter(Boolean),{now:a.now,env:process.env}).map((r)=>r.id)}finally{s.close()}}case "retireDup":return L("scripts/devswarm-lib/fold.js").retireWorktreeDuplicates(home,{id:a.id,worktreePath:a.worktreePath},{cwd:a.cwd});default:throw new Error("unknown call "+c.fn)}};const out=[];for(const c of calls){try{const r=run(c);out.push(r===undefined?null:r)}catch(e){out.push({threw:String(e&&e.message||e)})}}console.log(JSON.stringify(out))'
+value = 'const NOW=Number(process.argv[3]);Date.now=()=>NOW;const root=process.argv[1],home=process.argv[2],calls=JSON.parse(process.argv[4]);process.env.HOME=home;process.env.USERPROFILE=home;process.env.ANTI_HALL_LOG_DIR=home+"/.anti-hall/logs";const fs=require("fs"),path=require("path");const L=(m)=>require(root+"/"+m);const run=(c)=>{const a=c.args||{};switch(c.fn){case "sweepState":L("companion/devswarm-supervisor.js").writeReconcileSweepState(home,fs,{lastRunAt:a.lastRunAt});return null;case "resumeWrite":L("scripts/devswarm-lib/reconcile.js").writeReconcileResume(home,a.repoKey,a.ids);return null;case "nameWrite":return L("companion/lib/devswarm-names.js").writeName(home,a.id,a.name,a.now);case "repoUnknownRecord":return L("companion/lib/devswarm-repo-unknown.js").record(home,a.repoKey,a.scope,a.reason,a.now);case "repoUnknownClear":L("companion/lib/devswarm-repo-unknown.js").clear(home,a.repoKey,a.scope);return null;case "activeCache":{process.env.ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT=String(a.floorPct);const r=L("companion/lib/devswarm-archived-cache.js").writeActiveCache({home,byRepoKey:a.byRepoKey,now:a.now,env:process.env});return r===null?null:path.relative(home,r)}case "sampling":{const S=L("companion/lib/devswarm-startup-sampling.js");return S.runSamplingPass(a.ids.map((id)=>({id})),{home,env:process.env,now:a.now,maxProbe:a.maxProbe,run:(id)=>a.probes[id]||{ok:false,error:"no probe"}})}case "healRegistry":return L("scripts/devswarm-lib/fold.js").healRegistry(home,a.repoKey,{});case "healRows":{const F=L("scripts/devswarm-lib/fold.js");return a.ids.map((id)=>F.rehomeMiskeyedRow(home,id,a.repoKey,{}))}case "foldRekey":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{return F.rekeySubdirRegistryRows(s,home,false)}finally{s.close()}}case "foldGroup":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{const by=new Map(s.listRegistry().map((r)=>[String(r.id),r]));const r=F.foldGroupIntoSurvivor(s,home,a.survivor,a.ids.map((i)=>by.get(i)).filter(Boolean),{});return {retired:r.retired,left:r.left,forwardFailed:r.forwardFailed,forwarded:r.forwarded,skipped:r.skipped}}finally{s.close()}}case "foldDerive":{const C=L("scripts/devswarm-lib/core.js");const s=C.store.openStore({home,hash:a.repoKey});try{C.store.deriveSummary(s,{home});return null}finally{s.close()}}case "ghosts":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{const by=new Map(s.listRegistry().map((r)=>[String(r.id),r]));return F.ghostRegistryRows(s,home,a.ids.map((i)=>by.get(i)).filter(Boolean),{now:a.now,env:process.env}).map((r)=>r.id)}finally{s.close()}}case "retireDup":return L("scripts/devswarm-lib/fold.js").retireWorktreeDuplicates(home,{id:a.id,worktreePath:a.worktreePath},{cwd:a.cwd});case "retireArchived":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{return F.retireArchivedWorktreeGroup(s,home,a.id,a.worktreePath)}finally{s.close()}}case "forwardArchived":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{return F.forwardArchivedOrphanUnread(s,a.id,a.survivor,{home,now:a.now,maxAgeMs:a.maxAgeMs})}finally{s.close()}}default:throw new Error("unknown call "+c.fn)}};const out=[];for(const c of calls){try{const r=run(c);out.push(r===undefined?null:r)}catch(e){out.push({threw:String(e&&e.message||e)})}}console.log(JSON.stringify(out))'
 
 [devswarm_recon.node_timeout_ms]
 doc = "How long the Node witness may run for one job."
@@ -269,7 +269,13 @@ value = "fold-mesh"
 doc = "The label of the retire-worktree-duplicates job."
 value = "retire-dup"
 
+[devswarm_recon.job_archived]
+doc = "The label of the retire-archived-worktree-group job."
+value = "retire-archived"
 
+[devswarm_recon.job_forward_archived]
+doc = "The label of the forward-archived-orphan-unread job."
+value = "forward-archived"
 
 [devswarm_recon.job_ghosts]
 doc = "The label of the ghost-row witness job."
@@ -299,13 +305,37 @@ value = "fold"
 doc = "Why a candidate was not folded: its survivor is not registered in the store."
 value = "survivor-gone"
 
+[devswarm_recon.reason_anchor]
+doc = "The reason an attended mesh-anchor row was left (archiveLeftReason)."
+value = "mesh-anchor-attended"
 
+[devswarm_recon.reason_raced]
+doc = "The reason a left row is given when it has no descriptor (archiveLeftReason)."
+value = "raced-re-register"
 
+[devswarm_recon.reason_live_descriptor]
+doc = "The reason a left row with a descriptor and a live session is given (archiveLeftReason)."
+value = "live-descriptor"
 
+[devswarm_recon.reason_no_live_session]
+doc = "The reason a left row with a descriptor and no live session is given (archiveLeftReason)."
+value = "descriptor-no-live-session"
 
+[devswarm_recon.reason_forward_failed]
+doc = "The reason a row whose forward failed is reported as left."
+value = "forward-failed"
 
+[devswarm_recon.status_ok]
+doc = "The status of a forward that completed."
+value = "ok"
 
+[devswarm_recon.status_gone]
+doc = "The status of a forward whose destination is not registered."
+value = "gone"
 
+[devswarm_recon.archived_forward_prefix]
+doc = "The provenance prefix of a body forwarded from an archived partition (archivedForwardProvenancePrefix). {id}."
+value = "[forwarded from archived {id}] "
 
 [devswarm_recon.ghost_age_env]
 doc = "The environment variable that sets, in hours, how long a never-attended registry row must be untouched before it is a ghost (Node reads only this variable)."
