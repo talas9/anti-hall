@@ -992,3 +992,41 @@ value = "primary takeover must run in the project's Primary checkout"
 [devswarm_cli.msg_primary_unknown_sub]
 doc = "The error of an unknown `primary` subcommand; {sub} is the word as JSON."
 value = "primary: unknown subcommand {sub} (status|takeover)"
+
+# ---- relay (lane l8c) ---------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_relay]
+doc = "The verb that forwards a message of the caller's own inbox, verbatim, to another workspace."
+value = "relay"
+
+[devswarm_cli.action_relay]
+doc = "The `action` of a relay result."
+value = "relay"
+
+[devswarm_cli.flag_note_file]
+doc = "The relay flag naming a file whose text is appended to the forwarded message."
+value = "note-file"
+
+[devswarm_cli.relay_head_from]
+doc = "The start of the provenance header a relayed message carries; the original sender follows."
+value = "relayed from "
+
+[devswarm_cli.relay_head_seq]
+doc = "The header words between the sender and the message's sequence number."
+value = ", seq "
+
+[devswarm_cli.relay_head_comma]
+doc = "The header words between the sequence number and the byte count."
+value = ", "
+
+[devswarm_cli.relay_head_end]
+doc = "The end of the provenance header: the byte count's unit and the blank line before the body."
+value = " bytes\n\n"
+
+[devswarm_cli.relay_note_join]
+doc = "What separates the forwarded body from the relayer's own note."
+value = "\n\n---\n"
+
+[devswarm_cli.relay_null]
+doc = "How a relayed message names a sender it does not know."
+value = "null"
