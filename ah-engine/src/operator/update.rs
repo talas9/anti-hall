@@ -195,6 +195,46 @@ fn resolve_installed(rx: &Rx, paths: &Paths) -> Option<String> {
     cache.or(json).or_else(|| version_from_marketplace(rx, &paths.plugin_json))
 }
 
+/// What the wake watcher needs of `update.js`: the versions it knows of (`versionFromInstalledJson`, `newestCacheVersion`,
+/// `versionFromMarketplace`) and where the cache lives. Pure reads; `None` when the patterns do not compile.
+pub(crate) struct KnownVersions {
+    /// The version the harness registry names.
+    pub registry: Option<String>,
+    /// The newest version cache directory.
+    pub cache: Option<String>,
+    /// The version in the marketplace clone's manifest.
+    pub marketplace: Option<String>,
+    /// The cache root (`<plugins>/cache/anti-hall/anti-hall`).
+    pub cache_root: String,
+}
+
+fn cached_rx() -> Option<&'static Rx> {
+    static RX: defaults::Cache<Option<Rx>> = defaults::Cache::new();
+    RX.get_or_init(|| Rx::new().ok()).as_ref()
+}
+
+/// The versions `checkStaleVersion` of the wake watcher compares (`update.js` `resolvePaths` and the three readers).
+pub(crate) fn known_versions(env: &Env, home: &str) -> Option<KnownVersions> {
+    let rx = cached_rx()?;
+    let paths = resolve_paths(env, home);
+    Some(KnownVersions {
+        registry: version_from_installed_json(rx, &paths.installed_json),
+        cache: newest_cache_version(rx, &paths.cache_root),
+        marketplace: version_from_marketplace(rx, &paths.plugin_json),
+        cache_root: paths.cache_root,
+    })
+}
+
+/// `isSemver(v)` of `update.js`.
+pub(crate) fn semver_ok(v: &str) -> bool {
+    cached_rx().is_some_and(|rx| is_semver(rx, v))
+}
+
+/// `compareVersions(a, b)` of `update.js`: -1, 0 or 1.
+pub(crate) fn compare_versions(a: &str, b: &str) -> i32 {
+    cached_rx().map_or(0, |rx| compare(rx, a, b))
+}
+
 /// The registry and the cache both read, and disagree.
 fn installed_version_lag(rx: &Rx, paths: &Paths) -> Option<(String, String)> {
     let cache = newest_cache_version(rx, &paths.cache_root)?;

@@ -72,6 +72,8 @@ fn run(mut cmd: Command, home: &Path, cwd: &Path, extra: &[(&str, &str)], stdin:
         .env("AH_ENGINE_SHADOW_RATE_PHASE", "0")
         .env("AH_ENGINE_SHADOW_RATE_INSTALL", "0")
         .env("AH_ENGINE_SHADOW_RATE_UNINSTALL", "0")
+        // the Node installer writes the Node-only command; the engine's installer writes the launcher form unless told otherwise
+        .env("ANTIHALL_STATUSLINE_NODE_ONLY", "1")
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

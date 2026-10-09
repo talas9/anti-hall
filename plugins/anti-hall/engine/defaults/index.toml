@@ -71,5 +71,6 @@ files = [
     "realtime.toml",
     "github_rt.toml",
     "jev_report.toml",
+    "wake_watch.toml",
 ]
 extra_dir = "hooks.d"

@@ -32,6 +32,7 @@ Sets up the anti-hall two-line statusline:
    - `~/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/statusline/statusline.js` (stable across updates — preferred)
    - `__dirname/statusline.js` (dev / direct repo run — fallback)
    It **never** bakes a versioned cache path (`.../cache/anti-hall/anti-hall/<version>/...`) because that path breaks silently on every plugin update.
+   **Engine-first command.** With the engine installed, `ah-engine install-statusline` (same flags) writes `sh "<plugin>/scripts/ah-run.sh" --stdin statusline -- "<plugin>/statusline/statusline.js"`: the launcher runs the engine's `statusline` and falls back to the Node dispatcher when the engine is absent or defers. The Node installer keeps writing `node "<dispatcher>"`; `ah-engine migrate` moves such an existing command to the launcher form once (backup kept, nothing else touched).
 6. **Never hand-edit `~/.anti-hall/base-statusline.json`.** It is GLOBAL and shared by every project that points at the dispatcher; the installer already protects it (won't clobber an existing one).
 7. **Precedence check.** Before writing, the installer reads `statusLine` across all three scopes and prints a note if a committed `settings.json` would be shadowed, or if anti-hall is already the effective statusLine (`already installed — exit 0`).
 8. **Gitignore.** When installing `--project`, the installer auto-appends `.claude/settings.local.json` to `.gitignore` if missing, and warns if the file is already git-tracked.

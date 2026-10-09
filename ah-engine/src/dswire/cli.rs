@@ -88,6 +88,9 @@ pub fn run_with(p: &Parsed, env: &dyn Fn(&str) -> Option<String>) -> i32 {
     if compat {
         return compat_run(p);
     }
+    if verb == defaults::text("wake_watch.verb") {
+        return crate::wakew::run(&p.rest[1..]);
+    }
     if verb == "create" || verb == "merge" {
         out(p, json!({"outcome": Word::Deferred.text(), "verb": verb, "why": defaults::render("devswarm_wire.msg_deferred", &[("verb", &verb)])}));
         return deferred;
