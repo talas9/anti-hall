@@ -11,7 +11,7 @@ The DevSwarm role, gate and wake guards.
 
 | Verb | What it does | Roles |
 |---|---|---|
-| `ah-engine devswarm` | `<status\|line\|advisory --session <id>\|archive --id <ws> --request <id>\|plan-prune --older-than <days>\|prune --confirm-ids <ids> --plan <nonce>>` The DevSwarm realtime state and owner actions (lane dswire) | main, codex, workspace, subagent (owner args: archive, plan-prune, prune) |
+| `ah-engine devswarm` | `<status\|line\|supervisor\|recover --id <ws> --request <id>\|advisory --session <id>\|archive --id <ws> --request <id>\|plan-prune --older-than <days>\|prune --confirm-ids <ids> --plan <nonce>\|help [<verb>]\|skip <guard> [--ttl <min>]\|archive-ignore <id>\|archive-unignore <id>\|gate-intent --reason <text>\|notice --list\|plan set\|show <id>\|scope add <id> --glob <g> --note <t>\|gate <id> --set <csv> --clear <csv>\|workspaces list\|logs [--limit <n>]\|wake-directive <id>>` The DevSwarm realtime state and owner actions (lane dswire) | main, codex, workspace, subagent (owner args: archive, plan-prune, prune, recover, create, merge, skip, archive-ignore, archive-unignore, gate-intent, notice) |
 
 ## Guards
 
@@ -52,5 +52,11 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.autoArchive.mode` = "on": Auto-archive mode: on (archive), dry-run (plan only, nothing spawned), off
 - `devswarm.nudgeCooldownSec` = 120: Seconds between two pokes of one workspace
 - `devswarm.nudgeMaxAttempts` = 2: Pokes before a stale workspace is escalated
+- `devswarm.housekeepingSweep` = "auto": Housekeeping sweep switch: auto / on / off
+- `devswarm.housekeepingSweepSec` = 3600: Least time between two housekeeping sweeps
+- `devswarm.supervisorLogRotateBytes` = 10485760: Size above which the supervisor log is rotated to its .1 copy
+- `devswarm.maxRecoveries` = 3: Most kill-and-resume recoveries of one workspace
+- `devswarm.reconcileSweep` = "auto": Reconcile sweep switch: auto / on / off
+- `devswarm.reconcileSweepSec` = 900: Least time between two reconcile sweeps
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

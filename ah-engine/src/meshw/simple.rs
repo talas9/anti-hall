@@ -614,7 +614,7 @@ fn logs(inv: &Inv, a: &Args) -> R<Answer> {
     // `Date.parse` of an entry's `ts`: the strict ISO form, else Node
     let ts_ms = |e: &OVal| -> R<Option<f64>> {
         match e.get("ts") {
-            Some(OVal::Str(t)) => crate::checks::ctxbudget::limit::iso_ms(t).map_or_else(|| defer("log-ts"), |ms| Ok(Some(ms))),
+            Some(OVal::Str(t)) => crate::dispatch::inject::iso_ms(t).map_or_else(|| defer("log-ts"), |ms| Ok(Some(ms))),
             Some(v) if !v.truthy() => Ok(None),
             None => Ok(None),
             Some(_) => defer("log-ts"),
