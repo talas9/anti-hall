@@ -608,7 +608,8 @@ fn cmd_jev_sweep(_p: &Parsed) -> i32 {
 
 /// The `agent_tick` scheduled job (`ah-engine agent_tick --json`): one tracker tick.
 fn cmd_agent_tick(p: &Parsed) -> i32 {
-    crate::agents::run_cmd(&Parsed { command: p.command.clone(), json: p.json, rest: vec![defaults::text("agent_tracker.tick_verb").to_string()] })
+    let verb = defaults::text("agent_tracker.tick_verb").to_string();
+    crate::agents::run_cmd(&Parsed { command: p.command.clone(), json: p.json, rest: vec![verb.clone()], raw: vec![verb] })
 }
 
 #[cfg(test)]
