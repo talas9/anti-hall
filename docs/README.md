@@ -6,7 +6,7 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 
 ## Docs site
 
-The pages of the published docs site (built with MkDocs from this folder; the settings
+The pages of the published docs site, https://talas9.github.io/anti-hall/ (built with MkDocs from this folder; the settings
 reference and the changelog pages are generated at build time by `tools/site_gen.py`).
 
 | Page | What it covers |
