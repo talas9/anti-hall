@@ -47,6 +47,8 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
         ("config", vec!["validate".into(), cfg.display().to_string()]),
         ("doctor", s(&["--check"])),
         ("agents", s(&["status"])),
+        ("gh", s(&["status"])),
+        ("gh", s(&["segment"])),
     ]
 }
 

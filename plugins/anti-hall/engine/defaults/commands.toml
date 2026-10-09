@@ -79,7 +79,7 @@ doc = "The agent tracker (feature 21): `status` lists every tracked agent (main 
 value = { args = "<status|tick> [--json]", read_only = false, read_only_args = ["status"], status = "implemented" }
 [cmd.gh]
 doc = "GitHub realtime (feature #20, independent of DevSwarm): `status` prints, from the state file with no network, what is followed (the repos of the working directories of live sessions, their pull request, review, CI and mergeability), the rate-limit budget, the hold in force (backoff, budget, gh missing, logged out or offline) and the measured rate-limit cost of 200 and 304 answers; `segment [--cwd <dir>]` prints the statusline piece for the repo that holds the directory (empty when there is nothing to say); `poll [--force]` runs one tick now."
-value = { args = "<status|segment|poll> [--cwd <dir>] [--force]", read_only = false, status = "implemented" }
+value = { args = "<status|segment|poll> [--cwd <dir>] [--force]", read_only = false, read_only_args = ["status", "segment"], status = "implemented" }
 
 [cmd.gh_poll]
 doc = "The scheduled GitHub realtime tick (the `gh_poll` job): notices pushes, polls the followed repos that are due inside the rate budget and records the edges; prints its counts with --json and always exits 0."
