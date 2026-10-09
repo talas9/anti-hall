@@ -2088,3 +2088,319 @@ value = "no orphaned partitions with unread mail in this project"
 [devswarm_cli.msg_reap_applied]
 doc = "The note of a pass that acted; {dir} is the directory the archives go to."
 value = "unread rows were archived + verified under {dir} and each partition retired by advancing its cursor; NO message rows were deleted"
+
+# ---- lane dsA: archive, register-primary, diagnose, healthcheck ---------------------------------------------------------
+
+[devswarm_cli.verb_archive]
+doc = "The verb that archives a workspace locally and then in the DevSwarm app."
+value = "archive"
+
+[devswarm_cli.action_archive]
+doc = "The `action` an archive result carries."
+value = "archive"
+
+[devswarm_cli.flag_force_cross_project]
+doc = "The flag that archives a workspace of another project (always Node's)."
+value = "force-cross-project"
+
+[devswarm_cli.dir_recovery_intent]
+doc = "The directory holding an archive's crash-recovery marker, under the DevSwarm state directory."
+value = "recovery-intent"
+
+[devswarm_cli.recovery_op]
+doc = "The `op` the recovery marker of an archive names."
+value = "archive"
+
+[devswarm_cli.hc_version_re]
+doc = "The pattern `parseVersion` finds a version in (three groups)."
+value = "(\\d+)\\.(\\d+)\\.(\\d+)"
+
+[devswarm_cli.hc_cap_prefix]
+doc = "The prefix of a workspace verb's capability name."
+value = "workspace."
+
+[devswarm_cli.hc_reason_old]
+doc = "Why a capability is dormant: the build is older than the verb's minimum."
+value = "requires DevSwarm >= {min} (have {have})"
+
+[devswarm_cli.hc_reason_lead]
+doc = "The lead of the reason when the build lacks a verb that has a minimum version."
+value = "requires DevSwarm >= {min}; "
+
+[devswarm_cli.hc_reason_missing]
+doc = "The reason when the build's help does not list the verb."
+value = "`hivecontrol workspace {verb}` not in this build's --help"
+
+[devswarm_cli.hc_line_note]
+doc = "The note part of a dormant line."
+value = " ({note})"
+
+[devswarm_cli.hc_line_needs]
+doc = "The cause part of a dormant line for a verb with a minimum version."
+value = "needs DevSwarm >= {min}, you have {have}"
+
+[devswarm_cli.hc_unknown_version]
+doc = "The version a dormant line names when the build's is unknown."
+value = "unknown"
+
+[devswarm_cli.hc_line]
+doc = "The dormant line the capability cache records (`dormantLog`)."
+value = "feature {name}{note} is dormant: {because}"
+
+[devswarm_cli.hc_code_notfound]
+doc = "The `spawnSync` error code of a missing binary or working directory."
+value = "ENOENT"
+
+[devswarm_cli.hc_code_denied]
+doc = "The `spawnSync` error code of a binary that may not run."
+value = "EACCES"
+
+[devswarm_cli.hc_code_other]
+doc = "The `spawnSync` error code of any other failure to start."
+value = "UNKNOWN"
+
+[devswarm_cli.hc_code_timeout]
+doc = "The `spawnSync` error code of a call stopped at its timeout."
+value = "ETIMEDOUT"
+
+[devswarm_cli.hc_code_buffer]
+doc = "The `spawnSync` error code of a call whose output passed the buffer."
+value = "ENOBUFS"
+
+[devswarm_cli.hc_err_spawn]
+doc = "The error text of a call that could not run."
+value = "spawnSync {bin} {code}"
+
+[devswarm_cli.hc_err_exited]
+doc = "The error text of a call that exited non-zero; `{detail}` is empty or `: <stderr>`."
+value = "{bin} {args} exited {status}{detail}"
+
+[devswarm_cli.hc_err_signal]
+doc = "The error text of a call ended by a signal."
+value = "{bin} {args} killed by signal {signal}{detail}"
+
+[devswarm_cli.hc_err_detail]
+doc = "The stderr part of an error text."
+value = ": {stderr}"
+
+[devswarm_cli.hc_err_unknown]
+doc = "The error text when a call failed without saying why."
+value = "unknown hivecontrol failure"
+
+[devswarm_cli.hc_signal_names]
+doc = "Signal number = name, for the signals a call is likely to end with."
+value = ["1=SIGHUP", "2=SIGINT", "3=SIGQUIT", "6=SIGABRT", "9=SIGKILL", "11=SIGSEGV", "13=SIGPIPE", "14=SIGALRM", "15=SIGTERM"]
+
+[devswarm_cli.hc_signal_fallback]
+doc = "The name of a signal that is not in the list."
+value = "SIG{n}"
+
+[devswarm_cli.hc_archive_args]
+doc = "The `hivecontrol` arguments before the workspace reference of an app archive."
+value = ["workspace", "archive"]
+
+[devswarm_cli.hc_archive_verb]
+doc = "The workspace verb the app archive needs."
+value = "archive"
+
+[devswarm_cli.hc_archive_min_version]
+doc = "The DevSwarm version that has the archive verb."
+value = "2.5.3"
+
+[devswarm_cli.hc_archive_note]
+doc = "The note the archive capability's dormant line carries."
+value = "auto-archive of done workspaces"
+
+[devswarm_cli.app_archive_timeout_ms]
+doc = "The time one `hivecontrol workspace archive` may take."
+value = 60000
+
+[devswarm_cli.app_archive_retry_re]
+doc = "The failure text of the app's flaky terminal check; the call is repeated once on it."
+value = "(?i-u)could not confirm terminal\\b"
+
+[devswarm_cli.app_primary_label_re]
+doc = "An id the app archive never passes to hivecontrol."
+value = "(?i-u)^primary-"
+
+[devswarm_cli.app_reason_primary_label]
+doc = "Why a primary-<hash> label id is not archived in the app."
+value = "primary-<hash> label id is never passed to hivecontrol"
+
+[devswarm_cli.app_reason_unreadable]
+doc = "Why nothing is archived in the app when its database cannot be read."
+value = "app DB unreadable — cannot confirm the builder"
+
+[devswarm_cli.app_reason_no_builder]
+doc = "Why nothing is archived in the app when it holds no builder with this id."
+value = "no app builder with this exact id"
+
+[devswarm_cli.app_reason_type_unknown]
+doc = "Why nothing is archived in the app when the builder's type is unknown."
+value = "app builderType unknown"
+
+[devswarm_cli.app_reason_primary]
+doc = "Why nothing is archived in the app for the Primary builder."
+value = "primary builder"
+
+[devswarm_cli.app_reason_archived]
+doc = "Why nothing is archived in the app when it is archived already."
+value = "app builder is already archived"
+
+[devswarm_cli.app_reason_dormant]
+doc = "The reason when a capability is not usable and says nothing more."
+value = "dormant"
+
+[devswarm_cli.app_builder_type_primary]
+doc = "The builder type of a Primary."
+value = "primary"
+
+[devswarm_cli.app_err_archived_false]
+doc = "The error text of a call whose answer says it archived nothing; `{raw}` is the first characters of the answer."
+value = "hivecontrol reported archived:false: {raw}"
+
+[devswarm_cli.app_err_raw_chars]
+doc = "How many characters of the answer that error text keeps."
+value = 200
+
+[devswarm_cli.app_why_still_open]
+doc = "Why an app archive is not verified: the database still lists the workspace open."
+value = "the app DB still lists the workspace open (isActive=1)"
+
+[devswarm_cli.app_why_unconfirmed]
+doc = "Why an app archive is not verified: nothing confirms it."
+value = "the app DB could not confirm the workspace and hivecontrol did not report archived:true"
+
+[devswarm_cli.app_err_exit0]
+doc = "The error text of a call that exited 0 without archiving."
+value = "hivecontrol exited 0 but {why}"
+
+[devswarm_cli.app_why_unverified]
+doc = "The reason when no reason is known."
+value = "the archive could not be verified"
+
+[devswarm_cli.app_err_branch_skipped]
+doc = "What is added to the error when the branch fallback was not tried."
+value = "(branch fallback skipped: {why})"
+
+[devswarm_cli.app_why_no_branch]
+doc = "Why the branch fallback was skipped."
+value = "no branch name"
+
+[devswarm_cli.app_why_db]
+doc = "Why the branch fallback was skipped when the database cannot be read."
+value = "app DB unreadable"
+
+[devswarm_cli.app_why_shared]
+doc = "Why the branch fallback was skipped when the branch name is shared."
+value = "branch name is shared by {n} builders"
+
+[devswarm_cli.app_manual_command]
+doc = "The command that archives the workspace by hand."
+value = "hivecontrol workspace archive {target}"
+
+[devswarm_cli.app_side_effect]
+doc = "The message when archiving changed other builders."
+value = "hivecontrol changed OTHER app builders while archiving {id} — NOT undone, check the app"
+
+[devswarm_cli.app_state_gone]
+doc = "The state a builder that vanished is reported in."
+value = "gone"
+
+[devswarm_cli.app_state_archived]
+doc = "A builder's state when it is archived."
+value = "archived"
+
+[devswarm_cli.app_state_open]
+doc = "A builder's state when it is open."
+value = "open"
+
+[devswarm_cli.app_state_closed]
+doc = "A builder's state when it is closed but not archived."
+value = "closed"
+
+[devswarm_cli.app_via_id]
+doc = "How an app archive that worked through the id says so."
+value = "id"
+
+[devswarm_cli.app_via_branch]
+doc = "How an app archive that worked through the branch name says so."
+value = "branch"
+
+[devswarm_cli.msg_app_side_warning]
+doc = "The warning that names an app side effect; `{message}` and `{changed}` (JSON)."
+value = "APP SIDE EFFECT: {message} {changed}"
+
+[devswarm_cli.msg_app_step_ok]
+doc = "The manual step of an archive that also archived in the app; `{retry}` is empty or the retry note."
+value = "archived in the DevSwarm app too (isActive=0/isHidden=1, verified){retry}."
+
+[devswarm_cli.msg_app_retry_note]
+doc = "The retry note."
+value = " — succeeded on retry"
+
+[devswarm_cli.msg_app_step_fail]
+doc = "The manual step of an archive whose app side is not done; `{tail}` says why."
+value = "run `{cmd}` (or archive it manually in the DevSwarm app) to also archive workspace {id} there — anti-hall's own archive only tombstoned its local descriptor/registry (archive keeps disk contents; never delete without confirmation).{tail}"
+
+[devswarm_cli.msg_app_tail_attempted]
+doc = "The tail of that step when an app archive was tried."
+value = " [app archive attempted, NOT verified: {error}]"
+
+[devswarm_cli.msg_app_tail_skipped]
+doc = "The tail of that step when an app archive was not tried."
+value = " [app archive not attempted: {reason}]"
+
+[devswarm_cli.msg_app_error_unknown]
+doc = "The error named in the tail when none is known."
+value = "unknown"
+
+[devswarm_cli.msg_live_child_warning]
+doc = "The warning of an archive whose child still beats."
+value = "child session still live for {id} (fresh heartbeat) — it may re-register and reappear; close its terminal or it will keep coming back"
+
+[devswarm_cli.app_reason_absent]
+doc = "The reason the capability gate gives when `hivecontrol` cannot be found."
+value = "hivecontrol-absent"
+
+# ---- register-primary ---------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_register_primary]
+doc = "The verb that registers the Primary checkout's own workspace."
+value = "register-primary"
+
+[devswarm_cli.action_register_primary]
+doc = "The `action` a register-primary result carries."
+value = "register-primary"
+
+[devswarm_cli.flag_force]
+doc = "The flag that registers the Primary over a live holder, or from a child workspace."
+value = "force"
+
+[devswarm_cli.reason_not_primary_checkout]
+doc = "The `reason` of the refusal to register a child workspace as the Primary."
+value = "not-primary-checkout"
+
+[devswarm_cli.reason_live_primary_conflict]
+doc = "The `reason` of the refusal to register over a live Primary session."
+value = "live-primary-conflict"
+
+[devswarm_cli.msg_regprim_no_worktree]
+doc = "The refusal outside a git worktree without --worktree."
+value = "register-primary must run inside a git worktree (or pass --worktree <path>)"
+
+[devswarm_cli.msg_regprim_child]
+doc = "The refusal to register a child workspace; {worktree} is the path as JSON."
+value = "register-primary refused: {worktree} is a DevSwarm CHILD workspace, not the project's Primary checkout. A child is addressed by its own workspace id; pass --force only if this worktree really hosts the Primary."
+
+[devswarm_cli.msg_regprim_conflict]
+doc = "The refusal to register over a live Primary session; {worktree}, {id} and {session} are JSON strings."
+value = "register-primary refused: worktree {worktree} already has a LIVE Primary row {id} registered under a different, currently-live session ({session}). Registering now would silently overwrite that session's ownership of this row (anti-hall: ONE Primary per project). Pass --force to register anyway."
+
+[devswarm_cli.regprim_builder_env]
+doc = "The variable that names a child's own builder id; register-primary falls back to it for the session."
+value = "DEVSWARM_BUILDER_ID"
+
+[devswarm_cli.regprim_child_env]
+doc = "The variable DevSwarm sets only on a child workspace."
+value = "DEVSWARM_SOURCE_BRANCH"

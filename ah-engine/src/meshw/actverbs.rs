@@ -453,7 +453,7 @@ fn lstat_exists(p: &std::path::Path) -> bool {
 
 /// `hasFreshHeartbeat(id, home, { now })`: the heartbeat record's `ts` (else the file's mtime) is positive, not in the future,
 /// and at most the freshness window old.
-fn has_fresh_heartbeat(inv: &Inv, id: &str) -> bool {
+pub(crate) fn has_fresh_heartbeat(inv: &Inv, id: &str) -> bool {
     let p = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let ts = match std::fs::read(&p).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) {
         Some(v) if matches!(v.get("ts"), Some(OVal::Num(x)) if x.is_finite()) => match v.get("ts") {

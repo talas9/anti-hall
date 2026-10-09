@@ -31,6 +31,7 @@
 pub mod actverbs;
 pub mod appdb;
 pub mod appverbs;
+pub mod archiveverb;
 pub mod args;
 pub mod clog;
 pub mod common;

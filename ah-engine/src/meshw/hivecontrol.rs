@@ -138,18 +138,39 @@ pub fn run(args: &[&str], env: &Env) -> Option<String> {
 
 /// One call bounded by `timeout`, reporting what `defaultRun` reports (see [`Call`]).
 pub fn call(args: &[&str], env: &Env, timeout: std::time::Duration) -> Call {
+    call_full(args, env, None, timeout).call
+}
+
+/// Everything one `spawnSync` of `defaultRun` tells its caller, enough to build the `error` text it returns.
+#[derive(Debug, Clone, Default)]
+pub struct Full {
+    /// What [`call`] reports.
+    pub call: Call,
+    /// The stderr (decoded as UTF-8, lossily).
+    pub stderr: String,
+    /// The exit code of a process that exited.
+    pub code: Option<i32>,
+    /// The signal that ended the process.
+    pub signal: Option<i32>,
+    /// The process could not be started (the error kind), as `r.error` of a missing binary or working directory.
+    pub spawn_failed: Option<std::io::ErrorKind>,
+    /// The stdout passed the buffer limit (`ENOBUFS`).
+    pub overflow: bool,
+}
+
+/// [`call`] in a working directory, with the stderr, the status and the failure kind kept.
+pub fn call_full(args: &[&str], env: &Env, cwd: Option<&str>, timeout: std::time::Duration) -> Full {
+    use std::os::unix::process::ExitStatusExt;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
-    let Ok(mut child) = Command::new(defaults::text("mesh_write.hivecontrol_bin"))
-        .args(args)
-        .env_clear()
-        .envs(env)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    else {
-        return Call::default();
+    let mut cmd = Command::new(defaults::text("mesh_write.hivecontrol_bin"));
+    cmd.args(args).env_clear().envs(env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Full { spawn_failed: Some(e.kind()), ..Full::default() },
     };
     let limit = defaults::num("mesh_write.hivecontrol_max_stdout_bytes") as usize;
     // both pipes are drained while the child runs, so a chatty child cannot block on a full pipe; the reader fills a shared
@@ -180,11 +201,28 @@ pub fn call(args: &[&str], env: &Env, timeout: std::time::Duration) -> Call {
     } else {
         out_done.store(true, Ordering::SeqCst);
     }
+    let err = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let err_done = Arc::new(AtomicBool::new(false));
     if let Some(mut e) = child.stderr.take() {
+        let (buf, done) = (Arc::clone(&err), Arc::clone(&err_done));
         std::thread::spawn(move || {
-            let mut sink = vec![0u8; defaults::num("mesh_write.hivecontrol_read_chunk") as usize];
-            while matches!(e.read(&mut sink), Ok(n) if n > 0) {}
+            let mut chunk = vec![0u8; defaults::num("mesh_write.hivecontrol_read_chunk") as usize];
+            loop {
+                match e.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(mut b) = buf.lock()
+                            && b.len() <= limit
+                        {
+                            b.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                }
+            }
+            done.store(true, Ordering::SeqCst);
         });
+    } else {
+        err_done.store(true, Ordering::SeqCst);
     }
     let deadline = Instant::now() + timeout;
     let poll = defaults::millis("mesh_write.hivecontrol_poll_ms");
@@ -209,15 +247,93 @@ pub fn call(args: &[&str], env: &Env, timeout: std::time::Duration) -> Call {
             Err(_) => break None,
         }
     };
-    let Some(st) = status else { return Call { ok: false, raw: String::new(), timed_out } };
-    // the pipe closes with the child; give the reader a moment to take the last bytes
+    let overflow = over.load(Ordering::SeqCst);
+    let Some(st) = status else {
+        return Full { call: Call { ok: false, raw: String::new(), timed_out }, overflow, ..Full::default() };
+    };
+    // the pipes close with the child; give the readers a moment to take the last bytes
     let until = Instant::now() + grace;
-    while !out_done.load(Ordering::SeqCst) && Instant::now() < until {
+    while !(out_done.load(Ordering::SeqCst) && err_done.load(Ordering::SeqCst)) && Instant::now() < until {
         std::thread::sleep(poll);
     }
     let bytes = out.lock().map(|b| b.clone()).unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&err.lock().map(|b| b.clone()).unwrap_or_default()).into_owned();
     if bytes.len() > limit {
-        return Call::default();
+        return Full { overflow: true, ..Full::default() };
     }
-    Call { ok: st.success(), raw: String::from_utf8_lossy(&bytes).into_owned(), timed_out: false }
+    Full {
+        call: Call { ok: st.success(), raw: String::from_utf8_lossy(&bytes).into_owned(), timed_out: false },
+        stderr,
+        code: st.code(),
+        signal: st.signal(),
+        spawn_failed: None,
+        overflow: false,
+    }
+}
+
+/// What the capability gate says about one workspace verb, from the cache alone.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Cap {
+    /// The binary cannot be found: Node's `can` answers `hivecontrol-absent` and never spawns or writes.
+    Absent,
+    /// The build has the verb and is new enough.
+    Ok,
+    /// The build lacks the verb or is too old and Node already recorded the dormant line: the reason it reports.
+    Dormant(String),
+    /// Node would probe the binary or record the dormant line in its cache: not reproducible.
+    Probe,
+}
+
+/// `parseVersion(v)` as numbers; `None` when there is no `x.y.z` in it.
+fn version_parts(v: &str) -> Option<[u64; 3]> {
+    let re = regex::Regex::new(defaults::text("devswarm_cli.hc_version_re")).ok()?;
+    let c = re.captures(v)?;
+    Some([c[1].parse().ok()?, c[2].parse().ok()?, c[3].parse().ok()?])
+}
+
+/// `can('workspace.<verb>')` from the cache alone: `verb` with its `minVersion` (`None` for any build) and the note the dormant
+/// line carries.
+pub fn cap_verb(env: &Env, home: &Path, verb: &str, min_version: Option<&str>, note: Option<&str>) -> Cap {
+    let Ok(found) = resolve_bin(env, home) else { return Cap::Probe };
+    let Some(bin) = found else { return Cap::Absent };
+    let cache = home
+        .join(defaults::text("mesh_write.dir_anti_hall"))
+        .join(defaults::text("mesh_write.dir_devswarm"))
+        .join(defaults::text("mesh_write.hivecontrol_cache_file"));
+    let Some(c @ OVal::Obj(_)) = std::fs::read_to_string(cache).ok().and_then(|t| OVal::parse(&t)) else { return Cap::Probe };
+    let key_ok = matches!(c.get("key"), Some(OVal::Str(k)) if cache_keys(&bin).contains(k));
+    let probe = c.get("probe");
+    if !key_ok || !probe.is_some_and(|p| matches!(p, OVal::Obj(_)) && p.get("present").is_some_and(OVal::truthy)) {
+        return Cap::Probe;
+    }
+    let name = format!("{}{verb}", defaults::text("devswarm_cli.hc_cap_prefix"));
+    let version = match probe.and_then(|p| p.get("version")) {
+        Some(OVal::Str(v)) if !v.is_empty() => Some(v.as_str()),
+        _ => None,
+    };
+    let too_old = match (min_version.and_then(version_parts), version.and_then(version_parts)) {
+        (Some(min), Some(have)) => have < min,
+        _ => false,
+    };
+    let has_verb = probe.and_then(|p| p.get("verbs")).and_then(|v| v.get(verb)).is_some_and(OVal::truthy);
+    if !too_old && has_verb {
+        return Cap::Ok;
+    }
+    let tpl = crate::meshw::extverbs::tpl;
+    let min = min_version.unwrap_or_default();
+    let have = version.unwrap_or(defaults::text("devswarm_cli.hc_unknown_version"));
+    let reason = if too_old {
+        tpl("devswarm_cli.hc_reason_old", &[("min", min), ("have", have)])
+    } else {
+        let lead = if min.is_empty() { String::new() } else { tpl("devswarm_cli.hc_reason_lead", &[("min", min)]) };
+        format!("{lead}{}", tpl("devswarm_cli.hc_reason_missing", &[("verb", verb)]))
+    };
+    let note_part = note.map_or(String::new(), |n| tpl("devswarm_cli.hc_line_note", &[("note", n)]));
+    let because = if min.is_empty() { reason.clone() } else { tpl("devswarm_cli.hc_line_needs", &[("min", min), ("have", have)]) };
+    let line = tpl("devswarm_cli.hc_line", &[("name", &name), ("note", &note_part), ("because", &because)]);
+    // Node records the dormant line in its cache unless the cache already holds exactly it
+    match c.get("dormantLog").and_then(|d| d.get(&name)) {
+        Some(OVal::Str(l)) if *l == line => Cap::Dormant(reason),
+        _ => Cap::Probe,
+    }
 }

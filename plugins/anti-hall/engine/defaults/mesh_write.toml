@@ -1980,3 +1980,7 @@ value = "repoId"
 [mesh_write.legacy_cursor_seps]
 doc = "What follows the workspace id in the name of a legacy per-instance cursor file under `cursors/` (`<id>#inst-<short>.json`, `<id>#nd-<short>.json`)."
 value = ["#inst-", "#nd-"]
+
+[mesh_write.app_col_branch]
+doc = "The `builders` branch column (the archive verb's branch fallback and its side-effect report)."
+value = "branchName"

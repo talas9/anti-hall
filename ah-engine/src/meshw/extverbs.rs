@@ -52,6 +52,10 @@ pub enum Ext {
     Correct,
     /// `reap-orphans` (lane l8h).
     ReapOrphans,
+    /// `archive <id>` (lane dsA).
+    Archive,
+    /// `register-primary` (lane dsA).
+    RegisterPrimary,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -92,6 +96,10 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Correct)
     } else if is("devswarm_cli.verb_reap_orphans") {
         Some(Ext::ReapOrphans)
+    } else if is("devswarm_cli.verb_archive") {
+        Some(Ext::Archive)
+    } else if is("devswarm_cli.verb_register_primary") {
+        Some(Ext::RegisterPrimary)
     } else {
         None
     }
@@ -99,7 +107,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register | Ext::Correct | Ext::ReapOrphans)
+    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register | Ext::Correct | Ext::ReapOrphans | Ext::RegisterPrimary)
 }
 
 /// Run the verb.
@@ -122,11 +130,13 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::Register => super::lifeverbs::register(inv, a),
         Ext::Correct => super::lifeverbs::correct(inv, a),
         Ext::ReapOrphans => super::lifeverbs::reap_orphans(inv, a),
+        Ext::Archive => super::archiveverb::archive(inv, a),
+        Ext::RegisterPrimary => super::lifeverbs::register_primary(inv, a),
     }
 }
 
 /// Whether the Node witness of the CLI verbs runs after the engine answered. Retention is gated before it acts (the engine's plan
 /// and Node's read-only planner must agree on every row), and Node's own `run` would prune a copy of a store of any size.
 pub fn witnessed(v: Ext) -> bool {
-    !matches!(v, Ext::Retention)
+    !matches!(v, Ext::Retention | Ext::Archive)
 }

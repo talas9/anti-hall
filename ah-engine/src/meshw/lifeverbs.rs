@@ -27,7 +27,7 @@ fn answer(code: i32, v: OVal) -> Answer {
 }
 
 /// `{ ok: false, error }` the way the dispatcher refuses a missing or unsafe id.
-fn bad_id() -> Answer {
+pub(crate) fn bad_id() -> Answer {
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(false)).put("error", s(defaults::text("devswarm_cli.msg_bad_id")));
     answer(2, o.done())
@@ -43,7 +43,7 @@ fn store_owner_key(inv: &Inv, id: &str) -> R<String> {
 
 /// Apply a planned job's units to the real home, in order, the caller holding each unit's lock. A unit handed back (lock busy, drifted precondition) before any
 /// write defers the verb; a unit that fails after its first step landed is a committed failure.
-fn apply_units(inv: &Inv, units: &[crate::dssup::recon::Unit]) -> R<()> {
+pub(crate) fn apply_units(inv: &Inv, units: &[crate::dssup::recon::Unit]) -> R<()> {
     let st = inv.settings();
     let env = apply::Env { home: &inv.home, now: inv.now, st: &st, log_dir: None };
     for (i, u) in units.iter().enumerate() {
@@ -52,7 +52,11 @@ fn apply_units(inv: &Inv, units: &[crate::dssup::recon::Unit]) -> R<()> {
         match apply::unit(&env, &unlocked, &Hooks::none()) {
             UnitEnd::Applied => crate::meshw::mark_committed(),
             UnitEnd::Deferred(why) if i == 0 => return defer(&why),
-            UnitEnd::Deferred(why) | UnitEnd::Failed(why) => return defer(&format!("committed:{why}")),
+            UnitEnd::Deferred(why) | UnitEnd::Failed(why) => {
+                // a step that failed after earlier steps landed has written: Node must not repeat the verb
+                crate::meshw::mark_committed();
+                return defer(&format!("committed:{why}"));
+            }
         }
     }
     Ok(())
@@ -362,11 +366,17 @@ fn has_duplicate_rows(inv: &Inv, current: &str, id: &str, worktree: Option<&str>
 /// the caller's cwd. Every refusal (Node logs those to the central log), the re-home, an archived twin, a second registry row of
 /// the worktree and a project the engine cannot name are Node's, decided before the first write.
 fn register_verb(inv: &Inv, a: &Args, require_new: bool) -> R<Answer> {
+    register_core(inv, a, require_new, None)
+}
+
+/// [`register_verb`]; `primary` is the worktree of `register-primary`, whose id is a `primary-<hash>` label by design and whose
+/// result names the worktree and the workspace instead of the action.
+fn register_core(inv: &Inv, a: &Args, require_new: bool, primary: Option<&str>) -> R<Answer> {
     let id = a.positionals.get(1).map(String::as_str).unwrap_or("");
     if !is_safe_id(id) {
         return Ok(bad_id());
     }
-    if crate::meshw::heartbeat::is_primary_label(id) {
+    if primary.is_none() && crate::meshw::heartbeat::is_primary_label(id) {
         return defer("primary-label");
     }
     let f = reg_flags(a)?;
@@ -531,7 +541,16 @@ fn register_verb(inv: &Inv, a: &Args, require_new: bool) -> R<Answer> {
     // home does not hold (the parity test compares them in the whole-home tree)
     wsverbs::note_summary(inv, &current);
     let mut o = Obj::default();
-    o.put("ok", OVal::Bool(true)).put("action", s(action)).put("id", s(id)).put("descriptor", out_desc);
+    match primary {
+        None => o.put("ok", OVal::Bool(true)).put("action", s(action)).put("id", s(id)).put("descriptor", out_desc),
+        Some(wt) => o
+            .put("ok", OVal::Bool(true))
+            .put("action", s(defaults::text("devswarm_cli.action_register_primary")))
+            .put("id", s(id))
+            .put("workspaceId", s(id))
+            .put("worktree", s(wt))
+            .put("descriptor", out_desc),
+    };
     Ok(answer(0, o.done()))
 }
 
@@ -543,6 +562,100 @@ pub fn ensure(inv: &Inv, a: &Args) -> R<Answer> {
 /// `register <id> --worktree P --session S [--inbox P --cursor P --nudge CMD]`.
 pub fn register(inv: &Inv, a: &Args) -> R<Answer> {
     register_verb(inv, a, false)
+}
+
+// ---- register-primary ---------------------------------------------------------------------------------------------------
+
+/// `register-primary [--worktree P] [--session S] [--inbox P] [--cursor P] [--force]` (`cmdRegisterPrimary`): the Primary's own
+/// descriptor under `primary-<hash of the worktree>`, written by the same code as `register`. The refusals Node words itself
+/// (not inside a worktree, a child builder of the app, a live Primary under another session) are answered here; everything the
+/// registration defers on is Node's, decided before the first write.
+pub fn register_primary(inv: &Inv, a: &Args) -> R<Answer> {
+    let name = |k: &str| defaults::text(k);
+    for k in ["devswarm_cli.flag_worktree", "devswarm_cli.flag_session", "devswarm_cli.flag_reg_inbox", "devswarm_cli.flag_reg_cursor"] {
+        if a.flags.get(name(k)).is_some_and(|v| v.iter().any(|x| matches!(x, crate::meshw::args::FlagVal::S(t) if t.is_empty()))) {
+            return defer("empty-flag");
+        }
+    }
+    let force = a.has(name("devswarm_cli.flag_force"));
+    let wt_flag = a.one(name("devswarm_cli.flag_worktree")).map(str::to_string);
+    let worktree = match &wt_flag {
+        Some(w) => w.clone(),
+        None => match ident::resolve_caller_worktree(&inv.cwd)? {
+            Some(w) => w,
+            None => return Ok(fail_with(&[("error", s(name("devswarm_cli.msg_regprim_no_worktree")))])),
+        },
+    };
+    let id = ident::primary_workspace_id(&worktree)?;
+    if !force {
+        let real = ident::resolve_caller_worktree(&worktree)?;
+        let builder = ident::builder_for_worktree(&inv.home, &inv.env, real.as_deref().unwrap_or(&worktree))?;
+        if builder.and_then(|b| b.builder_type).is_some_and(|t| !t.is_empty() && t != name("mesh_write.builder_type_primary")) {
+            let msg = crate::meshw::extverbs::tpl("devswarm_cli.msg_regprim_child", &[("worktree", &quote(&worktree))]);
+            return Ok(fail_with(&[
+                ("reason", s(name("devswarm_cli.reason_not_primary_checkout"))),
+                ("id", s(&id)),
+                ("worktree", s(&worktree)),
+                ("error", s(&msg)),
+            ]));
+        }
+        // the child-environment corroboration (a registered descriptor of DEVSWARM_BUILDER_ID, or a cwd under the app's repos) is only asked without --worktree
+        if wt_flag.is_none() && inv.env.get(name("devswarm_cli.regprim_child_env")).is_some_and(|v| !crate::checks::guardkit::text::js_trim(v).is_empty()) {
+            return defer("child-environment");
+        }
+    }
+    let session = a
+        .one(name("devswarm_cli.flag_session"))
+        .map(str::to_string)
+        .or_else(|| inv.env.get(name("mesh_write.env_session_id")).filter(|v| !v.is_empty()).cloned())
+        .or_else(|| inv.env.get(name("devswarm_cli.regprim_builder_env")).filter(|v| !v.is_empty()).cloned())
+        .unwrap_or_else(|| id.clone());
+    let cursor = a
+        .one(name("devswarm_cli.flag_reg_cursor"))
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::meshw::cursors::primary_cursor_path(&inv.home, &id).to_string_lossy().into_owned());
+    if !force {
+        // the live-holder check reads the registry row of the worktree's project; the app database may name the caller as the holder
+        let Some(key) = ident::repo_key_for_worktree(&worktree)? else { return defer("no-project") };
+        let Some(reader) = crate::meshw::tick::open_reader(inv, &key)? else { return defer("no-store") };
+        let rows = ident::rows_of(&reader.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?);
+        if let Some(existing) = rows.iter().find(|r| r.id == id)
+            && let Some(held) = existing.session_id.as_deref().filter(|x| !x.is_empty() && *x != session)
+            && crate::dssup::liveness::session_alive(&inv.home, held)?
+        {
+            let app_readable = ident::app_db_path(&inv.home, &inv.env).is_some_and(|f| std::fs::metadata(f).is_ok_and(|m| m.is_file()));
+            if app_readable {
+                return defer("app-session-check");
+            }
+            let msg = crate::meshw::extverbs::tpl(
+                "devswarm_cli.msg_regprim_conflict",
+                &[("worktree", &quote(&worktree)), ("id", &quote(&id)), ("session", &quote(held))],
+            );
+            return Ok(fail_with(&[
+                ("reason", s(name("devswarm_cli.reason_live_primary_conflict"))),
+                ("error", s(&msg)),
+                ("id", s(&id)),
+                ("worktree", s(&worktree)),
+                ("existingSessionId", s(held)),
+            ]));
+        }
+    }
+    let mut reg = Args { positionals: vec![name("devswarm_cli.verb_register").to_string(), id.clone()], ..Args::default() };
+    let put = |reg: &mut Args, k: &str, v: String| {
+        reg.flags.insert(name(k).to_string(), vec![crate::meshw::args::FlagVal::S(v)]);
+    };
+    put(&mut reg, "devswarm_cli.flag_worktree", worktree.clone());
+    put(&mut reg, "devswarm_cli.flag_session", session);
+    put(&mut reg, "devswarm_cli.flag_reg_cursor", cursor);
+    if let Some(inbox) = a.one(name("devswarm_cli.flag_reg_inbox")) {
+        put(&mut reg, "devswarm_cli.flag_reg_inbox", inbox.to_string());
+    }
+    register_core(inv, &reg, false, Some(&worktree))
+}
+
+/// `JSON.stringify(text)`.
+fn quote(x: &str) -> String {
+    serde_json::to_string(x).unwrap_or_default()
 }
 
 // ---- correct ------------------------------------------------------------------------------------------------------------
