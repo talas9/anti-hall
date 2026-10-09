@@ -1223,3 +1223,240 @@ value = "a symlink to nothing"
 [doctor_msg.kind_other]
 doc = "What a path turned out to be."
 value = "not a file"
+
+# ---- the statusline render check ----------------------------------------------------------------------------------------------------
+
+[doctor.statusline_dispatcher]
+doc = "The statusline dispatcher script, relative to the plugin root; the render check requires it to be installed."
+value = "statusline/statusline.js"
+
+[doctor.statusline_rich]
+doc = "The line-1 renderer script, relative to the plugin root."
+value = "statusline/statusline-rich.js"
+
+[doctor.statusline_verb]
+doc = "The engine command that renders the statusline for the render check."
+value = "statusline"
+
+[doctor.statusline_sample]
+doc = "The session payload the render check pipes to the statusline; {cwd} is the working directory as a JSON string."
+value = "{\"workspace\":{\"current_dir\":{cwd}},\"cwd\":{cwd},\"model\":{\"display_name\":\"doctor-test\"},\"context_window\":{\"used_percentage\":50}}"
+
+[doctor.statusline_min_lines]
+doc = "How many lines the statusline must print for the render check to pass (line 1 plus the context gauge on line 2)."
+value = 2
+min = 1
+
+[doctor.statusline_timeout_ms]
+doc = "How long the render check lets the statusline run before it warns (CPU contention under parallel runs is the usual cause)."
+value = 30000
+unit = "ms"
+min = 1
+
+[doctor.statusline_max_bytes]
+doc = "The most bytes of statusline output the render check keeps."
+value = 1048576
+unit = "bytes"
+min = 1
+
+[doctor.statusline_script_env]
+doc = "Test-only: the environment variable that names a stand-in script (run under Node) for the render check instead of the engine's own statusline."
+value = "ANTIHALL_DOCTOR_SL_SCRIPT"
+
+[doctor.statusline_timeout_env]
+doc = "Test-only: the environment variable that shortens the render check's timeout, in milliseconds."
+value = "ANTIHALL_DOCTOR_SL_TIMEOUT_MS"
+
+[doctor.node_check_flag]
+doc = "The Node flag that checks a script's syntax without running it."
+value = "--check"
+
+[doctor_msg.statusline_dispatcher_missing]
+doc = "The statusline dispatcher script is not installed."
+value = "statusline.js dispatcher missing"
+
+[doctor_msg.statusline_renders]
+doc = "The statusline printed both lines. Placeholder: {n}."
+value = "statusline renders {n} lines (line 1 + live context gauge on line 2)"
+
+[doctor_msg.statusline_one_line]
+doc = "The statusline printed only one line although the payload carried a context window."
+value = "statusline rendered only 1 line — line 2 (context gauge) did NOT render despite context_window in the payload"
+
+[doctor_msg.statusline_timeout]
+doc = "The statusline did not finish within the render check's timeout."
+value = "statusline.js timed out under load (30s) — likely CPU contention, not a real failure; re-run outside contention to confirm"
+
+[doctor_msg.statusline_no_output]
+doc = "The statusline printed nothing, or failed. Placeholder: {code}."
+value = "statusline.js produced no output (exit {code})"
+
+[doctor_msg.statusline_rich_ok]
+doc = "The line-1 renderer script is present and its syntax is valid."
+value = "statusline-rich.js (line-1 renderer) present, syntax valid"
+
+[doctor_msg.statusline_rich_bad]
+doc = "The line-1 renderer script is missing or invalid."
+value = "statusline-rich.js missing/invalid — line 1 falls back to the simple renderer"
+
+# ---- OMC, Codex and other plugins ---------------------------------------------------------------------------------------------------
+
+[doctor.omc_probe_session]
+doc = "The session id the OMC loop probe presents (a loop pinned to another session does not count)."
+value = "doctor-omc-probe"
+
+[doctor.codex_double_backslash]
+doc = "Two backslashes in a row: the doctor reads them as one slash when it falls back to the coarse Codex registration test."
+value = "\\\\"
+
+[doctor.codex_coarse_marker]
+doc = "The text a Codex hooks.json holds when anti-hall hooks are registered in it (the coarse test, used only when the plugin has no Codex registration to compare)."
+value = "/plugins/anti-hall/hooks/"
+
+[doctor.codex_hooks_enabled_re]
+doc = "A Codex config.toml whose [features] table sets hooks = true."
+value = "(?m)\\[features\\][\\s\\S]*?^\\s*hooks\\s*=\\s*true"
+
+[doctor.foreign_script_re]
+doc = "The script name a foreign hook command runs (its first .js, .mjs or .cjs token); only this name is ever shown, never the command."
+value = "[A-Za-z0-9_-]+\\.(?:js|mjs|cjs)"
+
+[doctor.foreign_non_script]
+doc = "What is shown for a foreign hook whose command names no script."
+value = "(non-script hook)"
+
+[doctor.foreign_bash]
+doc = "A foreign PreToolUse matcher that contains this (any case) counts as matching the shell tool."
+value = "bash"
+
+[doctor.foreign_pre]
+doc = "The hook event whose foreign shell hooks compete with the guards."
+value = "PreToolUse"
+
+[doctor.foreign_stop]
+doc = "The hook event whose foreign hooks sit beside the Stop guards."
+value = "Stop"
+
+[doctor.foreign_additive]
+doc = "The hook events where a foreign hook only adds to anti-hall's (reported as information)."
+value = ["UserPromptSubmit", "SessionStart"]
+
+[doctor.foreign_max_bytes]
+doc = "The largest settings or hook registration file read when scanning other plugins."
+value = 524288
+
+[doctor.installed_max_bytes]
+doc = "The largest plugin registry file read when scanning other plugins."
+value = 4194304
+
+[doctor.skills_dir]
+doc = "The skills directory of a plugin, relative to its root."
+value = "skills"
+
+[doctor.self_plugin_key]
+doc = "The enabledPlugins key of anti-hall itself, left out of the scan of other plugins."
+value = "anti-hall@anti-hall"
+
+[doctor.installed_plugins_rel]
+doc = "The host's registry of installed plugins, relative to the home directory."
+value = ".claude/plugins/installed_plugins.json"
+
+[doctor.claude_settings_local_rel]
+doc = "A project's local host settings file, relative to the project."
+value = ".claude/settings.local.json"
+
+[doctor_msg.head_omc]
+doc = "The heading of the oh-my-claudecode section."
+value = "OMC (oh-my-claudecode) — detected"
+
+[doctor_msg.omc_none]
+doc = "oh-my-claudecode is not enabled."
+value = "OMC (oh-my-claudecode) not detected — skipped"
+
+[doctor_msg.omc_enabled]
+doc = "oh-my-claudecode is enabled. Placeholder: {key}."
+value = "OMC plugin enabled in settings (enabledPlugins[\"{key}\"])"
+
+[doctor_msg.omc_loop_active]
+doc = "An oh-my-claudecode autonomous loop is active."
+value = "an OMC autonomous loop is ACTIVE right now — anti-hall task-guard/tasklist-guard defer to it (no double-block)"
+
+[doctor_msg.omc_loop_idle]
+doc = "No oh-my-claudecode loop is active."
+value = "no active OMC autonomous loop detected — anti-hall Stop-hook guards run normally"
+
+[doctor_msg.head_codex]
+doc = "The heading of the Codex section."
+value = "Codex / OMX port — detected"
+
+[doctor_msg.codex_none]
+doc = "No Codex configuration was found."
+value = "Codex / OMX not detected — no <cwd>/.codex or ~/.codex config.toml — skipped"
+
+[doctor_msg.codex_label_project]
+doc = "The label of the project's Codex directory."
+value = "project"
+
+[doctor_msg.codex_label_global]
+doc = "The label of the home directory's Codex directory."
+value = "global"
+
+[doctor_msg.codex_hooks_on]
+doc = "The Codex config enables hooks. Placeholder: {label}."
+value = "Codex config.toml ({label}) has the hooks feature enabled"
+
+[doctor_msg.codex_hooks_off]
+doc = "The Codex config does not enable hooks. Placeholder: {label}."
+value = "Codex config.toml ({label}) found but [features] hooks is not enabled"
+
+[doctor_msg.codex_wired]
+doc = "The Codex hooks file registers anti-hall's hooks. Placeholder: {label}."
+value = "Codex hooks.json ({label}) has anti-hall hooks registered"
+
+[doctor_msg.codex_unwired]
+doc = "The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}."
+value = "Codex hooks.json ({label}) present but no anti-hall hooks found — run plugins/anti-hall/codex/install-codex.js"
+
+[doctor_msg.codex_missing]
+doc = "There is no Codex hooks file. Placeholder: {label}."
+value = "Codex hooks.json ({label}) missing — run plugins/anti-hall/codex/install-codex.js"
+
+[doctor_msg.head_foreign]
+doc = "The heading of the other-plugins section."
+value = "Foreign skill/hook conflict scan"
+
+[doctor_msg.foreign_none]
+doc = "No other enabled plugin conflicts."
+value = "no foreign hook/skill conflicts detected among enabled plugins"
+
+[doctor_msg.foreign_pre]
+doc = "Another plugin hooks the shell tool before it runs. Placeholders: {plugin}, {script}, {matcher}."
+value = "foreign PreToolUse hook on Bash: plugin \"{plugin}\" registers {script} (matcher {matcher}) — may compete with anti-hall's own allow/deny (git-guard/command-guard/edit-guard)"
+
+[doctor_msg.foreign_stop]
+doc = "Another plugin has a Stop hook. Placeholders: {plugin}, {script}, {tail}."
+value = "foreign Stop hook: plugin \"{plugin}\" registers {script}{tail}"
+
+[doctor_msg.foreign_stop_tail]
+doc = "Appended when anti-hall has its own Stop hook."
+value = " — a second Stop hook alongside anti-hall's own"
+
+[doctor_msg.foreign_additive]
+doc = "Another plugin hooks the same event without competing. Placeholders: {event}, {plugin}, {script}."
+value = "additive {event} overlap: plugin \"{plugin}\" also registers {script} (both run; non-competing)"
+
+[doctor_msg.foreign_skill]
+doc = "Another plugin ships a skill with the same name. Placeholders: {plugin}, {skill}."
+value = "skill-name collision: plugin \"{plugin}\" also ships a skill named \"{skill}\" (anti-hall ships one too)"
+
+[doctor_msg.head_integrations]
+doc = "The heading of the notes about companions that are not installed (oh-my-claudecode, the Codex port)."
+value = "Integrations"
+
+[doctor.omc_time_fields]
+doc = "The timestamp fields of an oh-my-claudecode loop state file; the loop counts as active when any of them is within the freshness window."
+value = ["last_checked_at", "updated_at", "started_at"]
+
+[doctor.no_exit_code]
+doc = "What the render check shows as the exit code when the statusline was ended by a signal or never started."
+value = "null"

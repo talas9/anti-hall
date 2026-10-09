@@ -129,6 +129,7 @@ impl Sc {
         copy_dir(&real.join("engine"), &p.join("engine"));
         copy_dir(&real.join("hooks"), &p.join("hooks"));
         copy_dir(&real.join(".claude-plugin"), &p.join(".claude-plugin"));
+        copy_dir(&real.join("statusline"), &p.join("statusline"));
         copy_dir(&real.join("codex/hooks"), &p.join("codex/hooks"));
         self.plugin = p;
         self.write_lock("0.1.0", &self.triples());

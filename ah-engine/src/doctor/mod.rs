@@ -15,9 +15,11 @@
 //! context-footprint measurement, the DevSwarm supervisor, the OMC and Codex detection, the ingest daemon units, the foreign
 //! plugin conflict scan, the leaked-store reports) and its explicit opt-in flags (`--prune-cache`, `--reclaim-ingest-lock`,
 //! `--repair-*`, `--logs`). Each such flag is reported when given; the Node doctor stays in place for them.
+mod detect;
 mod facts;
 mod install;
 mod plugin;
+mod render;
 mod runtime;
 mod selftest;
 mod system;
@@ -416,7 +418,16 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     doc.head(defaults::text("doctor_msg.head_guards"));
     selftest::run(&mut doc, &ctx, root.as_deref(), &version);
     statusline_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
+    render::statusline_render(&mut doc, &ctx, root_path);
+    let absent: Vec<&str> = [detect::omc_section(&mut doc, &ctx), detect::codex_section(&mut doc, &ctx, root_path)].into_iter().flatten().collect();
+    if !absent.is_empty() {
+        doc.head(defaults::text("doctor_msg.head_integrations"));
+        for note in absent {
+            doc.infol(note.to_string());
+        }
+    }
     workflows_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
+    detect::foreign_section(&mut doc, &ctx, root_path);
     if do_repair {
         repair_section(&mut doc, &ctx, &f, &fixes, root_path);
     } else if !f.check {

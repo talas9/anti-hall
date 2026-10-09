@@ -51,6 +51,19 @@ fn put(base: &Path, rel: &str, content: &str) {
     fs::write(p, content).unwrap();
 }
 
+thread_local! {
+    /// Extra variables for the next runs on this thread (a test sets them with `with_env`).
+    static EXTRA: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with extra environment variables on both doctors' runs.
+fn with_env<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    EXTRA.with(|e| *e.borrow_mut() = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+    let r = f();
+    EXTRA.with(|e| e.borrow_mut().clear());
+    r
+}
+
 fn env(cmd: &mut Command, fx: &Fx) {
     cmd.env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -58,6 +71,11 @@ fn env(cmd: &mut Command, fx: &Fx) {
         .env("USERPROFILE", &fx.home)
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
         .current_dir(&fx.cwd);
+    EXTRA.with(|e| {
+        for (k, v) in e.borrow().iter() {
+            cmd.env(k, v);
+        }
+    });
 }
 
 fn run_node(fx: &Fx, args: &[&str]) -> (i32, String) {
@@ -234,4 +252,184 @@ fn flags_the_engine_doctor_does_not_handle_are_reported_not_ignored() {
     let fx = fixture(&|_, _| {});
     let (_, out) = run_rust(&fx, &["--check", "--prune-cache"]);
     assert!(out.contains("--prune-cache is not handled by the engine doctor yet"), "{out}");
+}
+
+// ---- the checks the engine doctor gained: statusline render, OMC, Codex, other plugins ---------------------------------------
+
+/// The finding lines (trimmed of their mark and indent) of a report that contain any of the needles, in order.
+fn pick(report: &str, needles: &[&str]) -> Vec<String> {
+    report.lines().filter(|l| l.starts_with("  ") && needles.iter().any(|n| l.contains(n))).map(|l| l.trim().to_string()).collect()
+}
+
+/// Run both doctors on identically seeded homes and return the (node, rust) finding lines holding any of the needles.
+fn both(seed: &dyn Fn(&Path, &Path), needles: &[&str]) -> (Vec<String>, Vec<String>) {
+    let (a, b) = (fixture(seed), fixture(seed));
+    let (_, node) = run_node(&a, &["--dry-run"]);
+    let (_, rust) = run_rust(&b, &["--dry-run"]);
+    (pick(&norm(&node, &a), needles), pick(&norm(&rust, &b), needles))
+}
+
+fn script(dir: &Path, name: &str, body: &str) -> String {
+    put(dir, name, body);
+    dir.join(name).to_string_lossy().into_owned()
+}
+
+#[test]
+fn the_statusline_render_check_reads_the_two_lines_the_same_way() {
+    let needles = ["statusline renders", "statusline rendered", "statusline.js", "statusline-rich.js", "dispatcher missing"];
+    let (n, r) = both(&|_, _| {}, &needles);
+    assert_eq!(n, r);
+    assert!(r.iter().any(|l| l.contains("statusline renders 2 lines")), "{r:?}");
+    assert!(r.iter().any(|l| l.contains("statusline-rich.js (line-1 renderer) present, syntax valid")), "{r:?}");
+    // the stand-in script path of the test override: one line, a failure, a hang, a missing script
+    let tmp = std::env::temp_dir().join(format!("ah-sl-standin-{}", std::process::id()));
+    let one = script(&tmp, "one.js", "process.stdin.resume();process.stdin.on('end',()=>console.log('only'));");
+    let fail = script(&tmp, "fail.js", "process.exit(3);");
+    let hang = script(&tmp, "hang.js", "setInterval(()=>{},1000);");
+    let two = script(&tmp, "two.js", "process.stdin.resume();process.stdin.on('end',()=>console.log('a\\nb'));");
+    let cases = [
+        ("one line", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", one.as_str())], "rendered only 1 line"),
+        ("failure", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", fail.as_str())], "produced no output (exit 3)"),
+        ("hang", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", hang.as_str()), ("ANTIHALL_DOCTOR_SL_TIMEOUT_MS", "400")], "timed out under load"),
+        ("two lines", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", two.as_str())], "statusline renders 2 lines"),
+        ("missing", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", "/nonexistent/sl.js")], "dispatcher missing"),
+    ];
+    for (name, vars, want) in cases {
+        let (n, r) = with_env(&vars, || both(&|_, _| {}, &needles));
+        assert_eq!(n, r, "{name}");
+        assert!(r.iter().any(|l| l.contains(want)), "{name}: {r:?}");
+    }
+    fs::remove_dir_all(&tmp).ok();
+}
+
+fn omc_seed(home: &Path, cwd: &Path, state: Option<&str>) {
+    put(home, ".claude/settings.json", "{\"enabledPlugins\":{\"oh-my-claudecode@omc\":true}}");
+    if let Some(s) = state {
+        put(cwd, ".omc/state/ralph-state.json", s);
+    }
+}
+
+#[test]
+fn omc_detection_matches_nodes_gates() {
+    let needles = ["OMC"];
+    let now = || format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    let (n, r) = both(&|_, _| {}, &needles);
+    assert_eq!(n, r);
+    assert!(r.iter().any(|l| l.contains("OMC (oh-my-claudecode) not detected")), "{r:?}");
+    let t = now();
+    let fresh = format!("{{\"active\":true,\"updated_at\":{t}}}");
+    let stale = "{\"active\":true,\"updated_at\":1000}".to_string();
+    let pinned = format!("{{\"active\":true,\"updated_at\":{t},\"session_id\":\"other\"}}");
+    let off = format!("{{\"active\":false,\"updated_at\":{t}}}");
+    for (name, state, want) in [
+        ("no state", None, "no active OMC autonomous loop"),
+        ("fresh loop", Some(fresh.as_str()), "autonomous loop is ACTIVE"),
+        ("stale loop", Some(stale.as_str()), "no active OMC autonomous loop"),
+        ("pinned elsewhere", Some(pinned.as_str()), "no active OMC autonomous loop"),
+        ("inactive", Some(off.as_str()), "no active OMC autonomous loop"),
+    ] {
+        let (n, r) = both(&|h, c| omc_seed(h, c, state), &needles);
+        assert_eq!(n, r, "{name}");
+        assert!(r.iter().any(|l| l.contains(want)), "{name}: {r:?}");
+    }
+    let (n, r) = with_env(&[("DISABLE_OMC", "1")], || both(&|h, c| omc_seed(h, c, Some(&fresh)), &needles));
+    assert_eq!(n, r, "kill switch");
+    assert!(r.iter().any(|l| l.contains("no active OMC autonomous loop")), "{r:?}");
+    // a project-level enablement and an ISO timestamp
+    let iso = "{\"active\":true,\"started_at\":\"2999-01-01T00:00:00.000Z\"}";
+    let (n, r) = both(
+        &|_, c| {
+            put(c, ".claude/settings.local.json", "{\"enabledPlugins\":{\"oh-my-claudecode@omc\":true}}");
+            put(c, ".omc/state/team-state.json", iso);
+        },
+        &needles,
+    );
+    assert_eq!(n, r, "project scope");
+}
+
+fn codex_hooks(wired: bool) -> String {
+    if !wired {
+        return "{\"hooks\":{\"Stop\":[]}}".to_string();
+    }
+    let thin = fs::read_to_string(plugin().join("codex/hooks/hooks.json")).unwrap();
+    thin.replace("${PLUGIN_ROOT}", plugin().to_string_lossy().as_ref())
+}
+
+#[test]
+fn codex_detection_matches_nodes_per_event_check() {
+    let needles = ["Codex / OMX", "Codex config.toml", "Codex hooks.json ("];
+    let (n, r) = both(&|_, _| {}, &needles);
+    assert_eq!(n, r);
+    assert!(r.iter().any(|l| l.contains("Codex / OMX not detected")), "{r:?}");
+    let on = "[features]\nhooks = true\n";
+    let off = "[features]\nother = 1\n";
+    let cases = [
+        ("project wired", Some(on), Some(true), None, None),
+        ("project unwired, global missing", Some(on), Some(false), Some(off), None),
+        ("project without hooks.json", Some(off), None, None, None),
+        ("both", Some(on), Some(true), Some(on), Some(true)),
+    ];
+    for (name, pc, pw, gc, gw) in cases {
+        let (n, r) = both(
+            &|h, c| {
+                if let Some(t) = pc {
+                    put(c, ".codex/config.toml", t);
+                    if let Some(w) = pw {
+                        put(c, ".codex/hooks.json", &codex_hooks(w));
+                    }
+                }
+                if let Some(t) = gc {
+                    put(h, ".codex/config.toml", t);
+                    if let Some(w) = gw {
+                        put(h, ".codex/hooks.json", &codex_hooks(w));
+                    }
+                }
+            },
+            &needles,
+        );
+        assert_eq!(n, r, "{name}");
+        assert!(!r.is_empty() && r.iter().all(|l| l.contains("Codex config.toml") || l.contains("Codex hooks.json")), "{name}: {r:?}");
+    }
+}
+
+#[test]
+fn the_foreign_plugin_scan_reports_the_same_conflicts() {
+    let seed = |home: &Path, _: &Path| {
+        let root = home.parent().unwrap();
+        let foo = root.join("plugins/foo");
+        let bar = root.join("plugins/bar");
+        put(
+            home,
+            ".claude/settings.json",
+            "{\"enabledPlugins\":{\"foo@m\":true,\"bar@m\":true,\"off@m\":false,\"anti-hall@anti-hall\":true,\"ghost@m\":true}}",
+        );
+        put(
+            home,
+            ".claude/plugins/installed_plugins.json",
+            &format!(
+                "{{\"plugins\":{{\"foo@m\":[{{\"installPath\":\"/old\"}},{{\"installPath\":{}}}],\"bar@m\":[{{\"installPath\":{}}}]}}}}",
+                serde_json::to_string(&foo.to_string_lossy()).unwrap(),
+                serde_json::to_string(&bar.to_string_lossy()).unwrap()
+            ),
+        );
+        put(
+            &foo,
+            "hooks/hooks.json",
+            "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"command\":\"node /u/secret/guard.js --x\"}]},{\"matcher\":\"Edit\",\"hooks\":[{\"command\":\"node e.js\"}]},{\"hooks\":[{\"command\":\"node g.cjs\"},{\"command\":\"node g.cjs\"}]}],\"Stop\":[{\"hooks\":[{\"command\":\"sh stop.sh\"}]}],\"SessionStart\":[{\"hooks\":[{\"command\":\"node s.mjs\"}]}],\"PostToolUse\":[{\"hooks\":[{\"command\":\"node p.js\"}]}]}}",
+        );
+        put(&foo, "skills/doctor/SKILL.md", "x");
+        put(&foo, "skills/unique/SKILL.md", "x");
+        put(&bar, "hooks/hooks.json", "{\"hooks\":{\"UserPromptSubmit\":[{\"hooks\":[{\"command\":\"node u.js\"}]}]}}");
+    };
+    let (a, b) = (fixture(&seed), fixture(&seed));
+    let (_, node) = run_node(&a, &["--dry-run"]);
+    let (_, rust) = run_rust(&b, &["--dry-run"]);
+    let (ns, rs) = (sections(&norm(&node, &a)), sections(&norm(&rust, &b)));
+    let title = "Foreign skill/hook conflict scan";
+    let (n, r) = (section(&ns, title).unwrap(), section(&rs, title).unwrap());
+    assert_eq!(n, r);
+    assert!(r.len() >= 5 && r.iter().any(|l| l.contains("skill-name collision") && l.contains("\"doctor\"")), "{r:?}");
+    assert!(r.iter().all(|l| !l.contains("secret")), "a command path never appears: {r:?}");
+    let (n, r) = both(&|_, _| {}, &["foreign hook/skill conflicts"]);
+    assert_eq!(n, r);
 }

@@ -113,6 +113,17 @@ fn render_all(stdin: &[u8]) -> Result<(), Defer> {
     let home = home(&env);
     let Some(root) = plugin_root(&env) else { return Ok(()) };
     let cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    let text = render_text(stdin, &env, &home, &root, &cwd)?;
+    if !text.is_empty() {
+        out(&text);
+    }
+    Ok(())
+}
+
+/// The statusline text for a session payload (what [`run`] prints), rendered in this process; `Err` when the engine leaves it to
+/// the Node dispatcher. The doctor's render check calls this with its own home, so it spawns nothing and writes nothing.
+pub(crate) fn render_text(stdin: &[u8], env: &std::collections::BTreeMap<String, String>, home: &str, root: &str, cwd: &str) -> Result<String, Defer> {
+    let (home, root, cwd, env) = (home.to_string(), root.to_string(), cwd.to_string(), env.clone());
     let cx = Ctx { home: home.clone(), tmpdir: phasebar::tmpdir(&env), now: crate::checks::jsport::date::now_ms() };
     let input = String::from_utf8_lossy(stdin).into_owned();
     let run_own = |kind: &str| -> Result<Option<String>, Defer> {
@@ -156,8 +167,5 @@ fn render_all(stdin: &[u8]) -> Result<(), Defer> {
         }
         text.push_str(&l2);
     }
-    if !text.is_empty() {
-        out(&text);
-    }
-    Ok(())
+    Ok(text)
 }
