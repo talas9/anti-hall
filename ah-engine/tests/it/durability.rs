@@ -222,7 +222,6 @@ fn whole_file_state_is_written_atomically_outside_the_listed_exceptions() {
     const EXCEPTIONS: &[(&str, &str)] = &[
         ("src/backup.rs", "manifest written into a backup directory that is not published yet"),
         ("src/checks/speculation_guard/mod.rs", "an append-only judge log cut at its cap, as Node does"),
-        ("src/checks/task_tracker/metrics.rs", "tmp file then rename, exactly as Node's writeMetrics does (a failure is lost silently)"),
         ("src/checks/sibling_sweep/mod.rs", "an append-only log cut at its cap, as Node does"),
         ("src/checks/guardkit/nodelock.rs", "a lock file (locks stay as they are)"),
         ("src/checks/guardkit/filelock.rs", "a lock file (locks stay as they are)"),

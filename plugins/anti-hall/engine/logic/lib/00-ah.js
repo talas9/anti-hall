@@ -27,7 +27,8 @@ var ah = {
   // for a path outside it, a link below it or a text over the cap (the check then takes its failure policy); returns false
   // when the disk refuses.
   state: {
-    writeAtomic: function (rel, t) { return ahHost.writeAtomic(rel, ahWf(t)); },
+    // `o.leaveTemp`: a failed rename leaves the temporary file behind, as the Node writers do (for a writer whose parity suite compares the directory).
+    writeAtomic: function (rel, t, o) { return ahHost.writeAtomic(rel, ahWf(t), !!(o && o.leaveTemp)); },
     // The SCOPED append, same path rules; one O_APPEND write. false when the disk refuses.
     appendFile: function (rel, t) { return ahHost.appendFile(rel, ahWf(t)); },
     // The cross-process lock file `rel` (Node lock protocol) with the timings of the defaults group `group`: a handle, or null

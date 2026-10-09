@@ -80,4 +80,24 @@ var jx = {
     }
     return /\d/.test(s) ? undefined : NaN;
   },
+  // Date.parse of an ISO-8601 date-time with `Z` or a `+hh:mm` offset exactly as V8 reads it (a day past the end of its month rolls over;
+  // an hour of 24 is only midnight): milliseconds, NaN where V8 answers NaN, or undefined for any other form (V8's legacy parser or the
+  // local time zone might accept it: the caller defers).
+  dateParse: function (s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:(Z)|([+-])(\d{2}):(\d{2}))$/.exec(s);
+    if (!m) return undefined;
+    var y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5], se = +m[6], ms = 0, off = 0;
+    if (m[7] !== undefined) for (var i = 0; i < 3; i++) ms = ms * 10 + (i < m[7].length ? +m[7].charAt(i) : 0);
+    if (m[9] !== undefined) {
+      var oh = +m[10], om = +m[11];
+      if (oh > 23 || om > 59) return NaN;
+      off = (oh * 60 + om) * (m[9] === '-' ? -1 : 1);
+    }
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 24 || mi > 59 || se > 59 || (h === 24 && (mi !== 0 || se !== 0 || ms !== 0))) return NaN;
+    var yy = mo <= 2 ? y - 1 : y, era = Math.floor(yy / 400), yoe = yy - era * 400;
+    var doy = Math.floor((153 * (mo > 2 ? mo - 3 : mo + 9) + 2) / 5);
+    var doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+    var days = era * 146097 + doe - 719468 + (d - 1);
+    return (((days * 24 + h) * 60 + mi - off) * 60 + se) * 1000 + ms;
+  },
 };

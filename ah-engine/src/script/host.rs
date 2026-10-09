@@ -22,7 +22,7 @@
 //! | `passwdHome()` | the user's home as the passwd database has it, or `null` |
 //! | `realpath(path)` | the canonical path (links resolved), or `null` when it does not exist |
 //! | `pathResolve(base, p)` | Node `path.resolve(base, p)` (posix) |
-//! | `writeAtomic(rel, text)` | the SCOPED write (`rel` is relative to the home directory, under the state directory): see [`write_atomic`] |
+//! | `writeAtomic(rel, text, leaveTemp?)` | the SCOPED write (`rel` is relative to the home directory, under the state directory; `leaveTemp`: a failed rename keeps the temporary file, as the Node writers do): see [`write_atomic`] |
 //! | `appendFile(rel, text)` | the SCOPED append (same path rules as `writeAtomic`; one `O_APPEND` write): see [`append_file`] |
 //! | `lstat(path)` | JSON `{kind,size,mtimeMs,mode}` of the path itself (links not followed), or `null`: see [`lstat`] |
 //! | `realpathEx(path)` | JSON `{path}` or `{error}`: the canonical path, or why there is none: see [`realpath_ex`] |
@@ -170,8 +170,25 @@ fn refused(why: &str) -> Error {
 /// created as needed. The check and the write are separate steps, so a process that races a link into the tree between
 /// them is not excluded; the root is the owner's own state directory, so that is the owner racing themselves.
 pub fn write_atomic(home: &str, rel: &str, text: &str) -> rquickjs::Result<bool> {
-    let Some(cur) = scoped_target(home, rel, text.len(), false)? else { return Ok(false) };
-    let style = crate::atomic::Style { skip_sync: defaults::num("script.write_sync") == 0, ..crate::atomic::Style::default() };
+    write_atomic_with(home, rel, text, false)
+}
+
+/// [`write_atomic`] with the choice of what a failed rename leaves behind: `leave_temp` keeps the temporary file, as the Node
+/// writers do (a state writer whose parity suite compares the directory asks for it); otherwise it is removed.
+pub fn write_atomic_with(home: &str, rel: &str, text: &str, leave_temp: bool) -> rquickjs::Result<bool> {
+    let style = crate::atomic::Style {
+        skip_sync: defaults::num("script.write_sync") == 0,
+        leave_temp_on_rename_failure: leave_temp,
+        ..crate::atomic::Style::default()
+    };
+    let Some(cur) = scoped_target(home, rel, text.len(), false)? else {
+        // a directory where the file goes: the Node writers stage their temporary file and fail at the rename, which leaves it behind
+        let there = Path::new(home).join(rel);
+        if leave_temp && std::fs::symlink_metadata(&there).is_ok_and(|m| m.is_dir()) {
+            crate::discard::harmless(crate::atomic::write_styled(&there, text, style)); // keep: the rename is expected to fail
+        }
+        return Ok(false);
+    };
     Ok(crate::atomic::write_styled(&cur, text, style).is_ok())
 }
 
@@ -675,9 +692,9 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("pathResolve", Function::new(c.clone(), |a: String, b: String| paths::resolve(&a, &b))?)?;
     h.set(
         "writeAtomic",
-        Function::new(c.clone(), |rel: String, text: String| -> rquickjs::Result<bool> {
+        Function::new(c.clone(), |rel: String, text: String, leave_temp: Option<bool>| -> rquickjs::Result<bool> {
             let home = with_settings(|st| st.home.clone())?;
-            write_atomic(&home, &rel, &text)
+            write_atomic_with(&home, &rel, &text, leave_temp.unwrap_or(false))
         })?,
     )?;
     h.set(

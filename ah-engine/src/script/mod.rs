@@ -404,3 +404,6 @@ mod tests_golden_d6;
 #[cfg(test)]
 #[path = "golden_e/tests.rs"]
 mod tests_golden_e;
+#[cfg(test)]
+#[path = "golden_f/tests.rs"]
+mod tests_golden_f;

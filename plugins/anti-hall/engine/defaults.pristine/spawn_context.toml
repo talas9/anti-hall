@@ -249,10 +249,6 @@ value = "CLAUDE_CONFIG_DIR"
 doc = "The host's config directory under the home directory when the variable is not set."
 value = ".claude"
 
-[verify_first_orch.codex_transcript_patterns]
-doc = "Transcript paths that identify a Codex session (JavaScript regex sources): a rollout file, or any path under a .codex directory."
-value = ['(^|[\\/])rollout-[^\\/]*\.jsonl$', '[\\/]\.codex[\\/]']
-
 [verify_first_orch.root_placeholder]
 doc = "Placeholder in the compact text that is replaced by the plugin root."
 value = "<abs>"

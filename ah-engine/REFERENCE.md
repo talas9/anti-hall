@@ -1287,7 +1287,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `verify_first_orch.codex_transcript_patterns` | `(^\\|[\\/])rollout-[^\\/]*\.jsonl$, [\\/]\.codex[\\/]` |  |  | Transcript paths that identify a Codex session (JavaScript regex sources): a rollout file, or any path under a .codex directory. |
 | `verify_first_orch.compact_body` | `A/E. Delegate builds/tests/deploys/installs, noisy commands and broad searche...` |  |  | Lines of the compact orchestration text, after the first line. |
 | `verify_first_orch.compact_delivery` | `; sent in full on your first spawn` |  |  | The phrase added to the compact first line when the full text follows on the first spawn. |
 | `verify_first_orch.compact_first` | `ORCHESTRATION (main thread = coordinator; letters match the full rules A-N in...` |  |  | First line of the compact orchestration text. |
@@ -3882,7 +3881,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.exec_programs` | `git` |  |  | Program names `ah.exec` may run (bare names, resolved through the request's PATH). Anything else answers null. |
 | `script.exec_timeout_max_ms` | `5000` |  | ms | Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit. |
 | `script.ext` | `.js` |  |  | File extension of a check script and of a lib file. |
-| `script.includes` | `1 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
+| `script.includes` | `2 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
 | `script.lib_dir` | `lib` |  |  | Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script. |
 | `script.logic_dir` | `engine/logic` |  |  | Directory of the shipped check scripts, relative to the plugin root. |
 | `script.msg_bad_verdict` | `unexpected verdict {value}` |  |  | Logged reason (then the call defers) when a script returns a value that is not a verdict. |
@@ -4017,7 +4016,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.jev_label_texts` | `a new, previously-unstated request or task, continuing or elaborating on work...` |  |  | What each label means, in the order of the labels. |
 | `task_tracker.jev_labels` | `new-request, follow-up, correction, question` |  |  | The labels Jev may answer with, in order. |
 | `task_tracker.jev_state_limit` | `4000` |  |  | How much of the prompt Jev sees, in UTF-16 units. |
-| `task_tracker.json_max_depth` | `64` |  |  | How deeply nested a state file may be before the engine hands the read to Node. |
 | `task_tracker.main_owner_re` | `^(main\|orchestrator\|coordinator)$` |  |  | JavaScript regex source (case-insensitive) of an owner that still counts as unowned (the coordinator itself). |
 | `task_tracker.metrics_counters` | `demandsShown, demandsFollowed, demandsIgnored, idleNeglectBlocks` |  |  | The counters of the metrics file, in the order a fresh file lists them. |
 | `task_tracker.metrics_file` | `dispatch-demand-metrics.json` |  |  | The file that counts the dispatch demands shown, followed and ignored. |

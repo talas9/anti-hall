@@ -33,4 +33,33 @@ var vf = {
     return up === null ? null : vf.dirname(up);
   },
   withRoot: function (t, root) { return t.split(ah.cfg('verify_first.abs_marker')).join(root); },
+  // True when the session might get the DevSwarm Primary sentence, which only Node can decide (the callers defer).
+  primaryPossible: function () {
+    if (ah.env.get(ah.cfg('verify_first.env_devswarm_disable')) === '1') return false;
+    var mode = ah.settings.enum('verify_first.sw_supervisor_mode'), active;
+    if (mode === 'off') active = false;
+    else if (mode === 'on') active = true;
+    else { var repo = ah.env.get(ah.cfg('verify_first.env_devswarm_repo')); active = repo !== null && repo.trim() !== ''; }
+    if (!active) return false;
+    var src = ah.env.get(ah.cfg('verify_first.env_devswarm_source_branch'));
+    if (src !== null && src.trim() !== '') return false;
+    return ah.settings.bool('verify_first.sw_dispatch_tier_text');
+  },
+  // The session id as the UserPromptSubmit hooks use it (`payload.session_id` when truthy, `String(..)` of a number or true): a string,
+  // null for none, or undefined for an id the engine does not spell exactly as JavaScript (an array or object): the caller defers.
+  sessionOf: function (p) {
+    var v = jx.isObj(p) ? p.session_id : undefined;
+    if (v === undefined || v === null || v === false || v === 0 || v === '' || (typeof v === 'number' && isNaN(v))) return null;
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number') return String(v);
+    if (v === true) return 'true';
+    return undefined;
+  },
+  // `payload.transcript_path` when a non-empty string: the path, null for none, or undefined for a relative path (Node would resolve it
+  // against its own working directory, which the engine does not share: the caller defers).
+  transcriptOf: function (p) {
+    var v = jx.isObj(p) ? p.transcript_path : undefined;
+    if (typeof v !== 'string' || v === '') return null;
+    return v.charAt(0) === '/' ? v : undefined;
+  },
 };

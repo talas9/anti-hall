@@ -108,8 +108,7 @@ pub fn scenarios() -> Vec<Scn> {
     );
     v.push(
         scn("vf-tp-no-trailing-newline", "verify-first", vec![step(pl("tnn", TP, "p")), step(pl("tnn", TP, "p")).after(deliver())])
-            .seed(vec![w("t.jsonl", filler(now).trim_end())])
-            .defers_second_step(),
+            .seed(vec![w("t.jsonl", filler(now).trim_end())]),
     );
 
     // ---- the burst and delivery rules ---------------------------------------------------------------------------
@@ -278,8 +277,7 @@ pub fn scenarios() -> Vec<Scn> {
                 step(pl("mlb", TP, "x")).pre(vec![wa("t.jsonl", "{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\" BROKEN\n")]),
             ],
         )
-        .seed(vec![base_transcript(now)])
-        .defers_second_step(),
+        .seed(vec![base_transcript(now)]),
     );
     v.push(
         scn(
@@ -452,7 +450,7 @@ pub fn scenarios() -> Vec<Scn> {
         scn("vf-state-entry-not-object", "verify-first", vec![step(pl("seo", TP, "x"))])
             .seed(vec![base_transcript(now), w(&sf("seo"), "{\"verify-first\":\"text\",\"other\":5}")]),
     );
-    v.push(scn("vf-state-k-noninteger", "verify-first", vec![step(pl("skn", TP, "x"))]).seed(vec![base_transcript(now), w(&sf("skn"), format!("{{\"verify-first\":{{\"hash\":\"{HASH_VF}\",\"tp\":\"$TP($HOME/t.jsonl)\",\"lastEmittedAt\":{},\"lastSeenAt\":{},\"turnsSinceEmit\":0,\"ch\":\"aa\",\"k\":1.5}}}}", now - 5000.0, now - 5000.0))]).defers());
+    v.push(scn("vf-state-k-noninteger", "verify-first", vec![step(pl("skn", TP, "x"))]).seed(vec![base_transcript(now), w(&sf("skn"), format!("{{\"verify-first\":{{\"hash\":\"{HASH_VF}\",\"tp\":\"$TP($HOME/t.jsonl)\",\"lastEmittedAt\":{},\"lastSeenAt\":{},\"turnsSinceEmit\":0,\"ch\":\"aa\",\"k\":1.5}}}}", now - 5000.0, now - 5000.0))]));
     v.push(scn("vf-state-k-zero", "verify-first", vec![step(pl("skz", TP, "x"))]).seed(vec![base_transcript(now), w(&sf("skz"), format!("{{\"verify-first\":{{\"hash\":\"{HASH_VF}\",\"tp\":\"$TP($HOME/t.jsonl)\",\"lastEmittedAt\":{},\"lastSeenAt\":{},\"turnsSinceEmit\":0,\"ch\":\"aa\",\"k\":0}}}}", now - 5000.0, now - 5000.0))]));
     v.push(scn("vf-state-ch-missing", "verify-first", vec![step(pl("scm", TP, "x"))]).seed(vec![
         base_transcript(now),
@@ -465,7 +463,7 @@ pub fn scenarios() -> Vec<Scn> {
             ),
         ),
     ]));
-    v.push(scn("vf-state-garbage", "verify-first", vec![step(pl("sg", TP, "x"))]).seed(vec![base_transcript(now), w(&sf("sg"), "}{ not json")]).defers());
+    v.push(scn("vf-state-garbage", "verify-first", vec![step(pl("sg", TP, "x"))]).seed(vec![base_transcript(now), w(&sf("sg"), "}{ not json")]));
     v.push(scn("vf-state-blank", "verify-first", vec![step(pl("sb", TP, "x"))]).seed(vec![base_transcript(now), w(&sf("sb"), "")]));
     v.push(scn("vf-state-array", "verify-first", vec![step(pl("sa", TP, "x"))]).seed(vec![base_transcript(now), w(&sf("sa"), "[]")]));
     v.push(scn("vf-state-stale-keys-pruned", "verify-first", vec![step(pl("skp", TP, "x"))]).seed(vec![
