@@ -99,3 +99,8 @@ mod claim_ledger_jev {
         assert!(fake.seen.lock().unwrap().is_empty() && log_rows(&h).is_empty());
     }
 }
+
+#[test]
+fn idle_agent_sweep_script_matches_the_compiled_port() {
+    golden_report("idle-agent-sweep", 12);
+}
