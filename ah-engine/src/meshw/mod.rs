@@ -45,6 +45,7 @@ pub mod plan;
 pub mod planverbs;
 pub mod read;
 pub mod readprimary;
+pub mod reportverbs;
 pub mod roster;
 pub mod send;
 pub mod simple;

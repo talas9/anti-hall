@@ -240,8 +240,8 @@ fn add_extra(p: &mut OVal, glob: &str, note: &str, now: f64) -> R<bool> {
 
 /// The supervision event of a plan write, recorded after it (best effort); a log due for rotation was deferred beforehand.
 fn record(inv: &Inv, typ: &str, fields: Vec<(String, OVal)>) {
-    if let Some(line) = plan::record(inv, typ, &fields, inv.now as f64) {
-        crate::meshw::note_written(&plan::log_rel(), line.as_bytes());
+    if plan::record(inv, typ, &fields, inv.now as f64).is_some() {
+        plan::note_log(inv);
     }
 }
 

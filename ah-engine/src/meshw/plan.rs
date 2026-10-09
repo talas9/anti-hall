@@ -301,7 +301,7 @@ fn record_summary(plan: &mut OVal, text: &str, stepped: bool, now: f64) -> R<()>
 }
 
 /// `dur(ms)`.
-fn dur(ms: f64) -> String {
+pub(crate) fn dur(ms: f64) -> String {
     let ms = if ms.is_nan() { 0.0 } else { ms };
     let m = (ms / defaults::num("mesh_write.dur_ms_per_min") as f64).floor().max(0.0);
     let per_hour = defaults::num("mesh_write.dur_min_per_hour") as f64;
@@ -585,6 +585,11 @@ pub fn plan_rel(key: &str) -> String {
         defaults::text("mesh_write.dir_plans"),
         defaults::text("mesh_write.json_suffix")
     )
+}
+
+/// Record the supervision log as this verb left it (its whole content: the witness starts from a copy of the log).
+pub fn note_log(inv: &Inv) {
+    crate::meshw::set_written(&log_rel(), &std::fs::read(log_path(inv)).unwrap_or_default());
 }
 
 /// The supervision log's path under the home.
