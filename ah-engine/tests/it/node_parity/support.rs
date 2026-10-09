@@ -95,6 +95,61 @@ pub fn forward_test_scale(c: &mut Command) {
 
 /// Run `cmd args` with exactly `env` (nothing inherited), `input` on stdin, in `cwd`; killed after 60 seconds.
 pub fn run(cmd: &str, args: &[String], input: &[u8], env: &Env, cwd: &str) -> Out {
+    let t0 = Instant::now();
+    let r = run_untimed(cmd, args, input, env, cwd);
+    timing::add(cmd, t0.elapsed());
+    r
+}
+
+/// `AH_PARITY_TIMING=1`: the summed wall time of the Node, engine and other children a lane spawned (summed over its worker
+/// threads, so with `conc` workers the sums can exceed the lane's wall time). Each nextest test is its own process, so the
+/// counters are per test.
+pub mod timing {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+    static NODE: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    static ENGINE: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    static OTHER: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+    pub fn on() -> bool {
+        std::env::var("AH_PARITY_TIMING").is_ok_and(|v| v == "1")
+    }
+    pub(super) fn add(cmd: &str, d: Duration) {
+        START.get_or_init(Instant::now);
+        let slot = if cmd == super::ENGINE {
+            &ENGINE
+        } else if cmd == super::node_binary() {
+            &NODE
+        } else {
+            &OTHER
+        };
+        slot[0].fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
+        slot[1].fetch_add(1, Ordering::Relaxed);
+    }
+    /// Count a span of Node time that did not go through `run` (a replayed golden counts nothing).
+    pub fn add_node(d: Duration) {
+        START.get_or_init(Instant::now);
+        NODE[0].fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
+        NODE[1].fetch_add(1, Ordering::Relaxed);
+    }
+    /// One line for a lane's summary, empty unless timing is on.
+    pub fn line(name: &str) -> String {
+        if !on() {
+            return String::new();
+        }
+        let s = |a: &[AtomicU64; 2]| (a[0].load(Ordering::Relaxed) as f64 / 1e9, a[1].load(Ordering::Relaxed));
+        let (n, e, o) = (s(&NODE), s(&ENGINE), s(&OTHER));
+        let wall = START.get().map_or(0.0, |t| t.elapsed().as_secs_f64());
+        let share = if n.0 + e.0 + o.0 > 0.0 { 100.0 * n.0 / (n.0 + e.0 + o.0) } else { 0.0 };
+        format!(
+            "  TIMING {name}: wall={wall:.1}s node={:.1}s/{} engine={:.1}s/{} other={:.1}s/{} node-share={share:.1}% (child time summed over workers)\n",
+            n.0, n.1, e.0, e.1, o.0, o.1
+        )
+    }
+}
+
+fn run_untimed(cmd: &str, args: &[String], input: &[u8], env: &Env, cwd: &str) -> Out {
     let mut c = Command::new(cmd);
     c.args(args).env_clear().current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (k, v) in env {
@@ -158,7 +213,7 @@ pub fn run(cmd: &str, args: &[String], input: &[u8], env: &Env, cwd: &str) -> Ou
 }
 
 /// The `node` the parent's `PATH` finds, as an absolute path: a scenario may give the child a `PATH` without it.
-fn node_binary() -> &'static str {
+pub(crate) fn node_binary() -> &'static str {
     static NODE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     NODE.get_or_init(|| {
         let path = std::env::var("PATH").unwrap_or_default();

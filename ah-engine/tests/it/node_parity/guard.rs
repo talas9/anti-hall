@@ -636,6 +636,7 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
             (&m.engine.code, clip(&m.engine.out, 160), clip(&m.engine.err, 160))
         ));
     }
+    s.push_str(&timing::line(o.name));
     drop(scratch);
     Report { stats, summary: s }
 }
