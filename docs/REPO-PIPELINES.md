@@ -16,6 +16,7 @@ How this GitHub repository is checked, released and protected. Pushes to `dev` r
 | `pages.yml` | Pushes to `main`, manual | Builds and deploys the docs site to GitHub Pages | No |
 | `ah-engine-release.yml` | Manual (prepare), `ah-engine-v*` tags (publish) | Builds, checksums and attests engine binaries; opens the lock PR; creates the engine release | No (release pipeline) |
 | `issue-triage.yml` | Issue opened | One triage comment plus labels; no-op without a Claude credential secret | No |
+| `triage.yml` | Issue opened/edited, PR opened/updated | Maps issue-form answers to `priority:`/`size:`/`area:` labels; path-based `area:*` PR labels (`.github/labeler.yml`) | No |
 | `stale.yml` | Daily, manual | Labels issues/PRs inactive for 60 days and comments once. **Never closes or deletes**; `priority:P0`/`P1` exempt | No |
 
 Pull-request workflows cancel a superseded run of the same PR; every job has a `timeout-minutes`.
@@ -29,7 +30,7 @@ Pull-request workflows cancel a superseded run of the same PR; every job has a `
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Layout, tests, adding a guard |
 | [`SUPPORT.md`](../SUPPORT.md) | Where to ask questions and report bugs |
 | `.github/CODEOWNERS` | `* @talas9` |
-| `.github/dependabot.yml` | Dependabot version updates |
+| `.github/dependabot.yml` | Dependabot version updates (GitHub Actions, weekly, against `dev`) |
 | `.github/release-drafter.yml` | Release-draft categories (`type:feature`, `type:bug`, `type:docs`, `type:ci`, `type:chore`) |
 
 ## Security settings (all free on public repositories)
