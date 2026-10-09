@@ -41,7 +41,9 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Project layout, running the tests, adding a guard. |
 | [`../SECURITY.md`](../SECURITY.md) | Report a vulnerability privately, not in a public issue. |
 | [`../CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Expected behaviour and how to report a conduct problem. |
+| [`../SUPPORT.md`](../SUPPORT.md) | Where to ask a question, report a bug or get help. |
 | [`../RELEASING.md`](../RELEASING.md) | The release checklist and the `dev` → `main` branch flow. |
+| [`REPO-PIPELINES.md`](./REPO-PIPELINES.md) | Every GitHub workflow, its trigger and whether it gates, plus the repository's policy files and security settings. |
 | [`CONTRACT-1.0.md`](./CONTRACT-1.0.md) | What semver freezes at 1.0: settings keys, CLI verbs, hooks, state paths, Codex parity. |
 | [`../AGENTS.md`](../AGENTS.md) | The protocol for Codex and cross-tool agents. |
 | [`../plugins/anti-hall/README.md`](../plugins/anti-hall/README.md) | The plugin directory page (ships inside the plugin). |
