@@ -442,7 +442,7 @@ impl<'a> Act<'a> {
         let ttl = defaults::num("devswarm_act.plan_ttl_ms") as i64;
         let plan = json!({"nonce": nonce, "createdAt": now, "expiresAt": now + ttl, "olderThanDays": days, "eligibleIds": ids, "rows": rows});
         std::fs::create_dir_all(self.plans_dir()).map_err(|e| e.to_string())?;
-        std::fs::write(self.plans_dir().join(format!("{nonce}.json")), plan.to_string()).map_err(|e| e.to_string())?;
+        crate::atomic::write(self.plans_dir().join(format!("{nonce}.json")), plan.to_string()).map_err(|e| e.to_string())?;
         Ok(plan)
     }
 
@@ -487,7 +487,7 @@ impl<'a> Act<'a> {
             return json!({"ok": false, "dormant": true, "error": why});
         }
         plan["consumedAt"] = json!(now);
-        if let Err(e) = std::fs::write(&path, plan.to_string()) {
+        if let Err(e) = crate::atomic::write(&path, plan.to_string()) {
             return json!({"ok": false, "error": defaults::render("devswarm_act.msg_plan_write", &[("why", &e)])});
         }
         let s = self.settings();
@@ -553,10 +553,5 @@ pub fn write_atomic(path: &Path, text: &str) {
     if let Some(d) = path.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports the failure
     }
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(format!(".{}{}", std::process::id(), defaults::text("mesh_write.tmp_suffix")));
-    let tmp = PathBuf::from(tmp);
-    if std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path)).is_err() {
-        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: a staged temp must not leak
-    }
+    crate::discard::harmless(crate::atomic::write(path, text)); // keep: best effort, and the atomic writer removes its own staged temp on failure
 }
