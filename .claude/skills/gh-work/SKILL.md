@@ -10,6 +10,14 @@ task list is built FROM the board, never the other way round. Repo `talas9/anti-
 **"anti-hall roadmap"** = user project **3**, owner `talas9`. Text on GitHub stays agnostic
 (public repo): no private paths, names, emails or session ids.
 
+## HARD RULE: every agent and lane is tracked on its issue
+
+- Every agent or lane brief names its issue `#n`.
+- At start: move the item to In progress and comment the approach.
+- At milestones and at the end: comment evidence (commit SHAs, test names and results).
+- A paused or stopped lane gets a state comment immediately.
+- PRs use `Closes #n`.
+
 ## Autonomous operating loop
 
 1. **Session start / resume: sync the board.**

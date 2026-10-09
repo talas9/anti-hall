@@ -10,6 +10,14 @@ back as commits for the coordinator to integrate. Every lane brief restates thes
 A machine may keep its own stricter lane rules (for example `~/.anti-hall/work/LANE-RULES.md`);
 read them first, they win over this summary.
 
+## HARD RULE: every agent and lane is tracked on its issue
+
+- Every agent or lane brief names its issue `#n`.
+- At start: move the item to In progress and comment the approach.
+- At milestones and at the end: comment evidence (commit SHAs, test names and results).
+- A paused or stopped lane gets a state comment immediately.
+- PRs use `Closes #n`.
+
 ## 1. Where to work
 
 - A fresh scratch clone or a `git worktree add` under `~/.anti-hall/work/` (never `/tmp`, never
