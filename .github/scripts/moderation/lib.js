@@ -213,6 +213,8 @@ function prRules({ title, body, files, headRef, sameRepo, baseRef }, cfg) {
     areas: areas.slice(0, 5),
     missing_tests: codeChanged && !has(p.test_paths),
     missing_docs: codeChanged && !has(p.doc_paths),
+    // PR to the release branch: user-facing code changed with no CHANGELOG, docs/, README, skill or Codex-docs change.
+    docs_drift: baseRef === p.docs_drift_base && has(p.user_facing_paths) && !has(p.docs_drift_paths),
   };
 }
 
@@ -399,8 +401,14 @@ function modelResult(env, schemaName) {
   const reason = env.MODEL_REASON || '';
   const latency = Number(env.MODEL_LATENCY_MS || 0) || null;
   if (provider === 'none') return { provider: 'none', reason: reason || 'not called', latency, data: null };
-  const data = validate(parseModelJson(env.MODEL_RESULT), prompt(schemaName).schema);
-  if (!data || !Object.keys(data).length) return { provider: 'none', reason: `${provider} output failed validation`, latency, data: null };
+  const parsed = parseModelJson(env.MODEL_RESULT);
+  const data = validate(parsed, prompt(schemaName).schema);
+  if (!data || !Object.keys(data).length) {
+    // Structure only (never the text): tells "not JSON" from "wrong keys" without echoing model output.
+    const raw = String(env.MODEL_RESULT || '');
+    const shape = !raw ? 'empty reply' : !parsed ? `not parseable as JSON (${raw.length} chars, starts with ${JSON.stringify(raw.trim().slice(0, 1))})` : `JSON keys: ${Object.keys(parsed).slice(0, 8).join(',') || 'none'}`;
+    return { provider: 'none', reason: `${provider} output failed validation: ${shape}`, latency, data: null };
+  }
   return { provider, reason, latency, data };
 }
 

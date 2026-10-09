@@ -14,6 +14,8 @@
 
 {{checklist}}
 
+{{scanning}}
+
 {{summary}}
 
 This comment is updated on each push. It never approves, requests changes, merges or closes.
