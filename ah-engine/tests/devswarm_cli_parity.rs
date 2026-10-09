@@ -910,7 +910,10 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
             for w in &c.writes {
                 assert!(homes[1].join(w).is_file(), "{}: expected the verb to have written {w}", c.name);
             }
-            pending.push((c.name.clone(), homes[1].join("state")));
+            // send's native refusals (l8d) have no store-free witness; devswarm_l8d_parity::send_refusals_match_node covers them
+            if c.label != "Send" {
+                pending.push((c.name.clone(), homes[1].join("state")));
+            }
         } else {
             deferred += 1;
             assert_eq!(e.code, n.code, "{}: exit code of the fallback", c.name);

@@ -799,6 +799,20 @@ fn prepare_into(inv: &Inv, with_store: bool, scratch: &Path) -> Option<PathBuf> 
             std::os::unix::fs::symlink(&src, dst).ok()?;
         }
     }
+    // a caller whose ANTI_HALL_LOG_DIR moves the central log: Node's witness reads a copy of THAT log (its writes still go to the
+    // scratch home), and its printed paths are mapped back to the caller's directory
+    if let Some(d) = inv.env.get(defaults::text("devswarm_cli.env_log_dir")).filter(|d| !d.is_empty()) {
+        let wdir = crate::meshw::clog::witness_dir(&home);
+        std::fs::create_dir_all(&wdir).ok()?;
+        for f in [defaults::text("devswarm_cli.log_file"), defaults::text("devswarm_cli.log_rotated_file")] {
+            let (src, dst) = (Path::new(d).join(f), wdir.join(f));
+            crate::discard::harmless(std::fs::remove_file(&dst)); // keep: absent is the wanted state
+            if src.is_file() {
+                std::fs::copy(&src, &dst).ok()?;
+            }
+        }
+        std::fs::write(scratch.join("log-dir"), d).ok()?;
+    }
     // a caller outside any project has no store to copy: the verb answers without one (a refusal), and Node meets none either
     if with_store && let Some(real) = super::real_store(inv).ok().filter(|r| r.is_file()) {
         let key = real.parent()?.file_name()?.to_string_lossy().to_string();
@@ -890,7 +904,11 @@ pub fn run_witness(args: &[String]) -> i32 {
                 Ok(re) => re.replace_all(&t, defaults::text("devswarm_cli.witness_mask_to")).into_owned(),
                 Err(_) => t,
             };
-            let node_stdout = mask(String::from_utf8_lossy(&o.stdout).replace(&home.to_string_lossy().into_owned(), &real_home.to_string_lossy()));
+            let mut node_raw = String::from_utf8_lossy(&o.stdout).into_owned();
+            if let Ok(d) = std::fs::read_to_string(scratch.join("log-dir")) {
+                node_raw = node_raw.replace(&crate::meshw::clog::witness_dir(&home).to_string_lossy().into_owned(), &d);
+            }
+            let node_stdout = mask(node_raw.replace(&home.to_string_lossy().into_owned(), &real_home.to_string_lossy()));
             let node_code = o.status.code().unwrap_or(-1);
             let want_stdout = mask(String::from_utf8_lossy(&read(&scratch.join("expect-stdout"))).into_owned());
             let want_code: i32 = String::from_utf8_lossy(&read(&scratch.join("expect-code"))).trim().parse().unwrap_or(-1);
