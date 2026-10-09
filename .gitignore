@@ -61,3 +61,6 @@ _site/
 docs/changelog.md
 docs/settings/reference.md
 tools/__pycache__/
+
+# Local Playwright MCP scratch
+.playwright-mcp/

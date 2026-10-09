@@ -1,3 +1,4 @@
+# Retired: superseded by community.yml (rules-first triage + model brief). Kept for manual use.
 # First-pass triage for newly opened issues: ONE comment + labels, nothing else.
 #
 # Secrets (set ONE; the OAuth token is preferred):
@@ -14,8 +15,7 @@
 name: Issue triage
 
 on:
-  issues:
-    types: [opened]
+  workflow_dispatch:
 
 permissions:
   contents: read
