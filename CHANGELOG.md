@@ -6,6 +6,16 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.203.1 (2026-10-09)
+
+### Fixed
+
+- api-guard: the Python probe now runs with `-I` (isolated mode) instead of `-s`. With `-s` the probe's current directory (the temp dir) led `sys.path`, so Python listed the whole temp dir on its first import (40-73 s on a machine with about 490k temp entries) and a `json.py` placed in the temp dir would run inside the probe.
+
+### Security
+
+- On Linux the temp dir is the shared `/tmp`, so another local user could plant a `json.py` there and have it execute inside the api-guard probe. `-I` removes the current directory and user site from `sys.path` and ignores `PYTHON*` environment variables, closing that path.
+
 ## 0.203.0 (2026-10-09)
 
 ### Highlights
