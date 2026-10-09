@@ -43,6 +43,10 @@ if [ -n "$survivors" ]; then
   echo "FAIL: daemons survived the test run: $(echo "$survivors" | tr '\n' ' ')" >&2
   # which daemons, from which test (their state directory is in the command line or the environment of the test that made it)
   ps -Ao pid,ppid,etime,command | grep -F "ah-engine serve" | grep -v grep >&2 || true
+  for p in $survivors; do
+    if [ -r "/proc/$p/environ" ]; then tr '\0' '\n' <"/proc/$p/environ" | grep -E '^(AH_ENGINE_DIR|HOME|CARGO_PKG_NAME|NEXTEST_TEST_NAME)=' | sed "s/^/  $p: /" >&2
+    else ps eww -p "$p" 2>/dev/null | tr ' ' '\n' | grep -E '^(AH_ENGINE_DIR|NEXTEST_TEST_NAME)=' | sed "s/^/  $p: /" >&2; fi
+  done || true
   exit 1
 fi
 exit $rc

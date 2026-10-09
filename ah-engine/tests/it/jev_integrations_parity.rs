@@ -255,8 +255,18 @@ fn normalise_row(r: &Value, deviation: &[&str]) -> Value {
 }
 
 fn compare(sc: &Scenario) {
-    let node = run_side(sc, false);
-    let eng = run_side(sc, true);
+    // The asks nobody waits for are detached from the Node hook; on a CI runner loaded by the other sweeps one of them has
+    // been seen not to arrive at all (6 of the 8 requests of the cap scenario, run 37863756223). A Node side that sent fewer
+    // requests than the scenario has is rerun, up to three times; the comparison itself is never loosened.
+    let mut node = run_side(sc, false);
+    let mut eng = run_side(sc, true);
+    for _ in 0..2 {
+        if node.requests.len() >= sc.requests {
+            break;
+        }
+        node = run_side(sc, false);
+        eng = run_side(sc, true);
+    }
     let who = sc.name;
     assert_eq!((node.out.0, &node.out.1, &node.out.2), (eng.out.0, &eng.out.1, &eng.out.2), "{who}: hook output differs");
     let sort = |v: &[Seen]| {

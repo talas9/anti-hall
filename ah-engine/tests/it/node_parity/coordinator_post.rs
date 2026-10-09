@@ -449,9 +449,10 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         Arc::new(move |_h: &Path, d: &Path| {
             let f = d.join("coordinator-work-session-lk.json.lock");
             write_file(&f, b"{\"pid\":");
-            if !fresh {
-                set_mtime(&f, now_ms() as f64 / 1000.0 - 60.0);
-            }
+            // "fresh" is an hour ahead, not the write time: the lock goes stale five seconds after its mtime, and a CI runner
+            // loaded by the other sweeps runs the seven steps of this scenario slower than that, so the two sides (set up one
+            // after the other) crossed the limit at different steps
+            set_mtime(&f, now_ms() as f64 / 1000.0 + if fresh { 3600.0 } else { -60.0 });
         })
     };
     let stale = || lock_rec(now_ms() as i64 - 60000, Some(999999));
