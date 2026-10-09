@@ -11,6 +11,7 @@ Subagent, task-list, delegation and routing guards.
 
 | Verb | What it does | Roles |
 |---|---|---|
+| `ah-engine agent_tick` | `` The scheduled agent tracker tick (the `agent_tick` job): one tracker tick, the same as `agents tick`; prints its counts with --json | main, codex |
 | `ah-engine agents` | `<status\|tick> [--json]` The agent tracker (feature 21): `status` lists every tracked agent (main sessions, subagents and background tasks, DevSwarm workspaces)... | main, codex, workspace, subagent (owner args: tick) |
 
 ## Guards
