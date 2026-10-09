@@ -1506,6 +1506,27 @@ function isGitPullFetchSegment(segment) {
   return sub === 'pull' || sub === 'fetch';
 }
 
+// isChildGitSyncChain(command) -> true iff every segment is a `git ...` (or a
+// leading `cd`) and the only HEAVY ones are push/pull/fetch. A DevSwarm CHILD
+// workspace commits and pushes its own branch (and submodule) as its normal
+// output step; the output is a few lines, and force-push/AI-credit checks stay
+// with git-guard. Anything that is not plain git (a `sh -c`, an interpreter, a
+// build) is not covered, so a nested heavy command cannot ride along.
+function isChildGitSyncChain(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const segs = splitSegments(command).map((x) => x.trim()).filter(Boolean);
+  if (!segs.length) return false;
+  let sawSync = false;
+  for (const seg of segs) {
+    const verb = effectiveVerb(seg);
+    if (verb === 'cd') continue;
+    if (verb !== 'git') return false;
+    if (isGitPushSegment(seg) || isGitPullFetchSegment(seg)) { sawSync = true; continue; }
+    if (isHeavySegment(seg, command)) return false;
+  }
+  return sawSync;
+}
+
 // isSafeSqliteReadonly(segment) -> true iff this is a `sqlite3` invocation
 // with `-readonly` present as its OWN argv token before the db path, and the
 // SQL/args after the db path contain none of sqlite3's dangerous dot-commands
@@ -4514,6 +4535,13 @@ function main(payload, env) {
     return io.decision(0);
   }
 
+  // A DevSwarm CHILD workspace is a worker on its own branch (peer report,
+  // SkyCrew child, 2026-10-09): its Bash writes are its job (edit parity does
+  // not apply) and its own git commit/push/fetch of the branch or a submodule
+  // runs inline. Builds/tests stay delegated. Fail-closed to the gate.
+  let childWorker = false;
+  try { childWorker = require('./lib/devswarm-role.js').isChildWorker(env, undefined, (payload && payload.cwd) || ''); } catch (_) { childWorker = false; }
+
   // Bash edit parity (F3): a main-thread Bash write (sed -i/perl -i/tee/cp/mv/
   // redirect, a literal open-for-write path in python -c / node -e, and the same
   // inside sh -c, eval, $(…) or a heredoc fed to a shell) into a file edit-guard would block for the Edit tool gets the
@@ -4521,7 +4549,7 @@ function main(payload, env) {
   // an edit-guard skip; a trusted (redirect-free) project command-allow match
   // passes. Both hosts (a Codex main thread is detected). Fail-open.
   try {
-    if (settingsGet('guards', 'bashEditParity') !== false
+    if (!childWorker && settingsGet('guards', 'bashEditParity') !== false
       && require('./lib/settings.js').enabled('safety', 'editGuard', settingsOpts())
       && !isSkipped('edit-guard')
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
@@ -4543,6 +4571,8 @@ function main(payload, env) {
   if (!isHeavyCommand(command)) {
     return io.decision(0);
   }
+
+  try { if (childWorker && isChildGitSyncChain(command)) return io.decision(0); } catch (_) { /* gated */ }
 
   // Narrow allow (owner-approved 2026-09-26): a bounded, single-target
   // read-only verification command is let through even though it classified

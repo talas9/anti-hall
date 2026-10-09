@@ -908,6 +908,11 @@ function main() {
   const { isCoordinator } = require('./coordinator-detect.js');
   if (!isCoordinator(payload)) process.exit(0);
 
+  // A DevSwarm CHILD workspace is a worker on its own branch, not the orchestrator:
+  // its edits are its job (peer report, SkyCrew child, 2026-10-09). The launcher
+  // deny above already ran for it.
+  try { if (require('./lib/devswarm-role.js').isChildWorker(process.env, undefined, cwd)) process.exit(0); } catch (_) { /* gated as before */ }
+
   // A Codex patch this parser rejects fails CLOSED on the main thread: its
   // targets cannot be checked, and Codex's own parser (which this one ports)
   // rejects the same text, so the block costs nothing.

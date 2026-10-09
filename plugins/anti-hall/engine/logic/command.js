@@ -4767,6 +4767,8 @@ function mainFlow(payload) {
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
       if (command.length > T.maxLen) unsure(); // a very large command is judged in parts, which the engine does not reproduce
       if (classifyBashWork(command, payload, { editOnly: true }).editBlocks.length) {
+        // a DevSwarm child workspace is a worker (hooks/lib/devswarm-role.js isChildWorker, which reads the disk): Node decides
+        if (LIB['./lib/devswarm-role.js'].isChildWorkspace()) unsure();
         return blockExact(LIB['./edit-guard.js'].delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload));
       }
     }
@@ -4798,6 +4800,8 @@ function mainFlow(payload) {
   if (guarded(() => settingsGet('guards', 'allowBackgroundScratchScripts') !== false && isBackgroundScratchScript(command, payload))) return 'allow';
   if (guarded(() => settingsGet('guards', 'allowGcloudReads') !== false && isAllowedGcloudReadCommand(command))) return 'allow';
 
+  // a DevSwarm child workspace commits and pushes its own branch inline (hooks/command-guard.js isChildGitSyncChain): Node decides
+  if (LIB['./lib/devswarm-role.js'].isChildWorkspace()) unsure();
   const cls = classifyHeavy(command);
   const remote = !!cls && cls.kind === 'remote';
   const detail = remote ? '' : cls
