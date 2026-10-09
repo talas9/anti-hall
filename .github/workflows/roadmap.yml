@@ -11,7 +11,15 @@
 # are skipped with a notice. Never closes, deletes or archives anything.
 name: Roadmap
 
+#   Event runs (push to dev/main, PR closed, issue opened/closed/reopened/labeled/unlabeled/milestoned)
+#     do ONLY the board sync and stale check for the touched item: rules-only, no model, no digest.
 on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    types: [closed]
+  issues:
+    types: [opened, closed, reopened, labeled, unlabeled, milestoned]
   schedule:
     - cron: "17 */6 * * *"
     - cron: "23 7 * * 1"
@@ -35,7 +43,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: roadmap
+  group: roadmap-${{ github.event.issue.number || github.event.pull_request.number || (github.event_name == 'push' && github.ref) || 'all' }}
   cancel-in-progress: false
 
 jobs:

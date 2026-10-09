@@ -161,7 +161,8 @@ async function apply({ github, context, core, getOctokit }) {
     try { return await fn(); } catch (e) { errors.push(`${desc.type}: ${L.isRateLimit(e) ? 'rate-limited' : (e.status || e.message)}`); return null; }
   };
   const items = await openItems(github, repo);
-  const one = context.eventName === 'workflow_dispatch' && Number(context.payload.inputs['item-number']) || null;
+  const p = context.payload;
+  const one = (context.eventName === 'workflow_dispatch' && Number(p.inputs['item-number'])) || (p.issue && p.issue.number) || (p.pull_request && p.pull_request.number) || null;
 
   // 1. Board consistency.
   let board = {};
