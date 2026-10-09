@@ -136,7 +136,9 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
     let lock_re = regex::Regex::new(r"\.lock\(.*?,\s*'([a-z][a-z0-9_]*)'").unwrap();
     for f in &js_files {
         for c in lock_re.captures_iter(&fs::read_to_string(f).unwrap()) {
-            for k in ["lock_stale_ms", "lock_wait_ms", "lock_step_ms", "lock_reclaim_stale_ms", "lock_release_tries", "lock_release_step_ms", "lock_boot_slop_s"] {
+            for k in
+                ["lock_stale_ms", "lock_wait_ms", "lock_step_ms", "lock_reclaim_stale_ms", "lock_release_tries", "lock_release_step_ms", "lock_boot_slop_s"]
+            {
                 literals.insert(format!("{}.{k}", &c[1]));
             }
         }

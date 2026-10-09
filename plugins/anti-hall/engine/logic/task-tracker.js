@@ -291,6 +291,9 @@ function decide(p) {
   }
   if (demand !== null) { try { ah.state.writeAtomic(demand.rel, demand.body); } catch (e) { /* lost silently, as Node's */ } }
   var c = compose(unknown !== null ? unknown.write() : '');
+  // held out of `t`, so a burst-collapsed copy and a delivered one hash alike
+  var primaryBlock = '';
+  if (primaryOn) primaryBlock = (dsid === null || dedupe.shouldEmit(primaryOpts())) ? primaryText : '';
   var t = c.text, out = t, emit = true;
   if (dsid !== null) {
     var o = { sessionId: dsid, key: ttT('dedupe_key'), content: t, transcriptPath: tp, normalize: normalize };
@@ -302,9 +305,6 @@ function decide(p) {
     if (dsid !== null) show = dedupe.shouldEmit({ sessionId: dsid, key: ttT('dedupe_short_key'), content: short, transcriptPath: tp, keepaliveTurns: keepalive });
     out = show ? [short, c.open].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner')) : c.open;
   }
-  // held out of `t`, so a burst-collapsed copy and a delivered one hash alike
-  var primaryBlock = '';
-  if (primaryOn) primaryBlock = (dsid === null || dedupe.shouldEmit(primaryOpts())) ? primaryText : '';
   var finalText = [emit ? out : '', primaryBlock].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner'));
   return finalText !== '' ? { advisory: text.advisoryJson(ttT('event'), finalText) } : 'allow';
 }

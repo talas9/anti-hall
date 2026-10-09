@@ -336,7 +336,10 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set("repoRoot", Function::new(c.clone(), |cwd: String| repo_root(&cwd))?)?;
     h.set("dateParse", Function::new(c.clone(), |text: String| date_parse(&text))?)?;
     h.set("readEnd", Function::new(c.clone(), |path: String, bytes: f64| read_end(&path, bytes))?)?;
-    h.set("isExecutable", Function::new(c.clone(), |path: String| crate::checks::jsport::fsx::is_file(&path) && crate::checks::jsport::fsx::is_executable(&path))?)?;
+    h.set(
+        "isExecutable",
+        Function::new(c.clone(), |path: String| crate::checks::jsport::fsx::is_file(&path) && crate::checks::jsport::fsx::is_executable(&path))?,
+    )?;
     h.set("uid", Function::new(c.clone(), || f64::from(crate::checks::jsport::home::uid()))?)?;
     Ok(())
 }

@@ -135,18 +135,6 @@ pub static VERIFY_FIRST_ORCH_CODEX: Scripted = Scripted::new("verify-first-orch-
 /// `task-tracker` (UserPromptSubmit).
 pub static TASK_TRACKER: Scripted = Scripted::new("task-tracker", "task_tracker.summary");
 
-/// `ship-it-guard` (PreToolUse on Edit, Write, MultiEdit; the opt-in plan gate).
-pub static SHIP_IT_GUARD: Scripted = Scripted::new("ship-it-guard", "ship_it.summary");
-
-/// `compact-declaration-guard` (PreToolUse).
-pub static COMPACT_DECLARATION_GUARD: Scripted = Scripted::new("compact-declaration-guard", "compact_decl.summary");
-
-/// `devswarm-parent-inbox` (UserPromptSubmit).
-pub static DEVSWARM_PARENT_INBOX: Scripted = Scripted::new("devswarm-parent-inbox", "devswarm_prompt.parent_summary");
-
-/// `devswarm-child-turn` (UserPromptSubmit).
-pub static DEVSWARM_CHILD_TURN: Scripted = Scripted::new("devswarm-child-turn", "devswarm_prompt.child_summary");
-
 /// `devswarm-child-gate` (Stop).
 pub static DEVSWARM_CHILD_GATE: Scripted = Scripted::new("devswarm-child-gate", "devswarm_gates.child_gate_summary");
 
@@ -192,18 +180,6 @@ pub static SCAN_THROTTLE: Scripted = Scripted::new("scan-throttle", "scan_thrott
 
 /// `merge-gate` (PreToolUse on Bash; opt-in).
 pub static MERGE_GATE: Scripted = Scripted::new("merge-gate", "merge_gate.summary");
-
-/// `task-lifecycle-log` (TaskCreated, TaskCompleted).
-pub static TASK_LIFECYCLE_LOG: Scripted = Scripted::new("task-lifecycle-log", "task_lifecycle_log.summary");
-
-/// `jev-weekly-scorecard` (SessionStart).
-pub static JEV_WEEKLY_SCORECARD: Scripted = Scripted::new("jev-weekly-scorecard", "jev_weekly.summary");
-
-/// `jev-review-reminder` (SessionStart).
-pub static JEV_REVIEW_REMINDER: Scripted = Scripted::new("jev-review-reminder", "jev_review.summary");
-
-/// `repair-on-reload` (SessionStart and UserPromptSubmit).
-pub static REPAIR_ON_RELOAD: Scripted = Scripted::new("repair-on-reload", "repair_reload.summary");
 
 /// `codex-availability` (SessionStart).
 pub static CODEX_AVAILABILITY: Scripted = Scripted::new("codex-availability", "codex_handover.avail_summary");

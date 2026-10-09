@@ -129,7 +129,11 @@ fn a_second_lock_is_held_beside_the_first_and_a_third_is_refused_and_the_wait_is
     );
     assert_eq!(run("zz-locks", &env(&h)), Some(Some(Verdict::Allow)));
     let want_second = crate::defaults::num("script.lock_max_held") >= 2;
-    assert_eq!(out(&h), json!([true, want_second, false, false]), "locks held at once are capped by script.lock_max_held; a lock already held is not taken twice");
+    assert_eq!(
+        out(&h),
+        json!([true, want_second, false, false]),
+        "locks held at once are capped by script.lock_max_held; a lock already held is not taken twice"
+    );
     assert!(!std::path::Path::new(&format!("{h}/.anti-hall/x.lock")).exists() && !std::path::Path::new(&format!("{h}/.anti-hall/y.lock")).exists(), "released");
 }
 

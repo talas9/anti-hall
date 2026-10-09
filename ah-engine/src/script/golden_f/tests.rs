@@ -31,7 +31,16 @@ fn compact_declaration_guard_script_matches_the_compiled_port() {
 
 #[test]
 fn devswarm_prompt_and_gate_scripts_match_the_compiled_ports() {
-    for check in ["devswarm-parent-inbox", "devswarm-child-turn", "devswarm-child-gate", "devswarm-parent-reply-tracker", "devswarm-child-drain", "devswarm-child-role", "devswarm-parent-gate", "devswarm-comms-guard"] {
+    for check in [
+        "devswarm-parent-inbox",
+        "devswarm-child-turn",
+        "devswarm-child-gate",
+        "devswarm-parent-reply-tracker",
+        "devswarm-child-drain",
+        "devswarm-child-role",
+        "devswarm-parent-gate",
+        "devswarm-comms-guard",
+    ] {
         golden_report(check, 12);
     }
 }
@@ -150,7 +159,10 @@ mod codex_nudge {
         let (_jev, _fake) = install_scripted(&home, &JEV_ON, vec![ok(200, &trivial(0.03))]);
         assert!(n.silent(&JEV_ON), "a confident trivial verdict skips the nudge");
         let rows = log_rows(&home);
-        assert_eq!((rows.len(), rows[0]["mode"].clone(), rows[0]["final"].clone(), rows[0]["changed"].clone()), (1, json!("on"), json!(false), json!("relaxed")));
+        assert_eq!(
+            (rows.len(), rows[0]["mode"].clone(), rows[0]["final"].clone(), rows[0]["changed"].clone()),
+            (1, json!("on"), json!(false), json!("relaxed"))
+        );
         assert!(!home.join(format!(".anti-hall/codex-nudge-state-{SID}.json")).exists());
         // on, and the call fails: today's verdict (nudge)
         let n = nudge_box("nudge-jev-on-fail");

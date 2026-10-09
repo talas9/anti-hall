@@ -487,14 +487,14 @@ mod golden;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-#[path = "host_tests_f/tests.rs"]
-mod tests_host_f;
-#[cfg(test)]
 #[path = "golden_d6/tests.rs"]
 mod tests_golden_d6;
 #[cfg(test)]
 #[path = "golden_e/tests.rs"]
 mod tests_golden_e;
+#[cfg(test)]
+#[path = "golden_f/tests.rs"]
+mod tests_golden_f;
 #[cfg(test)]
 #[path = "host_tests/tests.rs"]
 mod tests_host;
@@ -505,5 +505,5 @@ mod tests_host_d;
 #[path = "host_tests_e/tests.rs"]
 mod tests_host_e;
 #[cfg(test)]
-#[path = "golden_f/tests.rs"]
-mod tests_golden_f;
+#[path = "host_tests_f/tests.rs"]
+mod tests_host_f;

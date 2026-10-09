@@ -1202,47 +1202,6 @@ value = "ANTIHALL_COORDINATOR_WORK_LOCK_WAIT_MS"
 doc = "The variable that marks an isolated test home (enables the lock wait override)."
 value = "ANTIHALL_TEST_HOME_ISOLATED"
 
-[coordinator_work.lock_stale_ms]
-doc = "Age, in milliseconds, after which another process's lock on a window file or the metrics is considered abandoned and is taken over (the same limit for a live, a dead and an unknown holder)."
-value = 5000
-unit = "ms"
-min = 100
-max = 600000
-
-[coordinator_work.lock_step_ms]
-doc = "Pause between two attempts to take a held lock."
-value = 5
-unit = "ms"
-min = 1
-max = 1000
-
-[coordinator_work.lock_reclaim_stale_ms]
-doc = "A lock-takeover marker older than this belongs to a reclaimer that died and may be taken over."
-value = 5000
-unit = "ms"
-min = 100
-max = 600000
-
-[coordinator_work.lock_release_tries]
-doc = "How many times releasing a lock tries to take the takeover marker before it removes its own lock unguarded."
-value = 5
-min = 1
-max = 100
-
-[coordinator_work.lock_release_step_ms]
-doc = "The pause between those tries."
-value = 10
-unit = "ms"
-min = 1
-max = 1000
-
-[coordinator_work.lock_boot_slop_s]
-doc = "Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution)."
-value = 5
-unit = "s"
-min = 0
-max = 3600
-
 [coordinator_work.lock_suffix]
 doc = "Suffix of a lock file next to the file it guards."
 value = ".lock"
@@ -1637,3 +1596,18 @@ value = "DEVSWARM_SOURCE_BRANCH"
 [devswarm_prompt.mode_setting]
 doc = "Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset, as in hooks/lib/settings.js)."
 value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", manifest_default = "auto", values = ["auto", "on", "off"] }
+
+[guardkit.render_reserve]
+doc = "Extra bytes reserved beyond a message template's length when its placeholders are filled (a capacity hint, not a limit)."
+value = 32
+unit = "bytes"
+min = 0
+max = 65536
+
+[scan_throttle.pattern_literal_chars]
+doc = "ASCII characters a user pattern may contain as plain literals for the engine to match it itself; a pattern with any other construct defers to the Node guard, whose regex engine is the authority."
+value = " !#%&',-/:;<=>@_\"~`ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+[scan_throttle.pattern_escapes]
+doc = "Characters that may follow a backslash in a user pattern the engine matches itself (escaped punctuation, class escapes, newline, tab)."
+value = ".-/\\()[]*+?|^$sSdDwWbBnt{}"
