@@ -14,7 +14,6 @@ the update.
 - **Everything tunable lives in plugin files** (`plugins/anti-hall/engine/`), read at run time with hot reload, layered failover and self-heal. Nothing is compiled into the binary.
 - **Local-only telemetry**: `ah-engine telemetry summary`.
 - **Released separately.** The engine has its own version and GitHub Release (`ah-engine-v0.1.0`, six targets, build-provenance attested); the plugin pins it by sha256 in `ah-engine.lock`. A plugin without the binary, offline or on an unsupported platform runs the Node hooks exactly as before.
-- **Released separately.** The engine has its own version and GitHub Release (`ah-engine-v0.1.0`, six targets, build-provenance attested); the plugin pins it by sha256 in `ah-engine.lock`. A plugin without the binary, offline or on an unsupported platform runs the Node hooks exactly as before.
 
 ### Added
 
