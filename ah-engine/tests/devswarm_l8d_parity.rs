@@ -91,6 +91,12 @@ fn engine_cli(home: &Path, cwd: &Path, argv: &[String], now: i64, env: &[(&str, 
     Run { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into_owned() }
 }
 
+/// A read receipt's id is the clock in base 36 plus 12 random hex digits: the random part differs between any two runs, so it is
+/// blanked wherever it appears (stdout, file names, file contents) on both sides.
+fn mask_rid(text: &str) -> String {
+    regex::Regex::new(r"\b(r[0-9a-z]{8})[0-9a-f]{12}\b").unwrap().replace_all(text, "${1}<rand>").into_owned()
+}
+
 /// Blank the writer's pid and the wall-clock timestamp of every central-log line (see the module doc).
 fn mask_log(text: &str) -> String {
     let ts = regex::Regex::new(r#"(?m)^\{"ts":"[^"]*""#).unwrap();
@@ -104,7 +110,7 @@ fn tree(home: &Path) -> BTreeMap<String, String> {
         .map(|(k, v)| {
             let text = String::from_utf8_lossy(&v).replace(home.to_string_lossy().as_ref(), "<HOME>");
             let text = if k.contains("devswarm.jsonl") && !k.ends_with(".lock") { mask_log(&text) } else { text };
-            (k, text)
+            (mask_rid(&k), mask_rid(&text))
         })
         .collect()
 }
@@ -200,7 +206,10 @@ fn check_from(
         if c.native {
             native += 1;
             assert_eq!(log["verb"], c.label, "{}: telemetry names the verb", c.name);
-            let (es, ns) = (e.stdout.replace(homes[1].to_string_lossy().as_ref(), "<HOME>"), n.stdout.replace(homes[0].to_string_lossy().as_ref(), "<HOME>"));
+            let (es, ns) = (
+                mask_rid(&e.stdout.replace(homes[1].to_string_lossy().as_ref(), "<HOME>")),
+                mask_rid(&n.stdout.replace(homes[0].to_string_lossy().as_ref(), "<HOME>")),
+            );
             assert_eq!((e.code, &es), (n.code, &ns), "{}: stdout/exit differ\n engine: {es:?}\n node:   {ns:?}", c.name);
             let (te, tn) = (tree(&homes[1]), tree(&homes[0]));
             for k in te.keys().chain(tn.keys()) {
@@ -210,7 +219,10 @@ fn check_from(
                 let (de, dn) = (raw_dump(&key_db(&homes[1])), raw_dump(&key_db(&homes[0])));
                 assert!(de == dn, "{}: the store differs: {}", c.name, first_diff(&dn, &de));
             }
-            pending.push((c.name.clone(), homes[1].join("state")));
+            // `send` has no background Node witness (it is checked in shadow mode); its log line is compared in the tree above
+            if c.label != "Send" {
+                pending.push((c.name.clone(), homes[1].join("state")));
+            }
         } else {
             deferred += 1;
             assert_eq!(e.code, n.code, "{}: exit code of the fallback", c.name);
@@ -254,7 +266,12 @@ fn read_primary_windows_match_node() {
     }
     let fx = fixture("l8dwin");
     let rp = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "InboxReadPrimary");
-    let seeded = |h: &Path| put_log_line(h, "{\"ts\":\"2026-01-01T00:00:00.000Z\",\"component\":\"seed\",\"op\":\"x\",\"level\":\"info\",\"repoKey\":null,\"meshId\":null,\"pid\":1,\"msg\":\"earlier\"}\n");
+    let seeded = |h: &Path| {
+        put_log_line(
+            h,
+            "{\"ts\":\"2026-01-01T00:00:00.000Z\",\"component\":\"seed\",\"op\":\"x\",\"level\":\"info\",\"repoKey\":null,\"meshId\":null,\"pid\":1,\"msg\":\"earlier\"}\n",
+        )
+    };
     let cases = vec![
         rp("win-tail", &["inbox", "read-primary", "child-1", "--tail", "5"], "child", true),
         rp("win-since-index", &["inbox", "read-primary", "child-1", "--since", "3"], "child", true),
@@ -272,7 +289,8 @@ fn read_primary_windows_match_node() {
         rp("win-in-another-repository", &["inbox", "read-primary", "child-1", "--tail", "5"], "other", true),
         rp("win-unknown-id", &["inbox", "read-primary", "nope", "--tail", "5"], "child", true),
         rp("win-appends-to-an-existing-log", &["inbox", "read-primary", "child-1", "--tail", "5"], "child", true).setup(seeded),
-        rp("win-log-dir-from-the-environment", &["inbox", "read-primary", "child-1", "--tail", "5"], "child", true).env("ANTI_HALL_LOG_DIR", "{HOME}/elsewhere"),
+        rp("win-log-dir-from-the-environment", &["inbox", "read-primary", "child-1", "--tail", "5"], "child", true)
+            .env("ANTI_HALL_LOG_DIR", "{HOME}/elsewhere"),
         rp("win-node-test-context-is-node", &["inbox", "read-primary", "child-1", "--tail", "5"], "child", false).env("NODE_TEST_CONTEXT", "child-v8"),
         rp("win-bare-flag-reads-normally-so-is-node", &["inbox", "read-primary", "child-1", "--tail"], "child", false),
         rp("win-unsafe-id-is-node", &["inbox", "read-primary", "a/b", "--tail", "5"], "child", false),
@@ -338,4 +356,141 @@ fn engine_and_node_appends_interleave_without_corrupting_a_line() {
         }
         assert!(!home.join(".anti-hall/logs/devswarm.jsonl.rotate.lock").exists(), "round {round}: the rotate lock is released");
     }
+}
+
+// ---- unclaimed-session promotion ---------------------------------------------------------------------------------------
+
+/// Give `child-1` a descriptor (with the floor rows a read-primary needs) carrying `desc` as its session, and set the session of
+/// its registry row (`None` leaves the seeded one).
+fn set_sessions(h: &Path, child: &Path, repo_key: &str, desc: Option<&str>, reg: Option<&str>) {
+    let mut d = serde_json::json!({"id": "child-1", "worktreePath": child.to_string_lossy()});
+    if let Some(sid) = desc {
+        d["sessionId"] = Value::String(sid.into());
+    }
+    let floor = |ns: &str| serde_json::json!({"partition": "child-1", "ns": ns, "reader": "#floor", "value": 0, "updatedAt": 1_700_000_000_000_i64});
+    let spec = serde_json::json!({"rows": [floor("store"), floor("nd")], "descriptors": [d]});
+    let o = Command::new("node")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mesh_write_support/ack_seed.js"))
+        .arg(h)
+        .arg(repo_key)
+        .arg(spec.to_string())
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("HOME", h)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "ack_seed: {}", String::from_utf8_lossy(&o.stderr));
+    // the ackCommand names the stable launcher when one is on disk
+    put(h, ".anti-hall/bin/devswarm.js", "// launcher\n");
+    if let Some(sid) = reg {
+        let db = h.join(".anti-hall/devswarm/store").join(repo_key).join("devswarm.db");
+        let c = rusqlite::Connection::open(db).unwrap();
+        c.execute("UPDATE registry SET session_id = ?1 WHERE id = 'child-1'", [sid]).unwrap();
+    }
+}
+
+#[test]
+fn unclaimed_session_promotion_matches_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8dpromo");
+    let rk = fx.repo_key.clone();
+    let child_wt = fx.child.clone();
+    let mk = |desc: Option<&'static str>, reg: Option<&'static str>| {
+        let (rk, wt) = (rk.clone(), child_wt.clone());
+        move |h: &Path| set_sessions(h, &wt, &rk, desc, reg)
+    };
+    let both = mk(Some("unclaimed:child-1"), Some("unclaimed:child-1"));
+    let desc_only = mk(Some("unclaimed:child-1"), Some("sess-registry"));
+    let reg_only = mk(Some("sess-descriptor"), Some("unclaimed:child-1"));
+    let claimed = mk(Some("sess-a"), Some("sess-a"));
+    let no_desc_session = mk(None, Some("unclaimed:child-1"));
+    let rp = |name: &str, argv: &[&str], native: bool| lc(name, argv, "child", native, "InboxReadPrimary");
+    fn with<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+        ["inbox", "read-primary", "child-1"].iter().chain(extra.iter()).copied().collect()
+    }
+    let cases = vec![
+        rp("promo-both-sides-by-flag", &with(&["--session", "sess-real"]), true).setup(both.clone()),
+        rp("promo-both-sides-by-env", &with(&[]), true).setup(both.clone()).env("CLAUDE_CODE_SESSION_ID", "sess-env"),
+        rp("promo-flag-beats-env", &with(&["--session", "sess-flag"]), true).setup(both.clone()).env("CLAUDE_CODE_SESSION_ID", "sess-env"),
+        rp("promo-blank-flag-falls-to-env", &with(&["--session", ""]), true).setup(both.clone()).env("CLAUDE_CODE_SESSION_ID", "sess-env"),
+        rp("promo-padded-session-is-trimmed", &with(&["--session", "  sess-pad  "]), true).setup(both.clone()),
+        rp("promo-text-format", &with(&["--session", "sess-real", "--format", "text"]), true).setup(both.clone()),
+        rp("promo-descriptor-behind-the-registry", &with(&["--session", "sess-real"]), true).setup(desc_only),
+        // the descriptor is claimed, so Node's ownership proof (the sole UNCLAIMED row of the caller's worktree) fails: Node reads on unpromoted
+        rp("promo-registry-behind-a-claimed-descriptor-is-node", &with(&["--session", "sess-real"]), false).setup(reg_only.clone()),
+        rp("promo-registry-behind-without-a-session", &with(&[]), false).setup(reg_only),
+        rp("promo-registry-only-marker-null-descriptor", &with(&["--session", "sess-real"]), true).setup(no_desc_session),
+        rp("promo-already-claimed-writes-nothing", &with(&["--session", "sess-real"]), true).setup(claimed),
+        rp("promo-no-session-is-node", &with(&[]), false).setup(both.clone()),
+        rp("promo-session-equal-to-the-id-is-node", &with(&["--session", "child-1"]), false).setup(both.clone()),
+        rp("promo-synthetic-session-is-node", &with(&["--session", "unclaimed:other"]), false).setup(both.clone()),
+        rp("promo-reconcile-sweep-is-node", &with(&["--session", "sess-real"]), false).setup(both.clone()).env("ANTIHALL_RECONCILE_SWEEP", "1"),
+        rp("promo-read-of-another-row-is-node", &["inbox", "read-primary", "child-2", "--session", "sess-real"], false).setup(both.clone()),
+        lc("promo-from-the-primary-checkout-is-node", &with(&["--session", "sess-real"]), "main", false, "InboxReadPrimary").setup(both),
+    ];
+    check(&fx, &cases, &[], 8, 7);
+}
+
+// ---- send refusals --------------------------------------------------------------------------------------------------------
+
+#[test]
+fn send_refusals_match_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8dsend");
+    let sd = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "Send");
+    let cases = vec![
+        sd("send-outside-a-project", &["send", "--to", "child-1", "--message", "hi"], "nongit", true),
+        sd("send-outside-a-project-quiet", &["send", "--to", "child-1", "--message", "hi", "--quiet"], "nongit", true),
+        sd("send-from-someone-else", &["send", "--to", "child-2", "--message", "hi", "--from", "somebody"], "child", true),
+        sd("send-without-a-target", &["send", "--message", "hi"], "child", true),
+        sd("send-two-target-modes", &["send", "--to", "child-2", "--broadcast", "--message", "hi"], "child", true),
+        sd("send-three-target-modes", &["send", "--to", "child-2", "--broadcast", "--to-primary", "--message", "hi"], "child", true),
+        sd("send-question-on-a-broadcast", &["send", "--broadcast", "--question", "--message", "hi"], "child", true),
+        sd("send-answers-on-a-broadcast", &["send", "--broadcast", "--answers", "--message", "hi"], "child", true),
+        sd("send-both-on-a-broadcast-names-the-question", &["send", "--broadcast", "--answers", "--question", "--message", "hi"], "child", true),
+        sd("send-two-message-sources", &["send", "--to", "child-2", "--message", "hi", "--message-file", "/no/such/file"], "child", true),
+        sd("send-no-message-source", &["send", "--to", "child-2"], "child", true),
+        sd("send-empty-message", &["send", "--to", "child-2", "--message", ""], "child", true),
+        sd("send-unknown-urgency", &["send", "--to", "child-2", "--message", "hi", "--urgency", "asap"], "child", true),
+        sd("send-unknown-urgency-quiet", &["send", "--to", "child-2", "--message", "hi", "--urgency", "asap", "--quiet"], "child", true),
+        sd("send-to-itself", &["send", "--to", "child-1", "--message", "hi"], "child", true),
+        sd("send-to-its-own-mesh-label", &["send", "--to", &fx.child_mesh, "--message", "hi"], "child", true),
+        sd("send-to-primary-from-the-primary", &["send", "--to-primary", "--message", "hi"], "main", true),
+        sd("send-refused-in-a-log-dir-of-its-own", &["send", "--message", "hi"], "child", true).env("ANTI_HALL_LOG_DIR", "{HOME}/elsewhere"),
+        sd("send-refused-under-a-test-context-is-node", &["send", "--message", "hi"], "child", false).env("NODE_TEST_CONTEXT", "child-v8"),
+        sd("send-unreadable-message-file-is-node", &["send", "--to", "child-2", "--message-file", "/no/such/file"], "child", false),
+        sd("send-a-good-message-still-sends", &["send", "--to", "child-2", "--message", "hello"], "child", true),
+    ];
+    check(&fx, &cases, &[], 17, 2);
+}
+
+// ---- done refusals --------------------------------------------------------------------------------------------------------
+
+#[test]
+fn done_refusals_match_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8ddone");
+    let d = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "Done");
+    let cases = vec![
+        d("done-someone-elses-id", &["done", "child-2"], "child", true),
+        d("done-unknown-id", &["done", "nope"], "child", true),
+        d("done-an-id-needing-json-quotes", &["done", "a\"b c\\d \u{e9}"], "child", true),
+        d("done-from-the-primary-checkout", &["done"], "main", true),
+        d("done-from-the-primary-checkout-naming-an-id", &["done", "child-1"], "main", true),
+        d("done-outside-a-project", &["done"], "nongit", true),
+        d("done-in-another-repository", &["done"], "other", true),
+        d("done-refused-in-a-log-dir-of-its-own", &["done", "nope"], "child", true).env("ANTI_HALL_LOG_DIR", "{HOME}/elsewhere"),
+        d("done-refused-under-a-test-context-is-node", &["done", "nope"], "child", false).env("NODE_TEST_CONTEXT", "child-v8"),
+        d("done-still-reports", &["done", "--summary", "merged"], "child", true),
+    ];
+    check(&fx, &cases, &[], 9, 1);
 }

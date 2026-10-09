@@ -87,8 +87,22 @@ fn engine_cli(home: &Path, cwd: &Path, argv: &[String], now: i64, env: &[(&str, 
     Run { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into_owned() }
 }
 
+/// The central log's lines carry the wall-clock `ts` and the writer's `pid`, which differ between the engine and Node by design
+/// (see tests/devswarm_l8d_parity.rs): both are blanked on both sides.
+fn mask_log(text: &str) -> String {
+    let ts = regex::Regex::new(r#"(?m)^\{"ts":"[^"]*""#).unwrap();
+    let pid = regex::Regex::new(r#""pid":[0-9]+,"msg""#).unwrap();
+    pid.replace_all(&ts.replace_all(text, r#"{"ts":"T""#), r#""pid":0,"msg""#).into_owned()
+}
+
 fn tree(home: &Path) -> BTreeMap<String, String> {
-    home_files(home).into_iter().map(|(k, v)| (k, String::from_utf8_lossy(&v).replace(home.to_string_lossy().as_ref(), "<HOME>"))).collect()
+    home_files(home)
+        .into_iter()
+        .map(|(k, v)| {
+            let text = String::from_utf8_lossy(&v).replace(home.to_string_lossy().as_ref(), "<HOME>");
+            (k.clone(), if k.contains("devswarm.jsonl") && !k.ends_with(".lock") { mask_log(&text) } else { text })
+        })
+        .collect()
 }
 
 fn verify_lines(state: &Path) -> Vec<Value> {
@@ -266,11 +280,12 @@ fn done_cases(fx: &Fx) -> Vec<Lc> {
         d("done-twice-is-a-duplicate", &["done"], true).setup(twice),
         d("done-closes-a-plan", &["done"], true).setup(with_plan.clone()),
         d("done-closes-a-plan-with-a-summary", &["done", "--summary", "all steps"], true).setup(with_plan),
-        d("done-someone-elses-id", &["done", "child-2"], false),
-        d("done-unknown-id", &["done", "nope"], false),
-        lc("done-from-the-primary-checkout", &["done"], "main", false, "Done"),
-        lc("done-outside-a-project", &["done"], "nongit", false, "Done"),
-        lc("done-outside-a-repository-other", &["done"], "other", false, "Done"),
+        // the refusals Node logs to the central log: lane l8d writes that log itself (tests/devswarm_l8d_parity.rs compares the log line)
+        d("done-someone-elses-id", &["done", "child-2"], true),
+        d("done-unknown-id", &["done", "nope"], true),
+        lc("done-from-the-primary-checkout", &["done"], "main", true, "Done"),
+        lc("done-outside-a-project", &["done"], "nongit", true, "Done"),
+        lc("done-outside-a-repository-other", &["done"], "other", true, "Done"),
     ]
 }
 
@@ -282,7 +297,7 @@ fn done_matches_node() {
     }
     let fx = fixture("l8cdone");
     let cases = done_cases(&fx);
-    check(&fx, &cases, &[], 8, 5);
+    check(&fx, &cases, &[], 13, 0);
 }
 
 // ---- primary -------------------------------------------------------------------------------------------------------------

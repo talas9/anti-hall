@@ -18,6 +18,13 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+/// The central log's lines carry the wall-clock `ts` and the writer's `pid` (different processes, different instants): both blanked.
+fn mask_log(text: &str) -> String {
+    let ts = regex::Regex::new(r#"(?m)^\{"ts":"[^"]*""#).unwrap();
+    let pid = regex::Regex::new(r#""pid":[0-9]+,"msg""#).unwrap();
+    pid.replace_all(&ts.replace_all(text, r#"{"ts":"T""#), r#""pid":0,"msg""#).into_owned()
+}
+
 #[path = "mesh_write_support/fx.rs"]
 mod fx;
 use fx::*;
@@ -185,14 +192,14 @@ fn engine_verbs_match_node_byte_for_byte() {
             extra: vec![],
             native: false,
         },
-        Case { name: "send-no-target", cwd: "main", argv: vec![s("send"), s("--message"), s("x")], stdin: None, extra: vec![], native: false },
+        Case { name: "send-no-target", cwd: "main", argv: vec![s("send"), s("--message"), s("x")], stdin: None, extra: vec![], native: true },
         Case {
             name: "send-two-targets",
             cwd: "main",
             argv: vec![s("send"), s("--to"), s("child-1"), s("--broadcast"), s("--message"), s("x")],
             stdin: None,
             extra: vec![],
-            native: false,
+            native: true,
         },
         Case {
             name: "send-empty",
@@ -200,7 +207,7 @@ fn engine_verbs_match_node_byte_for_byte() {
             argv: vec![s("send"), s("--to"), s("child-1"), s("--message"), s("")],
             stdin: None,
             extra: vec![],
-            native: false,
+            native: true,
         },
         Case {
             name: "send-bad-urgency",
@@ -208,7 +215,7 @@ fn engine_verbs_match_node_byte_for_byte() {
             argv: vec![s("send"), s("--to"), s("child-1"), s("--message"), s("x"), s("--urgency"), s("meh")],
             stdin: None,
             extra: vec![],
-            native: false,
+            native: true,
         },
         Case {
             name: "send-self",
@@ -216,7 +223,7 @@ fn engine_verbs_match_node_byte_for_byte() {
             argv: vec![s("send"), s("--to"), primary.clone(), s("--message"), s("me")],
             stdin: None,
             extra: vec![],
-            native: false,
+            native: true,
         },
         Case {
             name: "send-spoof",
@@ -224,7 +231,7 @@ fn engine_verbs_match_node_byte_for_byte() {
             argv: vec![s("send"), s("--to"), s("child-1"), s("--from"), s("child-2"), s("--message"), s("x")],
             stdin: None,
             extra: vec![],
-            native: false,
+            native: true,
         },
         Case {
             name: "send-multi",
@@ -240,7 +247,7 @@ fn engine_verbs_match_node_byte_for_byte() {
             argv: vec![s("send"), s("--broadcast"), s("--question"), s("--message"), s("x")],
             stdin: None,
             extra: vec![],
-            native: false,
+            native: true,
         },
         Case {
             name: "send-not-git",
@@ -248,7 +255,7 @@ fn engine_verbs_match_node_byte_for_byte() {
             argv: vec![s("send"), s("--to"), s("child-1"), s("--message"), s("x")],
             stdin: None,
             extra: vec![],
-            native: false,
+            native: true,
         },
         Case { name: "mesh-read-bare-seq", cwd: "main", argv: vec![s("mesh"), s("read"), s("--seq")], stdin: None, extra: vec![], native: false },
         Case { name: "mesh-read-last-consume", cwd: "main", argv: vec![s("mesh"), s("read"), s("--last"), s("1")], stdin: None, extra: vec![], native: false },
@@ -360,7 +367,15 @@ fn engine_verbs_match_node_byte_for_byte() {
         assert!(dn == de, "{}: raw store dump differs: {}", c.name, first_diff(&dn, &de));
         let (cn, ce) = (node_dump(&hn, &fx.repo_key), node_dump(&he, &fx.repo_key));
         assert!(cn == ce, "{}: canonical dump differs: {}", c.name, first_diff(&cn, &ce));
-        let (fn_, fe) = (home_files(&hn), home_files(&he));
+        let (mut fn_, mut fe) = (home_files(&hn), home_files(&he));
+        // the central log's lines carry the wall-clock `ts` and the writer's `pid`: different processes, different instants
+        for m in [&mut fn_, &mut fe] {
+            for (k, v) in m.iter_mut() {
+                if k.contains("devswarm.jsonl") {
+                    *v = mask_log(&String::from_utf8_lossy(v)).into_bytes();
+                }
+            }
+        }
         let kn: Vec<&String> = fn_.keys().collect();
         let ke: Vec<&String> = fe.keys().collect();
         assert_eq!(kn, ke, "{}: home tree file set differs", c.name);
@@ -369,7 +384,7 @@ fn engine_verbs_match_node_byte_for_byte() {
         }
     }
     eprintln!("parity: {} cases, {native} answered by the engine and byte-identical to Node, {deferred} handed to Node", cases.len());
-    assert!(native >= 20 && deferred >= 10);
+    assert!(native >= 28 && deferred >= 5);
 }
 
 #[test]

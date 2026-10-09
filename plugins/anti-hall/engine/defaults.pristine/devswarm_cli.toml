@@ -1513,3 +1513,101 @@ value = "--{flag} <v>"
 [devswarm_cli.window_text_prefix]
 doc = "What `inbox read-primary --format text` prints in front of a refusal's message."
 value = "ok:false "
+
+# ---- unclaimed-session promotion (lane l8d) -------------------------------------------------------------------------------
+
+[devswarm_cli.env_reconcile_sweep]
+doc = "The environment variable a reconcile sweep's drain sets to `1`: that drain is not the row's own session, so it never promotes an unclaimed row."
+value = "ANTIHALL_RECONCILE_SWEEP"
+
+[devswarm_cli.op_promoted]
+doc = "The central-log operation of a promotion of an unclaimed session to a real one."
+value = "unclaimed-session-promoted"
+
+[devswarm_cli.msg_promoted]
+doc = "The central-log message of that promotion. {id} is the workspace, {marker} the `unclaimed:` placeholder it carried."
+value = "workspace {id} promoted from {marker} to a real session id"
+
+# ---- send refusals (lane l8d): the texts of scripts/devswarm-lib/send.js cmdSend -------------------------------------------
+
+[devswarm_cli.reason_no_project]
+doc = "The reason of a verb that needs a project and ran outside one."
+value = "no-project"
+
+[devswarm_cli.msg_send_no_project]
+doc = "send's refusal outside a project."
+value = "send must run from inside a git worktree of a DevSwarm project (the mesh store is per-project) — cd into the repo first"
+
+[devswarm_cli.msg_send_from_mismatch]
+doc = "send's refusal of a --from that is not the caller's derived identity. {from_flag} and {from} are JSON-quoted."
+value = "send --from {from_flag} does not match the caller's derived identity {from} — spoofing rejected"
+
+[devswarm_cli.msg_send_target_many]
+doc = "send's refusal of more than one target mode."
+value = "send accepts --to <meshId> OR --to-primary OR --broadcast, not more than one"
+
+[devswarm_cli.msg_send_target_none]
+doc = "send's refusal of no target mode."
+value = "send requires --to <meshId>, --to-primary, or --broadcast"
+
+[devswarm_cli.msg_send_question_broadcast]
+doc = "send's refusal of --question on a broadcast."
+value = "send --question is only valid for a direct message (--to/--to-primary), not --broadcast"
+
+[devswarm_cli.msg_send_answers_broadcast]
+doc = "send's refusal of --answers on a broadcast."
+value = "send --answers is only valid for a direct message (--to/--to-primary), not --broadcast"
+
+[devswarm_cli.msg_send_source_many]
+doc = "send's refusal of more than one message source."
+value = "send accepts exactly one of --message, --message-file, or --message-stdin"
+
+[devswarm_cli.msg_send_source_none]
+doc = "send's refusal of no message source."
+value = "send requires exactly one of --message TEXT, --message-file <path>, or --message-stdin"
+
+[devswarm_cli.msg_send_empty]
+doc = "send's refusal of an empty body."
+value = "send requires --message TEXT (or --message-file/--message-stdin) with a non-empty body"
+
+[devswarm_cli.msg_send_urgency]
+doc = "send's refusal of an unknown urgency. {allowed} are the words, joined by `|`."
+value = "send --urgency must be one of {allowed}"
+
+[devswarm_cli.msg_send_self]
+doc = "send's refusal of a message to the sender itself. {suffix} is `-primary` for --to-primary."
+value = "send --to{suffix} cannot address the sender itself"
+
+[devswarm_cli.send_self_primary_suffix]
+doc = "What --to-primary adds to `--to` in that refusal."
+value = "-primary"
+
+[devswarm_cli.msg_log_not_ok]
+doc = "The central-log message of a result that is not ok and names neither an error nor a reason."
+value = "verb returned ok:false"
+
+# ---- done refusals (lane l8d): scripts/devswarm-lib/misc-verbs.js cmdDone ------------------------------------------------------
+
+[devswarm_cli.reason_done_primary_checkout]
+doc = "The reason of `done` run from the Primary checkout."
+value = "primary-checkout"
+
+[devswarm_cli.msg_done_primary_checkout]
+doc = "done's refusal from the Primary checkout."
+value = "done is a child verb — the Primary checkout has no done-report"
+
+[devswarm_cli.reason_done_not_own]
+doc = "The reason of `done` naming a workspace that is not the caller's."
+value = "not-own-workspace"
+
+[devswarm_cli.msg_done_not_own]
+doc = "done's refusal of another workspace's id. {id_arg} and {identity} are JSON-quoted."
+value = "done {id_arg} is not the caller's own workspace ({identity}) — a child reports only itself"
+
+[devswarm_cli.reason_done_no_identity]
+doc = "The reason of `done` that could not resolve the caller's id."
+value = "no-identity"
+
+[devswarm_cli.msg_done_no_identity]
+doc = "done's refusal when the caller's id cannot be resolved."
+value = "could not resolve this workspace's id"

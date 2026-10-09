@@ -216,7 +216,8 @@ mod tests {
         assert_eq!(v["err"]["message"], "boom");
         assert_eq!(v["ctx"]["reason"], "why");
         assert_eq!(v["ctx"]["msg"], "boom");
-        let keys: Vec<&str> = ["\"ts\"", "\"component\"", "\"op\"", "\"level\"", "\"repoKey\"", "\"meshId\"", "\"pid\"", "\"msg\"", "\"err\"", "\"ctx\""].to_vec();
+        let keys: Vec<&str> =
+            ["\"ts\"", "\"component\"", "\"op\"", "\"level\"", "\"repoKey\"", "\"meshId\"", "\"pid\"", "\"msg\"", "\"err\"", "\"ctx\""].to_vec();
         let at: Vec<usize> = keys.iter().map(|k| text.find(k).unwrap_or(usize::MAX)).collect();
         assert!(at.windows(2).all(|w| w[0] < w[1]), "keys out of order: {text}");
     }
