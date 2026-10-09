@@ -14,9 +14,15 @@
 # 2026-10-09 (process watch, lane-reaper): sysinfo 0.39.6 (exact pin, `system` feature only) adds 3 measured crates: 60 -> 63.
 # 2026-10-09 (realtime lane R1): notify =8.2.0 (default features off, only macos_fsevent) adds 5 on the macOS host (+notify, notify-types, fsevent-sys, walkdir, same-file)
 # and 7 on Linux hosts; base_crates is the midpoint (69) and the one-crate headroom covers the Linux hosts. Reason: DECISIONS.md "Realtime watch backend".
-base_crates = 69
+# 2026-10-09 (startup lane): sysinfo is gone (the process table is libc in src/procwatch/table.rs; sysinfo's macOS build linked IOKit and
+# CoreFoundation and cost ~1 ms of dyld work per short-lived invocation) and macOS has its own kqueue backend over libc
+# (src/watch/kq.rs; the notify crate's FSEvents backend linked CoreServices and CoreFoundation). The crates measured per host by
+# `cargo tree` (engine excluded): macOS arm64 60 (Intel 58, no jemalloc), Linux x86_64 and arm64 67. The Linux-only crates are
+# notify, notify-types, inotify, inotify-sys, mio, walkdir, same-file (inotify watching); base_crates is the macOS arm64 count
+# plus one and the headroom is the Linux-only set, so every host stays inside [base - 1, base + headroom].
+base_crates = 61
 # Crates approved but not yet in the tree; the headroom covers their own entries only.
-approved = ["mio"]
-approved_headroom = 1
+approved = []
+approved_headroom = 6
 # The limit the test enforces: base_crates + approved_headroom.
-max_crates = 70
+max_crates = 67

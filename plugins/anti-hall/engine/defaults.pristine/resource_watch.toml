@@ -2,7 +2,7 @@
 # memory (docs/AH-ENGINE.md, "Process watch"). Format: see the header of engine.toml. It shares the process scan with the orphan
 # sweep (procwatch.toml) and nothing else. It never kills or throttles; renicing an offender is an opt-in setting.
 #
-# Platform notes. CPU is sysinfo's per-core percent: 100 is one core fully busy, a multi-threaded process can read several
+# Platform notes. CPU is the per-core percent: 100 is one core fully busy, a multi-threaded process can read several
 # hundred. The first reading of a process is always 0 (a rate needs two samples) and is ignored. On Apple Silicon the percent is of
 # one core's time whatever its kind (performance or efficiency core), so the same percent is less work on an efficiency core.
 # Memory is the resident set on Linux and the physical footprint (which counts compressed pages) on macOS, where it matches Activity
@@ -58,6 +58,14 @@ value = 256
 [resource_watch.psi_path]
 doc = "The Linux memory pressure file."
 value = "/proc/pressure/memory"
+
+[resource_watch.meminfo_path]
+doc = "The Linux memory statistics file (swap in use is SwapTotal minus SwapFree)."
+value = "/proc/meminfo"
+
+[resource_watch.mac_swap_sysctl]
+doc = "The macOS sysctl name of the swap usage record."
+value = "vm.swapusage"
 
 [resource_watch.mac_pressure_sysctl]
 doc = "The macOS sysctl name of the memory pressure level."

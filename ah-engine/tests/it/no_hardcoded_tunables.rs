@@ -111,6 +111,8 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     ("src/script/host.rs", "static CALL", "a thread-local slot for the request state of one script call, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static RES", "a thread-local regex cache, initialised empty (its size bound is script.regex_cache_max): state, not a tunable"),
+    ("src/watch/kq.rs", "const FFLAGS", "the kqueue vnode event flags the backend subscribes to: a kernel protocol constant, not a tunable"),
+    ("src/watch/kq.rs", "const GONE", "the kqueue vnode event flags that mean the file went away: a kernel protocol constant, not a tunable"),
     ("src/deadline.rs", "static REQ", "a thread-local slot initialised empty (the request being served): state, not a tunable"),
     ("src/deadline.rs", "static STAGED", "a thread-local list initialised empty (the state writes a request staged): state, not a tunable"),
     ("src/telemetry/mod.rs", "static STAGE", "a thread-local slot initialised empty (what a request staged): state, not a tunable"),

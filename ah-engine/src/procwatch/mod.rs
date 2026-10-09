@@ -10,6 +10,7 @@ pub mod disk;
 pub mod host;
 pub mod orphan;
 pub mod resource;
+pub mod table;
 #[cfg(test)]
 mod tests;
 
