@@ -2,7 +2,7 @@
 # status.sh [--table]   Read-only. Says whether the machine is live, who decides each check, and whether anything would double-run.
 . "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/lib.sh"
 need_node
-if [ "${1:-}" = "--table" ]; then entry_table "$BUNDLE/ah-engine" | awk -F'\t' 'BEGIN{print "event\tentry\tcheck\tguard"} {print}' | { column -t -s '	' 2>/dev/null || cat; }; exit 0; fi
+if [ "${1:-}" = "--table" ]; then entry_table "$BUNDLE/ah-engine" | awk -F'\t' 'BEGIN{print "event\tentry\tcheck\tguard\tengine_only"} {print}' | { column -t -s '	' 2>/dev/null || cat; }; exit 0; fi
 bad=0
 # The ledger is a record, not the truth: if it says live but the host's own view (the CLI) disagrees, say so instead of "LIVE".
 drift=

@@ -1,5 +1,6 @@
 # Event/check pairs the engine answers identically to Node (replayed: engine vs same-version Node). go-live.sh all-agreeing turns exactly these
-# engine checks ON (30 guard entries); everything else on a guard event stays decided by Node (git-guard, swarm-guard x2, Stop/sibling-sweep).
+# engine checks ON (30 guard entries); everything else on a guard event stays decided by Node (git-guard, swarm-guard x2), except
+# ENGINE-ONLY checks (no Node twin: sibling-sweep, procwatch-advisory, engine-role-guard), which go-live.sh always turns ON.
 PreToolUse/api-guard
 PreToolUse/ask-guard
 PreToolUse/command

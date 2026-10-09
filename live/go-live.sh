@@ -61,6 +61,9 @@ else
     [ $? -eq 0 ] || die "$want has no engine check (Node-only hook); nothing to switch"
   done
 fi
+# an ENGINE-ONLY check (no Node twin: its fallback is a no-op shim) is always engine-decided, whatever the selection: left to
+# Node it would be OFF, not "decided by Node"
+awk -F'\t' 'NR==FNR {on[$1 "\t" $2]=1; next} $4==1 && $3!="" && $5==1 && !(($1 "\t" $2) in on) {print $1 "\t" $2}' "$ON" "$TBL" >>"$ON"
 # OFF = every guard entry with a check that is not in ON
 awk -F'\t' 'NR==FNR {on[$1 "\t" $2]=1; next} $4==1 && $3!="" && !(($1 "\t" $2) in on) {print $1 "\t" $2}' "$ON" "$TBL" >"$OFF"
 NON=$(awk -F'\t' '$4==0 && $3!=""' "$TBL" | wc -l | tr -d ' ')

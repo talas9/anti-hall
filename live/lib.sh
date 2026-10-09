@@ -64,11 +64,19 @@ entry_table() {
   # scratch HOME + state dir: the table comes from THIS binary reading THIS bundle's engine/defaults, and a running daemon of
   # another build must not answer for it. $2 = plugin root (default: the bundled plugin).
   _s=$(mktemp -d) || return 1
-  HOME=$_s AH_ENGINE_DIR=$_s/st AH_ENGINE_PLUGIN_ROOT=${2:-$BUNDLE_ROOT} "$1" config --json | node -e '
+  # columns: event, entry id, check (empty: Node-only hook), guard event (1/0), engine-only check (1/0: no Node twin, so
+  # "left to Node" would switch it OFF). Engine-only = listed in script.engine_only_checks, or its fallback command is the
+  # ENGINE-ONLY no-op shim (older bundles listed only some engine-only checks).
+  HOME=$_s AH_ENGINE_DIR=$_s/st AH_ENGINE_PLUGIN_ROOT=${2:-$BUNDLE_ROOT} "$1" config --json | ROOT=${2:-$BUNDLE_ROOT} node -e '
+    const fs=require("fs");
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
       const c=JSON.parse(s).settings, guards=c["dispatch.guard_events"].value;
+      const only=(c["script.engine_only_checks"]||{value:[]}).value;
+      const shim=cmd=>{ const m=/\$\{CLAUDE_PLUGIN_ROOT\}\/(hooks\/[\w.-]+)"?$/.exec(cmd||""); if(!m) return false;
+        try { return /is ENGINE-ONLY/.test(fs.readFileSync(process.env.ROOT+"/"+m[1],"utf8")); } catch(e) { return false; } };
       for (const k of Object.keys(c)) { const m=k.match(/^dispatch\.hooks_claude_(\w+)$/); if(!m) continue;
-        for (const e of c[k].value) console.log([m[1],e.id,e.check||"",guards.includes(m[1])?1:0].join("\t")); }
+        for (const e of c[k].value) console.log([m[1],e.id,e.check||"",guards.includes(m[1])?1:0,
+          e.check&&(only.includes(e.check)||shim(e.command))?1:0].join("\t")); }
     });'
   _rc=$?; rm -rf "$_s"; return $_rc
 }
