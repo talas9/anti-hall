@@ -40,11 +40,13 @@ pub struct Project {
 }
 
 impl Project {
-    /// Resolve a path to its project: the git worktree root, its repo key and its Primary id. `None` for a path that is not in a
-    /// git repository (nothing to drain there).
+    /// Resolve a path to its project: the repository's MAIN worktree (what the Node unit bakes as its working directory, never a
+    /// linked worktree that may be removed), its repo key and its Primary id. Any worktree of a repository names the same project.
+    /// `None` for a path that is not in a git repository, or whose main worktree is gone (nothing to drain there).
     pub fn resolve(path: &str) -> Option<Project> {
-        let wt = ident::resolve_caller_worktree(path).ok().flatten()?;
-        let repo_key = ident::repo_key_for_worktree(&wt).ok().flatten()?;
+        let c = ident::resolve_context(path, true).ok()?;
+        let wt = c.main_worktree.filter(|m| std::path::Path::new(m).is_dir())?;
+        let repo_key = c.repo_key?;
         let workspace_id = ident::primary_workspace_id(&wt).ok()?;
         Some(Project { worktree: wt, repo_key, workspace_id })
     }
@@ -372,11 +374,7 @@ impl Drainer {
         if let Some(d) = p.parent() {
             crate::discard::harmless(std::fs::create_dir_all(d)); // keep: a heartbeat is best effort
         }
-        let tmp = PathBuf::from(format!("{}.{}{}", p.display(), std::process::id(), defaults::text("devswarm_ingest.tmp_suffix")));
-        let ok = std::fs::write(&tmp, o.done().stringify()).and_then(|()| std::fs::rename(&tmp, &p));
-        if ok.is_err() {
-            crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: our own temp
-        }
+        crate::discard::harmless(crate::atomic::write(&p, o.done().stringify())); // keep: a heartbeat is best effort
     }
 
     /// Both liveness signals (the lock's time and the heartbeat file); false when the lock is lost.
@@ -498,7 +496,7 @@ impl Drainer {
                 std::process::id(),
                 defaults::text("devswarm_ingest.quarantine_suffix")
             ));
-            std::fs::write(&p, body).ok().map(|()| p)
+            crate::atomic::write(&p, body).ok().map(|()| p)
         });
         let suppressed = std::mem::take(&mut self.quarantine_suppressed);
         self.log(&defaults::render(

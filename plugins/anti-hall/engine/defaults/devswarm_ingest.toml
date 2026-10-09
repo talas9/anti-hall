@@ -218,6 +218,13 @@ value = ["worktree", "list", "--porcelain"]
 doc = "The start of a worktree line in that listing."
 value = "worktree "
 
+[devswarm_ingest.shutdown_wait_ms]
+doc = "How long the daemon waits at shutdown for the drain threads to finish the monitor call in flight (it has already taken its messages off the native queue, so they must reach the WAL and the store before the process exits)."
+value = 60000
+min = 1000
+max = 600000
+unit = "ms"
+
 [devswarm_ingest.stop_poll_ms]
 doc = "How often a waiting drain checks whether it must stop."
 value = 200
@@ -250,10 +257,6 @@ value = ".json"
 [devswarm_ingest.ndjson_suffix]
 doc = "The suffix of an NDJSON file."
 value = ".ndjson"
-
-[devswarm_ingest.tmp_suffix]
-doc = "The suffix of the temporary file a heartbeat is written through."
-value = ".tmp"
 
 [devswarm_ingest.log_file]
 doc = "The ingest log, relative to the home directory (the file the Node daemon's unit writes its output to); one `[ISO time] line` each."
@@ -423,8 +426,8 @@ min = 1024
 max = 1073741824
 
 [devswarm_ingest.witness_timeout_ms]
-doc = "Bound of one witness run."
-value = 120000
+doc = "Bound of one witness run. The drain of that project waits while it runs (messages queue up natively, nothing is lost), so it stays far under the three minutes after which a daemon's heartbeat reads stale."
+value = 60000
 min = 1000
 max = 900000
 unit = "ms"
