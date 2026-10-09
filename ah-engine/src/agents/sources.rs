@@ -224,6 +224,30 @@ fn cli(env: &Env, st: &mut State) -> Listing {
     l
 }
 
+/// A subagent whose launching session records it as ended (a terminal task notice: completed, failed, stopped, killed; or a
+/// `TaskStop` that was answered) is done, whatever its own transcript last said: a stopped agent writes no closing line, so
+/// reading only its transcript would call it running (and silent) for as long as the transcript is tracked.
+fn stopped_subagents(env: &Env, st: &mut State) {
+    let opts = crate::checks::agent_scan::Opts { now_ms: env.now_ms as f64, ignore_unanswered_stops: true };
+    let tail = defaults::num("agent_scan.tail_bytes");
+    let mut ended: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    let live: Vec<(String, String)> =
+        st.agents.values().filter(|a| a.kind == kind_name("subagent") && a.running).map(|a| (a.id.clone(), a.path.clone())).collect();
+    for (id, path) in live {
+        // <projects>/<dir>/<parent session>/subagents/agent-<id>.jsonl: the launching session's transcript is <dir>/<parent session>.jsonl
+        let Some(session_dir) = Path::new(&path).parent().and_then(Path::parent) else { continue };
+        let parent = format!("{}{}", session_dir.to_string_lossy(), pth("transcript_ext"));
+        let set = ended.entry(parent.clone()).or_insert_with(|| {
+            crate::checks::agent_scan::scan_transcript(&parent, tail, &opts).ok().flatten().map(|s| s.terminal).unwrap_or_default()
+        });
+        if set.contains(&id)
+            && let Some(a) = st.agents.get_mut(&id)
+        {
+            a.running = false;
+        }
+    }
+}
+
 /// Discover and ingest every source; drop agents that disappeared.
 pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
     let now = env.now_ms;
@@ -249,6 +273,7 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
             a.kind = kind_name("main").into();
         }
     }
+    stopped_subagents(env, st);
     heartbeats(env, st);
     devswarm(env, st);
     let l = cli(env, st);
