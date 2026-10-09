@@ -346,14 +346,6 @@ value = ")(;{}|&`"
 doc = "Text that, at the position where the prefix would go, starts a command substitution and makes the position unsafe."
 value = "$("
 
-[scan_throttle.pattern_literal_chars]
-doc = "ASCII characters a user pattern may contain as plain literals for the engine to match it itself; a pattern with any other construct defers to the Node guard, whose regex engine is the authority."
-value = " !#%&',-/:;<=>@_\"~`ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-
-[scan_throttle.pattern_escapes]
-doc = "Characters that may follow a backslash in a user pattern the engine matches itself (escaped punctuation, class escapes, newline, tab)."
-value = ".-/\\()[]*+?|^$sSdDwWbBnt{}"
-
 [scan_throttle.msg_group_what]
 doc = "Advisory headline when the scan is not the first simple command."
 value = "a repo-wide scan command was detected in a compound or grouped command (not the first simple command); it was NOT modified."

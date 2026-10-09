@@ -208,14 +208,6 @@ doc = "How much of the end of a job log is read."
 value = 8192
 unit = "bytes"
 
-[codex_handover.json_max_depth]
-doc = "Deepest nesting of a state file the port reads; deeper is left to the Node hook."
-value = 512
-
-[codex_handover.json_suffix]
-doc = "The suffix of a per-session state file name."
-value = ".json"
-
 [codex_handover.judge_child_env]
 doc = "Environment variable that marks a Jev judge child process, whose hooks do nothing."
 value = "ANTIHALL_JUDGE_CHILD"
@@ -438,20 +430,6 @@ value = ".claude/projects"
 [codex_handover.proto_key]
 doc = "A key whose merge into an object JavaScript treats specially; a state file holding it is left to the Node hook."
 value = "__proto__"
-
-[codex_handover.prune_stamp_prefix]
-doc = "The start of the prune throttle stamp file name."
-value = ".prune-stamp-"
-
-[codex_handover.prune_throttle_ms]
-doc = "The least time between two sweeps for stale Codex nudge state files."
-value = 21600000
-unit = "ms"
-
-[codex_handover.prune_ttl_ms]
-doc = "Age after which a per-session Codex nudge state file is removed."
-value = 604800000
-unit = "ms"
 
 [codex_handover.quota_default_reason]
 doc = "The reason recorded for an outage that gives none."
