@@ -186,6 +186,9 @@ pub static CODEX_NUDGE: Scripted = Scripted::new("codex-nudge", "codex_handover.
 /// `coordinator-work-guard` (PreToolUse and PostToolUse on Bash).
 pub static COORDINATOR_WORK_GUARD: Scripted = Scripted::new("coordinator-work-guard", "coordinator_work.summary");
 
+/// `command` (PreToolUse on Bash; the command-guard's allow decision).
+pub static COMMAND: Scripted = Scripted::new("command", "command.check_summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

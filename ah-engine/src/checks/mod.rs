@@ -11,9 +11,7 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod agent_scan;
-pub mod command;
 pub mod compact_decl;
-pub mod coordinator_work;
 pub mod emit_dedupe;
 pub mod git;
 pub mod guardkit;
@@ -166,7 +164,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::SCAN_THROTTLE,
         &scripted::COORDINATOR_WORK_GUARD,
         &scripted::COMPACT_DECLARATION_GUARD,
-        &command::CommandGuard,
+        &scripted::COMMAND,
         &scripted::MODEL_ROUTING,
         &scripted::FAILURE_ROOT_CAUSE_NUDGE,
         &scripted::GIT_AUDIT,

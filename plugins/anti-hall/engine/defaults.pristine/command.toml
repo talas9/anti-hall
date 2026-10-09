@@ -18,6 +18,12 @@ value = "command-guard (PreToolUse on Bash): heavy-command and Bash-write delega
 doc = "Commands longer than this many characters are deferred to the Node hook (command-guard.js MAX_CLASSIFY_LEN: the Node guard switches to a head/tail scan above it)."
 value = 65536
 
+[command.script_max_len]
+doc = "Commands longer than this many characters are deferred to the Node hook by the plugin script: a script has a fixed time budget, and classifying a command costs time in proportion to its length (about 4 ms per thousand characters on a loaded machine), so a long command is left to Node rather than to a budget that would cut the script off mid-way."
+value = 4096
+unit = "chars"
+min = 256
+
 [command.max_depth]
 doc = "Nesting depth of inline shells, eval and command substitutions the heavy and write scans follow (command-guard.js `d < 3`)."
 value = 3

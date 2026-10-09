@@ -5,5 +5,5 @@
 # Batch 6 (lanes d88fb and d88fc, merged) moved the checks listed in DECISIONS 1.106 and 1.107 to scripts: 32.
 # Batch 7 (lane d88e) moves the last decision checks: stale-agent-stop-note 31, claim-ledger 30, idle-agent-sweep 29, auto-handover-pause-nag 28, compact-advice-guard 27, session-end-mcp-reaper 26.
 # Batch 8 (lane d88f): verify-first, verify-first-orch, verify-first-orch-codex, task-tracker 22; ship-it-guard, compact-declaration-guard, the eight DevSwarm gates, the three session gates and task-lifecycle-log 8.
-# scan-throttle, merge-side-pick, merge-gate 5; codex-availability, codex-quota-detect, codex-nudge 2; coordinator-work-guard 1.
-1
+# scan-throttle, merge-side-pick, merge-gate 5; codex-availability, codex-quota-detect, codex-nudge 2; coordinator-work-guard 1; command 0.
+0

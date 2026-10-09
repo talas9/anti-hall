@@ -293,3 +293,8 @@ mod codex_nudge {
 fn coordinator_work_guard_script_matches_the_compiled_port() {
     golden_report("coordinator-work-guard", 12);
 }
+
+#[test]
+fn command_script_matches_the_compiled_port() {
+    golden_report("command", 12);
+}
