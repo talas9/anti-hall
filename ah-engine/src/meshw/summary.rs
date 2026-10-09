@@ -706,7 +706,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
                 {
                     let m = st.reader().needs_reply_previews(&d.id, &[*q as i64]).or_else(|e| err("previews", e))?;
                     if let Some(Value::String(b)) = m.values().next() {
-                        p.set(&crate::checks::guardkit::ojson::js_number_text(*q), s(b));
+                        p.set(&crate::checks::jsport::num::to_js_string(*q), s(b));
                     }
                 }
             }

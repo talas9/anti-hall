@@ -229,7 +229,7 @@ fn session_alive(home: &Path, session: &str) -> R<bool> {
         let sid = match rec.get(defaults::text("mesh_write.field_session_id")) {
             None | Some(OVal::Null) => continue,
             Some(OVal::Str(s)) => s.clone(),
-            Some(OVal::Num(x)) => crate::checks::guardkit::ojson::js_number_text(*x),
+            Some(OVal::Num(x)) => crate::checks::jsport::num::to_js_string(*x),
             Some(OVal::Bool(b)) => b.to_string(),
             Some(_) => return defer("session-record-type"),
         };

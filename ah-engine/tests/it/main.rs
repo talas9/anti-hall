@@ -22,6 +22,7 @@ mod dep_budget;
 mod devswarm_act_witness;
 mod devswarm_gates_parity;
 mod dssup_appsync;
+mod js_number_printers;
 mod dssup_deferred;
 mod dssup_retention;
 mod devswarm_prompt_parity;

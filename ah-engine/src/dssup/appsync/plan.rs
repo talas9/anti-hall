@@ -59,7 +59,7 @@ pub fn read_json_dir(dir: &Path) -> R<Vec<Desc>> {
         let id = match body.get(defaults::text("devswarm_sup.as_c_id")) {
             None => stem.to_string(),
             Some(OVal::Str(s)) => s.clone(),
-            Some(OVal::Num(n)) => crate::checks::guardkit::ojson::js_number_text(*n),
+            Some(OVal::Num(n)) => crate::checks::jsport::num::to_js_string(*n),
             Some(_) => return defer("descriptor-id-type"),
         };
         out.push(Desc { id, body });

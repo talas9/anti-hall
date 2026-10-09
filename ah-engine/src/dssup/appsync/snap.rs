@@ -50,7 +50,7 @@ impl J {
     pub fn string(&self) -> Option<String> {
         match self {
             J::Null => None,
-            J::Num(n) => Some(crate::checks::guardkit::ojson::js_number_text(*n)),
+            J::Num(n) => Some(crate::checks::jsport::num::to_js_string(*n)),
             J::Str(s) => Some(s.clone()),
         }
     }
@@ -500,7 +500,7 @@ pub fn finish_signal(ws: &Ws) -> Option<String> {
     }
     let mut s = String::from(defaults::text("devswarm_sup.as_pr_word"));
     if let Some(n) = pr.number {
-        s.push_str(&format!(" #{}", crate::checks::guardkit::ojson::js_number_text(n)));
+        s.push_str(&format!(" #{}", crate::checks::jsport::num::to_js_string(n)));
     }
     s.push(' ');
     s.push_str(state);

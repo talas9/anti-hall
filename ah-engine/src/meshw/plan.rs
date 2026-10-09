@@ -16,7 +16,8 @@
 // - an unreadable optional file is the same as an absent one (Node's try/catch around readFileSync)
 // - the supervision log is best effort (Node's `record` never throws)
 use crate::checks::guardkit::nodelock;
-use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::ojson::OVal;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::js_number_of_str;
 use crate::defaults;
 use crate::meshw::common::{Inv, Obj, n, s};
@@ -288,7 +289,7 @@ fn dur(ms: f64) -> String {
     let ms = if ms.is_nan() { 0.0 } else { ms };
     let m = (ms / defaults::num("mesh_write.dur_ms_per_min") as f64).floor().max(0.0);
     let per_hour = defaults::num("mesh_write.dur_min_per_hour") as f64;
-    let v = |x: f64| js_number_text(x);
+    let v = |x: f64| to_js_string(x);
     if m < per_hour {
         return defaults::render("mesh_write.dur_fmt_min", &[("v", &v(m))]);
     }
@@ -302,7 +303,7 @@ fn dur(ms: f64) -> String {
 /// A step's `n` as JavaScript prints it in a label.
 fn step_number(step: &OVal) -> R<String> {
     match step.get("n") {
-        Some(OVal::Num(x)) => Ok(js_number_text(*x)),
+        Some(OVal::Num(x)) => Ok(to_js_string(*x)),
         Some(OVal::Str(t)) => Ok(t.clone()),
         _ => defer("plan-shape"),
     }
@@ -350,7 +351,7 @@ pub(crate) fn finish_label(plan: &OVal, now: f64) -> R<OVal> {
         && *i >= 1.0
         && *i <= total as f64
     {
-        parts.push(defaults::render("mesh_write.lbl_inferred", &[("n", &js_number_text(*i))]));
+        parts.push(defaults::render("mesh_write.lbl_inferred", &[("n", &to_js_string(*i))]));
     }
     if let Some(r) = finite(plan.get("done_reported_at")) {
         parts.push(defaults::render("mesh_write.lbl_done_reported_part", &[("dur", &dur(now - r))]));

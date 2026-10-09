@@ -133,6 +133,8 @@ impl Ordered {
     /// Serialize the way `JSON.stringify` does (no spaces, keys in stored order).
     pub fn to_json(&self) -> String {
         match self {
+            // a number is a JavaScript double: `1.0` prints `1`, `1e21` prints `1e+21`
+            Ordered::Scalar(serde_json::Value::Number(n)) => crate::checks::jsport::num::to_js_string(n.as_f64().unwrap_or(f64::NAN)),
             Ordered::Scalar(v) => v.to_string(),
             Ordered::Str(s) => serde_json::Value::String(s.clone()).to_string(),
             Ordered::List(a) => format!("[{}]", a.iter().map(Ordered::to_json).collect::<Vec<_>>().join(",")),

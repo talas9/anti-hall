@@ -320,7 +320,7 @@ fn ack_to(p: &Path, target: f64) -> std::io::Result<()> {
     let mut tmp = p.as_os_str().to_os_string();
     tmp.push(defaults::text("mesh_write.tmp_suffix"));
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, crate::checks::guardkit::ojson::js_number_text(t))?;
+    std::fs::write(&tmp, crate::checks::jsport::num::to_js_string(t))?;
     std::fs::rename(&tmp, p)
 }
 

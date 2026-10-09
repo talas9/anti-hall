@@ -515,8 +515,8 @@ fn numbers_print_like_javascript_including_halfway_ties() {
     let theirs = String::from_utf8(out.stdout).unwrap();
     let mut bad = Vec::new();
     for (v, t) in vals.iter().zip(theirs.lines()) {
-        if v.is_finite() && ah_engine::checks::guardkit::ojson::js_number_text(*v) != t {
-            bad.push((*v, t.to_string(), ah_engine::checks::guardkit::ojson::js_number_text(*v)));
+        if v.is_finite() && ah_engine::checks::jsport::num::to_js_string(*v) != t {
+            bad.push((*v, t.to_string(), ah_engine::checks::jsport::num::to_js_string(*v)));
         }
     }
     assert!(bad.is_empty(), "{} of {} differ, first: {:?}", bad.len(), vals.len(), &bad[..bad.len().min(3)]);
