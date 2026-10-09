@@ -311,3 +311,46 @@ fn primary_matches_node() {
     ];
     check(&fx, &cases, &[], 8, 3);
 }
+
+// ---- relay ---------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn relay_matches_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8crelay");
+    let note = fx.root.join("note.txt");
+    fs::write(&note, "please look at this\nthanks \u{e9}\n").unwrap();
+    let empty_note = fx.root.join("empty-note.txt");
+    fs::write(&empty_note, "").unwrap();
+    let note_s = note.to_string_lossy().to_string();
+    let empty_s = empty_note.to_string_lossy().to_string();
+    let missing_s = fx.root.join("no-such-note.txt").to_string_lossy().to_string();
+    let primary = fx.primary_id.clone();
+    let r = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "Relay");
+    let cases = vec![
+        r("relay-to-a-child", &["relay", "1", "--to", "child-2"], "child", true),
+        r("relay-the-newest", &["relay", "12", "--to", "child-2"], "child", true),
+        r("relay-from-the-primary", &["relay", "2", "--to", "child-2"], "main", true),
+        r("relay-with-a-note", &["relay", "1", "--to", "child-2", "--note-file", &note_s], "child", true),
+        r("relay-with-an-empty-note", &["relay", "1", "--to", "child-2", "--note-file", &empty_s], "child", true),
+        r("relay-seq-as-a-float-is-floored", &["relay", "1.9", "--to", "child-2"], "child", true),
+        r("relay-a-primary-message-to-a-child", &["relay", "7", "--to", "child-1"], "main", true),
+        r("relay-to-the-primary-id-is-node", &["relay", "1", "--to", &primary], "child", false),
+        r("relay-an-unreadable-note", &["relay", "1", "--to", "child-2", "--note-file", &missing_s], "child", false),
+        r("relay-seq-not-in-my-inbox", &["relay", "2", "--to", "child-2"], "child", false),
+        r("relay-unknown-seq", &["relay", "999", "--to", "child-2"], "child", false),
+        r("relay-negative-seq", &["relay", "-1", "--to", "child-2"], "child", false),
+        r("relay-seq-not-a-number", &["relay", "abc", "--to", "child-2"], "child", false),
+        r("relay-a-receipt-is-node", &["relay", "r123abc", "--to", "child-2"], "child", false),
+        r("relay-no-recipient", &["relay", "1"], "child", false),
+        r("relay-no-seq", &["relay", "--to", "child-2"], "child", false),
+        r("relay-unregistered-recipient", &["relay", "1", "--to", "nobody"], "child", false),
+        r("relay-to-myself", &["relay", "1", "--to", "child-1"], "child", false),
+        r("relay-several-recipients", &["relay", "1", "--to", "child-1,child-2"], "child", false),
+        r("relay-outside-a-project", &["relay", "1", "--to", "child-2"], "nongit", false),
+    ];
+    check(&fx, &cases, &[], 7, 8);
+}

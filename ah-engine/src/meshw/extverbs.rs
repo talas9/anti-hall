@@ -28,6 +28,8 @@ pub enum Ext {
     Done,
     /// `primary [status|takeover]` (lane l8c).
     Primary,
+    /// `relay <seq> --to ID` (lane l8c).
+    Relay,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -44,6 +46,8 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Done)
     } else if is("devswarm_cli.verb_primary") {
         Some(Ext::Primary)
+    } else if is("devswarm_cli.verb_relay") {
+        Some(Ext::Relay)
     } else {
         None
     }
@@ -51,7 +55,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done)
+    matches!(v, Ext::Done | Ext::Relay)
 }
 
 /// Run the verb.
@@ -62,5 +66,6 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::AppSync => super::appverbs::app_sync(inv, a),
         Ext::Done => super::actverbs::done(inv, a),
         Ext::Primary => super::actverbs::primary(inv, a),
+        Ext::Relay => super::actverbs::relay(inv, a),
     }
 }

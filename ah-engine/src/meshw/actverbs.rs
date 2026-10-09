@@ -22,7 +22,7 @@ use crate::meshw::common::{self, Inv, Obj, n, s};
 use crate::meshw::ident::{self, R, Row, defer};
 use crate::meshw::idlock::{self, devswarm_root, is_safe_id};
 use crate::meshw::plan;
-use crate::meshw::send::{Answer, Effect, mesh_candidates, resolve_mesh_target};
+use crate::meshw::send::{Answer, Effect, resolve_mesh_target};
 use crate::meshw::store::{self, MeshStore};
 use crate::meshw::wsverbs;
 
@@ -312,4 +312,110 @@ pub fn primary(inv: &Inv, a: &Args) -> R<Answer> {
         ("reason", s(defaults::text("devswarm_cli.reason_not_primary_checkout"))),
         ("error", s(defaults::text("devswarm_cli.msg_primary_takeover_na"))),
     ]))
+}
+
+// ---- relay --------------------------------------------------------------------------------------------------------------
+
+/// `relay <seq> --to ID [--note-file P]`: forward a message of the caller's own inbox, verbatim, to `--to`.
+/// A read receipt (`r...`), and every refusal Node logs, are Node's.
+pub fn relay(inv: &Inv, a: &Args) -> R<Answer> {
+    common::seat_check(inv)?;
+    let heal = common::self_heal(inv)?;
+    let cwd = inv.cwd.as_str();
+    let Some(repo_key) = ident::repo_key_for_worktree(cwd)? else { return defer("no-project") };
+    let Some(to_flag) = a.one(defaults::text("mesh_write.flag_to")).filter(|x| !x.is_empty()) else { return defer("no-recipient") };
+    let Some(seq_arg) = a.positionals.get(1).filter(|x| !x.is_empty()) else { return defer("no-seq") };
+    let note = match a.one(defaults::text("devswarm_cli.flag_note_file")) {
+        Some(f) => match std::fs::read(f) {
+            Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+            Err(_) => return defer("note-file"),
+        },
+        None => None,
+    };
+    let st = common::open_store(inv, &repo_key)?;
+    let rows = rows_of(&st)?;
+    let from = ident::sender_identity_detailed(&inv.env, cwd, &rows, &inv.home)?;
+    if !alias_on_file(inv, &from) {
+        return defer("sender-alias");
+    }
+    let caller = from.identity.clone();
+    if is_receipt_id(seq_arg) {
+        return defer("receipt");
+    }
+    let num = crate::checks::guardkit::text::js_number_of_str(seq_arg);
+    if !num.is_finite() || num < 0.0 {
+        return defer("bad-seq");
+    }
+    let seq = num.floor();
+    let mut found: Option<serde_json::Value> = None;
+    st.reader()
+        .for_each_message(&caller, 0, |m| {
+            if m["storeSeq"].as_f64() == Some(seq) {
+                found = Some(m);
+                return false;
+            }
+            true
+        })
+        .map_err(|e| ident::Defer(format!("relay-read:{e}")))?;
+    let Some(row) = found else { return defer("message-not-found") };
+    let body = row["body"].as_str().unwrap_or_default().to_string();
+    if body.is_empty() {
+        return defer("empty-body");
+    }
+    let source_bytes = body.len();
+    let sender_text = match row["sender"].as_str() {
+        Some(x) => x.to_string(),
+        None => defaults::text("devswarm_cli.relay_null").to_string(),
+    };
+    let store_seq = crate::checks::guardkit::ojson::js_number_text(row["storeSeq"].as_f64().unwrap_or(f64::NAN));
+    let header = format!(
+        "{}{sender_text}{}{store_seq}{}{source_bytes}{}",
+        defaults::text("devswarm_cli.relay_head_from"),
+        defaults::text("devswarm_cli.relay_head_seq"),
+        defaults::text("devswarm_cli.relay_head_comma"),
+        defaults::text("devswarm_cli.relay_head_end")
+    );
+    let note_suffix = match &note {
+        Some(nt) if !nt.is_empty() => format!("{}{nt}", defaults::text("devswarm_cli.relay_note_join")),
+        _ => String::new(),
+    };
+    let relayed = format!("{header}{body}{note_suffix}");
+    let expected = header.len() + source_bytes + note_suffix.len();
+    let mut send_args = Args { positionals: vec![defaults::text("mesh_write.verb_send").to_string()], ..Args::default() };
+    send_args.flags.insert(defaults::text("mesh_write.flag_to").to_string(), vec![crate::meshw::args::FlagVal::S(to_flag.to_string())]);
+    send_args.flags.insert(defaults::text("mesh_write.flag_message").to_string(), vec![crate::meshw::args::FlagVal::S(relayed)]);
+    let send_res = crate::meshw::send::cmd_send(inv, &send_args)?;
+    let send_ok = matches!(send_res.0.iter().find(|(k, _)| k == "ok").map(|(_, v)| v), Some(OVal::Bool(true)));
+    let bytes = match send_res.0.iter().find(|(k, _)| k == "bytes").map(|(_, v)| v) {
+        Some(OVal::Num(b)) => Some(*b),
+        _ => None,
+    };
+    let effect = match send_res.0.iter().find(|(k, _)| k == "hash").map(|(_, v)| v) {
+        Some(OVal::Str(h)) => Effect::Row(h.clone()),
+        _ => Effect::None,
+    };
+    // the send wrote; a failed read-back or a short copy is a failure Node logs, which cannot be repeated now
+    if !send_ok || bytes != Some(expected as f64) {
+        return defer("relay-send-failed");
+    }
+    let mut out = Obj::default();
+    out.put("ok", OVal::Bool(true))
+        .put("action", s(defaults::text("devswarm_cli.action_relay")))
+        .put("from", s(&caller))
+        .put("to", s(to_flag))
+        .put("seq", row["storeSeq"].as_f64().map_or(OVal::Null, n))
+        .put("sourceBytes", n(source_bytes as f64))
+        .put("relayedBytes", bytes.map_or(OVal::Null, n))
+        .put("expectedBytes", n(expected as f64))
+        .put("send", send_res.done());
+    for (k, v) in heal {
+        out.put(&k, v);
+    }
+    Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect })
+}
+
+/// `/^r[a-z0-9]+$/i`.
+fn is_receipt_id(x: &str) -> bool {
+    let mut it = x.chars();
+    matches!(it.next(), Some('r' | 'R')) && x.len() > 1 && it.all(|c| c.is_ascii_alphanumeric())
 }

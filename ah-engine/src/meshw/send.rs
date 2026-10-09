@@ -158,7 +158,7 @@ fn quiet_line(r: &OVal) -> String {
 }
 
 /// `cmdSend(flags, ctx)`: the successful path, else [`Defer`].
-fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
+pub(crate) fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
     let home = &inv.home;
     let cwd = ident::project_cwd_for(home, &inv.env, &inv.cwd)?;
     let Some(repo_key) = ident::repo_key_for_worktree(&cwd)? else { return defer("no-project") };
