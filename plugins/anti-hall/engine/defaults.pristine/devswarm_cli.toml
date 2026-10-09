@@ -1030,3 +1030,41 @@ value = "\n\n---\n"
 [devswarm_cli.relay_null]
 doc = "How a relayed message names a sender it does not know."
 value = "null"
+
+# ---- archive-request (lane l8c) -----------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_archive_request]
+doc = "The parent verb that asks a child workspace to archive itself (a message into the child's own partition)."
+value = "archive-request"
+
+[devswarm_cli.action_archive_request]
+doc = "The `action` of an archive-request result."
+value = "archive-request"
+
+[devswarm_cli.archive_marker]
+doc = "The machine-readable marker that starts an archive request message."
+value = "[[ANTIHALL_ARCHIVE_REQUEST]]"
+
+[devswarm_cli.archive_tail]
+doc = "The closing words of an archive request message."
+value = "your parent asks you to archive this workspace; confirm with your user, then run devswarm.js archive <id>."
+
+[devswarm_cli.archive_urgency]
+doc = "The urgency of an archive request message (fixed: it is a reminder, never an emergency)."
+value = "high"
+
+[devswarm_cli.archive_reminder]
+doc = "The reminder an archive-request result carries for the Primary."
+value = "Ensure you have verified merged + tested + deployed per your repo policy before archiving."
+
+[devswarm_cli.msg_ambig_prefix]
+doc = "The refusal when an id prefix names several workspaces; {id} is the word as JSON, {n} the count, {ids} the candidates."
+value = "ambiguous workspace id prefix {id} matches {n} workspaces — archived nothing; use the full id: {ids}"
+
+[devswarm_cli.msg_ambig_mesh]
+doc = "The refusal when a mesh label names several registered workspaces; {id}, {n} and {ids} as above."
+value = "ambiguous mesh id {id} matches {n} workspaces — archived nothing; use one full id: {ids}"
+
+[devswarm_cli.msg_ids_join]
+doc = "What separates the candidate ids in those refusals."
+value = ", "

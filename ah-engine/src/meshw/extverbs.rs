@@ -30,6 +30,8 @@ pub enum Ext {
     Primary,
     /// `relay <seq> --to ID` (lane l8c).
     Relay,
+    /// `archive-request <childId>` (lane l8c).
+    ArchiveRequest,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -48,6 +50,8 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Primary)
     } else if is("devswarm_cli.verb_relay") {
         Some(Ext::Relay)
+    } else if is("devswarm_cli.verb_archive_request") {
+        Some(Ext::ArchiveRequest)
     } else {
         None
     }
@@ -55,7 +59,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done | Ext::Relay)
+    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest)
 }
 
 /// Run the verb.
@@ -67,5 +71,6 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::Done => super::actverbs::done(inv, a),
         Ext::Primary => super::actverbs::primary(inv, a),
         Ext::Relay => super::actverbs::relay(inv, a),
+        Ext::ArchiveRequest => super::actverbs::archive_request(inv, a),
     }
 }

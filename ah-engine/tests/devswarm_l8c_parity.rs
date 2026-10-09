@@ -354,3 +354,47 @@ fn relay_matches_node() {
     ];
     check(&fx, &cases, &[], 7, 8);
 }
+
+// ---- archive-request -----------------------------------------------------------------------------------------------------
+
+#[test]
+fn archive_request_matches_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8carchreq");
+    let wt = fx.child.to_string_lossy().to_string();
+    let descriptor = move |h: &Path| {
+        put(h, ".anti-hall/devswarm/workspaces/child-1.json", &format!("{{\"id\":\"child-1\",\"worktreePath\":\"{wt}\",\"sessionId\":\"child-1\"}}"));
+    };
+    let fresh = |h: &Path| put(h, ".anti-hall/devswarm/heartbeats/child-1.json", &format!("{{\"id\":\"child-1\",\"ts\":{}}}", NOW - 60_000));
+    let stale = |h: &Path| put(h, ".anti-hall/devswarm/heartbeats/child-1.json", &format!("{{\"id\":\"child-1\",\"ts\":{}}}", NOW - 86_400_000));
+    let d2 = descriptor.clone();
+    let d3 = descriptor.clone();
+    let ar = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "ArchiveRequest");
+    let cases = vec![
+        ar("ar-registered-child", &["archive-request", "child-1"], "main", true),
+        ar("ar-with-a-reason", &["archive-request", "child-1", "--reason", "merged to main"], "main", true),
+        ar("ar-with-a-bare-reason", &["archive-request", "child-1", "--reason"], "main", true),
+        ar("ar-prefix-resolves-to-one", &["archive-request", "child-2"], "main", true),
+        ar("ar-ambiguous-prefix", &["archive-request", "child-"], "main", true),
+        ar("ar-mesh-label-resolves", &["archive-request", &fx.child_mesh], "main", true),
+        ar("ar-unknown-id-makes-an-orphan-partition-is-node", &["archive-request", "nope"], "main", false),
+        ar("ar-archived-id-with-mail-is-node", &["archive-request", "child-3"], "main", false),
+        ar("ar-from-a-child", &["archive-request", "child-2"], "child", true),
+        ar("ar-live-target-with-a-descriptor", &["archive-request", "child-1"], "main", true).setup(move |h| {
+            descriptor(h);
+            fresh(h);
+        }),
+        ar("ar-stale-target-is-node", &["archive-request", "child-1"], "main", false).setup(move |h| {
+            d2(h);
+            stale(h);
+        }),
+        ar("ar-target-without-a-heartbeat-is-node", &["archive-request", "child-1"], "main", false).setup(d3),
+        ar("ar-unsafe-id", &["archive-request", "../x"], "main", true),
+        ar("ar-no-id", &["archive-request"], "main", true),
+        ar("ar-outside-a-project", &["archive-request", "child-1"], "nongit", false),
+    ];
+    check(&fx, &cases, &[], 10, 5);
+}
