@@ -372,6 +372,8 @@ function cmdBuildTables() {
   t.gcloudReadVerbs = cmdSet('command.gcloud_read_verbs'); t.jqSafe = cmdSet('command.jq_safe_flags'); t.curlBare = cmdSet('command.curl_bare_flags');
   t.jqRefusedWords = ah.cfg('command.jq_refused_words'); t.gcloudTokenVars = ah.cfg('command.gcloud_token_vars');
   t.bgInterpreters = cmdSet('command.background_script_interpreters'); t.bgDelims = cmdSet('command.background_chain_delims');
+  t.plainReadGitKinds = cmdSet('command.plain_read_git_kinds');
+  t.bgSafeFlags = {}; Object.keys(ah.cfg('command.background_script_safe_flags')).forEach(function (k) { t.bgSafeFlags[k] = new Set(ah.cfg('command.background_script_safe_flags')[k]); });
   t.cdDelims = ah.cfg('command.cd_delims'); t.pipelineEnds = ah.cfg('command.pipeline_ends'); t.cdContextsMax = ah.cfg('command.cd_contexts_max');
   t.inlineVerbs = cmdSet('command.inline_verbs'); t.inlinePythonFlags = ah.cfg('command.inline_python_flags'); t.inlineOtherFlags = ah.cfg('command.inline_other_flags');
   t.inlineWriteMarkers = ah.cfg('command.inline_write_markers');
@@ -2186,6 +2188,42 @@ function isWholeCommandReadOnlyForm(command) {
   return true;
 }
 
+// readOnlyFormUnits(split) -> Set of segment indexes that belong to a chain UNIT which is, on its
+// own, exactly one isWholeCommandReadOnlyForm. A chain is cut into units at `;` / `&&` only (a unit is
+// its pipe-joined segments). The exemption applies ONLY when EVERY unit of the chain is read-only on
+// its face: a whole read-only form, or one plain read-only git segment (a safe `git fetch`, or
+// `git rev-parse|status|log|show` in the plain-chain shapes). Any other unit leaves the set empty, so the
+// line is judged segment by segment exactly as before. (command-guard.js readOnlyFormUnits)
+function readOnlyFormUnits(split) {
+  const none = new Set();
+  const out = new Set();
+  const { segments, delims } = split;
+  if (segments.length < 2 || !delims.some((x) => x === '&&' || x === ';')) return none;
+  let start = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const last = i === segments.length - 1;
+    const cut = last || delims[i] === '&&' || delims[i] === ';';
+    if (!cut) { if (delims[i] !== '|') return none; continue; }
+    let text = '';
+    for (let j = start; j <= i; j++) text += (j > start ? ' | ' : '') + segments[j].trim();
+    if (isWholeCommandReadOnlyForm(text)) {
+      for (let j = start; j <= i; j++) out.add(j);
+    } else if (!(start === i && isPlainReadGitSegment(segments[i].trim()))) {
+      return none;
+    }
+    start = i + 1;
+  }
+  return out;
+}
+
+// One plain read-only git segment: a fetch that isSafeGitFetch accepts, or a log/status/show/rev-parse in
+// the exact shapes classifyPlainGitChainSegment recognises (no redirect, no expansion, no extra flags).
+function isPlainReadGitSegment(segment) {
+  if (isSafeGitFetch(segment)) return !hasUnquotedRedirectChar(segment) && !hasShellExpansionAnywhere(segment);
+  const cls = classifyPlainGitChainSegment(segment);
+  return !!cls && T.plainReadGitKinds.has(cls.kind);
+}
+
 // isClosedSinkStage(segment) -> true iff the stage is EXACTLY one of the closed
 // stdin-only sink shapes (no file operand, no unknown flag; only used by
 // isWholeCommandReadOnlyForm AND isBoundedSinkSegment, so every sink that
@@ -2464,7 +2502,11 @@ function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const d = typeof depth === 'number' ? depth : 0;
   if (d === 0 && isWholeCommandReadOnlyForm(command)) return false;
-  for (const seg of splitSegments(command)) {
+  const split = splitSegmentsDetailed(command);
+  const exempt = d === 0 ? readOnlyFormUnits(split) : null;
+  for (let si = 0; si < split.segments.length; si++) {
+    if (exempt && exempt.has(si)) continue;
+    const seg = split.segments[si];
     if (isHeavySegment(seg, command)) return true;
     if (d < T.maxDepth) {
       // (b) shell -c payload: unwrap and evaluate as command(s).
@@ -3729,7 +3771,12 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
   // `VAR=…` token is not a path, so env-prefix assignments stay refused.
   const direct = tokens.length >= 1 && tokens[0].includes('/') && !T.bgInterpreters.has(tokens[0]);
   if (!direct && (tokens.length < 2 || !T.bgInterpreters.has(tokens[0]))) return false;
-  const script = direct ? tokens[0] : tokens[1];
+  let scriptIdx = direct ? 0 : 1;
+  if (!direct) {
+    const safe = Object.prototype.hasOwnProperty.call(T.bgSafeFlags, tokens[0]) ? T.bgSafeFlags[tokens[0]] : undefined;
+    while (safe && scriptIdx < tokens.length && safe.has(tokens[scriptIdx])) scriptIdx++;
+  }
+  const script = tokens[scriptIdx];
   if (!script || script.startsWith('-')) return false;
   if (!isScratchpadOrTmpPath(script, direct ? Object.assign({ ownOnly: true }, ctx) : ctx)) return false;
   const payload = ctx.payload;

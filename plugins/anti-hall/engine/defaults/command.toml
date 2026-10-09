@@ -504,6 +504,14 @@ min = 100
 doc = "Interpreters of a background scratch script (command-guard.js BACKGROUND_SCRIPT_INTERPRETERS)."
 value = ["python3", "node", "sh", "bash"]
 
+[command.background_script_safe_flags]
+doc = "Per interpreter, the valueless flags that may sit between the interpreter and a background scratch script (`python3 -I probe.py`); none takes a value, loads code or changes which file runs (command-guard.js BACKGROUND_SCRIPT_SAFE_FLAGS)."
+value = { python3 = ["-I", "-B", "-u", "-E", "-s", "-S", "-O", "-OO", "-q"], node = ["--no-warnings", "--trace-warnings", "--enable-source-maps"] }
+
+[command.plain_read_git_kinds]
+doc = "classifyPlainGitChainSegment kinds that count as one read-only unit of a chain whose other units are whole read-only forms (command-guard.js isPlainReadGitSegment)."
+value = ["log", "status", "show", "revparse"]
+
 [command.background_chain_delims]
 doc = "Delimiters a background scratch script chain may use."
 value = [";", "&&", "|", "end"]
