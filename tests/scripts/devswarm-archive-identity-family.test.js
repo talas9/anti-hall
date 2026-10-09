@@ -75,7 +75,7 @@ test('LIVE INCIDENT: archiving the slug row also retires its cross-linked UUID t
   try {
     const repoKey = repokey.repoKeyForWorktree(W);
     const top = inst.resolveWorktree(W);
-    const nested = path.join(top, 'skyfb');
+    const nested = path.join(top, 'appfb');
     fs.mkdirSync(nested, { recursive: true });
     const ctx = { home, cwd: W, env: { HOME: home }, backend: BACKEND };
 
@@ -240,8 +240,8 @@ test('MIGRATION: an ALREADY-orphaned twin (pre-fix archive) is retired retroacti
   const home = tmpHome();
   try {
     // The exact pre-fix end state: slug tombstoned, UUID twin still LIVE.
-    writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID, repoKey: 'skycrew-a7a7a5' });
-    const twin = { id: UUID, worktreePath: '/gone/wt/skyfb', sessionId: 'ec774c7f', repoKey: 'modules-ba76c8' };
+    writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID, repoKey: 'demoapp-a7a7a5' });
+    const twin = { id: UUID, worktreePath: '/gone/wt/appfb', sessionId: 'ec774c7f', repoKey: 'modules-ba76c8' };
     writeDesc(home, UUID, twin);
 
     // dryRun classifies WITHOUT writing.
@@ -269,7 +269,7 @@ test('MIGRATION: a MID-ARCHIVE state (both descriptors present for one id) is le
     const d = { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID };
     writeArchivedDesc(home, SLUG, d);
     writeDesc(home, SLUG, d); // BOTH present -> applyRecoveryIntents' job, not ours
-    writeDesc(home, UUID, { id: UUID, worktreePath: '/gone/wt/skyfb', sessionId: 'other' });
+    writeDesc(home, UUID, { id: UUID, worktreePath: '/gone/wt/appfb', sessionId: 'other' });
 
     const r = cli.foldArchivedFamilyDescriptors(home, {});
     assert.deepStrictEqual(r.retired, [], 'a crashed/mid-archive id must not be swept here');
@@ -313,7 +313,7 @@ test('DOCTOR WIRING: fold-archived-family-descriptors detects (dry-run) and reti
   const W = makeGitRepo('doctorfam');
   try {
     writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID });
-    writeDesc(home, UUID, { id: UUID, worktreePath: '/gone/wt/skyfb', sessionId: 'ec774c7f' });
+    writeDesc(home, UUID, { id: UUID, worktreePath: '/gone/wt/appfb', sessionId: 'ec774c7f' });
     const env = { HOME: home, ANTIHALL_DEVSWARM_STORE_BACKEND: BACKEND, PATH: process.env.PATH };
     const find = (res) => res.find((x) => x.id === 'fold-archived-family-descriptors');
 
@@ -344,7 +344,7 @@ test('UPDATE WIRING: the post-update pass runs the family-descriptor migration a
   const home = tmpHome();
   try {
     writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID });
-    writeDesc(home, UUID, { id: UUID, worktreePath: '/gone/wt/skyfb', sessionId: 'ec774c7f' });
+    writeDesc(home, UUID, { id: UUID, worktreePath: '/gone/wt/appfb', sessionId: 'ec774c7f' });
     const r = U.foldArchivedRowsPostUpdate({
       paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
       env: { DEVSWARM_REPO_ID: 'repo-1', HOME: home }, // gate OPEN
@@ -566,7 +566,7 @@ test('P0-3: MIGRATION refuses to retire a REUSED id that is a genuinely LIVE wor
   const liveWt = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-livewt-'));
   try {
     // archived/A names B in its sessionId — a HISTORICAL link, written long ago.
-    writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID, repoKey: 'skycrew-a7a7a5' });
+    writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID, repoKey: 'demoapp-a7a7a5' });
     // B is TODAY an unrelated, LIVE workspace: its own session, its own worktree
     // that EXISTS on disk. Descriptor ids get reused; A's memory of a B is not
     // evidence about THIS B.
@@ -706,7 +706,7 @@ test('GATED-a: gone worktree + archived/<twin>.json at a DIFFERENT inode/bytes -
   const W = makeGitRepo('gateda');
   try {
     writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID });
-    const twin = { id: UUID, worktreePath: '/gone/wt/skyfb', sessionId: 'ec774c7f' };
+    const twin = { id: UUID, worktreePath: '/gone/wt/appfb', sessionId: 'ec774c7f' };
     writeDesc(home, UUID, twin);
     // A pre-existing, independently written archived copy (different inode AND bytes).
     // NB: written under a different id key would be a candidate; UUID has a live
@@ -756,7 +756,7 @@ test('GATED-c (regression): gone worktree and NO archived copy is still retired 
   const home = tmpHome();
   try {
     writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID });
-    const twin = { id: UUID, worktreePath: '/gone/wt/skyfb', sessionId: 'ec774c7f' };
+    const twin = { id: UUID, worktreePath: '/gone/wt/appfb', sessionId: 'ec774c7f' };
     writeDesc(home, UUID, twin);
     const dry = cli.foldArchivedFamilyDescriptors(home, { dryRun: true });
     assert.deepStrictEqual(dry.retired, [UUID]);

@@ -441,7 +441,10 @@ fn nudge_matches_node() {
         nu("nudge-unknown-id", &["nudge", "nobody"], "main", true),
         nu("nudge-unsafe-id", &["nudge", "../x"], "main", true),
         nu("nudge-no-id", &["nudge"], "main", true),
-        nu("nudge-outside-a-project", &["nudge", "nobody"], "nongit", true),
+        nu("nudge-unknown-id-from-a-child-worktree", &["nudge", "nobody"], "child", true),
+        // the id is resolved through the project's store first (Node's `resolveTargetId`); outside a project Node opens a store
+        // under an empty key, which the engine leaves to Node
+        nu("nudge-outside-a-project", &["nudge", "nobody"], "nongit", false),
         nu("nudge-a-registered-id-without-a-descriptor-is-node", &["nudge", "child-1"], "main", false),
         nu("nudge-a-mesh-label-is-node", &["nudge", &fx.child_mesh], "main", false),
         nu("nudge-with-a-descriptor-is-node", &["nudge", "child-1"], "main", false).setup(with_descriptor),

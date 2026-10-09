@@ -37,6 +37,10 @@ value = "gate-intent"
 doc = "The verb that reprints the SessionStart mailbox-wake directive (native for a child workspace)."
 value = "wake-directive"
 
+[devswarm_cli.action_wake_directive]
+doc = "The `action` of a wake-directive refusal for an ambiguous workspace id (the canonical-id resolver's)."
+value = "wake-directive"
+
 [devswarm_cli.verb_notice]
 doc = "The maintainer-notice verb (`--list` is native, `--post` is Node's)."
 value = "notice"
@@ -1064,6 +1068,10 @@ value = "Ensure you have verified merged + tested + deployed per your repo polic
 doc = "The refusal when an id prefix names several workspaces; {id} is the word as JSON, {n} the count, {ids} the candidates."
 value = "ambiguous workspace id prefix {id} matches {n} workspaces — archived nothing; use the full id: {ids}"
 
+[devswarm_cli.msg_ambig_archived]
+doc = "The unarchive refusal when an id prefix or mesh label names several archived workspaces; {id}, {n} and {ids} as above."
+value = "ambiguous archived id {id} matches {n} archived workspaces — unarchived nothing; use one full id: {ids}"
+
 [devswarm_cli.msg_ambig_mesh]
 doc = "The refusal when a mesh label names several registered workspaces; {id}, {n} and {ids} as above."
 value = "ambiguous mesh id {id} matches {n} workspaces — archived nothing; use one full id: {ids}"
@@ -1076,6 +1084,10 @@ value = ", "
 
 [devswarm_cli.verb_nudge]
 doc = "The verb that pokes a stale workspace through its nudge command (or escalates it)."
+value = "nudge"
+
+[devswarm_cli.action_nudge]
+doc = "The `action` of a nudge refusal for an ambiguous workspace id (the canonical-id resolver's)."
 value = "nudge"
 
 [devswarm_cli.msg_nudge_no_descriptor]

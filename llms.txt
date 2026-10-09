@@ -46,6 +46,8 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [plugins/anti-hall/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/README.md): the plugin directory page (what it does, install, data sent).
 - [plugins/anti-hall/codex/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/codex/README.md): the Codex port, hook subset, skills, OMX mapping.
 - [docs/README.md](https://github.com/talas9/anti-hall/blob/main/docs/README.md): the documentation start page, a grouped index of every doc.
+- [Docs site](https://talas9.github.io/anti-hall/): the same docs as a searchable site (MkDocs, GitHub Pages).
+- [docs/REPO-PIPELINES.md](https://github.com/talas9/anti-hall/blob/main/docs/REPO-PIPELINES.md): every GitHub workflow, its trigger and whether it gates, and the repository policies.
 - [docs/CONTRACT-1.0.md](https://github.com/talas9/anti-hall/blob/main/docs/CONTRACT-1.0.md): the 1.0 compatibility contract (stable CLIs, hooks, settings, paths).
 - [docs/AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md): the optional ah-engine: install (pinned sha256), go-live and rollback, failover and self-heal, telemetry, what still runs on Node, pre-release measurements.
 - [docs/DEVELOPMENT.md](https://github.com/talas9/anti-hall/blob/main/docs/DEVELOPMENT.md): build, test and release the plugin and the engine.
@@ -171,7 +173,6 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | devswarm | DevSwarm integration: mesh CLI, recovery, auto-archive/prune, retention, app DB, screenshot sync. |
 | jev | Jev classifier activation, modes per integration, report. |
 | defects | File/list/show/rule on anti-hall defect reports. |
-| flutter-debug | Agent-driven Flutter run/hot-reload/drive/screenshot debug loop (plus the `flutter-debug` agent). |
 
 `skills/MODEL-POLICY.md` is the shared model roster (Claude + Codex tables).
 
@@ -186,7 +187,6 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | anti-hall-defects | defects |
 | anti-hall-devswarm | devswarm |
 | anti-hall-doctor | doctor |
-| anti-hall-flutter-debug | flutter-debug |
 | anti-hall-handover | handover |
 | anti-hall-install-statusline | install-statusline (explains what applies on Codex) |
 | anti-hall-jev | jev |

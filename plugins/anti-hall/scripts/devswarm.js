@@ -577,6 +577,21 @@ function run(argv, ctx0) {
   } finally { setSeatGuard(prevGuard.ctx, prevGuard.verdict); }
 }
 
+// resolveTargetId(raw, ctx, action) -> { id } | { error }. The ONE canonical resolver for every
+// operator verb that targets ANOTHER workspace (nudge, gate, plan, scope, wake-directive, respawn,
+// correct, archive-ignore/unignore, inbox count/read/ack): accepts every id form `spawn` hands back
+// (meshId, full uuid, unique uuid prefix) through resolveArchiveId — the same resolver archive /
+// unarchive / archive-request use. An id nothing resolves stays as given (the verb's own
+// "not registered" answer is unchanged); an ambiguous one is refused with the candidate list.
+// NOT used by the caller's-own-identity verbs (register, ensure, heartbeat, done, inbox pull/tick/
+// ack-primary): aliasing those would write liveness/ownership under another workspace's id.
+function resolveTargetId(raw, ctx, action) {
+  const r = resolveArchiveId(raw, ctx);
+  if (r.ok) return { id: r.id };
+  if (r.candidates) return { error: { code: 2, result: Object.assign({ action, id: raw }, r) } };
+  return { id: raw };
+}
+
 function runArmed(cmd, positionals, flags, ctx, argv) {
   // v0.108.0 Primary seat: a session that does not hold a LIVE-held seat may
   // not send, ack, spawn or merge-broadcast as the Primary.
@@ -635,8 +650,13 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       }
       case 'inbox': {
         const sub = positionals[1];
-        const id = positionals[2];
+        let id = positionals[2];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        if (sub === 'count' || sub === 'read' || sub === 'ack') {
+          const rt = resolveTargetId(id, ctx, 'inbox-' + sub);
+          if (rt.error) return rt.error;
+          id = rt.id;
+        }
         // 'pull' is the NATIVE-DRAIN verb (Phase 7 send-time self-heal, D-O-D7):
         // self-heal runs BEFORE it, never before the other (non-draining) inbox
         // subcommands (count/read/ack/messages).
@@ -658,9 +678,11 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         return { code: 0, result: cmdWorkspacesList(flags, ctx) };
       }
       case 'gate': {
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const r = cmdGate(id, flags, ctx);
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const rt = resolveTargetId(rawId, ctx, 'gate');
+        if (rt.error) return rt.error;
+        const r = cmdGate(rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'done': {
@@ -673,7 +695,15 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       case 'nudge': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const r = cmdNudge(id, flags, ctx);
+        // The `id` echo is a pinned contract (the id exactly as the caller gave it), so the
+        // canonical id is passed down but the echo is restored; `resolvedId` carries the canonical one.
+        const rt = resolveTargetId(id, ctx, 'nudge');
+        if (rt.error) return rt.error;
+        const r = cmdNudge(rt.id, flags, ctx);
+        if (r && rt.id !== id) {
+          if (r.id !== undefined) r.id = id;
+          r.resolvedId = rt.id;
+        }
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'archive': {
@@ -698,20 +728,24 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       case 'unarchive': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const resolvedU = resolveArchiveId(id, ctx);
+        const resolvedU = resolveArchiveId(id, ctx, { unarchive: true });
         if (resolvedU.candidates) return { code: 2, result: Object.assign({ action: 'unarchive', id }, resolvedU) };
         const r = cmdUnarchive(resolvedU.ok ? resolvedU.id : id, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'archive-ignore': {
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        return { code: 0, result: cmdArchiveIgnore(id, ctx, { set: true }) };
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const rt = resolveTargetId(rawId, ctx, 'archive-ignore');
+        if (rt.error) return rt.error;
+        return { code: 0, result: cmdArchiveIgnore(rt.id, ctx, { set: true }) };
       }
       case 'archive-unignore': {
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        return { code: 0, result: cmdArchiveIgnore(id, ctx, { set: false }) };
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const rt = resolveTargetId(rawId, ctx, 'archive-unignore');
+        if (rt.error) return rt.error;
+        return { code: 0, result: cmdArchiveIgnore(rt.id, ctx, { set: false }) };
       }
       case 'archive-request': {
         const id = positionals[1];
@@ -822,7 +856,12 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         // C (Stop-gate reassert trim follow-up): on-demand reprint of the
         // SessionStart MAILBOX WAKE directive, pure read, never touches the
         // store. See cmdWakeDirective's own header for the full rationale.
-        const wid = positionals[1];
+        let wid = positionals[1];
+        if (isSafeId(wid)) {
+          const rt = resolveTargetId(wid, ctx, 'wake-directive');
+          if (rt.error) return rt.error;
+          wid = rt.id;
+        }
         const r = cmdWakeDirective(wid, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
@@ -853,16 +892,20 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       case 'plan': {
         // Meeseeks P1: `plan set <id> --steps …|--steps-file P [--scope …]` / `plan show <id>`.
         const sub = positionals[1];
-        const id = positionals[2];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'plan', error: 'usage: devswarm.js plan set|show <id> …' } };
-        const r = cmdPlan(sub, id, flags, ctx);
+        const rawId = positionals[2];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, action: 'plan', error: 'usage: devswarm.js plan set|show <id> …' } };
+        const rt = resolveTargetId(rawId, ctx, 'plan');
+        if (rt.error) return rt.error;
+        const r = cmdPlan(sub, rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'scope': {
         // Meeseeks P2: the child tags user-requested extra work.
-        const id = positionals[2];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'scope', error: 'usage: devswarm.js scope add <id> --glob <glob> --note TEXT' } };
-        const r = cmdScope(positionals[1], id, flags, ctx);
+        const rawId = positionals[2];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, action: 'scope', error: 'usage: devswarm.js scope add <id> --glob <glob> --note TEXT' } };
+        const rt = resolveTargetId(rawId, ctx, 'scope');
+        if (rt.error) return rt.error;
+        const r = cmdScope(positionals[1], rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'supervision-report': {
@@ -875,16 +918,20 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       }
       case 'respawn': {
         // Meeseeks P3: Primary-run respawn after a warning (never automatic).
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'respawn', error: 'usage: devswarm.js respawn <id> [--dry-run]' } };
-        const r = cmdRespawn(id, flags, ctx);
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, action: 'respawn', error: 'usage: devswarm.js respawn <id> [--dry-run]' } };
+        const rt = resolveTargetId(rawId, ctx, 'respawn');
+        if (rt.error) return rt.error;
+        const r = cmdRespawn(rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'correct': {
         // Meeseeks P2: the Primary's correction for a straying child.
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'correct', error: 'usage: devswarm.js correct <id> [--dry-run]' } };
-        const r = cmdCorrect(id, flags, ctx);
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, action: 'correct', error: 'usage: devswarm.js correct <id> [--dry-run]' } };
+        const rt = resolveTargetId(rawId, ctx, 'correct');
+        if (rt.error) return rt.error;
+        const r = cmdCorrect(rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'healthcheck': {

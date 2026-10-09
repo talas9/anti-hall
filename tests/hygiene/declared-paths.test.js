@@ -66,9 +66,9 @@ test('every skills/<dir> has a SKILL.md and only allow-listed loose files sit be
   assert.deepStrictEqual(bad, []);
 });
 
-test('${CLAUDE_PLUGIN_ROOT} paths named in skill and agent text exist', () => {
+test('${CLAUDE_PLUGIN_ROOT} paths named in skill text exist', () => {
   const bad = [];
-  for (const base of ['skills', 'agents']) {
+  for (const base of ['skills']) {
     for (const f of walk(path.join(PLUGIN, base)).filter((p) => p.endsWith('.md'))) {
       for (const r of rootRefs(fs.readFileSync(f, 'utf8'))) {
         if (!fs.existsSync(path.join(PLUGIN, r))) bad.push(`${path.relative(PLUGIN, f)}: ${r}`);

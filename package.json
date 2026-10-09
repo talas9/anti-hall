@@ -1,6 +1,6 @@
 {
   "name": "anti-hall-tests",
-  "version": "0.202.0",
+  "version": "0.300.0",
   "private": true,
   "description": "Test harness for the anti-hall plugin. The plugin version is in plugins/anti-hall/.claude-plugin/plugin.json.",
   "scripts": {

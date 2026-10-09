@@ -709,6 +709,78 @@ function submodulePathsFor(cwd) {
   } catch (_) { return null; }
 }
 
+
+// submoduleGitDir(common, wt, S) -> the submodule's own git dir under the superproject's common dir.
+// `.git/modules/<name>` is keyed by the submodule NAME (usually == path); read the name from the
+// worktree's .gitmodules, fall back to the path.
+function submoduleGitDir(common, wt, S) {
+  try {
+    const text = fs.readFileSync(path.join(wt, '.gitmodules'), 'utf8');
+    const re = /\[submodule\s+"([^"]+)"\]([^\[]*)/g;
+    let m;
+    while ((m = re.exec(text))) {
+      const pm = /^\s*path\s*=\s*(.+?)\s*$/m.exec(m[2]);
+      if (pm && pm[1] === S) {
+        const cand = path.join(common, 'modules', m[1]);
+        if (fs.existsSync(cand)) return cand;
+      }
+    }
+  } catch (_) { /* fall through */ }
+  return path.join(common, 'modules', S);
+}
+
+// fetchMissingSubmoduleCommit(modGit, sha) -> { ok, fetched, error? }. If `sha` is already a commit in
+// the submodule's object store: nothing to do. Else `git fetch origin` (then, if still absent, `fetch origin
+// <sha>`), each bounded. Fetch only ADDS objects/refs; nothing is moved or deleted. Never throws.
+function fetchMissingSubmoduleCommit(modGit, sha) {
+  const g = (args) => spawnSync('git', ['-C', modGit].concat(args), { encoding: 'utf8', timeout: SPAWN_FETCH_TIMEOUT_MS });
+  const have = () => { const r = g(['cat-file', '-e', sha + '^{commit}']); return r.status === 0; };
+  try {
+    if (have()) return { ok: true, fetched: false };
+    const errs = [];
+    const f1 = g(['fetch', '--quiet', 'origin']);
+    if (f1.status !== 0) errs.push(String(f1.stderr || f1.error || 'fetch failed').trim().split('\n').pop());
+    if (have()) return { ok: true, fetched: true };
+    const f2 = g(['fetch', '--quiet', 'origin', sha]);
+    if (f2.status !== 0) errs.push(String(f2.stderr || f2.error || 'fetch of commit failed').trim().split('\n').pop());
+    if (have()) return { ok: true, fetched: true };
+    return { ok: false, fetched: false, error: errs.filter(Boolean).join('; ') || 'commit not found on origin' };
+  } catch (e) { return { ok: false, fetched: false, error: String(e && e.message || e) }; }
+}
+
+// preflightSubmoduleCommits(cwd, rest) -> { fetched: [{path, sha}], failed: [{path, sha, error}] }.
+// `hivecontrol workspace create` runs `git worktree add -b <branch> <wt>/<sub> <pinned-sha>` per submodule from
+// the LOCAL module clone; a pinned sha pushed to the submodule's remote after that clone last fetched makes it
+// die with `fatal: invalid reference` (field defect). Before create: for each declared submodule, resolve the sha
+// the source ref pins and, if the local module lacks it, fetch it. Bounded, fail-open (a failure is reported in
+// `failed`, never throws, never blocks the create).
+function preflightSubmoduleCommits(cwd, rest) {
+  const res = { fetched: [], failed: [] };
+  try {
+    const paths = submodulePathsFor(cwd);
+    if (!paths) return res;
+    const common = gitCommonDirFor(cwd);
+    if (!common) return res;
+    const src = extractFlagValue(rest, '-s', '--source');
+    const refs = src ? [src, 'origin/' + src] : ['HEAD'];
+    const g = (args) => spawnSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', timeout: SPAWN_FETCH_TIMEOUT_MS });
+    for (const S of paths) {
+      let sha = null;
+      for (const ref of refs) {
+        const r = g(['rev-parse', '--verify', '--quiet', ref + ':' + S]);
+        if (r.status === 0 && /^[0-9a-f]{40}$/.test(String(r.stdout).trim())) { sha = String(r.stdout).trim(); break; }
+      }
+      if (!sha) continue;
+      const modGit = submoduleGitDir(common, cwd, S);
+      if (!fs.existsSync(modGit)) continue; // submodule never initialised locally: nothing to fetch into
+      const fe = fetchMissingSubmoduleCommit(modGit, sha);
+      if (!fe.ok) res.failed.push({ path: S, sha, error: fe.error });
+      else if (fe.fetched) res.fetched.push({ path: S, sha });
+    }
+  } catch (_) { /* fail-open */ }
+  return res;
+}
+
 // parseSubmoduleWorktreeFailures(res, cwd) -> [{ path, error }]. TOLERANT,
 // TEXT-based extraction (hivecontrol's `workspace create` does NOT document a
 // per-submodule failure JSON shape — the KB has no pinned field for it, and
@@ -759,11 +831,25 @@ function parseSubmoduleWorktreeFailures(res, cwd) {
     if (existsLine.test(m[0])) continue; // already captured above with its path
     const line = m[1].trim();
     const mentionsSubmodulePath = Array.isArray(submodulePaths) && submodulePaths.some((sp) => line.includes(sp));
-    if (!(/\bworktree\b/i.test(line) || mentionsSubmodulePath)) continue; // not tied to a submodule worktree add
+    // CONTEXT ATTRIBUTION (field defect: `fatal: invalid reference: <sha>` was silently dropped): git's own
+    // fatal line carries neither "worktree" nor the path; the create output echoes the failing command on
+    // the line before it (`git worktree add -b <branch> <path> <sha>`). A fatal that directly follows such an
+    // echo (no other `fatal:` in between) belongs to that submodule worktree add, and gives us its path.
+    const before = text.slice(Math.max(0, m.index - 600), m.index);
+    const echoes = before.match(/git worktree add\b[^\n]*?(?=\\n|\n|$)/g);
+    const echo = echoes && echoes.length ? echoes[echoes.length - 1] : null;
+    const afterEcho = echo ? before.slice(before.lastIndexOf(echo) + echo.length) : '';
+    const tiedByEcho = !!echo && !/fatal:/.test(afterEcho);
+    if (!(/\bworktree\b/i.test(line) || mentionsSubmodulePath || tiedByEcho)) continue; // not tied to a submodule worktree add
+    let failPath = null;
+    if (tiedByEcho) {
+      const pm = /git worktree add\s+(?:-b\s+\S+\s+)?(\S+)/.exec(echo);
+      if (pm) failPath = pm[1].replace(/^['"]|['"]$/g, '');
+    }
     const key = 'generic:' + line;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ path: null, error: line });
+    out.push({ path: failPath, error: line });
   }
   return out;
 }
@@ -771,13 +857,13 @@ function parseSubmoduleWorktreeFailures(res, cwd) {
 // repairSubmoduleWorktrees(failures, text, branch, cwd) -> { repaired, remaining }
 // (0.120.8, a downstream project field defect, 3rd occurrence). ROOT CAUSE (proven from the
 // DevSwarm app's own source + its log): `workspace create` starts the
-// `worktreeInclude` copy (`.devswarm/config.json`, e.g. `skyflutter/.env`) in
+// `worktreeInclude` copy (`.devswarm/config.json`, e.g. `appflutter/.env`) in
 // the BACKGROUND (`copyUntrackedFiles`, not awaited) and then runs
 // `git worktree add -b <branch> <wt>/<sub> <sha>` per submodule. The copy does
 // `mkdir -p <wt>/<sub>` + `cp -Rp`, so the submodule dir is NON-EMPTY when
 // `worktree add` runs -> git refuses ("'<path>' already exists"). Only a
-// submodule that has an include file present is hit (skyflutter/.env exists;
-// skyinform/.env.local and skywebsite/.env did not). A later workspace setup
+// submodule that has an include file present is hit (appflutter/.env exists;
+// mailerapp/.env.local and appwebsite/.env did not). A later workspace setup
 // step may remove the dir, which is why it can look "missing" afterwards while
 // the branch (created by the failed attempt chain) remains. The fix belongs to
 // DevSwarm (await the copy / skip gitlink paths); this is the loss-free
@@ -802,13 +888,14 @@ function repairSubmoduleWorktrees(failures, text, branch, cwd) {
     const P = f && f.path;
     const S = Array.isArray(subPaths) && typeof P === 'string' && path.isAbsolute(P)
       ? subPaths.find((sp) => P.endsWith('/' + sp)) : null;
-    if (!S || f.error !== 'already exists') { remaining.push(f); continue; }
+    const missingObject = !!(f && /invalid reference|not a valid object name|unable to read tree|bad object/i.test(String(f.error || '')));
+    if (!S || (f.error !== 'already exists' && !missingObject)) { remaining.push(f); continue; }
     let aside = null;
     try {
       const wt = P.slice(0, -(S.length + 1));
       const common = gitCommonDirFor(wt);
       if (!common) { remaining.push(f); continue; }
-      const modGit = path.join(common, 'modules', S);
+      const modGit = submoduleGitDir(common, wt, S);
       // Presence of the submodule worktree's own link file (not identity resolution).
       const linkFile = path.join(P, '.git');
       if (!fs.existsSync(modGit) || fs.existsSync(linkFile)) { remaining.push(f); continue; }
@@ -821,6 +908,12 @@ function repairSubmoduleWorktrees(failures, text, branch, cwd) {
       if (cm) { b = cm[1]; sha = cm[2]; }
       if (!b) { remaining.push(f); continue; }
       if (!sha) { const r = g(wt, ['rev-parse', 'HEAD:' + S]); if (r.status === 0 && /^[0-9a-f]{40}$/.test(r.stdout.trim())) sha = r.stdout.trim(); }
+      // The pinned commit may exist only on the submodule's remote (pushed after the local module clone
+      // last fetched): fetch it (bounded, fail-open) before retrying the add.
+      if (missingObject && sha) {
+        const fe = fetchMissingSubmoduleCommit(modGit, sha);
+        if (!fe.ok) throw new Error('pinned commit ' + sha + ' is missing from the local submodule clone and could not be fetched: ' + fe.error);
+      }
       const movedBack = [];
       let st = null;
       try { st = fs.lstatSync(P); } catch (_) { st = null; }
@@ -982,6 +1075,11 @@ function cmdSpawn(rest, ctx) {
   let createTimeoutMs = SPAWN_CREATE_TIMEOUT_MS_DEFAULT;
   try { createTimeoutMs = require('../../hooks/lib/settings.js').get('devswarm', 'spawnCreateTimeoutMs', SPAWN_CREATE_TIMEOUT_MS_DEFAULT, { env, home: ctx.home }); } catch (_) { createTimeoutMs = SPAWN_CREATE_TIMEOUT_MS_DEFAULT; }
   if (!(Number.isFinite(createTimeoutMs) && createTimeoutMs > 0)) createTimeoutMs = SPAWN_CREATE_TIMEOUT_MS_DEFAULT;
+  // Fetch any submodule commit the source pins but the local module clone lacks, BEFORE create runs its
+  // per-submodule `git worktree add` (see preflightSubmoduleCommits). Not counted in createMs.
+  const preStart = Date.now();
+  const submodulePreflight = preflightSubmoduleCommits(cwd, rest);
+  timings.submodulePreflightMs = Date.now() - preStart;
   const createStart = Date.now();
   const res = run({ args, env: ctx.env, cwd, timeout: createTimeoutMs });
   timings.createMs = Date.now() - createStart;
@@ -1205,8 +1303,15 @@ function cmdSpawn(rest, ctx) {
         + (submoduleRepaired.length && submoduleRepaired[0].sha ? ' (' + submoduleRepaired[0].sha + ')' : '')
         + ', not the submodule\'s default branch.'
       : undefined,
-    warnings: (submoduleFailures.length || submoduleRepaired.length || sourceNote) ? [].concat(
+    // Present ONLY when the pre-create submodule fetch did something or failed.
+    submodulePreflight: (submodulePreflight.fetched.length || submodulePreflight.failed.length) ? submodulePreflight : undefined,
+    warnings: (submoduleFailures.length || submoduleRepaired.length || submodulePreflight.failed.length || sourceNote) ? [].concat(
       sourceNote ? [sourceNote] : [],
+      submodulePreflight.failed.length ? [
+        submodulePreflight.failed.length + ' submodule commit(s) pinned by the source are missing from the local submodule clone and '
+        + 'could not be fetched before create (' + submodulePreflight.failed.map((x) => x.path + '@' + String(x.sha).slice(0, 12) + ': ' + x.error).join('; ')
+        + '). Fetch them in the submodule, then re-create that submodule worktree.',
+      ] : [],
       submoduleRepaired.length ? [
         submoduleRepaired.length + ' submodule worktree(s) failed at create (a pre-copied worktreeInclude file made the path '
         + 'non-empty) and were repaired by spawn — see submoduleRepaired.',
@@ -1214,8 +1319,9 @@ function cmdSpawn(rest, ctx) {
       ...submoduleRepaired.reduce((acc, x) => acc.concat(x.warnings || []), []),
       submoduleFailures.length ? [
         submoduleFailures.length + ' of the workspace\'s submodule worktree(s) failed to create — see '
-        + 'submoduleFailures. The workspace may still be usable for the primary repo but broken for the '
-        + 'affected submodule(s); this was NOT auto-repaired.',
+        + 'submoduleFailures (' + submoduleFailures.map((x) => (x.path || '?') + ': ' + (x.repairError || x.error)).join('; ')
+        + '). ok stays true because the parent worktree was created and is usable; the affected '
+        + 'submodule worktree(s) are missing/broken and were NOT auto-repaired.',
       ] : []) : undefined,
     // DISTINCT from `created`: the workspace exists, but a session running in it
     // is a separate fact with separate evidence. Never `false` — absence of a

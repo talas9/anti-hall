@@ -197,7 +197,7 @@ test('reapLegacyUnitsForRepo returns {plan:[],stopped:[]} when no worktrees are 
 });
 
 // ---------------------------------------------------------------------------
-// 0.109 — installer efficiency (SkyCrew live evidence): this installer runs
+// 0.109 — installer efficiency (DemoApp live evidence): this installer runs
 // on EVERY workspace spawn. Before this fix, `reapLegacyUnitsForRepo` spawned
 // `launchctl unload` for EVERY enumerated legacy worktree unconditionally, so
 // ~33 already-reaped legacy labels each paid a real spawn (printing

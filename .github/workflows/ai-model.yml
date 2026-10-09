@@ -1,0 +1,399 @@
+# Reusable model step for community.yml, pr-check.yml and roadmap.yml.
+#
+# Provider chain (repo variable AI_PROVIDER, default "claude,copilot"; "none" = rules only):
+#   1. Claude via anthropics/claude-code-action (secret CLAUDE_CODE_OAUTH_TOKEN). Skipped cleanly
+#      when the secret is empty.
+#   2. Copilot CLI with the workflow GITHUB_TOKEN (permission copilot-requests: write, billed to
+#      the repository owner's Copilot seat) when Claude is skipped, fails, or hits a limit.
+#   3. Neither: provider "none" with the reason; the caller applies its rules-only result.
+#
+# Safety: these jobs hold only a read token. The checkout is the trusted default branch, never PR
+# code. Tools are none, or read-only (Read/Grep/Glob, plus WebSearch when asked). The reply is
+# schema-checked again by the caller, which uses only enum values and sanitized, capped text.
+name: AI model (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      purpose:
+        description: Prompt name (moderate, brief, qa-answer, pr-summary, digest)
+        type: string
+        required: true
+      prompt:
+        description: Full prompt text built by lib.buildPrompt (untrusted text is fenced inside it)
+        type: string
+        required: true
+      schema:
+        description: JSON schema string for the reply
+        type: string
+        required: true
+      claude_model:
+        description: Claude model alias (haiku, sonnet)
+        type: string
+        default: haiku
+      copilot_model:
+        description: Copilot CLI model for the fallback slot (repo variable COPILOT_MODEL overrides it)
+        type: string
+        default: ""
+      chain:
+        description: Ordered providers, e.g. "claude,copilot"
+        type: string
+        default: claude,copilot
+      tools:
+        description: none | read | read-web
+        type: string
+        default: none
+      max_turns:
+        type: number
+        default: 2
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN_2:
+        required: false
+    outputs:
+      result:
+        value: ${{ jobs.pick.outputs.result }}
+      provider:
+        description: Slot that answered (primary, secondary, copilot or none)
+        value: ${{ jobs.pick.outputs.provider }}
+      reason:
+        value: ${{ jobs.pick.outputs.reason }}
+      latency_ms:
+        value: ${{ jobs.pick.outputs.latency_ms }}
+      turns:
+        value: ${{ jobs.pick.outputs.turns }}
+      tokens:
+        value: ${{ jobs.pick.outputs.tokens }}
+
+permissions:
+  contents: read
+
+jobs:
+  claude:
+    if: contains(format(',{0},', inputs.chain), ',claude,')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    outputs:
+      ok: ${{ steps.out.outputs.ok }}
+      slot: ${{ steps.out.outputs.slot }}
+      result: ${{ steps.out.outputs.result }}
+      reason: ${{ steps.out.outputs.reason }}
+      latency_ms: ${{ steps.out.outputs.latency_ms }}
+      turns: ${{ steps.out.outputs.turns }}
+      tokens: ${{ steps.out.outputs.tokens }}
+    steps:
+      - name: Check for the Claude credentials
+        id: cred
+        env:
+          OAUTH1: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OAUTH2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
+          TOOLS: ${{ inputs.tools }}
+        run: |
+          if [ -n "$OAUTH1" ]; then echo "ok1=true" >> "$GITHUB_OUTPUT"; else echo "ok1=false" >> "$GITHUB_OUTPUT"; echo "::notice::Claude primary skipped: CLAUDE_CODE_OAUTH_TOKEN is not set."; fi
+          if [ -n "$OAUTH2" ]; then echo "ok2=true" >> "$GITHUB_OUTPUT"; else echo "ok2=false" >> "$GITHUB_OUTPUT"; echo "::notice::Claude secondary skipped: CLAUDE_CODE_OAUTH_TOKEN_2 is not set."; fi
+          echo "any=$([ -n "$OAUTH1$OAUTH2" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "t0=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
+          case "$TOOLS" in
+            read) echo 'tools=Read,Grep,Glob' >> "$GITHUB_OUTPUT" ;;
+            read-web) echo 'tools=Read,Grep,Glob,WebSearch' >> "$GITHUB_OUTPUT" ;;
+            *) echo 'tools=' >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Checkout the default branch (trusted)
+        if: steps.cred.outputs.any == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Claude (primary token)
+        id: claude1
+        if: steps.cred.outputs.ok1 == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@58985842b834ed26087302ba27d07bc24ca8697a # v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: "*"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: ${{ inputs.prompt }}
+          claude_args: |
+            --model ${{ inputs.claude_model }}
+            --max-turns ${{ inputs.max_turns }}
+            --tools "${{ steps.cred.outputs.tools }}"
+            --disallowedTools "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,Task,mcp__*"
+            --json-schema '${{ inputs.schema }}'
+
+      # Decide the failover at once: no sleep, no backoff, no retry of the primary. The log text
+      # only labels the reason; when it cannot be read, or the primary did not answer for any other
+      # reason, the secondary still runs (fail over on ANY primary failure).
+      - name: Classify the primary result
+        id: why1
+        if: always() && steps.cred.outputs.any == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OK1: ${{ steps.cred.outputs.ok1 }}
+          OUTCOME: ${{ steps.claude1.outcome }}
+          STRUCTURED: ${{ steps.claude1.outputs.structured_output }}
+          EXEC_FILE: ${{ steps.claude1.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            let text = '';
+            try { text = fs.readFileSync(process.env.EXEC_FILE, 'utf8').slice(-6000); } catch { /* no log */ }
+            // Structure of the final result record (no model text): shows an instant, zero-cost
+            // error result (account/limit/auth) apart from a real answer that lacked structure.
+            try {
+              const log = JSON.parse(fs.readFileSync(process.env.EXEC_FILE, 'utf8'));
+              const res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
+              core.info(`primary result record: subtype=${res.subtype} is_error=${res.is_error} turns=${res.num_turns} cost=${res.total_cost_usd} duration_ms=${res.duration_ms} api_error_status=${res.api_error_status ?? 'n/a'} keys=${Object.keys(res).join(',')}`);
+              if (res.api_error_status) text += ` api_error_status ${res.api_error_status}`;
+              if (res.is_error) await core.summary.addRaw(`Claude primary error: HTTP ${res.api_error_status ?? 'n/a'}, cost ${res.total_cost_usd}, ${res.duration_ms} ms\n\n`, true).write();
+              if (res.is_error && typeof res.result === 'string') {
+                text += ' ' + res.result.slice(0, 300);
+                // Only the CLI's own error line (limit, auth, ...) goes to the job summary; never the prompt or reply.
+                await core.summary.addRaw(`Claude primary error result (HTTP ${res.api_error_status ?? 'n/a'}): ${String(res.result).slice(0, 200).replace(/[\r\n|]+/g, ' ')} (cost ${res.total_cost_usd}, ${res.duration_ms} ms)\n\n`, true).write();
+              }
+            } catch { /* no execution file */ }
+            let why = '';
+            if (process.env.OK1 !== 'true') why = 'secret empty';
+            else if (process.env.OUTCOME !== 'success') {
+              if (/api_error_status 40[13]/.test(text)) why = 'auth error (token rejected, HTTP ' + text.match(/api_error_status (\d+)/)[1] + ')';
+              else if (/api_error_status 429|usage.?limit|too many requests|quota|credit/i.test(text)) why = 'usage/rate limit';
+              else if (/overloaded|529|503/i.test(text)) why = 'overloaded';
+              else if (/401|403|unauthori[sz]ed|authentication|invalid.*(token|credential)|expired/i.test(text)) why = 'auth error';
+              else why = text ? 'failed (cause not recognised)' : 'failed (no log, cause unknown)';
+            } else if (!(process.env.STRUCTURED || '').trim()) why = 'no structured output';
+            core.setOutput('failover', why ? 'true' : 'false');
+            core.setOutput('why', why);
+            if (why) core.info(`primary did not answer: ${why}; failing over to the secondary now`);
+
+      - name: Claude (secondary token)
+        id: claude2
+        if: always() && steps.cred.outputs.ok2 == 'true' && steps.claude1.outcome != 'success' && steps.why1.outputs.failover == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@58985842b834ed26087302ba27d07bc24ca8697a # v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: "*"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
+          prompt: ${{ inputs.prompt }}
+          claude_args: |
+            --model ${{ inputs.claude_model }}
+            --max-turns ${{ inputs.max_turns }}
+            --tools "${{ steps.cred.outputs.tools }}"
+            --disallowedTools "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,Task,mcp__*"
+            --json-schema '${{ inputs.schema }}'
+
+      - name: Classify the secondary result
+        id: why2
+        if: always() && steps.claude2.outcome != 'skipped' && steps.cred.outputs.ok2 == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OUTCOME: ${{ steps.claude2.outcome }}
+          STRUCTURED: ${{ steps.claude2.outputs.structured_output }}
+          EXEC_FILE: ${{ steps.claude2.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            let text = '';
+            try {
+              const log = JSON.parse(fs.readFileSync(process.env.EXEC_FILE, 'utf8'));
+              const res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
+              core.info(`secondary result record: subtype=${res.subtype} is_error=${res.is_error} turns=${res.num_turns} cost=${res.total_cost_usd} duration_ms=${res.duration_ms} api_error_status=${res.api_error_status ?? 'n/a'} keys=${Object.keys(res).join(',')}`);
+              if (res.api_error_status) text = `api_error_status ${res.api_error_status}`;
+              if (res.is_error) await core.summary.addRaw(`Claude secondary error: HTTP ${res.api_error_status ?? 'n/a'}, cost ${res.total_cost_usd}, ${res.duration_ms} ms\n\n`, true).write();
+              if (res.is_error && typeof res.result === 'string') {
+                text += ' ' + res.result.slice(0, 300);
+                await core.summary.addRaw(`Claude secondary error result (HTTP ${res.api_error_status ?? 'n/a'}): ${String(res.result).slice(0, 200).replace(/[\r\n|]+/g, ' ')} (cost ${res.total_cost_usd}, ${res.duration_ms} ms)\n\n`, true).write();
+              }
+            } catch { /* no execution file */ }
+            let why = '';
+            if (process.env.OUTCOME !== 'success' || !(process.env.STRUCTURED || '').trim()) {
+              if (/api_error_status 40[13]/.test(text)) why = 'auth error (token rejected, HTTP ' + text.match(/api_error_status (\d+)/)[1] + ')';
+              else if (/api_error_status 429|usage.?limit|too many requests|quota|credit/i.test(text)) why = 'usage/rate limit';
+              else if (/overloaded|529|503/i.test(text)) why = 'overloaded';
+              else why = text ? 'error result (cause not recognised)' : 'no structured output';
+            }
+            core.setOutput('why', why);
+
+      - name: Collect the Claude result
+        id: out
+        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ANY: ${{ steps.cred.outputs.any }}
+          WHY1: ${{ steps.why1.outputs.why }}
+          WHY2: ${{ steps.why2.outputs.why }}
+          OUTCOME1: ${{ steps.claude1.outcome }}
+          OUTCOME2: ${{ steps.claude2.outcome }}
+          STRUCTURED1: ${{ steps.claude1.outputs.structured_output }}
+          STRUCTURED2: ${{ steps.claude2.outputs.structured_output }}
+          EXEC1: ${{ steps.claude1.outputs.execution_file }}
+          EXEC2: ${{ steps.claude2.outputs.execution_file }}
+          T0: ${{ steps.cred.outputs.t0 }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const latency = Date.now() - Number(process.env.T0 || Date.now());
+            const e = process.env;
+            const pickSlot = e.OUTCOME1 === 'success' && (e.STRUCTURED1 || '').trim() ? 'primary'
+              : e.OUTCOME2 === 'success' && (e.STRUCTURED2 || '').trim() ? 'secondary' : '';
+            const file = pickSlot === 'secondary' ? e.EXEC2 : e.EXEC1;
+            let turns = '', tokens = '';
+            try {
+              const log = JSON.parse(fs.readFileSync(file, 'utf8'));
+              const res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
+              turns = res.num_turns ?? '';
+              const u = res.usage || {};
+              tokens = (u.input_tokens || 0) + (u.output_tokens || 0) || '';
+            } catch { /* no execution file */ }
+            let reason = '';
+            if (!pickSlot) reason = e.ANY !== 'true' ? 'claude: both secrets empty' : `claude: primary ${e.WHY1 || 'failed'}; secondary ${e.OUTCOME2 ? (e.WHY2 || 'failed') : 'not available'}`;
+            else if (pickSlot === 'secondary') reason = `primary ${e.WHY1}`;
+            const out = pickSlot === 'secondary' ? e.STRUCTURED2 : e.STRUCTURED1;
+            core.setOutput('ok', pickSlot ? 'true' : 'false');
+            core.setOutput('slot', pickSlot);
+            core.setOutput('result', pickSlot ? out.trim() : '');
+            core.setOutput('reason', reason);
+            core.setOutput('latency_ms', String(latency));
+            core.setOutput('turns', String(turns));
+            core.setOutput('tokens', String(tokens));
+            core.info(pickSlot ? `claude ${pickSlot} answered in ${latency} ms, turns ${turns}${reason ? ' (' + reason + ')' : ''}` : reason);
+
+  copilot:
+    needs: claude
+    if: >-
+      always() &&
+      contains(format(',{0},', inputs.chain), ',copilot,') &&
+      needs.claude.outputs.ok != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      copilot-requests: write
+    outputs:
+      ok: ${{ steps.out.outputs.ok }}
+      result: ${{ steps.out.outputs.result }}
+      reason: ${{ steps.out.outputs.reason }}
+      latency_ms: ${{ steps.out.outputs.latency_ms }}
+    steps:
+      # Always checked out: the Copilot CLI install below needs .github/copilot-cli/package-lock.json.
+      # With tools 'none' only that folder is checked out (sparse), so the model sees no repo files.
+      - name: Checkout the default branch (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: ${{ inputs.tools == 'none' && '.github/copilot-cli' || '' }}
+          sparse-checkout-cone-mode: false
+
+      - name: Install Copilot CLI
+        run: |
+          npm ci --ignore-scripts --prefix .github/copilot-cli
+          echo "$GITHUB_WORKSPACE/.github/copilot-cli/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Copilot
+        id: run
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_MODEL: ${{ vars.COPILOT_MODEL || inputs.copilot_model }}
+          PROMPT: ${{ inputs.prompt }}
+          TOOLS: ${{ inputs.tools }}
+        run: |
+          t0=$(date +%s%3N)
+          echo "t0=$t0" >> "$GITHUB_OUTPUT"
+          if [ "$TOOLS" = "none" ]; then
+            cd "$(mktemp -d)"
+            set -- --excluded-tools=bash,list_bash,read_bash,stop_bash,write_bash,apply_patch,create,edit,view,list_agents,read_agent,task,write_agent,ask_user,glob,grep,skill,web_fetch
+          else
+            set -- --available-tools=view,glob,grep --allow-tool=read
+          fi
+          [ -n "$COPILOT_MODEL" ] || unset COPILOT_MODEL
+          timeout 300 copilot -p "$PROMPT" -s --no-ask-user --no-custom-instructions --disable-builtin-mcps \
+            --deny-tool=shell --deny-tool=write --deny-tool=url "$@" > "$RUNNER_TEMP/copilot.out" 2> "$RUNNER_TEMP/copilot.err"
+
+      - name: Collect the Copilot result
+        id: out
+        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OUTCOME: ${{ steps.run.outcome }}
+          T0: ${{ steps.run.outputs.t0 }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } };
+            const out = read(process.env.RUNNER_TEMP + '/copilot.out').trim();
+            const err = read(process.env.RUNNER_TEMP + '/copilot.err').slice(-2000);
+            const latency = process.env.T0 ? Date.now() - Number(process.env.T0) : '';
+            if (process.env.OUTCOME !== 'success') core.info(`copilot stderr tail: ${err.slice(-400).replace(/\s+/g, ' ')}`);
+            let reason = '';
+            if (process.env.OUTCOME !== 'success') reason = /rate.?limit|quota|429|credits/i.test(err) ? 'copilot: rate/usage limit' : 'copilot: failed';
+            else if (!out.includes('{')) reason = 'copilot: no JSON in reply';
+            core.setOutput('ok', reason ? 'false' : 'true');
+            core.setOutput('result', reason ? '' : out.slice(0, 20000));
+            core.setOutput('reason', reason);
+            core.setOutput('latency_ms', String(latency));
+            core.info(reason || `copilot ok in ${latency} ms`);
+
+  pick:
+    needs: [claude, copilot]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      result: ${{ steps.pick.outputs.result }}
+      provider: ${{ steps.pick.outputs.provider }}
+      reason: ${{ steps.pick.outputs.reason }}
+      latency_ms: ${{ steps.pick.outputs.latency_ms }}
+      turns: ${{ steps.pick.outputs.turns }}
+      tokens: ${{ steps.pick.outputs.tokens }}
+    steps:
+      - name: Pick the first provider that answered
+        id: pick
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const n = JSON.parse(process.env.NEEDS);
+            const c = n.claude.outputs || {}, p = n.copilot.outputs || {};
+            const reasons = [c.reason, p.reason].filter(Boolean);
+            if (n.claude.result === 'skipped') reasons.unshift('claude: not in chain');
+            if (n.copilot.result === 'skipped' && c.ok !== 'true') reasons.push('copilot: not in chain');
+            let pick = { provider: 'none', result: '', latency_ms: '', turns: '', tokens: '' };
+            if (c.ok === 'true') pick = { provider: c.slot || 'primary', result: c.result, latency_ms: c.latency_ms, turns: c.turns, tokens: c.tokens };
+            else if (p.ok === 'true') pick = { provider: 'copilot', result: p.result, latency_ms: p.latency_ms, turns: '', tokens: '' };
+            for (const [k, v] of Object.entries(pick)) core.setOutput(k, String(v || ''));
+            if (c.ok === 'true' && c.reason) reasons.push(c.reason);
+            core.setOutput('reason', reasons.join('; '));
+            const line = `slot: ${pick.provider}${reasons.length ? ' (' + reasons.join('; ') + ')' : ''}`;
+            core.info(line);
+            await core.summary.addRaw(`**AI slot used:** \`${pick.provider}\`${reasons.length ? ' - ' + reasons.join('; ') : ''}\n`, true).write();
+
+      # One tiny marker artifact per run that made a model call (slot != none). lib.budget counts
+      # these per day, so AI_DAILY_CAP limits model calls, not workflow runs.
+      - name: Record the model call for the daily cap
+        id: mark
+        if: always() && steps.pick.outputs.provider != 'none' && steps.pick.outputs.provider != ''
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          SLOT: ${{ steps.pick.outputs.provider }}
+        run: |
+          wf=$(basename "${WORKFLOW_REF%%@*}")
+          echo "name=ai-call-${wf}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/ai-call" && echo "$SLOT" > "$RUNNER_TEMP/ai-call/slot.txt"
+
+      - name: Upload the model-call marker
+        if: always() && steps.mark.outputs.name != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.mark.outputs.name }}
+          path: ${{ runner.temp }}/ai-call/slot.txt
+          retention-days: 2

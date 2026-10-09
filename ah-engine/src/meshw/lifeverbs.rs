@@ -76,7 +76,7 @@ pub fn unarchive(inv: &Inv, a: &Args) -> R<Answer> {
     if !is_safe_id(raw) {
         return Ok(bad_id());
     }
-    let id = match resolve_archive_id(inv, raw)? {
+    let id = match resolve_archive_id(inv, raw, true)? {
         Resolved::Id(x) => x,
         Resolved::Ambiguous(tpl, ids) => return Ok(Resolved::refusal(defaults::text("devswarm_cli.action_unarchive"), true, raw, tpl, &ids)),
     };
@@ -775,6 +775,11 @@ pub fn correct(inv: &Inv, a: &Args) -> R<Answer> {
     if !is_safe_id(id) {
         return Ok(fail_with(&[("action", action), ("error", s(defaults::text("devswarm_cli.msg_corr_usage")))]));
     }
+    let id = match crate::meshw::actverbs::resolve_target_id(inv, id, defaults::text("devswarm_cli.action_correct"))? {
+        Ok(x) => x,
+        Err(refused) => return Ok(refused),
+    };
+    let id = id.as_str();
     let now = inv.now as f64;
     let found = crate::meshw::plan::find(inv, id)?;
     let Some(found) = found.filter(|f| !crate::meshw::plan::steps_of(&f.plan).is_empty()) else {

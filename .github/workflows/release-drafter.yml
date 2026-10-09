@@ -1,0 +1,29 @@
+name: release-drafter
+
+# Keeps a DRAFT GitHub Release up to date with the pull requests merged into
+# main, grouped by their type:* label (config: .github/release-drafter.yml).
+# It never publishes a release and never creates a tag: tags and releases stay
+# manual (RELEASING.md). A draft release has no tag until someone publishes it.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          publish: false
+          prerelease: false
+          latest: false

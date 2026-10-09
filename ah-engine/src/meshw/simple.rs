@@ -352,6 +352,12 @@ fn ignore(inv: &Inv, a: &Args, set: bool) -> R<Answer> {
     if !is_safe_id(id) {
         return Ok(fail(defaults::text("devswarm_cli.msg_bad_id")));
     }
+    let action = defaults::text(if set { "devswarm_cli.action_archive_ignore" } else { "devswarm_cli.action_archive_unignore" });
+    let id = match crate::meshw::actverbs::resolve_target_id(inv, id, action)? {
+        Ok(x) => x,
+        Err(refused) => return Ok(refused),
+    };
+    let id = id.as_str();
     let home = home_str(inv)?;
     let dir = devswarm_root(Path::new(&home)).join(defaults::text("devswarm_cli.ignore_dir"));
     let file = dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
@@ -694,6 +700,11 @@ fn wake_directive(inv: &Inv, a: &Args) -> R<Answer> {
     if !is_safe_id(id) {
         return Ok(fail(defaults::text("devswarm_cli.msg_bad_id")));
     }
+    let id = match crate::meshw::actverbs::resolve_target_id(inv, id, defaults::text("devswarm_cli.action_wake_directive"))? {
+        Ok(x) => x,
+        Err(refused) => return Ok(refused),
+    };
+    let id = id.as_str();
     let child = inv.env.get(defaults::text("devswarm_role.branch_env")).is_some_and(|v| !js_trim(v).is_empty());
     if !child {
         return defer("primary-directive");

@@ -228,6 +228,7 @@ fn whole_file_state_is_written_atomically_outside_the_listed_exceptions() {
         ("src/checks/phase_tracker/mod.rs", "the phase log is written in place so a symlinked log is written through, as Node does"),
         ("src/dispatch/mod.rs", "the empty done marker the wrapper tests for existence"),
         ("src/doctor/selftest.rs", "fixtures in the self-test's scratch home"),
+        ("src/doctor/devswarm.rs", "fixtures in the DevSwarm hook self-test's scratch home (`selftest::Scratch`), never state"),
         ("src/defaults/load.rs", "the one-time backup copy of an edited defaults file (a new file)"),
         (
             "src/meshw/",
@@ -238,6 +239,9 @@ fn whole_file_state_is_written_atomically_outside_the_listed_exceptions() {
             "the operator command-line tools (settings, defect, statusline, phase, install-statusline) write the very files Node's scripts write, in place or via their own tmp+rename, and the shadow scratch files; the parity tests compare the bytes",
         ),
         ("src/operator/install_codex.rs", "writes .codex/hooks.json exactly as install-codex.js does; the parity test compares the file"),
+        ("src/dssup/witness.rs", "the witness spec file in its scratch directory (never state)"),
+        ("src/dssup/recon/mirror.rs", "files of the scratch mirror the reconcile runs against (never the real store)"),
+        ("src/dssup/recon/sweep.rs", "a scratch copy of the sweep state the Node function runs against (never the real state)"),
         ("src/bin/", "developer generators, not the engine"),
     ];
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {

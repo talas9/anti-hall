@@ -245,14 +245,14 @@ const BLOCK = [
   // A write redirect outside the scratchpad/tmp on the SINK segment itself
   // disqualifies the whole line even though the primary segment and the
   // pipe shape both otherwise qualify.
-  'git clone --depth 1 https://example.com/repo.git /tmp/x | tail > /Users/talas9/Projects/anti-hall/out.log',
+  'git clone --depth 1 https://example.com/repo.git /tmp/x | tail > /Users/dev/Projects/anti-hall/out.log',
   // `tee` is not one of the allowed bounded sinks (tail/head/grep -c/grep -m
   // N/wc only) — piping an otherwise-qualifying git clone into `tee` (even
   // to a tmp destination) does not satisfy the "bounded output" condition.
   'git clone --depth 1 https://example.com/repo.git /tmp/x | tee /tmp/out.log',
   // git clone --depth 1 to a destination OUTSIDE the scratchpad/tmp must
   // stay blocked (git clone is HEAVY_PATTERNS-matched).
-  'git clone --depth 1 https://example.com/repo.git /Users/talas9/Projects/anti-hall/x | tail -1',
+  'git clone --depth 1 https://example.com/repo.git /Users/dev/Projects/anti-hall/x | tail -1',
   // Only `git clone --depth 1 https://… <tmp dest>` qualifies — a clone
   // without --depth 1 (or from a local path) never does.
   'git clone https://example.com/repo.git /tmp/x | tail -1',
@@ -294,7 +294,7 @@ const ALLOW = [
   // coordinator context (its internal spawn is the non-destructive count-gate +
   // one bounded read-messages, never a blocking monitor).
   'node scripts/devswarm.js inbox pull x',
-  // 0.114.1 hotfix (peer report, SkyCrew Primary): the version-independent
+  // 0.114.1 hotfix (peer report, DemoApp Primary): the version-independent
   // stable-launcher form under ~/.anti-hall/bin/ (hooks/lib/stable-launcher.js)
   // that every hook-emitted directive now names when devswarm.stableLauncher
   // is on (default) — `~`, `$HOME`, and `"${HOME}"` home-anchor forms. The
@@ -338,7 +338,7 @@ const ALLOW = [
   // command (verb: pytest) even though a real shell never expands a
   // backtick/$() inside a `<<'EOF'` body. Root cause: extractSubstitutions
   // had no heredoc awareness at all, unlike splitSegments/isHeavySegment.
-  "cd /Users/talas9/Projects/skycrew && S=/private/tmp/claude-501/-Users-talas9-Projects-skycrew/901870ae-e9d0-42cd-b328-fad620732d19/scratchpad\ncat > $S/m_alert23.txt <<'EOF'\nCORRECTIONS to your filed item (i), measured by the test-isolation lane — please update FOLLOWUPS-2026-09-23.md:\n1. The failing import is python/skyinformApi/_esim_admin_router.py:79 (NOT esimOps). There are TWO _esim_admin_router.py files; skyinformApi's is the one that dies. Traceback: tests/test_esim_intent_get_mirror_projection.py:27 -> skyinformApi/_esim_admin_router.py:79.\n2. The wrapper's \"codebase-scoped\" test step (bin/deploy-skyfb.sh:452-467) is a `pytest tests -k <codebase>` NAME FILTER over the root tests/ directory, not a directory scope — which is why a skyinformApi file fails the \"esimOps\" step.\n3. The test-isolation branch does NOT fix it (identical EXIT=2 on its head and main).\nThe error I relayed to that lane said esimOps; that was my relay error.\nEOF\nnode ~/.claude/plugins/cache/anti-hall/anti-hall/0.103.0/scripts/devswarm.js send --to a7aa9263-6a85-4582-a7ff-9aed4ad18e55 --message-file $S/m_alert23.txt | head -c 20",
+  "cd /Users/dev/Projects/demoapp && S=/private/tmp/claude-501/-Users-dev-Projects-demoapp/901870ae-e9d0-42cd-b328-fad620732d19/scratchpad\ncat > $S/m_alert23.txt <<'EOF'\nCORRECTIONS to your filed item (i), measured by the test-isolation lane — please update FOLLOWUPS-2026-09-23.md:\n1. The failing import is python/mailerApi/_esim_admin_router.py:79 (NOT esimOps). There are TWO _esim_admin_router.py files; mailerApi's is the one that dies. Traceback: tests/test_esim_intent_get_mirror_projection.py:27 -> mailerApi/_esim_admin_router.py:79.\n2. The wrapper's \"codebase-scoped\" test step (bin/deploy-appfb.sh:452-467) is a `pytest tests -k <codebase>` NAME FILTER over the root tests/ directory, not a directory scope — which is why a mailerApi file fails the \"esimOps\" step.\n3. The test-isolation branch does NOT fix it (identical EXIT=2 on its head and main).\nThe error I relayed to that lane said esimOps; that was my relay error.\nEOF\nnode ~/.claude/plugins/cache/anti-hall/anti-hall/0.103.0/scripts/devswarm.js send --to a7aa9263-6a85-4582-a7ff-9aed4ad18e55 --message-file $S/m_alert23.txt | head -c 20",
   // Minimal isolate of the same root cause: a backtick command substitution
   // inside a QUOTED heredoc delimiter's body is inert DATA (no expansion in
   // a real shell) and must not be extracted/recursed.

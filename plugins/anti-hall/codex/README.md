@@ -117,7 +117,7 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-ship-it` — scaled plan/build/verify workflow (replaces the retired `anti-hall-feature-launch`)
 - `anti-hall-context-conserve` — context/usage conservation and model routing
 - `anti-hall-model-policy` — Codex model routing table
-- `anti-hall-doctor`, `anti-hall-update`, `anti-hall-debt`, `anti-hall-simplify`, `anti-hall-flutter-debug`, `anti-hall-install-statusline`, `anti-hall-omx`, `anti-hall-omc`
+- `anti-hall-doctor`, `anti-hall-update`, `anti-hall-debt`, `anti-hall-simplify`, `anti-hall-install-statusline`, `anti-hall-omx`, `anti-hall-omc`
 - `anti-hall-defects` — file/list/show/rule on anti-hall defect reports
 - `anti-hall-devswarm` — DevSwarm integration: mesh CLI, recovery, auto-archive/prune, retention, app DB
 - `anti-hall-jev` — activate/configure/check the opt-in Jev classifier
@@ -125,7 +125,7 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-settings` — show/change any anti-hall setting; numbered-choice menu fallback (Codex has no `AskUserQuestion`) and no `/config` panel equivalent (Claude Code's `/config` carries only the headline switches, the safety guards and the keys) — `scripts/settings.js` is the only front door, grouped by category (`show`, then `show --section <category>`)
 - `deadly-loop-multi` (the double/triple/quadruple deadly loop) is intentionally **Claude-only, not ported** — it multiplies the Claude Sonnet/Opus/Codex trio, and there is no `anti-hall-deadly-loop-multi` Codex skill; use `anti-hall-deadly-loop` instead.
 - `anti-hall-handover` — comprehensive session handoff (index + per-session HANDOVER.md + detail files) so a fresh session can resume without re-deriving or guessing anything
-- `anti-hall-engine`, `anti-hall-engine-agents`, `anti-hall-engine-devswarm`, `anti-hall-engine-doctor`, `anti-hall-engine-github`, `anti-hall-engine-guards`, `anti-hall-engine-handovers`, `anti-hall-engine-mesh`, `anti-hall-engine-processes`, `anti-hall-engine-resources`, `anti-hall-engine-settings` — the generated engine skill family: `anti-hall-engine` is the tiny entry point, one sub-skill per feature area; which engine verbs a session may run depends on its role (main, workspace child, subagent, Codex)
+- `anti-hall-engine`, `anti-hall-engine-agents`, `anti-hall-engine-devswarm`, `anti-hall-engine-devswarm-supervisor`, `anti-hall-engine-doctor`, `anti-hall-engine-github`, `anti-hall-engine-guards`, `anti-hall-engine-handovers`, `anti-hall-engine-mesh`, `anti-hall-engine-processes`, `anti-hall-engine-resources`, `anti-hall-engine-settings` — the generated engine skill family: `anti-hall-engine` is the tiny entry point, one sub-skill per feature area; which engine verbs a session may run depends on its role (main, workspace child, subagent, Codex)
 
 Context conservation is also wired as a `UserPromptSubmit` hook via `limit-conserve-inject.js`.
 Feature launch is intentionally a Codex/OMX planning protocol, not a GSD wrapper, because GSD was removed from active Codex config.
@@ -152,7 +152,12 @@ Skip switches, remaining limits, hook latency and the opt-in judge numbers are i
 
 On Codex, shell writes (`cat >`, `tee`, `sed -i` and similar) reach `edit-guard`, `api-guard` and `ship-it-guard` as well as `apply_patch` edits (Codex 0.134 or later). Variable or glob targets, `dd`, `install`, `rsync` and scripts that write when run still fail open.
 
+## Roadmap
+
+**Later: native Windows support** — anti-hall currently supports macOS and Linux (including WSL). Native Windows support is planned for a future release, once the Rust engine has a Windows process-control layer and a non-shell hook wrapper.
+
 ## Documentation
 
 Everything else starts at the
-[documentation start page](https://github.com/talas9/anti-hall/blob/main/docs/README.md).
+[documentation start page](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
+or the [docs site](https://talas9.github.io/anti-hall/).

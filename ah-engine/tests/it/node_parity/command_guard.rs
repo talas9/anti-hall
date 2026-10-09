@@ -393,7 +393,7 @@ const PUSH: &[&str] = &[
 
 const GCLOUD: &[&str] = &[
     // a gcloud read inside a read-only chain (each `;`/`&&` unit read-only on its face), and the chain never widening the grammar
-    "git fetch -q origin main && git rev-parse origin/main && gcloud run services describe friendship --project p --region us-central1 --format='value(status.latestReadyRevisionName,status.traffic)' 2>&1 | head -2",
+    "git fetch -q origin main && git rev-parse origin/main && gcloud run services describe my-service --project p --region us-central1 --format='value(status.latestReadyRevisionName,status.traffic)' 2>&1 | head -2",
     "git rev-parse HEAD && gcloud functions describe fn --project foo --region us-central1",
     "gcloud functions list --project foo | head -3; git rev-parse HEAD",
     "git status && gcloud functions list --project foo | head -3",

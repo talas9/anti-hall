@@ -187,7 +187,7 @@ test('cmdReconcile: a LIVE row whose id carries a marker for a FOREIGN worktree 
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-reconcile-reused-wt-')));
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-reconcile-reused-wt-base-'));
   const repo = makeGitRepo('reused-wt');
-  const liveWorktree = makeGitRepo('reused-wt-live');
+  const liveWorktree = makeGitRepo('reused-wt-active');
   const foreignWorktree = makeGitRepo('reused-wt-foreign');
   try {
     const repoKey = repokey.repoKeyForWorktree(repo);

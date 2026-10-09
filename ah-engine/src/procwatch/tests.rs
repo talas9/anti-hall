@@ -998,7 +998,7 @@ fn the_shipped_dev_example_classes_parse_and_separate_a_test_daemon_from_the_liv
     let mut f = Fake {
         rows: vec![
             row(1, 0, 10 * DAY, "/sbin/launchd"),
-            row(10, 1, 5 * 3600, "/Users/u/.anti-hall/work/wt-a/ah-engine/target/debug/ah-engine serve"),
+            row(10, 1, 5 * 3600, "/Users/u/work/wt-a/ah-engine/target/debug/ah-engine serve"),
             row(11, 1, 5 * 3600, "/Users/u/.anti-hall/ah-engine/bin/ah-engine serve"),
             row(12, 1, 5 * 3600, "/Users/u/.anti-hall/ah-engine-live/bundle/ah-engine serve"),
             row(13, 1, 2 * 3600, "sleep 3600"),

@@ -442,7 +442,9 @@ fn scheduler_stubs(dir: &Path, labels: &[&str]) {
     let list_darwin: String = labels.iter().map(|l| format!("4242\t0\t{l}\n")).collect();
     let list_linux: String = labels
         .iter()
-        .map(|l| format!("{}.service loaded active running demo\n", l.replace("com.anti-hall.devswarm-ingest", "anti-hall-devswarm-ingest")))
+        // the systemd unit of a launchd label `com.anti-hall.devswarm-ingest.<key>` is `anti-hall-devswarm-ingest-<key>`
+        // (install-devswarm-ingest.js `unitForWorktree` / `unitForProject`)
+        .map(|l| format!("{}.service loaded active running demo\n", l.replace("com.anti-hall.devswarm-ingest.", "anti-hall-devswarm-ingest-")))
         .collect();
     put(dir, "loaded.darwin", &list_darwin);
     put(dir, "loaded.linux", &list_linux);

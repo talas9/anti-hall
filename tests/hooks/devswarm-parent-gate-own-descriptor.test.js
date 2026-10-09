@@ -70,7 +70,7 @@ function seedOwn(home, { total, floor, ownReaderValue }) {
   fs.writeFileSync(path.join(root, 'summaries', REPO_KEY + '.json'), JSON.stringify({
     workspaces: { [OWN_ID]: { unread: 0, total, cursor: total } }, archivedRegistryRows: [],
   }));
-  // The Primary's OWN descriptor (the live SkyCrew shape: workspaces/primary-<hash>.json).
+  // The Primary's OWN descriptor (the live DemoApp shape: workspaces/primary-<hash>.json).
   const inboxPath = path.join(root, 'inbox', OWN_ID + '.ndjson');
   const cursorPath = path.join(root, 'cursors', OWN_ID + '.json');
   fs.mkdirSync(path.join(root, 'workspaces'), { recursive: true });

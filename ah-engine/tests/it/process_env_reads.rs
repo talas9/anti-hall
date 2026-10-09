@@ -71,6 +71,14 @@ const ALLOW: &[(&str, &str)] = &[
         "`Wire::start`, the DevSwarm layer's own startup in the daemon: detection of the host DevSwarm and its home are properties of the engine process, not of any request",
     ),
     (
+        "src/wakew/mod.rs",
+        "`ah-engine devswarm wake-watch`, the idle-wake Monitor's own command-line process (run by `dswire/cli.rs`): the settings chain reads the Monitor's environment, as the Node watcher reads `process.env`; the daemon is not involved (D76)",
+    ),
+    (
+        "src/script/tests.rs",
+        "the scripted-check unit tests (`#[cfg(test)] mod tests` in script/mod.rs, a file of its own so the scan's `#[cfg(test)]` cut does not apply): the test process's wall-clock headroom `AH_TEST_TIME_SCALE`, which CI sets",
+    ),
+    (
         "src/dswire/cli.rs",
         "the `ah-engine devswarm` command-line process (and its one-shot state read): its own environment IS the caller's (the daemon is not involved, D76)",
     ),

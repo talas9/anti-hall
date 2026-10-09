@@ -1339,7 +1339,7 @@ test('DEDUP: repeated Stops with no NEW file-changing work never re-nag', () => 
 });
 
 // ---------------------------------------------------------------------------
-// FIX 7 (confirmed root cause of #17 against real SkyCrew Primary transcripts):
+// FIX 7 (confirmed root cause of #17 against real DemoApp Primary transcripts):
 // inter-agent message-passing Bash writes into the session's OWN scratchpad
 // directory (`.../<session>/scratchpad/...`) must not count toward workCount —
 // they are not project work, and counting them shifted workBucket fast enough
@@ -1627,10 +1627,10 @@ function mkSuperprojectWithSubmodule() {
   fs.writeFileSync(path.join(superRepo, 'root.txt'), 'x');
   git(['add', '.'], superRepo);
   git(['commit', '-q', '-m', 'init'], superRepo);
-  git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subRepo, 'skyfb'], superRepo);
+  git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subRepo, 'appfb'], superRepo);
   git(['commit', '-q', '-m', 'add submodule'], superRepo);
 
-  const submodulePath = path.join(superRepo, 'skyfb');
+  const submodulePath = path.join(superRepo, 'appfb');
   const st = fs.lstatSync(path.join(submodulePath, '.git'));
   assert.ok(st.isFile(), 'fixture sanity: submodule .git must be a FILE, not a directory');
 
@@ -1651,7 +1651,7 @@ test('SUBMODULE: cwd inside a submodule -> progress/history key on the SUPERPROJ
       ...edits(4),
       ...taskCreate(1, 'do the work', 'completed'),
     ]);
-    // cwd = the submodule checkout (as if the shell had `cd skyfb`).
+    // cwd = the submodule checkout (as if the shell had `cd appfb`).
     const r = testHook(HOOK, stopPayload(tp, fixture.submodulePath, session), { home: h.home });
     assert.ok(!isBlock(r), `expected allow (superproject progress is fresh); stdout: ${r.stdout}; reason: ${r.json && r.json.reason}`);
 

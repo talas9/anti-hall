@@ -267,13 +267,16 @@ labelled with how it was measured in the README of `ah-engine/`.
 ## Install, go-live and rollback
 
 **Install.** The plugin ships `ah-engine.lock` (schema, engine version, tag and the sha256 of every release asset). On every
-SessionStart, `hooks/ah-hook.sh` starts `hooks/ah-engine-bootstrap.sh` detached. The script (POSIX sh, never fails a session):
+SessionStart, `hooks/ah-hook.sh` starts `hooks/ah-engine-bootstrap.sh` detached (only when the lock file is present and the
+the wrapper's test-only binary override is unset). The script (POSIX sh, never fails a session):
 
 1. detects the target (macOS arm64 or x86_64, Linux x86_64 or arm64 on glibc or musl, WSL as Linux; anything else, such as
    native Windows, is reported as unsupported and skipped);
-2. downloads `ah-engine-vX.Y.Z-<triple>.tar.gz` from the GitHub Release over HTTPS;
+2. downloads `ah-engine-vX.Y.Z-<triple>.tar.gz` from the GitHub Release over HTTPS (TLS 1.2 or newer, 120 s download limit,
+   128 MB size cap; `curl`, or `wget` when there is no `curl`);
 3. installs it to `~/.anti-hall/ah-engine/bin/ah-engine` **only if its sha256 equals the lock's entry**. There is no trust on
-   first use: a mismatch is refused and nothing is installed;
+   first use: a mismatch is refused and nothing is installed. It extracts only the one expected binary from the archive and
+   runs `ah-engine version` first: a binary that does not run or reports another version is not installed;
 4. does it atomically and keeps the previous binary as `bin/ah-engine.prev`.
 
 It is idempotent (the same lock does nothing), rate limited (a failed attempt for a lock is retried after 6 hours), and it never
@@ -292,9 +295,9 @@ entries). A check that cannot reproduce Node exactly defers (exit 75 from the en
 | To undo | Do |
 |---|---|
 | one check | set `mode = "off"` on its `[entries."<id>"]` in the engine's `config.toml`: only the engine's check is skipped, its Node hook decides (hot reload, no restart) |
-| the engine, for now | `ah-engine stop`, then remove `~/.anti-hall/ah-engine/bin/ah-engine`; the wrapper finds no binary and runs the Node hooks |
+| the engine, for now | `ah-engine stop`, then remove `~/.anti-hall/ah-engine/bin/ah-engine`; the wrapper finds no binary (it looks at its test-only binary override, `~/.anti-hall/ah-engine/bin/ah-engine`, then `ah-engine` on `PATH`; remove a `PATH` copy too) and runs the Node hooks |
 | the engine, for good | also set `engine.bootstrap` = false or the opt-out variable (see Install above), or the next SessionStart reinstalls the pinned binary |
-| a bad engine build | copy `bin/ah-engine.prev` back over `bin/ah-engine` |
+| a bad engine build | copy `bin/ah-engine.prev` back over `bin/ah-engine`; the bootstrap then leaves it alone (its sha256 no longer matches the install marker), so the rollback sticks until you remove the binary or the lock changes |
 | a bad plugin edit of the engine files | nothing to do: the layered failover below falls back by itself |
 
 Whatever the engine cannot do, the Node hooks do; Node is the permanent floor.

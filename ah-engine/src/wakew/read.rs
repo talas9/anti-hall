@@ -234,7 +234,9 @@ fn write_atomic(path: &Path, payload: &str) -> bool {
         return false;
     }
     let tmp = PathBuf::from(format!("{}.{}{}", path.display(), std::process::id(), text("wake_watch.tmp_suffix")));
-    std::fs::write(&tmp, payload).is_ok() && std::fs::rename(&tmp, path).is_ok()
+    // Node's temporary name, through crate::atomic (synced, then renamed; left in place when the rename fails, as Node's)
+    let style = crate::atomic::Style { leave_temp_on_rename_failure: true, ..crate::atomic::Style::default() };
+    crate::atomic::stage(&tmp, payload, style).is_ok() && crate::atomic::replace(&tmp, path, style).is_ok()
 }
 
 /// `saveSeenState(home, id, state, fs, role)`: merge-preserving (keys a newer build owns are carried through), atomic,

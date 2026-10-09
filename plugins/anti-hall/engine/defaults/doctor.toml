@@ -339,7 +339,7 @@ doc = "How often a live self-test checks whether its Node hook has finished."
 value = 20
 unit = "ms"
 
-# ---- install-health checks (lane-doctor): the engine binary, daemon, state directory, configuration, plugin registry, toolchain, logs, witness ----
+# ---- install-health checks (doctor lane): the engine binary, daemon, state directory, configuration, plugin registry, toolchain, logs, witness ----
 
 [doctor.exec_bit]
 doc = "Permission bits that mean 'executable' (octal 0111)."

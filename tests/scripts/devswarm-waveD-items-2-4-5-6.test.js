@@ -369,9 +369,9 @@ test('item 4: a builder-id caller broadcasting for its SLUG row on the same work
     // slug row. `--session` cross-links them the way the real double
     // registration does.
     register(home, repo, 'builder-uuid-1', undefined);
-    register(home, repo, 'skycrew-slug', undefined, 'builder-uuid-1');
+    register(home, repo, 'demoapp-slug', undefined, 'builder-uuid-1');
     const r = cli.run(
-      ['heartbeat', 'skycrew-slug', '--summary', 'working on the thing'],
+      ['heartbeat', 'demoapp-slug', '--summary', 'working on the thing'],
       ctx(home, { cwd: repo, env: { DEVSWARM_BUILDER_ID: 'builder-uuid-1' } })
     );
     assert.strictEqual(r.result.ok, true);

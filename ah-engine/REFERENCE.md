@@ -2219,7 +2219,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.lc_instead` | `route execution to Codex (codex:codex-rescue, separate limit) and cheap Claud...` |  |  | The start of the Do instead line of the directive (the reset clause and the downshift text follow). |
 | `ctxbudget.lc_keepalive_turns` | `10` |  | turns | The emit-dedupe keepalive of the directive: an unchanged, delivered directive is re-sent after this many turns. |
 | `ctxbudget.lc_reason_manual` | `manual-on` |  |  | The directive reason when the mode setting forces conservation on. |
-| `ctxbudget.lc_resets_at` | ` Defer non-urgent heavy work until reset at {at}.` |  |  | The reset clause when a tripped bucket states its reset time ({at}, as the cache wrote it). |
+| `ctxbudget.lc_reset_round` | `3 entries` |  |  | The reset time in the reset clause is rounded to the nearest `ms` (a minute) and printed as an ISO time with a whole-minute `cut` replaced by `to`: the usage API reports the reset with millisecond jitter, which would change the directive every turn and defeat emit-dedupe. A reset time that is not a date is printed as written. |
+| `ctxbudget.lc_resets_at` | ` Defer non-urgent heavy work until reset at {at}.` |  |  | The reset clause when a tripped bucket states its reset time ({at}, rounded per ctxbudget.lc_reset_round). |
 | `ctxbudget.lc_resets_next` | ` Defer non-urgent heavy work until the next reset.` |  |  | The reset clause when no tripped bucket states a reset time. |
 | `ctxbudget.lc_what` | `limit conservation is active ({reason}).` |  |  | The first line of the directive; {reason} is the tripped buckets joined with + (or the manual reason). |
 | `ctxbudget.lc_why` | `Usage is near a plan limit.` |  |  | The Why line of the directive. |
@@ -7199,6 +7200,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.action_logs` | `logs` |  |  | The `action` of a logs result. |
 | `devswarm_cli.action_merge` | `merge` |  |  | The `action` of a merge result. |
 | `devswarm_cli.action_migrate_owner_keys` | `migrate-owner-keys` |  |  | The `action` a migrate-owner-keys result carries. |
+| `devswarm_cli.action_nudge` | `nudge` |  |  | The `action` of a nudge refusal for an ambiguous workspace id (the canonical-id resolver's). |
 | `devswarm_cli.action_plan` | `plan` |  |  | The `action` of a plan result. |
 | `devswarm_cli.action_primary_status` | `primary-status` |  |  | The `action` of a primary status result. |
 | `devswarm_cli.action_primary_takeover` | `primary-takeover` |  |  | The `action` of a primary takeover result. |
@@ -7216,6 +7218,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.action_spawn` | `spawn` |  |  | The `action` of a spawn refusal. |
 | `devswarm_cli.action_unarchive` | `unarchive` |  |  | The `action` an unarchive result and its refusals carry. |
 | `devswarm_cli.action_updated` | `updated` |  |  | The `action` a register over an existing descriptor reports. |
+| `devswarm_cli.action_wake_directive` | `wake-directive` |  |  | The `action` of a wake-directive refusal for an ambiguous workspace id (the canonical-id resolver's). |
 | `devswarm_cli.action_workspaces` | `workspaces` |  |  | The `action` of a workspaces result. |
 | `devswarm_cli.app_archive_retry_re` | `(?i-u)could not confirm terminal\b` |  |  | The failure text of the app's flaky terminal check; the call is repeated once on it. |
 | `devswarm_cli.app_archive_timeout_ms` | `60000` |  |  | The time one `hivecontrol workspace archive` may take. |
@@ -7449,6 +7452,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.merge_summary_ok` | `merge-into-source completed` |  |  | The broadcast text after a successful merge. |
 | `devswarm_cli.message_row_name` | `messages` |  |  | What the Node witness reports as different when the message row Node wrote is not the row the engine wrote. |
 | `devswarm_cli.migrate_tmp_suffix` | `tmp` |  |  | The ending of the staging file a descriptor rewrite is made in before it is renamed over the descriptor. |
+| `devswarm_cli.msg_ambig_archived` | `ambiguous archived id {id} matches {n} archived workspaces — unarchived nothi...` |  |  | The unarchive refusal when an id prefix or mesh label names several archived workspaces; {id}, {n} and {ids} as above. |
 | `devswarm_cli.msg_ambig_mesh` | `ambiguous mesh id {id} matches {n} workspaces — archived nothing; use one ful...` |  |  | The refusal when a mesh label names several registered workspaces; {id}, {n} and {ids} as above. |
 | `devswarm_cli.msg_ambig_prefix` | `ambiguous workspace id prefix {id} matches {n} workspaces — archived nothing;...` |  |  | The refusal when an id prefix names several workspaces; {id} is the word as JSON, {n} the count, {ids} the candidates. |
 | `devswarm_cli.msg_app_error_unknown` | `unknown` |  |  | The error named in the tail when none is known. |

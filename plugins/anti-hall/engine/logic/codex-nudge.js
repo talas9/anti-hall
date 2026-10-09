@@ -186,6 +186,7 @@ function decide(p) {
     }
   }
   if (sig === lastSig || nudges >= cxN('nudge_max')) return 'allow';
+  if (gk.pruneMeetsLink(dirRel, cxT('nudge_state_prefix'))) return 'defer'; // Node unlinks a stale linked state file; the host does not
   var ok = false;
   try { ok = ah.state.writeAtomic(dirRel + '/' + stateName, JSON.stringify({ sig: sig, nudges: nudges + 1 })); } catch (e) { ok = false; }
   if (!ok) return 'allow';

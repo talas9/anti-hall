@@ -1,7 +1,7 @@
 'use strict';
 // devswarm-parent-inbox.js — ARCHIVE-REQUEST-PENDING suppression.
 //
-// FIELD REPORT (SkyCrew, 399105fe/e75cade3): once the Primary had already run
+// FIELD REPORT (DemoApp, 399105fe/e75cade3): once the Primary had already run
 // `archive-request <id>` against a child, BOTH the "CHILD NOT DRAINING" per-
 // turn nag AND the (separately cooldown'd) "devswarm-archive-ready" reminder
 // kept re-instructing it to poke/re-send the identical request — even hours

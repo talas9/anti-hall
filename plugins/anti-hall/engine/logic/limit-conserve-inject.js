@@ -80,6 +80,13 @@ function lcConserving(home, hold) {
   return { reason: trips.join('+'), resetsAt: finite.length ? finite[0] : null };
 }
 
+// The reset time at minute precision (Node's minuteRounded): the cache's millisecond jitter would change the text every turn.
+function lcMinuteRounded(iso) {
+  var r = ah.cfg('ctxbudget.lc_reset_round'), t = new Date(iso).getTime();
+  if (!isFinite(t)) return String(iso);
+  return new Date(Math.round(t / r.ms) * r.ms).toISOString().replace(r.cut, r.to);
+}
+
 function decide(p) {
   if (ah.env.get(ah.cfg('ctxbudget.judge_child_env')) === ah.cfg('ctxbudget.judge_child_on')) return 'allow';
   var home = ah.env.get(ah.cfg('ctxbudget.home_env'));
@@ -89,7 +96,7 @@ function decide(p) {
   var active = lcConserving(home, tp !== null && !ah.path.isAbsolute(tp));
   if (active === 'defer') return 'defer';
   if (active === null) return lcEmpty();
-  var resets = active.resetsAt !== null ? text.render(ah.cfg('ctxbudget.lc_resets_at'), { at: active.resetsAt }) : ah.cfg('ctxbudget.lc_resets_next');
+  var resets = active.resetsAt !== null ? text.render(ah.cfg('ctxbudget.lc_resets_at'), { at: lcMinuteRounded(active.resetsAt) }) : ah.cfg('ctxbudget.lc_resets_next');
   var built = text.message('warn', ah.cfg('ctxbudget.lc_guard'), {
     what: text.render(ah.cfg('ctxbudget.lc_what'), { reason: active.reason }), why: ah.cfg('ctxbudget.lc_why'),
     instead: ah.cfg('ctxbudget.lc_instead') + resets + ' ' + ah.cfg('ctxbudget.lc_downshift'),

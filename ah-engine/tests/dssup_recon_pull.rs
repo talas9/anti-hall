@@ -59,7 +59,7 @@ fn init_env() -> String {
     use std::os::unix::fs::PermissionsExt;
     static ONCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     ONCE.get_or_init(|| {
-        let dir = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/work/recon-tests/stub-bin");
+        let dir = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/scratch/recon-tests/stub-bin");
         fs::create_dir_all(&dir).unwrap();
         let f = dir.join("hivecontrol");
         // written once (its modification time is part of Node's capability-cache key, which the tests compare)
@@ -207,7 +207,7 @@ fn tree(home: &Path) -> BTreeMap<String, String> {
 fn tree_with(home: &Path, loose: bool) -> BTreeMap<String, String> {
     home_files(home)
         .into_iter()
-        .filter(|(k, _)| !k.starts_with(".anti-hall/work") && !k.starts_with(".anti-hall/logs/") && !k.starts_with("hc/calls.log") && !k.ends_with("/"))
+        .filter(|(k, _)| !k.starts_with(".anti-hall/scratch") && !k.starts_with(".anti-hall/logs/") && !k.starts_with("hc/calls.log") && !k.ends_with("/"))
         .map(|(k, v)| {
             let text = String::from_utf8_lossy(&v).replace(home.to_string_lossy().as_ref(), "<HOME>");
             // the order of the records of a log: the engine captures the new batch before it replays the open ones (so the whole

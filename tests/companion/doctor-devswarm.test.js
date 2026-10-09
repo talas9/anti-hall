@@ -1,6 +1,6 @@
 'use strict';
 // doctor-devswarm: the DevSwarm section of `doctor.js` as a pure, testable check
-// function (mirrors the flutter-debug preflight -> doctor pattern). Real temp HOME
+// function. Real temp HOME
 // with fake timestamps; no real process touched.
 
 require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state

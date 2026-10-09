@@ -354,7 +354,7 @@ function jrBuildReport(rows, opts) {
     if (!row.id) return;
     if (!byId.has(row.id)) {
       byId.set(row.id, {
-        id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0,
+        id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0, derivedCalls: 0,
         excludedNoCompare: 0,
         changedHashByFresh: new Map(),
         failures: 0, latencies: [],
@@ -367,6 +367,9 @@ function jrBuildReport(rows, opts) {
       });
     }
     var bucket = byId.get(row.id);
+    // A row tagged derivedFrom (e.g. 'triage': a re-read of the triage cache label) is not an independent Jev decision:
+    // kept out of calls / jev% / cache totals and reported separately as derivedCalls (scripts/jev-report.js, ec36ff06).
+    if (typeof row.derivedFrom === 'string' && row.derivedFrom) { bucket.derivedCalls++; return; }
     bucket.calls++;
     if (row.backend === 'jev' || row.backend === 'cache') bucket.jevAnswered++;
     if (row.backend === 'cache') bucket.cacheHits++;
@@ -513,6 +516,7 @@ function jrBuildReport(rows, opts) {
       cachedCalls: bucket.cacheHits,
       jevAnsweredPct: bucket.calls > 0 ? bucket.jevAnswered / bucket.calls : 0,
       cacheHits: bucket.cacheHits,
+      derivedCalls: bucket.derivedCalls,
       agreementPct: agreementPct,
       agreeTotal: agreeTotal,
       excludedNoCompare: bucket.excludedNoCompare,

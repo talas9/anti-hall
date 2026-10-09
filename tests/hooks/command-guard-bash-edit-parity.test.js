@@ -4,7 +4,9 @@
 // A coordinator Bash write into a repo file gets edit-guard's verdict; git
 // verbs are classified (WORK / blockable) but never blocked by F3.
 require('../helpers/isolate-home.js');
-const { test } = require('node:test');
+const { test: nodeTest } = require('node:test');
+// Engine-parity duplicate (covered by ah-engine/tests/it/node_parity on the engine track): runs only with ANTIHALL_PARITY_TESTS=1 (nightly job).
+const test = (name, fn) => nodeTest(name, { skip: process.env.ANTIHALL_PARITY_TESTS !== '1' && 'set ANTIHALL_PARITY_TESTS=1 to run' }, fn);
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
