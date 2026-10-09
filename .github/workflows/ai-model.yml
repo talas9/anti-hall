@@ -242,7 +242,9 @@ jobs:
           fetch-depth: 1
 
       - name: Install Copilot CLI
-        run: npm install -g @github/copilot@1.0.90
+        run: |
+          npm ci --ignore-scripts --prefix .github/copilot-cli
+          echo "$GITHUB_WORKSPACE/.github/copilot-cli/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Copilot
         id: run

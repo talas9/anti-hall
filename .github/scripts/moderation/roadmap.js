@@ -6,6 +6,7 @@
 
 const fs = require('node:fs');
 const L = require('./lib.js');
+const SEC = require('./security-alerts.js');
 const LOG = 'roadmap-log';
 const DAY = 864e5;
 
@@ -176,6 +177,12 @@ async function apply({ github, context, core, getOctokit }) {
     await act({ type: 'comment', target: { number: i.number } }, () => github.rest.issues.createComment({ ...repo, issue_number: i.number, body: L.render(L.template('stale-check'), { marker: '<!-- stale-check -->', days: cfg.project.stale_days }) }));
   }
 
+  // 2b. Security alerts -> one issue each (scheduled and manual runs only; event runs stay light).
+  let security = null;
+  if (context.eventName === 'schedule' || context.eventName === 'workflow_dispatch') {
+    try { security = await SEC.sync({ github, wide: process.env.PROJECT_TOKEN ? getOctokit(process.env.PROJECT_TOKEN) : null, repo, act, errors }); } catch (e) { errors.push(`security: ${e.message}`); }
+  }
+
   // 3. Missing data flags (reported in the summary and the digest, not posted on items).
   const noMilestone = items.filter((i) => !i.pr && !i.milestone).map((i) => i.number);
   const noSize = items.filter((i) => !i.pr && !i.labels.some((l) => l.startsWith('size:'))).map((i) => i.number);
@@ -210,7 +217,7 @@ async function apply({ github, context, core, getOctokit }) {
 
   L.record(LOG, {
     workflow: 'roadmap', event: `${context.eventName}.${state.mode}`, item: one ? `#${one}` : 'all', verdict: state.mode,
-    board, stale: stale.map((i) => i.number), no_milestone: noMilestone.length, no_size: noSize.length,
+    board, security, stale: stale.map((i) => i.number), no_milestone: noMilestone.length, no_size: noSize.length,
     provider: model.provider, fallback_reason: model.reason, latency_ms: process.env.MODEL_LATENCY_MS || null, tokens: process.env.MODEL_TOKENS || null,
     actions, errors, dry_run: dry,
   });
