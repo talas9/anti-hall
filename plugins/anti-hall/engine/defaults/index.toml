@@ -64,6 +64,5 @@ files = [
     "devswarm_wire.toml",
     "realtime.toml",
     "github_rt.toml",
-    "devswarm_act.toml",
 ]
 extra_dir = "hooks.d"

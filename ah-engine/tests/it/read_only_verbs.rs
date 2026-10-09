@@ -48,6 +48,8 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
         ("doctor", s(&["--check"])),
         ("agents", s(&["status"])),
         ("gh", s(&["status"])),
+        ("devswarm", s(&["status"])),
+        ("devswarm", s(&["line"])),
         ("gh", s(&["segment"])),
     ]
 }

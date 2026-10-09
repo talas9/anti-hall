@@ -179,6 +179,10 @@ impl crate::checks::Check for RtAdvisory {
         true
     }
 
+    fn script_is_helper(&self) -> bool {
+        true
+    }
+
     fn run_payload(&self, s: &crate::rules::Subject<'_>, payload: &Value, _opts: &Value) -> Option<crate::checks::Verdict> {
         use crate::checks::Verdict;
         let main_thread = payload.get("agent_id").and_then(Value::as_str).is_none_or(str::is_empty);
