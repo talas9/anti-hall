@@ -52,11 +52,17 @@ doc = "Reason logged (then the failure policy applies) when a check's script def
 value = "{check}: the script defines no {entry} function"
 
 [script.time_limit_ms]
-doc = "Wall-clock limit of one script call; past it the interpreter is interrupted and the call defers to Node (never a silent allow)."
+doc = "CPU-time limit of one script call (the interpreter thread's own CPU time, see script.wall_limit_factor for the wall-clock backstop); past it the interpreter is interrupted and the call defers to Node (never a silent allow)."
 value = 50
 env = "AH_ENGINE_SCRIPT_TIME_MS"
 min = 1
 unit = "ms"
+
+[script.wall_limit_factor]
+doc = "The wall-clock backstop of a script call, as a multiple of its time limit. The limit itself counts the interpreter thread's CPU time, so a thread kept waiting for a core by a loaded machine is not interrupted; the backstop ends a script that waits without using CPU. Time a host function spends blocked (a child process, a lock) is credited back to the backstop."
+value = 10
+min = 1
+max = 1000
 
 [script.call_memory_bytes]
 doc = "Heap a single script call may allocate above the runtime's size after its scripts were loaded; past it the call fails and defers."
@@ -182,6 +188,13 @@ value = 5000
 min = 10
 unit = "ms"
 
+[script.exec_timeout_scale]
+doc = "Multiplier on the time every `ah.exec` run and every process listing a script asks for may take (the limit a script asks for, and the longest one, are both multiplied). 1 in production; a test build on a loaded machine raises it so a slow child process is not read as a failure."
+value = 1
+env = "AH_ENGINE_SCRIPT_EXEC_SCALE"
+min = 1
+max = 100
+
 [script.exec_poll_ms]
 doc = "How often the bounded runner checks whether an `ah.exec` child has finished."
 value = 2
@@ -231,7 +244,7 @@ max = 1048576
 unit = "bytes"
 
 [script.time_limit_by_check]
-doc = "Per-check wall-clock limit of one script call (ms), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; `command` (command-guard) resolves repositories and runs `git` for its edit parity and carve-outs (a child process wait is credited back, but a loaded machine stretches the interpreter's own time as well); `precompact-snapshot` reads the transcript tail of a PreCompact (a real 1.5 MB tail takes about 190 ms in the interpreter, so 50 ms would defer it to Node every time); `claim-ledger` walks up to 2 MB of transcript evidence; its SessionStart advisory only lists and stats files."
+doc = "Per-check limit of one script call (ms; the interpreter thread's CPU time, and the wall-clock backstop is script.wall_limit_factor times it), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; `command` (command-guard) resolves repositories and runs `git` for its edit parity and carve-outs (a child process wait is credited back, but a loaded machine stretches the interpreter's own time as well); `precompact-snapshot` reads the transcript tail of a PreCompact (a real 1.5 MB tail takes about 190 ms in the interpreter, so 50 ms would defer it to Node every time); `claim-ledger` walks up to 2 MB of transcript evidence; its SessionStart advisory only lists and stats files."
 value = { "handover-hygiene:Cli" = 30000, "handover-hygiene" = 1000, command = 200, precompact-snapshot = 500, claim-ledger = 500 }
 
 [script.p95_budget_by_check]

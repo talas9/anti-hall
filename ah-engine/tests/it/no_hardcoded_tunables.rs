@@ -73,6 +73,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/checks/scripted.rs", "const fn new(", "the constructor signature of the registry identity above"),
     ("src/script/mod.rs", "static POOL", "a thread-local slot for the worker's interpreter, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static CLOCK", "a thread-local clock override slot initialised empty (tests inject time): state, not a tunable"),
+    ("src/script/host.rs", "static DEADLINE", "a thread-local slot for the interrupt limits of the script call in progress, initialised empty (the limits are script.time_limit_ms and script.wall_limit_factor): state, not a tunable"),
     ("src/script/host.rs", "static HELD", "a thread-local list of the locks the script call holds, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static EXECS", "a thread-local counter of the processes the script call started, initialised to zero (its bound is script.exec_max_calls): state, not a tunable"),
     ("src/script/host_proc.rs", "static SEEN", "a thread-local list of the pids this script call has listed, empty at the start (the safety bound of the signal primitive): state, not a tunable"),

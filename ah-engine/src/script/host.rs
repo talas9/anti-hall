@@ -68,19 +68,20 @@ thread_local! {
 }
 
 /// Let the interrupt handler know which deadline belongs to the call in progress (`None` when it ends).
-pub fn set_deadline(d: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>) {
+pub fn set_deadline(d: Option<std::sync::Arc<super::Deadline>>) {
     DEADLINE.with(|c| *c.borrow_mut() = d);
 }
 
-/// Time a host function spent BLOCKED (a child process, a lock wait, a network consult) is not script time: the call's script
-/// time limit (`script.time_limit_ms`) is moved out by that long, so a slow `git` never turns into an interrupted script.
+/// Time a host function spent BLOCKED (a child process, a lock wait, a network consult) is not script time: the call's wall-clock
+/// backstop is moved out by that long, so a slow `git` never turns into an interrupted script (the CPU limit does not count it).
 pub(super) fn credit_blocking(since: std::time::Instant) {
     let ns = since.elapsed().as_nanos() as u64;
     DEADLINE.with(|c| {
         if let Some(d) = c.borrow().as_ref() {
-            let cur = d.load(std::sync::atomic::Ordering::Relaxed);
+            // only the wall backstop moves: blocked time uses no CPU, so the CPU limit is not touched
+            let cur = d.wall.load(std::sync::atomic::Ordering::Relaxed);
             if cur != 0 {
-                d.store(cur.saturating_add(ns), std::sync::atomic::Ordering::Relaxed);
+                d.wall.store(cur.saturating_add(ns), std::sync::atomic::Ordering::Relaxed);
             }
         }
     });
@@ -92,7 +93,8 @@ pub(super) fn credit_blocking(since: std::time::Instant) {
 pub(super) fn lift_deadline() {
     DEADLINE.with(|c| {
         if let Some(d) = c.borrow().as_ref() {
-            d.store(0, std::sync::atomic::Ordering::Relaxed);
+            d.wall.store(0, std::sync::atomic::Ordering::Relaxed);
+            d.cpu.store(0, std::sync::atomic::Ordering::Relaxed);
         }
     });
 }
@@ -359,7 +361,7 @@ type Held = (u64, crate::checks::guardkit::nodelock::Held, Option<std::sync::Mut
 thread_local! {
     static CLOCK: RefCell<Option<f64>> = const { RefCell::new(None) };
     /// The interpreter's interrupt deadline of the call in progress (nanoseconds since the pool epoch; 0 = none) and the epoch.
-    static DEADLINE: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicU64>>> = const { RefCell::new(None) };
+    static DEADLINE: RefCell<Option<std::sync::Arc<super::Deadline>>> = const { RefCell::new(None) };
     static HELD: RefCell<Vec<Held>> = const { RefCell::new(Vec::new()) };
     static EXECS: RefCell<u64> = const { RefCell::new(0) };
 }
@@ -656,7 +658,9 @@ pub fn exec(prog: &str, args: &[String], cwd: Option<&str>, env_pairs: &[String]
     }
     let started = std::time::Instant::now();
     let cap_ms = defaults::num("script.exec_timeout_max_ms");
-    let ms = if timeout_ms.is_finite() && timeout_ms > 0.0 { (timeout_ms as u64).min(cap_ms) } else { cap_ms };
+    let scale = defaults::num("script.exec_timeout_scale").max(1);
+    let asked = if timeout_ms.is_finite() && timeout_ms > 0.0 { (timeout_ms as u64).min(cap_ms) } else { cap_ms };
+    let ms = asked.saturating_mul(scale);
     let ran = crate::proc::run(cmd, prog, std::time::Duration::from_millis(ms), defaults::millis("script.exec_poll_ms"));
     credit_blocking(started);
     let Ok(o) = ran else { return Ok("null".into()) };

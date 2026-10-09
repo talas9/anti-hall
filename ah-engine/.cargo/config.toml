@@ -6,3 +6,13 @@
 # binaries inherit this environment, and the parity tests compare the state they leave under a fake HOME.
 [env]
 AH_ENGINE_PLUGIN_ROOT = { value = "../plugins/anti-hall", relative = true, force = true }
+
+# A script call's CPU-time limit (script.time_limit_ms, 50 ms) is sized for the release binary. A debug build runs the
+# interpreter and its regex compilation about 4 times slower (measured 2026-10-09: sibling-sweep p50 10.3 ms CPU debug against
+# 2.45 ms release, first calls of a fresh home over 150 ms), so test builds get a larger limit; the setting itself is untouched.
+AH_ENGINE_SCRIPT_TIME_MS = { value = "500", force = false }
+
+# The same holds for the child processes a script waits on (`git`): with the whole unit suite running in parallel on a loaded
+# machine a `git` child was measured (2026-10-09) to need over its 1000 ms and 2000 ms limits, so a golden case got a defer or
+# "not a git repository". Test builds multiply every `ah.exec` limit; the shipped limits are untouched.
+AH_ENGINE_SCRIPT_EXEC_SCALE = { value = "5", force = false }
