@@ -350,6 +350,8 @@ try {
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   let skipped = false;
   try { skipped = require('./skip-guard.js').isSkipped('task-tracker'); } catch (_) { skipped = false; }
+  // A message from another Claude session (not a person typing) is no new user request: no task-capture directive for it.
+  if (typeof payload.prompt === 'string' && /^\s*<cross-session-message\b|Another Claude session sent a message/i.test(payload.prompt.slice(0, 400))) process.exit(0);
 
   // JEV SHADOW (newRequest, default mode "shadow"): fire-and-forget
   // classification of the prompt into {new-request, follow-up, correction,

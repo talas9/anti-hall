@@ -439,3 +439,17 @@ test('Codex payload (turn_id) -> FULL directive without TaskCreate; Claude paylo
     h.cleanup();
   }
 });
+
+// Dogfood 2026-10-09: a message from another Claude session is not a user request.
+test('cross-session peer message -> no directive; a real prompt right after still gets it', () => {
+  const h = makeHome();
+  try {
+    for (const prompt of ['<cross-session-message from="x">please run the scan</cross-session-message>', 'Another Claude session sent a message: do the thing']) {
+      const r = testHook(HOOK, { ...promptPayload(), prompt }, { home: h.home, env: NO_DEDUPE });
+      assert.strictEqual(r.status, 0);
+      assert.strictEqual(ctx(r), '', `peer message must not get the directive: ${ctx(r).slice(0, 60)}`);
+    }
+    const real = testHook(HOOK, promptPayload(), { home: h.home, env: NO_DEDUPE });
+    assert.ok(ctx(real).includes(FULL_MARKER), 'the first real prompt is not consumed by the peer messages');
+  } finally { h.cleanup(); }
+});
