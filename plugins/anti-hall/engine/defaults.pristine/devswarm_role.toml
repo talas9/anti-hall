@@ -223,11 +223,11 @@ function meshRoute(argv, segments) {
   try {
     if (!segments || segments[1] !== 'devswarm.js') return out;
     // ROUTES: the verbs `ah-engine mesh` can answer. Each row is the leading words of the argv, plus an optional flag that
-    // must also be present (`roster` is routed only with --ack: the plain roster stays in Node). A verb the engine decides
-    // it cannot answer is handed to Node by the engine itself, so a row here only says "ask the engine first".
+    // must also be present. A verb the engine decides it cannot answer is handed to Node by the engine itself, so a row
+    // here only says "ask the engine first".
     var ROUTES = [
-      { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'], flag: '--ack' },
-      { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] }, { words: ['inbox', 'tick'] },
+      { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'] },
+      { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] }, { words: ['inbox', 'tick'] }, { words: ['inbox', 'read-primary'] },
     ];
     var routed = ROUTES.some(function (r) {
       return r.words.every(function (w, i) { return argv[i] === w; })
