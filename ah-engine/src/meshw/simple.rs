@@ -736,15 +736,12 @@ fn wake_directive(inv: &Inv, a: &Args) -> R<Answer> {
 
 // ---- the Node witness ---------------------------------------------------------------------------------------------------
 
-/// Every gate row of a store as text, oldest first (`None` when the store cannot be read).
-fn gates_dump(db: &Path) -> Option<String> {
-    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
-    c.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).ok()?;
-    let mut st = c.prepare(crate::sql::MESHW_GATES_DUMP).ok()?;
+/// Every row of one query as text, oldest first (`None` when the store cannot be read).
+fn rows_dump(c: &rusqlite::Connection, query: &str, cols: usize, out: &mut String) -> Option<()> {
+    let mut st = c.prepare(query).ok()?;
     let mut rows = st.query([]).ok()?;
-    let mut out = String::new();
     while let Some(r) = rows.next().ok()? {
-        for i in 0..5 {
+        for i in 0..cols {
             out.push_str(&match r.get_ref(i).ok()? {
                 rusqlite::types::ValueRef::Null => "null".to_string(),
                 rusqlite::types::ValueRef::Integer(x) => x.to_string(),
@@ -756,6 +753,15 @@ fn gates_dump(db: &Path) -> Option<String> {
         }
         out.push('\n');
     }
+    Some(())
+}
+
+/// Every gate row of a store as text, oldest first (`None` when the store cannot be read).
+fn gates_dump(db: &Path) -> Option<String> {
+    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    c.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).ok()?;
+    let mut out = String::new();
+    rows_dump(&c, crate::sql::MESHW_GATES_DUMP, 5, &mut out)?;
     Some(out)
 }
 
@@ -821,6 +827,11 @@ pub fn launch(scratch: &Path, inv: &Inv, argv: &[String], ans: &Answer) {
         if let Ok(key) = std::fs::read_to_string(scratch.join("snap-key")) {
             let db = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
             std::fs::write(scratch.join("expect-gates"), gates_dump(&db).unwrap_or_default())?;
+        }
+        if let (crate::meshw::send::Effect::Row(hash), Ok(key)) = (&ans.effect, std::fs::read_to_string(scratch.join("snap-key"))) {
+            let db = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
+            std::fs::write(scratch.join("expect-row-hash"), hash)?;
+            std::fs::write(scratch.join("expect-row"), super::row_by_hash(&db, hash).unwrap_or_default())?;
         }
         std::fs::write(scratch.join("expect-manifest"), serde_json::Value::Array(manifest).to_string())
     };
@@ -891,6 +902,13 @@ pub fn run_witness(args: &[String]) -> i32 {
                 let db = devswarm_root(&home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
                 if gates_dump(&db).unwrap_or_default().as_bytes() != read(&scratch.join("expect-gates")).as_slice() {
                     diff.push(defaults::text("devswarm_cli.gates_dump_table").to_string());
+                }
+                // the one message row the engine appended: Node's copy must hold the same row
+                if let Ok(hash) = std::fs::read_to_string(scratch.join("expect-row-hash")) {
+                    let theirs = super::row_by_hash(&db, &hash).unwrap_or_default();
+                    if theirs.as_bytes() != read(&scratch.join("expect-row")).as_slice() {
+                        diff.push(defaults::text("devswarm_cli.message_row_name").to_string());
+                    }
                 }
             }
             if node_stdout == want_stdout && node_code == want_code && diff.is_empty() {

@@ -57,7 +57,7 @@ fn caller_repo_key(inv: &Inv) -> R<Option<String>> {
 }
 
 /// `projectContextMismatch(id, registeredKey, callerKey, tail)`.
-fn mismatch(id: &str, registered: &str, caller: Option<&str>) -> Answer {
+fn mismatch(id: &str, registered: &str, caller: Option<&str>) -> OVal {
     let tail = match caller {
         Some(c) => defaults::render("devswarm_cli.msg_ctx_other", &[("caller", &quote(c))]),
         None => defaults::text("devswarm_cli.msg_ctx_none").to_string(),
@@ -75,7 +75,7 @@ fn mismatch(id: &str, registered: &str, caller: Option<&str>) -> Answer {
         .put("registeredRepoKey", s(registered))
         .put("callerRepoKey", caller.map_or(OVal::Null, s))
         .put("error", s(&msg));
-    answer(2, o.done())
+    o.done()
 }
 
 // ---- gate ---------------------------------------------------------------------------------------------------------------
@@ -92,6 +92,13 @@ pub fn run_gate(inv: &Inv, a: &Args) -> R<Answer> {
         return Ok(fail_error(defaults::text("devswarm_cli.msg_gate_usage")));
     }
     let set_by = a.one(defaults::text("devswarm_cli.flag_by")).unwrap_or(defaults::text("devswarm_cli.gate_set_by"));
+    let (ok, res) = gate_core(inv, id, &set_names, &clear_names, set_by)?;
+    Ok(answer(if ok { 0 } else { 2 }, res))
+}
+
+/// `cmdGate(id, { set, clear, by }, ctx)` once the flags are checked: `(ok, result)`. A refusal comes back before anything is
+/// written; a workspace the summary does not track comes back after the gate rows were (the caller decides what that means).
+pub(crate) fn gate_core(inv: &Inv, id: &str, set_names: &[String], clear_names: &[String], set_by: &str) -> R<(bool, OVal)> {
     // the authority gate runs before anything else: a workspace registered under another project is refused
     let caller = caller_repo_key(inv)?;
     let desc = ident::read_descriptor(&inv.home, id);
@@ -99,7 +106,7 @@ pub fn run_gate(inv: &Inv, a: &Args) -> R<Answer> {
         && let Some(registered) = crate::meshw::inbox::registered_repo_key(d, id)?
         && caller.as_deref() != Some(registered.as_str())
     {
-        return Ok(mismatch(id, &registered, caller.as_deref()));
+        return Ok((false, mismatch(id, &registered, caller.as_deref())));
     }
     // `merged` asks git for the merge proof (and warns on stderr): Node's
     if set_names.iter().any(|x| x == defaults::text("devswarm_cli.gate_merged")) {
@@ -124,16 +131,7 @@ pub fn run_gate(inv: &Inv, a: &Args) -> R<Answer> {
         crate::meshw::log_summary_failure(defaults::text("devswarm_cli.verb_gate"), &why);
     }
     // the refreshed summary file is part of what the verb wrote
-    let rel = format!(
-        "{}/{}/{}/{repo_key}{}",
-        defaults::text("mesh_write.dir_anti_hall"),
-        defaults::text("mesh_write.dir_devswarm"),
-        defaults::text("mesh_write.dir_summaries"),
-        defaults::text("mesh_write.json_suffix")
-    );
-    let file =
-        devswarm_root(&inv.write_home).join(defaults::text("mesh_write.dir_summaries")).join(format!("{repo_key}{}", defaults::text("mesh_write.json_suffix")));
-    crate::meshw::note_written(&rel, &std::fs::read(file).unwrap_or_default());
+    note_summary(inv, &repo_key);
     let ws = sum.get("workspaces").and_then(|w| w.get(id));
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(ws.is_some()))
@@ -149,7 +147,21 @@ pub fn run_gate(inv: &Inv, a: &Args) -> R<Answer> {
         }
     }
     o.put("tracked", OVal::Bool(ws.is_some()));
-    Ok(answer(if ws.is_some() { 0 } else { 2 }, o.done()))
+    Ok((ws.is_some(), o.done()))
+}
+
+/// Record the project's summary file as written by this verb (its content as it is now; a later write replaces it).
+pub(crate) fn note_summary(inv: &Inv, repo_key: &str) {
+    let rel = format!(
+        "{}/{}/{}/{repo_key}{}",
+        defaults::text("mesh_write.dir_anti_hall"),
+        defaults::text("mesh_write.dir_devswarm"),
+        defaults::text("mesh_write.dir_summaries"),
+        defaults::text("mesh_write.json_suffix")
+    );
+    let file =
+        devswarm_root(&inv.write_home).join(defaults::text("mesh_write.dir_summaries")).join(format!("{repo_key}{}", defaults::text("mesh_write.json_suffix")));
+    crate::meshw::set_written(&rel, &std::fs::read(file).unwrap_or_default());
 }
 
 // ---- workspaces list ----------------------------------------------------------------------------------------------------

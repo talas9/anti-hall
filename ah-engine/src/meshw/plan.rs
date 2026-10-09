@@ -137,6 +137,23 @@ pub fn find(inv: &Inv, id: &str) -> R<Option<Found>> {
     Ok(None)
 }
 
+/// `findPlan(home, { id, worktreePath })` with the worktree given (not read from the descriptor).
+pub fn find_for(inv: &Inv, id: &str, wt: Option<&str>) -> R<Option<Found>> {
+    let mut keys: Vec<String> = Vec::new();
+    if let Some(w) = wt {
+        keys.extend(key_for_worktree(w)?);
+    }
+    if is_safe_id(id) && !keys.iter().any(|k| k == id) {
+        keys.push(id.to_string());
+    }
+    for key in keys {
+        if let Some(plan) = read_plan(&plan_file(inv, &key))? {
+            return Ok(Some(Found { key, plan }));
+        }
+    }
+    Ok(None)
+}
+
 // ---- JavaScript value helpers ----
 
 /// `Number.isFinite(v)`: only a number.
