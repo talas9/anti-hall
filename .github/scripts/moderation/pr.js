@@ -38,6 +38,28 @@ function privacyOfFiles(files, cfg, deny) {
   return hits;
 }
 
+// New code-scanning alerts on the PR merge ref: open alerts there whose number is not open on the
+// base ref (an alert keeps its number across refs). Rules only; null when code scanning is unavailable.
+async function newScanningAlerts(github, repo, pr, cfg) {
+  const open = (ref) => github.paginate(github.rest.codeScanning.listAlertsForRepo, { ...repo, ref, state: 'open', per_page: 100 });
+  try {
+    const [onPr, onBase] = await Promise.all([open(`refs/pull/${pr.number}/merge`), open(`refs/heads/${pr.base}`).catch(() => [])]);
+    // dev may have no analysis of its own: fall back to the default branch's open alerts.
+    const baseAlerts = onBase.length || pr.base === 'main' ? onBase : await open('refs/heads/main').catch(() => []);
+    const known = new Set(baseAlerts.map((a) => a.number));
+    const fresh = onPr.filter((a) => !known.has(a.number));
+    return {
+      count: fresh.length,
+      listed: fresh.slice(0, cfg.pr.scanning_max_listed).map((a) => {
+        const loc = a.most_recent_instance && a.most_recent_instance.location;
+        return { number: a.number, rule: String((a.rule && a.rule.id) || 'unknown').slice(0, 80), severity: String((a.rule && (a.rule.security_severity_level || a.rule.severity)) || '').slice(0, 20), where: loc ? `${loc.path}:${loc.start_line}`.slice(0, 160) : '' };
+      }),
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function gate({ github, context, core }) {
   const cfg = L.loadConfig();
   const { pr, files } = await load({ github, context });
@@ -51,7 +73,7 @@ async function gate({ github, context, core }) {
   const verdict = skip ? { verdict: 'ok', reason: skip } : L.classify(`${pr.title}\n${pr.body || ''}`, { kind: 'body', association: pr.author_association }, cfg);
   const state = {
     event: `${context.eventName}.${context.payload.action || ''}`,
-    pr: { number: pr.number, title: pr.title, author: L.safeLogin(pr.user.login), labels: (pr.labels || []).map((l) => l.name), dependabot, draft: !!pr.draft },
+    pr: { number: pr.number, base: pr.base.ref, title: pr.title, author: L.safeLogin(pr.user.login), labels: (pr.labels || []).map((l) => l.name), dependabot, draft: !!pr.draft },
     rules, privacy, verdict, skip, bump: dependabot ? L.bumpRisk(pr.title) : null,
   };
   let call = null;
@@ -111,8 +133,10 @@ async function apply({ github, context, core }) {
   if (verdict.verdict === 'spam' || verdict.verdict === 'abusive') {
     if (!(await L.humanRemovedLabel(github, repo, pr.number, cfg.labels.review))) want.push(cfg.labels.review);
   }
+  // Docs drift: label on a PR to the release branch; a person who removed it keeps the call.
+  if (rules.docs_drift && !(await L.humanRemovedLabel(github, repo, pr.number, cfg.pr.docs_drift_label))) want.push(cfg.pr.docs_drift_label);
   const add = [...new Set(want)].filter((l) => !pr.labels.includes(l));
-  const remove = pr.labels.filter((l) => (l.startsWith('size:') && l !== rules.size) || (l === cfg.labels.needs_issue && !needsIssue));
+  const remove = pr.labels.filter((l) => (l.startsWith('size:') && l !== rules.size) || (l === cfg.labels.needs_issue && !needsIssue) || (l === cfg.pr.docs_drift_label && !rules.docs_drift));
   for (const name of remove) await act({ type: 'unlabel', name, target }, () => github.rest.issues.removeLabel({ ...repo, issue_number: pr.number, name }));
   if (add.length) {
     for (const name of add) actions.push({ type: 'label', name, target });
@@ -132,7 +156,12 @@ async function apply({ github, context, core }) {
     box(!rules.missing_docs, 'Docs or CHANGELOG updated for code changes'),
     box(!privacy.length, 'No private data (home paths, emails, session ids, private names)'),
     box(!rules.risks.workflow, 'No workflow changes (or reviewed: they run with repository permissions)'),
+    ...(rules.docs_drift ? [box(false, 'User-facing code changed with no CHANGELOG, docs/, README, skill or Codex-docs update (`docs:needed`)')] : []),
   ].join('\n');
+  const scan = await newScanningAlerts(github, repo, pr, cfg);
+  const scanning = scan === null ? '<sub>Code scanning: not available for this ref.</sub>'
+    : scan.count === 0 ? '**Code scanning:** no new alerts on this PR.'
+      : `**Code scanning: ${scan.count} new alert(s)** on this PR (not open on \`${pr.base}\`):\n${scan.listed.map((a) => `- #${a.number} \`${a.rule}\`${a.severity ? ` (${a.severity})` : ''} at \`${a.where}\``).join('\n')}`;
   const riskText = Object.entries(rules.risks).map(([k, v]) => `${k} (${v.slice(0, 3).map((f) => '`' + f + '`').join(', ')})`).join('; ') || 'none';
   let summary = '';
   if (pr.dependabot) summary = `**Dependency update:** ${state.bump} version bump. ${state.bump === 'major' ? 'Read the release notes for breaking changes before merging.' : 'Low risk if CI passes.'}`;
@@ -143,7 +172,7 @@ async function apply({ github, context, core }) {
   const body = L.render(L.template('pr-summary'), {
     marker: cfg.pr.sticky_marker, type: rules.type || 'unknown (title not conventional)', areas: areas.join(', ') || 'none',
     size: rules.size, lines: rules.lines, files: rules.files, title_ok: yes(rules.title_ok),
-    linked: rules.linked_issue ? 'yes' : (rules.needs_issue_exempt ? 'not needed (release PR)' : 'no'), risks: riskText, checklist, summary,
+    linked: rules.linked_issue ? 'yes' : (rules.needs_issue_exempt ? 'not needed (release PR)' : 'no'), risks: riskText, checklist, scanning, summary,
   });
   const comments = await github.paginate(github.rest.issues.listComments, { ...repo, issue_number: pr.number, per_page: 100 });
   const prev = comments.find((c) => c.user && c.user.login === 'github-actions[bot]' && (c.body || '').includes(cfg.pr.sticky_marker));

@@ -1,6 +1,10 @@
 'use strict';
-// roadmap.yml: keeps the "anti-hall roadmap" board and labels consistent, flags stale work,
-// posts the weekly digest, and reports the weekly mistake rate of all the automation.
+// roadmap.yml: keeps the "anti-hall roadmap" board and labels consistent (labels and state win; every
+// correction is logged to the job summary), fills the live "Last update" and "Progress" fields,
+// nudges stale in-progress work by comment (never closes), writes the weekly digest to the private
+// board as a project status update (job summary fallback; never a public issue), and reports the
+// weekly mistake rate of all the automation. Event runs touch only the item the event is about; the
+// 6-hourly and manual runs reconcile every open issue and PR.
 // Board writes need PROJECT_TOKEN (or ROADMAP_PROJECT_TOKEN); without it they are skipped with a
 // notice and the label-based parts still run. Only closes issues delivered on dev by a merged PR (delivered.js); never deletes or archives.
 
@@ -8,6 +12,7 @@ const fs = require('node:fs');
 const L = require('./lib.js');
 const SEC = require('./security-alerts.js');
 const DELIVERED = require('./delivered.js');
+const B = require('./board.js');
 const LOG = 'roadmap-log';
 const DAY = 864e5;
 
@@ -92,137 +97,241 @@ async function plan({ github, context, core }) {
   core.info(`mode=${mode} open=${items.length} closed7d=${closed.length} model=${want}`);
 }
 
-async function boardSync({ getOctokit, core, cfg, items, repo, act, item }) {
+// Activity of open items in one batched GraphQL call per 25 numbers: latest comments (for the
+// "Progress" line), references/commits (for "Last update"). Read with the workflow token.
+const ACT = `createdAt comments(last:10){nodes{createdAt body authorAssociation author{login}}}
+  timelineItems(last:5,itemTypes:[REFERENCED_EVENT,CROSS_REFERENCED_EVENT]){nodes{... on ReferencedEvent{createdAt} ... on CrossReferencedEvent{createdAt}}}`;
+
+async function activity(github, repo, numbers, cfg) {
+  const out = {};
+  for (let i = 0; i < numbers.length; i += 25) {
+    const chunk = numbers.slice(i, i + 25);
+    const q = `query($o:String!,$r:String!){repository(owner:$o,name:$r){${chunk.map((n) => `i${n}:issueOrPullRequest(number:${n}){... on Issue{${ACT}} ... on PullRequest{${ACT} commits(last:1){nodes{commit{committedDate}}}}}`).join(' ')}}}`;
+    let repoData;
+    try { repoData = (await github.graphql(q, { o: repo.owner, r: repo.repo })).repository; } catch { continue; }
+    for (const n of chunk) {
+      const x = repoData['i' + n];
+      if (!x) continue;
+      const comments = x.comments.nodes.map((c) => ({ createdAt: c.createdAt, body: c.body, association: c.authorAssociation, login: c.author && c.author.login }));
+      const refs = x.timelineItems.nodes.map((t) => t.createdAt).filter(Boolean);
+      const commitDate = x.commits && x.commits.nodes[0] ? x.commits.nodes[0].commit.committedDate : null;
+      out[n] = {
+        last: B.lastUpdate({ createdAt: x.createdAt, comments, refs, commitDate }),
+        progress: B.progressFrom(comments, cfg),
+        nudged: comments.some((c) => (c.body || '').includes('<!-- stale-check -->')),
+      };
+    }
+  }
+  return out;
+}
+
+const FIELD_Q = `query($l:String!,$n:Int!,$c:String){user(login:$l){projectV2(number:$n){id
+    fields(first:50){nodes{... on ProjectV2FieldCommon{id name dataType} ... on ProjectV2SingleSelectField{options{id name}}}}
+    items(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{id
+      content{... on Issue{number state repository{nameWithOwner}} ... on PullRequest{number state merged repository{nameWithOwner}}}
+      fieldValues(first:30){nodes{... on ProjectV2ItemFieldSingleSelectValue{name field{... on ProjectV2FieldCommon{name}}} ... on ProjectV2ItemFieldNumberValue{number field{... on ProjectV2FieldCommon{name}}} ... on ProjectV2ItemFieldDateValue{date field{... on ProjectV2FieldCommon{name}}} ... on ProjectV2ItemFieldTextValue{text field{... on ProjectV2FieldCommon{name}}}}}}}}}}`;
+
+// Reconcile the board with the repo. Labels and state win over the board. `only` = Set of numbers
+// (event runs touch just those items) or null (the scheduled/manual run reconciles everything).
+async function boardSync({ getOctokit, core, cfg, items, repo, act, only, acts, corrections }) {
   const token = process.env.PROJECT_TOKEN;
   if (!token) { core.notice('Board sync skipped: PROJECT_TOKEN empty/missing (ROADMAP_PROJECT_TOKEN also accepted).'); return { skipped: 'PROJECT_TOKEN empty/missing' }; }
   const gql = getOctokit(token).graphql;
-  const q = `query($l:String!,$n:Int!,$c:String){user(login:$l){projectV2(number:$n){id
-    fields(first:50){nodes{... on ProjectV2FieldCommon{id name dataType} ... on ProjectV2SingleSelectField{options{id name}}}}
-    items(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{id
-      content{... on Issue{number state repository{nameWithOwner} labels(first:30){nodes{name}}} ... on PullRequest{number state merged repository{nameWithOwner} labels(first:30){nodes{name}}}}
-      fieldValues(first:20){nodes{... on ProjectV2ItemFieldSingleSelectValue{name field{... on ProjectV2FieldCommon{name}}} ... on ProjectV2ItemFieldNumberValue{number field{... on ProjectV2FieldCommon{name}}}}}}}}}}`;
   let proj = null, c = null;
   const boardItems = [];
   for (let page = 0; page < 10; page++) {
-    const p = (await gql(q, { l: cfg.project.owner, n: cfg.project.number, c })).user.projectV2;
+    const p = (await gql(FIELD_Q, { l: cfg.project.owner, n: cfg.project.number, c })).user.projectV2;
     proj = proj || p;
     boardItems.push(...p.items.nodes);
     if (!p.items.pageInfo.hasNextPage) break;
     c = p.items.pageInfo.endCursor;
   }
-  const field = (name) => proj.fields.nodes.find((f) => f && f.name === name);
-  let writes = 0;
-  const set = async (it, name, value, number) => {
+  const P = cfg.project;
+  const fields = proj.fields.nodes.filter((f) => f && f.name);
+  const field = (name) => fields.find((f) => f.name === name);
+  // The two live-progress fields are created once when missing.
+  for (const [name, dataType] of [[P.fields.last_update, 'DATE'], [P.fields.progress, 'TEXT']]) {
+    if (field(name)) continue;
+    const made = await act({ type: 'field-create', name, dataType }, () => gql('mutation($p:ID!,$n:String!,$t:ProjectV2CustomFieldType!){createProjectV2Field(input:{projectId:$p,name:$n,dataType:$t}){projectV2Field{... on ProjectV2Field{id name dataType}}}}', { p: proj.id, n: name, t: dataType }));
+    if (made && made.createProjectV2Field.projectV2Field) fields.push(made.createProjectV2Field.projectV2Field);
+  }
+  const subIssues = !!field('Sub-issues progress');
+  let writes = 0, missingOption = 0;
+  const set = async (it, name, value, number, from) => {
     const f = field(name);
-    if (!f || value === undefined || value === null || writes >= cfg.project.max_field_writes_per_run) return;
-    const v = f.options ? (() => { const o = f.options.find((o) => o.name === value); return o && { singleSelectOptionId: o.id }; })() : { number: Number(value) };
-    if (!v) return;
+    if (!f || value === undefined || value === null || value === '' || String(from ?? '') === String(value) || writes >= P.max_field_writes_per_run) return;
+    let v;
+    if (f.options) { const o = f.options.find((x) => x.name === value); if (!o) { missingOption++; return; } v = { singleSelectOptionId: o.id }; }
+    else if (f.dataType === 'DATE') v = { date: value };
+    else if (f.dataType === 'TEXT') v = { text: value };
+    else v = { number: Number(value) };
     writes++;
+    corrections.push({ number, field: name, from: from ?? null, to: value });
     await act({ type: 'field', item: it.id, number, field: name, value }, () => gql('mutation($p:ID!,$i:ID!,$f:ID!,$v:ProjectV2FieldValue!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:$v}){projectV2Item{id}}}', { p: proj.id, i: it.id, f: f.id, v }));
   };
+  const byNum = new Map(items.map((i) => [i.number, i]));
   const full = `${repo.owner}/${repo.repo}`;
   const onBoard = new Set();
   let missingEstimate = 0;
+  const reconcile = async (it, number, open, ct, have) => {
+    const labels = open ? open.labels : [];
+    const closedState = open ? 'OPEN' : (ct && (ct.merged ? 'MERGED' : ct.state));
+    const { status } = B.deriveStatus({ labels, state: closedState, merged: ct && ct.merged, pr: open ? open.pr : !!(ct && 'merged' in ct) }, cfg);
+    if (status) await set(it, 'Status', status, number, have.Status);
+    const pr = labels.find((l) => /^priority:P[0-3]$/.test(l));
+    const sz = labels.find((l) => /^size:(S|M|L|XL)$/.test(l));
+    if (pr) await set(it, 'Priority', pr.slice(9), number, have.Priority);
+    if (sz) await set(it, 'Size', sz.slice(5), number, have.Size);
+    if ((have.Estimate === undefined || have.Estimate === null) && sz) await set(it, 'Estimate', cfg.triage.size_hours[sz], number, null);
+    if (open && (have.Estimate === undefined || have.Estimate === null) && !sz) missingEstimate++;
+    const a = acts[number];
+    if (open && a) {
+      await set(it, P.fields.last_update, B.day(a.last), number, have[P.fields.last_update]);
+      if (a.progress) await set(it, P.fields.progress, a.progress.text, number, have[P.fields.progress]);
+    }
+  };
   for (const it of boardItems) {
     const ct = it.content;
     if (!ct || !ct.repository || ct.repository.nameWithOwner !== full) continue;
     onBoard.add(ct.number);
-    if (item && ct.number !== item) continue;
-    const have = Object.fromEntries(it.fieldValues.nodes.filter((v) => v && v.field).map((v) => [v.field.name, v.name ?? v.number]));
-    const labels = ct.labels.nodes.map((l) => l.name);
-    let status = null;
-    if (ct.state === 'CLOSED' && !('merged' in ct)) status = cfg.project.done_status;
-    else if (ct.state === 'MERGED' || ct.merged) status = cfg.project.done_status;
-    else for (const [l, s] of Object.entries(cfg.project.status_from_label)) if (labels.includes(l)) { status = s; break; }
-    const pr = labels.find((l) => /^priority:P[0-3]$/.test(l));
-    const sz = labels.find((l) => /^size:(S|M|L|XL)$/.test(l));
-    if (status && have.Status !== status) await set(it, 'Status', status, ct.number);
-    if (pr && have.Priority !== pr.slice(9)) await set(it, 'Priority', pr.slice(9), ct.number);
-    if (sz && have.Size !== sz.slice(5)) await set(it, 'Size', sz.slice(5), ct.number);
-    if ((have.Estimate === undefined || have.Estimate === null) && sz) await set(it, 'Estimate', cfg.triage.size_hours[sz], ct.number);
-    if ((have.Estimate === undefined || have.Estimate === null) && !sz && ct.state === 'OPEN') missingEstimate++;
+    if (only && !only.has(ct.number)) continue;
+    const have = Object.fromEntries(it.fieldValues.nodes.filter((v) => v && v.field).map((v) => [v.field.name, v.name ?? v.number ?? v.date ?? v.text]));
+    await reconcile(it, ct.number, byNum.get(ct.number) || null, ct, have);
   }
   let adds = 0;
   for (const i of items) {
-    if (onBoard.has(i.number) || (item && i.number !== item) || adds >= cfg.project.max_adds_per_run) continue;
+    if (onBoard.has(i.number) || (only && !only.has(i.number)) || adds >= P.max_adds_per_run) continue;
     adds++;
-    await act({ type: 'board-add', number: i.number }, () => gql('mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}', { p: proj.id, c: i.node_id }));
+    corrections.push({ number: i.number, field: 'board', from: null, to: 'added' });
+    const added = await act({ type: 'board-add', number: i.number }, () => gql('mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}', { p: proj.id, c: i.node_id }));
+    if (added) await reconcile({ id: added.addProjectV2ItemById.item.id }, i.number, i, null, {});
   }
-  return { writes, adds, missingEstimate, boardItems: boardItems.length };
+  const openOnBoard = items.filter((i) => onBoard.has(i.number)).length;
+  return { writes, adds, missingEstimate, missingOption, boardItems: boardItems.length, projectId: proj.id, openTotal: items.length, openOnBoard, subIssuesField: subIssues };
+}
+
+// Event runs touch only the item(s) the event is about; the schedule and manual runs do everything.
+function touched(context) {
+  const p = context.payload;
+  if (context.eventName === 'workflow_dispatch') return Number(p.inputs['item-number']) ? new Set([Number(p.inputs['item-number'])]) : null;
+  if (context.eventName === 'schedule') return null;
+  if (context.eventName === 'push') {
+    const refs = new Set();
+    for (const c of p.commits || []) for (const m of String(c.message || '').matchAll(/#(\d{1,6})\b/g)) refs.add(Number(m[1]));
+    return new Set([...refs].slice(0, 10));
+  }
+  const n = (p.issue && p.issue.number) || (p.pull_request && p.pull_request.number);
+  return n ? new Set([n]) : new Set();
+}
+
+// Weekly digest -> the private project board only (status update). The job summary always gets it.
+async function postDigest({ getOctokit, core, cfg, body, atRisk, projectId, act }) {
+  const sum = process.env.GITHUB_STEP_SUMMARY;
+  if (sum) fs.appendFileSync(sum, '\n' + body + '\n');
+  const token = process.env.PROJECT_TOKEN;
+  if (!token || !projectId) return { posted: 'job-summary', why: token ? 'no project id' : 'PROJECT_TOKEN empty/missing' };
+  const status = atRisk ? cfg.project.status_update_status.risk : cfg.project.status_update_status.ok;
+  const ok = await act({ type: 'board-status-update', status }, () => getOctokit(token).graphql('mutation($p:ID!,$b:String!,$s:ProjectV2StatusUpdateStatus){createProjectV2StatusUpdate(input:{projectId:$p,body:$b,status:$s}){statusUpdate{id}}}', { p: projectId, b: body.slice(0, 60000), s: status }));
+  return ok || process.env.DRY ? { posted: 'board-status-update', status } : { posted: 'job-summary', why: 'status update mutation failed or unavailable' };
 }
 
 async function apply({ github, context, core, getOctokit }) {
   const cfg = L.loadConfig();
   const repo = context.repo;
+  const P = cfg.project;
   const state = JSON.parse(process.env.STATE || '{}');
   const dry = context.eventName === 'workflow_dispatch' && String(context.payload.inputs['dry-run']) === 'true';
-  const actions = [], errors = [];
+  if (dry) process.env.DRY = '1';
+  const actions = [], errors = [], corrections = [];
   const act = async (desc, fn) => {
     actions.push(desc);
     if (dry) return null;
     try { return await fn(); } catch (e) { errors.push(`${desc.type}: ${L.isRateLimit(e) ? 'rate-limited' : (e.status || e.message)}`); return null; }
   };
-  const items = await openItems(github, repo);
-  const p = context.payload;
-  const one = (context.eventName === 'workflow_dispatch' && Number(p.inputs['item-number'])) || (p.issue && p.issue.number) || (p.pull_request && p.pull_request.number) || null;
+  let items = await openItems(github, repo);
+  let only = touched(context);
 
   // 0. Issues closed by PRs merged into dev (GitHub only auto-closes for the default branch).
   let delivered = [];
   try { delivered = await DELIVERED.run({ github, repo, act }); } catch (e) { errors.push(`delivered: ${e.message}`); }
+  if (delivered.length) only = null; // sweep everything when some were just closed
 
-  // 1. Board consistency (closed issues go to Done; sweep everything when some were just closed).
-  let board = {};
-  try { board = await boardSync({ getOctokit, core, cfg, items, repo, act, item: delivered.length ? null : one }); } catch (e) { errors.push(`board: ${e.message}`); }
-
-  // 2. Stale in-progress work (labels only, so it runs without the board token).
-  const staleMs = cfg.project.stale_days * DAY;
-  const stale = items.filter((i) => i.labels.includes('status:in-progress') && !i.labels.includes(cfg.labels.stale_check) && Date.now() - new Date(i.updated) > staleMs && (!one || i.number === one)).slice(0, 20);
-  for (const i of stale) {
-    await act({ type: 'label', name: cfg.labels.stale_check, target: { kind: i.pr ? 'pr' : 'issue', number: i.number } }, () => github.rest.issues.addLabels({ ...repo, issue_number: i.number, labels: [cfg.labels.stale_check] }));
-    await act({ type: 'comment', target: { number: i.number } }, () => github.rest.issues.createComment({ ...repo, issue_number: i.number, body: L.render(L.template('stale-check'), { marker: '<!-- stale-check -->', days: cfg.project.stale_days }) }));
+  // 1. Open issues with no status label are untriaged: label them, so labels and board agree.
+  const scope = (i) => !only || only.has(i.number);
+  const unlabeled = items.filter((i) => !i.pr && scope(i) && !i.labels.some((l) => l.startsWith('status:'))).slice(0, 20);
+  for (const i of unlabeled) {
+    await act({ type: 'label', name: cfg.labels.triage, target: { kind: 'issue', number: i.number } }, () => github.rest.issues.addLabels({ ...repo, issue_number: i.number, labels: [cfg.labels.triage] }));
+    i.labels.push(cfg.labels.triage);
+    corrections.push({ number: i.number, field: 'label', from: null, to: cfg.labels.triage });
   }
 
-  // 2b. Security alerts -> one issue each (scheduled and manual runs only; event runs stay light).
+  // 2. Activity (Last update, Progress, stale check) for the items in scope.
+  const numbers = items.filter(scope).map((i) => i.number);
+  const acts = numbers.length ? await activity(github, repo, numbers, cfg) : {};
+
+  // 3. Board reconcile.
+  let board = {};
+  try { board = await boardSync({ getOctokit, core, cfg, items, repo, act, only, acts, corrections }); } catch (e) { errors.push(`board: ${e.message}`); }
+
+  // 4. Stale in-progress work: label + ONE nudge comment, never a close. Cleared when work resumes.
+  const stale = [], resumed = [];
+  for (const i of items.filter((x) => scope(x) && x.labels.includes('status:in-progress'))) {
+    const a = acts[i.number];
+    if (!a) continue;
+    const idle = B.hoursSince(a.last) > P.stale_hours;
+    const labeled = i.labels.includes(P.stale_label);
+    if (idle && !labeled) stale.push(i.number);
+    else if (!idle && labeled) resumed.push(i.number);
+  }
+  for (const n of stale.slice(0, 20)) {
+    await act({ type: 'label', name: P.stale_label, target: { kind: 'issue', number: n } }, () => github.rest.issues.addLabels({ ...repo, issue_number: n, labels: [P.stale_label] }));
+    if (!acts[n].nudged) await act({ type: 'comment', target: { number: n } }, () => github.rest.issues.createComment({ ...repo, issue_number: n, body: L.render(L.template('stale-check'), { marker: '<!-- stale-check -->', hours: P.stale_hours }) }));
+  }
+  for (const n of resumed.slice(0, 20)) await act({ type: 'unlabel', name: P.stale_label, target: { kind: 'issue', number: n } }, () => github.rest.issues.removeLabel({ ...repo, issue_number: n, name: P.stale_label }));
+
+  // 5. Security alerts -> one issue each (scheduled and manual runs only; event runs stay light).
   let security = null;
   if (context.eventName === 'schedule' || context.eventName === 'workflow_dispatch') {
     try { security = await SEC.sync({ github, wide: process.env.PROJECT_TOKEN ? getOctokit(process.env.PROJECT_TOKEN) : null, repo, act, errors }); } catch (e) { errors.push(`security: ${e.message}`); }
   }
 
-  // 3. Missing data flags (reported in the summary and the digest, not posted on items).
+  // 6. Missing data flags (summary and weekly digest, not posted on items).
   const noMilestone = items.filter((i) => !i.pr && !i.milestone).map((i) => i.number);
   const noSize = items.filter((i) => !i.pr && !i.labels.some((l) => l.startsWith('size:'))).map((i) => i.number);
 
-  // 4. Weekly digest.
+  // 7. Job summary: every correction made to the board and labels.
+  const sum = process.env.GITHUB_STEP_SUMMARY;
+  if (sum) {
+    const rows = corrections.slice(0, 150).map((c) => `| #${c.number} | ${c.field} | ${c.from ?? ''} | ${c.to} |`);
+    fs.appendFileSync(sum, `\n### Board reconcile${dry ? ' (dry run: nothing written)' : ''}\n\nScope: ${only ? [...only].map((n) => '#' + n).join(', ') || 'no items' : 'all open items'}. Open on board: ${board.openOnBoard ?? 'n/a'}/${board.openTotal ?? items.length}. Corrections: ${corrections.length}. Stale nudges: ${stale.length}.${board.subIssuesField === false ? ' The board has no "Sub-issues progress" field: add it to the views in the board settings.' : ''}${board.missingOption ? ` ${board.missingOption} Status value(s) have no matching board option.` : ''}\n\n${rows.length ? '| item | field | was | now |\n|---|---|---|---|\n' + rows.join('\n') : 'Nothing to correct.'}\n`);
+  }
+
+  // 8. Weekly digest: the private board only (project status update); never a public issue or discussion.
   let model = { provider: 'none', reason: state.model_skip || 'not needed', data: null };
+  let digest = null;
   if (state.mode === 'weekly') {
     if (process.env.MODEL_PROVIDER) model = L.modelResult(process.env, 'digest');
     const list = (arr, f) => (arr.length ? arr.map(f).join('\n') : '- (none)');
     const ln = (n) => `#${n}`;
     const inProg = items.filter((i) => i.labels.includes('status:in-progress'));
-    const risk = items.filter((i) => i.labels.includes('status:blocked') || i.labels.includes(cfg.labels.stale_check) || (prio(i.labels) <= 1 && !i.labels.includes('status:in-progress')));
+    const risk = items.filter((i) => i.labels.includes('status:blocked') || i.labels.includes(P.stale_label) || (prio(i.labels) <= 1 && !i.labels.includes('status:in-progress')));
+    const nums = (arr) => arr.slice(0, 15).map(ln).join(' ');
     const body = L.render(L.template('roadmap-digest'), {
-      marker: cfg.project.digest_marker, date: new Date().toISOString().slice(0, 10),
+      marker: P.digest_marker, date: new Date().toISOString().slice(0, 10),
       done_count: state.closed.length, done: list(state.closed, (c) => `- ${ln(c.number)} ${c.pr ? '(PR) ' : ''}`),
-      progress_count: inProg.length, progress: list(inProg, (i) => `- ${ln(i.number)}`),
+      progress_count: inProg.length, progress: list(inProg, (i) => `- ${ln(i.number)}${acts[i.number] && acts[i.number].progress ? ' ' + acts[i.number].progress.text : ''}`),
       risk_count: risk.length, risk: list(risk.slice(0, 15), (i) => `- ${ln(i.number)} (${i.labels.filter((l) => /^(status:blocked|status:stale-check|priority:P[01])$/.test(l)).join(', ')})`),
-      next_n: cfg.project.digest_next, next: list(state.next, (n) => `- ${ln(n.number)} P${prio(n.labels) === 4 ? '?' : prio(n.labels)}${n.blockedBy.length ? ', blocked by ' + n.blockedBy.map(ln).join(' ') : ''}`) +
+      next_n: P.digest_next, next: list(state.next, (n) => `- ${ln(n.number)} P${prio(n.labels) === 4 ? '?' : prio(n.labels)}${n.blockedBy.length ? ', blocked by ' + n.blockedBy.map(ln).join(' ') : ''}`) +
         (state.moves.length ? `\n\n**Milestone suggestions** (not applied): ${state.moves.map((m) => `${ln(m.number)} → ${m.to}`).join(', ')}` : ''),
-      missing: `${noMilestone.length} open issues without a milestone, ${noSize.length} without a size label${board.missingEstimate ? `, ${board.missingEstimate} board items without an estimate` : ''}.`,
+      missing: `${noMilestone.length} open issues without a milestone (${nums(noMilestone) || 'none'}), ${noSize.length} without a size label (${nums(noSize) || 'none'})${board.missingEstimate ? `, ${board.missingEstimate} board items without an estimate` : ''}.`,
       summary: model.data && model.data.summary ? `**Overview** (automated, ${model.provider}): ${L.sanitize(model.data.summary, cfg, 800)}` : '',
     });
-    const found = await github.rest.search.issuesAndPullRequests({ q: `repo:${repo.owner}/${repo.repo} is:issue in:title "${cfg.project.digest_title}" author:app/github-actions` }).catch(() => null);
-    let issue = found && found.data.items.find((i) => i.title === cfg.project.digest_title);
-    if (!issue && !dry) {
-      issue = (await github.rest.issues.create({ ...repo, title: cfg.project.digest_title, body: L.render(L.template('roadmap-digest-issue'), { marker: cfg.project.digest_marker }) })).data;
-      actions.push({ type: 'digest-issue-created', number: issue.number });
-      await github.graphql('mutation($i:ID!){pinIssue(input:{issueId:$i}){clientMutationId}}', { i: issue.node_id }).catch((e) => errors.push(`pin: ${e.message}`));
-    }
-    if (issue) await act({ type: 'digest', number: issue.number }, () => github.rest.issues.createComment({ ...repo, issue_number: issue.number, body }));
+    digest = await postDigest({ getOctokit, core, cfg, body, atRisk: risk.length > 0, projectId: board.projectId, act });
   }
 
   L.record(LOG, {
-    workflow: 'roadmap', event: `${context.eventName}.${state.mode}`, item: one ? `#${one}` : 'all', verdict: state.mode,
-    board, security, delivered, stale: stale.map((i) => i.number), no_milestone: noMilestone.length, no_size: noSize.length,
+    workflow: 'roadmap', event: `${context.eventName}.${state.mode}`, item: only ? [...only].map((n) => '#' + n).join(',') || 'none' : 'all', verdict: state.mode,
+    board, corrections: corrections.length, digest, security, delivered, stale, resumed, no_milestone: noMilestone.length, no_size: noSize.length,
     provider: model.provider, fallback_reason: model.reason, latency_ms: process.env.MODEL_LATENCY_MS || null, tokens: process.env.MODEL_TOKENS || null,
     actions, errors, dry_run: dry,
   });
@@ -287,4 +396,4 @@ async function mistakes({ github, context, core, getOctokit }) {
   L.record(LOG, { workflow: 'roadmap', event: 'weekly-report', item: 'all', verdict: 'report', per, providers, fallbacks, provider: 'none', actions: [] });
 }
 
-module.exports = { plan, apply, mistakes, rank, suggestMilestone };
+module.exports = { plan, apply, mistakes, rank, suggestMilestone, touched };
