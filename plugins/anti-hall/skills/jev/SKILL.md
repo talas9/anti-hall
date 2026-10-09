@@ -135,7 +135,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   their built-in rules, exactly as when Jev is off.
 - Privacy: with a backup on, the same (secret-scrubbed) decision text can reach the second vendor.
 - Decision rows in `jev-assist.ndjson` carry `transport` (and `fellBack: true` when the backup served it).
-- `jev-report.js` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
+- `ah-run.sh jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
 - UNVERIFIED: which status each vendor returns for an exhausted balance (Vercel `402` per community
   reports; TypeSafe undocumented), so both 402 and 429 are treated as eligible.
 
@@ -196,7 +196,7 @@ it.
 This is the full tracking loop, end to end — run it whenever the user asks how
 Jev is doing:
 
-1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js"` (add `--window 24h|7d`
+1. Run `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report` (add `--window 24h|7d`
    to narrow the cost window; default shows both).
 2. For EACH integration row, read its **suggestion** column and explain what it
    means and what to do next:
@@ -254,7 +254,7 @@ Jev is doing:
 
 ### "label that decision right/wrong"
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" label <hash> tp|fp` — see
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report label <hash> tp|fp` — see
 "jev report" below for the full mechanics. Mention that
 `~/.anti-hall/jev.json`'s `"audit": {"snippets": true}` must be turned on
 BEFORE the decision was made for `label <hash>` (no verdict) to show the actual
@@ -274,8 +274,8 @@ change with no evidence behind it yet.
 one combined table:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --by project
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --by session
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report --by project
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report --by session
 ```
 
 `--project <name>` filters to one project BEFORE reporting (combine with
@@ -317,7 +317,7 @@ Use this when the user wants a bad/accidental run out of the numbers without
 editing the log file directly:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" \
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report \
   --exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z
 ```
 
@@ -331,7 +331,7 @@ flags happened to be typed."
 
 ### Weekly scorecard (automatic + on-demand)
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --weekly [--json]` — a
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report --weekly [--json]` — a
 compact, ALWAYS-7-day summary: one line per integration with its current
 `[mode]`, KEEP/REVIEW/REMOVE suggestion, a short reason, and call count. Same
 thresholds as the full report, just condensed.
@@ -432,7 +432,7 @@ denominator; read it alongside the percentage, not the percentage alone.
 
 ## "jev report"
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" [--window 24h|7d]` — a
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report [--window 24h|7d]` — a
 read-only per-integration summary (call volume, agreement %, decisions changed,
 good-outcome rate, latency, estimated cost, real cost) with a KEEP/REVIEW/REMOVE
 suggestion per integration. Never mutates state.
@@ -441,10 +441,10 @@ Each changed decision's content hash `h` doubles as its stable id. Label one as
 a confirmed true/false positive:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" label <hash> tp|fp
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report label <hash> tp|fp
 ```
 
-This is the ONLY write path `jev-report.js` has — it appends to a separate,
+This is the ONLY write path `ah-run.sh jev-report` has — it appends to a separate,
 append-only `~/.anti-hall/logs/jev-labels.ndjson`, never touching
 `jev-assist.ndjson`. A human label always wins over an AUTO label for the same
 hash. AUTO labels are derived, at report time, from the SAME mechanical outcome
@@ -474,7 +474,7 @@ hash. `label <hash>` prints it if one exists. Deletion is manual-only, never
 automatic:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" prune-audit --days N
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report prune-audit --days N
 ```
 
 This is off by default precisely because it stores a piece of the actual

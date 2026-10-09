@@ -1,6 +1,6 @@
 #!/bin/sh
 # Skill launcher: run `ah-engine <verb> ...` when the engine answers, else the verb's Node script.
-#   ah-run.sh <verb> [args...]      verbs: settings jev-setup briefing capability-scan defect harvest
+#   ah-run.sh <verb> [args...]      verbs: settings jev-setup jev-report briefing capability-scan defect harvest
 #                                         install-statusline uninstall-statusline update install-codex
 # The engine is looked up as ah-hook.sh does: $HOME/.anti-hall/ah-engine/bin/ah-engine, then PATH.
 # Node runs instead when the engine is absent or not runnable (126/127), cannot load this plugin's defaults (70),
@@ -12,6 +12,7 @@ verb=${1:-}
 case $verb in
   settings) js=scripts/settings.js ;;
   jev-setup) js=scripts/jev-setup.js ;;
+  jev-report) js=scripts/jev-report.js ;;
   briefing) js=scripts/briefing.js ;;
   capability-scan) js=scripts/capability-scan.js ;;
   defect) js=scripts/defect.js ;;
