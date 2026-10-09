@@ -83,6 +83,7 @@ mod spool;
 mod task_checks_e2e;
 mod task_tracker_parity;
 mod telemetry;
+mod temp_leaks;
 mod template_drift;
 mod transcript_index;
 mod transcript_parity;

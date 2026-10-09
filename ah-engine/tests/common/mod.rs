@@ -5,6 +5,46 @@
 //! test if the process is still alive afterwards, so a leak is a test failure, never silent.
 #![allow(dead_code)] // each test binary uses a subset
 
+/// A scratch directory that is removed when it drops (also on a panic), so a test leaves nothing in the temp dir: leaked
+/// scratch dirs once piled up by the hundred thousand there and made anything that lists it (a Python probe) take seconds.
+/// `AH_PARITY_KEEP=1` keeps it for a post-mortem.
+pub struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    /// Create (fresh) `dir`; it is removed on drop.
+    pub fn at(dir: std::path::PathBuf) -> TempDir {
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a leftover of an earlier run under this name
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir.canonicalize().unwrap())
+    }
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        if std::env::var_os("AH_PARITY_KEEP").is_some() {
+            eprintln!("kept {}", self.0.display());
+        } else {
+            ah_engine::discard::harmless(std::fs::remove_dir_all(&self.0)); // keep: cleanup of a scratch directory
+        }
+    }
+}
+
 use std::path::Path;
 use std::time::{Duration, Instant};
 

@@ -135,6 +135,14 @@ pub struct Laid {
     pub vmask: Vec<String>,
 }
 
+/// The case's home lives in the temp dir: it goes with the laid-out case, or every run would leave one per case behind (the
+/// live6 replay found ~390,000 such dirs, and a Python probe that lists the temp dir then took tens of seconds).
+impl Drop for Laid {
+    fn drop(&mut self) {
+        crate::discard::harmless(std::fs::remove_dir_all(&self.home)); // keep: cleanup of a scratch directory
+    }
+}
+
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn lay(case: &Value) -> Laid {
@@ -397,4 +405,19 @@ pub fn regenerate(check: &str, compiled: &dyn Fn(&Laid) -> Option<Verdict>) {
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
     }
     std::fs::write(dir().join(format!("{check}.jsonl")), out).unwrap();
+}
+
+#[test]
+fn a_laid_case_takes_its_temp_home_with_it() {
+    // the leak check: every laid-out case used to leave its home in the temp dir
+    let homes: Vec<String> = (0..3)
+        .map(|i| {
+            let l = lay(&serde_json::json!({"files": {"{HOME}/.anti-hall/x.json": format!("{{\"n\":{i}}}")}}));
+            assert!(Path::new(&l.home).join(".anti-hall/x.json").is_file(), "the case is laid out");
+            l.home.clone()
+        })
+        .collect();
+    for h in homes {
+        assert!(!Path::new(&h).exists(), "{h} outlived its case");
+    }
 }

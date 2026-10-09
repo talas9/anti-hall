@@ -8,6 +8,7 @@
 //! reaches nothing; the one test that does signal real processes (`the_engine_really_signals_what_it_selects`) signals only
 //! children it spawned itself. A case marked `defer` is one the engine must hand to Node (`AHFALLBACK`), leaving the home as
 //! seeded.
+use crate::common::TempDir;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -129,7 +130,21 @@ const RUN_CAP: Duration = Duration::from_secs(40);
 fn engine_plugin() -> &'static Path {
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
-        let (src, root) = (plugin(), scratch("plugin"));
+        // A static is never dropped, so this tree lives in the build's own temp dir (not the system one), one per test process;
+        // the trees of processes that are gone are removed first.
+        let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        for e in std::fs::read_dir(base).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if let Some(pid) = n.strip_prefix("ah-reaper-plugin-").and_then(|p| p.parse::<i32>().ok())
+                && !crate::common::alive(pid)
+            {
+                ah_engine::discard::harmless(std::fs::remove_dir_all(e.path())); // keep: cleanup of a dead run's scratch tree
+            }
+        }
+        let root = base.join(format!("ah-reaper-plugin-{}", std::process::id()));
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&root)); // keep: a leftover under a reused pid
+        std::fs::create_dir_all(&root).unwrap();
+        let (src, root) = (plugin(), root.canonicalize().unwrap());
         let link = |from: &Path, to: &Path| std::os::unix::fs::symlink(from, to).unwrap();
         for e in std::fs::read_dir(&src).unwrap().flatten() {
             if e.file_name() != "engine" {
@@ -171,11 +186,8 @@ fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
 }
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-reaper-{tag}-{}-{}", std::process::id(), ID.fetch_add(1, Ordering::Relaxed)));
-    ah_engine::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a leftover of an earlier run of this test
-    std::fs::create_dir_all(&d).unwrap();
-    d.canonicalize().unwrap()
+fn scratch(tag: &str) -> TempDir {
+    TempDir::at(std::env::temp_dir().join(format!("ah-reaper-{tag}-{}-{}", std::process::id(), ID.fetch_add(1, Ordering::Relaxed))))
 }
 
 /// The fake `ps` and `launchctl`: they answer from files in `dir` and record every invocation's arguments in `dir/calls`.
