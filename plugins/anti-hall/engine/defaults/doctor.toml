@@ -1234,9 +1234,6 @@ value = "statusline/statusline.js"
 doc = "The line-1 renderer script, relative to the plugin root."
 value = "statusline/statusline-rich.js"
 
-[doctor.statusline_verb]
-doc = "The engine command that renders the statusline for the render check."
-value = "statusline"
 
 [doctor.statusline_sample]
 doc = "The session payload the render check pipes to the statusline; {cwd} is the working directory as a JSON string."

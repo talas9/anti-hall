@@ -1,13 +1,13 @@
 #!/bin/sh
 # Two forms. (1) Skill launcher: `ah-run.sh <verb> [args...]` runs `ah-engine <verb> ...` when the engine answers, else the verb's Node script.
 #   ah-run.sh <verb> [args...]      verbs: settings jev-setup jev-report briefing capability-scan defect harvest
-#                                         install-statusline uninstall-statusline update install-codex
+#                                         install-statusline uninstall-statusline update install-codex doctor
 # The engine is looked up as ah-hook.sh does: $HOME/.anti-hall/ah-engine/bin/ah-engine, then PATH.
 # Node runs instead when the engine is absent or not runnable (126/127), cannot load this plugin's defaults (70),
 # or defers the call (75: nothing written). Any other engine exit is the answer and is passed through.
 # (2) Generic form below: `ah-run.sh [--stdin] <engine-word>... -- <node-script> [<argument>...]`.
 case ${1:-} in
-  settings | jev-setup | jev-report | briefing | capability-scan | defect | harvest | install-statusline | uninstall-statusline | update | install-codex)
+  settings | jev-setup | jev-report | briefing | capability-scan | defect | harvest | install-statusline | uninstall-statusline | update | install-codex | doctor)
     here=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || here=.
     root=$(CDPATH= cd -- "$here/.." 2>/dev/null && pwd) || root=$here/..
     verb=${1:-}
@@ -24,6 +24,7 @@ case ${1:-} in
       uninstall-statusline) js=statusline/uninstall-statusline.js ;;
       update) js=skills/update/scripts/update.js ;;
       install-codex) js=codex/install-codex.js ;;
+      doctor) js=hooks/doctor.js ;;
     esac
     engine=$HOME/.anti-hall/ah-engine/bin/ah-engine
     [ -x "$engine" ] || engine=$(command -v ah-engine 2>/dev/null || true)

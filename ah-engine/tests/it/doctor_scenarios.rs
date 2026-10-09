@@ -130,6 +130,10 @@ impl Sc {
         copy_dir(&real.join("hooks"), &p.join("hooks"));
         copy_dir(&real.join(".claude-plugin"), &p.join(".claude-plugin"));
         copy_dir(&real.join("statusline"), &p.join("statusline"));
+        // the libraries the DevSwarm hook self-tests run through: read-only links to the real ones (a test that edits one copies it first)
+        for dir in ["companion", "scripts", "skills", "agents", "assets", "monitors", "docs"] {
+            symlink(real.join(dir), p.join(dir)).unwrap();
+        }
         copy_dir(&real.join("codex/hooks"), &p.join("codex/hooks"));
         self.plugin = p;
         self.write_lock("0.1.0", &self.triples());
@@ -1437,9 +1441,8 @@ fn ds_the_supervisor_files_must_parse_and_the_hook_tests_must_pass() {
     sc.own_plugin();
     sc.programs(&[], &[]);
     // the hooks the self-tests run need the companion libraries and the scripts beside them
-    for dir in ["companion", "scripts", "skills", "agents", "assets", "monitors", "docs"] {
-        copy_dir(&real_plugin().join(dir), &sc.plugin.join(dir));
-    }
+    fs::remove_file(sc.plugin.join("companion")).unwrap();
+    copy_dir(&real_plugin().join("companion"), &sc.plugin.join("companion"));
     // a supervisor script that does not parse is a failure, even with DevSwarm dormant
     let live = sc.plugin.join("companion/lib/liveness.js");
     let good = fs::read(&live).unwrap();

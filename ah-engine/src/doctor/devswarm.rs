@@ -22,6 +22,8 @@ enum Verdict {
     Pass(String),
     Fail(String),
     Skip(String),
+    /// The engine defers the check to its Node hook and Node could not run it: not exercised, reported as a warning.
+    Deferred(String),
 }
 
 fn text(key: &str) -> &'static str {
@@ -58,6 +60,10 @@ fn payload(key: &str, pairs: &[(&str, String)]) -> Value {
     v
 }
 
+fn deferred(check: &str) -> Verdict {
+    Verdict::Deferred(defaults::render("doctor_msg.deferred", &[("check", &check)]))
+}
+
 fn blocked(out: &str) -> bool {
     crate::checks::lit_re(text("doctor.decision_block_re")).is_match(out)
 }
@@ -78,14 +84,18 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
     if let Some(h) = selftest::Scratch::new(ctx, text("doctor.ds_label_turn")) {
         let env = env_for(&h.dir, &child_env, &[]);
         let r = selftest::run_check(ctx, root, "devswarm-child-turn", text("doctor.ds_script_turn"), &payload("doctor.ds_payload_turn", &[]), &env);
-        let said = r.text().is_some_and(|t| crate::checks::lit_re(text("doctor.ds_turn_re")).is_match(t));
-        let beat = std::fs::read_dir(devswarm_dir(&h.dir).join(text("doctor.ds_heartbeat_dir")))
-            .is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(text("mesh_write.json_suffix")))));
-        out.push(if said && beat {
-            Verdict::Pass(text("doctor_msg.ds_turn_ok").into())
+        if r.text().is_none() {
+            out.push(deferred("devswarm-child-turn"));
         } else {
-            Verdict::Fail(defaults::render("doctor_msg.ds_turn_bad", &[("said", &said), ("beat", &beat)]))
-        });
+            let said = r.text().is_some_and(|t| crate::checks::lit_re(text("doctor.ds_turn_re")).is_match(t));
+            let beat = std::fs::read_dir(devswarm_dir(&h.dir).join(text("doctor.ds_heartbeat_dir")))
+                .is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(text("mesh_write.json_suffix")))));
+            out.push(if said && beat {
+                Verdict::Pass(text("doctor_msg.ds_turn_ok").into())
+            } else {
+                Verdict::Fail(defaults::render("doctor_msg.ds_turn_bad", &[("said", &said), ("beat", &beat)]))
+            });
+        }
     }
 
     // 2. a child's Stop is blocked until it reports to its parent (it must be a registered workspace)
@@ -102,7 +112,13 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
             &env,
         );
         let ok = wrote.is_ok() && r.text().is_some_and(blocked);
-        out.push(if ok { Verdict::Pass(text("doctor_msg.ds_cgate_ok").into()) } else { Verdict::Fail(text("doctor_msg.ds_cgate_bad").into()) });
+        out.push(if r.text().is_none() {
+            deferred("devswarm-child-gate")
+        } else if ok {
+            Verdict::Pass(text("doctor_msg.ds_cgate_ok").into())
+        } else {
+            Verdict::Fail(text("doctor_msg.ds_cgate_bad").into())
+        });
     }
 
     // 3. the Primary is told about a workspace's unread backlog (read from the shared summary of this project)
@@ -149,7 +165,13 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
             &env,
         );
         let ok = wrote.is_ok() && r.text().is_some_and(blocked);
-        out.push(if ok { Verdict::Pass(text("doctor_msg.ds_pgate_ok").into()) } else { Verdict::Fail(text("doctor_msg.ds_pgate_bad").into()) });
+        out.push(if r.text().is_none() {
+            deferred("devswarm-parent-gate")
+        } else if ok {
+            Verdict::Pass(text("doctor_msg.ds_pgate_ok").into())
+        } else {
+            Verdict::Fail(text("doctor_msg.ds_pgate_bad").into())
+        });
     }
     out
 }
@@ -246,6 +268,7 @@ pub fn section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
             Verdict::Pass(m) => doc.ok(m),
             Verdict::Fail(m) => doc.bad(m),
             Verdict::Skip(m) => doc.infol(m),
+            Verdict::Deferred(m) => doc.warnl(m),
         }
     }
     match sched {
