@@ -357,6 +357,7 @@ function scanTranscript(transcriptPath, preLines, opts) {
             outputFile: typeof att.outputFilePath === 'string' ? att.outputFilePath : '',
             description: typeof att.description === 'string' ? att.description : '',
             launchedAtMs: Number.isFinite(t) ? t : NaN,
+            taskType: typeof att.taskType === 'string' ? att.taskType : '',
           });
         }
       } else if (TERMINAL_NOTIFICATION_STATUS.test(String(att.status))) {

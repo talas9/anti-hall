@@ -124,6 +124,7 @@ pub fn rec_json(id: &str, r: &agent_scan::Rec) -> Value {
         "teammate": r.teammate,
         "lastSeenMs": r.last_seen_ms,
         "pendingMessage": r.pending_message,
+        "taskType": r.task_type,
         "spawnInput": r.spawn_input,
     })
 }

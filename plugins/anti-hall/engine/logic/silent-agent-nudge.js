@@ -14,6 +14,15 @@ function snNum(v) { return typeof v === 'number' && isFinite(v); }
 // `Number(v)` of a stored time, NaN where JavaScript gives NaN.
 function snNumber(v) { return v === null ? 0 : Number(v); }
 
+// Whether the output file sits in another session's task directory (.../<session id>/tasks/<id>.output): an agent a previous
+// session started, carried into this transcript by a restart or compaction. No session id, or another path shape, is never "other".
+function snFromOtherSession(outputFile, session) {
+  if (!session || typeof outputFile !== 'string') return false;
+  var parts = outputFile.split('/'), n = parts.length;
+  if (n < 3 || parts[n - 2] !== ah.cfg('silent_nudge.tasks_dir')) return false;
+  return parts[n - 3].length === ah.cfgNum('silent_nudge.session_id_len') && parts[n - 3] !== session;
+}
+
 function snCandidates(p, home, now, threshold, session) {
   var out = [], transcript = typeof p.transcript_path === 'string' ? p.transcript_path : '';
   if (transcript) {
@@ -25,6 +34,7 @@ function snCandidates(p, home, now, threshold, session) {
       for (var i = 0; i < scan.launched.length; i++) {
         var rec = scan.launched[i], id = rec.id;
         if (terminal[id] === true || rec.pendingMessage) continue;
+        if (snFromOtherSession(rec.outputFile, session)) continue; // a previous session's agent, not ours
         var reference = NaN, snapshot = ah.cfg('silent_nudge.missing'), missing = true;
         if (rec.outputFile && rec.outputFile.charAt(0) !== '/') return null;
         if (rec.outputFile) {
@@ -48,7 +58,7 @@ function snCandidates(p, home, now, threshold, session) {
         if (resumed > reference) reference = resumed;
         if (resumed !== 0) snapshot = snapshot + ah.cfg('silent_nudge.resume_mark') + String(resumed);
         if (now - reference < threshold) continue;
-        out.push({ key: ah.cfg('silent_nudge.key_transcript') + id, id: id, resumedAt: resumed, snapshot: snapshot, label: rec.description ? rec.description : id, age: now - reference });
+        out.push({ key: ah.cfg('silent_nudge.key_transcript') + id, id: id, resumedAt: resumed, snapshot: snapshot, label: rec.description ? rec.description : id, age: now - reference, shell: rec.taskType === ah.cfg('silent_nudge.shell_task_type') });
       }
     }
   }
@@ -74,7 +84,7 @@ function snCandidates(p, home, now, threshold, session) {
     if (finished.some(function (w) { return w.toLowerCase() === status; })) continue;
     if (now - ts < threshold) continue;
     if (ts !== Math.trunc(ts) || Math.abs(ts) >= ah.cfgNum('agent_scan.safe_int')) return null;
-    out.push({ key: ah.cfg('silent_nudge.key_heartbeat') + d.id, id: d.id, resumedAt: 0, snapshot: String(ts), label: typeof d.step === 'string' && d.step ? d.step : d.id, age: now - ts });
+    out.push({ key: ah.cfg('silent_nudge.key_heartbeat') + d.id, id: d.id, resumedAt: 0, snapshot: String(ts), label: typeof d.step === 'string' && d.step ? d.step : d.id, age: now - ts, shell: false });
   }
   return out;
 }
@@ -232,9 +242,11 @@ function decide(p, opts) {
   ah.state.op(home, 'after_reply', stateRel, stateText);
   if (acked) return 'allow';
   var named = ah.cfgNum('silent_nudge.max_named');
-  var items = shown.slice(0, named).map(function (c, n) { return text.render(ah.cfg('silent_nudge.msg_item'), { label: labels[n], mins: String(Math.floor(c.age / 60000)) }); });
+  var items = shown.slice(0, named).map(function (c, n) { return text.render(ah.cfg('silent_nudge.msg_item'), { label: (c.shell ? ah.cfg('silent_nudge.shell_label_prefix') : '') + labels[n], mins: String(Math.floor(c.age / 60000)) }); });
   var more = shown.length > named ? text.render(ah.cfg('silent_nudge.msg_more'), { n: shown.length - named }) : '';
-  var what = text.render(ah.cfg('silent_nudge.msg_what'), { count: shown.length, min: String(minutes), shown: items.join(ah.cfg('silent_nudge.msg_item_sep')), more: more });
+  var anyShell = shown.some(function (c) { return c.shell; }), anyAgent = shown.some(function (c) { return !c.shell; });
+  var noun = ah.cfg(anyShell ? (anyAgent ? 'silent_nudge.noun_mixed' : 'silent_nudge.noun_shell') : 'silent_nudge.noun_agent');
+  var what = text.render(ah.cfg('silent_nudge.msg_what'), { count: shown.length, noun: noun, min: String(minutes), shown: items.join(ah.cfg('silent_nudge.msg_item_sep')), more: more });
   var instead = text.render(ah.cfg('silent_nudge.msg_instead'), { them: ah.cfg(shown.length === 1 ? 'silent_nudge.pronoun_one' : 'silent_nudge.pronoun_many') });
   var hint = session ? text.render(ah.cfg('silent_nudge.ack_hint'), { key: ackKey, now: String(ah.clock.now()), path: snAckPath(home, session) }) : '';
   var reason = text.message('block', guard, { what: what, why: ah.cfg('silent_nudge.msg_why'), instead: instead, allowed: ah.cfg('silent_nudge.msg_allowed'), extra: [hint] });

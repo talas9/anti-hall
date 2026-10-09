@@ -391,6 +391,48 @@ test('COMPACTION: launch record outside the capped tail window, agent re-injecte
   } finally { h.cleanup(); }
 });
 
+function adoptedLine(taskId, taskType, description, out) {
+  return {
+    type: 'attachment',
+    attachment: { type: 'task_status', taskId, taskType, description, status: 'running', outputFilePath: out },
+    timestamp: isoMinutesAgo(90),
+  };
+}
+
+test('RESTART: a previous session\'s agent re-injected as a running task_status is NOT ours -> nothing', () => {
+  const h = makeHome();
+  try {
+    const out = path.join(h.home, '11111111-2222-3333-4444-555555555555', 'tasks', 'abc.output');
+    const tp = h.writeTranscript([adoptedLine('abc', 'local_agent', 'Old session lane', out)]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'a task dir of another session is not this session\'s agent: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('RESTART: the same shape inside THIS session\'s task dir still nudges (control)', () => {
+  const h = makeHome();
+  try {
+    const sid = '11111111-2222-3333-4444-555555555555';
+    const out = path.join(h.home, sid, 'tasks', 'abc.output');
+    const tp = h.writeTranscript([adoptedLine('abc', 'local_agent', 'Own lane', out)]);
+    const r = testHook(HOOK, Object.assign(stopPayload(tp), { session_id: sid }), { home: h.home });
+    assert.ok(isBlock(r), JSON.stringify(r.json));
+    assert.match(r.json.reason, /of your own background subagent\(s\)/);
+  } finally { h.cleanup(); }
+});
+
+test('SHELL: a quiet background shell is reported as a shell, never as a subagent', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([adoptedLine('b9hc3cu3v', 'local_bash', 'Restart the build-load throttle', path.join(h.home, 'nope.output'))]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), JSON.stringify(r.json));
+    assert.match(r.json.reason, /of your own background shell\(s\)/);
+    assert.match(r.json.reason, /shell: Restart the build-load throttle/);
+    assert.doesNotMatch(r.json.reason, /subagent/);
+  } finally { h.cleanup(); }
+});
+
 test('HARD CAP: 5 consecutive Stops for the same stale agent produce exactly 1 block, even when the snapshot keeps changing', () => {
   const h = makeHome();
   try {

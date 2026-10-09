@@ -121,6 +121,10 @@ fn task_status(id: &str, out: &str, desc: &str, ts: &str) -> String {
 }
 
 /// Agent `n` (id `a1b2c3d4e5f6<n>`) launched 90 minutes ago with description `desc`; its output file is `out-<n>.txt`.
+fn task_status_typed(id: &str, out: &str, desc: &str, ts: &str, task_type: &str) -> String {
+    json!({"type": "attachment", "attachment": {"type": "task_status", "taskId": id, "taskType": task_type, "status": "running", "outputFilePath": out, "description": desc}, "timestamp": ts}).to_string()
+}
+
 fn agent(n: &str, desc: &str) -> Vec<String> {
     let id = format!("a1b2c3d4e5f6{n}");
     vec![agent_use(&format!("tu_{n}"), desc, &ago(5400)), launch(&format!("tu_{n}"), &id, &format!("$HOME/out-{n}.txt"), &ago(5400))]
@@ -180,6 +184,12 @@ pub(crate) fn scenarios() -> Vec<Sc> {
             .aged("out-01.txt", "{}\n", OLD)
             .defers(),
     );
+    let other = "11111111-2222-3333-4444-555555555555";
+    v.push(sc("previous-session-agent-is-skipped", s1.clone()).lines(&[task_status_typed("0123456789abcdef", &format!("$HOME/p/{other}/tasks/0123456789abcdef.output"), "old lane", &ago(5400), "local_agent")]));
+    v.push(sc("previous-session-agent-no-session-still-judged", json!(null)).lines(&[task_status_typed("0123456789abcdef", &format!("$HOME/p/{other}/tasks/0123456789abcdef.output"), "old lane", &ago(5400), "local_agent")]));
+    v.push(sc("own-session-dir-agent-nudges", json!(other)).lines(&[task_status_typed("0123456789abcdef", &format!("$HOME/p/{other}/tasks/0123456789abcdef.output"), "old lane", &ago(5400), "local_agent")]));
+    v.push(sc("background-shell-named-as-shell", s1.clone()).lines(&[task_status_typed("b9hc3cu3v", "$HOME/nope", "Restart the build-load throttle", &ago(5400), "local_bash")]));
+    v.push(sc("shell-and-agent-mixed-noun", s1.clone()).lines(&[task_status_typed("b9hc3cu3v", "$HOME/nope", "Restart the build-load throttle", &ago(5400), "local_bash"), task_status_typed("0123456789abcdef", "$HOME/nope", "an agent", &ago(5400), "local_agent")]));
     v.push(sc("no-description-names-id", s1.clone()).lines(&[task_status("0123456789abcdef", "$HOME/nope", "", &ago(5400))]));
     v.push(sc("sidechain-is-the-age", s1.clone()).lines(&one()).aged("out-01.txt", "{}\n", 7200).aged(
         &format!("t/session/subagents/agent-{}.jsonl", id("01")),
