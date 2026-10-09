@@ -1,16 +1,12 @@
 name: codeql
 
-# CodeQL code scanning (advanced setup). Runs on pull requests to main, pushes to
-# main and weekly; never on dev pushes. Findings appear under Security > Code
+# Disabled: the repository uses CodeQL default setup (Settings → Code security). Re-enable these triggers only after switching default setup off.
+
+# CodeQL code scanning (advanced setup, currently manual-only). Previously ran on
+# pull requests to main, pushes to main and weekly. Findings appear under Security > Code
 # scanning. Rust is analysed once Rust sources (Cargo.toml) are on the scanned
 # branch; until then the rust cell is a no-op.
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-  schedule:
-    - cron: '23 4 * * 1'
   workflow_dispatch:
 
 permissions: {}

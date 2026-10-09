@@ -8,7 +8,7 @@ How this GitHub repository is checked, released and protected. Pushes to `dev` r
 |---|---|---|---|
 | `test.yml` (tests) | PRs, pushes to `main`, `rc-v*` tags | `node --test`, sharded over ubuntu/macOS × Node 22/24 (full matrix on `rc-v*`) | **Yes**: `tests-passed` is a required check |
 | `pr-source.yml` | PRs to `main` | Rejects a PR to `main` whose source is not this repo's `dev` | **Yes**: `dev-only` is a required check |
-| `codeql.yml` | PRs to `main`, pushes to `main`, weekly | CodeQL scanning of JavaScript/TypeScript, workflows (`actions`) and Rust (once Rust sources are present) | No (alerts in Security → Code scanning) |
+| `codeql.yml` | Manual only (`workflow_dispatch`); disabled while CodeQL default setup is on | CodeQL scanning of JavaScript/TypeScript, workflows (`actions`) and Rust (once Rust sources are present) | No (alerts in Security → Code scanning) |
 | `dependency-review.yml` | PRs to `main` and `dev` | Fails when a PR adds a dependency with a high or critical advisory | No (not a required check) |
 | `pr-title.yml` | PRs to `main` and `dev` | PR title must follow Conventional Commits (`type(scope): summary`) | No |
 | `scorecard.yml` | Pushes to `main`, weekly, branch-protection changes | OpenSSF Scorecard; publishes results and uploads SARIF | No |
@@ -42,5 +42,5 @@ Pull-request workflows cancel a superseded run of the same PR; every job has a `
 | Dependabot alerts | On |
 | Dependabot security updates | On |
 | Private vulnerability reporting | On |
-| Code scanning | Advanced setup via `codeql.yml` (default setup stays off; the two cannot run together) |
+| Code scanning | Default setup (Settings → Code security); `codeql.yml` is manual-only because advanced and default setup cannot run together |
 | `main` ruleset | Blocks direct pushes, force pushes and deletion; requires `dev-only` and `tests-passed` |
