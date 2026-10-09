@@ -4,7 +4,7 @@
 #   replacing a stale label of the same prefix when the form is edited.
 # - pull_request_target opened/synchronize: path-based area:* labels from .github/labeler.yml.
 #   The PR's code is never checked out; actions/labeler reads only the changed file list.
-# - optional: with the ROADMAP_PROJECT_TOKEN secret (a token with the `project` scope), an opened
+# - optional: with the PROJECT_TOKEN secret (ROADMAP_PROJECT_TOKEN also accepted) (a token with the `project` scope), an opened
 #   issue is added to the roadmap board and its Status/Priority/Size/Estimate fields are filled.
 #   Without the secret the board's built-in "Auto-add to project" workflow adds items instead.
 #
@@ -90,12 +90,12 @@ jobs:
       - name: Add the issue to the roadmap board
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          HAS_TOKEN: ${{ secrets.ROADMAP_PROJECT_TOKEN != '' }}
+          HAS_TOKEN: ${{ secrets.PROJECT_TOKEN != '' || secrets.ROADMAP_PROJECT_TOKEN != '' }}
         with:
-          github-token: ${{ secrets.ROADMAP_PROJECT_TOKEN || github.token }}
+          github-token: ${{ secrets.PROJECT_TOKEN || secrets.ROADMAP_PROJECT_TOKEN || github.token }}
           script: |
             if (process.env.HAS_TOKEN !== 'true') {
-              core.notice('Roadmap board: ROADMAP_PROJECT_TOKEN is not set; the board\'s built-in auto-add workflow handles new items.');
+              core.notice('Roadmap board: PROJECT_TOKEN empty/missing (ROADMAP_PROJECT_TOKEN also accepted); the board\'s built-in auto-add workflow handles new items.');
               return;
             }
             const issue = context.payload.issue;
