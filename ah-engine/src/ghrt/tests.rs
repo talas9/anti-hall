@@ -790,16 +790,44 @@ fn green(s: &Stub, etag: &str) {
     s.set("checks", 200, etag, json!({"check_runs": [{"name": "build", "status": "completed", "conclusion": "success"}]}));
 }
 
-/// A followed repo whose PR #7 is open, unreviewed, with CI running (the baseline), then (second call) approved with CI green.
-fn becomes_ready(name: &str) -> (Fx, Stub) {
-    let fx = Fx::new(name);
-    fx.repo("r1", Some(ACME));
+/// A DevSwarm app database with a primary and, when `workspace` is given, a child workspace on `branch` in `worktree`.
+fn app_db(fx: &Fx, workspace: Option<(&str, &Path)>) -> PathBuf {
+    let db = fx.dir.join("devswarm.db");
+    crate::discard::harmless(std::fs::remove_file(&db)); // keep: a leftover of an earlier call in the same test
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, worktreePath TEXT, label TEXT, isHidden INTEGER, pullRequestId TEXT, builderType TEXT, isActive INTEGER, lastSelectedAt TEXT);
+         CREATE TABLE builder_terminals (id INTEGER PRIMARY KEY, builderId TEXT, panelStatus TEXT, isActive INTEGER);
+         CREATE TABLE pull_requests (id TEXT PRIMARY KEY, number INTEGER, state TEXT, checkStatus TEXT, lastSyncedAt TEXT);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO builders VALUES ('prim','r1','main','/nowhere','Primary',0,NULL,'primary',1,NULL)", []).unwrap();
+    if let Some((branch, wt)) = workspace {
+        c.execute("INSERT INTO builders VALUES ('ws1','r1',?1,?2,'Child',0,NULL,'standard',1,NULL)", rusqlite::params![branch, wt.to_str().unwrap()]).unwrap();
+    }
+    db
+}
+
+/// A followed repo whose PR #7 (head branch `branch`) is open, unreviewed, with CI running (the baseline), then approved with CI
+/// green. `workspace`: the branch belongs to a DevSwarm workspace in the repo's directory.
+fn becomes_ready_on(name: &str, branch: &str, workspace: bool) -> (Fx, Stub) {
+    let mut fx = Fx::new(name);
+    let r = fx.repo("r1", Some(ACME));
+    if branch != "main" {
+        git(&r, &["checkout", "-q", "-b", branch]);
+    }
+    let db = app_db(&fx, workspace.then_some((branch, r.as_path())));
+    fx.cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_app_db", json!(db.to_str().unwrap()));
     let s = Stub::new();
     open_pr(&s);
     fx.tick(&s, T0 + 1000);
     approved(&s, "\"v2\"");
     green(&s, "\"c2\"");
     (fx, s)
+}
+
+fn becomes_ready(name: &str) -> (Fx, Stub) {
+    becomes_ready_on(name, "main", true)
 }
 
 fn merge_report(fx: &Fx) -> Value {
@@ -966,4 +994,39 @@ fn a_merge_whose_base_branch_goes_red_or_is_reverted_is_a_mistake_and_a_clean_on
     fx.tick(&s, t + 90_000_000);
     let r = merge_report(&fx);
     assert_eq!((r["mistakes"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone(), r["mistake_rate"].clone()), (json!(0), json!(0), json!(1), json!(0.0)));
+}
+
+#[test]
+fn only_a_workspace_pull_request_is_auto_merged() {
+    // a dependency bot's pull request, a release pull request (dev into main) and a person's: ready, announced, never merged
+    for branch in ["dependabot/npm_and_yarn/lodash-4.17.21", "dev", "alice/fix-typo"] {
+        let (fx, s) = becomes_ready_on(&format!("scope-{}", branch.len()), branch, false);
+        fx.tick(&s, T0 + 100_000);
+        fx.tick(&s, T0 + 5_000_000);
+        assert!(edge_kinds(&fx).contains(&"ready".to_string()), "{branch}: still announced");
+        assert!(s.merges.borrow().is_empty(), "{branch}: not a workspace branch, never merged");
+        let r = merge_report(&fx);
+        assert_eq!(r["by_action"]["merge"]["refused"], json!(1), "{branch}: refused once, not once per tick: {r}");
+    }
+    // the branch of a live workspace in this directory: merged once
+    let (fx, s) = becomes_ready_on("scope-ws", "feat/child-work", true);
+    fx.tick(&s, T0 + 100_000);
+    fx.tick(&s, T0 + 5_000_000);
+    assert_eq!(s.merges.borrow().len(), 1);
+    // the same branch name on a workspace that lives in another directory is not this pull request's workspace
+    let (fx, s) = becomes_ready_on("scope-elsewhere", "feat/child-work", false);
+    let db = app_db(&fx, Some(("feat/child-work", Path::new("/somewhere/else"))));
+    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_app_db", json!(db.to_str().unwrap()));
+    poll::tick(&cfg, &s, T0 + 100_000, false);
+    assert!(s.merges.borrow().is_empty());
+    // scope all: any ready pull request
+    let (fx, s) = becomes_ready_on("scope-all", "dev", false);
+    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_auto_merge_scope", json!("all"));
+    poll::tick(&cfg, &s, T0 + 100_000, false);
+    assert_eq!(s.merges.borrow().len(), 1);
+    // a draft is never ready, in any scope
+    let (fx, s) = becomes_ready_on("scope-draft", "feat/d", true);
+    s.set("pulls", 200, "\"pdr\"", json!([{"number": 7, "state": "open", "draft": true, "base": {"ref": "main"}, "title": "t"}]));
+    fx.tick(&s, T0 + 100_000);
+    assert!(s.merges.borrow().is_empty());
 }

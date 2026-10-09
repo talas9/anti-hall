@@ -313,6 +313,14 @@ value = true
 doc = "ACT: when every ready condition holds for the current head commit, re-checked live right before, merge the pull request with `gh pr merge --merge` (ready_merge_argv; never --admin, so GitHub's branch protection and required reviews still decide and may refuse). Once per head commit (key merge:<repo>#<number>:<sha>), recorded in the ledger and the action log, with follow-up checks for a revert or a red base branch. Default ON by owner decision; turn it off with github_rt.ready_auto_merge = false in settings.json (section github_rt) or the engine config file."
 value = true
 
+[github_rt.ready_auto_merge_scope]
+doc = "Which pull requests the auto-merge may merge: `workspaces` (default) only those whose head branch is the branch of a live, non-primary DevSwarm workspace (matched against the app database's builders and their worktrees), never a release pull request (dev into main), a dependency bot's or a person's; `all` any pull request of a followed branch that is ready. Drafts are never ready, whatever the scope."
+value = "workspaces"
+
+[github_rt.ready_app_db]
+doc = "The DevSwarm app database the scope check reads; empty (default) uses the detected one. For installs in a non-standard place."
+value = ""
+
 [github_rt.ready_ok_states]
 doc = "The mergeable_state values GitHub reports that count as mergeable and clean."
 value = ["clean", "has_hooks"]
@@ -341,4 +349,4 @@ value = { wait_ms = 900000, retry_ms = 300000, give_up_ms = 3600000, revert_wind
 
 [github_rt.ready_actions]
 doc = "How merge readiness names itself in the action log: the feature, its two actions and its two mistake signals (with the text logged for each)."
-value = { feature = "merge_ready", notify = "notify", merge = "merge", mistake_reverted = "merged_then_reverted", detail_reverted = "a commit on the base branch reverts the merged pull request", mistake_ci = "base_ci_red_after_merge", detail_ci = "checks of the merge commit failed on the base branch", live_recheck_failed = "a ready condition no longer held at the live re-check", head_moved = "the head commit changed since the ready edge" }
+value = { feature = "merge_ready", notify = "notify", merge = "merge", mistake_reverted = "merged_then_reverted", detail_reverted = "a commit on the base branch reverts the merged pull request", mistake_ci = "base_ci_red_after_merge", detail_ci = "checks of the merge commit failed on the base branch", out_of_scope = "not a DevSwarm workspace pull request (github_rt.ready_auto_merge_scope = workspaces)", live_recheck_failed = "a ready condition no longer held at the live re-check", head_moved = "the head commit changed since the ready edge" }

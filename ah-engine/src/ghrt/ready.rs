@@ -102,6 +102,27 @@ fn failed_conditions(c: &Value) -> String {
     c.as_object().map(|m| m.iter().filter(|(_, v)| **v == json!(false)).map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(",")).unwrap_or_default()
 }
 
+/// Whether the branch checked out in `root` is the branch of a live, non-primary DevSwarm workspace whose worktree is that
+/// directory (the app database's builders; `github_rt.ready_app_db` overrides where the database is). Unknown reads as no.
+fn workspace_owns(cfg: &Cfg, branch: &str, root: &str) -> bool {
+    use crate::devswarm_rt::sources::read_app;
+    let over = cfg.txt_value("github_rt.ready_app_db");
+    let db = if over.is_empty() {
+        let env: crate::meshw::ident::Env = std::env::vars().collect();
+        let home = env.get(crate::defaults::env_name("home")).map(PathBuf::from).unwrap_or_default();
+        crate::meshw::ident::app_db_path(&home, &env).map(PathBuf::from)
+    } else {
+        Some(PathBuf::from(over))
+    };
+    let Some(app) = db.as_deref().and_then(read_app) else { return false };
+    let canon = |p: &str| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+    let here = canon(root);
+    app.builders.iter().any(|b| {
+        let primary = b.builder_type.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()).is_none_or(|t| t == "primary");
+        !primary && b.active == Some(true) && b.branch.as_deref() == Some(branch) && b.worktree.as_deref().is_some_and(|w| canon(w) == here)
+    })
+}
+
 /// The auto-merge for the repo's pull request, when `status` says ready. Idempotent per head commit; live re-check first.
 pub(super) fn try_merge(ctx: &Ctx, st: &mut State, repo: &mut Repo, status: &Value, prev_used: &mut Option<(u64, u64)>) {
     let cfg = ctx.cfg;
@@ -114,6 +135,20 @@ pub(super) fn try_merge(ctx: &Ctx, st: &mut State, repo: &mut Repo, status: &Val
     }
     let key = merge_key(&repo.slug, number, &sha);
     if seen(cfg, &key) {
+        return;
+    }
+    if cfg.txt_value("github_rt.ready_auto_merge_scope") != "all" && !workspace_owns(cfg, &repo.branch, &repo.root) {
+        // not a DevSwarm workspace's pull request (a release, a dependency bot, a person's): never merged by the engine; said once per head
+        let skip = format!("scope:{key}");
+        if !seen(cfg, &skip) {
+            ledger_add(cfg, &skip, "out-of-scope", ctx.now);
+            let (feature, action) = (word(cfg, "feature"), word(cfg, "merge"));
+            let t = target(&repo.slug, number, &sha);
+            let mut inputs = status["ready_conditions"].clone();
+            inputs["workspace_branch"] = json!(false);
+            actlog::record(&cfg.state_dir(), &Action { feature: &feature, action: &action, target: &t, inputs, outcome: "refused", reason: &word(cfg, "out_of_scope"), latency_ms: 0 }, ctx.now);
+            emit_act(&feature, &action, crate::telemetry::event::Outcome::Block, 0, &t, &word(cfg, "out_of_scope"), &key);
+        }
         return;
     }
     let (feature, action) = (word(cfg, "feature"), word(cfg, "merge"));

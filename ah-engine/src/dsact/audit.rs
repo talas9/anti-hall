@@ -16,10 +16,12 @@ use std::path::Path;
 pub fn act_rec(r: &Report, latency_ms: u64) -> ActRec<'_> {
     let map = defaults::raw("devswarm_act.audit_outcomes");
     let word = r.word.text();
-    let outcome = ["allow", "block", "error", "timeout"]
-        .iter()
-        .find(|o| map.get(o).is_some_and(|l| l.strings().contains(&word)))
-        .and_then(|o| Outcome::parse(o))
+    let outcome = map
+        .as_table()
+        .into_iter()
+        .flatten()
+        .find(|(_, l)| l.strings().contains(&word))
+        .and_then(|(o, _)| Outcome::parse(o))
         .unwrap_or(Outcome::Skip);
     let reason = if r.word == Word::Done { "" } else { word };
     ActRec { feature: &r.kind, action: &r.kind, outcome, latency_ms, target: &r.id, inputs: "", reason, action_id: &r.key }
