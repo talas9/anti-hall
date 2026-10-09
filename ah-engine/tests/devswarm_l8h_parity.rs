@@ -626,3 +626,39 @@ fn correct_matches_node() {
     ];
     check(&fx, &cases, &[], 11, 1);
 }
+
+// ---- reap-orphans ---------------------------------------------------------------------------------------------------------
+
+#[test]
+fn reap_orphans_matches_node() {
+    need_node!();
+    let fx = fixture("l8hreap");
+    let r = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "ReapOrphans");
+    // a partition nobody registered, holding mail: the orphan the dry run would list
+    let key = fx.repo_key.clone();
+    let orphan = move |h: &Path| {
+        let o = Command::new("node").arg(support("orphan.js")).arg(h).arg(&key).output().unwrap();
+        assert!(o.status.success(), "orphan.js: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    let orphan2 = orphan.clone();
+    let orphan3 = orphan.clone();
+    let cases = vec![
+        r("reap-dry-run-with-an-orphan-is-node", &["reap-orphans"], "main", false).setup(orphan),
+        r("reap-apply-with-an-orphan-is-node", &["reap-orphans", "--apply", "--max", "1", "--i-am-a-human"], "main", false).setup(orphan2),
+        r("reap-refusal-does-not-need-the-orphans", &["reap-orphans", "--apply"], "main", true).setup(orphan3),
+        r("reap-dry-run", &["reap-orphans"], "main", true),
+        r("reap-apply-as-a-human", &["reap-orphans", "--apply", "--max", "3", "--i-am-a-human"], "main", true),
+        r("reap-apply-as-a-human-from-a-child", &["reap-orphans", "--apply", "--max=2", "--i-am-a-human"], "child", true),
+        r("reap-apply-without-max", &["reap-orphans", "--apply"], "main", true),
+        r("reap-apply-with-a-bare-max", &["reap-orphans", "--apply", "--max"], "main", true),
+        r("reap-apply-with-zero", &["reap-orphans", "--apply", "--max", "0"], "main", true),
+        r("reap-apply-with-a-fraction", &["reap-orphans", "--apply", "--max", "2.5"], "main", true),
+        r("reap-apply-with-words", &["reap-orphans", "--apply", "--max", "lots"], "main", true),
+        r("reap-apply-under-automation", &["reap-orphans", "--apply", "--max", "3", "--i-am-a-human"], "main", true).env("ANTIHALL_DEVSWARM_AUTOMATION", "1"),
+        r("reap-apply-from-a-non-interactive-shell", &["reap-orphans", "--apply", "--max", "3"], "main", true),
+        r("reap-outside-a-project", &["reap-orphans"], "nongit", true),
+        r("reap-apply-outside-a-project", &["reap-orphans", "--apply", "--max", "3"], "nongit", true),
+        r("reap-from-a-child", &["reap-orphans", "--apply"], "child", true),
+    ];
+    check(&fx, &cases, &[], 11, 2);
+}

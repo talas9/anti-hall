@@ -1998,3 +1998,93 @@ value = "send failed — warned_at not recorded"
 [devswarm_cli.msg_corr_not_recorded]
 doc = "The error when the correction was sent but the plan could not be updated."
 value = "the correction was sent, but warned_at could not be recorded (plan file locked or gone) — retry"
+
+# ---- reap-orphans (lane l8h) --------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_reap_orphans]
+doc = "The verb that retires orphaned mesh partitions (dry run unless --apply --max N)."
+value = "reap-orphans"
+
+[devswarm_cli.action_reap_orphans]
+doc = "The `action` a reap-orphans result and its refusals carry."
+value = "reap-orphans"
+
+[devswarm_cli.flag_apply]
+doc = "The reap-orphans flag that acts instead of only listing."
+value = "apply"
+
+[devswarm_cli.flag_max]
+doc = "The reap-orphans flag giving the most partitions one pass may retire."
+value = "max"
+
+[devswarm_cli.flag_human]
+doc = "The reap-orphans flag by which a person claims to be driving a non-interactive shell."
+value = "i-am-a-human"
+
+[devswarm_cli.reap_automation_env]
+doc = "The environment variable a supervisor, cron or hook context sets; reap-orphans --apply refuses while it is set."
+value = "ANTIHALL_DEVSWARM_AUTOMATION"
+
+[devswarm_cli.reap_automation_value]
+doc = "The value of that variable that marks an automated context."
+value = "1"
+
+[devswarm_cli.reap_dir]
+doc = "The directory (under the DevSwarm root) where a reap archives the unread rows of a retired partition."
+value = "reaped"
+
+[devswarm_cli.reap_mode_dry_run]
+doc = "The `mode` of a reap-orphans listing."
+value = "dry-run"
+
+[devswarm_cli.reap_mode_apply]
+doc = "The `mode` of a reap-orphans pass that acted."
+value = "apply"
+
+[devswarm_cli.reap_reason_no_project]
+doc = "The `reason` of the refusal outside a git worktree."
+value = "no-project"
+
+[devswarm_cli.reap_reason_max_required]
+doc = "The `reason` of the refusal of --apply without --max."
+value = "max-required"
+
+[devswarm_cli.reap_reason_bad_max]
+doc = "The `reason` of the refusal of a --max that is no positive integer."
+value = "bad-max"
+
+[devswarm_cli.reap_reason_automation]
+doc = "The `reason` of the refusal of --apply in an automated context."
+value = "automation-refused"
+
+[devswarm_cli.reap_reason_non_interactive]
+doc = "The `reason` of the refusal of --apply from a non-interactive shell."
+value = "non-interactive-refused"
+
+[devswarm_cli.msg_reap_no_project]
+doc = "The refusal outside a git worktree."
+value = "reap-orphans must run inside a git worktree (the mesh store is per-project)"
+
+[devswarm_cli.msg_reap_max_required]
+doc = "The refusal of --apply without --max."
+value = "--apply requires --max N (the maximum number of partitions this pass may retire). There is deliberately no unbounded apply."
+
+[devswarm_cli.msg_reap_bad_max]
+doc = "The refusal of a bad --max; {got} is the value as JSON."
+value = "--max must be a positive integer (got {got})"
+
+[devswarm_cli.msg_reap_automation]
+doc = "The refusal of --apply in an automated context."
+value = "refusing to --apply with ANTIHALL_DEVSWARM_AUTOMATION=1 set: retiring a partition is a human decision, never a scheduled sweep. Run it yourself from an interactive shell."
+
+[devswarm_cli.msg_reap_non_interactive]
+doc = "The refusal of --apply from a non-interactive shell."
+value = "refusing to --apply from a non-interactive stdin (cron/pipeline/subagent shape). If a human really is driving this, pass --i-am-a-human as well."
+
+[devswarm_cli.msg_reap_none]
+doc = "The note of a listing that found no orphaned partition."
+value = "no orphaned partitions with unread mail in this project"
+
+[devswarm_cli.msg_reap_applied]
+doc = "The note of a pass that acted; {dir} is the directory the archives go to."
+value = "unread rows were archived + verified under {dir} and each partition retired by advancing its cursor; NO message rows were deleted"

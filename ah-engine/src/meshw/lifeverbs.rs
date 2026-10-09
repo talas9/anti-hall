@@ -773,3 +773,94 @@ pub fn correct(inv: &Inv, a: &Args) -> R<Answer> {
         .put("sent", sent_result);
     Ok(reply(o))
 }
+
+// ---- reap-orphans -------------------------------------------------------------------------------------------------------
+
+/// The refusal / result object of `reap-orphans` with `ok` and `action` first.
+fn reap_result(ok: bool, fields: &[(&str, OVal)]) -> Obj {
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(ok)).put("action", s(defaults::text("devswarm_cli.action_reap_orphans")));
+    for (k, v) in fields {
+        o.put(k, v.clone());
+    }
+    o
+}
+
+/// `reap-orphans [--apply --max N] [--i-am-a-human]`: the engine answers the cases that need no orphan classification: no
+/// project, every refusal of the apply path, and a project with no partition holding unread mail with no live reader (the
+/// summary defers, nothing written, the moment one exists: classifying it and retiring it stay Node's).
+pub fn reap_orphans(inv: &Inv, a: &Args) -> R<Answer> {
+    let apply = a.has(defaults::text("devswarm_cli.flag_apply"));
+    let Some(repo_key) = ident::resolve_context(&inv.cwd, true)?.repo_key else {
+        let o = reap_result(false, &[("reason", s(defaults::text("devswarm_cli.reap_reason_no_project"))), ("error", s(defaults::text("devswarm_cli.msg_reap_no_project")))]);
+        return Ok(answer(2, o.done()));
+    };
+    // collectOrphanCandidates opens the project's store (Node creates a missing one) and reads its summary
+    let Some(_reader) = crate::meshw::tick::open_reader(inv, &repo_key)? else { return defer("no-store") };
+    let store = common::open_store(inv, &repo_key)?;
+    let refuse = |reason: &str, error: String| -> Answer {
+        answer(2, reap_result(false, &[("reason", s(reason)), ("error", s(&error))]).done())
+    };
+    let max_n = if apply {
+        let flag = defaults::text("devswarm_cli.flag_max");
+        let raw = a.one(flag);
+        let Some(raw) = raw else {
+            return Ok(refuse(defaults::text("devswarm_cli.reap_reason_max_required"), defaults::text("devswarm_cli.msg_reap_max_required").to_string()));
+        };
+        let n = crate::checks::guardkit::text::js_number_of_str(raw);
+        if !n.is_finite() || n < 1.0 || n.floor() != n {
+            return Ok(refuse(
+                defaults::text("devswarm_cli.reap_reason_bad_max"),
+                crate::meshw::extverbs::tpl("devswarm_cli.msg_reap_bad_max", &[("got", &serde_json::to_string(raw).unwrap_or_default())]),
+            ));
+        }
+        if inv.env.get(defaults::text("devswarm_cli.reap_automation_env")).map(String::as_str) == Some(defaults::text("devswarm_cli.reap_automation_value")) {
+            return Ok(refuse(defaults::text("devswarm_cli.reap_reason_automation"), defaults::text("devswarm_cli.msg_reap_automation").to_string()));
+        }
+        // SAFETY: isatty only reads the descriptor's mode.
+        let tty = unsafe { libc::isatty(0) } == 1;
+        if !tty && !a.has(defaults::text("devswarm_cli.flag_human")) {
+            return Ok(refuse(defaults::text("devswarm_cli.reap_reason_non_interactive"), defaults::text("devswarm_cli.msg_reap_non_interactive").to_string()));
+        }
+        Some(n)
+    } else {
+        None
+    };
+    // the refusals above do not depend on the candidates; a result that lists or retires them does: any partition with unread mail
+    // and no live reader defers here
+    crate::meshw::summary::compute(&store, inv, None)?;
+    let n_ = crate::meshw::common::n;
+    let o = match max_n {
+        None => reap_result(
+            true,
+            &[
+                ("mode", s(defaults::text("devswarm_cli.reap_mode_dry_run"))),
+                ("repoKey", s(&repo_key)),
+                ("candidateCount", n_(0.0)),
+                ("candidates", OVal::Arr(Vec::new())),
+                ("note", s(defaults::text("devswarm_cli.msg_reap_none"))),
+            ],
+        ),
+        Some(max) => {
+            let reaped_dir = idlock::devswarm_root(&inv.home).join(defaults::text("devswarm_cli.reap_dir"));
+            reap_result(
+                true,
+                &[
+                    ("mode", s(defaults::text("devswarm_cli.reap_mode_apply"))),
+                    ("repoKey", s(&repo_key)),
+                    ("max", n_(max)),
+                    ("candidateCount", n_(0.0)),
+                    ("consideredCount", n_(0.0)),
+                    ("reapedCount", n_(0.0)),
+                    ("reaped", OVal::Arr(Vec::new())),
+                    ("failedCount", n_(0.0)),
+                    ("failed", OVal::Arr(Vec::new())),
+                    ("capped", OVal::Bool(false)),
+                    ("remaining", n_(0.0)),
+                    ("note", s(&crate::meshw::extverbs::tpl("devswarm_cli.msg_reap_applied", &[("dir", &reaped_dir.to_string_lossy())]))),
+                ],
+            )
+        }
+    };
+    Ok(answer(0, o.done()))
+}
