@@ -612,7 +612,8 @@ fn sync_ui_matches_node() {
     let exact: Vec<String> = labels.iter().take(6).cloned().collect();
     let trunc: Vec<String> = labels.iter().take(6).map(|l| format!("{}\u{2026}", l.chars().take(14).collect::<String>())).collect();
     let upper: Vec<String> = labels.iter().take(4).map(|l| format!("  {}  ", l.to_uppercase())).collect();
-    let mixed: Vec<String> = vec!["nothing matches this title at all".into(), "   ".into(), labels[1].clone(), labels[1].clone(), "Ship it".into(), "Fix the gate...".into()];
+    let mixed: Vec<String> =
+        vec!["nothing matches this title at all".into(), "   ".into(), labels[1].clone(), labels[1].clone(), "Ship it".into(), "Fix the gate...".into()];
     let f_exact = write("t-exact.json", &json(&exact));
     let f_trunc = write("t-trunc.json", &json(&trunc));
     let f_upper = write("t-upper.json", &json(&upper));
@@ -655,4 +656,175 @@ fn sync_ui_matches_node() {
         assert!(r.stdout.contains("\"matched\":[{"), "the titles match builders: {}", r.stdout);
     }
     check_from(&fx, &cases, &[], &settled, Some(CORPUS_DIRS), now, 15, 4);
+}
+
+// ---- retention -----------------------------------------------------------------------------------------------------------
+
+const RT_HASH: &str = "proj-abcdef";
+
+fn rt_support(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/dssup_support").join(name)
+}
+
+fn rt_corpus(root: &Path, name: &str, seed: u32, now: i64) -> PathBuf {
+    let home = root.join(name);
+    let o =
+        Command::new("node").arg(rt_support("rt_corpus.js")).arg(&home).arg(RT_HASH).arg(seed.to_string()).arg(now.to_string()).arg("small").output().unwrap();
+    assert!(o.status.success(), "corpus: {}", String::from_utf8_lossy(&o.stderr));
+    home
+}
+
+fn rt_dump(home: &Path) -> String {
+    let o = Command::new("node").arg(rt_support("rt_dump.js")).arg(home).output().unwrap();
+    assert!(o.status.success(), "dump: {}", String::from_utf8_lossy(&o.stderr));
+    mask_sizes(&String::from_utf8_lossy(&o.stdout))
+}
+
+/// Sizes that depend on how a file is laid out (two SQLite builds, two compressors) are blanked on both sides.
+fn mask_sizes(d: &str) -> String {
+    let re = regex::Regex::new(r#""(bytesBefore|bytesAfter|mbBefore|mbAfter|totalBytes|totalBytesAfter|capBytes|bytes|ms)":[0-9.]+"#).unwrap();
+    let evict = regex::Regex::new(r#"("event":"archive-evict","file":"[^"]*","bytes":)[0-9]+"#).unwrap();
+    evict.replace_all(&re.replace_all(d, r#""$1":0"#), "${1}0").into_owned()
+}
+
+fn rt_env(extra: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut e: Vec<(String, String)> = vec![
+        ("ANTIHALL_DEVSWARM_RETENTION_DAYS".into(), "30".into()),
+        ("ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION".into(), "5".into()),
+        ("ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB".into(), "100".into()),
+        ("ANTIHALL_DEVSWARM_RETENTION_ARCHIVE".into(), "true".into()),
+    ];
+    for (k, v) in extra {
+        e.retain(|(x, _)| x != k);
+        e.push(((*k).into(), (*v).into()));
+    }
+    e
+}
+
+#[test]
+fn retention_matches_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8cret");
+    let seed = rt_corpus(&fx.root, "rt-seed", 3, NOW - 30 * DAY / 4);
+    let tools = tools_path(&fx.root, true);
+    let nonode = tools_path(&fx.root, false);
+    for bin in [&tools, &nonode] {
+        let g = Command::new("sh").args(["-c", "command -v gzip"]).output().unwrap();
+        std::os::unix::fs::symlink(String::from_utf8_lossy(&g.stdout).trim(), Path::new(bin).join("gzip")).ok();
+    }
+    let nongit = fx.root.join("rt-cwd");
+    fs::create_dir_all(&nongit).unwrap();
+    let nongit = real(&nongit);
+    struct Case {
+        name: &'static str,
+        argv: Vec<&'static str>,
+        env: Vec<(String, String)>,
+        native: bool,
+    }
+    let c = |name: &'static str, argv: &[&'static str], extra: &[(&str, &str)], native: bool| Case { name, argv: argv.to_vec(), env: rt_env(extra), native };
+    let cases = vec![
+        c("ret-status", &["retention", "status"], &[], true),
+        c("ret-status-disabled", &["retention", "status"], &[("ANTIHALL_DEVSWARM_RETENTION_DAYS", "0")], true),
+        c("ret-status-size-limit", &["retention", "status"], &[("ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB", "0.1")], true),
+        c("ret-dry-run", &["retention", "run", "--dry-run"], &[], true),
+        c("ret-dry-run-one-store", &["retention", "run", "--dry-run", "--store", RT_HASH], &[], true),
+        c("ret-dry-run-size-limit", &["retention", "run", "--dry-run"], &[("ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB", "0.2")], true),
+        c(
+            "ret-dry-run-no-archive",
+            &["retention", "run", "--dry-run"],
+            &[("ANTIHALL_DEVSWARM_RETENTION_ARCHIVE", "false"), ("ANTIHALL_DEVSWARM_RETENTION_DAYS", "1")],
+            true,
+        ),
+        c("ret-run-one-store", &["retention", "run", "--store", RT_HASH], &[], true),
+        c("ret-run-the-only-store", &["retention", "run"], &[], true),
+        c("ret-run-with-a-size-limit", &["retention", "run"], &[("ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB", "0.4")], true),
+        c(
+            "ret-run-without-an-archive",
+            &["retention", "run", "--store", RT_HASH],
+            &[("ANTIHALL_DEVSWARM_RETENTION_ARCHIVE", "false"), ("ANTIHALL_DEVSWARM_RETENTION_DAYS", "1")],
+            true,
+        ),
+        c("ret-run-disabled-is-node", &["retention", "run"], &[("ANTIHALL_DEVSWARM_RETENTION_DAYS", "0")], false),
+        c("ret-run-unknown-store-is-node", &["retention", "run", "--store", "nope-123456"], &[], false),
+        c("ret-run-bad-store", &["retention", "run", "--store", "../x"], &[], true),
+        c("ret-run-dotfile-store", &["retention", "run", "--store", ".hidden"], &[], true),
+        c("ret-restore-is-node", &["retention", "restore", "--store", RT_HASH, "--month", "2026-01"], &[], false),
+        c("ret-usage", &["retention"], &[], true),
+        c("ret-unknown-sub", &["retention", "frobnicate"], &[], true),
+    ];
+    let (mut native, mut deferred) = (0, 0);
+    for (i, k) in cases.iter().enumerate() {
+        if std::env::var("AH_L8C_FILTER").is_ok_and(|f| !k.name.contains(&f)) {
+            continue;
+        }
+        let now = NOW + i as i64;
+        let homes: Vec<PathBuf> = ["node", "engine", "defer"].iter().map(|x| fx.root.join(format!("ret{i}-{x}"))).collect();
+        for h in &homes {
+            let st = Command::new("cp").arg("-Rp").arg(&seed).arg(h).status().unwrap();
+            assert!(st.success());
+            fs::create_dir_all(h.join(".anti-hall")).unwrap();
+            fs::write(h.join(".anti-hall/settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
+        }
+        let argv: Vec<String> = k.argv.iter().map(|x| (*x).into()).collect();
+        let with_path = |p: &str| -> Vec<(String, String)> {
+            let mut e = k.env.clone();
+            e.push(("PATH".into(), p.into()));
+            e
+        };
+        let (en, ee, ed) = (with_path(&tools), with_path(&tools), with_path(&nonode));
+        let n = node_cli(&homes[0], &nongit, &argv, now, &to_ref(&en));
+        let e = engine_cli(&homes[1], &nongit, &argv, now, &to_ref(&ee));
+        let log = last_log(&homes[1].join("state"));
+        assert_eq!(
+            log["result"] == "native",
+            k.native,
+            "{}: expected native={} but the engine logged {log} (engine {} {:?}; node {} {:?})",
+            k.name,
+            k.native,
+            e.code,
+            e.stdout,
+            n.code,
+            n.stdout
+        );
+        if k.native {
+            native += 1;
+            let (es, ns) = (
+                mask_sizes(&e.stdout).replace(homes[1].to_string_lossy().as_ref(), "<HOME>"),
+                mask_sizes(&n.stdout).replace(homes[0].to_string_lossy().as_ref(), "<HOME>"),
+            );
+            assert_eq!((e.code, &es), (n.code, &ns), "{}: stdout/exit differ\n engine: {}\n node:   {}", k.name, e.stdout, n.stdout);
+            let (de, dn) = (rt_dump(&homes[1]), rt_dump(&homes[0]));
+            assert!(de == dn, "{}: the store, archive, state or log differ: {}", k.name, first_diff(&dn, &de));
+            let _ = fs::remove_dir_all(&homes[0]);
+            let _ = fs::remove_dir_all(&homes[1]);
+        } else {
+            deferred += 1;
+            assert_eq!(e.code, n.code, "{}: exit code of the fallback", k.name);
+            let pre = rt_dump(&homes[2]);
+            let d = engine_cli(&homes[2], &nongit, &argv, now, &to_ref(&ed));
+            assert_eq!(d.code, 75, "{}: a deferral the engine cannot hand to Node exits 75, got {} / {}", k.name, d.code, d.stdout);
+            assert!(d.stdout.is_empty(), "{}: nothing is printed on a deferral", k.name);
+            assert!(pre == rt_dump(&homes[2]), "{}: a deferral wrote", k.name);
+        }
+    }
+    // an acting run with no Node to agree with the plan writes nothing and exits 75
+    let h = fx.root.join("ret-nowitness");
+    assert!(Command::new("cp").arg("-Rp").arg(&seed).arg(&h).status().unwrap().success());
+    fs::create_dir_all(h.join(".anti-hall")).unwrap();
+    fs::write(h.join(".anti-hall/settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
+    let pre = rt_dump(&h);
+    let mut e = rt_env(&[]);
+    e.push(("PATH".into(), nonode.clone()));
+    let argv: Vec<String> = vec!["retention".into(), "run".into()];
+    let d = engine_cli(&h, &nongit, &argv, NOW, &to_ref(&e));
+    assert_eq!(d.code, 75, "no witness, no write: {} / {}", d.code, d.stdout);
+    assert!(pre == rt_dump(&h), "an acting run without a witness wrote");
+    let (deferred, total) = (deferred + 1, cases.len() + 1);
+    eprintln!("l8c retention parity: {total} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written");
+    if std::env::var("AH_L8C_FILTER").is_err() {
+        assert!(native >= 13 && deferred >= 4, "{native} native, {deferred} deferred");
+    }
 }

@@ -91,6 +91,12 @@ pub struct Pruned {
     pub vacuum: Option<OVal>,
     /// The time budget ran out.
     pub budget_exhausted: bool,
+    /// Rows the plan saw (`totalRows`).
+    pub total_rows: i64,
+    /// Rows already tombstoned when the plan was made.
+    pub already_tombstoned: i64,
+    /// What the plan protected, per reason (the names of `devswarm_sup.rt_protected_names`).
+    pub protected: [i64; 7],
 }
 
 /// The rows to prune, chosen from an agreed plan: the old enough ones, then (over the size limit) the oldest remaining
@@ -319,6 +325,8 @@ pub struct Run<'a> {
     pub budget_ms: f64,
     /// The retention state (updated in place: `stores.<hash>.maxArchivedId`).
     pub state: &'a mut OVal,
+    /// A command-line run: mark the commit point of the front door before the first write (Node must never repeat it).
+    pub commit: bool,
 }
 
 /// Open the store for writing (never creating it).
@@ -409,6 +417,9 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
         let full = full_rows(c, &ids)?;
         if full.is_empty() {
             continue;
+        }
+        if run.commit {
+            crate::meshw::mark_committed();
         }
         let written = if run.settings.archive { append_archive(run.home, run.hash, &full, run.now)? } else { Vec::new() };
         // the tombstoning transaction

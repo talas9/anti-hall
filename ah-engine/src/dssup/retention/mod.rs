@@ -21,6 +21,7 @@
 // - an unreadable or unparsable state file is the empty state (Node: `readJson(p, null)`)
 pub mod apply;
 pub mod cap;
+pub mod cli;
 pub mod dry;
 pub mod fold;
 pub mod gz;
@@ -80,7 +81,7 @@ pub fn read_state(home: &Path) -> Result<OVal, Defer> {
 }
 
 /// Write the state the way Node does (the whole object, atomically). Unchanged content is not rewritten.
-fn write_state(home: &Path, st: &OVal) {
+pub(super) fn write_state(home: &Path, st: &OVal) {
     let text = st.stringify();
     let p = state_path(home);
     if std::fs::read_to_string(&p).is_ok_and(|t| t == text) {
@@ -129,11 +130,11 @@ pub fn sqlite_stores(home: &Path) -> Vec<Store> {
     out
 }
 
-fn lock_path(home: &Path) -> String {
+pub(super) fn lock_path(home: &Path) -> String {
     devswarm_root(home).join(defaults::text("devswarm_sup.rt_lock_file")).to_string_lossy().into_owned()
 }
 
-fn lock_params() -> nodelock::Params {
+pub(super) fn lock_params() -> nodelock::Params {
     nodelock::Params { stale_ms: defaults::num("devswarm_sup.rt_lock_stale_ms"), wait_ms: 0, steal_dead: true, ..nodelock::Params::swarm() }
 }
 
@@ -234,7 +235,7 @@ fn disagreement(p: &Plan, c: &Choice, node: &Value) -> Option<String> {
 }
 
 /// How one store ended.
-enum Ended {
+pub(super) enum Ended {
     Pruned(Box<Pruned>),
     DryRun(Value),
     Held(String),
@@ -246,7 +247,7 @@ fn witness_log(ctx: &Ctx, rec: &Value) {
 }
 
 /// The engine's sweep of one store: plan, agree with Node, plan again, then (not in a dry run) archive and tombstone.
-fn one_store(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Settings, hash: &str, dry: bool) -> Ended {
+pub(super) fn one_store(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Settings, hash: &str, dry: bool, mark: bool) -> Ended {
     let now = ctx.now as f64;
     let holds = plan::holds_of(st, hash, now);
     let bytes_before = apply::store_bytes(ctx.home, hash);
@@ -288,15 +289,24 @@ fn one_store(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Settings, hash: 
             json!({"hash": hash, "candidates": first.cands.len(), "ageCandidates": choice.age, "sizeCandidates": choice.size, "candidateBytes": choice.bytes, "overLimit": choice.over}),
         );
     }
-    let mut run = Run { home: ctx.home, hash, settings: *s, now, budget_ms: budget_ms(ctx), state: st };
+    let mut run = Run { home: ctx.home, hash, settings: *s, now, budget_ms: if mark { f64::INFINITY } else { budget_ms(ctx) }, state: st, commit: mark };
     match apply::prune(&mut run, &first, chosen, choice.size, choice.age, bytes_before, choice.over) {
-        Ok(r) => Ended::Pruned(Box::new(r)),
+        Ok(mut r) => {
+            r.total_rows = first.total_rows;
+            r.already_tombstoned = first.total_tombstoned;
+            for p in first.parts.values() {
+                for (i, x) in [p.too_new, p.keep_last, p.unread, p.question, p.ndjson, p.broadcast, p.held].into_iter().enumerate() {
+                    r.protected[i] += x;
+                }
+            }
+            Ended::Pruned(Box::new(r))
+        }
         Err(d) => Ended::Fallback(d),
     }
 }
 
 /// `recordStore(st, hash, r, now)`.
-fn record_store(st: &mut OVal, hash: &str, r: &Pruned, now: i64) {
+pub(super) fn record_store(st: &mut OVal, hash: &str, r: &Pruned, now: i64) {
     let prev_total = match obj_mut(obj_mut(st, defaults::text("devswarm_sup.rt_state_stores")), hash).get(defaults::text("devswarm_sup.rt_state_tombstoned")) {
         Some(OVal::Num(n)) if n.is_finite() => *n,
         Some(OVal::Str(t)) => crate::checks::guardkit::text::js_number_of_str(t),
@@ -346,7 +356,7 @@ fn legacy_fold(ctx: &Ctx, runner: &dyn Runner, hash: &str) -> Value {
 }
 
 /// The archive cap: nothing to evict needs no comparison; an eviction list must be Node's exact dry-run list.
-fn archive_cap(ctx: &Ctx, runner: &dyn Runner, s: &Settings) -> Value {
+pub(super) fn archive_cap(ctx: &Ctx, runner: &dyn Runner, s: &Settings) -> Value {
     if s.archive_max_mb <= 0.0 {
         return Value::Null;
     }
@@ -414,7 +424,7 @@ fn locked(ctx: &Ctx, runner: &dyn Runner, s: &Settings, dry_switch: bool) -> Res
     due.retain(|x| !held_back(ctx, &x.hash, backoff));
     let mut result = Value::Null;
     if let Some(target) = due.first() {
-        match one_store(ctx, runner, &mut st, s, &target.hash, dry) {
+        match one_store(ctx, runner, &mut st, s, &target.hash, dry, false) {
             Ended::Pruned(r) => {
                 let fold = legacy_fold(ctx, runner, &target.hash);
                 record_store(&mut st, &target.hash, &r, ctx.now);

@@ -804,7 +804,14 @@ fn str_list(items: &[String]) -> OVal {
 }
 
 /// `planUiSync({ titles, snapshot, repositoryId, descriptors, markers, names })`.
-fn plan_ui_sync(titles: &[String], snapshot: Option<&snap::Snap>, repository_id: Option<&str>, descriptors: &[String], markers: &[String], names: &[(String, String)]) -> OVal {
+fn plan_ui_sync(
+    titles: &[String],
+    snapshot: Option<&snap::Snap>,
+    repository_id: Option<&str>,
+    descriptors: &[String],
+    markers: &[String],
+    names: &[(String, String)],
+) -> OVal {
     let titles: Vec<&String> = titles.iter().filter(|t| !js_trim(t).is_empty()).collect();
     let mut out = Obj::default();
     let Some(sn) = snapshot else {
@@ -818,8 +825,14 @@ fn plan_ui_sync(titles: &[String], snapshot: Option<&snap::Snap>, repository_id:
             .put("unknown", str_list(descriptors));
         return out.done();
     };
-    let scoped: Vec<&snap::Ws> =
-        sn.workspaces.iter().filter(|w| w.builder_type.as_deref() != Some(defaults::text("mesh_write.builder_type_primary")) && repository_id.is_none_or(|r| r.is_empty() || w.repository_id.as_deref() == Some(r))).collect();
+    let scoped: Vec<&snap::Ws> = sn
+        .workspaces
+        .iter()
+        .filter(|w| {
+            w.builder_type.as_deref() != Some(defaults::text("mesh_write.builder_type_primary"))
+                && repository_id.is_none_or(|r| r.is_empty() || w.repository_id.as_deref() == Some(r))
+        })
+        .collect();
     let mut visible_by_rank: Vec<&snap::Ws> = scoped.iter().copied().filter(|w| visible(w)).collect();
     visible_by_rank.sort_by(|a, b| rank_key(a).partial_cmp(&rank_key(b)).unwrap_or(std::cmp::Ordering::Equal));
     let name_of = |id: &str| names.iter().find(|(k, _)| k == id).map(|(_, v)| v.as_str());
@@ -946,7 +959,11 @@ fn gather_ui(inv: &Inv, titles: &[String]) -> R<(Option<snap::Snap>, Option<Stri
             let direct = sn.repositories.iter().find(|r| r.path.as_deref() == Some(norm.as_str()));
             match direct {
                 Some(r) => Some(r.id.clone()),
-                None => sn.workspaces.iter().find(|w| w.worktree_path.as_deref() == Some(norm.as_str()) && w.repository_id.as_deref().is_some_and(|x| !x.is_empty())).and_then(|w| w.repository_id.clone()),
+                None => sn
+                    .workspaces
+                    .iter()
+                    .find(|w| w.worktree_path.as_deref() == Some(norm.as_str()) && w.repository_id.as_deref().is_some_and(|x| !x.is_empty()))
+                    .and_then(|w| w.repository_id.clone()),
             }
         }
         None => None,
@@ -993,7 +1010,11 @@ fn gather_ui(inv: &Inv, titles: &[String]) -> R<(Option<snap::Snap>, Option<Stri
             };
             let cached = names.iter().find(|(k, _)| *k == w.id).map(|(_, v)| v.as_str());
             let mut o = Obj::default();
-            o.put("id", s(&w.id)).put("title", label_val(w.label.as_deref())).put("app", s(app)).put("antiHall", s(anti)).put("cachedName", cached.map_or(OVal::Null, s));
+            o.put("id", s(&w.id))
+                .put("title", label_val(w.label.as_deref()))
+                .put("app", s(app))
+                .put("antiHall", s(anti))
+                .put("cachedName", cached.map_or(OVal::Null, s));
             table.push(o.done());
         }
     }
@@ -1014,7 +1035,9 @@ pub fn sync_ui(inv: &Inv, a: &Args) -> R<Answer> {
         None if a.has(defaults::text("devswarm_cli.flag_stdin")) => return defer("titles-stdin"),
         None => {
             let mut o = Obj::default();
-            o.put("ok", OVal::Bool(false)).put("action", s(defaults::text("devswarm_cli.sui_action"))).put("error", s(defaults::text("devswarm_cli.sui_msg_needs_titles")));
+            o.put("ok", OVal::Bool(false))
+                .put("action", s(defaults::text("devswarm_cli.sui_action")))
+                .put("error", s(defaults::text("devswarm_cli.sui_msg_needs_titles")));
             return Ok(answer(2, o.done()));
         }
     };
@@ -1028,7 +1051,9 @@ pub fn sync_ui(inv: &Inv, a: &Args) -> R<Answer> {
     };
     let Some(titles) = titles else {
         let mut o = Obj::default();
-        o.put("ok", OVal::Bool(false)).put("action", s(defaults::text("devswarm_cli.sui_action"))).put("error", s(defaults::text("devswarm_cli.sui_msg_bad_titles")));
+        o.put("ok", OVal::Bool(false))
+            .put("action", s(defaults::text("devswarm_cli.sui_action")))
+            .put("error", s(defaults::text("devswarm_cli.sui_msg_bad_titles")));
         return Ok(answer(2, o.done()));
     };
     if a.has(defaults::text("devswarm_cli.flag_yes")) {
@@ -1044,4 +1069,44 @@ pub fn sync_ui(inv: &Inv, a: &Args) -> R<Answer> {
         .put("plan", plan)
         .put("before", OVal::Arr(table));
     Ok(answer(0, o.done()))
+}
+
+// ---- retention ----------------------------------------------------------------------------------------------------------
+
+/// `safeStoreName(h)`: `/^[A-Za-z0-9._-]{1,80}$/` and not a dotfile.
+fn safe_store_name(h: &str) -> bool {
+    (1..=defaults::num("devswarm_cli.ret_store_name_max") as usize).contains(&h.len())
+        && h.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && !h.starts_with('.')
+}
+
+/// `retention status | run [--dry-run] [--store X] | restore ...`: `status` and `run` as `ah-engine` does them under the duty's own
+/// agreement with Node's planner (see [`crate::dssup::retention::cli`]); `restore` is Node's.
+pub fn retention(inv: &Inv, a: &Args) -> R<Answer> {
+    let sub = a.positionals.get(1).map(String::as_str);
+    let t = |k: &str| defaults::text(k);
+    let Some(root) = defaults::root() else { return defer("no-plugin-root") };
+    let settings = inv.settings();
+    let ctx = crate::dssup::tick::Ctx { home: &inv.home, root: &root, st: &settings, now: inv.now, engine_pokes: false };
+    if sub == Some(t("devswarm_cli.ret_sub_status")) {
+        let v = crate::dssup::retention::cli::status(&ctx)?;
+        return Ok(answer(0, v));
+    }
+    if sub == Some(t("devswarm_cli.ret_sub_run")) {
+        let store = a.one(t("devswarm_cli.ret_flag_store"));
+        if store.is_some_and(|x| !x.is_empty() && !safe_store_name(x)) {
+            let mut o = Obj::default();
+            o.put("ok", OVal::Bool(false)).put("error", s(t("devswarm_cli.ret_msg_bad_store")));
+            return Ok(answer(2, o.done()));
+        }
+        let dry = a.has(t("devswarm_cli.flag_dry_run"));
+        let (ok, v) = crate::dssup::retention::cli::run(&ctx, &crate::dsact::runner::System::configured(), dry, store.filter(|x| !x.is_empty()))?;
+        return Ok(answer(if ok { 0 } else { 2 }, v));
+    }
+    if sub == Some(t("devswarm_cli.ret_sub_restore")) {
+        return defer("restore");
+    }
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false)).put("error", s(t("devswarm_cli.ret_msg_usage")));
+    Ok(answer(2, o.done()))
 }

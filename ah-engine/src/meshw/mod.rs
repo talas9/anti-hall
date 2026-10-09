@@ -190,7 +190,7 @@ pub enum Verb {
 
 /// Whether the verb is checked by the CLI-verb Node witness (`simple::prepare` / `launch` / `run_witness`).
 fn cli_witnessed(v: Option<Verb>) -> bool {
-    matches!(v, Some(Verb::Simple(_) | Verb::Plan | Verb::Scope | Verb::Gate | Verb::Workspaces | Verb::Ext(_)))
+    matches!(v, Some(Verb::Simple(_) | Verb::Plan | Verb::Scope | Verb::Gate | Verb::Workspaces)) || matches!(v, Some(Verb::Ext(e)) if extverbs::witnessed(e))
 }
 
 /// The verb's name as the telemetry log spells it (`Send`, `MeshRead`, `MeshHistory`, `InboxAckPrimary`).

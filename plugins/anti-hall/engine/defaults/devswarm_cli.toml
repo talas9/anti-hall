@@ -1320,3 +1320,51 @@ value = "screenshotsync"
 [devswarm_cli.sui_setting_files]
 doc = "The files under the anti-hall directory in which the screenshot-sync setting can be set."
 value = ["settings.json", "config.toml", "config.json"]
+
+# ---- retention (lane l8c) -----------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_retention]
+doc = "The verb that shows and runs message retention (tombstoning old, fully read message bodies, archive first)."
+value = "retention"
+
+[devswarm_cli.ret_sub_status]
+doc = "The retention subcommand that shows the settings, phase, store sizes and archive size."
+value = "status"
+
+[devswarm_cli.ret_sub_run]
+doc = "The retention subcommand that prunes (or, with --dry-run, reports what it would prune)."
+value = "run"
+
+[devswarm_cli.ret_sub_restore]
+doc = "The retention subcommand that restores archived bodies into their tombstoned rows."
+value = "restore"
+
+[devswarm_cli.ret_flag_store]
+doc = "The retention flag naming one store."
+value = "store"
+
+[devswarm_cli.ret_store_name_max]
+doc = "The longest store name `--store` accepts."
+value = 80
+min = 1
+max = 255
+
+[devswarm_cli.ret_msg_bad_store]
+doc = "The retention error for a store name that is not a plain store key."
+value = "bad --store"
+
+[devswarm_cli.ret_msg_usage]
+doc = "The retention usage error."
+value = "usage: retention status | run [--dry-run] [--store X] | restore --store X --month yyyy-mm"
+
+[devswarm_cli.ret_action_status]
+doc = "The `action` of a retention status result."
+value = "retention-status"
+
+[devswarm_cli.ret_action_run]
+doc = "The `action` of a retention run result."
+value = "retention-run"
+
+[devswarm_cli.ret_reason_no_journal]
+doc = "The reason a store has no legacy journal to fold."
+value = "no-journal"
