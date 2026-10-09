@@ -75,6 +75,10 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/script/host.rs", "static CLOCK", "a thread-local clock override slot initialised empty (tests inject time): state, not a tunable"),
     ("src/script/host.rs", "static HELD", "a thread-local list of the locks the script call holds, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static EXECS", "a thread-local counter of the processes the script call started, initialised to zero (its bound is script.exec_max_calls): state, not a tunable"),
+    ("src/script/host_proc.rs", "static SEEN", "a thread-local list of the pids this script call has listed, empty at the start (the safety bound of the signal primitive): state, not a tunable"),
+    ("src/script/host_proc.rs", "static TERMED", "a thread-local list of the pids this script call has signalled politely, empty at the start: state, not a tunable"),
+    ("src/script/host_proc.rs", "static SENT", "a thread-local counter of the signals this script call has sent, zero at the start (its bound is hostproc.signal_max_per_call): state, not a tunable"),
+    ("src/script/host_proc.rs", "static SLEPT", "a thread-local counter of the milliseconds this script call has slept, zero at the start (its bound is hostproc.sleep_total_max_ms): state, not a tunable"),
     ("src/script/host_b3.rs", "static HEREDOC", "a thread-local slot for the heredoc scan of the command being walked, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static CALL", "a thread-local slot for the request state of one script call, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static RES", "a thread-local regex cache, initialised empty (its size bound is script.regex_cache_max): state, not a tunable"),
@@ -164,7 +168,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/transcript/record.rs", "b.len() < 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
     ("src/jev/keep.rs", "b.len() < 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
     ("src/checks/taskstate/tail.rs", "b.len() >= 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
-    ("src/checks/ctxbudget/mod.rs", "#[doc = concat!", "a generated rustdoc attribute, not run-time text"),
     (
         "src/migrate/mod.rs",
         "out.len() < 11",
