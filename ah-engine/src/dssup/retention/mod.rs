@@ -20,6 +20,9 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - an unreadable or unparsable state file is the empty state (Node: `readJson(p, null)`)
 pub mod apply;
+pub mod cap;
+pub mod dry;
+pub mod fold;
 pub mod gz;
 pub mod plan;
 
@@ -316,33 +319,61 @@ fn record_store(st: &mut OVal, hash: &str, r: &Pruned, now: i64) {
     }
 }
 
-/// Node's journal fold for a store, only when there is a journal to fold.
+/// The journal fold of a store, only when there is a journal to fold. Whether the journal is safe to fold is Node's own merge
+/// check (a read-only dry run); the engine folds only the exact files Node's dry run names.
 fn legacy_fold(ctx: &Ctx, runner: &dyn Runner, hash: &str) -> Value {
-    let dir = plan::store_dir(ctx.home, hash).join(defaults::text("devswarm_sup.rt_journal_dir"));
-    let any = std::fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|e| e.file_name().to_string_lossy().ends_with(defaults::text("devswarm_sup.rt_journal_ext")));
-    if !any {
+    let mine = fold::items(ctx.home, hash);
+    if mine.is_empty() {
         return Value::Null;
     }
-    let d = defaults::raw("devswarm_sup.duty.retention");
-    let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-    let r = node(runner, ctx, d.str_field("fold_snippet"), &[hash], timeout);
-    if r.ok { super::tick::parse(&r.stdout) } else { json!({"error": r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr))}) }
+    let node = match dry::node_fold_dry(ctx, runner, hash) {
+        Ok(v) => v,
+        Err(why) => {
+            witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-fold", "store": hash, "match": Value::Null, "error": why}));
+            return json!({"held": why});
+        }
+    };
+    if node["eligible"] != true {
+        return node;
+    }
+    if !fold::agrees(&mine, &node) {
+        let why = defaults::text("devswarm_sup.rt_msg_fold_differ");
+        witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-fold", "store": hash, "match": false, "detail": why}));
+        return json!({"held": why});
+    }
+    witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-fold", "store": hash, "match": true, "files": mine.len()}));
+    fold::run(ctx.home, hash, &mine)
 }
 
-/// Node's archive-cap eviction, only when a cap is set.
+/// The archive cap: nothing to evict needs no comparison; an eviction list must be Node's exact dry-run list.
 fn archive_cap(ctx: &Ctx, runner: &dyn Runner, s: &Settings) -> Value {
     if s.archive_max_mb <= 0.0 {
         return Value::Null;
     }
+    let p = cap::plan(ctx.home, s);
+    if p.removed.is_empty() {
+        return p.json(false);
+    }
     let d = defaults::raw("devswarm_sup.duty.retention");
     let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
     let spec = json!({"days": s.days, "maxStoreMB": s.max_store_mb, "keepPerPartition": s.keep, "archive": s.archive, "archiveMaxMB": s.archive_max_mb, "enabled": s.enabled()});
-    let r = node(runner, ctx, d.str_field("cap_snippet"), &[&spec.to_string()], timeout);
-    if r.ok { super::tick::parse(&r.stdout) } else { json!({"error": r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr))}) }
+    let r = node(runner, ctx, d.str_field("cap_dry_snippet"), &[&spec.to_string()], timeout);
+    let said = if r.ok { serde_json::from_str::<Value>(r.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default()).ok() } else { None };
+    let Some(node_plan) = said else {
+        let why = r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr));
+        witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-cap", "match": Value::Null, "error": why}));
+        return json!({"held": why});
+    };
+    if !cap::same(&p, &node_plan) {
+        let why = defaults::text("devswarm_sup.rt_msg_cap_differ");
+        witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-cap", "match": false, "detail": why}));
+        return json!({"held": why});
+    }
+    witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-cap", "match": true, "files": p.removed.len()}));
+    let done = cap::evict(ctx.home, &p);
+    let mut v = p.json(false);
+    v["removed"] = Value::Array(done.iter().map(|(f, b)| json!({"file": f, "bytes": b})).collect());
+    v
 }
 
 /// The native sweep. `Err` hands the whole sweep to Node's function (nothing of Node's is half done by then).
@@ -359,11 +390,12 @@ fn sweep(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Value, Defer> {
     out
 }
 
-fn locked(ctx: &Ctx, runner: &dyn Runner, s: &Settings, dry: bool) -> Result<Value, Defer> {
+fn locked(ctx: &Ctx, runner: &dyn Runner, s: &Settings, dry_switch: bool) -> Result<Value, Defer> {
+    let dry = dry_switch;
     let t0 = std::time::Instant::now();
     let mut st = read_state(ctx.home)?;
     if !is_armed(&st) {
-        return Err(Defer("dry-run-phase".into())); // the one-time report phase stays Node's
+        return dry::phase(ctx, runner, &mut st, s, dry_switch, budget_ms(ctx));
     }
     let stores = sqlite_stores(ctx.home);
     let interval = defaults::num("devswarm_sup.rt_store_min_interval_ms") as f64;
