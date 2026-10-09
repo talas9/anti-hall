@@ -1,51 +1,52 @@
-# Repository pipelines and policies
+---
+title: Repository pipelines
+description: How the anti-hall repository is tested, moderated and released, at a glance.
+---
 
-How this GitHub repository is checked, released and protected. Pushes to `dev` run no CI by design: `main` changes only through a pull request from `dev`, and that pull request is the gate (see [`RELEASING.md`](../RELEASING.md)). Every third-party action is pinned to a full commit SHA; Dependabot proposes updates.
+# Repository pipelines
 
-## Workflows (`.github/workflows/`)
+A short tour of the automation around the repository. Step-by-step runbooks for
+maintainers live in the
+[project wiki](https://github.com/talas9/anti-hall/wiki/Repo-automation).
 
-| Workflow | Trigger | Purpose | Gates a merge to `main`? |
-|---|---|---|---|
-| `test.yml` (tests) | PRs, pushes to `main`, `rc-v*` tags | `node --test`, sharded over ubuntu/macOS × Node 22/24 (full matrix on `rc-v*`) | **Yes**: `tests-passed` is a required check |
-| `pr-source.yml` | PRs to `main` | Rejects a PR to `main` whose source is not this repo's `dev` | **Yes**: `dev-only` is a required check |
-| `codeql.yml` | Manual only (`workflow_dispatch`); disabled while CodeQL default setup is on | CodeQL scanning of JavaScript/TypeScript, workflows (`actions`) and Rust (once Rust sources are present) | No (alerts in Security → Code scanning) |
-| `dependency-review.yml` | PRs to `main` and `dev` | Fails when a PR adds a dependency with a high or critical advisory | No (not a required check) |
-| `pr-title.yml` | PRs to `main` and `dev` | PR title must follow Conventional Commits (`type(scope): summary`) | No |
-| `scorecard.yml` | Pushes to `main`, weekly, branch-protection changes | OpenSSF Scorecard; publishes results and uploads SARIF | No |
-| `release-drafter.yml` | Pushes to `main` | Updates a **draft** release grouped by `type:*` labels. Never publishes or tags | No |
-| `pages.yml` | Pushes to `main`, manual | Builds and deploys the docs site to GitHub Pages | No |
-| `ah-engine-release.yml` | Manual (prepare), `ah-engine-v*` tags (publish) | Builds, checksums and attests engine binaries; opens the lock PR; creates the engine release | No (release pipeline) |
-| `issue-triage.yml` | Manual only (retired; superseded by `community.yml`) | Former one-comment triage; kept for manual use and disabled in Actions | No |
-| `triage.yml` | Issue opened/edited, PR opened/updated | Maps issue-form answers to `priority:`/`size:`/`area:` labels; path-based `area:*` PR labels (`.github/labeler.yml`). Triage comments come from `community.yml` | No |
-| `stale.yml` | Daily, manual | Labels issues/PRs inactive for 60 days and comments once. **Never closes or deletes**; `priority:P0`/`P1` exempt | No |
-| `community.yml` | Issue/comment/discussion events, manual | Privacy scrub, moderation (hide/label/lock spam), rules-first triage brief and Q&A answer; optional model via `ai-model.yml`. Never closes or deletes | No |
-| `pr-check.yml` | PR opened/updated (`pull_request_target`, no checkout), manual | Size/type/risk/needs-issue labels and one sticky checklist comment | No |
-| `privacy-scan.yml` | PRs, pushes to `dev`/`main` | gitleaks + privacy rules on new commits; job `privacy-scan` fails on a hit | Yes (required on `main`) |
-| `roadmap.yml` | Every 6 h, weekly, manual | Board sync, stale flag, weekly digest and automation mistake-rate report | No |
-| `ai-model.yml` | Called by the above | Claude, then Copilot, then rules-only model step (`AI_PROVIDER`, `AI_DAILY_CAP`) | No |
+## Release flow
 
-Pull-request workflows cancel a superseded run of the same PR; every job has a `timeout-minutes`.
+```text
+short-lived branch ──► dev ──► pull request ──► main ──► tag vX.Y.Z ──► GitHub Release
+                     (no CI)   (required checks)  (docs deploy)  (immutable)
+```
 
-## Policy files
+- Work lands on `dev`. Pushes to `dev` run no CI, so the local test suite is the gate.
+- `main` changes only through a pull request from `dev`. Merging that pull request is the
+  release, and the docs site deploys from it.
+- Release tags (`vX.Y.Z`, `ah-engine-vX.Y.Z`) are immutable: they are never moved or
+  deleted. A wrong release is fixed with a new version.
 
-| File | Purpose |
+## CI layout
+
+| When | What runs |
 |---|---|
-| [`SECURITY.md`](../SECURITY.md) | Supported versions; report vulnerabilities through GitHub private vulnerability reporting |
-| [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Expected behaviour and how to report a problem |
-| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Layout, tests, adding a guard |
-| [`SUPPORT.md`](../SUPPORT.md) | Where to ask questions and report bugs |
-| `.github/CODEOWNERS` | `* @talas9` |
-| `.github/dependabot.yml` | Dependabot version updates (GitHub Actions, weekly, against `dev`) |
-| `.github/release-drafter.yml` | Release-draft categories (`type:feature`, `type:bug`, `type:docs`, `type:ci`, `type:chore`) |
+| Pull requests | Lean run: Node 24, Linux and macOS shards |
+| Release candidate tags, tags, pushes to `main`, weekly | Full matrix: Linux and macOS, Node 22 and 24 |
+| Nightly | Engine parity suites and timing benchmarks, kept out of the per-PR run |
+| Pull requests touching docs | Strict docs build (broken links or pages fail it) |
 
-## Security settings (all free on public repositories)
+## Repo automation
 
-| Setting | State |
+Issues, pull requests and discussions are handled **rules first**: labels, duplicate
+checks, spam and privacy checks and the roadmap board are plain rules. A model is only
+asked to add research, wording or an escalation to a human, and never closes or deletes
+anything.
+
+| Part | What it does |
 |---|---|
-| Secret scanning | On |
-| Secret scanning push protection | On |
-| Dependabot alerts | On |
-| Dependabot security updates | On |
-| Private vulnerability reporting | On |
-| Code scanning | Default setup (Settings → Code security); `codeql.yml` is manual-only because advanced and default setup cannot run together |
-| `main` ruleset | Blocks direct pushes, force pushes and deletion; requires `dev-only`, `tests-passed` and `privacy-scan` |
+| Triage | Labels, milestone and a short brief on new issues |
+| Moderation | Hides or labels spam and abuse; escalates to review |
+| PR check | Size, type and risk labels plus one checklist comment |
+| Privacy scan | Blocks private paths, emails and session ids in new text and diffs |
+| Roadmap manager | Keeps the project board in sync and posts a weekly digest |
+
+!!! note "Model chain"
+    When a model is used, the order is Claude (primary token), Claude (secondary token),
+    GitHub Copilot, then rules only. Each job picks its model from
+    `.github/moderation/config.json`; no model version is pinned in a workflow.

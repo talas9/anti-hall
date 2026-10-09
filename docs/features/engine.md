@@ -5,10 +5,11 @@ description: ah-engine, the resident Rust program being built to answer anti-hal
 
 # Rust engine
 
-!!! warning "Not in a release yet"
-    The engine is being built on a separate integration branch and is not part of the
-    current release. Today every hook runs as a Node.js script, as described in the rest
-    of these docs. This page explains what is coming; details may change before it ships.
+!!! info "Status"
+    The engine is ready for release and is not part of the current plugin release: the
+    plugin installs it itself once a release pins it. Until then every hook runs as a
+    Node.js script, as described in the rest of these docs. Details may change before it
+    ships.
 
 ## What it is
 
@@ -35,6 +36,16 @@ Every hook entry becomes one thin trigger per event. When the engine is installe
   Node.
 - **If the engine is missing, busy, slow or broken**, the trigger runs the Node hooks
   exactly as before. A request that takes longer than its time budget falls back to Node.
+
+| Situation | Who decides | Result |
+|---|---|---|
+| Engine installed, case proven identical | Engine | Answer from memory, about 2 ms |
+| Engine installed, case not provable | Node hook | Same verdict as before |
+| Engine missing, busy, slow or broken | Node hook | Same verdict as before |
+
+!!! tip "Safe to try"
+    Because Node is always the fallback, removing the engine never weakens a guard; it
+    only makes hooks slower.
 
 The engine binary is downloaded by a small bootstrap script and checked against a sha256
 checksum pinned in the plugin. Supported platforms are the same as the plugin: macOS and
