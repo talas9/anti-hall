@@ -32,6 +32,7 @@ pub mod ghrt;
 pub mod gitcache;
 pub mod handovers;
 pub mod health;
+pub mod hcguard;
 pub mod hookcfg;
 pub mod hookio;
 pub mod hooksgen;

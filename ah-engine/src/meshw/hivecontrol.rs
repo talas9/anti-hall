@@ -207,6 +207,11 @@ pub fn call_full(args: &[&str], env: &Env, cwd: Option<&str>, timeout: std::time
     use std::os::unix::process::ExitStatusExt;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    // a test build never reaches the real DevSwarm CLI (src/hcguard.rs): a refused call reads as a missing binary
+    if crate::hcguard::permit(defaults::text("mesh_write.hivecontrol_bin"), env.get("PATH").map(String::as_str)).is_err() {
+        let kind = std::io::ErrorKind::NotFound;
+        return Full { call: Call { error: spawn_error(defaults::text("devswarm_cli.errno_enoent")), ..Call::default() }, spawn_failed: Some(kind), ..Full::default() };
+    }
     let mut cmd = Command::new(defaults::text("mesh_write.hivecontrol_bin"));
     cmd.args(args).env_clear().envs(env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(d) = cwd.filter(|d| !d.is_empty()) {

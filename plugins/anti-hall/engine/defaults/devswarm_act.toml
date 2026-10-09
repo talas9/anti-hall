@@ -23,6 +23,42 @@ value = ["recover", "drain", "read-messages"]
 doc = "The DevSwarm CLI executable, resolved on the process PATH (Node: `hivecontrol`). A missing binary means every action answers `unavailable` and nothing is written."
 value = "hivecontrol"
 
+[devswarm_act.hc_guard]
+doc = "Whether the engine refuses to start any hivecontrol that is not a test stub (src/hcguard.rs): `auto` = on in a debug build (every cargo test build) and off in the shipped release, `on`, or `off`. A refused call is treated like a missing binary."
+value = "auto"
+
+[devswarm_act.hc_guard_on]
+doc = "The word that turns the hivecontrol guard on."
+value = "on"
+
+[devswarm_act.hc_guard_off]
+doc = "The word that turns the hivecontrol guard off."
+value = "off"
+
+[devswarm_act.hc_guard_stub_env]
+doc = "The variable a test harness sets (a colon-separated list of directories) to name where its stub hivecontrol lives; with the guard active only a hivecontrol inside such a directory, or inside a root of hc_guard_roots, may run."
+value = "AH_HC_STUB_DIR"
+
+[devswarm_act.hc_guard_path_env]
+doc = "The variable whose directories a bare hivecontrol name is looked up in when the guard resolves it."
+value = "PATH"
+
+[devswarm_act.hc_guard_roots]
+doc = "Scratch directories a stub hivecontrol may live in while the guard is active (a real DevSwarm install is never there). `{temp}` is the system temp dir, `{home}/x` is under the home directory. Symlinks are followed before the check."
+value = ["{temp}", "/tmp", "/private/tmp", "/var/folders", "{home}/.anti-hall/work"]
+
+[devswarm_act.hc_guard_root_temp]
+doc = "The root entry that stands for the system temp directory."
+value = "{temp}"
+
+[devswarm_act.hc_guard_root_home]
+doc = "The prefix of a root entry that is relative to the home directory."
+value = "{home}"
+
+[devswarm_act.hc_guard_refused]
+doc = "Log line when the guard refuses a call. Placeholders: bin, resolved, var."
+value = "hivecontrol refused: '{bin}' resolves to '{resolved}', which is not a test stub (put the stub in a scratch directory or name its directory in {var})"
+
 [devswarm_act.hc_timeout_ms]
 doc = "Wall-clock bound of one hivecontrol call; on expiry only the engine's own child is killed (Node: lifecycle.js HC_TIMEOUT_MS and archive.js APP_ARCHIVE_TIMEOUT_MS)."
 value = 60000
