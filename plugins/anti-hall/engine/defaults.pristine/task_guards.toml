@@ -315,6 +315,13 @@ value = "blocks"
 doc = "The status (lowercase) of a task that can be dispatched now."
 value = "pending"
 
+[task_guard.owner_match_min]
+doc = "The shortest task owner text that counts as naming a running agent by a part of its description (an owner of fewer characters matches only the agent's id or its whole description). A task owned by a running agent is attended and is not listed by the generic block."
+value = 4
+unit = "chars"
+min = 1
+max = 40
+
 [task_guard.coordinator_owner_re]
 doc = "JavaScript regex source (case-insensitive) of an owner that is the orchestrator itself; such a task still counts as unowned."
 value = '^(main|orchestrator|coordinator)$'
