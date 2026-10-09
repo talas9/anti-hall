@@ -926,7 +926,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `schedule.action_args` | `1 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
-| `schedule.actions` | `8 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.actions` | `9 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
@@ -1769,7 +1769,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_PreCompact` | `5 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreToolUse` | `22 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `5 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
-| `dispatch.hooks_claude_SessionStart` | `17 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
+| `dispatch.hooks_claude_SessionStart` | `18 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_Stop` | `12 items` |  |  | The claude Stop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStart` | `5 entries` |  |  | The claude SubagentStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStop` | `5 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
@@ -1778,8 +1778,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_UserPromptSubmit` | `9 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_codex_PreToolUse` | `9 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
-| `dispatch.hooks_codex_SessionStart` | `16 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PreToolUse` | `10 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_codex_SessionStart` | `17 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `5 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_UserPromptSubmit` | `9 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
@@ -4584,7 +4584,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_unknown_op` | `unknown file operation {op}` |  |  | Error a script sees when it asks a file operation the host does not have. Placeholder: {op}. |
 | `script.msg_write_refused` | `write refused: {why}` |  |  | Error a script sees when its write was refused. Placeholder: {why}. |
 | `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
-| `script.p95_budget_by_check` | `14 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. |
+| `script.p95_budget_by_check` | `14 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). Batch 6 (2026-10-09, release no LTO, machine load average 12 to 17, so roughly twice the quiet figures): speculation-guard p50 236 us, p95 1,064 us (its corpus holds Jev asks and state writes), tasklist-guard p50 881 us, p95 2,775 us (it creates the progress directory, stats the progress and history files and appends to the session indexes); the other batch-6 checks stay under the 1,000 us default (dispatch-tier p95 510, model-routing 607, speculation-judge 338, silent-agent-nudge 967, task-guard 935). The compiled ports were not timed before removal, so these are the scripts' own p95s, not an added figure; merge-side-pick p50 38 then 106 us, p95 7,199 then 6,104 us (both are the per-session state file's locked read-modify-write; measured 2026-10-09 on a machine at load 25-30). Measured 2026-10-09 (lane d88fd, release, thread CPU time, best of three): command p50 77 then 295 us, p95 1,804 then 2,761 us on the 5,827-scenario command-guard lane corpus (the compiled port short-cut commands that cannot write or run anything heavy; the script runs the Node functions, and the corpus is skewed to heavy and write cases, which resolve repositories and spawn `git`); coordinator-work-guard p50 28 then 1,128 us, p95 798 then 3,009 us on its golden corpus, where the compiled port deferred 149 of 192 calls to a Node process (tens of milliseconds each) and the script answers all of them. A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. |
 | `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
 | `script.read_max_bytes` | `4194304` |  | bytes | Upper bound of one `ah.fs.readText` read, whatever the script asks for. |
 | `script.readdir_max` | `10000` |  |  | Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole). |
@@ -4593,7 +4593,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.sweep_max_remove` | `200` |  |  | Most files one `ah.state.sweep` call may delete, whatever the script asks for. |
 | `script.tail_buf_bytes` | `65536` |  | bytes | Size of the buffer `ah.transcript.tailLines` reads a file through. |
 | `script.tail_max_bytes` | `16777216` |  | bytes | Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for. |
-| `script.time_limit_by_check` | `3 entries` |  |  | Per-check wall-clock limit of one script call (ms), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; its SessionStart advisory only lists and stats files. |
+| `script.time_limit_by_check` | `3 entries` |  |  | Per-check wall-clock limit of one script call (ms), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; `command` (command-guard) resolves repositories and runs `git` for its edit parity and carve-outs (a child process wait is credited back, but a loaded machine stretches the interpreter's own time as well); its SessionStart advisory only lists and stats files. |
 | `script.time_limit_ms` | `50` | `AH_ENGINE_SCRIPT_TIME_MS` | ms | Wall-clock limit of one script call; past it the interpreter is interrupted and the call defers to Node (never a silent allow). |
 | `script.write_max_bytes` | `1048576` |  | bytes | Largest text one `ah.state.writeAtomic` call may write; a larger text is refused. |
 | `script.write_path_max` | `600` |  |  | Longest relative path one `ah.state.writeAtomic` call may name. |
@@ -5683,6 +5683,128 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `handovers.title_prefix_re` | `^Handover\s*[:—–-]\s*(?=\S)` |  |  | A leading `Handover` word that is dropped from a title when something follows it. |
 | `handovers.verbs` | `index, check, search` |  |  | The sub-commands of `ah-engine handovers`. |
 | `handovers.walk_up_max` | `8` |  |  | How many parent directories are tried when the working directory has no handovers directory (a session started in a sub-directory). |
+
+### procwatch.toml / procwatch
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `procwatch.advisory_events` | `SessionStart, UserPromptSubmit, PreToolUse` |  |  | The hook events the procwatch-advisory script answers. |
+| `procwatch.classes` | `6 entries, 6 entries, 6 entries, 6 entries, 6 entries, 6 entries` |  |  | Orphan classes, first match wins. name: report name; mode_key: the defaults key of its mode setting (off \| report \| kill); cmd_re: matches the command line; exclude_re: a match is skipped ('' = none); min_age_s: how old a process must be; children: also list its descendants (they die with it). |
+| `procwatch.cmd_chars` | `160` |  |  | A command line in a report or advisory is cut to this many characters. |
+| `procwatch.extra_classes_file` | `procwatch-classes.toml` |  |  | The owner's own orphan classes: a TOML file with `[[classes]]` tables (name, mode = off \| report \| kill, cmd_re, exclude_re, min_age_s, children) in the engine state directory. Its classes are tried before the shipped ones. Example: engine/examples/procwatch-dev.toml. |
+| `procwatch.f_command` | `command` |  |  | The tool input field that holds a shell command. |
+| `procwatch.f_event` | `hook_event_name` |  |  | The hook payload field that names the event. |
+| `procwatch.f_session` | `session_id` |  |  | The hook payload field that holds the session id. |
+| `procwatch.f_tool_input` | `tool_input` |  |  | The hook payload field that holds the tool input. |
+| `procwatch.grace_ms` | `2000` |  | ms | How long a kill waits between the polite and the forced signal. |
+| `procwatch.guard_name` | `procwatch` |  |  | The name the process-watch messages carry. |
+| `procwatch.impact_kill` | `orphan_kill` |  |  | Impact kind recorded when an orphan is signalled. |
+| `procwatch.impact_orphan` | `orphan_candidate` |  |  | Impact kind recorded when an orphan candidate is first reported. |
+| `procwatch.marker_var` | `CLAUDECODE` |  |  | The environment variable Claude Code sets in every child process; a process without it is never an orphan candidate. |
+| `procwatch.max_kills_per_run` | `8` |  |  | The most processes one sweep signals, in any class. |
+| `procwatch.max_listed` | `50` |  |  | The most orphan candidates one report lists (the count is kept exactly). |
+| `procwatch.mode_build_daemon` | `7 entries` |  |  | Mode of the build_daemon class (build tool daemons): off \| report \| kill. |
+| `procwatch.mode_dev_server` | `7 entries` |  |  | Mode of the dev_server class (dev servers and watchers an agent started): off \| report \| kill. Report lists them; kill terminates one at a time. |
+| `procwatch.mode_mcp_server` | `7 entries` |  |  | Mode of the mcp_server class (MCP servers of ended sessions): off \| report \| kill. The SessionEnd MCP reaper (maintenance.sessionEndReaper) is a separate switch. |
+| `procwatch.mode_other` | `7 entries` |  |  | Mode of the catch-all class (any other process a Claude session started and left behind, oldest first): off \| report \| kill. |
+| `procwatch.mode_shell_task` | `7 entries` |  |  | Mode of the shell_task class (background shell commands of ended sessions): off \| report \| kill. |
+| `procwatch.mode_test_runner` | `7 entries` |  |  | Mode of the test_runner class (test runners and their children): off \| report \| kill. |
+| `procwatch.msg_bad_config` | `process watch configuration is invalid (a pattern does not compile)` |  |  | The sweep's error when its configuration does not compile. |
+| `procwatch.msg_killed` | `Stopped {n} orphan(s) (class in kill mode): {list}.` |  |  | Line added when a sweep stopped orphans; {n} count, {list} the stopped ones. |
+| `procwatch.msg_more` | ` and {m} more` |  |  | Remainder note; {m} more. |
+| `procwatch.msg_orphans_instead` | `Nothing was stopped. Opt in per class with procwatch.<class>Mode=kill (/anti-...` |  |  | What to do about orphans. |
+| `procwatch.msg_orphans_what` | `{n} process(es) left behind by ended Claude sessions: {list}{more}.` |  |  | Orphan summary line; {n} candidates, {list} the named ones, {more} the remainder note. |
+| `procwatch.msg_orphans_why` | `They keep running (ports, CPU, memory) after the session that started them is...` |  |  | Why the orphan summary matters. |
+| `procwatch.msg_stuck_instead` | `Check its output file or SendMessage it, then TaskStop it if it is dead. Noth...` |  |  | What to do about a stuck agent. |
+| `procwatch.msg_stuck_what` | `{n} background agent(s) have shown no output for {minutes}+ minutes: {list}{m...` |  |  | Stuck-agent line; {n} agents, {list} the named ones, {more} the remainder note. |
+| `procwatch.msg_stuck_why` | `It may be hung, waiting on input, or finished without reporting; it keeps its...` |  |  | Why a stuck agent matters. |
+| `procwatch.orphan_cooldown_s` | `3600` |  | s | Least time between two orphan summaries to the same session. |
+| `procwatch.orphan_max_named` | `5` |  |  | The most orphan candidates one advisory names (the rest are counted). |
+| `procwatch.owner_var` | `CLAUDE_PID` |  |  | The environment variable that holds the pid of the Claude session process that started the process. |
+| `procwatch.pre_tool_event` | `PreToolUse` |  |  | The event on which only the critical-disk warning about heavy commands is given. |
+| `procwatch.protect_pids_below` | `2` |  |  | Pids below this are never signalled (init and the kernel's own). |
+| `procwatch.protect_res` | `(?i)/\.anti-hall/ah-engine[^/]*/, (?i)/plugins/(marketplaces/)?anti-hall/, (?...` |  |  | Regular expressions (case-insensitive) of command lines that are never signalled: the plugin's installed engine (live install and state directories under ~/.anti-hall/ah-engine*), its hooks and companions, and any Claude Code plugin cache. |
+| `procwatch.report_file` | `procwatch-report.json` |  |  | The sweep's latest findings, relative to the engine state directory. |
+| `procwatch.report_max_age_s` | `3600` |  | s | A report older than this is not shown (the sweep is not running). |
+| `procwatch.resource_shown_key` | `res-shown` |  |  | Prefix of the cooldown record that remembers the newest resource warning a session was shown. |
+| `procwatch.scan_every_s` | `300` |  | s | Least time between two orphan scans (the resource sampling runs on every sweep). |
+| `procwatch.session_cmd_re` | `(?i)(^\|[/\s])claude(\s\|$)\|@anthropic-ai/claude-code\|claude-code/(cli\|dist)` |  |  | Regular expression (case-insensitive) of the command line of a Claude Code session process: how a live owner is told from a recycled pid, and how the resource watch finds a process's session. |
+| `procwatch.session_var` | `CLAUDE_CODE_SESSION_ID` |  |  | The environment variable that holds the id of the session that started the process. |
+| `procwatch.state_keep_s` | `86400` |  | s | Advisory cooldown records older than this are dropped. |
+| `procwatch.state_rel` | `procwatch-state.json` |  |  | The advisory's cooldown records, relative to the engine state directory. |
+| `procwatch.stuck_cooldown_s` | `900` |  | s | Least time before the same agent is named as stuck again. |
+| `procwatch.stuck_event` | `UserPromptSubmit` |  |  | The hook event on which the stuck-agent advisory is given (the silent-agent-nudge check answers it; on Stop it nudges). |
+| `procwatch.stuck_label_chars` | `60` |  |  | An agent's description is cut to this many characters in the stuck-agent advisory. |
+| `procwatch.stuck_max_named` | `5` |  |  | The most stuck agents one advisory names (the rest are counted). |
+| `procwatch.stuck_minutes` | `7 entries` |  |  | Minutes without output after which a background agent of this session is reported as stuck (procwatch.stuckMinutes). |
+| `procwatch.stuck_state_file` | `procwatch-stuck.json` |  |  | Cooldown records of the stuck-agent advisory, relative to the engine state directory. |
+| `procwatch.summary` | `SessionStart, UserPromptSubmit and PreToolUse advisory: leftover processes of...` |  |  | One-line description of the procwatch-advisory check in the generated reference. |
+| `procwatch.sw_enabled` | `6 entries` |  |  | Where the master switch of the process watch is read from (procwatch.enabled, default on): the scheduled sweep and the advisory. |
+
+### resource_watch.toml / resource_watch
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `resource_watch.bytes_per_mb` | `1048576` |  |  | Bytes in a megabyte (binary), for the memory figures. |
+| `resource_watch.cooldown_s` | `7 entries` |  |  | Least time before the same process (or the same system warning) is named again (resourceWatch.cooldownSeconds). |
+| `resource_watch.cpu_pct` | `7 entries` |  |  | Warn when a process of a live session averages at least this much CPU (per-core percent, 100 = one core) over the whole window (resourceWatch.cpuPercent). |
+| `resource_watch.cpu_window_s` | `7 entries` |  |  | The window a CPU reading must hold for, in seconds (resourceWatch.cpuWindowSeconds); the sampling interval is schedule.procwatch_ms. |
+| `resource_watch.impact_kind` | `resource_warning` |  |  | Impact kind recorded for every resource warning. |
+| `resource_watch.keep_s` | `3600` |  | s | A warning stays in the report this long, so a session that starts or prompts later still sees it once. |
+| `resource_watch.mac_pressure_level` | `7 entries` |  |  | Warn when the macOS memory pressure level is at least this (2 warn, 4 critical; resourceWatch.macPressureLevel; 0 turns it off). |
+| `resource_watch.mac_pressure_sysctl` | `kern.memorystatus_vm_pressure_level` |  |  | The macOS sysctl name of the memory pressure level. |
+| `resource_watch.max_tracked` | `256` |  |  | The most processes whose CPU history is kept (the busiest first); the rest are not tracked. |
+| `resource_watch.mem_mb` | `7 entries` |  |  | Warn when a process of a live session holds at least this much memory, in MB (resourceWatch.memoryMb). |
+| `resource_watch.msg_cpu_limit` | `{pct}% over {window}s` |  |  | CPU threshold text; {pct}. |
+| `resource_watch.msg_cpu_usage` | `{pct}% CPU for {window}s` |  |  | CPU usage text; {pct} percent, {window} seconds. |
+| `resource_watch.msg_instead` | `Nothing was stopped or slowed. Check whether the work is expected; if not, as...` |  |  | What to do. |
+| `resource_watch.msg_mem_limit` | `{mb} MB` |  |  | Memory threshold text; {mb} MB. |
+| `resource_watch.msg_mem_usage` | `{mb} MB memory` |  |  | Memory usage text; {mb} MB. |
+| `resource_watch.msg_pressure` | `system memory pressure is {value} (threshold {limit})` |  |  | System memory pressure line; {value} the reading, {limit} the threshold. |
+| `resource_watch.msg_proc_what` | `pid {pid} ({name}, session {session}) is using {usage}; threshold {limit}` |  |  | Process warning line; {name} the command, {pid}, {session} the session pid, {usage} what it uses, {limit} the threshold. |
+| `resource_watch.msg_swap` | `system swap in use is {used} MB (threshold {limit} MB)` |  |  | System swap line; {used} MB in use, {limit} MB threshold. |
+| `resource_watch.msg_what` | `Resource use is high: {list}.` |  |  | Advisory first line; {list} the findings joined. |
+| `resource_watch.msg_why` | `A runaway process slows every session on this machine and can push it into swap.` |  |  | Why it matters. |
+| `resource_watch.percent_base` | `100` |  |  | The whole in a percentage. |
+| `resource_watch.psi_path` | `/proc/pressure/memory` |  |  | The Linux memory pressure file. |
+| `resource_watch.psi_pct` | `7 entries` |  |  | Warn when Linux memory pressure (PSI some avg10) is at least this percent (resourceWatch.pressurePercent; 0 turns it off). |
+| `resource_watch.renice` | `6 entries` |  |  | Opt-in (default off): lower the priority of a process the watch warned about, once (resourceWatch.renice). Never kills. |
+| `resource_watch.renice_value` | `10` |  |  | The nice value a renice sets (1 to 19; higher is lower priority). |
+| `resource_watch.sw_enabled` | `6 entries` |  |  | Where the resource watch's on/off switch is read from (resourceWatch.enabled, default on). |
+| `resource_watch.swap_mb` | `7 entries` |  |  | Warn when the system has this much swap in use, in MB (resourceWatch.swapMb; 0 turns the swap warning off). |
+| `resource_watch.window_cover_pct` | `75` |  |  | How much of the CPU window the samples must span before a reading counts as sustained (percent); a sweep that ran late or a process that is new does not trip it early. |
+
+### disk_watch.toml / disk_watch
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `disk_watch.block_at_critical` | `6 entries` |  |  | Opt-in (default off): at the critical level, block heavy commands instead of only warning (diskWatch.blockAtCritical). |
+| `disk_watch.bytes_per_gb` | `1073741824` |  |  | Bytes in a gigabyte (binary), for the floors and the sizes shown. |
+| `disk_watch.bytes_per_mb` | `1048576` |  |  | Bytes in a megabyte (binary). |
+| `disk_watch.cooldown_s` | `7 entries` |  |  | Least time before the same volume is warned about again at the same level (diskWatch.cooldownSeconds); a worse level is never held back. |
+| `disk_watch.critical_gb` | `7 entries` |  |  | Critical when a watched volume has less than this free, in GB (diskWatch.criticalGb; 0 = not used). |
+| `disk_watch.critical_pct` | `7 entries` |  |  | Critical when a watched volume has less than this percent free (diskWatch.criticalPercent; 0 = not used). |
+| `disk_watch.growth_budget_ms` | `400` |  | ms | The growth scan stops after this long. |
+| `disk_watch.growth_depth` | `3` |  |  | How deep under a watched root the growth scan looks for those directory names. |
+| `disk_watch.growth_every_s` | `600` |  | s | Least time between two growth scans (a scan runs only while a volume is low, and its result is reused in between). |
+| `disk_watch.growth_max_entries` | `30000` |  |  | The growth scan stops after visiting this many directory entries (a size is then 'at least'). |
+| `disk_watch.growth_min_mb` | `500` |  |  | A directory smaller than this is not named. |
+| `disk_watch.growth_names` | `12 items` |  |  | Directory names counted as build or cache growth in the suggestion. |
+| `disk_watch.growth_top` | `3` |  |  | The most growth directories an advisory names. |
+| `disk_watch.heavy_command_re` | `(^\|[;&\|\s])(cargo +(build\|test\|check\|bench\|install)\|npm +(ci\|install\|i)\b\|yar...` |  |  | Regular expression (JavaScript source, matched case-insensitively) of the shell commands that write a lot of data: the ones warned about at the critical level. |
+| `disk_watch.impact_kind` | `disk_warning` |  |  | Impact kind recorded for every disk warning. |
+| `disk_watch.msg_blocked` | `Blocked: disk space is critical ({list}). Free space, or set diskWatch.blockA...` |  |  | Block reason when diskWatch.blockAtCritical is on; {list} the volume lines. |
+| `disk_watch.msg_growth` | ` Biggest build or cache directories under the watched paths: {list} (suggesti...` |  |  | Growth suggestion; {list} the directories with sizes. |
+| `disk_watch.msg_heavy` | `This command writes a lot of data.` |  |  | Line added at the critical level before a heavy command. |
+| `disk_watch.msg_instead` | `Free space before starting more builds, clones or worktrees; nothing was dele...` |  |  | What to do; {growth} names the biggest growth or is empty. |
+| `disk_watch.msg_vol` | `{path}: {free} free ({pct}%), {level}` |  |  | One volume line; {path} a path on it, {free} free, {pct} percent free, {level} warn or critical. |
+| `disk_watch.msg_what` | `Low disk space: {list}.` |  |  | Advisory first line; {list} the volume lines. |
+| `disk_watch.msg_why` | `A full disk fails builds and writes, and a machine with almost no space left ...` |  |  | Why it matters. |
+| `disk_watch.percent_base` | `100` |  |  | The whole in a percentage. |
+| `disk_watch.sw_enabled` | `6 entries` |  |  | Where the disk watch's on/off switch is read from (diskWatch.enabled, default on). |
+| `disk_watch.temp_default` | `/tmp` |  |  | The temp directory when the TMPDIR variable of the process is unset. |
+| `disk_watch.warn_gb` | `7 entries` |  |  | Warn when a watched volume has less than this free, in GB (diskWatch.warnGb; 0 = not used). |
+| `disk_watch.warn_pct` | `7 entries` |  |  | Warn when a watched volume has less than this percent free (diskWatch.warnPercent; 0 = not used). |
 
 ## Messages
 
