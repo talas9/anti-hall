@@ -1,0 +1,177 @@
+# anti-hall docs site (GitHub Pages). Build: see the "Docs site" section of CONTRIBUTING.md
+# or .github/workflows/pages.yml:
+#   python3 -I tools/site_gen.py && mkdocs build --strict
+site_name: anti-hall
+site_description: Verify-first guardrails for Claude Code and Codex.
+site_author: Mohammed Talas
+site_url: https://talas9.github.io/anti-hall/
+repo_url: https://github.com/talas9/anti-hall
+repo_name: talas9/anti-hall
+edit_uri: edit/dev/docs/
+copyright: MIT © Mohammed Talas
+docs_dir: docs
+site_dir: _site
+
+theme:
+  name: material
+  language: en
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+  font: false
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to system preference
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.action.edit
+    - content.tabs.link
+
+extra_css:
+  - stylesheets/extra.css
+
+hooks:
+  - tools/site_hooks.py
+
+plugins:
+  - search
+  # Social cards stay off: they need extra image libraries.
+
+exclude_docs: |
+  README.md
+  archive/
+  *-session-handoff.md
+
+not_in_nav: |
+  KB.md
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: info
+    unrecognized_links: warn
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: start/install.md
+      - Update: start/update.md
+      - Uninstall: start/uninstall.md
+  - Features:
+      - Guards and checks: features/guards.md
+      - Task tracking: features/tasks.md
+      - Handovers and context: features/handovers.md
+      - Skills: features/skills.md
+      - Statusline: features/statusline.md
+      - DevSwarm workspaces: features/devswarm.md
+      - Rust engine: features/engine.md
+  - Settings:
+      - Changing settings: settings/index.md
+      - Settings reference: settings/reference.md
+  - Troubleshooting: troubleshooting.md
+  - Reference:
+      - Full guide: GUIDE.md
+      - tasklist-guard: TASKLIST-GUARD.md
+      - Task work design: TASK-WORK.md
+      - Hook latency: HOOK-LATENCY.md
+      - The 1.0 contract: CONTRACT-1.0.md
+      - Jev classifier: KB-jev-classifier.md
+      - End-to-end tests: E2E-TESTING.md
+      - Benchmark method: BENCHMARK-METHOD.md
+      - Background (research notes):
+          - About these notes: background.md
+          - Claude and Codex synthesis: KB-claude-codex.md
+          - Claude Code hooks: KB-claude-code-hooks.md
+          - Claude Code harness features: KB-claude-code-harness-features.md
+          - Workflow orchestration (Claude): KB-claude-workflow-orchestration.md
+          - Monitor tool: KB-claude-monitor-tool.md
+          - Codex hooks and plugins: KB-codex-platform-hooks-plugins.md
+          - Workflow orchestration (Codex): KB-codex-workflow-orchestration.md
+          - Codex vs Opus for coding: KB-codex-vs-opus-coding.md
+          - oh-my-claudecode (OMC): KB-omc.md
+          - oh-my-codex (OMX): KB-omx.md
+          - cmux: KB-cmux.md
+          - DevSwarm and hivecontrol: KB-devswarm-hivecontrol.md
+          - DevSwarm app database: KB-devswarm-app-db.md
+          - Fable 5: KB-fable-5.md
+          - Sonnet 5: KB-sonnet-5.md
+          - GPT-5.6: KB-gpt-5.6.md
+          - Model modes: KB-model-modes.md
+          - Token usage: KB-token-usage-models.md
+          - Goal setting: KB-goal-setting.md
+          - False completion: KB-false-completion.md
+          - Overengineering: KB-overengineering.md
+          - Session handover: KB-session-handover.md
+          - Handover research: KB-handover-research.md
+          - Context preservation: CONTEXT-PRESERVATION-KB.md
+          - Codex KB map: CODEX-KB-MIGRATION-MAP.md
+          - Opus 4.8 features: opus-4-8-features.md
+          - Opus 4.8 swarm: opus-4-8-swarm.md
+          - GSD distilled: gsd-distilled.md
+          - Superpowers planning: superpowers-planning.md
+          - Prompting talk notes: keynote-prompting-claude.md
+          - Prompting talk transcript: keynote-transcript.md
+  - Contributing:
+      - Contributing: contributing.md
+      - Repository pipelines: REPO-PIPELINES.md
+  - Changelog: changelog.md

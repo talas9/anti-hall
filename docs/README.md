@@ -4,6 +4,29 @@ The start page: every doc, grouped, one line each. New here? Read the
 [`GUIDE.md`](./GUIDE.md) sections you need; [`KB.md`](./KB.md) is the canonical,
 maintained knowledge base (ground truth, staleness ledger, topic map).
 
+## Docs site
+
+The pages of the published docs site (built with MkDocs from this folder; the settings
+reference and the changelog pages are generated at build time by `tools/site_gen.py`).
+
+| Page | What it covers |
+|---|---|
+| [`index.md`](./index.md) | Docs site home: what anti-hall is, install, what you'll notice in your first session. |
+| [`start/install.md`](./start/install.md) | Install for Claude Code and Codex, keep `.anti-hall/` out of git, check it works. |
+| [`start/update.md`](./start/update.md) | Update on Claude Code and Codex. |
+| [`start/uninstall.md`](./start/uninstall.md) | Remove the plugin, the statusline and the optional companions. |
+| [`features/guards.md`](./features/guards.md) | Each guard, its message, its setting, skipping one, and what guards do not do. |
+| [`features/tasks.md`](./features/tasks.md) | Task tracking: task-guard, tasklist-guard, the progress file and the fix ledger. |
+| [`features/handovers.md`](./features/handovers.md) | Automatic and manual handovers, resuming, keeping context small. |
+| [`features/skills.md`](./features/skills.md) | Every skill, when to use it, and the Codex skill names. |
+| [`features/statusline.md`](./features/statusline.md) | The optional two-line statusline: install, consolidate, remove. |
+| [`features/devswarm.md`](./features/devswarm.md) | The optional DevSwarm integration and its companions. |
+| [`features/engine.md`](./features/engine.md) | The Rust engine (not in a release yet): what it is, live answers and Node fallback. |
+| [`settings/index.md`](./settings/index.md) | Changing settings: the skill, `/config`, the CLI, precedence, safety settings. |
+| [`troubleshooting.md`](./troubleshooting.md) | The doctor, common problems, what the messages mean, turning a check off. |
+| [`contributing.md`](./contributing.md) | Contributing links and how to build the docs site. |
+| [`background.md`](./background.md) | Introduces the research notes (KB-*) shown under Background on the site. |
+
 ## Getting started
 
 | Doc | What it covers |
