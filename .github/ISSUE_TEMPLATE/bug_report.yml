@@ -1,7 +1,7 @@
 name: Bug report
 description: Something in anti-hall does not work as documented
 title: "bug: "
-labels: ["bug"]
+labels: ["bug", "type:bug", "status:triage"]
 body:
   - type: markdown
     attributes:
@@ -34,14 +34,39 @@ body:
         - Linux
     validations:
       required: true
+  - type: dropdown
+    id: path
+    attributes:
+      label: Which path ran
+      description: "`/anti-hall:doctor` shows whether hooks run on the engine (ah-engine) or the Node fallback."
+      options:
+        - Engine (ah-engine)
+        - Node fallback
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - engine
+        - devswarm
+        - hooks
+        - statusline
+        - codex
+        - ci
+        - docs
+        - release
+        - not sure
   - type: input
     id: node
     attributes:
       label: Node version
-      description: Output of `node --version`.
+      description: Output of `node --version`, or "none" if Node is not installed.
       placeholder: v22.0.0
     validations:
-      required: true
+      required: false
   - type: textarea
     id: happened
     attributes:

@@ -1,0 +1,154 @@
+# Deterministic triage (no model, no secrets needed):
+# - issues opened/edited: add status:triage on open when no status:* label is set;
+#   map the issue-form dropdowns (Priority, Estimate, Area) to priority:*, size:* and area:* labels,
+#   replacing a stale label of the same prefix when the form is edited.
+# - pull_request_target opened/synchronize: path-based area:* labels from .github/labeler.yml.
+#   The PR's code is never checked out; actions/labeler reads only the changed file list.
+# - optional: with the ROADMAP_PROJECT_TOKEN secret (a token with the `project` scope), an opened
+#   issue is added to the roadmap board and its Status/Priority/Size/Estimate fields are filled.
+#   Without the secret the board's built-in "Auto-add to project" workflow adds items instead.
+#
+# The model-based first-pass comment stays in issue-triage.yml; the two do not overlap.
+name: Triage
+
+on:
+  issues:
+    types: [opened, edited]
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: triage-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  ROADMAP_PROJECT_OWNER: talas9
+  ROADMAP_PROJECT_NUMBER: "3"
+
+jobs:
+  issue-labels:
+    if: github.event_name == 'issues' && github.event.issue.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Map form fields to labels
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+            const current = new Set((issue.labels || []).map(l => l.name));
+
+            // "### Heading\n\nvalue" blocks rendered by issue forms.
+            const field = (heading) => {
+              const re = new RegExp('^###\\s+' + heading + '\\s*\\n+([^\\n]+)', 'mi');
+              const m = body.match(re);
+              const v = m ? m[1].trim() : '';
+              return v === '_No response_' ? '' : v;
+            };
+
+            const AREAS = ['engine', 'devswarm', 'hooks', 'statusline', 'codex', 'ci', 'docs', 'release'];
+            const wanted = {};
+            const pr = field('Priority').match(/^P([0-3])\b/);
+            if (pr) wanted['priority:'] = 'priority:P' + pr[1];
+            const sz = field('Estimate').match(/^(S|M|L|XL)\b/);
+            if (sz) wanted['size:'] = 'size:' + sz[1];
+            const area = field('Area').toLowerCase();
+            if (AREAS.includes(area)) wanted['area:'] = 'area:' + area;
+
+            const add = [];
+            const remove = [];
+            for (const [prefix, label] of Object.entries(wanted)) {
+              if (!current.has(label)) add.push(label);
+              // Only a form edit replaces a same-prefix label; never touch area:* labels the form did not set.
+              if (prefix !== 'area:') {
+                for (const l of current) if (l.startsWith(prefix) && l !== label) remove.push(l);
+              }
+            }
+            const hasStatus = [...current].some(l => l.startsWith('status:'));
+            if (context.payload.action === 'opened' && !hasStatus) add.push('status:triage');
+
+            const { owner, repo } = context.repo;
+            for (const name of remove) {
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name }).catch(() => {});
+            }
+            if (add.length) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: add });
+            }
+            core.info(`added: ${add.join(', ') || 'none'}; removed: ${remove.join(', ') || 'none'}`);
+
+  add-to-project:
+    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Add the issue to the roadmap board
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          HAS_TOKEN: ${{ secrets.ROADMAP_PROJECT_TOKEN != '' }}
+        with:
+          github-token: ${{ secrets.ROADMAP_PROJECT_TOKEN || github.token }}
+          script: |
+            if (process.env.HAS_TOKEN !== 'true') {
+              core.notice('Roadmap board: ROADMAP_PROJECT_TOKEN is not set; the board\'s built-in auto-add workflow handles new items.');
+              return;
+            }
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+            const field = (h) => {
+              const m = body.match(new RegExp('^###\\s+' + h + '\\s*\\n+([^\\n]+)', 'mi'));
+              const v = m ? m[1].trim() : '';
+              return v === '_No response_' ? '' : v;
+            };
+            const q = `query($login:String!,$n:Int!){user(login:$login){projectV2(number:$n){id
+              fields(first:50){nodes{... on ProjectV2FieldCommon{id name dataType}
+              ... on ProjectV2SingleSelectField{options{id name}}}}}}}`;
+            const res = await github.graphql(q, { login: process.env.ROADMAP_PROJECT_OWNER, n: Number(process.env.ROADMAP_PROJECT_NUMBER) });
+            const project = res.user.projectV2;
+            const byName = Object.fromEntries(project.fields.nodes.filter(f => f && f.name).map(f => [f.name, f]));
+            const add = await github.graphql(
+              `mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}`,
+              { p: project.id, c: issue.node_id });
+            const itemId = add.addProjectV2ItemById.item.id;
+
+            const setValue = async (name, value) => {
+              const f = byName[name];
+              if (!f || value === undefined || value === '') return;
+              let v;
+              if (f.options) {
+                const o = f.options.find(o => o.name === value);
+                if (!o) return;
+                v = { singleSelectOptionId: o.id };
+              } else if (f.dataType === 'NUMBER') {
+                const n = Number(value);
+                if (!Number.isFinite(n) || n <= 0) return;
+                v = { number: n };
+              } else {
+                v = { text: String(value) };
+              }
+              await github.graphql(
+                `mutation($p:ID!,$i:ID!,$f:ID!,$v:ProjectV2FieldValue!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:$v}){projectV2Item{id}}}`,
+                { p: project.id, i: itemId, f: f.id, v });
+            };
+            await setValue('Status', 'Triage');
+            await setValue('Priority', (field('Priority').match(/^P[0-3]/) || [])[0]);
+            await setValue('Size', (field('Estimate').match(/^(S|M|L|XL)\b/) || [])[1]);
+            await setValue('Estimate', (field('Estimate in hours').match(/^\d+(\.\d+)?/) || [])[0]);
+            core.info(`added issue #${issue.number} to the roadmap board`);
+
+  pr-labels:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Label by changed paths
+        uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+        with:
+          repo-token: ${{ github.token }}
+          configuration-path: .github/labeler.yml
+          sync-labels: false
