@@ -1,3 +1,12 @@
+#![allow(
+    dead_code,
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::needless_range_loop,
+    clippy::useless_vec,
+    clippy::regex_creation_in_loops,
+    clippy::let_underscore_must_use
+)]
 //! The reconcile port, slices S3 (the drain of one workspace) and S4 (`cmdReconcile`, `distinctRepoKeys`, the sweep duty), against
 //! Node's own functions.
 //!
