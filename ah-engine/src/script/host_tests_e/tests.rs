@@ -123,7 +123,9 @@ fn proc_signal_ends_only_a_pid_the_scripts_own_listing_showed_and_obeys_its_boun
     let h = home("signal");
     let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
     let pid = child.id();
-    let (me, parent) = (std::process::id(), unsafe { libc::getppid() } as u32);
+    // SAFETY: getppid takes no arguments and cannot fail.
+    let parent = unsafe { libc::getppid() } as u32;
+    let me = std::process::id();
     let path = fakes(&h, &[("ps", &format!("      1       0 /sbin/launchd\n{pid:>7} 1 sleep 60\n{me:>7} 1 self\n{parent:>7} 1 parent"))]);
     // refused: before any listing, a never-listed pid, pid 0 and 1, this process and its parent, a forced signal before a polite one
     put_override(
@@ -264,6 +266,15 @@ fn the_finished_agent_scans_answer_null_for_a_missing_file_and_unsure_for_a_rela
         let r: Value = serde_json::from_str(&f(&t, 1000.0)).unwrap();
         assert!(r.get("teammates").or_else(|| r.get("agents")).unwrap().as_array().unwrap().is_empty(), "{r}");
     }
+}
+
+#[test]
+fn call_fn_applies_a_rule_function_of_a_rules_script_and_answers_none_for_what_does_not_exist() {
+    let args = json!({"status": {"checks": "running", "pr": "open", "running": 0}});
+    assert_eq!(crate::script::call_fn("rules/gh-rt", "ghCadence", &args), Some(json!("poll_running_ms")));
+    assert_eq!(crate::script::call_fn("rules/gh-rt", "ghCadence", &json!({"status": {"checks": "green", "pr": "open"}})), Some(json!("poll_idle_ms")));
+    assert_eq!(crate::script::call_fn("rules/gh-rt", "noSuchFunction", &args), None, "a function the script does not define");
+    assert_eq!(crate::script::call_fn("rules/no-such-script", "ghCadence", &args), None, "a script that does not exist");
 }
 
 /// Every raw function the host modules document in their header table is installed (`h.set("<name>"`): a primitive named in the docs

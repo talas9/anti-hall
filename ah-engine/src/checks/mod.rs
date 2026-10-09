@@ -25,7 +25,6 @@ pub mod guardkit;
 pub mod handover;
 pub mod idle_agent_sweep;
 pub mod jsport;
-pub mod mcp_reaper;
 pub mod merge_gate;
 pub mod merge_side_pick;
 pub mod replykit;
@@ -239,7 +238,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &devswarm_gates::DevswarmParentReplyTracker,
         &devswarm_gates::DevswarmChildDrain,
         &scripted::SIBLING_SWEEP,
-        &mcp_reaper::SessionEndMcpReaper,
+        &scripted::SESSION_END_MCP_REAPER,
         &task_tracker::TaskTracker,
     ];
     &ALL

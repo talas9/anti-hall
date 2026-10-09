@@ -70,6 +70,7 @@ var ah = {
   settings: {
     bool: function (key) { return ahHost.settingBool(key); },
     enum: function (key) { return ahHost.settingEnum(key); },
+    str: function (key) { return ahHost.settingStr(key); },
     num: function (key) { return ahHost.settingNum(key); },
     skipped: function (guard) { return ahHost.skipped(guard); },
     // `get(section, key, dflt)` of the settings chain for the described entry; `dflt` undefined: the entry's own default.

@@ -23,7 +23,7 @@ use regex::Regex;
 use rquickjs::{Ctx, Function, Object};
 use serde_json::json;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -39,9 +39,9 @@ static CLOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     /// The pids the script's own listings of this call showed.
-    static SEEN: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+    static SEEN: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     /// The pids this call signalled politely (a forced signal needs one first).
-    static TERMED: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+    static TERMED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     /// Signals sent and milliseconds slept in this call.
     static SENT: RefCell<u64> = const { RefCell::new(0) };
     static SLEPT: RefCell<u64> = const { RefCell::new(0) };
@@ -143,7 +143,12 @@ pub fn proc_list() -> rquickjs::Result<String> {
     for line in out.split('\n') {
         let Some(c) = re.captures(line) else { continue };
         let (pid, ppid) = (number_of_str(&c[1]), number_of_str(&c[2]));
-        SEEN.with(|s| s.borrow_mut().insert(key(pid)));
+        SEEN.with(|s| {
+            let mut s = s.borrow_mut();
+            if !s.contains(&key(pid)) {
+                s.push(key(pid));
+            }
+        });
         rows.push(json!({"pid": pid, "ppid": ppid, "cmd": &c[3]}));
     }
     Ok(json!({"rows": rows}).to_string())
@@ -337,7 +342,7 @@ pub fn proc_signal(pid: f64, forced: bool) -> bool {
         return false;
     }
     if !forced {
-        TERMED.with(|s| s.borrow_mut().insert(key(pid)));
+        TERMED.with(|s| s.borrow_mut().push(key(pid)));
     }
     let sig = if forced { libc::SIGKILL } else { libc::SIGTERM };
     // SAFETY: a plain signal to a validated pid (at least the minimum, not this process or its parent, shown by this call's own

@@ -108,6 +108,9 @@ pub static AUTO_HANDOVER_PAUSE_NAG: Scripted = Scripted::new("auto-handover-paus
 /// `compact-advice-guard`.
 pub static COMPACT_ADVICE_GUARD: Scripted = Scripted::new("compact-advice-guard", "ctxbudget.summary_compact_advice");
 
+/// `session-end-mcp-reaper`.
+pub static SESSION_END_MCP_REAPER: Scripted = Scripted::new("session-end-mcp-reaper", "mcp_reaper.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

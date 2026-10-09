@@ -17,7 +17,7 @@
 //! | `reTest(src, flags, text)` | a linear-time regex test (`flags`: `i` ignore case, `m` multiline (`^`/`$` at line boundaries), `r` engine syntax; else JavaScript syntax) |
 //! | `reFind(src, flags, text)` / `reFindAll` | match positions in UTF-16 units: `[start, end]` / `[s0, e0, s1, e1, ...]` |
 //! | `env(name)` | a variable of the hook's own environment (the request's, never the daemon's), or `null` |
-//! | `settingEnum(key)` / `settingNum(key)` | the effective value of the enum / numeric setting described by defaults entry `key` |
+//! | `settingEnum(key)` / `settingStr(key)` / `settingNum(key)` | the effective value of the enum / string (first non-empty tier, trimmed) / numeric setting described by defaults entry `key` |
 //! | `fileSize(path)` | the size in bytes of a regular file, or `null` |
 //! | `passwdHome()` | the user's home as the passwd database has it, or `null` |
 //! | `realpath(path)` | the canonical path (links resolved), or `null` when it does not exist |
@@ -653,6 +653,13 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
         Function::new(c.clone(), |key: String| -> rquickjs::Result<String> {
             let e = entry(&key)?;
             with_settings(|st| settings::get_enum(st, &e.value))
+        })?,
+    )?;
+    h.set(
+        "settingStr",
+        Function::new(c.clone(), |key: String| -> rquickjs::Result<String> {
+            let e = entry(&key)?;
+            with_settings(|st| settings::get_string(st, &e.value))
         })?,
     )?;
     h.set(

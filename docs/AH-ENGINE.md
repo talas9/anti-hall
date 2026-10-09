@@ -660,7 +660,9 @@ judgement calls do.
   this stays checked on every machine. Edges (CI red or green on a commit, pull request merged or closed, changes requested,
   approved, conflict) are compared against the status of the previous complete poll of the same branch (the first sight is a
   baseline and raises none), deduped by repo, kind and commit or pull request inside `edge_cooldown_ms`, and kept in
-  `ghrt/edges.json` (`max_edges`). Consumers: `ah-engine gh status|segment`; the engine-only check `gh-rt-advisory`
+  `ghrt/edges.json` (`max_edges`). The rules (how an answer reads as a summary, a repo's status, the edges between two statuses,
+  an edge's text, the statusline pieces, the polling cadence) are the plugin script `engine/logic/rules/gh-rt.js`, called through
+  `script::call_fn` with the settings it needs; the poller keeps the plumbing. Consumers: `ah-engine gh status|segment`; the engine-only check `gh-rt-advisory`
   (UserPromptSubmit, plugin script `engine/logic/gh-rt-advisory.js`, fallback no-op `hooks/gh-rt-advisory`) tells each session
   about the edges of its own repo once, only for the kinds in `advisory_kinds`, newer than `advisory_max_age_ms`, at most
   `advisory_max_per_prompt` per prompt, with a per-session cursor file; owner notifications are opt-in (`notify_kinds` and
@@ -816,7 +818,7 @@ missing file) follows one rule: a check with a Node twin defers to it, an engine
 quietly elsewhere. Time a primitive spends blocked (a child process, a lock wait, a Jev consult) is not script time.
 
 Checks that decide in a script today: `api-guard`, `inbox-read-guard`, `orch-on-spawn`, `verify-first-subagent`,
-`verify-first-full`, `fable-availability`, `edit-guard`, `git` (the git guard), `git-audit` (its PostToolUse audit, built on `git.js` through `script.includes`), `swarm-guard`, `sibling-sweep`, `ask-guard`, `phase-tracker`, `failure-root-cause-nudge`, `output-verify-guard`, the six session-maintenance checks (`version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge`, `progress-prune`), `emit-dedupe-reset`, `precompact-snapshot`, `handover-resume`, `limit-conserve-inject` and `auto-handover`., `dispatch-tier`, `model-routing`, `speculation-guard`, `speculation-judge` (every path that needs no model; a reply that needs the model defers to the Node hook), `silent-agent-nudge`, `task-guard` and `tasklist-guard`. Each has a
+`verify-first-full`, `fable-availability`, `edit-guard`, `git` (the git guard), `git-audit` (its PostToolUse audit, built on `git.js` through `script.includes`), `swarm-guard`, `sibling-sweep`, `ask-guard`, `phase-tracker`, `failure-root-cause-nudge`, `output-verify-guard`, the six session-maintenance checks (`version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge`, `progress-prune`), `emit-dedupe-reset`, `precompact-snapshot`, `handover-resume`, `limit-conserve-inject`, `auto-handover`, `dispatch-tier`, `model-routing`, `speculation-guard`, `speculation-judge` (every path that needs no model; a reply that needs the model defers to the Node hook), `silent-agent-nudge`, `task-guard`, `tasklist-guard`, `stale-agent-stop-note`, `claim-ledger`, `idle-agent-sweep`, `auto-handover-pause-nag`, `compact-advice-guard` and `session-end-mcp-reaper`. Each has a
 golden corpus (`tests/golden/<check>.jsonl`, frozen from its compiled port before the port was removed) that the script must
 reproduce byte for byte, and `parity/run-golden.js` replays the same corpus against the Node hook. A case may place events relative to the moment it is replayed (`{NOW-<ms>}`, `{ISO-<ms>}`, `{DATE}` in any string) and set `normTs` so clock readings, instants and calendar days in the answers and the watched files compare as `{TS}`, `{ISO}` and `{DATE}`; `"node": false` marks a case the Node hook cannot be given (a plugin root it resolves itself).
 
@@ -827,7 +829,7 @@ ordinary failure):
 |---|---|---|
 | `cfg(key)`, `cfgNum(key)`, `cfgLive(key)` | a shipped defaults entry; a numeric one with its clamps; the value through the owner's editable layers (`settings.json`, `config.toml`, shipped) | `cfgLive` is cached per file stamp and defaults generation |
 | `env.get(name)`, `env.passwdHome()` | a variable of the hook's own environment (never the daemon's) | |
-| `settings.bool/enum/num(key)`, `settings.skipped(guard)` | the effective value of a setting entry through the settings chain; an unexpired skip | |
+| `settings.bool/enum/str/num(key)`, `settings.skipped(guard)` | the effective value of a setting entry through the settings chain (`str`: the first non-empty tier, trimmed); an unexpired skip | |
 | `fs.isFile/isDir/size/readText/realpath/realpathEx` | file tests and reads (`realpathEx` tells a missing path from one that could not be examined) | reads capped by `script.read_max_bytes` |
 | `fs.lstat(path)`, `fs.kind(path)`, `fs.mtimeMs(path)` | `{kind: file / dir / link / other, size, mtimeMs, mode}` of the path itself (links not followed), `null` when absent, `{kind: "error", code}` when it exists but cannot be examined; the kind alone; the modification time | |
 | `fs.readdir(path)`, `fs.listDir(path)`, `fs.readlink(path)`, `fs.readTail(path, window)` | sorted entry names (`readdir` is capped, `listDir` is not and sorts by bytes); a link's target text; the last `window` bytes as text with the partial first line dropped | `script.readdir_max` entries, else `null`; `script.read_max_bytes` |
@@ -854,6 +856,10 @@ ordinary failure):
 | `clock.now()`, `clock.local(ms)`, `home()`, `pid()` | the engine's one clock (injectable for tests); the local calendar fields and zone offset of an instant; the request's home directory; the engine's process id | |
 | `sys.memory()`, `platform()`, `repo.context(dir)`, `sha1(text)`, `fnv(text)`, `contentHash(parts)`, `log(kind, text)` | machine memory figures; the operating system; the checkout around a directory; hashes (SHA-1, 64-bit FNV, the Jev content hash); a line in the event log | |
 | `settings.get(key, dflt, root)`, `text.maskQuoted(text)`, `shell.heredocAt(cmd, i)` | the settings chain with the caller's fallback; the speculation guard's quoted-text masking; the heredoc opener parser | |
+
+A script that is not a check at all is a rule set: `engine/logic/rules/<name>.js` defines global functions that engine code calls with
+`script::call_fn("rules/<name>", "<function>", <json>)` and reads back as JSON (today `rules/gh-rt`, the GitHub realtime rules). The same
+bounds apply (time, heap, the `ah.*` API); a call that fails gives no answer, and the caller decides what that means.
 
 A script answers `null`, `'allow'`, `'defer'`, `{block: text}`, `{advisory: text}`, `{exact: {code, out, err}}`, or, for a routing check,
 `{routed: {verdict, meta: [{requested_model, parent_model, task_class, recommended_tier, selected_model, outcome, spawn_key, delegate,

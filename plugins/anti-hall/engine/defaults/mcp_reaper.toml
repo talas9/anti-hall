@@ -4,15 +4,15 @@
 #
 # Every selection rule of the Node hook is a setting here: which processes count as MCP servers, the age floor, the runners and
 # dev servers that are never reaped, the init names PID 1 must carry, the cap, and the grace period between the polite and the
-# forced signal. The engine kills exactly what the Node hook would and never more: a process is a candidate only when ALL of
-# these hold (see select.rs): the sweep reason is a real termination, PID 1 is an init process, the process is parented to
-# PID 1, its command line matches the MCP signature, it is not excluded by the user's pattern or the runner list, it is old
-# enough, and the platform's service manager does not own it. Anything the engine cannot decide exactly (a user pattern it cannot
-# translate, a start time it cannot read as JavaScript would) is handed to the Node hook before anything is written or signalled.
+# forced signal. The decision is the plugin script `engine/logic/session-end-mcp-reaper.js` (D88); the process listing, the age and
+# service-manager probes, the bounded signal and the bounded sleep it calls are the generic `ah.proc.*` primitives, configured in
+# host_proc.toml. The engine kills exactly what the Node hook would and never more: a process is a candidate only when ALL of
+# these hold: the sweep reason is a real termination, PID 1 is an init process, the process is parented to PID 1, its command line
+# matches the MCP signature, it is not excluded by the user's pattern or the runner list, it is old enough, and the platform's
+# service manager does not own it. What the host cannot decide the way Node would (a probe it cannot read, an ambiguous local time)
+# is handed to the Node hook before anything is written or signalled.
 #
-# The regular expressions are JavaScript source (case-insensitive unless noted) compiled by the engine's JavaScript translator,
-# which has no look-ahead: where the Node source uses `(?=[\s/]|$)` after a token, the shipped source consumes that character
-# instead (`([\s/]|$)`), which accepts exactly the same command lines when the pattern is only asked whether it matches.
+# The regular expressions are JavaScript source (case-insensitive unless noted), the very ones the Node companion has.
 
 [mcp_reaper.summary]
 doc = "One-line description of the session-end-mcp-reaper check in the generated reference."
@@ -73,70 +73,6 @@ value = "logs"
 doc = "The audit log file name."
 value = "session-end-reaper.log"
 
-[mcp_reaper.ps_command]
-doc = "The process listing command and its arguments: pid, parent pid and command line of every process."
-value = ["ps", "-axo", "pid=,ppid=,command="]
-
-[mcp_reaper.etimes_command]
-doc = "The age probe that reports elapsed seconds (Linux); the pid list is appended as the last argument."
-value = ["ps", "-o", "pid=,etimes=", "-p"]
-
-[mcp_reaper.lstart_command]
-doc = "The age probe that reports the start time (macOS and BSD, which have no elapsed-seconds column); the pid list is appended as the last argument."
-value = ["ps", "-o", "pid=,lstart=", "-p"]
-
-[mcp_reaper.launchctl_command]
-doc = "The command that lists the processes the macOS service manager owns."
-value = ["launchctl", "list"]
-
-[mcp_reaper.ps_timeout_ms]
-doc = "How long the process listing may take before the sweep gives up and does nothing."
-value = 3000
-unit = "ms"
-
-[mcp_reaper.probe_timeout_ms]
-doc = "How long an age probe or the service-manager listing may take (an age probe that times out leaves the age unknown, so the process is not reaped; a service-manager listing that times out skips every candidate)."
-value = 2000
-unit = "ms"
-
-[mcp_reaper.ps_max_bytes]
-doc = "The largest process listing accepted; a bigger one is treated as a failed listing and the sweep does nothing."
-value = 33554432
-unit = "bytes"
-
-[mcp_reaper.probe_max_bytes]
-doc = "The largest age-probe or service-manager output the sweep reads; a bigger one is handed to Node."
-value = 1048576
-unit = "bytes"
-
-[mcp_reaper.ps_line_re]
-doc = "JavaScript regex source (case-sensitive) of one process listing line: pid, parent pid, command line."
-value = '^\s*(\d+)\s+(\d+)\s+(.*)$'
-
-[mcp_reaper.etimes_line_re]
-doc = "JavaScript regex source (case-sensitive) of one elapsed-seconds line: pid, seconds."
-value = '^\s*(\d+)\s+(\d+)\s*$'
-
-[mcp_reaper.lstart_line_re]
-doc = "JavaScript regex source (case-sensitive) of one start-time line: pid, start time."
-value = '^\s*(\d+)\s+(.+?)\s*$'
-
-[mcp_reaper.lstart_form_re]
-doc = "JavaScript regex source (case-sensitive) of the one start-time text the engine reads itself, the form `ps -o lstart=` prints: weekday, month, day of month, time, year. Any other text is handed to Node, whose date parser the engine does not reproduce."
-value = '^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ([ 0-3]\d) ([0-2]\d):([0-5]\d):([0-5]\d) (\d{4})$'
-
-[mcp_reaper.months]
-doc = "The month abbreviations of the start-time form, January first."
-value = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-[mcp_reaper.tz_env]
-doc = "The environment variable that moves the time zone Node would read a start time in; when a request sets it the start time is handed to Node."
-value = "TZ"
-
-[mcp_reaper.launchctl_header_re]
-doc = "JavaScript regex source (case-insensitive) of the header line of the service-manager listing."
-value = '^PID\s'
-
 [mcp_reaper.mcp_self_re]
 doc = "JavaScript regex source (case-insensitive) of a command line that is never an MCP server: the reaper tooling itself."
 value = 'mcp-reaper'
@@ -166,12 +102,12 @@ doc = "The program name that may itself be the `mcp start` command."
 value = "mcp"
 
 [mcp_reaper.suffix_re]
-doc = "JavaScript regex source (case-insensitive) of a `<name>-mcp` package token, bounded on the left by the start, white space or a slash and on the right by white space, a slash or the end (the right bound is consumed here; see the header)."
-value = '(^|[\s/])([a-z0-9][a-z0-9._-]*-mcp)([\s/]|$)'
+doc = "JavaScript regex source (case-insensitive) of a `<name>-mcp` package token, bounded on the left by the start, white space or a slash and on the right by white space, a slash or the end."
+value = '(^|[\s/])([a-z0-9][a-z0-9._-]*-mcp)(?=[\s/]|$)'
 
 [mcp_reaper.scoped_re]
-doc = "JavaScript regex source (case-insensitive) of an `@scope/mcp` package token (right bound consumed, as for the suffix pattern)."
-value = '(^|\s)@[a-z0-9][a-z0-9._-]*/mcp([\s/]|$)'
+doc = "JavaScript regex source (case-insensitive) of an `@scope/mcp` package token."
+value = '(^|\s)@[a-z0-9][a-z0-9._-]*/mcp(?=[\s/]|$)'
 
 [mcp_reaper.suffix_argv0_re]
 doc = "JavaScript regex source (case-insensitive) of a program name that is itself a `<name>-mcp` binary."
@@ -196,22 +132,6 @@ value = ["launchd", "systemd", "init"]
 [mcp_reaper.orphan_ppid]
 doc = "The parent pid that marks an orphan: the kernel reparents a process whose parent died to PID 1."
 value = 1
-
-[mcp_reaper.platform_launchd]
-doc = "The Rust operating-system name on which the service-manager listing is consulted (Node's darwin)."
-value = "macos"
-
-[mcp_reaper.platform_systemd]
-doc = "The Rust operating-system name on which the control-group file is consulted (Node's linux)."
-value = "linux"
-
-[mcp_reaper.cgroup_path]
-doc = "The control-group file of a process; `{pid}` is the process id."
-value = "/proc/{pid}/cgroup"
-
-[mcp_reaper.cgroup_marker]
-doc = "The text in a control-group file that marks a systemd service."
-value = ".service"
 
 [mcp_reaper.event_scan]
 doc = "The audit log event name of a completed scan."
@@ -253,24 +173,3 @@ value = "systemd-service"
 doc = "The Node companion module the hook reuses for its signature test, relative to the plugin root. The Node hook does nothing when it cannot load it, so the engine acts only where it is present."
 value = "companion/mcp-reaper.js"
 
-[mcp_reaper.poll_ms]
-doc = "How often a running command is checked for completion."
-value = 2
-unit = "ms"
-
-[mcp_reaper.read_ms]
-doc = "The least time to wait for a finished command's output after it exits; it may also use what is left of the command's timeout. Output that never arrives fails the command (never an empty listing)."
-value = 1000
-unit = "ms"
-
-[mcp_reaper.max_exact_id]
-doc = "Process ids at or above this are handed to Node: the engine holds an id exactly as JavaScript prints it only below 2^53."
-value = 9007199254740992
-
-[mcp_reaper.max_hour]
-doc = "The largest hour of a start time the engine reads itself (the form allows 24 to 29, which JavaScript carries into the next day)."
-value = 23
-
-[mcp_reaper.min_year]
-doc = "The earliest year of a start time the engine reads itself."
-value = 1970

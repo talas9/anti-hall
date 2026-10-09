@@ -908,9 +908,7 @@ pub fn scenarios() -> Vec<Scn> {
         ],
         vec![w("t.jsonl", n_finished(3, 20.0))],
     ));
-    v.push(
-        seq("sid-array", vec![step(payload(json!({"session_id": [1], "transcript_path": TP, "prompt": "x"})))], vec![w("t.jsonl", n_finished(3, 20.0))]),
-    );
+    v.push(seq("sid-array", vec![step(payload(json!({"session_id": [1], "transcript_path": TP, "prompt": "x"})))], vec![w("t.jsonl", n_finished(3, 20.0))]));
     v.push(seq(
         "sid-array-quiet-transcript",
         vec![step(payload(json!({"session_id": [1], "transcript_path": TP, "prompt": "x"})))],

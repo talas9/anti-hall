@@ -3,5 +3,5 @@
 # session-end-mcp-reaper, verify-first-orch-codex): 58. Migrating those three to scripts lowers it again.
 # Batch 5 (lane d88b5) moved git, git-audit, swarm-guard and sibling-sweep to scripts: 54.
 # Batch 6 (lanes d88fb and d88fc, merged) moved the checks listed in DECISIONS 1.106 and 1.107 to scripts: 32.
-# Batch 7 (lane d88e) moves the last decision checks: stale-agent-stop-note 31, claim-ledger 30, idle-agent-sweep 29, auto-handover-pause-nag 28, compact-advice-guard 27.
-27
+# Batch 7 (lane d88e) moves the last decision checks: stale-agent-stop-note 31, claim-ledger 30, idle-agent-sweep 29, auto-handover-pause-nag 28, compact-advice-guard 27, session-end-mcp-reaper 26.
+26

@@ -13,9 +13,9 @@ const cases = fs.readFileSync(corpus, 'utf8').split('\n').filter(Boolean).map((l
 const pluginReal = fs.realpathSync(plugin);
 // time tokens ({MS:-300000}, {ISO:..}, {HM:..}): offsets from the real clock here (the Node hook has no pinned clock); the stored
 // answer carries the same tokens, turned back into text below
-const NOW = Date.now();
-const timeText = (kind, off) => { const t = NOW + off; return kind === 'MS' ? String(t) : kind === 'DATE' ? new Date(t).toISOString().slice(0, 10) : kind === 'LDATE' ? (() => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })() : kind === 'ISO' ? new Date(t).toISOString() : new Date(t).toISOString().slice(11, 16) + ' UTC'; };
-const timeTokens = (s) => [...s.matchAll(/\{(MS|ISO|HM|DATE|LDATE):(-?[0-9]+)\}/g)].map((m) => [m[0], timeText(m[1], Number(m[2]))]);
+let NOW = Date.now(); // refreshed for every case: a long corpus must not age its own fixtures
+const timeText = (kind, off) => { const t = NOW + off; return kind === 'MS' ? String(t) : kind === 'DATE' ? new Date(t).toISOString().slice(0, 10) : kind === 'LDATE' ? (() => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })() : kind === 'LSTART' ? (() => { const d = new Date(t); return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()] + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()] + ' ' + String(d.getDate()).padStart(2, ' ') + ' ' + [d.getHours(), d.getMinutes(), d.getSeconds()].map((x) => String(x).padStart(2, '0')).join(':') + ' ' + d.getFullYear(); })() : kind === 'ISO' ? new Date(t).toISOString() : new Date(t).toISOString().slice(11, 16) + ' UTC'; };
+const timeTokens = (s) => [...s.matchAll(/\{(MS|ISO|HM|DATE|LDATE|LSTART):(-?[0-9]+)\}/g)].map((m) => [m[0], timeText(m[1], Number(m[2]))]);
 const fillTime = (s) => { let o = s; for (const [tok, txt] of timeTokens(s)) o = o.split(tok).join(txt); return o; };
 // {NOW}, {NOW-<ms>}, {NOW+<ms>}: the current time in ms; {ISO}, {ISO-<ms>}, {ISO+<ms>}: the same as ISO text, {DATE}: its UTC day (see script::expand_now)
 const expandNow = (s) => s.replace(/\{(NOW|ISO|DATE)([-+][0-9]+)?\}/g, (m, k, d) => { const t = Date.now() + (d ? Number(d) : 0); return k === 'NOW' ? String(t) : k === 'DATE' ? new Date(t).toISOString().slice(0, 10) : new Date(t).toISOString(); });
@@ -28,6 +28,7 @@ const sub = (v, home, real) => {
 };
 let compared = 0, skipped = 0, bad = 0;
 for (const c of cases) {
+  NOW = Date.now();
   if (['defer', 'none'].includes(c.expect.v) || c.node === false) { skipped++; continue; }
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-gold-node-'));
   const real = fs.realpathSync(home);
@@ -37,12 +38,12 @@ for (const c of cases) {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     if (typeof spec === 'string') fs.writeFileSync(p, sub(spec, home, real));
     else if (spec && spec.link !== undefined) fs.symlinkSync(sub(spec.link, home, real), p);
-    else if (spec && spec.text !== undefined) { fs.writeFileSync(p, sub(spec.text, home, real)); if (spec.age_ms !== undefined) { const at = new Date(NOW - spec.age_ms); fs.utimesSync(p, at, at); } }
+    else if (spec && spec.text !== undefined) { fs.writeFileSync(p, sub(spec.text, home, real)); if (spec.mode !== undefined) fs.chmodSync(p, spec.mode); if (spec.age_ms !== undefined) { const at = new Date(NOW - spec.age_ms); fs.utimesSync(p, at, at); } }
     else fs.mkdirSync(p, { recursive: true });
   }
   const env = { PATH: process.env.PATH, ...sub(c.env || {}, home, real) };
   if (c.opts && c.opts.plugin_root) env.CLAUDE_PLUGIN_ROOT = sub(c.opts.plugin_root, home, real); else env.CLAUDE_PLUGIN_ROOT = plugin;
-  const run = () => cp.spawnSync('node', [path.join(plugin, hook), ...hookArgs], { input: JSON.stringify(sub(c.payload, home, real)), env, encoding: 'utf8' });
+  const run = () => cp.spawnSync(process.execPath, [path.join(plugin, hook), ...hookArgs], { input: JSON.stringify(sub(c.payload, home, real)), env, encoding: 'utf8' });
   for (let i = 1; i < (c.repeat || 1); i++) run(); // earlier runs only leave their state behind
   const r = run();
   const times = timeTokens(JSON.stringify(c)).sort((a, b) => b[1].length - a[1].length);

@@ -132,37 +132,5 @@ pub fn segment(cfg: &Cfg, cwd: &str, now: u64) -> String {
     if !repo.known || now.saturating_sub(repo.last_poll_ms) > cfg.int("github_rt.stale_ms") {
         return String::new();
     }
-    let s = &repo.status;
-    let (number, text) = (s["number"].as_u64().unwrap_or(0).to_string(), |k: &str| s[k].as_str().unwrap_or("").to_string());
-    let pr = text("pr");
-    let mut parts: Vec<String> = Vec::new();
-    for kind in cfg.strs("github_rt.statusline_kinds") {
-        let w = |name: &str| cfg.word(name, &[("number", &number)]);
-        match kind.as_str() {
-            "checks" => match text("checks").as_str() {
-                "running" => parts.push(w("segment_checks_running")),
-                "red" => parts.push(w("segment_checks_red")),
-                "green" => parts.push(w("segment_checks_green")),
-                _ => {}
-            },
-            "pr" => match pr.as_str() {
-                "open" => parts.push(w("segment_pr")),
-                "merged" => parts.push(w("segment_merged")),
-                "closed" => parts.push(w("segment_closed")),
-                _ => {}
-            },
-            "review" if pr == "open" => {
-                match text("review").as_str() {
-                    "changes_requested" => parts.push(w("segment_changes")),
-                    "approved" => parts.push(w("segment_approved")),
-                    _ => {}
-                }
-                if s["conflict"] == true {
-                    parts.push(w("segment_conflict"));
-                }
-            }
-            _ => {}
-        }
-    }
-    parts.join(&cfg.txt("github_rt.words", "segment_sep"))
+    parse::segment(cfg, &repo.status)
 }

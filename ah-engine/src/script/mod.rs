@@ -244,6 +244,67 @@ pub fn missing(name: &str, event: &str) -> Option<Verdict> {
     Some(failed(name, event, defaults::text("script.msg_no_script")))
 }
 
+/// The loaded context of `name`, built (and the memory ceiling set) when the files changed since it was.
+fn ensure_loaded(pool: &mut Pool, name: &str, fp: &Fingerprint) -> Result<Context, String> {
+    if pool.loaded.get(name).is_none_or(|l| l.fp != *fp) {
+        // a replaced context goes before the new one is built, and its cycles are collected
+        pool.loaded.remove(name);
+        pool.rt.set_memory_limit(0);
+        pool.rt.run_gc();
+        let ctx = load(pool, fp)?;
+        pool.loaded.insert(name.to_string(), Loaded { fp: fp.clone(), ctx });
+        pool.rt.run_gc();
+        let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
+        pool.rt.set_memory_limit(base + defaults::num("script.call_memory_bytes") as usize);
+    }
+    pool.loaded.get(name).map(|l| l.ctx.clone()).ok_or_else(|| "context".to_string())
+}
+
+/// Ask the plugin script `name` (`engine/logic/<name>.js`, owner override first) to apply one of its rules: call the global
+/// function `func` with `args` (JSON in, JSON out). This is how engine code that is not a hook (the GitHub poller, a statusline
+/// segment) reads a rule from the plugin instead of holding it: the script is the rule. `None` when scripts are off, the script
+/// is missing, or the call failed (an exception, the time or heap limit, a result that is not JSON); the reason is logged, and the
+/// caller decides what no answer means. The same bounds as a hook's script apply.
+pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
+    if defaults::num("script.enabled") == 0 {
+        return None;
+    }
+    let env = RequestEnv::from_pairs(std::env::vars());
+    let st = Settings::from_env(&env);
+    let fp = resolve(name, &st.home)?;
+    let r = POOL.with(|cell| -> Result<Value, String> {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(Pool::new().ok_or("runtime")?);
+        }
+        let pool = slot.as_mut().ok_or("runtime")?;
+        let ctx = ensure_loaded(pool, name, &fp)?;
+        let raw = serde_json::to_string(args).map_err(|e| e.to_string())?;
+        let limit = defaults::num("script.time_limit_ms").saturating_mul(1_000_000);
+        host::with_call(st, || {
+            host::set_deadline(Some(pool.deadline.clone()));
+            pool.deadline.store((pool.epoch.elapsed().as_nanos() as u64).saturating_add(limit).max(1), Ordering::Relaxed);
+            let out = ctx.with(|c| -> Result<String, String> {
+                let f: Function = c.globals().get(func).catch(&c).map_err(|e| e.to_string())?;
+                let a: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
+                let v: JsValue = f.call((a,)).catch(&c).map_err(|e| e.to_string())?;
+                let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
+                Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
+            });
+            pool.deadline.store(0, Ordering::Relaxed);
+            host::set_deadline(None);
+            serde_json::from_str(&out?).map_err(|e| e.to_string())
+        })
+    });
+    match r {
+        Ok(v) => Some(v),
+        Err(e) => {
+            crate::discard::note("script_error", &format!("{name}.{func}: {e}"));
+            None
+        }
+    }
+}
+
 fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
@@ -251,18 +312,7 @@ fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str
             *slot = Some(Pool::new().ok_or("runtime")?);
         }
         let pool = slot.as_mut().ok_or("runtime")?;
-        if pool.loaded.get(name).is_none_or(|l| l.fp != *fp) {
-            // a replaced context goes before the new one is built, and its cycles are collected
-            pool.loaded.remove(name);
-            pool.rt.set_memory_limit(0);
-            pool.rt.run_gc();
-            let ctx = load(pool, fp)?;
-            pool.loaded.insert(name.to_string(), Loaded { fp: fp.clone(), ctx });
-            pool.rt.run_gc();
-            let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
-            pool.rt.set_memory_limit(base + defaults::num("script.call_memory_bytes") as usize);
-        }
-        let ctx = pool.loaded.get(name).map(|l| l.ctx.clone()).ok_or("context")?;
+        let ctx = ensure_loaded(pool, name, fp)?;
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
         let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
         let limit = defaults::num("script.time_limit_ms").saturating_mul(1_000_000);
