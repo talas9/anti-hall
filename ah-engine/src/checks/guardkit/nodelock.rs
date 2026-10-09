@@ -370,6 +370,12 @@ pub fn acquire(path: &str, p: Params) -> Option<Held> {
     acquire_with(path, p, Steal::Default)
 }
 
+/// Whether `acquire_stale_unless_live` would find the lock held by someone it must respect: a lock file exists whose holder is
+/// alive, or too fresh to take over. Read-only (a lock that could be taken over, or no lock, is not held).
+pub fn held_by_other(path: &str, p: Params) -> bool {
+    inspect(path, &p).is_some_and(|h| !stealable(&h, &p, Steal::StaleUnlessLive))
+}
+
 /// Which holders a waiter may take over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Steal {

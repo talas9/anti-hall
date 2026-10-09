@@ -1,0 +1,642 @@
+//! The pull a `--child` tick runs first: `inbox tick <id> --child` is `withSelfHeal(() => cmdInbox('pull', ...))` followed by
+//! the ordinary tick, ported from `scripts/devswarm-lib/inbox-cmd.js` `cmdInboxPull`, `register.js` `cmdRegister` (its
+//! `ensure` branch for a descriptor that exists) and `companion/lib/devswarm-pull.js` `pullOnce`, over the delivery
+//! write-ahead log of `companion/lib/devswarm-read-wal.js` (the engine's byte-compatible port is [`crate::dssup::ingest::wal`]).
+//!
+//! What a pull does, in Node's order:
+//!
+//! 1. the ensure: under the workspace's lock, backfill what a descriptor is missing (`ownerKey`, `repoKey`, a default inbox and
+//!    cursor path), pre-create the cursor (`0`, exclusive) and the inbox (an empty append), upsert the registry row and refresh the
+//!    summary;
+//! 2. `pullOnce`, under the per-workspace pull lock (`locks/pull-<id>.lock`, stale after a minute, a live holder never taken
+//!    over): replay every batch the WAL holds without a closing record, refuse a destructive read while the WAL cannot be
+//!    appended and fsynced, run the non-destructive `hivecontrol workspace message-count`, and only for a count above zero the
+//!    ONE bounded `workspace read-messages`. The raw bytes are appended and fsynced to the WAL the moment the read returns,
+//!    BEFORE they are parsed; then the new rows are appended to the descriptor's NDJSON inbox (deduplicated by the content hash
+//!    embedded in each line, fsynced), fed to the store (best effort, as in Node) and the batch is closed with a `done` (or
+//!    `quarantine`) record. A crash anywhere after the WAL fsync re-delivers, never loses, and never duplicates: the replay is
+//!    idempotent by the hash.
+//!
+//! The engine answers the steady state and nothing else, and decides EVERYTHING it can defer before the first write
+//! ([`plan`]): a descriptor that needs a project move, a refusal, a second registry row of the same worktree, an `unclaimed:`
+//! session, a self-heal that would spawn the installer, WAL batches of other readers or spilled ones, a replayed batch whose
+//! dates the engine does not reproduce, a store that is not SQLite. What it cannot know before the destructive read (a date
+//! form it does not reproduce in a fresh batch) is handled loss-free: the inbox append is made, the store feed is left to Node
+//! and the batch stays PENDING in the WAL, so the next pull hands the replay to Node.
+// Discard triage (E3): every `.ok()` / `harmless` / `unwrap_or*` in this file is a deliberate keep, for these reasons:
+// - the pre-creates of the cursor and the inbox, the cross-invocation app cache and the store feed are best effort in Node
+//   (`try { ... } catch (_) {}`); a failure there never stops the pull
+// - an unreadable optional file is the same as an absent one (Node's try/catch around readFileSync)
+// - text that does not parse is the absent value (Node's JSON.parse catch parity)
+use crate::checks::guardkit::nodelock;
+use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::text::js_trim;
+use crate::defaults;
+use crate::dssup::ingest::{import, wal};
+use crate::meshw::appdb::{self, CacheWrite};
+use crate::meshw::common::{Inv, Obj, s};
+use crate::meshw::hivecontrol;
+use crate::meshw::ident::{self, R, defer};
+use crate::meshw::idlock::{self, devswarm_root};
+use crate::meshw::store::{MeshStore, RegistryRow};
+use crate::meshw::{summary, tick, union};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+/// What the non-destructive `message-count` answered.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Peek {
+    /// The call failed (no binary, a non-zero exit, a timeout): the pull ends with an error and reads nothing.
+    Failed,
+    /// `parseCount` of the answer.
+    Count(f64),
+    /// The pull lock is held by another pull: the call is never made.
+    NotAsked,
+}
+
+/// Everything the pull needs, settled before the first write.
+pub(crate) struct Plan {
+    id: String,
+    /// The descriptor as the ensure leaves it.
+    ensured: OVal,
+    /// The ensure changes the descriptor file.
+    rewrite_descriptor: bool,
+    /// The registry row the ensure upserts.
+    row: RegistryRow,
+    /// The caller's project key (the store the ensure and the feed write).
+    repo_key: String,
+    store: MeshStore,
+    cache: Option<CacheWrite>,
+    sender: Option<String>,
+    cwd: String,
+    inbox: PathBuf,
+    wal: PathBuf,
+    lock_file: PathBuf,
+    /// Batches the WAL holds without a closing record, oldest first.
+    pending: Vec<wal::Open>,
+    peek: Peek,
+}
+
+/// What the pull reports to the tick.
+#[derive(Debug, Default)]
+pub(crate) struct Outcome {
+    /// `walBlocked`: the delivery log cannot be written, so mail may be waiting that the count cannot see.
+    pub wal_blocked: bool,
+}
+
+fn field_str(d: &OVal, key: &str) -> Option<String> {
+    match d.get(key) {
+        Some(OVal::Str(x)) if !x.is_empty() => Some(x.clone()),
+        _ => None,
+    }
+}
+
+fn text_or_null(d: &OVal, key: &str) -> R<Option<String>> {
+    match d.get(key) {
+        None | Some(OVal::Null) => Ok(None),
+        Some(OVal::Str(t)) => Ok(Some(t.clone())),
+        Some(_) => defer("descriptor-field-shape"),
+    }
+}
+
+/// `inboxDefaultPath(home, id)`.
+fn inbox_default(home: &Path, id: &str) -> String {
+    devswarm_root(home).join(defaults::text("mesh_write.dir_inbox")).join(format!("{id}{}", defaults::text("mesh_write.ndjson_suffix"))).to_string_lossy().into_owned()
+}
+
+/// `cursorDefaultPath(home, id)`.
+fn cursor_default(home: &Path, id: &str) -> String {
+    devswarm_root(home).join(defaults::text("mesh_write.dir_cursors")).join(format!("{id}{}", defaults::text("mesh_write.cursor_file_suffix"))).to_string_lossy().into_owned()
+}
+
+fn pull_lock_params() -> nodelock::Params {
+    nodelock::Params {
+        stale_ms: defaults::num("mesh_write.pull_lock_stale_ms"),
+        wait_ms: 0,
+        step_ms: defaults::num("mesh_write.pull_lock_step_ms"),
+        reclaim_stale_ms: defaults::num("mesh_write.id_lock_reclaim_stale_ms"),
+        release_tries: defaults::num("mesh_write.id_lock_release_tries"),
+        release_step_ms: defaults::num("mesh_write.id_lock_release_step_ms"),
+        boot_slop_s: defaults::num("mesh_write.id_lock_boot_slop_s"),
+        steal_dead: false,
+    }
+}
+
+/// `parseCount(raw)`: a bare number, a JSON object with a known count key, or the first integer in the text; anything else is 0.
+fn parse_count(raw: &str) -> f64 {
+    let t = js_trim(raw);
+    if t.is_empty() {
+        return 0.0;
+    }
+    let clamp = |n: f64| n.floor().max(0.0);
+    if let Some(v) = OVal::parse(t) {
+        match &v {
+            OVal::Num(n) if n.is_finite() => return clamp(*n),
+            OVal::Obj(_) => {
+                for k in defaults::list("mesh_write.pull_count_keys") {
+                    if let Some(OVal::Num(n)) = v.get(k)
+                        && n.is_finite()
+                    {
+                        return clamp(*n);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // `t.match(/-?\d+/)` then `parseInt`
+    let b = t.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let start = i;
+        if b[i] == b'-' {
+            i += 1;
+        }
+        let digits = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i > digits {
+            return t[start..i].parse::<f64>().map_or(0.0, |n| n.max(0.0));
+        }
+        i = start + 1;
+    }
+    0.0
+}
+
+/// Whether another reader's WAL (`pull-*.ndjson`, or a file an earlier adopter claimed) holds an open batch: Node would adopt
+/// it under that reader's lock, which the engine does not do.
+fn foreign_open_batches(root: &Path, own: &Path) -> bool {
+    let dir = root.join(defaults::text("devswarm_ingest.dir_wal"));
+    let suffix = defaults::text("devswarm_ingest.wal_suffix");
+    let prefix = defaults::text("mesh_write.pull_file_prefix");
+    let has_open = |f: &Path| wal::pending(f).map_or(true, |p| !p.is_empty());
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with(prefix) && name.ends_with(suffix) && e.path() != own && has_open(&e.path()) {
+            return true;
+        }
+    }
+    let stem = own.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+    let adopted = dir.join(defaults::text("devswarm_ingest.dir_adopted")).join(stem);
+    std::fs::read_dir(adopted).into_iter().flatten().flatten().any(|e| e.file_name().to_string_lossy().ends_with(suffix) && has_open(&e.path()))
+}
+
+/// The first half of the plan: the ensure (what the descriptor, the registry and the summary become), decided without writing. The
+/// tick counts over [`Plan::ensured`], which is the descriptor Node's count reads after its own ensure.
+pub(crate) fn prepare(inv: &Inv, id: &str, desc: &OVal) -> R<Plan> {
+    if crate::meshw::heartbeat::is_primary_label(id) {
+        return defer("primary-label");
+    }
+    // withSelfHeal: the probe reads; a heal that would spawn the installer is Node's
+    crate::meshw::common::self_heal(inv)?; // the heal's fields are added to the pull result, which a tick never prints
+    let wt = ident::resolve_caller_worktree(&inv.cwd)?.unwrap_or_else(|| inv.cwd.clone());
+    let (verdict, cache) = appdb::archived_verdict(&inv.home, &inv.env, inv.now, id, Some(&wt), true)?;
+    if verdict == Some(true) {
+        return defer("app-archived");
+    }
+    let OVal::Obj(fields) = desc else { return defer("descriptor-shape") };
+    if fields.iter().any(|(k, _)| k == "__proto__") {
+        return defer("descriptor-keys");
+    }
+    let ctx = ident::resolve_context(&inv.cwd, true)?;
+    if ctx.kind.starts_with(defaults::text("mesh_write.kind_submodule_prefix")) {
+        return defer("submodule");
+    }
+    let Some(current) = ctx.repo_key.clone() else { return defer("no-project") };
+    if let Some(reg) = crate::meshw::inbox::registered_repo_key(desc, id)?
+        && reg != current
+    {
+        return defer("project-context-mismatch");
+    }
+    let hash_key = crate::meshw::send::hash_from_workspace_id(id);
+    let owner_key = defaults::text("mesh_write.field_owner_key");
+    let stored_owner = field_str(desc, owner_key);
+    if stored_owner.as_deref() == Some(hash_key.as_str()) && hash_key != current {
+        return defer("rehome");
+    }
+    let wt_field = defaults::text("mesh_write.field_worktree_path");
+    let desc_wt = union::path_field(desc, wt_field)?;
+    let fresh = |d: &OVal| -> R<Option<String>> {
+        match union::path_field(d, wt_field)? {
+            Some(w) => ident::repo_key_for_worktree(&w),
+            None => Ok(None),
+        }
+    };
+    let proven = match stored_owner.clone() {
+        Some(k) => Some(k),
+        None => match field_str(desc, defaults::text("mesh_write.field_repo_key")) {
+            Some(k) => Some(k),
+            None => fresh(desc)?,
+        },
+    };
+    if proven.as_deref() != Some(current.as_str()) {
+        return defer("ensure-refused");
+    }
+    // the descriptor as the ensure leaves it
+    let mut ensured = desc.clone();
+    if stored_owner.is_none() {
+        ensured.set(owner_key, s(&current));
+    }
+    if fresh(&ensured)?.as_deref() == Some(current.as_str()) {
+        ensured.set(defaults::text("mesh_write.field_repo_key"), s(&current));
+    }
+    for (key, default) in [
+        (defaults::text("mesh_write.field_inbox_path"), inbox_default(&inv.home, id)),
+        (defaults::text("mesh_write.field_cursor_path"), cursor_default(&inv.home, id)),
+    ] {
+        if matches!(ensured.get(key), None | Some(OVal::Null)) || matches!(ensured.get(key), Some(OVal::Str(x)) if x.is_empty()) {
+            ensured.set(key, s(&default));
+        }
+        if !matches!(ensured.get(key), Some(OVal::Str(_))) {
+            return defer("descriptor-path-type");
+        }
+    }
+    let rewrite_descriptor = ensured.stringify() != desc.stringify();
+    let nudge = match ensured.get(defaults::text("mesh_write.field_nudge_command")) {
+        None | Some(OVal::Null) => None,
+        Some(v) => Some(v.stringify()),
+    };
+    let row = RegistryRow {
+        id: id.to_string(),
+        worktree_path: text_or_null(&ensured, wt_field)?,
+        session_id: text_or_null(&ensured, defaults::text("mesh_write.field_session_id"))?,
+        inbox_path: text_or_null(&ensured, defaults::text("mesh_write.field_inbox_path"))?,
+        cursor_path: text_or_null(&ensured, defaults::text("mesh_write.field_cursor_path"))?,
+        nudge_command: nudge,
+    };
+    // maybePromoteUnclaimed: a row stamped `unclaimed:` is promoted by a session the caller proves it owns
+    if row.session_id.as_deref() == Some(format!("{}{id}", defaults::text("mesh_write.synthetic_session_prefix")).as_str()) {
+        return defer("unclaimed");
+    }
+    // the registry: the row's worktree must be the one the upsert would write (else the collision guard decides), and no other row
+    // of the same worktree may exist (retireWorktreeDuplicates would fold it)
+    let Some(reader) = tick::open_reader(inv, &current)? else { return defer("no-store") };
+    let rows = ident::rows_of(&reader.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?);
+    if let (Some(existing), Some(incoming)) = (rows.iter().find(|r| r.id == id).and_then(|r| r.worktree_path.clone()), row.worktree_path.as_deref())
+        && existing != incoming
+    {
+        return defer("registry-collision");
+    }
+    if let Some(w) = desc_wt.as_deref() {
+        let keep_mesh = ident::primary_workspace_id(w)?;
+        if keep_mesh != id
+            && let Some(keep_real) = ident::canonical_worktree_real_path(w)?
+        {
+            for r in rows.iter().filter(|r| r.id != id) {
+                if let Some(rw) = r.worktree_path.as_deref().filter(|x| !x.is_empty())
+                    && ident::canonical_worktree_real_path(rw)?.as_deref() == Some(keep_real.as_str())
+                {
+                    return defer("duplicate-registry-rows");
+                }
+            }
+        }
+    }
+    let store = crate::meshw::common::open_store(inv, &current)?;
+    summary::check(&store, inv, None)?;
+    // pullOnce reads the store of the worktree the caller stands in
+    let pull_repo = ident::repo_key_for_worktree(&wt)?;
+    if pull_repo.as_deref() != Some(current.as_str()) {
+        return defer("pull-store-differs");
+    }
+    let wctx = ident::resolve_context(&wt, false)?;
+    if wctx.kind.starts_with(defaults::text("mesh_write.kind_submodule_prefix")) {
+        return defer("submodule");
+    }
+    let sender = ident::primary_workspace_id(wctx.main_worktree.as_deref().unwrap_or(&wt)).ok().filter(|x| idlock::is_safe_id(x));
+    let root = devswarm_root(&inv.home);
+    let wal_file = wal::wal_path(&root, defaults::text("mesh_write.pull_wal_kind"), id);
+    let lock_file = root.join(defaults::text("mesh_write.dir_locks")).join(format!(
+        "{}{id}{}",
+        defaults::text("mesh_write.pull_file_prefix"),
+        defaults::text("mesh_write.lock_suffix")
+    ));
+    let inbox = PathBuf::from(field_str(&ensured, defaults::text("mesh_write.field_inbox_path")).unwrap_or_default());
+    Ok(Plan {
+        id: id.to_string(),
+        ensured,
+        rewrite_descriptor,
+        row,
+        repo_key: current,
+        store,
+        cache,
+        sender,
+        cwd: wt,
+        inbox,
+        wal: wal_file,
+        lock_file,
+        pending: Vec::new(),
+        peek: Peek::NotAsked,
+    })
+}
+
+impl Plan {
+    /// The descriptor as the ensure leaves it.
+    pub(crate) fn ensured(&self) -> &OVal {
+        &self.ensured
+    }
+
+    /// This pull's delivery log (the pull replays and closes its open batches before the tick reports the log's health).
+    pub(crate) fn wal_path(&self) -> &Path {
+        &self.wal
+    }
+
+    /// The second half: what `pullOnce` will find (the lock, the delivery log, the native count), still without writing.
+    /// `store_unread` is the unread count of the store partition before the pull and `line_form` whether the tick prints its one
+    /// line (the JSON form refuses a count over the read limit, which a drain could cause).
+    pub(crate) fn finish(mut self, inv: &Inv, store_unread: usize, line_form: bool) -> R<Plan> {
+        let root = devswarm_root(&inv.home);
+        let busy = nodelock::held_by_other(&self.lock_file.to_string_lossy(), pull_lock_params());
+        if busy {
+            return Ok(self);
+        }
+        self.pending = match wal::pending(&self.wal) {
+            Ok(p) => p,
+            Err(_) => return defer("wal-unreadable"),
+        };
+        if wal::spilled(&self.wal) > 0 {
+            return defer("wal-spilled");
+        }
+        if foreign_open_batches(&root, &self.wal) {
+            return defer("wal-foreign");
+        }
+        for p in &self.pending {
+            if import::rows(&self.id, &import::parse_batch(&p.raw), inv.now).iter().any(|r| r.ts_fallback) {
+                return defer("wal-replay-date");
+            }
+        }
+        let c = hivecontrol::call(&defaults::list("mesh_write.hc_message_count"), &inv.env, defaults::millis("mesh_write.hivecontrol_timeout_ms"));
+        self.peek = if c.ok { Peek::Count(parse_count(&c.raw)) } else { Peek::Failed };
+        if let Peek::Count(n) = self.peek
+            && !line_form
+            && n > 0.0
+            && (store_unread as f64) + n > defaults::num("mesh_write.inbox_read_limit") as f64
+        {
+            return defer("read-cap");
+        }
+        Ok(self)
+    }
+}
+
+fn write_descriptor(inv: &Inv, id: &str, d: &OVal) -> std::io::Result<()> {
+    let dir = devswarm_root(&inv.write_home).join(defaults::text("mesh_write.dir_workspaces"));
+    let file = dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
+    let mut tmp = file.as_os_str().to_os_string();
+    tmp.push(defaults::text("mesh_write.tmp_suffix"));
+    let tmp = PathBuf::from(tmp);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&tmp, d.stringify())?;
+    std::fs::rename(&tmp, &file)
+}
+
+/// `precreateCursorAndInbox(desc)`: the cursor at `0` (exclusive: never clobbered), the inbox by an empty append.
+fn precreate(d: &OVal) {
+    if let Some(c) = field_str(d, defaults::text("mesh_write.field_cursor_path")) {
+        let p = Path::new(&c);
+        if let Some(dir) = p.parent() {
+            crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: best effort, as Node's try/catch
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(p) {
+            crate::discard::harmless(f.write_all(defaults::text("mesh_write.cursor_initial").as_bytes())); // keep: best effort
+        }
+    }
+    if let Some(i) = field_str(d, defaults::text("mesh_write.field_inbox_path")) {
+        let p = Path::new(&i);
+        if let Some(dir) = p.parent() {
+            crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: best effort
+        }
+        crate::discard::harmless(std::fs::OpenOptions::new().append(true).create(true).open(p)); // keep: best effort
+    }
+}
+
+fn lacks_trailing_newline(file: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(file) else { return false };
+    let Ok(len) = f.metadata().map(|m| m.len()) else { return false };
+    if len == 0 || f.seek(SeekFrom::Start(len - 1)).is_err() {
+        return false;
+    }
+    let mut last = Vec::new();
+    f.take(1).read_to_end(&mut last).is_ok() && last.first().is_some_and(|b| *b != b'\n')
+}
+
+/// What one batch made of the inbox.
+struct Ingested {
+    imported: usize,
+    duplicate: usize,
+    parsed: usize,
+    /// The store feed was left to Node (a date form the engine does not reproduce).
+    store_left: bool,
+}
+
+/// `ingestRaw(raw)`: parse one raw native batch, append the new rows to the durable inbox (idempotent by the embedded content
+/// hash) and fsync it, then the best-effort store feed. `Err` when the durable append fails (the WAL entry then stays pending).
+fn ingest_raw(inv: &Inv, p: &Plan, raw: &str) -> Result<Ingested, String> {
+    let batch = import::parse_batch(raw);
+    let mut seen = std::collections::HashSet::<String>::new();
+    if let Ok(bytes) = std::fs::read(&p.inbox) {
+        for line in String::from_utf8_lossy(&bytes).split('\n') {
+            let t = js_trim(line);
+            if t.is_empty() {
+                continue;
+            }
+            if let Some(o) = OVal::parse(t)
+                && let Some(h) = o.get(defaults::text("mesh_write.row_hash_field"))
+                && !matches!(h, OVal::Null)
+            {
+                seen.insert(import::js_string(h));
+            }
+        }
+    }
+    let (mut imported, mut duplicate) = (0, 0);
+    let mut lines = String::new();
+    let pick = |m: &OVal, k: &str| -> OVal {
+        match m.get(k) {
+            None | Some(OVal::Null) => OVal::Null,
+            Some(v) => v.clone(),
+        }
+    };
+    for m in &batch.messages {
+        let h = import::message_hash(&p.id, m);
+        if seen.contains(&h) {
+            duplicate += 1;
+            continue;
+        }
+        seen.insert(h.clone());
+        let mut o = Obj::default();
+        o.put(defaults::text("mesh_write.row_hash_field"), s(&h));
+        for k in defaults::list("mesh_write.row_fields") {
+            o.put(k, pick(m, k));
+        }
+        o.put(defaults::text("mesh_write.row_sender_field"), p.sender.as_deref().map_or(OVal::Null, s));
+        lines.push_str(&o.done().stringify());
+        lines.push('\n');
+        imported += 1;
+    }
+    // DURABLE append precedes the WAL `done`: one append of the whole batch, a leading newline after a torn tail, then the fsync
+    if !lines.is_empty() {
+        if let Some(d) = p.inbox.parent() {
+            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        }
+        let lead = if lacks_trailing_newline(&p.inbox) { "\n" } else { "" };
+        let mut f = std::fs::OpenOptions::new().append(true).create(true).open(&p.inbox).map_err(|e| e.to_string())?;
+        f.write_all(format!("{lead}{lines}").as_bytes()).map_err(|e| e.to_string())?;
+        drop(f);
+        std::fs::File::open(&p.inbox).and_then(|f| f.sync_all()).map_err(|e| e.to_string())?;
+    }
+    // the store parity feed: best effort, as in Node (`try { ... } catch (_) {}`)
+    let mut store_left = false;
+    if import::rows(&p.id, &batch, inv.now).iter().any(|r| r.ts_fallback) {
+        store_left = true;
+    } else if import::ingest_payload(&p.store, &inv.home, &p.id, raw, inv.now).is_ok()
+        && let Some(why) = summary::derive_after_write(&p.store, inv, &p.repo_key)
+    {
+        crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_inbox"), &why);
+    }
+    Ok(Ingested { imported, duplicate, parsed: batch.messages.len(), store_left })
+}
+
+/// The ensure's writes and then `pullOnce`. Nothing here defers (the plan did): the first thing it does is take the workspace's
+/// lock, and a lock that stays busy hands the verb to Node before anything is written.
+pub(crate) fn execute(inv: &Inv, p: Plan) -> R<Outcome> {
+    let Some(id_lock) = idlock::acquire(&inv.home, &p.id) else { return defer("lock-busy") };
+    crate::meshw::mark_committed();
+    // ---- the ensure, under the workspace lock (a failure skips the pull, as Node's catch around it does) ----
+    let ensure = || -> bool {
+        if let Some(c) = &p.cache {
+            c.perform();
+        }
+        if p.rewrite_descriptor && write_descriptor(inv, &p.id, &p.ensured).is_err() {
+            return false;
+        }
+        precreate(&p.ensured);
+        if p.store.upsert_registry(&p.row, inv.now, |_, _| true).is_err() {
+            return false;
+        }
+        if let Some(why) = summary::derive_after_write(&p.store, inv, &p.repo_key) {
+            crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_inbox"), &why);
+        }
+        true
+    };
+    let ensured = ensure();
+    id_lock.release();
+    if !ensured {
+        return Ok(Outcome::default());
+    }
+    Ok(pull_once(inv, &p))
+}
+
+/// `pullOnce`: one bounded, guard-safe drain of the child's native queue into its durable inbox.
+fn pull_once(inv: &Inv, p: &Plan) -> Outcome {
+    let none = Outcome::default();
+    let Some(lock) = nodelock::acquire_stale_unless_live(&p.lock_file.to_string_lossy(), pull_lock_params()) else { return none };
+    let out = pull_locked(inv, p);
+    lock.release();
+    out
+}
+
+fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
+    let blocked = Outcome { wal_blocked: true };
+    // the descriptor is read again, as Node does (the ensure has written it)
+    let Some(desc) = std::fs::read(devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{}{}", p.id, defaults::text("mesh_write.json_suffix"))))
+        .ok()
+        .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
+    else {
+        return Outcome::default();
+    };
+    let worktree = field_str(&desc, defaults::text("mesh_write.field_worktree_path")).unwrap_or_else(|| p.cwd.clone());
+    // REPLAY FIRST: every batch a previous pull captured but never closed is ingested before any new destructive read
+    for entry in &p.pending {
+        let Ok(r) = ingest_raw(inv, p, &entry.raw) else { return Outcome::default() };
+        if r.store_left {
+            continue;
+        }
+        let raw_t = js_trim(&entry.raw);
+        let empty = r.parsed == 0 && !raw_t.is_empty() && raw_t != defaults::text("mesh_write.empty_array");
+        let closed = if empty {
+            wal::close_batch(&p.wal, &entry.e, defaults::text("mesh_write.wal_quarantine"), &format!("\"reason\":\"{}\"", defaults::text("mesh_write.wal_reason_unparseable")), inv.now)
+        } else {
+            wal::close_batch(
+                &p.wal,
+                &entry.e,
+                defaults::text("mesh_write.wal_done"),
+                &format!("\"imported\":{},\"duplicate\":{},\"into\":{}", r.imported, r.duplicate, OVal::Str(p.id.clone()).stringify()),
+                inv.now,
+            )
+        };
+        if closed.is_err() {
+            return Outcome::default();
+        }
+    }
+    // FAIL CLOSED: never a destructive read into a WAL that cannot be appended and fsynced right now
+    if wal::preflight(&p.wal).is_some() {
+        return blocked;
+    }
+    let native = match p.peek {
+        Peek::Count(n) => n,
+        Peek::Failed | Peek::NotAsked => return Outcome::default(),
+    };
+    if native <= 0.0 {
+        wal::maybe_rotate(&p.wal, inv.now);
+        return Outcome::default();
+    }
+    // ONE bounded read-messages (finite timeout, never monitor)
+    let r = hivecontrol::call(&defaults::list("mesh_write.hc_read_messages"), &inv.env, defaults::millis("mesh_write.pull_read_timeout_ms"));
+    // WAL the RAW bytes immediately, before the exit status is looked at and before any parse
+    let mut entry: Option<String> = None;
+    let mut wal_error = false;
+    if !r.raw.is_empty() {
+        match wal::capture_raw(&p.wal, &r.raw, inv.now, Some(&worktree)) {
+            wal::Capture::Wal(e) => entry = Some(e),
+            _ => wal_error = true,
+        }
+    }
+    if !r.ok {
+        return Outcome { wal_blocked: wal_error };
+    }
+    let got = match ingest_raw(inv, p, &r.raw) {
+        Ok(g) => g,
+        Err(_) => return Outcome { wal_blocked: wal_error },
+    };
+    let recovered = (got.imported + got.duplicate) as f64;
+    let shortfall = recovered < native;
+    if !wal_error && !got.store_left {
+        // a close that fails leaves the batch pending: the next pull replays it idempotently. An empty read has no entry id and
+        // Node closes it as `null` all the same.
+        let (kind, extra) = if shortfall {
+            (
+                defaults::text("mesh_write.wal_quarantine"),
+                format!(
+                    "\"reason\":\"{}\",\"nativeCount\":{},\"recovered\":{}",
+                    defaults::text("mesh_write.wal_reason_shortfall"),
+                    js_number_text(native),
+                    js_number_text(recovered)
+                ),
+            )
+        } else {
+            (defaults::text("mesh_write.wal_done"), format!("\"imported\":{},\"duplicate\":{}", got.imported, got.duplicate))
+        };
+        let closed = match &entry {
+            Some(e) => wal::close_batch(&p.wal, e, kind, &extra, inv.now),
+            None => wal::fsync_append(&p.wal, &format!("{{\"t\":\"{kind}\",{extra},\"e\":null,\"ts\":{}}}\n", inv.now)),
+        };
+        crate::discard::harmless(closed); // keep: the batch stays pending and the next pull replays it (Node's catch)
+    }
+    if shortfall {
+        eprint!(
+            "{}",
+            defaults::render(
+                "mesh_write.msg_pull_shortfall",
+                &[
+                    ("id", &OVal::Str(p.id.clone()).stringify()),
+                    ("count", &js_number_text(native)),
+                    ("recovered", &js_number_text(recovered)),
+                    ("lost", &js_number_text(native - recovered)),
+                    ("wal", &p.wal.display()),
+                    ("entry", &entry.unwrap_or_else(|| defaults::text("mesh_write.js_null").to_string())),
+                ]
+            )
+        );
+    }
+    Outcome { wal_blocked: wal_error }
+}

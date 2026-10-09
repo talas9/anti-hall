@@ -43,6 +43,7 @@ pub mod ident;
 pub mod idlock;
 pub mod inbox;
 pub mod plan;
+pub mod pull;
 pub mod planverbs;
 pub mod read;
 pub mod readprimary;
@@ -375,6 +376,9 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
             // a writing verb keeps Node as a background check on a scratch copy (never a second write on the real home)
             let scratch = match verb_of(&a) {
                 Some(Verb::Heartbeat) => verify::prepare(&inv, a.one(defaults::text("mesh_write.flag_summary")).is_some()),
+                // a `--child` tick drains the native queue DESTRUCTIVELY: its Node witness would meet the real hivecontrol, so
+                // it is not run until it can be given a recording stub (see `pull`)
+                Some(Verb::InboxTick) if a.has(defaults::text("mesh_write.flag_child")) => None,
                 Some(Verb::InboxTick) => verify::prepare_tick(&inv),
                 Some(Verb::InboxReadPrimary) => verify::prepare_read_primary(&inv),
                 Some(Verb::Roster) => verify::prepare_roster(&inv),
