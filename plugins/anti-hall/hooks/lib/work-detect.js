@@ -178,6 +178,8 @@ function allPathsExcluded(neutralized) {
 function hasExcludedPathHint(cmd) {
   if (typeof cmd !== 'string' || !cmd) return false;
   if (SCRATCHPAD_PATH_RE.test(cmd) || ANTIHALL_STATE_DIR_RE.test(cmd)) return true;
+  // A session whose working directory IS the scratchpad writes relative paths there (`python3 scan.py > out.tsv`): scratch, not project work.
+  try { if (SCRATCHPAD_PATH_RE.test(process.cwd() + '/')) return true; } catch (_) { /* no cwd: no hint */ }
   let root;
   try { root = os.tmpdir(); } catch (_) { return false; }
   return typeof root === 'string' && !!root && cmd.indexOf(root) !== -1;

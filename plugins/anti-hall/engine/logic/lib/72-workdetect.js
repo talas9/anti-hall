@@ -45,8 +45,10 @@ var wd = {
     if (wd.re('workdetect.scratchpad_path').test(fp) || wd.re('workdetect.state_dir').test(fp)) return true;
     return wd.underTmp(fp, cx);
   },
-  pathHint: function (cmd, root) {
-    return !!cmd && (wd.re('workdetect.scratchpad_path').test(cmd) || wd.re('workdetect.state_dir').test(cmd) || (!!root && cmd.indexOf(root) >= 0));
+  // A session whose working directory is the scratchpad writes relative paths there (hooks/lib/work-detect.js hasExcludedPathHint).
+  cwdScratch: function (cx) { return !!cx && !!cx.cwd && wd.re('workdetect.scratchpad_path').test(cx.cwd + '/'); },
+  pathHint: function (cmd, root, cx) {
+    return wd.cwdScratch(cx) || !!cmd && (wd.re('workdetect.scratchpad_path').test(cmd) || wd.re('workdetect.state_dir').test(cmd) || (!!root && cmd.indexOf(root) >= 0));
   },
   allPathsExcluded: function (n, cx) {
     var toks = n.split(/\s+/).filter(Boolean);
@@ -118,7 +120,7 @@ var wd = {
       if (!cmd || wd.housekeepingOnly(cmd)) return false;
       var n = wd.neutralize(cmd);
       if (!wd.bashWork(n)) return false;
-      var scratchOnly = wd.pathHint(cmd, cx.tmp) && !wd.re('workdetect.always_work', 'i').test(n) && wd.allPathsExcluded(n, cx);
+      var scratchOnly = wd.pathHint(cmd, cx.tmp, cx) && !wd.re('workdetect.always_work', 'i').test(n) && wd.allPathsExcluded(n, cx);
       return !scratchOnly;
     }
     return false;
