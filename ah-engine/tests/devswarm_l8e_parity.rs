@@ -1,3 +1,12 @@
+#![allow(
+    dead_code,
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::needless_range_loop,
+    clippy::useless_vec,
+    clippy::regex_creation_in_loops,
+    clippy::let_underscore_must_use
+)]
 //! Parity of `inbox tick <id> --child` (lane l8e): `ah-engine mesh inbox tick ... --child` (mesh.engine_writes = on) against the
 //! real `node scripts/devswarm.js inbox tick ... --child`.
 //!

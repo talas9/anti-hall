@@ -371,6 +371,7 @@ fn hints(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>) -> R<Vec<St
 }
 
 /// `computeInstanceNonceCounts(rows, now, freshMs)`: id -> the most nonces alive at once.
+#[allow(clippy::type_complexity)]
 fn instance_counts(st: &MeshStore, now: f64) -> R<HashMap<String, f64>> {
     let window = defaults::num("devswarm_sup.lv_heartbeat_fresh_ms") as f64;
     let gap = defaults::num("devswarm_cli.rr_split_gap_ms") as f64;
@@ -555,6 +556,7 @@ fn archived_rows(e: &Eng, shown: &HashSet<String>) -> R<Vec<Obj>> {
 }
 
 /// `localArchivedAppLive(home, { repoKey })`: workspaces anti-hall archived that the app still shows.
+#[allow(clippy::type_complexity)]
 fn app_still_live(e: &Eng, snap: &Snap) -> R<Vec<(String, String, Option<String>, Option<String>, String)>> {
     let home = e.inv.home.as_path();
     let archived = read_json_dir(&dir_of(home, "devswarm_sup.as_dir_archived"))?;

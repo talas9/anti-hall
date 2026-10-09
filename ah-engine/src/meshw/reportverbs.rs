@@ -947,6 +947,7 @@ fn screenshot_setting_untouched(inv: &Inv) -> bool {
 }
 
 /// One snapshot-and-records gathering of `sync-ui` (`gather()`): `(snapshot, repositoryId, plan, table, descriptor ids)`.
+#[allow(clippy::type_complexity)]
 fn gather_ui(inv: &Inv, titles: &[String]) -> R<(Option<snap::Snap>, Option<String>, OVal, Vec<OVal>)> {
     let file = crate::meshw::ident::app_db_path(&inv.home, &inv.env);
     let snapshot = match &file {

@@ -1,3 +1,12 @@
+#![allow(
+    dead_code,
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::needless_range_loop,
+    clippy::useless_vec,
+    clippy::regex_creation_in_loops,
+    clippy::let_underscore_must_use
+)]
 //! The reconcile port, slice S7 (archived registry rows and twin descriptors), against Node's own functions.
 //!
 //! Every case builds a scratch home, plans with the engine and runs the witness gate: Node's function on one mirror, the engine's

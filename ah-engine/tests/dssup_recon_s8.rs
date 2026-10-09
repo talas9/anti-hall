@@ -1,3 +1,12 @@
+#![allow(
+    dead_code,
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::needless_range_loop,
+    clippy::useless_vec,
+    clippy::regex_creation_in_loops,
+    clippy::let_underscore_must_use
+)]
 //! The reconcile port, slice S8: the four deferred stage wrappers run by the engine item by item
 //! (`devswarm_sup.sweep_tail_mode = engine`) against Node's own `runDeferredStage` on twin homes.
 //!
