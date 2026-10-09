@@ -358,6 +358,7 @@ impl Scratch {
         static N: AtomicUsize = AtomicUsize::new(0);
         // a short base: a daemon's Unix socket path must stay under the platform limit
         let base = if Path::new("/tmp").is_dir() { PathBuf::from("/tmp") } else { std::env::temp_dir() };
+        sweep_dead(&base);
         let d = base.join(format!("ah-par-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
         std::fs::remove_dir_all(&d).ok();
         std::fs::create_dir_all(&d).unwrap();
@@ -376,6 +377,36 @@ impl Drop for Scratch {
             wipe(&self.0);
         }
     }
+}
+
+/// Remove the `ah-par-<tag>-<pid>-<n>` dirs of test processes that are gone: a test killed on its timeout (SIGKILL) never
+/// runs its `Scratch`'s drop, and those dirs (up to ~1.8 GB each) piled up in /tmp. Run once per process, at its first scratch.
+pub fn sweep_dead(base: &Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| sweep_dead_now(base));
+}
+
+pub fn sweep_dead_now(base: &Path) {
+    for e in std::fs::read_dir(base).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        if let Some(pid) = scratch_pid(&n)
+            && pid != std::process::id() as i32
+            && !crate::common::alive(pid)
+        {
+            wipe(&e.path());
+        }
+    }
+}
+
+/// The pid in a scratch dir name `ah-par-<tag>-<pid>-<n>`.
+pub fn scratch_pid(name: &str) -> Option<i32> {
+    let rest = name.strip_prefix("ah-par-")?;
+    let mut it = rest.rsplitn(3, '-');
+    let n = it.next()?;
+    let pid = it.next()?;
+    it.next()?;
+    n.parse::<u64>().ok()?;
+    pid.parse::<i32>().ok().filter(|p| *p > 1)
 }
 
 /// Remove a tree, giving permissions back first (a scenario may have taken away its own).

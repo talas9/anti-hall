@@ -1035,18 +1035,18 @@
 {"code":"2","err":"⛔ anti-hall · merge-gate: auto-merge blocked: your recent output flagged a deliverable as pending/unverified (\"pending owner\").\nWhy: A self-issued hedge blocks auto-merge (false-done backstop).\nDo instead: verify it against its agreed criterion or get owner sign-off, then merge.\nOverride (only if the user explicitly asked): set ANTIHALL_MERGE_GATE=off, or skip merge-gate","id":"ctx-optStoredFlat-0#0","in":"6cb78eeaabe468c2","out":""}
 {"code":"0","err":"","id":"ctx-optStoredFlat-1#0","in":"d824c4acfba14325","out":""}
 {"code":"0","err":"","id":"ctx-optStoredFlat-2#0","in":"c13b57d9ba707171","out":""}
-{"code":"0","err":"","id":"ctx-skip-0#0","in":"ec17df9ee2fa2391","out":""}
-{"code":"0","err":"","id":"ctx-skip-1#0","in":"3ae0cc9d1960e6d3","out":""}
-{"code":"0","err":"","id":"ctx-skip-2#0","in":"7d5629f79c0f6222","out":""}
-{"code":"0","err":"","id":"ctx-skipAll-0#0","in":"704b68ac61470348","out":""}
-{"code":"0","err":"","id":"ctx-skipAll-1#0","in":"3839871fb68e2c25","out":""}
-{"code":"0","err":"","id":"ctx-skipAll-2#0","in":"2a2a9571cedc8d7a","out":""}
-{"code":"2","err":"⛔ anti-hall · merge-gate: auto-merge blocked: your recent output flagged a deliverable as pending/unverified (\"pending owner\").\nWhy: A self-issued hedge blocks auto-merge (false-done backstop).\nDo instead: verify it against its agreed criterion or get owner sign-off, then merge.\nOverride (only if the user explicitly asked): set ANTIHALL_MERGE_GATE=off, or skip merge-gate","id":"ctx-skipExpired-0#0","in":"86ee78fc97ea2bff","out":""}
-{"code":"0","err":"","id":"ctx-skipExpired-1#0","in":"745bc189bf98e2ba","out":""}
-{"code":"0","err":"","id":"ctx-skipExpired-2#0","in":"53c5a5dfa9bab36e","out":""}
-{"code":"2","err":"⛔ anti-hall · merge-gate: auto-merge blocked: your recent output flagged a deliverable as pending/unverified (\"pending owner\").\nWhy: A self-issued hedge blocks auto-merge (false-done backstop).\nDo instead: verify it against its agreed criterion or get owner sign-off, then merge.\nOverride (only if the user explicitly asked): set ANTIHALL_MERGE_GATE=off, or skip merge-gate","id":"ctx-skipOther-0#0","in":"53608162e97a4d99","out":""}
-{"code":"0","err":"","id":"ctx-skipOther-1#0","in":"88ce1285bc98574f","out":""}
-{"code":"0","err":"","id":"ctx-skipOther-2#0","in":"5ffbcd60f17f3a6a","out":""}
+{"code":"0","err":"","id":"ctx-skip-0#0","in":"8540240c30547b64","out":""}
+{"code":"0","err":"","id":"ctx-skip-1#0","in":"de0975e6ed594036","out":""}
+{"code":"0","err":"","id":"ctx-skip-2#0","in":"f4321c85ce123b9f","out":""}
+{"code":"0","err":"","id":"ctx-skipAll-0#0","in":"a8879b59cf04d570","out":""}
+{"code":"0","err":"","id":"ctx-skipAll-1#0","in":"dbf6a7e0c8d3578e","out":""}
+{"code":"0","err":"","id":"ctx-skipAll-2#0","in":"3aebd435d9510958","out":""}
+{"code":"2","err":"⛔ anti-hall · merge-gate: auto-merge blocked: your recent output flagged a deliverable as pending/unverified (\"pending owner\").\nWhy: A self-issued hedge blocks auto-merge (false-done backstop).\nDo instead: verify it against its agreed criterion or get owner sign-off, then merge.\nOverride (only if the user explicitly asked): set ANTIHALL_MERGE_GATE=off, or skip merge-gate","id":"ctx-skipExpired-0#0","in":"a8879b59cf04d570","out":""}
+{"code":"0","err":"","id":"ctx-skipExpired-1#0","in":"dbf6a7e0c8d3578e","out":""}
+{"code":"0","err":"","id":"ctx-skipExpired-2#0","in":"3aebd435d9510958","out":""}
+{"code":"2","err":"⛔ anti-hall · merge-gate: auto-merge blocked: your recent output flagged a deliverable as pending/unverified (\"pending owner\").\nWhy: A self-issued hedge blocks auto-merge (false-done backstop).\nDo instead: verify it against its agreed criterion or get owner sign-off, then merge.\nOverride (only if the user explicitly asked): set ANTIHALL_MERGE_GATE=off, or skip merge-gate","id":"ctx-skipOther-0#0","in":"5846c28895b299da","out":""}
+{"code":"0","err":"","id":"ctx-skipOther-1#0","in":"9396b50de0630be5","out":""}
+{"code":"0","err":"","id":"ctx-skipOther-2#0","in":"6b3c7cfa2955e6f9","out":""}
 {"code":"2","err":"⛔ anti-hall · merge-gate: auto-merge blocked: your recent output flagged a deliverable as pending/unverified (\"pending owner\").\nWhy: A self-issued hedge blocks auto-merge (false-done backstop).\nDo instead: verify it against its agreed criterion or get owner sign-off, then merge.\nOverride (only if the user explicitly asked): set ANTIHALL_MERGE_GATE=off, or skip merge-gate","id":"ctx-strOn-0#0","in":"72540ee5b29a4f79","out":""}
 {"code":"0","err":"","id":"ctx-strOn-1#0","in":"d5922cd51e3947d1","out":""}
 {"code":"0","err":"","id":"ctx-strOn-2#0","in":"88ed3d04342ae611","out":""}

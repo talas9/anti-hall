@@ -1,5 +1,5 @@
 {
-  "cases": 12555,
+  "cases": 12582,
   "files": {
     "plugins/anti-hall/.claude-plugin/plugin.json": "b582679169128b1329e74eb2d3fec89db7f4309d277a6ee2f37d423f12a2c644",
     "plugins/anti-hall/codex/hooks/hooks.json": "4415ec8635631746dc52534b30f79639d8c50178e51833ec2af0154ed2a5f595",
@@ -156,12 +156,5 @@
     "git": "git version 2.54.0 (Apple Git-157)",
     "node": "v24.14.0"
   },
-  "volatile": [
-    "lock-foldLockStale",
-    "lock-metricsStale",
-    "lock-sessionStale",
-    "~group-end-41",
-    "~group-end-45",
-    "~group-end-47"
-  ]
+  "volatile": []
 }

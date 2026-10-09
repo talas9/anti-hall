@@ -226,7 +226,7 @@ impl Norm {
         }
         self.subs.push((raw, format!("{{{tok}}}")));
         // longest first: a home inside the scratch root is replaced before the root
-        self.subs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        self.subs.sort_by_key(|s| std::cmp::Reverse(s.0.len()));
         self
     }
     /// A one-way mask (the masked text cannot be restored on replay, so use it only for text the comparison masks too).

@@ -766,198 +766,198 @@
 {"code":"0","err":"","id":"ds-dson-93#0","in":"0d81113a32e5acdc","out":""}
 {"code":"0","err":"","id":"ds-dson-94#0","in":"e0ae5701fa157272","out":""}
 {"code":"0","err":"","id":"ds-dson-95#0","in":"ffe1881c2fff7983","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-0#0","in":"ac8b671f599ff342","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-1#0","in":"a241e8957cbce0f5","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-10#0","in":"e06ffb7053789f92","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-11#0","in":"cdb0f7344fe0cc7f","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-12#0","in":"17b6ac33ecfba161","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipread-13#0","in":"ff797361a27911f2","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-14#0","in":"1924a02579402e7d","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-15#0","in":"318099c5d81ce0ce","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipread-16#0","in":"f1e7811d022a7660","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-17#0","in":"0051c24adc28b533","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-18#0","in":"617016e5ce8f8b16","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-19#0","in":"e3e52be66291c5f6","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipread-2#0","in":"9f271435ae473779","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-20#0","in":"687bb7340d0e15d3","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-21#0","in":"a0d9d1f6f3ddb5b5","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-22#0","in":"1e6415bb88728f63","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipread-23#0","in":"9ecd7bf0a2061b27","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-24#0","in":"a5c4fc9d9f1cdc35","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-25#0","in":"2de871e8534ebd8e","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-26#0","in":"66b3ec3ff70e4385","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-27#0","in":"4c5cb1f632b5d051","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-28#0","in":"e1d094ef7a3be09b","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-29#0","in":"57f64a3c5644c2eb","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-3#0","in":"18fdd325de67fe08","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-30#0","in":"d1fa01c3cea94803","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-31#0","in":"d973b026c706978c","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-32#0","in":"e508b3b4a912dc68","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-33#0","in":"0bde6a5cab118658","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-34#0","in":"08a2995283f3864c","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-35#0","in":"d1663f936e854f39","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-36#0","in":"679075661ef60fe0","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-37#0","in":"ac5a0f36a6b17b45","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-38#0","in":"bb5124d7b5a6b773","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-39#0","in":"2f83dd1f14ce7335","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-4#0","in":"6d6d2d068d77a4d3","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-40#0","in":"355d7887c4df32ec","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-41#0","in":"0d055bb34105ac7b","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-42#0","in":"16434e74814969fb","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-43#0","in":"0f7b7620bdc98cc8","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-44#0","in":"87a75545d728bb0b","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-45#0","in":"df1ab359f09514ce","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-46#0","in":"fe5cefa30f0a95cc","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-47#0","in":"e36b27bd21f10ad3","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-48#0","in":"3bf7564e2dc742d3","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-49#0","in":"1c8eaafb530dc961","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-5#0","in":"99db1af3620aaa3a","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-50#0","in":"1382b6752b9589e7","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-51#0","in":"6aa59bee84a21e03","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-52#0","in":"deff135672f582d8","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-53#0","in":"959e748f58f3476b","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-54#0","in":"e0301cc928f74b7a","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-55#0","in":"3fe9703bc9a45b3a","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-56#0","in":"f43fcbaf80f9207b","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-57#0","in":"221a87c8f5cf9746","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-58#0","in":"e0e9197c0b10377b","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-59#0","in":"f7f0378a64c6df0b","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-6#0","in":"e01656b5af9b17b9","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-60#0","in":"b1beffb06173c07a","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-61#0","in":"56d1d87805db0f75","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-62#0","in":"10aee99c2fd152d3","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-63#0","in":"29fb8ed65a4f693d","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-64#0","in":"a6ae7a8f6ba2d98d","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-65#0","in":"289846c4410dacac","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-66#0","in":"b32197b2ba0b4910","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-67#0","in":"1ca6fb8768eb5f1a","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-68#0","in":"2799f22e48f51187","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-69#0","in":"e32f1ff04cf70647","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-7#0","in":"86e46fd7ce9bd087","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipread-70#0","in":"fcff0fd849f14b11","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-71#0","in":"9b9a1076c1f78470","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-72#0","in":"16d9b91e2f5c71d1","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-73#0","in":"be2f18b31171d2d8","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-74#0","in":"0b696fe9b34761e6","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-75#0","in":"9cbce27b6bd08082","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-76#0","in":"9d1d7f23cb928f32","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-77#0","in":"8d95797264a39ba3","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-78#0","in":"37c51efc4eedaac1","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-79#0","in":"fef3f331da124f6b","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-8#0","in":"412840f44e13104a","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipread-80#0","in":"d8a5a87f5f449048","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-81#0","in":"0a9bad6139e2d0cf","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-82#0","in":"3ce9ec8e9f636d81","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-83#0","in":"0d5b7b427580be61","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-84#0","in":"5f15a8715f1c94f3","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-85#0","in":"6f20cd81108a874e","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-86#0","in":"eb24b0e9f7bc3815","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-87#0","in":"f69f7094d1da00ed","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-88#0","in":"c0bae44d3e819982","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-89#0","in":"3bf8ba6e2a7b4124","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-9#0","in":"0ff893971681e0bd","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-90#0","in":"af3197115d0576e7","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-91#0","in":"1db25768c453f768","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-92#0","in":"3622b3f1462131b0","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-93#0","in":"1eaf42c41181c841","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-94#0","in":"383cd95883d1d6f2","out":""}
-{"code":"0","err":"","id":"ds-dsskipread-95#0","in":"620d20bb8fc72739","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-0#0","in":"19234b0e1c63c013","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-1#0","in":"0df4f8a687a54539","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-10#0","in":"a5f52692265cefcb","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-11#0","in":"710f175701278131","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipsend-12#0","in":"436938ef25f55f80","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-13#0","in":"ba12e83e61e07fa3","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-14#0","in":"b6f8476dcba018ce","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipsend-15#0","in":"db0e1dd7a655279b","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-16#0","in":"3c6383e994259b77","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-17#0","in":"a4931769bba9f1a1","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-18#0","in":"ce36c886d7260451","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipsend-19#0","in":"549fba7214eef78e","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-2#0","in":"3da398c181a7dc00","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-20#0","in":"f45aecb7aa899f67","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-21#0","in":"4634fb0c1ae36702","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipsend-22#0","in":"b5f072fe255e47ba","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-23#0","in":"1b0e582fa5d9f779","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipsend-24#0","in":"d65424bb414ad246","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-25#0","in":"a08f409867649e11","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-26#0","in":"8204a1d821cb5035","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-27#0","in":"1ea9c07f9e9975be","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-28#0","in":"542d8c4cce3be37f","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipsend-29#0","in":"284a5e49e324878a","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-3#0","in":"286117aae232eff7","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-30#0","in":"002ab8a91468c862","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-31#0","in":"425d365f9dab996e","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-32#0","in":"441dc9efecc9a7d3","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipsend-33#0","in":"21637be880ccb9ac","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-34#0","in":"48c711f34e8fe2d5","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-35#0","in":"f8560ddde3286aaf","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipsend-36#0","in":"84fc7c5f79759863","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-37#0","in":"582d7c879dde275d","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-38#0","in":"ea58a539087a06c7","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-39#0","in":"6bbb21a24f4600a4","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-4#0","in":"e21a4d0294f445e1","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-40#0","in":"09d89c5d9a3e0a5e","out":""}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-41#0","in":"5a1e2355716e9252","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-42#0","in":"cf90ecfa193bc310","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-43#0","in":"1aa975c2d3e478c6","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-44#0","in":"c174ee490707a2e3","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
-{"code":"0","err":"","id":"ds-dsskipsend-45#0","in":"d190156c5e832e39","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-46#0","in":"2e9def92d06840e0","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-47#0","in":"c43b1557ec2cda87","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-48#0","in":"0b94817ad73df8e8","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-49#0","in":"8afc8e060efda777","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-5#0","in":"5f76ababda5cf257","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-50#0","in":"73172fc7a41b91d1","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-51#0","in":"07fee7e6d6c0def9","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-52#0","in":"5afc41e640523b7f","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-53#0","in":"f67916632feb5214","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-54#0","in":"f4c6262511d871a0","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-55#0","in":"9d5ec2d2d464b107","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-56#0","in":"63aff20dda6b42c0","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-57#0","in":"a7d31a3f4e747fb7","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-58#0","in":"90135b11ea374080","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-59#0","in":"34960e12fc5c5014","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-6#0","in":"adf6bb0e74e1a769","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-60#0","in":"f887fbd1f181d012","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-61#0","in":"53bdb46b432a001d","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-62#0","in":"a8647c5aa3aebff0","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-63#0","in":"1da76b9f25d31fac","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-64#0","in":"735b87fc6521f73a","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-65#0","in":"781550ffdea04ea4","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-66#0","in":"3f3cd9603d57aff4","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-67#0","in":"1570cbb6a5c91778","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-68#0","in":"1c545557f4d5ae6f","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-69#0","in":"cc109cb1b1de64c1","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-7#0","in":"3b7d1cdf3bc1b764","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-70#0","in":"19ca30e84850a7ec","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-71#0","in":"3193dbd9a88235d8","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-72#0","in":"789a00d1105a4f93","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-73#0","in":"2e69459c47aa1634","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-74#0","in":"84748a35b094e86d","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-75#0","in":"22e7847941727992","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-76#0","in":"7d1fdb094fe6e0d9","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-77#0","in":"2f01ab547fa1209f","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-78#0","in":"74ea8f0d470ace02","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-79#0","in":"27d8e304ddf08ede","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-8#0","in":"b50e047d19fab3be","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-80#0","in":"dde1f9c940910177","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-81#0","in":"2848e454aeae44b5","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-82#0","in":"ca59a39d355048e9","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-83#0","in":"5de7df08ec552d09","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-84#0","in":"4cdf8facc6c07b43","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-85#0","in":"7ff8495dfebb7088","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-86#0","in":"2e97d0e9590911f7","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-87#0","in":"887067b76fe4009a","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-88#0","in":"6d009516d652dec4","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-89#0","in":"8a2ef70a3b60d531","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-9#0","in":"a20246950d0f5668","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-90#0","in":"4fa49bf7fdef5a4b","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-91#0","in":"f4ae011251315d8f","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-92#0","in":"c918d65bd766081d","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-93#0","in":"e16f8d4d71a36343","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-94#0","in":"48de03bd4e3c19e0","out":""}
-{"code":"0","err":"","id":"ds-dsskipsend-95#0","in":"be658befa37230d2","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-0#0","in":"0e02ea2064c9fb14","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-1#0","in":"9719b5495b720e48","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-10#0","in":"4ac6882e541f1ef5","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-11#0","in":"7227d22febe4fa38","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-12#0","in":"44d4438fc16d941c","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipread-13#0","in":"bacdc788ffc6aff1","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-14#0","in":"20dac7cd06041e9d","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-15#0","in":"02ca7cd098db8dc9","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipread-16#0","in":"52d1af8529690fd5","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-17#0","in":"7a8b8e9a5456ef35","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-18#0","in":"a13405ae4eec4b49","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-19#0","in":"ef56e0284e864cc1","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipread-2#0","in":"b471024fe4df1e02","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-20#0","in":"62e972999c98cf12","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-21#0","in":"6b84dda54a384db6","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-22#0","in":"5524d58e33c7f906","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipread-23#0","in":"f1bd228e6f3510d6","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-24#0","in":"672e9342e0dc31b1","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-25#0","in":"89db5390c41223cc","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-26#0","in":"a40caeb64fed308b","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-27#0","in":"c5e1f202d7f815ef","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-28#0","in":"8abd9356aba43b27","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-29#0","in":"afa36ac0c09c93d5","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-3#0","in":"ecdf823bb538dc76","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-30#0","in":"a46f5c58a54b9d23","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-31#0","in":"a48177fee21c66b7","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-32#0","in":"5a23002c208e8487","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-33#0","in":"701177431c9517a3","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-34#0","in":"a131f0fd7f44c2da","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-35#0","in":"26045440606af096","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-36#0","in":"bcd2f038a550872e","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-37#0","in":"ea43d84d2ca14710","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-38#0","in":"2397ec3ef399280b","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-39#0","in":"509aff294994e776","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-4#0","in":"ce158445e119c174","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-40#0","in":"35e7eb734bac12f2","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-41#0","in":"6aaaa43623027fdf","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-42#0","in":"b23fe61063ce128d","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-43#0","in":"71d7c78996ccfb13","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-44#0","in":"94616b887de49a92","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-45#0","in":"5687b1a963965b5c","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-46#0","in":"17625350b35b22f4","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-47#0","in":"718a51de5c09550c","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-48#0","in":"2749e88020e66f67","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-49#0","in":"ddebfc13dbe5cfb8","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-5#0","in":"30a3f353bae493f9","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-50#0","in":"c928232ccb781113","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-51#0","in":"1612b6eab9c38439","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-52#0","in":"e478b86839d896ed","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-53#0","in":"e9c7f2c0c9eddf25","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-54#0","in":"8f98d34399e1e59b","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-55#0","in":"ad5007b8ed774e3c","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-56#0","in":"5295f8d2cfca02cc","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-57#0","in":"54a7888496aa32cb","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-58#0","in":"52a7df3e17b90433","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-59#0","in":"e9609b7ffe1edd5c","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-6#0","in":"478dc6a830bfc759","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-60#0","in":"191b60b0fad2e8e4","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-61#0","in":"deefed1e620f821f","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-62#0","in":"f3c7b770e9107bda","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-63#0","in":"905088b6eac425c5","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-64#0","in":"5b34fb301b528440","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-65#0","in":"3ae229aac2b3c3f6","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-66#0","in":"787d6b344cf4f681","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-67#0","in":"b85de68efd111d0c","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-68#0","in":"bb5c82bae8cee87c","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-69#0","in":"7ab0dcd7bb513002","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-7#0","in":"0b7c53c8f07f3c7b","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-child` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipread-70#0","in":"2bffef4dcaf21c1b","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-71#0","in":"5004626fe97144fd","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-72#0","in":"766d5fb6193c27c3","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-73#0","in":"01c9c766c5954677","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-74#0","in":"c631ea0670fb1d3b","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-75#0","in":"320bce00acd1cfe0","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-76#0","in":"d724d3cdd40eb9e8","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-77#0","in":"9d7faa337b8a35db","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-78#0","in":"af23d920bb52105b","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-79#0","in":"4c6a87c9a9016e86","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \"<text>\"` to report status.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipread-8#0","in":"7f561647ba809c34","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-mesh-only: `hivecontrol workspace message-parent` is blocked.\\nWhy: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.\\nDo instead: `node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary \\\"<text>\\\"` to report status.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipread-80#0","in":"3ced2ed91d45c339","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-81#0","in":"50cf9ee49ab7a971","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-82#0","in":"8888614cf4c8e4fc","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-83#0","in":"c1ba37b0071b1646","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-84#0","in":"74c00cfd404a8259","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-85#0","in":"0bec2f2907330c43","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-86#0","in":"598b579430b77acc","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-87#0","in":"00d9b5ece96bba17","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-88#0","in":"bf9bdf323acdc3da","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-89#0","in":"b8def936c445b3c5","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-9#0","in":"5cf4d4062246bfd5","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-90#0","in":"f1893353dfb91f5b","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-91#0","in":"89a0415f02b5d86d","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-92#0","in":"99e713b05cc77095","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-93#0","in":"bbc15cc59ba988c5","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-94#0","in":"ae1c19454ebc0475","out":""}
+{"code":"0","err":"","id":"ds-dsskipread-95#0","in":"6dba387aee897507","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-0#0","in":"64541c5f003a70fe","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-1#0","in":"bab6460c6c22b1e9","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-10#0","in":"6a3cd6916188ef74","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-11#0","in":"24354bb612f69b2e","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipsend-12#0","in":"b7a243119582ef60","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-13#0","in":"ec8a33eb2ec63e5a","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-14#0","in":"337f89b2c42126be","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipsend-15#0","in":"86d5f4b8550fc7f5","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-16#0","in":"02a7bf8aa399d70b","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-17#0","in":"73858f52d22c0ed9","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-18#0","in":"a2c635579104ec52","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipsend-19#0","in":"935b89832820f513","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-2#0","in":"a643bd82f2425587","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-20#0","in":"2cbeff4494f28aea","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-21#0","in":"359f0c5b0e71db20","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace monitor` is blocked.\\nWhy: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipsend-22#0","in":"d5eee7a25ab5d1a7","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-23#0","in":"bc0143158e9609fd","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipsend-24#0","in":"65ad753b0c71f124","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-25#0","in":"f4ea73b58231652d","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-26#0","in":"41d6a98f44174fe6","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-27#0","in":"174a75604d5e3b21","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-28#0","in":"63eb36ed129be6dd","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipsend-29#0","in":"67b883c27c9dfa2d","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely","id":"ds-dsskipsend-3#0","in":"f5008db81edf574b","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-read-guard: `hivecontrol workspace read-messages` is blocked.\\nWhy: It mark-reads and drains the native queue, losing messages the durable inbox still needs.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.\\nAllowed here: `message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-30#0","in":"e0d8e09bb4fd5118","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-31#0","in":"c6ab4965031de6dc","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-32#0","in":"b95b05f436570b90","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipsend-33#0","in":"4d995f0044730c03","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-34#0","in":"c56be0b874b508dc","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-35#0","in":"313ae5a3f3705d43","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipsend-36#0","in":"9488679e896267fe","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-37#0","in":"5449172e86550346","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-38#0","in":"15808ac01a630645","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-39#0","in":"9c0abf7ac2d24171","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-4#0","in":"79d7d4c3a8428e7f","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-40#0","in":"cb8d20e590ef1861","out":""}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-41#0","in":"6a44534f5af555f3","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-42#0","in":"703133b723463d78","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-43#0","in":"9d9b73d6bb0f0d9a","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"2","err":"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely","id":"ds-dsskipsend-44#0","in":"a16c243e16da9366","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · devswarm-inbox-read: a shell read of the raw DevSwarm inbox file is blocked.\\nWhy: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.\\nDo instead: `devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.\\nOverride (only if the user explicitly asked): set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely\"}"}
+{"code":"0","err":"","id":"ds-dsskipsend-45#0","in":"df5fd59cf48691c2","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-46#0","in":"f5e1be0b82c9181a","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-47#0","in":"78202dfba722f945","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-48#0","in":"a8fe84f6ab29e07d","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-49#0","in":"3835de15efa9e63d","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-5#0","in":"9e8ecf81e084828d","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-50#0","in":"038b59f4f019069d","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-51#0","in":"a2c7f7f570793a7d","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-52#0","in":"fe046fee68b56177","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-53#0","in":"699a7913f728506b","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-54#0","in":"82ce70aeea0b5544","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-55#0","in":"e82fa8cd19ac94af","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-56#0","in":"c9e2622ae09ca9ad","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-57#0","in":"28235cfe000dd675","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-58#0","in":"da917b62ef8a151e","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-59#0","in":"41abe671ef59c5a8","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-6#0","in":"173d7bc3dc35eac5","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-60#0","in":"afd62627647cf3ba","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-61#0","in":"ca4642930f100e96","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-62#0","in":"c02797f605d13370","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-63#0","in":"d26bd0f303f43fa8","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-64#0","in":"f7395a12429acb6f","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-65#0","in":"af25a706a6bd6ada","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-66#0","in":"e80f62316c311853","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-67#0","in":"07f52a4aa98efaa0","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-68#0","in":"8935ae208ec72693","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-69#0","in":"d5a4967d0a508e78","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-7#0","in":"22f5d5a895f0f90f","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-70#0","in":"039d59c94a33afdc","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-71#0","in":"4c1e2f7b2cb4fb88","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-72#0","in":"f112c9c64d3fe7db","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-73#0","in":"165df13933eeba2f","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-74#0","in":"0da01f6c124bfbd9","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-75#0","in":"e1a4bf5bea1bb085","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-76#0","in":"174f7b4e8929bd8a","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-77#0","in":"eeb9ae043468e694","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-78#0","in":"7161418b9fe26b58","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-79#0","in":"8695273c9a1ef346","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-8#0","in":"83e76fc737733d1b","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-80#0","in":"7ecc558445855f09","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-81#0","in":"afbd5f483e5ff71f","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-82#0","in":"354a4726b3c11a13","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-83#0","in":"d7583d57d8cf76f6","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-84#0","in":"35d7251a44e7acff","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-85#0","in":"950f5df6d2e3f47a","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-86#0","in":"bb9fe794a78ec5c2","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-87#0","in":"901e0b58c13a53a4","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-88#0","in":"a16ff970a93e8944","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-89#0","in":"2b29eba09493b8bf","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-9#0","in":"64b3e7afe1baa472","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-90#0","in":"091a6d4c6201c6ea","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-91#0","in":"c2aaaa4e2d577a68","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-92#0","in":"1d8bce941d66e617","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-93#0","in":"bd5f1c5089549792","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-94#0","in":"4f1f96341db82c3b","out":""}
+{"code":"0","err":"","id":"ds-dsskipsend-95#0","in":"817a6f58410d6cdd","out":""}
 {"code":"0","err":"","id":"ds-mailallow-0#0","in":"6c5844bae31830f7","out":""}
 {"code":"0","err":"","id":"ds-mailallow-1#0","in":"987b5a7277db8f41","out":""}
 {"code":"0","err":"","id":"ds-mailallow-10#0","in":"59dcc29adcc7953e","out":""}
@@ -1054,102 +1054,102 @@
 {"code":"0","err":"","id":"ds-mailallow-93#0","in":"5890bb0d721052c8","out":""}
 {"code":"0","err":"","id":"ds-mailallow-94#0","in":"ce35a0d5c3ade707","out":""}
 {"code":"0","err":"","id":"ds-mailallow-95#0","in":"4f72fd820be11fab","out":""}
-{"code":"0","err":"","id":"ds-mailskip-0#0","in":"b9fc05f9f6b3eb4b","out":""}
-{"code":"0","err":"","id":"ds-mailskip-1#0","in":"198974bd9f180ba0","out":""}
-{"code":"0","err":"","id":"ds-mailskip-10#0","in":"13e92f4dcf78253b","out":""}
-{"code":"0","err":"","id":"ds-mailskip-11#0","in":"0460a30c459d0922","out":""}
-{"code":"0","err":"","id":"ds-mailskip-12#0","in":"feda8a66672d5632","out":""}
-{"code":"0","err":"","id":"ds-mailskip-13#0","in":"8625b3cfd4abc484","out":""}
-{"code":"0","err":"","id":"ds-mailskip-14#0","in":"b3e30bb77c8b77ae","out":""}
-{"code":"0","err":"","id":"ds-mailskip-15#0","in":"b54321befe02a838","out":""}
-{"code":"0","err":"","id":"ds-mailskip-16#0","in":"1331e71f5b3c90b1","out":""}
-{"code":"0","err":"","id":"ds-mailskip-17#0","in":"b102bec8b94e33b5","out":""}
-{"code":"0","err":"","id":"ds-mailskip-18#0","in":"5fa720282e9f9ade","out":""}
-{"code":"0","err":"","id":"ds-mailskip-19#0","in":"e7d1b0c265aed406","out":""}
-{"code":"0","err":"","id":"ds-mailskip-2#0","in":"9f27064b0535a208","out":""}
-{"code":"0","err":"","id":"ds-mailskip-20#0","in":"e0235729352dd9a4","out":""}
-{"code":"0","err":"","id":"ds-mailskip-21#0","in":"13159773112ce11e","out":""}
-{"code":"0","err":"","id":"ds-mailskip-22#0","in":"b5f6897355bdaed2","out":""}
-{"code":"0","err":"","id":"ds-mailskip-23#0","in":"9cd240ef8e5db8f1","out":""}
-{"code":"0","err":"","id":"ds-mailskip-24#0","in":"04c23aefcaff5991","out":""}
-{"code":"0","err":"","id":"ds-mailskip-25#0","in":"69532ae95b2b8f28","out":""}
-{"code":"0","err":"","id":"ds-mailskip-26#0","in":"922978b8b7cf0192","out":""}
-{"code":"0","err":"","id":"ds-mailskip-27#0","in":"a4667a0e5d70d019","out":""}
-{"code":"0","err":"","id":"ds-mailskip-28#0","in":"dd00cf95b2a89280","out":""}
-{"code":"0","err":"","id":"ds-mailskip-29#0","in":"226bf6ad9fed8e65","out":""}
-{"code":"0","err":"","id":"ds-mailskip-3#0","in":"45f8f4129f7f73dc","out":""}
-{"code":"0","err":"","id":"ds-mailskip-30#0","in":"a26ea298cbbbacc4","out":""}
-{"code":"0","err":"","id":"ds-mailskip-31#0","in":"0bcfd9e823869b71","out":""}
-{"code":"0","err":"","id":"ds-mailskip-32#0","in":"79002679fa5ad4df","out":""}
-{"code":"0","err":"","id":"ds-mailskip-33#0","in":"e3bf6d5e9435288b","out":""}
-{"code":"0","err":"","id":"ds-mailskip-34#0","in":"e83caf9221b1c007","out":""}
-{"code":"0","err":"","id":"ds-mailskip-35#0","in":"1d7ccb1832e6270e","out":""}
-{"code":"0","err":"","id":"ds-mailskip-36#0","in":"828e92a8ecf737b5","out":""}
-{"code":"0","err":"","id":"ds-mailskip-37#0","in":"637f5e0ee4e4dae2","out":""}
-{"code":"0","err":"","id":"ds-mailskip-38#0","in":"7fba128db0975fed","out":""}
-{"code":"0","err":"","id":"ds-mailskip-39#0","in":"4c22b100ec6e109f","out":""}
-{"code":"0","err":"","id":"ds-mailskip-4#0","in":"384a420aa40baa09","out":""}
-{"code":"0","err":"","id":"ds-mailskip-40#0","in":"0bdd623e73ab86d2","out":""}
-{"code":"0","err":"","id":"ds-mailskip-41#0","in":"41e19316a1374836","out":""}
-{"code":"0","err":"","id":"ds-mailskip-42#0","in":"e872413f913d62b6","out":""}
-{"code":"0","err":"","id":"ds-mailskip-43#0","in":"801b88efe3996db5","out":""}
-{"code":"0","err":"","id":"ds-mailskip-44#0","in":"3a9e9cb38d0b9714","out":""}
-{"code":"0","err":"","id":"ds-mailskip-45#0","in":"e403466d3c8c9782","out":""}
-{"code":"0","err":"","id":"ds-mailskip-46#0","in":"ff97b7f6ac780b49","out":""}
-{"code":"0","err":"","id":"ds-mailskip-47#0","in":"8c8ed0f1fc459daa","out":""}
-{"code":"0","err":"","id":"ds-mailskip-48#0","in":"a8827358060ebbdc","out":""}
-{"code":"0","err":"","id":"ds-mailskip-49#0","in":"0b6a9ddff9fbbece","out":""}
-{"code":"0","err":"","id":"ds-mailskip-5#0","in":"8b396ced979379b0","out":""}
-{"code":"0","err":"","id":"ds-mailskip-50#0","in":"ac7084b73ef1c4fb","out":""}
-{"code":"0","err":"","id":"ds-mailskip-51#0","in":"82b05c4c4591de71","out":""}
-{"code":"0","err":"","id":"ds-mailskip-52#0","in":"1612c720f1af3c9c","out":""}
-{"code":"0","err":"","id":"ds-mailskip-53#0","in":"c92fab9696a0b6c2","out":""}
-{"code":"0","err":"","id":"ds-mailskip-54#0","in":"3d37820bf41786d8","out":""}
-{"code":"0","err":"","id":"ds-mailskip-55#0","in":"ab85f950c63026fa","out":""}
-{"code":"0","err":"","id":"ds-mailskip-56#0","in":"ee41edb2c22daba1","out":""}
-{"code":"0","err":"","id":"ds-mailskip-57#0","in":"7ea9c943dfc8b1ba","out":""}
-{"code":"0","err":"","id":"ds-mailskip-58#0","in":"83fea53712b65b8e","out":""}
-{"code":"0","err":"","id":"ds-mailskip-59#0","in":"a4e67683b1861271","out":""}
-{"code":"0","err":"","id":"ds-mailskip-6#0","in":"e0a72131604529b4","out":""}
-{"code":"0","err":"","id":"ds-mailskip-60#0","in":"6d8c2b96999b0f7c","out":""}
-{"code":"0","err":"","id":"ds-mailskip-61#0","in":"cd4d57157ba7f9d9","out":""}
-{"code":"0","err":"","id":"ds-mailskip-62#0","in":"cfc855a91f714aad","out":""}
-{"code":"0","err":"","id":"ds-mailskip-63#0","in":"92ad9cd3de83486f","out":""}
-{"code":"0","err":"","id":"ds-mailskip-64#0","in":"1e32dcc7aa57d860","out":""}
-{"code":"0","err":"","id":"ds-mailskip-65#0","in":"0e600ca94c8c1484","out":""}
-{"code":"0","err":"","id":"ds-mailskip-66#0","in":"ba5b4f7059e363a6","out":""}
-{"code":"0","err":"","id":"ds-mailskip-67#0","in":"97c0d3b6374936ea","out":""}
-{"code":"0","err":"","id":"ds-mailskip-68#0","in":"63fa96c5b3605c34","out":""}
-{"code":"0","err":"","id":"ds-mailskip-69#0","in":"89ab370d70bf68b2","out":""}
-{"code":"0","err":"","id":"ds-mailskip-7#0","in":"23c71b2481651abd","out":""}
-{"code":"0","err":"","id":"ds-mailskip-70#0","in":"b37aa358ac40609c","out":""}
-{"code":"0","err":"","id":"ds-mailskip-71#0","in":"437db5a331618556","out":""}
-{"code":"0","err":"","id":"ds-mailskip-72#0","in":"2220a3d583784c0a","out":""}
-{"code":"0","err":"","id":"ds-mailskip-73#0","in":"4495e8bb7d0f8b14","out":""}
-{"code":"0","err":"","id":"ds-mailskip-74#0","in":"ae7f2ceec292e6b1","out":""}
-{"code":"0","err":"","id":"ds-mailskip-75#0","in":"dfd9c632d23a81f9","out":""}
-{"code":"0","err":"","id":"ds-mailskip-76#0","in":"5e63aeddc38f4767","out":""}
-{"code":"0","err":"","id":"ds-mailskip-77#0","in":"9dc6d3b90b598ab4","out":""}
-{"code":"0","err":"","id":"ds-mailskip-78#0","in":"0b3e859068bb2eb1","out":""}
-{"code":"0","err":"","id":"ds-mailskip-79#0","in":"03e5b3dccddd80fc","out":""}
-{"code":"0","err":"","id":"ds-mailskip-8#0","in":"8d1c4b3e14e3f2ae","out":""}
-{"code":"0","err":"","id":"ds-mailskip-80#0","in":"d264b669e6db9f9b","out":""}
-{"code":"0","err":"","id":"ds-mailskip-81#0","in":"f44fbf69a3435bfc","out":""}
-{"code":"0","err":"","id":"ds-mailskip-82#0","in":"bb360045ed64db0b","out":""}
-{"code":"0","err":"","id":"ds-mailskip-83#0","in":"28f1cbcdcc337788","out":""}
-{"code":"0","err":"","id":"ds-mailskip-84#0","in":"fb0413c5c21aefcc","out":""}
-{"code":"0","err":"","id":"ds-mailskip-85#0","in":"5c1acfe9b39c58b5","out":""}
-{"code":"0","err":"","id":"ds-mailskip-86#0","in":"cfb688e64b750998","out":""}
-{"code":"0","err":"","id":"ds-mailskip-87#0","in":"cb88183f7ca20e12","out":""}
-{"code":"0","err":"","id":"ds-mailskip-88#0","in":"b890834efc904826","out":""}
-{"code":"0","err":"","id":"ds-mailskip-89#0","in":"36dc608d42d8be7c","out":""}
-{"code":"0","err":"","id":"ds-mailskip-9#0","in":"564938e3ff809ce4","out":""}
-{"code":"0","err":"","id":"ds-mailskip-90#0","in":"6a9fb66d5975cd95","out":""}
-{"code":"0","err":"","id":"ds-mailskip-91#0","in":"9e13c846013bc4d6","out":""}
-{"code":"0","err":"","id":"ds-mailskip-92#0","in":"e6ccbf15153dd0a8","out":""}
-{"code":"0","err":"","id":"ds-mailskip-93#0","in":"1c7eaf1a0535ee78","out":""}
-{"code":"0","err":"","id":"ds-mailskip-94#0","in":"bcc190738550e7fe","out":""}
-{"code":"0","err":"","id":"ds-mailskip-95#0","in":"6f626e9dde6b8d7e","out":""}
+{"code":"0","err":"","id":"ds-mailskip-0#0","in":"e864b69ce29b1af5","out":""}
+{"code":"0","err":"","id":"ds-mailskip-1#0","in":"1ebcd84a7b33bbd1","out":""}
+{"code":"0","err":"","id":"ds-mailskip-10#0","in":"761827ce0b30bf41","out":""}
+{"code":"0","err":"","id":"ds-mailskip-11#0","in":"b3a9fc0108310487","out":""}
+{"code":"0","err":"","id":"ds-mailskip-12#0","in":"cc8a6cf701d1b553","out":""}
+{"code":"0","err":"","id":"ds-mailskip-13#0","in":"2019ba10a064efd7","out":""}
+{"code":"0","err":"","id":"ds-mailskip-14#0","in":"49690da7d51629db","out":""}
+{"code":"0","err":"","id":"ds-mailskip-15#0","in":"73cdbc7e086a8710","out":""}
+{"code":"0","err":"","id":"ds-mailskip-16#0","in":"f6f00efb0428777a","out":""}
+{"code":"0","err":"","id":"ds-mailskip-17#0","in":"5dfc7302950076d3","out":""}
+{"code":"0","err":"","id":"ds-mailskip-18#0","in":"c6efd580af56338d","out":""}
+{"code":"0","err":"","id":"ds-mailskip-19#0","in":"d326b3f38d3e81b1","out":""}
+{"code":"0","err":"","id":"ds-mailskip-2#0","in":"1a8a7763a6f549fc","out":""}
+{"code":"0","err":"","id":"ds-mailskip-20#0","in":"9fbd4d59e5a0e3e0","out":""}
+{"code":"0","err":"","id":"ds-mailskip-21#0","in":"307df0214bfade86","out":""}
+{"code":"0","err":"","id":"ds-mailskip-22#0","in":"c61abe2008a0b7ba","out":""}
+{"code":"0","err":"","id":"ds-mailskip-23#0","in":"6bc85852e34293cc","out":""}
+{"code":"0","err":"","id":"ds-mailskip-24#0","in":"8fad83f9e7c7d6b5","out":""}
+{"code":"0","err":"","id":"ds-mailskip-25#0","in":"ceed625adaa6f132","out":""}
+{"code":"0","err":"","id":"ds-mailskip-26#0","in":"d28dd08b4791fa10","out":""}
+{"code":"0","err":"","id":"ds-mailskip-27#0","in":"e8461c253786f6b6","out":""}
+{"code":"0","err":"","id":"ds-mailskip-28#0","in":"1d4877e0979233da","out":""}
+{"code":"0","err":"","id":"ds-mailskip-29#0","in":"5f8e0a2545e19f6f","out":""}
+{"code":"0","err":"","id":"ds-mailskip-3#0","in":"e8f62ff9ae4d3008","out":""}
+{"code":"0","err":"","id":"ds-mailskip-30#0","in":"c552d86ff8eaa027","out":""}
+{"code":"0","err":"","id":"ds-mailskip-31#0","in":"87db36461cb481b3","out":""}
+{"code":"0","err":"","id":"ds-mailskip-32#0","in":"bdbcb9c1653e5492","out":""}
+{"code":"0","err":"","id":"ds-mailskip-33#0","in":"e093c6d8866747b4","out":""}
+{"code":"0","err":"","id":"ds-mailskip-34#0","in":"638f2815a3bcf786","out":""}
+{"code":"0","err":"","id":"ds-mailskip-35#0","in":"fcafa152fab6b40e","out":""}
+{"code":"0","err":"","id":"ds-mailskip-36#0","in":"3085cc7ba53468d3","out":""}
+{"code":"0","err":"","id":"ds-mailskip-37#0","in":"669c477fa6bd6a53","out":""}
+{"code":"0","err":"","id":"ds-mailskip-38#0","in":"2c1322bf4168cf7f","out":""}
+{"code":"0","err":"","id":"ds-mailskip-39#0","in":"391452d0749bbf59","out":""}
+{"code":"0","err":"","id":"ds-mailskip-4#0","in":"531da167222d4253","out":""}
+{"code":"0","err":"","id":"ds-mailskip-40#0","in":"b482afa4162f0d1a","out":""}
+{"code":"0","err":"","id":"ds-mailskip-41#0","in":"8a66464d6241df74","out":""}
+{"code":"0","err":"","id":"ds-mailskip-42#0","in":"7527a3d8dcb620cd","out":""}
+{"code":"0","err":"","id":"ds-mailskip-43#0","in":"19fd7f589378f92d","out":""}
+{"code":"0","err":"","id":"ds-mailskip-44#0","in":"94b41132509e3ab8","out":""}
+{"code":"0","err":"","id":"ds-mailskip-45#0","in":"08e448fa6abcd765","out":""}
+{"code":"0","err":"","id":"ds-mailskip-46#0","in":"b65b931a2197a85e","out":""}
+{"code":"0","err":"","id":"ds-mailskip-47#0","in":"26959dbf3ffb830a","out":""}
+{"code":"0","err":"","id":"ds-mailskip-48#0","in":"eccb9ec7848abb4d","out":""}
+{"code":"0","err":"","id":"ds-mailskip-49#0","in":"4adf74a557afcd27","out":""}
+{"code":"0","err":"","id":"ds-mailskip-5#0","in":"a99306de8b666cb9","out":""}
+{"code":"0","err":"","id":"ds-mailskip-50#0","in":"1809f996b92b50df","out":""}
+{"code":"0","err":"","id":"ds-mailskip-51#0","in":"c4114c0668862aa5","out":""}
+{"code":"0","err":"","id":"ds-mailskip-52#0","in":"7a8759c8f7b4a10e","out":""}
+{"code":"0","err":"","id":"ds-mailskip-53#0","in":"d13d4cec133a205c","out":""}
+{"code":"0","err":"","id":"ds-mailskip-54#0","in":"72e8b688f7be2bad","out":""}
+{"code":"0","err":"","id":"ds-mailskip-55#0","in":"56cae9c4bc2638eb","out":""}
+{"code":"0","err":"","id":"ds-mailskip-56#0","in":"29b91f72cf36bf50","out":""}
+{"code":"0","err":"","id":"ds-mailskip-57#0","in":"661ed3b6cb30c918","out":""}
+{"code":"0","err":"","id":"ds-mailskip-58#0","in":"aa72dd271e7f90af","out":""}
+{"code":"0","err":"","id":"ds-mailskip-59#0","in":"8201fc4ecdff34b0","out":""}
+{"code":"0","err":"","id":"ds-mailskip-6#0","in":"8a8a32db3a8ff25f","out":""}
+{"code":"0","err":"","id":"ds-mailskip-60#0","in":"342aff56433bb199","out":""}
+{"code":"0","err":"","id":"ds-mailskip-61#0","in":"fae1b5a307285aae","out":""}
+{"code":"0","err":"","id":"ds-mailskip-62#0","in":"35251f1fee96b78a","out":""}
+{"code":"0","err":"","id":"ds-mailskip-63#0","in":"22b76eb75e23d738","out":""}
+{"code":"0","err":"","id":"ds-mailskip-64#0","in":"a417c96c21283ec6","out":""}
+{"code":"0","err":"","id":"ds-mailskip-65#0","in":"bf07c9949ceb6d82","out":""}
+{"code":"0","err":"","id":"ds-mailskip-66#0","in":"a28ee1594f8d47fe","out":""}
+{"code":"0","err":"","id":"ds-mailskip-67#0","in":"bd261dc0d009d125","out":""}
+{"code":"0","err":"","id":"ds-mailskip-68#0","in":"e6071b93604c712e","out":""}
+{"code":"0","err":"","id":"ds-mailskip-69#0","in":"bf794b1123c00866","out":""}
+{"code":"0","err":"","id":"ds-mailskip-7#0","in":"6cbd82d10bf0f1cf","out":""}
+{"code":"0","err":"","id":"ds-mailskip-70#0","in":"150b13bf85d8dbc1","out":""}
+{"code":"0","err":"","id":"ds-mailskip-71#0","in":"85bc53aa43b86cb4","out":""}
+{"code":"0","err":"","id":"ds-mailskip-72#0","in":"d1911a6299a12f5d","out":""}
+{"code":"0","err":"","id":"ds-mailskip-73#0","in":"69f61d726428fa2e","out":""}
+{"code":"0","err":"","id":"ds-mailskip-74#0","in":"51f28962a50c4a16","out":""}
+{"code":"0","err":"","id":"ds-mailskip-75#0","in":"73c8d06edcb64c15","out":""}
+{"code":"0","err":"","id":"ds-mailskip-76#0","in":"419b678a4231cda1","out":""}
+{"code":"0","err":"","id":"ds-mailskip-77#0","in":"74a222bc210b468f","out":""}
+{"code":"0","err":"","id":"ds-mailskip-78#0","in":"edd59e68f61f35d3","out":""}
+{"code":"0","err":"","id":"ds-mailskip-79#0","in":"51c29000af5f4d55","out":""}
+{"code":"0","err":"","id":"ds-mailskip-8#0","in":"e843c382483d6629","out":""}
+{"code":"0","err":"","id":"ds-mailskip-80#0","in":"5b819ea316ccf787","out":""}
+{"code":"0","err":"","id":"ds-mailskip-81#0","in":"f2d94caa237a0fb8","out":""}
+{"code":"0","err":"","id":"ds-mailskip-82#0","in":"06c6383711be6422","out":""}
+{"code":"0","err":"","id":"ds-mailskip-83#0","in":"f96a50d423153091","out":""}
+{"code":"0","err":"","id":"ds-mailskip-84#0","in":"d7b8e7f9d07a35e1","out":""}
+{"code":"0","err":"","id":"ds-mailskip-85#0","in":"06a50e9ce804cec4","out":""}
+{"code":"0","err":"","id":"ds-mailskip-86#0","in":"000be926f67bd5e2","out":""}
+{"code":"0","err":"","id":"ds-mailskip-87#0","in":"979f38793b0a2460","out":""}
+{"code":"0","err":"","id":"ds-mailskip-88#0","in":"f6a0fb2467a34661","out":""}
+{"code":"0","err":"","id":"ds-mailskip-89#0","in":"1f87cf0985c115e6","out":""}
+{"code":"0","err":"","id":"ds-mailskip-9#0","in":"5f2ad235152d9165","out":""}
+{"code":"0","err":"","id":"ds-mailskip-90#0","in":"c557df1dea193af7","out":""}
+{"code":"0","err":"","id":"ds-mailskip-91#0","in":"a7c0eec6f2bb9133","out":""}
+{"code":"0","err":"","id":"ds-mailskip-92#0","in":"af6888a97c8de6d1","out":""}
+{"code":"0","err":"","id":"ds-mailskip-93#0","in":"948c73d51f9aa19a","out":""}
+{"code":"0","err":"","id":"ds-mailskip-94#0","in":"92f0c91ae4d8e2c2","out":""}
+{"code":"0","err":"","id":"ds-mailskip-95#0","in":"32c11e7b392a227a","out":""}
 {"code":"0","err":"","id":"ds-stashenv-0#0","in":"44d5e9bcd59950dd","out":""}
 {"code":"0","err":"","id":"ds-stashenv-1#0","in":"2cbfffab98689748","out":""}
 {"code":"0","err":"","id":"ds-stashenv-10#0","in":"150724ba3ac958a6","out":""}
@@ -1438,195 +1438,195 @@
 {"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashset-93#0","in":"011f3af83d71d2f3","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
 {"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashset-94#0","in":"684b057fd0448f47","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
 {"code":"0","err":"","id":"ds-stashset-95#0","in":"3981cdbf58df9f63","out":""}
-{"code":"0","err":"","id":"ds-stashskip-0#0","in":"0304ed28d58e883b","out":""}
-{"code":"0","err":"","id":"ds-stashskip-1#0","in":"7240f628040ba0eb","out":""}
-{"code":"0","err":"","id":"ds-stashskip-10#0","in":"5c7d5412c088fbba","out":""}
-{"code":"0","err":"","id":"ds-stashskip-11#0","in":"29e74c9de23afd9c","out":""}
-{"code":"0","err":"","id":"ds-stashskip-12#0","in":"d5faae28b8595b98","out":""}
-{"code":"0","err":"","id":"ds-stashskip-13#0","in":"e4cf750a4a64fb6d","out":""}
-{"code":"0","err":"","id":"ds-stashskip-14#0","in":"1ad30dfc91503edc","out":""}
-{"code":"0","err":"","id":"ds-stashskip-15#0","in":"db72afaaad21b083","out":""}
-{"code":"0","err":"","id":"ds-stashskip-16#0","in":"06b5e649c70e7cd2","out":""}
-{"code":"0","err":"","id":"ds-stashskip-17#0","in":"21ddaed6de0a505d","out":""}
-{"code":"0","err":"","id":"ds-stashskip-18#0","in":"23ebbe84df82cab6","out":""}
-{"code":"0","err":"","id":"ds-stashskip-19#0","in":"2e4e381bc76aba9d","out":""}
-{"code":"0","err":"","id":"ds-stashskip-2#0","in":"d2af2993f4f3398a","out":""}
-{"code":"0","err":"","id":"ds-stashskip-20#0","in":"c89ed12ffb7a6e9f","out":""}
-{"code":"0","err":"","id":"ds-stashskip-21#0","in":"59be7cdcf2f2c0ba","out":""}
-{"code":"0","err":"","id":"ds-stashskip-22#0","in":"99cebdd47755ed04","out":""}
-{"code":"0","err":"","id":"ds-stashskip-23#0","in":"af841d934bdcb4e2","out":""}
-{"code":"0","err":"","id":"ds-stashskip-24#0","in":"b4321e79f13886cf","out":""}
-{"code":"0","err":"","id":"ds-stashskip-25#0","in":"ca5c32d5c63ccc69","out":""}
-{"code":"0","err":"","id":"ds-stashskip-26#0","in":"6c45c20b2cfdfaa7","out":""}
-{"code":"0","err":"","id":"ds-stashskip-27#0","in":"aa364eaae5167f06","out":""}
-{"code":"0","err":"","id":"ds-stashskip-28#0","in":"bb56ceda41340ae3","out":""}
-{"code":"0","err":"","id":"ds-stashskip-29#0","in":"f52db00bd64f1d5f","out":""}
-{"code":"0","err":"","id":"ds-stashskip-3#0","in":"d0da3cf44bca15e9","out":""}
-{"code":"0","err":"","id":"ds-stashskip-30#0","in":"e1f942e413b42b0d","out":""}
-{"code":"0","err":"","id":"ds-stashskip-31#0","in":"e0a5500bb80ec35d","out":""}
-{"code":"0","err":"","id":"ds-stashskip-32#0","in":"4a47875f2f80ed32","out":""}
-{"code":"0","err":"","id":"ds-stashskip-33#0","in":"54e96b3a2df2179b","out":""}
-{"code":"0","err":"","id":"ds-stashskip-34#0","in":"d2ccc6b63396f364","out":""}
-{"code":"0","err":"","id":"ds-stashskip-35#0","in":"4ed1e98ee5801954","out":""}
-{"code":"0","err":"","id":"ds-stashskip-36#0","in":"27758670a3308701","out":""}
-{"code":"0","err":"","id":"ds-stashskip-37#0","in":"1a7ab28728ddc835","out":""}
-{"code":"0","err":"","id":"ds-stashskip-38#0","in":"d161b3355ee039e5","out":""}
-{"code":"0","err":"","id":"ds-stashskip-39#0","in":"6714762f9a48988b","out":""}
-{"code":"0","err":"","id":"ds-stashskip-4#0","in":"52d4a65b3384de16","out":""}
-{"code":"0","err":"","id":"ds-stashskip-40#0","in":"d9d44b1ec7c1c1c9","out":""}
-{"code":"0","err":"","id":"ds-stashskip-41#0","in":"1d446c99d6b3ab26","out":""}
-{"code":"0","err":"","id":"ds-stashskip-42#0","in":"1f7d149e47a51226","out":""}
-{"code":"0","err":"","id":"ds-stashskip-43#0","in":"e5a4dfd20bab0f46","out":""}
-{"code":"0","err":"","id":"ds-stashskip-44#0","in":"cfde6cec780889dd","out":""}
-{"code":"0","err":"","id":"ds-stashskip-45#0","in":"df9da5cd7ef46a23","out":""}
-{"code":"0","err":"","id":"ds-stashskip-46#0","in":"fff7204350d977ad","out":""}
-{"code":"0","err":"","id":"ds-stashskip-47#0","in":"62c09ba43c4abc4b","out":""}
-{"code":"0","err":"","id":"ds-stashskip-48#0","in":"602838e39e6eccc3","out":""}
-{"code":"0","err":"","id":"ds-stashskip-49#0","in":"351b8c5dc0565a57","out":""}
-{"code":"0","err":"","id":"ds-stashskip-5#0","in":"f5e7b0dffc99098b","out":""}
-{"code":"0","err":"","id":"ds-stashskip-50#0","in":"e6307a57f7e6d5a8","out":""}
-{"code":"0","err":"","id":"ds-stashskip-51#0","in":"90734b156b837718","out":""}
-{"code":"0","err":"","id":"ds-stashskip-52#0","in":"5732ef3bd1c5c5c7","out":""}
-{"code":"0","err":"","id":"ds-stashskip-53#0","in":"5567652bea7a7b53","out":""}
-{"code":"0","err":"","id":"ds-stashskip-54#0","in":"6c3f24a9154eed78","out":""}
-{"code":"0","err":"","id":"ds-stashskip-55#0","in":"9a8ce39141377832","out":""}
-{"code":"0","err":"","id":"ds-stashskip-56#0","in":"34acd8f584851b91","out":""}
-{"code":"0","err":"","id":"ds-stashskip-57#0","in":"3de0d8798c87f531","out":""}
-{"code":"0","err":"","id":"ds-stashskip-58#0","in":"2a61cd5f8d2a2829","out":""}
-{"code":"0","err":"","id":"ds-stashskip-59#0","in":"fb9f40d622ca4e6d","out":""}
-{"code":"0","err":"","id":"ds-stashskip-6#0","in":"5ba287b918df1aeb","out":""}
-{"code":"0","err":"","id":"ds-stashskip-60#0","in":"87b8f754f43bb673","out":""}
-{"code":"0","err":"","id":"ds-stashskip-61#0","in":"feef30fe6ea25678","out":""}
-{"code":"0","err":"","id":"ds-stashskip-62#0","in":"1758b02123a58c3e","out":""}
-{"code":"0","err":"","id":"ds-stashskip-63#0","in":"3f11cb65e56135cf","out":""}
-{"code":"0","err":"","id":"ds-stashskip-64#0","in":"27fde6b0476b7fe1","out":""}
-{"code":"0","err":"","id":"ds-stashskip-65#0","in":"52e11c5753180629","out":""}
-{"code":"0","err":"","id":"ds-stashskip-66#0","in":"3d78c9953dfb03eb","out":""}
-{"code":"0","err":"","id":"ds-stashskip-67#0","in":"263954da228f4aa8","out":""}
-{"code":"0","err":"","id":"ds-stashskip-68#0","in":"a9a6e232ebc803c0","out":""}
-{"code":"0","err":"","id":"ds-stashskip-69#0","in":"4809e8c41509dd6e","out":""}
-{"code":"0","err":"","id":"ds-stashskip-7#0","in":"8ad0493c182e7e20","out":""}
-{"code":"0","err":"","id":"ds-stashskip-70#0","in":"3644602871eed41c","out":""}
-{"code":"0","err":"","id":"ds-stashskip-71#0","in":"3095874e81185d46","out":""}
-{"code":"0","err":"","id":"ds-stashskip-72#0","in":"4ecbf42fc2c4484e","out":""}
-{"code":"0","err":"","id":"ds-stashskip-73#0","in":"7b277bc69c2d672c","out":""}
-{"code":"0","err":"","id":"ds-stashskip-74#0","in":"6544bf47946a5b82","out":""}
-{"code":"0","err":"","id":"ds-stashskip-75#0","in":"4c36745776bb2149","out":""}
-{"code":"0","err":"","id":"ds-stashskip-76#0","in":"61390f37758e686b","out":""}
-{"code":"0","err":"","id":"ds-stashskip-77#0","in":"d4a36d10cb857134","out":""}
-{"code":"0","err":"","id":"ds-stashskip-78#0","in":"c74ddb9cfa1f8f0d","out":""}
-{"code":"0","err":"","id":"ds-stashskip-79#0","in":"31b194094b58fd32","out":""}
-{"code":"0","err":"","id":"ds-stashskip-8#0","in":"e9f3bbb3676d321e","out":""}
-{"code":"0","err":"","id":"ds-stashskip-80#0","in":"4b594143077ab29e","out":""}
-{"code":"0","err":"","id":"ds-stashskip-81#0","in":"e09f01cfb626a745","out":""}
-{"code":"0","err":"","id":"ds-stashskip-82#0","in":"0910b4e5c729c7e6","out":""}
-{"code":"0","err":"","id":"ds-stashskip-83#0","in":"4742880c92f156d7","out":""}
-{"code":"0","err":"","id":"ds-stashskip-84#0","in":"a03f006cccb87852","out":""}
-{"code":"0","err":"","id":"ds-stashskip-85#0","in":"91ee017f8a8e7cb6","out":""}
-{"code":"0","err":"","id":"ds-stashskip-86#0","in":"46312b8591ecacfb","out":""}
-{"code":"0","err":"","id":"ds-stashskip-87#0","in":"9791147c80dca498","out":""}
-{"code":"0","err":"","id":"ds-stashskip-88#0","in":"bdaa7e97239ea6d8","out":""}
-{"code":"0","err":"","id":"ds-stashskip-89#0","in":"75209483cbef00bc","out":""}
-{"code":"0","err":"","id":"ds-stashskip-9#0","in":"d7e0dde14ab98f71","out":""}
-{"code":"0","err":"","id":"ds-stashskip-90#0","in":"77d45bd4c2de50fe","out":""}
-{"code":"0","err":"","id":"ds-stashskip-91#0","in":"c5b550f8506771f3","out":""}
-{"code":"0","err":"","id":"ds-stashskip-92#0","in":"555502b75af6f432","out":""}
-{"code":"0","err":"","id":"ds-stashskip-93#0","in":"587d3d8aca73ea4d","out":""}
-{"code":"0","err":"","id":"ds-stashskip-94#0","in":"0bd16a099cfdee8d","out":""}
-{"code":"0","err":"","id":"ds-stashskip-95#0","in":"fd1049b61c238d2e","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-0#0","in":"0fac961f6c817e24","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-1#0","in":"da411ee119518baa","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-10#0","in":"dba477a6b968a609","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-11#0","in":"8fb95e0c3959660a","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-12#0","in":"fb29f4d33735a75d","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-13#0","in":"61a64d4b94289128","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-14#0","in":"31033aa3ff670fce","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-15#0","in":"f36519d7f40dc9ee","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-16#0","in":"5cf974a9f2a0f484","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-17#0","in":"532828c5b3d14fe6","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-18#0","in":"224b7d54c32103c0","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-19#0","in":"326588ee9131ed85","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-2#0","in":"31c50ed5e534a805","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-20#0","in":"45000ced28ebc5c0","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-21#0","in":"4b573a19cbe4763f","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-22#0","in":"45781c732e63deed","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-23#0","in":"5538c96f39c3a4d8","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-24#0","in":"62e5f50bb8271319","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-25#0","in":"d2674543f41daf9e","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-26#0","in":"519c31dc2322ecfa","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-27#0","in":"14de9c23c6270adf","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-28#0","in":"1f571df0a05726ee","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-29#0","in":"09ae36e1a77182ae","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-3#0","in":"94a49cf51472f3a0","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-30#0","in":"64c49dbd3d9be4b0","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-31#0","in":"747e7dba3778ca99","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-32#0","in":"797cfab3c6e5d97c","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-33#0","in":"18c3878fa03e8ea4","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-34#0","in":"8c5806f5b21b8bc3","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-35#0","in":"2ee705813a02fe85","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-36#0","in":"e43e3ad579d9d969","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-37#0","in":"85fee1c6173bedad","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-38#0","in":"d68e11e296f15870","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-39#0","in":"b38b6faf801cdb61","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-4#0","in":"6eaffd3adf8f1b69","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-40#0","in":"ca27f3d561e38cc9","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-41#0","in":"60152150a5d85d69","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-42#0","in":"9f07959f7ed316bd","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-43#0","in":"0264986faf06ef5e","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-44#0","in":"6a509d71c9c73863","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-45#0","in":"00afc31b429bad1c","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-46#0","in":"65df4d36fc13bd3d","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-47#0","in":"19148742668986fd","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-48#0","in":"b5b974af81d6331b","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-49#0","in":"51d8391d3d4d5d3c","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-5#0","in":"cf86bc257d9a8810","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-50#0","in":"2da9267db6dc302f","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-51#0","in":"c167f29d4dfafe35","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-52#0","in":"309caf18436ad56e","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-53#0","in":"02a3440bd096a36b","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-54#0","in":"ddba1d3e8021894c","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-55#0","in":"23f2bc86c16ed1ab","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-56#0","in":"548953b610f24d0f","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-57#0","in":"128404b647478f7c","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-58#0","in":"a31f3644b1cc1635","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-59#0","in":"5d9d926ddf6ad9b8","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-6#0","in":"3950aa3b480033d5","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-60#0","in":"ba69fef653474f77","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-61#0","in":"248b764b1aef9fc0","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-62#0","in":"54ed54c604c376eb","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-63#0","in":"202ab74bf5459def","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-64#0","in":"712bbb4131c568a7","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-65#0","in":"1409f05993bdadc0","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-66#0","in":"af76fa120f10cdec","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-67#0","in":"32122ee3f7962c58","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-68#0","in":"e55e6f8015161066","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-69#0","in":"8e1642d59ca52d2d","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-7#0","in":"7271ba205c760c9f","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-70#0","in":"69ea4fd36f47a88a","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-71#0","in":"5e6e279da59bdc01","out":""}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-72#0","in":"6762a5b996f43b44","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-73#0","in":"dd57a46cfb8c97bb","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-74#0","in":"fe2a6b918718073b","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-75#0","in":"97b9b1b54ba5df3c","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-76#0","in":"8f2bd957833ecd1d","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash pop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-77#0","in":"f13885f79c2e266f","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash pop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash drop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-78#0","in":"07cbcd88918ed74d","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash drop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash clear` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-79#0","in":"c8d3cffdb6e5ac70","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash clear` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"0","err":"","id":"ds-stashskipall-8#0","in":"84a98431cced1b89","out":""}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash apply` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-80#0","in":"1b1bcb31f0619833","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash apply` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash save` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-81#0","in":"f0e297a6dc9bced1","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash save` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"0","err":"","id":"ds-stashskipall-82#0","in":"ef2837fe0b9f4cb0","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-83#0","in":"77c63f3f5160997c","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-84#0","in":"735580490a4ed441","out":""}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-85#0","in":"aab01bb4a9a1c2d3","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash pop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-86#0","in":"c3c2a5274bdd2570","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash pop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-87#0","in":"6f5ac9b8f4a59d8f","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-88#0","in":"cea4477f5dc1f5fc","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"0","err":"","id":"ds-stashskipall-89#0","in":"553aa0b574cefb7b","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-9#0","in":"ab9b1b8ad2b486cd","out":""}
-{"code":"0","err":"","id":"ds-stashskipall-90#0","in":"95dc97ff0b5b2f55","out":""}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-91#0","in":"980e5d2cd46c6830","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-92#0","in":"6534644fc099517d","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-93#0","in":"63a73cd1300daf51","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-94#0","in":"a489f270ef8c8124","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
-{"code":"0","err":"","id":"ds-stashskipall-95#0","in":"c8d8d71d84cce0cf","out":""}
+{"code":"0","err":"","id":"ds-stashskip-0#0","in":"f709b142412b5e8e","out":""}
+{"code":"0","err":"","id":"ds-stashskip-1#0","in":"f318356ae734d953","out":""}
+{"code":"0","err":"","id":"ds-stashskip-10#0","in":"9e21d85c0bef4f39","out":""}
+{"code":"0","err":"","id":"ds-stashskip-11#0","in":"fa943f89b2241d54","out":""}
+{"code":"0","err":"","id":"ds-stashskip-12#0","in":"3dfe7f92f19de58a","out":""}
+{"code":"0","err":"","id":"ds-stashskip-13#0","in":"4f87f63280ae6f79","out":""}
+{"code":"0","err":"","id":"ds-stashskip-14#0","in":"42393d052ccbaf57","out":""}
+{"code":"0","err":"","id":"ds-stashskip-15#0","in":"4cae1de2ebde3bbf","out":""}
+{"code":"0","err":"","id":"ds-stashskip-16#0","in":"e666166c46d9d096","out":""}
+{"code":"0","err":"","id":"ds-stashskip-17#0","in":"ef07a8d6bf08793b","out":""}
+{"code":"0","err":"","id":"ds-stashskip-18#0","in":"2b72ee3af2a6e78b","out":""}
+{"code":"0","err":"","id":"ds-stashskip-19#0","in":"361f197bbc114cd6","out":""}
+{"code":"0","err":"","id":"ds-stashskip-2#0","in":"6af4672e6d571f45","out":""}
+{"code":"0","err":"","id":"ds-stashskip-20#0","in":"529db87b6b1e0df5","out":""}
+{"code":"0","err":"","id":"ds-stashskip-21#0","in":"cf75925afec61ff7","out":""}
+{"code":"0","err":"","id":"ds-stashskip-22#0","in":"1f56efc05037aa8a","out":""}
+{"code":"0","err":"","id":"ds-stashskip-23#0","in":"ea36c6d2cc9df7e6","out":""}
+{"code":"0","err":"","id":"ds-stashskip-24#0","in":"cbd360b7ae2afbd6","out":""}
+{"code":"0","err":"","id":"ds-stashskip-25#0","in":"8c52c507ad98912d","out":""}
+{"code":"0","err":"","id":"ds-stashskip-26#0","in":"6198f0dd8a29a8d9","out":""}
+{"code":"0","err":"","id":"ds-stashskip-27#0","in":"a3965c0faa3ed9e8","out":""}
+{"code":"0","err":"","id":"ds-stashskip-28#0","in":"b129e40a893ce4d5","out":""}
+{"code":"0","err":"","id":"ds-stashskip-29#0","in":"94278147755f05c0","out":""}
+{"code":"0","err":"","id":"ds-stashskip-3#0","in":"c777c52a84b049e1","out":""}
+{"code":"0","err":"","id":"ds-stashskip-30#0","in":"c455616e4fb25b7f","out":""}
+{"code":"0","err":"","id":"ds-stashskip-31#0","in":"32dceccdae6d6553","out":""}
+{"code":"0","err":"","id":"ds-stashskip-32#0","in":"d2873efa2e64b5fa","out":""}
+{"code":"0","err":"","id":"ds-stashskip-33#0","in":"667737197f461195","out":""}
+{"code":"0","err":"","id":"ds-stashskip-34#0","in":"0d19a2afc09aa9be","out":""}
+{"code":"0","err":"","id":"ds-stashskip-35#0","in":"6c7fe1e08d90d71d","out":""}
+{"code":"0","err":"","id":"ds-stashskip-36#0","in":"d34be5db3affde47","out":""}
+{"code":"0","err":"","id":"ds-stashskip-37#0","in":"72c99b5030f91982","out":""}
+{"code":"0","err":"","id":"ds-stashskip-38#0","in":"846e0d084e3abf5c","out":""}
+{"code":"0","err":"","id":"ds-stashskip-39#0","in":"0d3de4de57ae9da2","out":""}
+{"code":"0","err":"","id":"ds-stashskip-4#0","in":"6ce0cc6ae6560e9f","out":""}
+{"code":"0","err":"","id":"ds-stashskip-40#0","in":"686f10f01a18e690","out":""}
+{"code":"0","err":"","id":"ds-stashskip-41#0","in":"e0efdf5e780b0519","out":""}
+{"code":"0","err":"","id":"ds-stashskip-42#0","in":"ccaf30cff60c1300","out":""}
+{"code":"0","err":"","id":"ds-stashskip-43#0","in":"bacbf4d881595e41","out":""}
+{"code":"0","err":"","id":"ds-stashskip-44#0","in":"60e277ca2f29bb86","out":""}
+{"code":"0","err":"","id":"ds-stashskip-45#0","in":"7d54dfc328ace0ea","out":""}
+{"code":"0","err":"","id":"ds-stashskip-46#0","in":"32efb4db323f184f","out":""}
+{"code":"0","err":"","id":"ds-stashskip-47#0","in":"4f169af71dc80f22","out":""}
+{"code":"0","err":"","id":"ds-stashskip-48#0","in":"0e0c5c126af72511","out":""}
+{"code":"0","err":"","id":"ds-stashskip-49#0","in":"e1e0526ad713cd5e","out":""}
+{"code":"0","err":"","id":"ds-stashskip-5#0","in":"208565f4aaec579b","out":""}
+{"code":"0","err":"","id":"ds-stashskip-50#0","in":"ee329751b27d1c83","out":""}
+{"code":"0","err":"","id":"ds-stashskip-51#0","in":"36f280b1813f6de1","out":""}
+{"code":"0","err":"","id":"ds-stashskip-52#0","in":"f01d675023b31df4","out":""}
+{"code":"0","err":"","id":"ds-stashskip-53#0","in":"d5f7146625741f74","out":""}
+{"code":"0","err":"","id":"ds-stashskip-54#0","in":"1b9360aef1bf5b5b","out":""}
+{"code":"0","err":"","id":"ds-stashskip-55#0","in":"f66cfa89f4a9d6a1","out":""}
+{"code":"0","err":"","id":"ds-stashskip-56#0","in":"f2f83ac1241d0c95","out":""}
+{"code":"0","err":"","id":"ds-stashskip-57#0","in":"d646b85c267fc733","out":""}
+{"code":"0","err":"","id":"ds-stashskip-58#0","in":"d8cf9c347553c26a","out":""}
+{"code":"0","err":"","id":"ds-stashskip-59#0","in":"558169721fc649fd","out":""}
+{"code":"0","err":"","id":"ds-stashskip-6#0","in":"19bf1f5737a85aba","out":""}
+{"code":"0","err":"","id":"ds-stashskip-60#0","in":"0b4f120869e49378","out":""}
+{"code":"0","err":"","id":"ds-stashskip-61#0","in":"f863c15d9b404d12","out":""}
+{"code":"0","err":"","id":"ds-stashskip-62#0","in":"1d0a31223c375552","out":""}
+{"code":"0","err":"","id":"ds-stashskip-63#0","in":"6730215d0c3e9593","out":""}
+{"code":"0","err":"","id":"ds-stashskip-64#0","in":"e6042717051edce0","out":""}
+{"code":"0","err":"","id":"ds-stashskip-65#0","in":"a9e1e3477cccb317","out":""}
+{"code":"0","err":"","id":"ds-stashskip-66#0","in":"e07f40dbbd3c6c1f","out":""}
+{"code":"0","err":"","id":"ds-stashskip-67#0","in":"800d8affa9c3c8fd","out":""}
+{"code":"0","err":"","id":"ds-stashskip-68#0","in":"8c4766aea7a78966","out":""}
+{"code":"0","err":"","id":"ds-stashskip-69#0","in":"700ab3ba679902b5","out":""}
+{"code":"0","err":"","id":"ds-stashskip-7#0","in":"52aebeb3d82be188","out":""}
+{"code":"0","err":"","id":"ds-stashskip-70#0","in":"fc60cf3df6335a54","out":""}
+{"code":"0","err":"","id":"ds-stashskip-71#0","in":"e16d280f5ec1627e","out":""}
+{"code":"0","err":"","id":"ds-stashskip-72#0","in":"504c37b8d26c1179","out":""}
+{"code":"0","err":"","id":"ds-stashskip-73#0","in":"0dc8581b0393f63b","out":""}
+{"code":"0","err":"","id":"ds-stashskip-74#0","in":"af4b4e78947251c8","out":""}
+{"code":"0","err":"","id":"ds-stashskip-75#0","in":"dd3c35e7d2b82cc6","out":""}
+{"code":"0","err":"","id":"ds-stashskip-76#0","in":"238c559d7256c21f","out":""}
+{"code":"0","err":"","id":"ds-stashskip-77#0","in":"8b6f077996f8662e","out":""}
+{"code":"0","err":"","id":"ds-stashskip-78#0","in":"9f5e3a2a712c34b9","out":""}
+{"code":"0","err":"","id":"ds-stashskip-79#0","in":"94a500fc2aa80916","out":""}
+{"code":"0","err":"","id":"ds-stashskip-8#0","in":"2e1f84b1d27feab1","out":""}
+{"code":"0","err":"","id":"ds-stashskip-80#0","in":"f82de58c5372c12a","out":""}
+{"code":"0","err":"","id":"ds-stashskip-81#0","in":"a51ce7395b2e134d","out":""}
+{"code":"0","err":"","id":"ds-stashskip-82#0","in":"fdb08caab8589ba6","out":""}
+{"code":"0","err":"","id":"ds-stashskip-83#0","in":"fa8de27ec9c593e5","out":""}
+{"code":"0","err":"","id":"ds-stashskip-84#0","in":"ca8568991359141f","out":""}
+{"code":"0","err":"","id":"ds-stashskip-85#0","in":"d99c6dade2c3d1fd","out":""}
+{"code":"0","err":"","id":"ds-stashskip-86#0","in":"4aabffcc44a88163","out":""}
+{"code":"0","err":"","id":"ds-stashskip-87#0","in":"7a99323c8b30f5df","out":""}
+{"code":"0","err":"","id":"ds-stashskip-88#0","in":"330a739a7e0f7673","out":""}
+{"code":"0","err":"","id":"ds-stashskip-89#0","in":"a1217ab57a4445ec","out":""}
+{"code":"0","err":"","id":"ds-stashskip-9#0","in":"720243925fdbf678","out":""}
+{"code":"0","err":"","id":"ds-stashskip-90#0","in":"724acd0c3185d9ef","out":""}
+{"code":"0","err":"","id":"ds-stashskip-91#0","in":"cc17d5414977de91","out":""}
+{"code":"0","err":"","id":"ds-stashskip-92#0","in":"ab54714c10b0044b","out":""}
+{"code":"0","err":"","id":"ds-stashskip-93#0","in":"2199b89dad2a3bb3","out":""}
+{"code":"0","err":"","id":"ds-stashskip-94#0","in":"69d5a6845323b2f4","out":""}
+{"code":"0","err":"","id":"ds-stashskip-95#0","in":"7b5dd0d756550dc5","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-0#0","in":"02314eeefc72a42d","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-1#0","in":"eecbbdd66c604ea0","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-10#0","in":"100980768320b63c","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-11#0","in":"24d9b0bbb0773a6c","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-12#0","in":"645e0bf516bbaf5c","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-13#0","in":"07202394f5140a31","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-14#0","in":"b66d6419b120ff08","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-15#0","in":"68bf51bd8f39ec35","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-16#0","in":"a9ca01f774ee179e","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-17#0","in":"e24a99b9073e5253","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-18#0","in":"5e84039aa113a673","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-19#0","in":"5c66c7988f3082d6","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-2#0","in":"7025592e9038d60f","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-20#0","in":"ec0dd33c18ff4f34","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-21#0","in":"ae50b2df6d4a1253","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-22#0","in":"32490da3dcd40ade","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-23#0","in":"135dd7b7f63bb6cf","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-24#0","in":"f59f96aba4643c0d","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-25#0","in":"a9240836aa2f732b","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-26#0","in":"14e75c53f04806a7","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-27#0","in":"9f90b85b24753732","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-28#0","in":"1f3222eab9cff86e","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-29#0","in":"0c32446c0359aebc","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-3#0","in":"310d125f6b626e4d","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-30#0","in":"a340d3da7c206aab","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-31#0","in":"c69b366153cbc97b","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-32#0","in":"d7fa0784071e39fb","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-33#0","in":"9cd5c60fdc695ce0","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-34#0","in":"bc496607530d5b08","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-35#0","in":"1b8541fb9c8f8c1a","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-36#0","in":"2c2a63a9dc93051b","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-37#0","in":"abb14f1fc76f8e3d","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-38#0","in":"b36e92fd5ebe2247","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-39#0","in":"f7f86a9de65c5ed1","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-4#0","in":"f2288b7332122a6b","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-40#0","in":"a0f11be7be471893","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-41#0","in":"a034976c071f7d88","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-42#0","in":"4ff84d84b4a6966f","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-43#0","in":"e952cc77d6b8dec6","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-44#0","in":"bfc409f344318469","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-45#0","in":"2634e5915e0cdc70","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-46#0","in":"c5721d345cedcaa3","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-47#0","in":"328cd79c2969d658","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-48#0","in":"9c5182dfbb52ea5b","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-49#0","in":"525fe3337969413b","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-5#0","in":"220def39d0158579","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-50#0","in":"192113c91b2d3be7","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-51#0","in":"50177ffb6c9b05af","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-52#0","in":"d18b33b1ee60e78b","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-53#0","in":"c22caaf1b1638c63","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-54#0","in":"74cc6c8257799e9b","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-55#0","in":"e14a0bf67b588ad6","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-56#0","in":"aaf34c83344ff884","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-57#0","in":"48250ac44ab58e7e","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-58#0","in":"e15547749fc46e0e","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-59#0","in":"9f7a852863cbbef6","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-6#0","in":"40e71122a1a039c0","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-60#0","in":"22d6ba7d554e3359","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-61#0","in":"6e8e3c2453883c8e","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-62#0","in":"f8e84c2e799040f6","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-63#0","in":"7f0f31963afc9a57","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-64#0","in":"3bea398b450004d4","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-65#0","in":"a9b2a23c5c9af373","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-66#0","in":"87213595b83a6f00","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-67#0","in":"76552acbb459b3e4","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-68#0","in":"f98bf43c2c95596f","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-69#0","in":"0beae2c19aeb509d","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-7#0","in":"bf9a39d6aa7b6886","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-70#0","in":"98c89da4fe0c3250","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-71#0","in":"1fc07e69eefcfa0d","out":""}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-72#0","in":"2f58a6ddf358ccc7","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-73#0","in":"aa02846de7013fc4","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-74#0","in":"d749e715017ab682","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-75#0","in":"d0f2389014f254de","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-76#0","in":"32efc79ddebdf077","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash pop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-77#0","in":"3efd72c759add2b1","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash pop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash drop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-78#0","in":"b6caede0a2a6ef95","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash drop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash clear` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-79#0","in":"3797df1d0fd07d16","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash clear` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"0","err":"","id":"ds-stashskipall-8#0","in":"5642dead2c13892b","out":""}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash apply` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-80#0","in":"171e225e51736da5","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash apply` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash save` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-81#0","in":"a3c08e0d4804cf5c","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash save` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"0","err":"","id":"ds-stashskipall-82#0","in":"8a926ca99fd72029","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-83#0","in":"bafdfb06f95fe4ae","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-84#0","in":"124fde4cf444aec6","out":""}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-85#0","in":"ccd743eac51e056e","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash pop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-86#0","in":"ebef900c3bcaf31d","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash pop` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-87#0","in":"f46faa8359934c2f","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-88#0","in":"76a3ff66c88857ad","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"0","err":"","id":"ds-stashskipall-89#0","in":"c659cab49f4a4264","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-9#0","in":"0c001e142d6d4a00","out":""}
+{"code":"0","err":"","id":"ds-stashskipall-90#0","in":"7eac87f62faad2cf","out":""}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-91#0","in":"120187c08e844b4d","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-92#0","in":"7f3a1a7e098782d4","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-93#0","in":"655950db130b247e","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"2","err":"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\nAllowed here: `git stash list` (read-only).","id":"ds-stashskipall-94#0","in":"cecad26af301f25d","out":"{\"decision\":\"block\",\"reason\":\"⛔ anti-hall · git-stash-guard: `git stash push` is blocked for this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1).\\nWhy: A stash can swallow another agent's protected WIP (defect b08b26566b92).\\nDo instead: commit the work (even as a WIP commit); never delegate a stash to a subagent.\\nAllowed here: `git stash list` (read-only).\"}"}
+{"code":"0","err":"","id":"ds-stashskipall-95#0","in":"237601e5a03e929a","out":""}

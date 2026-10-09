@@ -310,5 +310,10 @@ pub(crate) fn opts() -> Opts {
     o.events = vec!["PostToolUse"];
     o.conc = 6;
     o.node_argv = Some(|_| strs(&["--audit"]));
+    // the audit names the HEAD commit, whose id depends on the commit time the setup used: a replay cannot reproduce it
+    o.replay_mask = Some(|t| {
+        static SHA: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\b[0-9a-f]{7,40}\b").unwrap());
+        SHA.replace_all(t, "<SHA>").to_string()
+    });
     o
 }

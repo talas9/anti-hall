@@ -146,6 +146,10 @@ pub struct Opts {
     pub mutate: bool,
     /// The tools the hook shells out to: their versions are part of its Node golden's fingerprint.
     pub node_tools: Vec<Tool>,
+    /// Text a replayed Node answer cannot reproduce (it names something the run created from the real clock, such as a commit
+    /// id), masked in both answers when Node's answer came from its golden. A live run (record, `AH_LIVE_NODE=1`) compares it
+    /// exactly.
+    pub replay_mask: Option<fn(&str) -> String>,
 }
 
 impl Opts {
@@ -170,6 +174,7 @@ impl Opts {
             strict_defer_prefix: None,
             mutate: false,
             node_tools: vec![Tool::Node, Tool::Git],
+            replay_mask: None,
         }
     }
 }
@@ -288,6 +293,18 @@ fn state_diff(node: &BTreeMap<String, Option<String>>, home_e: &Path, re: &Regex
     None
 }
 
+/// A golden key without clock readings: corpora and contexts are built from the real clock (a skip entry `now + 1 h`, a
+/// session's `firstTs`), so the readings move between recording and replay while the case stays the same. Only the key is
+/// masked; a Node answer that depends on the reading is caught as volatile when recording.
+fn unclocked(s: &str) -> String {
+    static CLOCK: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\d{4}-\d\d-\d\d|\b1\d{9}(?:\d{3})?(?:\.\d+)?\b").unwrap()
+    });
+    static PID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(&format!(r"\b{}\b", std::process::id())).unwrap());
+    // the test process's own pid (a lock a scenario writes as held by a live process) differs per run as well
+    PID.replace_all(&CLOCK.replace_all(s, "<CLOCK>"), "<PID>").to_string()
+}
+
 /// The initial home of a group as text (paths relative, contents and link targets normalized): part of every golden input, so
 /// a changed context re-keys its cases.
 fn home_key(home: &Path, norm: &Norm) -> String {
@@ -313,7 +330,7 @@ fn home_key(home: &Path, norm: &Norm) -> String {
                 out.push(format!(
                     "{r} {:o} {}",
                     md.permissions().mode() & 0o7777,
-                    goldens::sha256_hex(norm.apply(&String::from_utf8_lossy(&std::fs::read(&p).unwrap_or_default())).as_bytes())
+                    goldens::sha256_hex(unclocked(&norm.apply(&String::from_utf8_lossy(&std::fs::read(&p).unwrap_or_default()))).as_bytes())
                 ));
             }
         }
@@ -321,6 +338,23 @@ fn home_key(home: &Path, norm: &Norm) -> String {
     let mut v = Vec::new();
     walk(home, "", norm, &mut v);
     norm.apply(&v.join("\n"))
+}
+
+/// Stop a group's daemon and wait for its process to exit (the pid its singleton lock file names; `common::reap` looks for an
+/// `ah-engine serve` command line, which a daemon the client spawned does not show, and then waited 2 s per group for nothing).
+/// SIGKILL after the ceiling, so a daemon never outlives its group.
+fn stop_daemon(dir: &Path, stop: impl Fn()) {
+    let pid = crate::common::lock_pid(dir).or_else(|| crate::common::marker_pid(dir));
+    stop();
+    let Some(pid) = pid else { return };
+    let t = std::time::Instant::now();
+    while crate::common::alive(pid) && t.elapsed() < crate::common::READY_CEILING {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if crate::common::alive(pid) {
+        // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
 }
 
 enum R {
@@ -444,7 +478,7 @@ fn run_guard_with(o: &Opts, hooks: &Path, scenarios: &[Scenario], golden: &Golde
         let env = node_env(&home_s, ctx);
         // PATH is the runner's own (it differs between shells and CI); the tools it finds are in the fingerprint
         let keyed_env: Vec<&(String, Option<String>)> = env.iter().filter(|(k, _)| k != "PATH").collect();
-        let this = norm.apply(&format!("args={args:?}\nenv={keyed_env:?}\nstdin={input}"));
+        let this = unclocked(&norm.apply(&format!("args={args:?}\nenv={keyed_env:?}\nstdin={input}")));
         *chain = goldens::sha256_hex(format!("{chain}\n{this}").as_bytes());
         let a = golden.node(id, chain.as_bytes(), norm, || {
             let r = node(&args, input.as_bytes(), &env, "/tmp");
@@ -459,7 +493,8 @@ fn run_guard_with(o: &Opts, hooks: &Path, scenarios: &[Scenario], golden: &Golde
         (out, a)
     };
 
-    for (gi, (_, idxs)) in groups.iter().enumerate() {
+    // One group: its homes, rules file and daemon, its scenarios on `inner` workers. Groups are independent of each other.
+    let run_group = |idxs: &Vec<usize>, gi: usize, inner: usize| {
         let gi = gi + 1;
         let ctx: &Ctx = scenarios[idxs[0]].ctx.as_deref().unwrap_or(&norm_default);
         let home = mk_home(&tmp, &gi.to_string(), ctx);
@@ -516,7 +551,7 @@ fn run_guard_with(o: &Opts, hooks: &Path, scenarios: &[Scenario], golden: &Golde
         let list: Vec<&Scenario> = idxs.iter().map(|&i| &scenarios[i]).collect();
         let list_keys: Vec<&String> = idxs.iter().map(|&i| &keys[i]).collect();
         let chains: Mutex<Vec<String>> = Mutex::new(Vec::new());
-        pool(&list, o.conc, |sc, li| {
+        pool(&list, inner, |sc, li| {
             stats.lock().unwrap().scenarios += 1;
             let mut stopped = false;
             let mut chain = group_key.clone();
@@ -545,6 +580,11 @@ fn run_guard_with(o: &Opts, hooks: &Path, scenarios: &[Scenario], golden: &Golde
                     continue;
                 }
                 let input = step.raw.clone().unwrap_or_else(|| serde_json::to_string(&payload_e).unwrap());
+                let replayed = golden.mode() == NodeMode::Replay && !golden.is_volatile(&format!("{}#{si}", list_keys[li]));
+                let same = |e: &Out, n: &Out| match o.replay_mask.filter(|_| replayed) {
+                    Some(m) => e.code == n.code && m(&e.out) == m(&n.out) && m(&e.err) == m(&n.err),
+                    None => e == n,
+                };
                 let mut results: Vec<(&str, R)> = Vec::new();
                 if matches!(o.mode, Mode::Oneshot | Mode::Both) && si == 0 {
                     let e = run(ENGINE, &strs(&["check", o.check]), input.as_bytes(), &oenv, "/tmp").trimmed();
@@ -552,7 +592,7 @@ fn run_guard_with(o: &Opts, hooks: &Path, scenarios: &[Scenario], golden: &Golde
                         "oneshot",
                         if e.out == "AHFALLBACK" {
                             R::Deferred
-                        } else if e == n {
+                        } else if same(&e, &n) {
                             R::Same
                         } else {
                             R::Other(e)
@@ -565,7 +605,7 @@ fn run_guard_with(o: &Opts, hooks: &Path, scenarios: &[Scenario], golden: &Golde
                         "daemon",
                         if e.out == "AHDEFERRED" {
                             R::Deferred
-                        } else if e == n {
+                        } else if same(&e, &n) {
                             R::Same
                         } else {
                             R::Other(e)
@@ -706,15 +746,24 @@ fn run_guard_with(o: &Opts, hooks: &Path, scenarios: &[Scenario], golden: &Golde
             }
         }
         if o.mode != Mode::Oneshot {
-            run(ENGINE, &strs(&["ctl", "stop"]), b"", &denv, "/tmp");
-            for _ in 0..200 {
-                if !run(ENGINE, &strs(&["ctl", "ping"]), b"", &denv, "/tmp").code_is(0) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(30));
+            // wait for the daemon PROCESS to end, not just its socket: an exiting daemon still writes its log and last-known-good
+            // defaults, which re-created the group's dir after it was removed (a leaked scratch dir per run)
+            stop_daemon(&dir, || {
+                run(ENGINE, &strs(&["ctl", "stop"]), b"", &denv, "/tmp");
+            });
+        }
+        // a lane of a thousand groups held ~1 GB of engine state until its end: each group's dirs go when the group is done
+        if std::env::var_os("AH_PARITY_KEEP").is_none() {
+            for d in [&dir, &home, &home_e] {
+                wipe(d);
             }
         }
-    }
+    };
+    // The groups run side by side (api_guard has about one per scenario, which ran as a serial chain of daemon start-ups), and
+    // each gets workers in proportion to its share of the scenarios, so one big group is not left to a single worker.
+    let total = scenarios.len().max(1);
+    let all: Vec<(usize, &Vec<usize>)> = groups.iter().map(|(_, v)| v).enumerate().collect();
+    pool(&all, o.conc, |(gi, idxs), _| run_group(idxs, *gi, (idxs.len() * o.conc).div_ceil(total).clamp(1, o.conc)));
     let stats = stats.into_inner().unwrap();
     let mismatches = mism.into_inner().unwrap();
     let pc = |x: usize| if stats.compared > 0 { format!("{:.2}%", 100.0 * x as f64 / stats.compared as f64) } else { "-".into() };
