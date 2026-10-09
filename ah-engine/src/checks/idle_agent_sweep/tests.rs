@@ -116,4 +116,3 @@ fn codex_agents_are_finished_until_closed_or_retasked() {
     again.push(call(T0 - 1000.0, "send_input", json!({"target": uuid}), "c3"));
     assert_eq!(codex::finished(&again).unwrap(), vec![]);
 }
-

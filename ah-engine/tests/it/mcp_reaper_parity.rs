@@ -146,9 +146,9 @@ fn engine_plugin() -> &'static Path {
         let cap = (RUN_CAP - Duration::from_secs(10)).as_millis();
         for e in std::fs::read_dir(src.join("engine/defaults")).unwrap().flatten() {
             let mut text = std::fs::read_to_string(e.path()).unwrap();
-            if e.file_name() == "mcp_reaper.toml" {
-                for key in ["mcp_reaper.ps_timeout_ms", "mcp_reaper.probe_timeout_ms"] {
-                    let at = text.find(&format!("[{key}]\n")).unwrap_or_else(|| panic!("{key} is not in mcp_reaper.toml"));
+            if e.file_name() == "host_proc.toml" {
+                for key in ["hostproc.list_timeout_ms", "hostproc.probe_timeout_ms"] {
+                    let at = text.find(&format!("[{key}]\n")).unwrap_or_else(|| panic!("{key} is not in host_proc.toml"));
                     let v = at + text[at..].find("\nvalue = ").unwrap() + 1;
                     let end = v + text[v..].find('\n').unwrap();
                     text = format!("{}value = {cap}{}", &text[..v], &text[end..]);
@@ -509,18 +509,11 @@ fn cases() -> Vec<Case> {
             .old(&[(1, 3600)])
             .env("ANTIHALL_REAPER_MATCH", "tool"),
     );
-    v.push(
-        case("user-match-invalid-ignored-by-node-engine-defers", vec![init(), row(1, 1, MCP)])
-            .old(&[(1, 3600)])
-            .env("ANTIHALL_REAPER_MATCH", "(unclosed")
-            .defer(),
-    );
-    v.push(case("user-match-lookahead-defers", vec![init(), row(1, 1, "bash /opt/x")]).old(&[(1, 3600)]).env("ANTIHALL_REAPER_MATCH", "x(?=$)").defer());
-    v.push(case("user-match-brace-quantifier-defers", vec![init(), row(1, 1, "bash /opt/xx")]).old(&[(1, 3600)]).env("ANTIHALL_REAPER_MATCH", "x{2}").defer());
-    v.push(
-        case("user-match-non-ascii-defers", vec![init(), row(1, 1, "bash /opt/caf\u{e9}")]).old(&[(1, 3600)]).env("ANTIHALL_REAPER_MATCH", "caf\u{e9}").defer(),
-    );
-    v.push(case("user-match-backref-defers", vec![init(), row(1, 1, "bash /opt/abab")]).old(&[(1, 3600)]).env("ANTIHALL_REAPER_MATCH", "(ab)\\1").defer());
+    v.push(case("user-match-invalid-ignored", vec![init(), row(1, 1, MCP)]).old(&[(1, 3600)]).env("ANTIHALL_REAPER_MATCH", "(unclosed"));
+    v.push(case("user-match-lookahead", vec![init(), row(1, 1, "bash /opt/x")]).old(&[(1, 3600)]).env("ANTIHALL_REAPER_MATCH", "x(?=$)"));
+    v.push(case("user-match-brace-quantifier", vec![init(), row(1, 1, "bash /opt/xx")]).old(&[(1, 3600)]).env("ANTIHALL_REAPER_MATCH", "x{2}"));
+    v.push(case("user-match-non-ascii", vec![init(), row(1, 1, "bash /opt/caf\u{e9}")]).old(&[(1, 3600)]).env("ANTIHALL_REAPER_MATCH", "caf\u{e9}"));
+    v.push(case("user-match-backref", vec![init(), row(1, 1, "bash /opt/abab")]).old(&[(1, 3600)]).env("ANTIHALL_REAPER_MATCH", "(ab)\\1"));
     v.push(case("user-exclude", two()).old(&[(1, 3600), (2, 3600)]).env("ANTIHALL_REAPER_EXCLUDE", "OTHER"));
     v.push(case("user-exclude-file", two()).old(&[(1, 3600), (2, 3600)]).file(".anti-hall/settings.json", r#"{"guards":{"reaperExclude":"/srv/"}}"#));
     v.push(
@@ -529,7 +522,7 @@ fn cases() -> Vec<Case> {
             .env("ANTIHALL_REAPER_MATCH", "my-tool")
             .env("ANTIHALL_REAPER_EXCLUDE", "opt"),
     );
-    v.push(case("user-exclude-lookahead-defers", two()).old(&[(1, 3600)]).env("ANTIHALL_REAPER_EXCLUDE", "(?!x)").defer());
+    v.push(case("user-exclude-lookahead", two()).old(&[(1, 3600)]).env("ANTIHALL_REAPER_EXCLUDE", "(?!x)"));
     v.push(
         case("user-pattern-unsupported-but-pid1-gate-first", vec![row_raw(1, 0, "python x"), row(1, 1, MCP)])
             .old(&[(1, 3600)])
@@ -743,7 +736,8 @@ fn the_sweep_selects_and_logs_exactly_what_node_does() {
     assert!(cs.len() >= 100, "the corpus must stay broad: {}", cs.len());
     let t = drive("reaper", cs);
     assert!(t.same >= 85, "answered {}", t.same);
-    assert!(t.deferred >= 8, "deferred {}", t.deferred);
+    assert!(t.deferred >= 4, "deferred {}", t.deferred); // the start-time forms the host does not read
+    assert!(t.same >= 100, "answered {}", t.same);
     assert!(t.killed >= 15, "the corpus must exercise the forced signal: {}", t.killed);
 }
 
@@ -798,7 +792,7 @@ fn the_shipped_patterns_are_the_node_patterns() {
     ah_engine::defaults::reload(Some(&plugin())).unwrap();
     let src = std::fs::read_to_string(plugin().join("companion/mcp-reaper.js")).unwrap();
     let reaper = std::fs::read_to_string(plugin().join("hooks/session-end-mcp-reaper.js")).unwrap();
-    let norm = |s: &str| s.replace("(?=[\\s/]|$)", "([\\s/]|$)").replace("\\/", "/");
+    let norm = |s: &str| s.replace("\\/", "/");
     for (key, node_src) in [
         ("mcp_reaper.runtime_re", &src),
         ("mcp_reaper.modelctx_re", &src),

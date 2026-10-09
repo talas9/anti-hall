@@ -195,10 +195,6 @@ fn clean(s: &str) -> String {
     s.chars().filter(|c| !matches!(c, '"' | '\'' | '$' | '`' | '\\' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '{' | '}' | '\n' | '\r')).collect()
 }
 
-fn short(sha: &str) -> &str {
-    sha.get(..7).unwrap_or(sha)
-}
-
 impl Ctx<'_> {
     fn hold(&self, st: &mut State, until: u64, reason: &str) {
         if until > st.hold_until_ms || st.hold_reason.is_empty() {
@@ -228,7 +224,8 @@ impl Ctx<'_> {
 
     fn note_rate(&self, st: &mut State, r: &Resp, prev_used: &mut Option<(u64, u64)>) {
         let cfg = self.cfg;
-        let (limit, remaining, used, reset) = (r.num_header(cfg, "limit"), r.num_header(cfg, "remaining"), r.num_header(cfg, "used"), r.num_header(cfg, "reset"));
+        let (limit, remaining, used, reset) =
+            (r.num_header(cfg, "limit"), r.num_header(cfg, "remaining"), r.num_header(cfg, "used"), r.num_header(cfg, "reset"));
         if let (Some(l), Some(rem)) = (limit, remaining) {
             st.rate.limit = l;
             st.rate.remaining = rem;
@@ -272,7 +269,11 @@ impl Ctx<'_> {
         let retry = r.num_header(cfg, "retry_after");
         let max = cfg.int("github_rt.backoff_max_ms");
         let backoff = |st: &State| (cfg.int("github_rt.backoff_ms") << u64::from(st.backoff_n).min(cfg.int("github_rt.backoff_max_doublings"))).min(max);
-        if u64::from(r.status) == cfg.num_field("github_rt.http", "rate_limited") || u64::from(r.status) >= cfg.num_field("github_rt.http", "server_error_from") || secondary || retry.is_some() {
+        if u64::from(r.status) == cfg.num_field("github_rt.http", "rate_limited")
+            || u64::from(r.status) >= cfg.num_field("github_rt.http", "server_error_from")
+            || secondary
+            || retry.is_some()
+        {
             let wait = retry.map_or_else(|| backoff(st), |s| (s * 1000).min(max));
             st.backoff_n = st.backoff_n.saturating_add(1);
             self.hold(st, self.now + wait, "backoff");
@@ -294,11 +295,7 @@ impl Ctx<'_> {
             Fail::NoResponse(text) => {
                 let t = text.to_ascii_lowercase();
                 let any = |k: &str| cfg.list_field("github_rt.patterns", k).iter().any(|p| t.contains(&p.to_ascii_lowercase()));
-                if any("unauth") {
-                    ("logged_out", cfg.int("github_rt.auth_retry_ms"))
-                } else {
-                    ("offline", cfg.int("github_rt.offline_retry_ms"))
-                }
+                if any("unauth") { ("logged_out", cfg.int("github_rt.auth_retry_ms")) } else { ("offline", cfg.int("github_rt.offline_retry_ms")) }
             }
         };
         st.gh = kind.to_string();
@@ -367,7 +364,13 @@ impl Ctx<'_> {
 
     fn path(&self, key: &str, repo: &Repo, extra: &[(&str, &str)]) -> String {
         let (owner, name) = repo.slug.split_once('/').unwrap_or(("", ""));
-        let mut p = self.cfg.txt("github_rt.endpoints", key).replace("{owner}", owner).replace("{repo}", name).replace("{branch}", &repo.branch).replace("{sha}", &repo.sha);
+        let mut p = self
+            .cfg
+            .txt("github_rt.endpoints", key)
+            .replace("{owner}", owner)
+            .replace("{repo}", name)
+            .replace("{branch}", &repo.branch)
+            .replace("{sha}", &repo.sha);
         for (k, v) in extra {
             p = p.replace(&format!("{{{k}}}"), v);
         }
@@ -392,7 +395,7 @@ impl Ctx<'_> {
             let Got::Val(d) = self.fetch(st, repo, &p, false, prev_used, &|b| parse::pull(b)) else { return false };
             repo.detail = d;
             let p = self.path("reviews", repo, &[("number", &number)]);
-            let Got::Val(rv) = self.fetch(st, repo, &p, false, prev_used, &|b| json!(parse::reviews(cfg, b))) else { return false };
+            let Got::Val(rv) = self.fetch(st, repo, &p, false, prev_used, &|b| parse::reviews(cfg, b)) else { return false };
             repo.review = rv.as_str().unwrap_or("none").to_string();
             if self.now.saturating_sub(repo.rules_ms) >= cfg.int("github_rt.rules_ms") || repo.rules_ms == 0 {
                 let base = repo.pr.get("base").and_then(Value::as_str).unwrap_or("").to_string();
@@ -422,29 +425,17 @@ impl Ctx<'_> {
     }
 
     fn cadence(&self, st: &State, status: &Value) -> u64 {
-        let cfg = self.cfg;
-        let still_running = status["running"].as_u64().unwrap_or(0) > 0;
-        let base = match (status["checks"].as_str().unwrap_or(""), status["pr"].as_str().unwrap_or("")) {
-            ("running", _) => "poll_running_ms",
-            _ if still_running => "poll_running_ms",
-            (_, "open") => "poll_idle_ms",
-            (_, "none") => "poll_nopr_ms",
-            _ => "poll_done_ms",
-        };
-        cfg.int(&format!("github_rt.{base}")).max(st.rate.poll_interval_ms)
+        let key = parse::cadence(status).unwrap_or_else(|| self.cfg.value("github_rt.cadence_fallback").as_str().unwrap_or_default().to_string());
+        self.cfg.int(&format!("github_rt.{key}")).max(st.rate.poll_interval_ms)
     }
 }
 
-fn edge_text(cfg: &Cfg, kind: &str, repo: &Repo, status: &Value) -> (String, Vec<String>) {
-    let jobs: Vec<String> = status["jobs"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-    let list = if jobs.is_empty() { cfg.word("no_jobs", &[]) } else { jobs.iter().take(cfg.int("github_rt.jobs_shown") as usize).cloned().collect::<Vec<_>>().join(&cfg.txt("github_rt.words", "job_sep")) };
-    let number = status["number"].as_u64().unwrap_or(0).to_string();
-    let text = cfg.word(kind, &[("slug", &repo.slug), ("branch", &repo.branch), ("number", &number), ("sha", short(&repo.sha)), ("jobs", &list)]);
-    (text, jobs)
-}
-
 fn read_edges(cfg: &Cfg) -> Vec<Value> {
-    std::fs::read_to_string(repos::file(cfg, "edges")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v.get("edges").and_then(Value::as_array).cloned()).unwrap_or_default()
+    std::fs::read_to_string(repos::file(cfg, "edges"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("edges").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
 }
 
 /// The edges recorded so far, oldest first.
@@ -473,7 +464,10 @@ fn notify(cfg: &Cfg, kind: &str, text: &str) {
     let mut cmd = std::process::Command::new(prog);
     cmd.args(rest.iter().map(fill));
     let poll = crate::defaults::millis("client.fallback_poll_ms");
-    crate::discard::logged("ghrt_notify", crate::proc::run(cmd, "notify", std::time::Duration::from_millis(cfg.int("github_rt.call_timeout_ms")), poll).map_err(crate::proc::Error::into_io));
+    crate::discard::logged(
+        "ghrt_notify",
+        crate::proc::run(cmd, "notify", std::time::Duration::from_millis(cfg.int("github_rt.call_timeout_ms")), poll).map_err(crate::proc::Error::into_io),
+    );
 }
 
 /// Resolve the recent directories into followed repos, creating and dropping records.
@@ -596,7 +590,12 @@ pub fn tick(cfg: &Cfg, run: &dyn Runner, now: u64, force: bool) -> Report {
             if repo.kind == "github" {
                 if ctx.poll_repo(&mut st, &mut repo, &mut prev_used) {
                     report.polled += 1;
-                    let status = parse::status(cfg, &serde_json::to_value(&repo).unwrap_or(Value::Null), now);
+                    let Some(status) = parse::status(cfg, &serde_json::to_value(&repo).unwrap_or(Value::Null), now) else {
+                        // the rules gave no answer: nothing is compared or recorded, and the repo is left alone for a while
+                        repo.err_until_ms = now + cfg.int("github_rt.poll_error_ms");
+                        st.repos.insert(root, repo);
+                        continue;
+                    };
                     let prev = repo.known.then(|| repo.status.clone());
                     for e in parse::edges(prev.as_ref(), &status) {
                         let key = format!("{}|{}|{}|{}", e.kind, repo.root, repo.branch, e.subject);
@@ -605,9 +604,9 @@ pub fn tick(cfg: &Cfg, run: &dyn Runner, now: u64, force: bool) -> Report {
                             continue;
                         }
                         st.edge_seen.insert(key, now);
-                        let (text, jobs) = edge_text(cfg, e.kind, &repo, &status);
+                        let (text, jobs) = parse::edge_text(cfg, &e.kind, &repo.slug, &repo.branch, &repo.sha, &status);
                         st.next_seq += 1;
-                        new_edges.push(json!({"seq": st.next_seq, "ts": now, "kind": e.kind, "root": repo.root, "slug": repo.slug, "branch": repo.branch, "sha": repo.sha, "number": status["number"], "text": text, "jobs": jobs, "advisory": cfg.strs("github_rt.advisory_kinds").iter().any(|k| k == e.kind)}));
+                        new_edges.push(json!({"seq": st.next_seq, "ts": now, "kind": e.kind, "root": repo.root, "slug": repo.slug, "branch": repo.branch, "sha": repo.sha, "number": status["number"], "text": text, "jobs": jobs, "advisory": cfg.strs("github_rt.advisory_kinds").contains(&e.kind)}));
                     }
                     repo.next_poll_ms = now + ctx.cadence(&st, &status);
                     repo.last_poll_ms = now;

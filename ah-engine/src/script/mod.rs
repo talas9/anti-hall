@@ -181,13 +181,12 @@ fn load_libs(pool: &Pool, libs: &Fingerprint) -> Result<Context, String> {
 
 /// Evaluate check `name`'s own files `own` in the shared context, inside `script.check_scope`, and register the entry it
 /// defines. `Err` carries the reason (an unreadable file, an exception, no entry function).
-fn load_check(ctx: &Context, name: &str, own: &Fingerprint) -> Result<(), String> {
+fn load_check(ctx: &Context, name: &str, own: &Fingerprint, entry: &str) -> Result<(), String> {
     let mut src = String::new();
     for (path, _, _) in own {
         src.push_str(&std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?);
         src.push('\n');
     }
-    let entry = defaults::text("script.entry");
     let body = defaults::render("script.check_scope", &[("entry", &entry), ("source", &src)]);
     ctx.with(|c| -> Result<(), String> {
         let f: JsValue = c.eval(body).catch(&c).map_err(|e| format!("{name}: {e}"))?;
@@ -297,17 +296,13 @@ fn limit_ms(name: &str, event: &str) -> u64 {
         .map_or_else(|| defaults::num("script.time_limit_ms"), |ms| ms.max(1) as u64)
 }
 
-fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
-    let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
-        let mut slot = cell.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(Pool::new().ok_or("runtime")?);
-        }
-        let pool = slot.as_mut().ok_or("runtime")?;
+/// The shared context with the entry `entry` of `own` registered under `key`, built (and the memory ceiling set) when the lib
+/// files or the entry's files changed since.
+fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprint, entry: &str) -> Result<Context, String> {
         let libs_stale = pool.ctx.as_ref().is_none_or(|(fp, _)| fp != libs);
-        if libs_stale || pool.checks.get(name).is_none_or(|fp| fp != own) {
+        if libs_stale || pool.checks.get(key).is_none_or(|fp| fp != own) {
             // a replaced context or entry goes before the new one is built, and its cycles are collected
-            pool.checks.remove(name);
+            pool.checks.remove(key);
             if libs_stale {
                 pool.checks.clear();
                 pool.ctx = None;
@@ -318,13 +313,70 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
                 pool.ctx = Some((libs.clone(), load_libs(pool, libs)?));
             }
             let ctx = pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or("context")?;
-            load_check(&ctx, name, own)?;
-            pool.checks.insert(name.to_string(), own.clone());
+            load_check(&ctx, key, own, entry)?;
+            pool.checks.insert(key.to_string(), own.clone());
             pool.rt.run_gc();
             let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
             pool.rt.set_memory_limit(base + defaults::num("script.call_memory_bytes") as usize);
         }
-        let ctx = pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or("context")?;
+    pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or_else(|| "context".to_string())
+}
+
+/// Ask the plugin script `name` (`engine/logic/<name>.js`, owner override first) to apply one of its rules: call its top-level
+/// function `func` with `args` (JSON in, JSON out). This is how engine code that is not a hook (the GitHub poller, a statusline
+/// segment) reads a rule from the plugin instead of holding it: the script is the rule. `None` when scripts are off, the script
+/// is missing, or the call failed (an exception, the time or heap limit, a result that is not JSON); the reason is logged, and the
+/// caller decides what no answer means. The same bounds as a hook's script apply.
+pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
+    if defaults::num("script.enabled") == 0 {
+        return None;
+    }
+    let env = RequestEnv::from_pairs(std::env::vars());
+    let st = Settings::from_env(&env);
+    let (libs, own) = resolve(name, &st.home)?;
+    let key = format!("{name}#{func}");
+    let r = POOL.with(|cell| -> Result<Value, String> {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(Pool::new().ok_or("runtime")?);
+        }
+        let pool = slot.as_mut().ok_or("runtime")?;
+        let ctx = ensure_entry(pool, &key, &libs, &own, func)?;
+        let raw = serde_json::to_string(args).map_err(|e| e.to_string())?;
+        let limit = limit_ms(name, func).saturating_mul(1_000_000);
+        host::with_call(st, || {
+            host::set_deadline(Some(pool.deadline.clone()));
+            pool.deadline.store((pool.epoch.elapsed().as_nanos() as u64).saturating_add(limit).max(1), Ordering::Relaxed);
+            let out = ctx.with(|c| -> Result<String, String> {
+                let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
+                let f: Function = reg.get(key.as_str()).catch(&c).map_err(|e| e.to_string())?;
+                let a: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
+                let v: JsValue = f.call((a,)).catch(&c).map_err(|e| e.to_string())?;
+                let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
+                Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
+            });
+            pool.deadline.store(0, Ordering::Relaxed);
+            host::set_deadline(None);
+            serde_json::from_str(&out?).map_err(|e| e.to_string())
+        })
+    });
+    match r {
+        Ok(v) => Some(v),
+        Err(e) => {
+            crate::discard::note("script_error", &format!("{name}.{func}: {e}"));
+            None
+        }
+    }
+}
+
+fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
+    let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(Pool::new().ok_or("runtime")?);
+        }
+        let pool = slot.as_mut().ok_or("runtime")?;
+        let ctx = ensure_entry(pool, name, libs, own, defaults::text("script.entry"))?;
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
         let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
         let limit = limit_ms(name, event).saturating_mul(1_000_000);

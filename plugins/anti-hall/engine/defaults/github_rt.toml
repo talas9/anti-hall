@@ -211,6 +211,14 @@ value = { running = ["queued", "in_progress", "waiting", "pending", "requested"]
 
 # ---- edges and consumers ----------------------------------------------------------------------------------
 
+[github_rt.rules_script]
+doc = "The plugin script (under engine/logic/) that holds the GitHub realtime rules: summaries, status, edges, edge text, statusline pieces and polling cadence."
+value = "rules/gh-rt"
+
+[github_rt.cadence_fallback]
+doc = "The setting (one of the poll_*_ms) a repo is polled by when the rules script gives no answer for its status."
+value = "poll_idle_ms"
+
 [github_rt.edge_cooldown_ms]
 doc = "The same edge (repo, kind, pull request or commit) is recorded at most once in this time."
 value = 600000

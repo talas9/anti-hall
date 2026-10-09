@@ -22,7 +22,6 @@ pub mod guardkit;
 pub mod handover;
 pub mod idle_agent_sweep;
 pub mod jsport;
-pub mod mcp_reaper;
 pub mod replykit;
 pub mod scripted;
 pub mod session;
@@ -242,7 +241,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::HANDOVER_HYGIENE,
         &scripted::AGENT_REMINDERS,
         &crate::dswire::consume::RtAdvisory,
-        &mcp_reaper::SessionEndMcpReaper,
+        &scripted::SESSION_END_MCP_REAPER,
         &scripted::PROCWATCH_ADVISORY,
         &task_tracker::TaskTracker,
     ];
