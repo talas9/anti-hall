@@ -7,6 +7,12 @@ description: "Use when spawning, messaging or stopping agents, keeping the task 
 
 Subagent, task-list, delegation and routing guards.
 
+## Verbs
+
+| Verb | What it does | Roles |
+|---|---|---|
+| `ah-engine agents` | `<status\|tick> [--json]` The agent tracker (feature 21): `status` lists every tracked agent (main sessions, subagents and background tasks, DevSwarm workspaces)... | main, codex, workspace, subagent (owner args: tick) |
+
 ## Guards
 
 - `coordinator-work-guard`: Main-thread work window
@@ -25,6 +31,8 @@ Subagent, task-list, delegation and routing guards.
 - `dispatch-tier`: Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in...
 - `task-guard`: Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has no running agent, else the generic...
 - `tasklist-guard`: Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale progress file, with the Node hook's loop...
+- `sibling-sweep`: Stop and SubagentStop reminder: when the reply states the cause of a bug in a fix context and the turn shows no search for other...
+- `agent-reminders`: Delivers the agent tracker's queued reminders and advisories to the session or subagent that owns them, at its next UserPromptSubmit or...
 - `task-tracker`: UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe...
 
 ## Switches
@@ -62,5 +70,8 @@ Subagent, task-list, delegation and routing guards.
 - `guards.tasklistWorkThreshold` = 3: How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold)
 - `guards.siblingSweep` = true: Where the on/off switch is read from (guards.siblingSweep, default on)
 - `context.taskTracker` = true: Where the check's on/off switch is read from (context.taskTracker, default on)
+- `agents.ownerNotify` = false: Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes that name the owner channel append a...
+- `agents.reminders` = true: Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued...
+- `agents.tracker` = true: Where the tracker's on/off switch is read from (agents.tracker, default on): off, a tick does nothing
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

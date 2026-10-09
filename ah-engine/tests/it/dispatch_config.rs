@@ -12,12 +12,19 @@ struct Env {
     dir: PathBuf,
 }
 
-const POST_BASH: [&str; 6] =
-    ["merge-side-pick:post", "git-guard:audit", "output-verify-guard", "devswarm-parent-reply-tracker", "devswarm-child-drain", "coordinator-work-guard:post"];
+const POST_BASH: [&str; 7] = [
+    "merge-side-pick:post",
+    "git-guard:audit",
+    "output-verify-guard",
+    "devswarm-parent-reply-tracker",
+    "devswarm-child-drain",
+    "coordinator-work-guard:post",
+    "agent-reminders",
+];
 /// Entries the engine answers itself in these tests' environment, so no Node command runs for them. None: the tests run with
 /// the checks down (`AH_ENGINE_NOSPAWN=1`), so every entry runs as its Node command.
 const POST_NATIVE: [&str; 0] = [];
-const PRE_BASH: [&str; 10] = [
+const PRE_BASH: [&str; 11] = [
     "compact-declaration-guard",
     "git-guard",
     "command-guard",
@@ -27,6 +34,7 @@ const PRE_BASH: [&str; 10] = [
     "scan-throttle",
     "api-guard",
     "ship-it-guard",
+    "procwatch-advisory",
     "engine-role-guard",
 ];
 
@@ -154,7 +162,7 @@ fn order_and_max_rules_decide_which_entries_run_and_how_their_answers_combine() 
     );
     assert_eq!(e.ran(), ["coordinator-work-guard:post", "merge-side-pick:post", "output-verify-guard"], "the cut entries never started");
     let log = e.log();
-    assert!(log.contains("dispatch_plan") && log.contains("skipped_max_rules=[git-guard:audit,devswarm-parent-reply-tracker,devswarm-child-drain]"), "{log}");
+    assert!(log.contains("dispatch_plan") && log.contains("skipped_max_rules=[git-guard:audit,devswarm-parent-reply-tracker,devswarm-child-drain,agent-reminders]"), "{log}");
 }
 
 #[test]

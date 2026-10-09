@@ -212,8 +212,6 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::EDIT_GUARD,
         &scripted::ENGINE_ROLE_GUARD,
         &scripted::ENGINE_ROLE_NOTE,
-        &scripted::ENGINE_ROLE_GUARD,
-        &scripted::ENGINE_ROLE_NOTE,
         &devswarm_comms::DevswarmCommsGuard,
         &scripted::SWARM_GUARD,
         &scripted::JEV_WEEKLY_SCORECARD,

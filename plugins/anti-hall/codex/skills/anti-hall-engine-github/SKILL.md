@@ -16,6 +16,10 @@ Git, merge and release guards.
 
 ## Switches
 
+- `guards.gitAliasResolve` = true: Switch for git alias and shell definition resolution
+- `safety.gitGuard` = true: Master switch of the check: settings.json section and key, environment variable and plugin-option name
+- `guards.gitGuardHeredocData` = true: Switch for data-heredoc masking
+- `guards.gitReusedMessageCheck` = true: Switch for the reused-commit-message check
 - `guards.mergeGate` = false: Where the opt-in switch is read from (guards.mergeGate, default off)
 - `guards.mergeSidePickAdvisory` = true: Where the on/off switch is read from (guards.mergeSidePickAdvisory, default on)
 - `guards.shipitGate` = false: Where the opt-in switch is read from (guards.shipitGate, default off)
