@@ -10,6 +10,8 @@ use serde_json::Value;
 use std::path::Path;
 
 struct Laid {
+    /// The case's scratch home, removed once the check is measured.
+    home: String,
     payload: Value,
     opts: Value,
     event: String,
@@ -107,6 +109,7 @@ fn lay(case: &Value, seq: usize) -> Laid {
         .map(|o| o.iter().map(|(k, v)| (k.clone(), fill(v.as_str().unwrap_or_default(), &home, &real))).collect())
         .unwrap_or_default();
     Laid {
+        home: home.clone(),
         payload: sub(case.get("payload").unwrap_or(&Value::Null), &home, &real),
         opts: sub(case.get("opts").unwrap_or(&Value::Null), &home, &real),
         event: case.get("event").and_then(Value::as_str).unwrap_or("PreToolUse").to_string(),
@@ -148,6 +151,11 @@ fn scripted_checks_stay_inside_the_latency_budget() {
             if started.elapsed() > std::time::Duration::from_secs(10) {
                 break;
             }
+        }
+        // the homes live in the temp dir: left behind, every run of this test added one per golden case (the live6 replay found
+        // ~390,000 there, and a Python probe that lists the temp dir took tens of seconds)
+        for l in &laid {
+            ah_engine::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
         }
         us.sort_unstable();
         let (p50, p95, p99) = (us[us.len() / 2], us[us.len() * 95 / 100], us[us.len() * 99 / 100]);
