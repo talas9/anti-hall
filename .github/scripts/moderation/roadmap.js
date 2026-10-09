@@ -80,7 +80,8 @@ async function plan({ github, context, core }) {
       const data = { done: closed.map((c) => c.title), in_progress: items.filter((i) => i.labels.includes('status:in-progress')).map((i) => i.title), next: next.map((n) => n.title) };
       core.setOutput('prompt', L.buildPrompt('digest', JSON.stringify(data), '', cfg));
       core.setOutput('schema', JSON.stringify(L.prompt('digest').schema));
-      core.setOutput('claude_model', cfg.model.claude_models.digest);
+      core.setOutput('claude_model', L.modelFor(cfg, 'digest').claude);
+      core.setOutput('copilot_model', L.modelFor(cfg, 'digest').copilot);
       core.setOutput('chain', chain.join(','));
     } else state.model_skip = chain.length ? 'daily cap reached' : 'AI_PROVIDER=none';
   }

@@ -43,6 +43,7 @@ jobs:
       prompt: ${{ steps.gate.outputs.prompt }}
       schema: ${{ steps.gate.outputs.schema }}
       claude_model: ${{ steps.gate.outputs.claude_model }}
+      copilot_model: ${{ steps.gate.outputs.copilot_model }}
       chain: ${{ steps.gate.outputs.chain }}
     steps:
       - name: Checkout the rules (default branch, never the PR)
@@ -75,11 +76,13 @@ jobs:
       prompt: ${{ needs.gate.outputs.prompt }}
       schema: ${{ needs.gate.outputs.schema }}
       claude_model: ${{ needs.gate.outputs.claude_model }}
+      copilot_model: ${{ needs.gate.outputs.copilot_model }}
       chain: ${{ needs.gate.outputs.chain }}
       tools: none
       max_turns: 2
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
 
   apply:
     needs: [gate, model]

@@ -25,11 +25,45 @@ function scan(diff, cfg, deny) {
   return hits;
 }
 
+// m***@t*** : first char of the local part and of the domain, rest hidden.
+function maskEmail(e) {
+  const [l, d = ''] = String(e).split('@');
+  return `${l.slice(0, 1)}***@${d.slice(0, 1)}***`;
+}
+
+function emailAllowed(email, allow) {
+  const e = String(email).trim().toLowerCase();
+  return allow.some((a) => {
+    const p = a.toLowerCase();
+    return p.startsWith('*@') ? e.endsWith(p.slice(1)) && e.length > p.length - 1 : e === p;
+  });
+}
+
+// log: output of `git log --format=%H%x09%ae%x09%ce`; returns one finding per commit with a bad email.
+function identityHits(log, cfg) {
+  const allow = cfg.privacy.commit_email_allow || [];
+  const hits = [];
+  for (const row of log.split('\n')) {
+    if (!row.trim()) continue;
+    const [sha, ae = '', ce = ''] = row.split('\t');
+    for (const e of [...new Set([ae, ce])]) {
+      if (!emailAllowed(e, allow)) hits.push({ rule: 'commit-identity', sha, msg: `commit ${sha.slice(0, 10)} authored as ${maskEmail(e)}; re-author as the maintainer identity` });
+    }
+  }
+  return hits;
+}
+
 function main() {
   const [base, head] = process.argv.slice(2);
   const cfg = L.loadConfig();
   const diff = execFileSync('git', ['diff', '--no-color', '--no-ext-diff', '-U0', '--diff-filter=AMR', `${base}..${head}`], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
   const hits = scan(diff, cfg, process.env.PRIVATE_DENYLIST);
+  const ids = identityHits(execFileSync('git', ['log', '--format=%H%x09%ae%x09%ce', `${base}..${head}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }), cfg);
+  for (const i of ids) {
+    console.log(`::error::${i.msg}`);
+    if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `| privacy | ${i.msg} |\n`);
+    hits.push({ rule: i.rule, file: '(commit)', line: 0 });
+  }
   const sum = process.env.GITHUB_STEP_SUMMARY;
   for (const h of hits.slice(0, cfg.privacy.max_hits_reported)) {
     console.log(`::error file=${h.file},line=${h.line}::privacy rule "${h.rule}" (value not shown)`);
@@ -43,4 +77,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { scan };
+module.exports = { scan, identityHits, maskEmail, emailAllowed };

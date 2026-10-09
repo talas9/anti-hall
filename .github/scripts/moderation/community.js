@@ -171,7 +171,8 @@ function finish(core, state, call, chain, cfg) {
     core.setOutput('purpose', call.purpose);
     core.setOutput('prompt', L.buildPrompt(call.purpose, call.untrusted, call.context, cfg));
     core.setOutput('schema', JSON.stringify(schema));
-    core.setOutput('claude_model', cfg.model.claude_models[call.purpose]);
+    core.setOutput('claude_model', L.modelFor(cfg, call.purpose).claude);
+    core.setOutput('copilot_model', L.modelFor(cfg, call.purpose).copilot);
     core.setOutput('tools', call.tools);
     core.setOutput('max_turns', String(call.max_turns));
     core.setOutput('chain', chain.join(','));

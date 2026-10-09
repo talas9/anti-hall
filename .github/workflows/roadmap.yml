@@ -53,6 +53,7 @@ jobs:
       prompt: ${{ steps.plan.outputs.prompt }}
       schema: ${{ steps.plan.outputs.schema }}
       claude_model: ${{ steps.plan.outputs.claude_model }}
+      copilot_model: ${{ steps.plan.outputs.copilot_model }}
       chain: ${{ steps.plan.outputs.chain }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,11 +83,13 @@ jobs:
       prompt: ${{ needs.plan.outputs.prompt }}
       schema: ${{ needs.plan.outputs.schema }}
       claude_model: ${{ needs.plan.outputs.claude_model }}
+      copilot_model: ${{ needs.plan.outputs.copilot_model }}
       chain: ${{ needs.plan.outputs.chain }}
       tools: none
       max_turns: 2
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
 
   apply:
     needs: [plan, model]
