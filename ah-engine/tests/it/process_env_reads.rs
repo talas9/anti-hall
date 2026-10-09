@@ -62,7 +62,10 @@ const ALLOW: &[(&str, &str)] = &[
         "src/script/mod.rs",
         "`call_fn`, engine code that is not a hook (the GitHub poller, a statusline segment) reading a rule from a plugin script: there is no request, so the engine process's own settings environment selects the plugin home",
     ),
-    ("src/dsact/runner.rs", "names the daemon's inherited variables to REMOVE from a spawned hivecontrol child (scrub prefixes from config); no value is read or used"),
+    (
+        "src/dsact/runner.rs",
+        "names the daemon's inherited variables to REMOVE from a spawned hivecontrol child (scrub prefixes from config); no value is read or used",
+    ),
     (
         "src/dswire/mod.rs",
         "`Wire::start`, the DevSwarm layer's own startup in the daemon: detection of the host DevSwarm and its home are properties of the engine process, not of any request",
