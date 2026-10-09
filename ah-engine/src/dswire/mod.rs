@@ -200,9 +200,10 @@ impl Wire {
         }
         let home = self.home.clone();
         let busy = self.jev_busy.clone();
+        let snap = self.rt.current();
         let spawned = std::thread::Builder::new().name("ah-dswire-jev".into()).spawn(move || {
             let env = crate::jev::settings::Env::process();
-            crate::jev::sweep::sweep_only(&home, &env, now_ms(), Some(&only));
+            crate::jev::sweep::sweep_rt(&home, &env, now_ms(), Some(&only), Some(&snap));
             busy.store(false, Ordering::SeqCst);
         });
         if spawned.is_err() {
