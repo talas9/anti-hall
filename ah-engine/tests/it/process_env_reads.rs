@@ -79,6 +79,10 @@ const ALLOW: &[(&str, &str)] = &[
         "the scripted-check unit tests (`#[cfg(test)] mod tests` in script/mod.rs, a file of its own so the scan's `#[cfg(test)]` cut does not apply): the test process's wall-clock headroom `AH_TEST_TIME_SCALE`, which CI sets",
     ),
     (
+        "src/ghrt/ready.rs",
+        "`workspace_owns`, the GitHub poller (daemon background duty, no request): locates the DevSwarm app database from the engine process's own environment, like the DevSwarm layer's startup in `dswire/mod.rs`; `github_rt.ready_app_db` overrides it",
+    ),
+    (
         "src/dswire/cli.rs",
         "the `ah-engine devswarm` command-line process (and its one-shot state read): its own environment IS the caller's (the daemon is not involved, D76)",
     ),

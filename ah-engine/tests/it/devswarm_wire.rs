@@ -31,6 +31,8 @@ fn now() -> i64 {
 struct Stub {
     calls: Mutex<Vec<Vec<String>>>,
     git_fail: Mutex<Vec<String>>,
+    /// The app database the stand-in hivecontrol writes an archive into (the engine checks the database shows the archive).
+    db: Mutex<Option<PathBuf>>,
 }
 
 impl Runner for Stub {
@@ -55,6 +57,9 @@ impl Runner for Stub {
         }
         let mut call = spec.bin.clone().into_iter().collect::<Vec<_>>();
         call.extend(spec.args.iter().cloned());
+        if let (Some(db), Some(id)) = (self.db.lock().unwrap().as_ref(), (call.get(1).map(String::as_str) == Some("archive")).then(|| call.get(2)).flatten()) {
+            Connection::open(db).unwrap().execute("UPDATE builders SET isActive = 0, isHidden = 1 WHERE id = ?1", params![id]).unwrap();
+        }
         self.calls.lock().unwrap().push(call);
         ok("{\"archived\":true}")
     }
@@ -162,8 +167,16 @@ fn rt(w: &World) -> Rt {
 }
 
 fn wire(w: &World, stub: &Arc<Stub>, exec: Executor) -> Wire {
+    wire_with(w, stub, exec, &[("ANTIHALL_DEVSWARM_AUTO_ARCHIVE_EVENT_DEBOUNCE_MS", "0")])
+}
+
+/// `wire` with extra settings in the wire's environment (the event path of an edge archives once its debounce has passed).
+fn wire_with(w: &World, stub: &Arc<Stub>, exec: Executor, extra: &[(&str, &str)]) -> Wire {
+    *stub.db.lock().unwrap() = Some(w.db.clone());
     let sink: ah_engine::dswire::Sink = Arc::new(|_f| {});
-    let env = RequestEnv::from_pairs([("HOME", w.home.to_string_lossy().into_owned())]);
+    let mut pairs = vec![("HOME".to_string(), w.home.to_string_lossy().into_owned())];
+    pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    let env = RequestEnv::from_pairs(pairs);
     Wire::new(rt(w), &w.home, &w.state, None, sink, Box::new(Shared(stub.clone()))).with_executor(move |_| exec).with_env(env).with_act_gap(0)
 }
 
@@ -203,6 +216,7 @@ fn a_state_edge_leads_to_exactly_one_archive() {
     app_db(&w, "merged");
     let r = wire.reconcile(Cause::Event);
     assert!(!r.edges.is_empty(), "the merged PR is an edge");
+    wire.events_if_due(); // an edge archives through the event path, once its debounce has passed
     assert_eq!(archives(&stub), vec![vec!["workspace".to_string(), "archive".into(), "ws-1".into()]], "exactly one archive, with an explicit id");
     wire.reconcile(Cause::Periodic);
     wire.reconcile(Cause::Overflow);
@@ -279,7 +293,8 @@ fn a_real_file_event_drives_the_archive() {
 fn an_edge_inside_the_sweep_gap_is_not_lost() {
     let w = world("gap");
     let stub = Arc::new(Stub::default());
-    let wire = wire(&w, &stub, Executor::Engine).with_act_gap(400);
+    // the event path owns a plain edge's archive; with it off the edge's sweep is the one the gap holds back
+    let wire = wire_with(&w, &stub, Executor::Engine, &[("ANTIHALL_DEVSWARM_AUTO_ARCHIVE_EVENT_TRIGGER", "false")]).with_act_gap(400);
     stub.git_fail.lock().unwrap().push("status".into());
     wire.reconcile(Cause::Startup);
     stub.git_fail.lock().unwrap().clear();
