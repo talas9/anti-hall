@@ -31,6 +31,8 @@ pub struct CommandInfo {
     pub read_only: bool,
     /// For a command that changes state only in some forms: the first arguments (`""` = none) whose runs are read-only.
     pub read_only_args: Vec<String>,
+    /// For a command that changes state only in some forms: the flags whose presence makes a run read-only (`mesh ... --db`).
+    pub read_only_flags: Vec<String>,
     /// `implemented` or `planned (D-n)`.
     pub status: String,
     /// What it does.
@@ -92,6 +94,7 @@ pub fn commands() -> Vec<CommandInfo> {
             args: e.value.str_field("args").to_string(),
             read_only: e.value.get("read_only").and_then(defaults::V::as_bool).unwrap_or(false),
             read_only_args: e.value.get("read_only_args").map(|v| v.strings().into_iter().map(str::to_string).collect()).unwrap_or_default(),
+            read_only_flags: e.value.get("read_only_flags").map(|v| v.strings().into_iter().map(str::to_string).collect()).unwrap_or_default(),
             status: e.value.str_field("status").to_string(),
             doc: e.doc.to_string(),
         })
@@ -219,7 +222,7 @@ pub fn run(args: &[String]) -> i32 {
     }
     // a read-only command (or form) writes nothing, not even the telemetry its in-process checks would leave in the state directory
     let first = p.rest.iter().find(|a| !a.starts_with("--")).map_or("", String::as_str);
-    if info.read_only || info.read_only_args.iter().any(|a| a == first) {
+    if info.read_only || info.read_only_args.iter().any(|a| a == first) || info.read_only_flags.iter().any(|f| p.rest.iter().any(|a| a == f)) {
         crate::telemetry::emit::set_read_only();
     }
     match handlers().iter().find(|(n, _)| *n == p.command) {

@@ -86,7 +86,7 @@ fn read_only_verbs_create_nothing_in_an_empty_home() {
 fn every_read_only_command_in_the_registry_is_exercised_above() {
     ah_engine::defaults::init().unwrap();
     let covered: Vec<&str> = runs(&std::env::temp_dir()).iter().map(|r| r.0).collect();
-    for c in ah_engine::cli::commands().iter().filter(|c| c.read_only || !c.read_only_args.is_empty()) {
+    for c in ah_engine::cli::commands().iter().filter(|c| c.read_only || !c.read_only_args.is_empty() || !c.read_only_flags.is_empty()) {
         assert!(covered.contains(&c.name.as_str()), "{} is marked read-only in commands.toml but read_only_verbs.rs does not run it", c.name);
     }
 }
