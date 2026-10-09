@@ -18,6 +18,7 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - an absent field of a fact or a request is the empty value, which the decision script reads as "not proven"
 // - a record that cannot be appended to a log is lost, never the action's result
+pub mod audit;
 pub mod decide;
 pub mod exec;
 pub mod ledger;

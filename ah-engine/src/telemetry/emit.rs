@@ -336,6 +336,57 @@ pub fn agent_call(r: AgentRec<'_>) -> Event {
     base(Kind::Agent, r.class, r.name, r.outcome, 0, 0, Extras::Fields(r.fields))
 }
 
+/// One acting-feature action (the shared `act` schema: see `telemetry.fields`). Identifiers and numbers only.
+pub struct ActRec<'a> {
+    /// The feature (`h`), for example `auto-archive`.
+    pub feature: &'a str,
+    /// The action (`e`), for example `archive`.
+    pub action: &'a str,
+    /// How it ended: Allow = done, Block = refused or stale, Skip = not applicable, Error, Timeout.
+    pub outcome: Outcome,
+    /// Latency in milliseconds.
+    pub latency_ms: u64,
+    /// What it acted on (a workspace id, a PR number, ...).
+    pub target: &'a str,
+    /// A short digest of the inputs (never text).
+    pub inputs: &'a str,
+    /// Why it was refused or failed; empty when it ran.
+    pub reason: &'a str,
+    /// The id a mistake signal refers back to (normally the idempotency key).
+    pub action_id: &'a str,
+}
+
+fn act_fields(r: &ActRec<'_>) -> Fields {
+    let mut f = Fields::new().tok("target", r.target).tok("action_id", r.action_id);
+    if !r.inputs.is_empty() {
+        f = f.tok("inputs", r.inputs);
+    }
+    if !r.reason.is_empty() {
+        f = f.tok("reason", r.reason);
+    }
+    f
+}
+
+/// The event for one action.
+pub fn act_call(r: &ActRec<'_>) -> Event {
+    base(Kind::Act, r.feature, r.action, r.outcome, r.latency_ms.saturating_mul(1000), 0, Extras::Fields(act_fields(r)))
+}
+
+/// The event for a mistake signal about an earlier action (`r.action_id`); the outcome is always Advise.
+pub fn mistake_call(r: &ActRec<'_>) -> Event {
+    base(Kind::Mistake, r.feature, r.action, Outcome::Advise, 0, 0, Extras::Fields(act_fields(r)))
+}
+
+/// Record one action now (any process).
+pub fn act(r: &ActRec<'_>) {
+    event(act_call(r));
+}
+
+/// Record a mistake signal now (any process).
+pub fn mistake(r: &ActRec<'_>) {
+    event(mistake_call(r));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

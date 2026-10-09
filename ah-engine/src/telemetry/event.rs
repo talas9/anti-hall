@@ -83,6 +83,10 @@ pub enum Kind {
     Model,
     /// The agent tracker: a per-agent series sample, a raised signal, a reminder (sent or held back) or an outcome.
     Agent,
+    /// One acting-feature action (the DevSwarm action layer and the expansion features): h = feature, e = action.
+    Act,
+    /// A mistake signal: a later observation that an earlier action (`action_id`) should not have been taken.
+    Mistake,
 }
 
 impl Kind {
@@ -101,6 +105,8 @@ impl Kind {
             Kind::Daemon => "daemon",
             Kind::Model => "model",
             Kind::Agent => "agent",
+            Kind::Act => "act",
+            Kind::Mistake => "mistake",
         }
     }
 
@@ -119,6 +125,8 @@ impl Kind {
             "daemon" => Kind::Daemon,
             "model" => Kind::Model,
             "agent" => Kind::Agent,
+            "act" => Kind::Act,
+            "mistake" => Kind::Mistake,
             _ => return None,
         })
     }
@@ -482,7 +490,7 @@ fn extra_fields(kind: Kind) -> Vec<&'static str> {
         Kind::Jev => &["integration", "mode", "verdict", "cost_uc"],
         Kind::Spill => &["bytes"],
         Kind::Delegate => &["spawn_key", "requested_model", "selected_model", "task_class"],
-        Kind::Hook | Kind::Check | Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent => &[],
+        Kind::Hook | Kind::Check | Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake => &[],
     };
     // the schema-driven kinds (and the detail of a Jev call) take their field names from the shipped `telemetry.fields`
     fixed.iter().copied().chain(schema(kind).into_iter().map(|(n, _)| n)).collect()
@@ -606,7 +614,7 @@ impl Event {
                 selected_model: tok("selected_model")?,
                 task_class: tok("task_class")?,
             }),
-            Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent => Extras::Fields(Fields::read(kind, m)?),
+            Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake => Extras::Fields(Fields::read(kind, m)?),
             Kind::Hook | Kind::Check => Extras::None,
         };
         Ok(Event { ts_ms, kind, h: tok("h")?, e: tok("e")?, o, ms: num("ms")?.min(u32::MAX as u64) as u32, ib: num("ib")?, extras })

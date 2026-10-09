@@ -721,6 +721,33 @@ spenders: injected context (injected bytes over `telemetry.bytes_per_token`, pri
 parent model) and recorded Jev cost. Every figure is labelled an estimate and states its method. Prices come from
 `impact.price_table`; it has no verified prices yet, so spawns are counted as unpriced and no dollar figure is invented.
 
+### Action and mistake events (one schema for every acting feature)
+
+Every feature that acts emits one `act` event per action and, when a later observation shows the action should not have been
+taken, one `mistake` event that points back at it. Both are ordinary telemetry events (identifiers and numbers only; field
+names live in `telemetry.fields` in `telemetry.toml`). Emit with `telemetry::emit::act(&ActRec{..})` and
+`telemetry::emit::mistake(&ActRec{..})`; any process may call them.
+
+| Concept | Event field | Meaning |
+| --- | --- | --- |
+| feature | `h` | The feature, a stable lowercase name (`auto-archive`, `poke`, `nag`, ...). |
+| action | `e` | The verb the feature performed (`archive`, `poke`, ...). |
+| outcome | `o` | `act`: `allow` = ran and verified, `block` = refused, stale or unverifiable, `skip` = not applicable, `error`, `timeout`. `mistake`: always `advise`. |
+| latency_ms | `ms` | Wall time of the action in whole milliseconds (`act` only). |
+| target | `target` | What it acted on (a workspace id, a PR number); an identifier, never text. |
+| inputs | `inputs` | A short digest of the decision inputs (optional). |
+| reason | `reason` | `act`: why it was refused or failed (a stable word such as `stale`, `refused`, `in-doubt`). `mistake`: what showed it was wrong (`reopened`, `reverted`, ...). |
+| action_id | `action_id` | The idempotency key of the action (cut to `telemetry.token_max_len`). A `mistake` carries the `action_id` of the `act` it refers to. |
+
+The DevSwarm action layer (`dsact`) emits an `act` event for every action it attempts, including refusals, with the ledger
+outcome word as the `reason`. `ah-engine devswarm ledger [--json] [--since 7d|36h|<days>]` (every role may run it; switch:
+`devswarm_act.audit_enabled`, on) is the one report: per feature the runs, done, failed, refused, success rate
+(done / finished), refusals by reason, mistaken actions and mistake rate (distinct mistaken actions / done), p50 and p95
+latency; the action ledger (outcomes per kind, keys started and never finished); and the Node witness agreement from
+`dsact.shadow`. A mistake whose `action_id` matches no `act` event is counted as `orphanMistakes`. `doctor` shows the same
+data as an "Action audit" section when there is any, and warns above `devswarm_act.audit_failure_warn_pct` /
+`audit_mistake_warn_pct`, for in-doubt keys and for witness disagreements. It only reads.
+
 ## Storage
 
 The daemon keeps what it records in two SQLite databases inside the state directory (D19, D21). SQLite is compiled into

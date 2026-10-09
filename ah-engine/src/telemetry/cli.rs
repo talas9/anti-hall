@@ -23,7 +23,7 @@ fn now_ms() -> u64 {
 }
 
 /// Open the databases for reading; `None` when no database exists yet.
-fn open_existing() -> Option<TelDb> {
+pub(crate) fn open_existing() -> Option<TelDb> {
     let dir = paths::dir();
     if !dir.join(defaults::text("storage.hot_file")).exists() {
         return None;

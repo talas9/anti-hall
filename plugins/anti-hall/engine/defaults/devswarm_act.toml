@@ -320,3 +320,57 @@ doc = "Size of one read from a child's output pipe."
 value = 65536
 min = 512
 max = 1048576
+
+# ---- the action audit (`ah-engine devswarm ledger`, the doctor section) ----------------------------------------------
+
+[devswarm_act.audit_enabled]
+doc = "The action audit view and its doctor section. On by default: it only reads the ledger, the witness file and the telemetry act/mistake events."
+value = true
+
+[devswarm_act.audit_outcomes]
+doc = "Which ledger outcome words map to which telemetry outcome of an `act` event: allow (the action ran and was verified), block (refused or stale or unverifiable), error, timeout. Any other word is `skip`."
+value = { allow = ["done"], block = ["refused", "stale", "in-doubt", "unavailable"], error = ["failed"], timeout = ["timeout"] }
+
+[devswarm_act.audit_default_days]
+doc = "The default window of the audit in days (`--since 7d`, `36h` or a day count overrides it)."
+value = 7
+min = 1
+max = 365
+
+[devswarm_act.audit_event_limit]
+doc = "Most act and most mistake events the audit reads from telemetry."
+value = 20000
+min = 100
+
+[devswarm_act.audit_failure_warn_pct]
+doc = "The doctor warns for a feature whose finished actions failed or timed out more often than this percentage."
+value = 20
+min = 0
+max = 100
+
+[devswarm_act.audit_mistake_warn_pct]
+doc = "The doctor warns for a feature where more than this percentage of completed actions drew a mistake signal."
+value = 5
+min = 0
+max = 100
+
+[devswarm_act.audit_mismatch_top]
+doc = "How many recent witness mismatches the audit lists."
+value = 10
+min = 1
+
+[devswarm_act.msg_audit_feature]
+doc = "Doctor line for one acting feature. Placeholders: feature, runs, done, failed, refused, mistakes."
+value = "{feature}: {runs} actions, {done} done, {failed} failed, {refused} refused, {mistakes} drew a mistake signal"
+
+[devswarm_act.msg_audit_in_doubt]
+doc = "Doctor warning: ledger keys that started and never finished (the effect is in doubt). Placeholder: n."
+value = "{n} action key(s) started and never finished (effect in doubt; they are never rerun): see `ah-engine devswarm ledger`"
+
+[devswarm_act.msg_audit_witness]
+doc = "Doctor warning: the engine and the Node witness disagreed. Placeholders: mismatch, n."
+value = "the Node witness disagreed with the engine on {mismatch} of {n} comparison(s): see `ah-engine devswarm ledger`"
+
+[devswarm_act.msg_audit_off]
+doc = "Answer of the ledger verb when the audit is switched off."
+value = "the action audit is switched off (devswarm_act.audit_enabled)"

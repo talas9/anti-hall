@@ -186,6 +186,13 @@ impl<'a> Act<'a> {
 
     /// Claim, run, check, record one action. `check` decides whether a successful process really did the job.
     fn execute(&self, kind: &str, id: &str, d: &Value, timeout_ms: u64, check: &dyn Fn(&RunResult) -> Result<(), String>) -> Report {
+        let t0 = std::time::Instant::now();
+        let r = self.execute_inner(kind, id, d, timeout_ms, check);
+        crate::telemetry::emit::act(&super::audit::act_rec(&r, t0.elapsed().as_millis() as u64));
+        r
+    }
+
+    fn execute_inner(&self, kind: &str, id: &str, d: &Value, timeout_ms: u64, check: &dyn Fn(&RunResult) -> Result<(), String>) -> Report {
         // a merge's informational check is side-effecting, so it runs only once the key is claimed
         let pre = d.get("pre").and_then(strings).filter(|p| self.argv_ok(p).and_then(|_| self.capability(&p[1])).is_ok());
         let key = d.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
