@@ -183,6 +183,8 @@ struct Holder {
     pid: Option<i64>,
     age_ms: f64,
     dead: bool,
+    /// A parsed record with a local pid (the pid can be probed).
+    known: bool,
 }
 
 fn parse_record(raw: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -231,7 +233,7 @@ fn inspect(path: &str, p: &Params) -> Option<Holder> {
     let age_ms = ts.map_or(f64::INFINITY, |t| (now_ms() as f64 - t).max(0.0));
     let known = pid.is_some() && (host.is_none() || host.as_deref() == Some(hostname().as_str()) || rec.as_ref().is_some_and(|r| same_machine(r, p)));
     let dead = known && !pid_alive(pid.unwrap_or(0));
-    Some(Holder { token, ts_from_mtime, ts, pid, age_ms, dead })
+    Some(Holder { token, ts_from_mtime, ts, pid, age_ms, dead, known })
 }
 
 enum Published {
@@ -347,12 +349,29 @@ fn release_unguarded(path: &str, token: &str) -> bool {
 
 /// `shouldSteal` for the policies in use: the live-holder limit equals `stale_ms` in both callers, so a dead holder
 /// (with `steal_dead`) or any holder older than `stale_ms` is taken over.
-fn stealable(h: &Holder, p: &Params) -> bool {
+fn stealable(h: &Holder, p: &Params, respect_live: bool) -> bool {
+    if respect_live {
+        // the ingest rule (`companion/devswarm-ingest.js` STEAL RULE): a holder whose pid is known to be dead is taken over
+        // at once, an unknown one once it is stale, and a LIVE one never (stealing from a live consumer would split a
+        // destructive queue between two readers)
+        let live = h.known && !h.dead;
+        return h.dead || (h.age_ms > p.stale_ms as f64 && !live);
+    }
     (p.steal_dead && h.dead) || h.age_ms > p.stale_ms as f64
 }
 
 /// `acquire(path, ...)`: `None` when the lock could not be taken (the caller fails open).
 pub fn acquire(path: &str, p: Params) -> Option<Held> {
+    acquire_with(path, p, false)
+}
+
+/// `acquire` with the ingest daemon's steal rule: a live holder is never taken over, however old its record (see
+/// `stealable`). The rest is the same protocol.
+pub fn acquire_respecting_live(path: &str, p: Params) -> Option<Held> {
+    acquire_with(path, p, true)
+}
+
+fn acquire_with(path: &str, p: Params, respect_live: bool) -> Option<Held> {
     if let Some(i) = path.rfind('/')
         && i > 0
     {
@@ -375,14 +394,14 @@ pub fn acquire(path: &str, p: Params) -> Option<Held> {
             Published::Failed => return None,
         }
         let Some(h) = inspect(path, &p) else { continue };
-        if stealable(&h, &p) {
+        if stealable(&h, &p, respect_live) {
             // reclaimGuarded: only a holder of the takeover marker may rename or remove the lock, and it re-judges first.
             let r = match take_sidecar(path, &p) {
                 None => None,
                 Some(side) => {
                     let out = match inspect(path, &p) {
                         None => Reclaimed::Gone,
-                        Some(fresh) if stealable(&fresh, &p) => reclaim(path, &fresh),
+                        Some(fresh) if stealable(&fresh, &p, respect_live) => reclaim(path, &fresh),
                         Some(_) => Reclaimed::Caught,
                     };
                     release_unguarded(&side.path, &side.token);
@@ -405,7 +424,47 @@ pub fn acquire(path: &str, p: Params) -> Option<Held> {
     }
 }
 
+/// The three answers of [`Held::refresh`] (Node: `true`, `false`, `'error'`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refresh {
+    /// The lock is still ours and its time was re-stamped.
+    Ok,
+    /// Definitive loss: the file is gone, or it parsed cleanly with another token.
+    Lost,
+    /// Not proof of loss (a torn or unreadable file, a failed write, a reclaimer at work): keep going and retry.
+    Error,
+}
+
 impl Held {
+    /// `refresh(handle)` (`companion/lib/lock.js`): re-stamp `ts` of our own record with a temp file and a rename, under
+    /// the reclaim marker so a stealer cannot publish its own lock between our token check and our rename.
+    pub fn refresh(&self) -> Refresh {
+        let Some(side) = take_sidecar(&self.path, &self.p) else { return Refresh::Error };
+        let out = self.refresh_locked();
+        release_unguarded(&side.path, &side.token);
+        out
+    }
+
+    fn refresh_locked(&self) -> Refresh {
+        let raw = match std::fs::read(&self.path) {
+            Ok(b) => String::from_utf8_lossy(&b).to_string(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Refresh::Lost,
+            Err(_) => return Refresh::Error,
+        };
+        let Some(mut cur) = parse_record(&raw) else { return Refresh::Error };
+        if cur.get("token").and_then(serde_json::Value::as_str) != Some(self.token.as_str()) {
+            return Refresh::Lost;
+        }
+        cur.insert("ts".to_string(), serde_json::json!(now_ms()));
+        let tmp = format!("{}{}{}-{}", self.path, defaults::text("swarm_guard.lock_hb_infix"), std::process::id(), rand());
+        let wrote = std::fs::write(&tmp, serde_json::Value::Object(cur).to_string()).and_then(|()| std::fs::rename(&tmp, &self.path));
+        if wrote.is_err() {
+            crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup of our own temp; the failed write is the answer
+            return Refresh::Error;
+        }
+        Refresh::Ok
+    }
+
     /// `release(handle)`: true when our lock was removed; a lock that is no longer ours is left alone.
     pub fn release(self) -> bool {
         if std::fs::metadata(&self.path).is_err() {

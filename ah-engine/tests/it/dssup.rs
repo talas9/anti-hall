@@ -74,6 +74,8 @@ fn put(p: &Path, v: &Value) {
 fn settings(f: &Fx, extra: &[(&str, &str)]) -> Settings {
     let mut env: HashMap<String, String> = HashMap::new();
     env.insert("HOME".into(), f.home.to_string_lossy().into_owned());
+    // the witness has its own tests; everywhere else it stays off so the runner sees only the duties
+    env.insert("ANTIHALL_DEVSWARM_SUP_WITNESS".into(), "off".into());
     for (k, v) in extra {
         env.insert((*k).into(), (*v).into());
     }
@@ -210,7 +212,7 @@ fn a_tick_runs_the_duties_in_nodes_order_with_the_poke_owner_and_the_shared_lock
     let names: Vec<&str> = out["duties"].as_array().unwrap().iter().map(|d| d["duty"].as_str().unwrap()).collect();
     assert_eq!(names, ["log_rotate", "verdicts", "reconcile", "deferred", "app_sync", "retention", "housekeeping"]);
     let calls = rec.calls.lock().unwrap();
-    assert_eq!(calls.len(), 6, "log rotation is native, the other six are Node's functions");
+    assert_eq!(calls.len(), 5, "log rotation and housekeeping are native, the other five are Node's functions");
     for c in calls.iter() {
         assert_eq!(c.bin.as_deref(), Some("node"));
         assert_eq!(c.args[0], "-e");
@@ -220,6 +222,7 @@ fn a_tick_runs_the_duties_in_nodes_order_with_the_poke_owner_and_the_shared_lock
     }
     assert_eq!(calls[0].args[4], "engine", "the liveness sweep is told the engine pokes");
     assert!(calls[0].args[1].contains("sweepOnce") && calls[1].args[1].contains("reconcileSweepIfDue"));
+    assert!(calls.iter().all(|c| !c.args[1].contains("housekeepingSweepIfDue")), "housekeeping is native: no worker for it");
     drop(calls);
     assert!(!dev(&f).join("locks/sweep.lock").exists(), "the lock is released");
     let rec2 = Rec::default();
@@ -330,14 +333,14 @@ fn the_gate_agrees_with_nodes_own_answer_on_the_same_state() {
     assert_eq!(node, json!({"h": "cooldown", "r": "cooldown"}));
     assert_eq!(tick::run_duty("housekeeping", &ctx(&f, &st, true), &rec)["reason"], "cooldown");
     assert_eq!(tick::run_duty("reconcile", &ctx(&f, &st, true), &rec)["reason"], "cooldown");
-    // and the other way: an old state is due for both
+    // and the other way: an old state is due for both (Node is asked first: the engine's run advances the shared state file)
     put(&dev(&f).join("housekeeping-sweep-state.json"), &json!({"lastRunAt": now() - 4_000_000}));
-    assert_eq!(tick::run_duty("housekeeping", &ctx(&f, &st, true), &rec)["outcome"], "ran");
     let node = node_eval(
         &f.home,
-        "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");console.log(JSON.stringify({h:S.housekeepingSweepIfDue({home:process.argv[2]}).ran}))",
+        "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");const fs=require(\"fs\");const p=process.argv[2]+\"/.anti-hall/devswarm/housekeeping-sweep-state.json\";const before=fs.readFileSync(p,\"utf8\");const r=S.housekeepingSweepIfDue({home:process.argv[2]});fs.writeFileSync(p,before);console.log(JSON.stringify({h:r.ran}))",
     );
     assert_eq!(node["h"], true, "Node also finds it due");
+    assert_eq!(tick::run_duty("housekeeping", &ctx(&f, &st, true), &rec)["outcome"], "ran");
 }
 
 // ---- each duty against real Node on a fixture home ----------------------------------------------------------------------------
@@ -398,7 +401,10 @@ fn a_missing_node_fails_the_duty_and_not_the_tick() {
     assert_eq!(out["ran"], true);
     let d = out["duties"].as_array().unwrap();
     assert_eq!(d[0]["outcome"], "ran", "the native duty does not need Node");
-    assert!(d[1..].iter().all(|x| x["outcome"] == "failed"), "{out}");
+    for x in &d[1..] {
+        let native = x["duty"] == "housekeeping";
+        assert_eq!(x["outcome"] == "ran", native, "{x}: a native duty runs without Node, the others fail alone");
+    }
 }
 
 // ---- log rotation against Node ----------------------------------------------------------------------------------------------
@@ -671,4 +677,240 @@ fn the_status_verb_reports_owner_guard_and_gates() {
     assert_eq!(v["mode"], "witness");
     let hk = v["duties"].as_array().unwrap().iter().find(|d| d["duty"] == "housekeeping").unwrap();
     assert_eq!(hk["notDue"], "cooldown");
+}
+
+// ---- housekeeping, native, against Node's own sweep and with the witness ------------------------------------------------------
+
+const DAY_MS: i64 = 86_400_000;
+
+/// Make `rel` (under the DevSwarm state directory of `f`) a file whose modification time is `age_days` days before `at`.
+fn aged(f: &Fx, rel: &str, age_days: f64, at: i64) {
+    let p = dev(f).join(rel);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, "x").unwrap();
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_millis((at as f64 - age_days * DAY_MS as f64) as u64);
+    std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(t).unwrap();
+}
+
+fn seed_housekeeping(f: &Fx, at: i64) {
+    aged(f, "reaped/old.ndjson", 40.0, at);
+    aged(f, "reaped/new.ndjson", 2.0, at);
+    aged(f, "reaped/edge-in.ndjson", 29.5, at);
+    aged(f, "reaped/edge-out.ndjson", 30.5, at);
+    aged(f, "reaped/old-but-not-a-log.txt", 90.0, at);
+    aged(f, "reaped/2026-01-01/dated-old.ndjson", 60.0, at);
+    aged(f, "reaped/2026-01-01/dated-new.ndjson", 1.0, at);
+    aged(f, "reaped/a/b/too-deep-old.ndjson", 90.0, at);
+    aged(f, "child-gate/session-old.json", 20.0, at);
+    aged(f, "child-gate/session-new.json", 3.0, at);
+    aged(f, "child-gate/session-edge-out.json", 14.5, at);
+    aged(f, "child-gate/session-edge-in.json", 13.5, at);
+    aged(f, "child-gate/old-other.log", 90.0, at);
+    // files that are not the sweeps' business, however old
+    aged(f, "liveness/ws-1.json", 400.0, at);
+    aged(f, "locks/x.lock", 400.0, at);
+    aged(f, "inbox/ws-1.ndjson", 400.0, at);
+}
+
+fn tree(f: &Fx) -> Vec<String> {
+    let base = dev(f);
+    let mut out: Vec<String> = walk(&base).into_iter().map(|(p, _)| p.strip_prefix(&base).unwrap().to_string_lossy().into_owned()).collect();
+    out.sort();
+    out
+}
+
+fn node_housekeeping(home: &Path, at: i64) -> Value {
+    node_eval(
+        home,
+        &format!(
+            "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");const r=S.housekeepingSweepIfDue({{home:process.argv[2],now:{at}}});console.log(JSON.stringify(r))"
+        ),
+    )
+}
+
+#[test]
+fn native_housekeeping_removes_exactly_what_nodes_sweep_removes_and_nothing_else() {
+    if !have_node() {
+        return;
+    }
+    let at = now();
+    let (a, b) = (fx("hk-engine", true), fx("hk-node", true));
+    seed_housekeeping(&a, at);
+    seed_housekeeping(&b, at);
+    let st = settings(&a, &[]);
+    let mut c = ctx(&a, &st, true);
+    c.now = at;
+    let eng = tick::run_duty("housekeeping", &c, &Rec::default());
+    let node = node_housekeeping(&b.home, at);
+    assert_eq!(eng["outcome"], "ran", "{eng}");
+    assert_eq!(node["ran"], true, "{node}");
+    // the same files survive in both homes, byte for byte the same tree
+    assert_eq!(tree(&a), tree(&b));
+    let gone: Vec<String> = [
+        "reaped/old.ndjson",
+        "reaped/edge-out.ndjson",
+        "reaped/2026-01-01/dated-old.ndjson",
+        "child-gate/session-old.json",
+        "child-gate/session-edge-out.json",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let left = tree(&a);
+    for g in &gone {
+        assert!(!left.contains(g), "{g} is removed");
+    }
+    for keep in [
+        "reaped/new.ndjson",
+        "reaped/edge-in.ndjson",
+        "reaped/old-but-not-a-log.txt",
+        "reaped/2026-01-01/dated-new.ndjson",
+        "reaped/a/b/too-deep-old.ndjson",
+        "child-gate/session-new.json",
+        "child-gate/session-edge-in.json",
+        "child-gate/old-other.log",
+        "liveness/ws-1.json",
+        "locks/x.lock",
+        "inbox/ws-1.ndjson",
+    ] {
+        assert!(left.contains(&keep.to_string()), "{keep} stays");
+    }
+    // the result rows: same keys, same statuses, the same files (relative to each home)
+    let rows = |v: &Value, base: &Path, node: bool| -> Vec<(String, String)> {
+        let results = if node { &v["results"] } else { &v["detail"]["results"] };
+        let mut out: Vec<(String, String)> = results
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|r| r.as_array().unwrap().iter())
+            .map(|r| {
+                (r["status"].as_str().unwrap().to_string(), Path::new(r["file"].as_str().unwrap()).strip_prefix(base).unwrap().to_string_lossy().into_owned())
+            })
+            .collect();
+        out.sort();
+        out
+    };
+    assert_eq!(rows(&eng, &dev(&a), false), rows(&node, &dev(&b), true));
+    assert_eq!(eng["detail"]["results"].as_object().unwrap().keys().collect::<Vec<_>>(), node["results"].as_object().unwrap().keys().collect::<Vec<_>>());
+    // the cool-down state file is Node's, byte for byte
+    let state = |f: &Fx| std::fs::read_to_string(dev(f).join("housekeeping-sweep-state.json")).unwrap();
+    assert_eq!(state(&a), state(&b));
+    assert_eq!(state(&a), json!({"lastRunAt": at}).to_string());
+    // a second pass inside the cool-down is held back; forced past it, it finds nothing and fails nothing
+    assert_eq!(tick::run_duty("housekeeping", &c, &Rec::default())["reason"], "cooldown");
+    put(&dev(&a).join("housekeeping-sweep-state.json"), &json!({"lastRunAt": 0}));
+    let again = tick::run_duty("housekeeping", &c, &Rec::default());
+    assert_eq!(again["detail"]["results"]["reapedLogs"], json!([]));
+    assert_eq!(again["detail"]["results"]["childGate"], json!([]));
+    assert_eq!(tree(&a), tree(&b));
+}
+
+#[test]
+fn native_housekeeping_follows_the_retention_settings_and_a_bad_value_never_narrows_the_window() {
+    let at = now();
+    let f = fx("hk-settings", true);
+    seed_housekeeping(&f, at);
+    // a 10-day window for the logs removes the 29.5-day file too; the child-gate window stays at its default
+    put(&f.home.join(".anti-hall/settings.json"), &json!({"devswarm": {"reapedRetentionDays": 10, "childGateRetentionDays": 0}}));
+    let st = settings(&f, &[]);
+    let mut c = ctx(&f, &st, true);
+    c.now = at;
+    tick::run_duty("housekeeping", &c, &Rec::default());
+    let left = tree(&f);
+    assert!(!left.contains(&"reaped/edge-in.ndjson".to_string()), "10 days: the 29.5 day log goes");
+    assert!(left.contains(&"reaped/new.ndjson".to_string()));
+    assert!(left.contains(&"child-gate/session-edge-in.json".to_string()), "0 is not a window: the 14 day default applies");
+    assert!(!left.contains(&"child-gate/session-edge-out.json".to_string()));
+    // the environment wins over the file
+    let g = fx("hk-env", true);
+    seed_housekeeping(&g, at);
+    let st = settings(&g, &[("ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS", "1")]);
+    let mut c = ctx(&g, &st, true);
+    c.now = at;
+    tick::run_duty("housekeeping", &c, &Rec::default());
+    assert!(!tree(&g).contains(&"child-gate/session-new.json".to_string()), "1 day: the 3 day file goes");
+}
+
+#[test]
+fn native_housekeeping_is_off_with_the_switches_and_where_the_directories_are_absent() {
+    let at = now();
+    let f = fx("hk-off", true);
+    seed_housekeeping(&f, at);
+    let before = tree(&f);
+    let st = settings(&f, &[("ANTIHALL_DEVSWARM_SUPERVISOR", "off")]);
+    let mut c = ctx(&f, &st, true);
+    c.now = at;
+    assert_eq!(tick::run_duty("housekeeping", &c, &Rec::default())["reason"], "disabled");
+    let st = settings(&f, &[("DISABLE_ANTIHALL_DEVSWARM", "1")]);
+    let mut c = ctx(&f, &st, true);
+    c.now = at;
+    assert_eq!(tick::run_duty("housekeeping", &c, &Rec::default())["reason"], "disabled");
+    put(&f.home.join(".anti-hall/settings.json"), &json!({"devswarm": {"housekeepingSweep": "off"}}));
+    let st = settings(&f, &[]);
+    let mut c = ctx(&f, &st, true);
+    c.now = at;
+    assert_eq!(tick::run_duty("housekeeping", &c, &Rec::default())["reason"], "disabled");
+    std::fs::remove_file(f.home.join(".anti-hall/settings.json")).unwrap();
+    assert_eq!(tree(&f), before, "a disabled sweep removes nothing and writes no state");
+    // no reaped/ and no child-gate/: a routine no-op
+    let g = fx("hk-none", true);
+    let st = settings(&g, &[]);
+    let mut c = ctx(&g, &st, true);
+    c.now = at;
+    let out = tick::run_duty("housekeeping", &c, &Rec::default());
+    assert_eq!((out["outcome"].as_str(), out["detail"]["results"]["reapedLogs"].clone()), (Some("ran"), json!([])));
+}
+
+#[test]
+fn the_witness_runs_nodes_sweep_on_a_scratch_mirror_and_logs_agreement() {
+    if !have_node() {
+        return;
+    }
+    let at = now();
+    let f = fx("witness-hk", true);
+    seed_housekeeping(&f, at);
+    let st = settings(&f, &[("ANTIHALL_DEVSWARM_SUP_WITNESS", "on")]);
+    let mut c = ctx(&f, &st, true);
+    c.now = at;
+    let sys = System::configured();
+    let out = tick::run(&c, Owner::Engine, &sys);
+    let hk = out["duties"].as_array().unwrap().iter().find(|d| d["duty"] == "housekeeping").unwrap();
+    assert_eq!(hk["witness"]["match"], true, "{out}");
+    let log = std::fs::read_to_string(f.home.join(".anti-hall/logs/devswarm-sup-witness.ndjson")).unwrap();
+    let lines: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let h = lines.iter().find(|l| l["duty"] == "housekeeping").unwrap();
+    assert_eq!(h["match"], true);
+    assert_eq!(h["detail"], json!({"onlyEngine": [], "onlyNode": []}));
+    assert!(h["engine"].as_array().unwrap().len() >= 5, "the five old files the engine removed");
+    assert!(lines.iter().any(|l| l["duty"] == "log_rotate" && l["match"] == true), "log rotation is witnessed too");
+    // the scratch mirror is gone, and the witness never ran Node against the live home
+    assert_eq!(std::fs::read_dir(f.home.join(".anti-hall/witness")).map(|d| d.count()).unwrap_or(0), 0);
+    // sampled: a second tick inside the interval does not run the witness again
+    let before = log.lines().count();
+    put(&dev(&f).join("housekeeping-sweep-state.json"), &json!({"lastRunAt": 0}));
+    tick::run(&c, Owner::Engine, &sys);
+    assert_eq!(std::fs::read_to_string(f.home.join(".anti-hall/logs/devswarm-sup-witness.ndjson")).unwrap().lines().count(), before);
+}
+
+#[test]
+fn the_witness_logs_a_mismatch_when_the_engine_and_node_disagree() {
+    if !have_node() {
+        return;
+    }
+    let at = now();
+    let f = fx("witness-mismatch", true);
+    seed_housekeeping(&f, at);
+    let st = settings(&f, &[("ANTIHALL_DEVSWARM_SUP_WITNESS", "on")]);
+    let mut c = ctx(&f, &st, true);
+    c.now = at;
+    let job = ah_engine::dssup::housekeep::witness_prepare(&c).unwrap();
+    // the engine claims it removed nothing at all, but five files were eligible: Node's run on the mirror disagrees
+    let claimed = json!({"duty": "housekeeping", "outcome": "ran", "detail": {"ran": true, "results": {"reapedLogs": [], "childGate": []}}});
+    let rec = ah_engine::dssup::witness::finish(job, &c, &System::configured(), &claimed);
+    assert_eq!(rec["match"], false);
+    assert_eq!(rec["detail"]["onlyNode"].as_array().unwrap().len(), 5, "{rec}");
+    let log = std::fs::read_to_string(f.home.join(".anti-hall/logs/devswarm-sup-witness.ndjson")).unwrap();
+    assert!(log.contains("\"match\":false"));
+    // the live files were never touched by the witness
+    assert!(tree(&f).contains(&"reaped/old.ndjson".to_string()));
 }

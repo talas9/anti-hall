@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 /// What one tick needs besides the runner.
+#[derive(Clone)]
 pub struct Ctx<'a> {
     /// The home directory.
     pub home: &'a Path,
@@ -34,12 +35,12 @@ fn duty(name: &str) -> &'static V {
     defaults::raw(&format!("devswarm_sup.duty.{name}"))
 }
 
-fn cut(s: &str) -> String {
+pub(super) fn cut(s: &str) -> String {
     s.chars().take(defaults::num("devswarm_sup.detail_chars") as usize).collect()
 }
 
 /// The worker's last output line as JSON, else its text.
-fn parse(out: &str) -> Value {
+pub(super) fn parse(out: &str) -> Value {
     let last = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
     serde_json::from_str(last).unwrap_or_else(|_| Value::String(cut(out)))
 }
@@ -108,27 +109,62 @@ pub fn lock_path(home: &Path) -> String {
     super::root(home).join(defaults::text("devswarm_sup.lock_file")).to_string_lossy().into_owned()
 }
 
-/// One duty: its gate, then its work (native, or Node's function in a bounded subprocess).
-pub fn run_duty(name: &str, ctx: &Ctx, runner: &dyn Runner) -> Value {
+/// Whether `name` runs natively this tick: a native duty always does, a node-kind duty with a native implementation does unless the
+/// rollback list `devswarm_sup.node_duties` names it.
+fn runs_native(name: &str, d: &V) -> bool {
+    d.str_field("kind") == "native" || (d.get("native").and_then(V::as_bool) == Some(true) && !defaults::list("devswarm_sup.node_duties").contains(&name))
+}
+
+/// The witness mirror of a duty's inputs, taken before the engine acts (`None`: not due, off, or nothing to compare).
+fn prepare_witness(name: &str, ctx: &Ctx) -> Option<super::witness::Job> {
+    if !super::witness::due(ctx, name) {
+        return None;
+    }
+    match name {
+        "log_rotate" => super::witness::prepare_log_rotate(ctx),
+        "housekeeping" => super::housekeep::witness_prepare(ctx),
+        _ => None,
+    }
+}
+
+/// One duty: its gate, then its work (native, or Node's function in a bounded subprocess). Returns the duty's record and, for a
+/// native duty that is due for a comparison, the witness job to finish AFTER the sweep lock is released.
+pub fn run_duty_w(name: &str, ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<super::witness::Job>) {
     let d = duty(name);
     if let Some(why) = not_due(ctx, d) {
-        return json!({"duty": name, "outcome": "skipped", "reason": why});
+        return (json!({"duty": name, "outcome": "skipped", "reason": why}), None);
     }
-    if d.str_field("kind") == "native" {
-        return match name {
-            "log_rotate" => json!({"duty": name, "outcome": "ran", "detail": log_rotate(ctx)}),
-            _ => json!({"duty": name, "outcome": "skipped", "reason": defaults::text("devswarm_sup.msg_disabled")}),
+    if runs_native(name, d) {
+        if !super::supervisor_enabled(ctx.st) {
+            return (json!({"duty": name, "outcome": "skipped", "reason": defaults::text("devswarm_sup.msg_disabled")}), None);
+        }
+        let job = prepare_witness(name, ctx);
+        let detail = match name {
+            "log_rotate" => log_rotate(ctx),
+            "housekeeping" => super::housekeep::run(ctx),
+            _ => return (json!({"duty": name, "outcome": "skipped", "reason": defaults::text("devswarm_sup.msg_disabled")}), None),
         };
+        return (json!({"duty": name, "outcome": "ran", "detail": detail}), job);
     }
     let owner = if ctx.engine_pokes { defaults::text("devswarm_sup.owner_engine") } else { defaults::text("devswarm_sup.owner_node") };
     let timeout = d.get("timeout_ms").and_then(V::as_integer).unwrap_or(0).max(1) as u64;
     let r = node(runner, ctx, d.str_field("snippet"), &[owner], timeout);
-    if r.ok {
+    let rec = if r.ok {
         json!({"duty": name, "outcome": "ran", "detail": parse(&r.stdout)})
     } else {
         let why = r.error.clone().unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { cut(&r.stderr) });
         json!({"duty": name, "outcome": "failed", "error": why, "status": r.status, "timedOut": r.timed_out})
+    };
+    (rec, None)
+}
+
+/// [`run_duty_w`] with the witness comparison finished at once (no lock to wait for).
+pub fn run_duty(name: &str, ctx: &Ctx, runner: &dyn Runner) -> Value {
+    let (rec, job) = run_duty_w(name, ctx, runner);
+    if let Some(j) = job {
+        super::witness::finish(j, ctx, runner, &rec);
     }
+    rec
 }
 
 /// One tick. `owner` is the configured mode; a witness runs nothing. Where DevSwarm is absent nothing is read or written.
@@ -151,8 +187,11 @@ pub fn run(ctx: &Ctx, owner: Owner, runner: &dyn Runner) -> Value {
     let names = defaults::list("devswarm_sup.duties");
     // Node rotates its log before it takes the lock; the other duties run under it
     let (first, rest) = names.split_first().map_or((None, &[][..]), |(f, r)| (Some(*f), r));
+    let mut jobs: Vec<(usize, super::witness::Job)> = Vec::new();
     if let Some(f) = first {
-        out.push(run_duty(f, ctx, runner));
+        let (rec, job) = run_duty_w(f, ctx, runner);
+        out.push(rec);
+        jobs.extend(job.map(|j| (out.len() - 1, j)));
     }
     let Some(held) = nodelock::acquire(&lock_path(ctx.home), lock_params()) else {
         return json!({"ran": false, "reason": "locked", "why": defaults::text("devswarm_sup.msg_locked"), "duties": out});
@@ -162,9 +201,16 @@ pub fn run(ctx: &Ctx, owner: Owner, runner: &dyn Runner) -> Value {
             out.push(json!({"duty": name, "outcome": "skipped", "reason": defaults::text("devswarm_sup.msg_budget")}));
             continue;
         }
-        out.push(run_duty(name, ctx, runner));
+        let (rec, job) = run_duty_w(name, ctx, runner);
+        out.push(rec);
+        jobs.extend(job.map(|j| (out.len() - 1, j)));
     }
     held.release();
+    // the Node witnesses run after the lock is released: they work on scratch copies and never need it
+    for (i, job) in jobs {
+        let verdict = super::witness::finish(job, ctx, runner, &out[i]);
+        out[i]["witness"] = json!({"match": verdict["match"]});
+    }
     let rec = json!({"ts": ctx.now, "ran": true, "duties": out});
     crate::dsact::exec::append_line(&ctx.home.join(defaults::text("devswarm_sup.engine_log")), &rec);
     rec
