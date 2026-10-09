@@ -34,6 +34,7 @@ fn golden_report(check: &str, limit: usize) {
             }
         }
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
+        crate::discard::harmless(std::fs::remove_dir_all(&l.real)); // keep: the canonical directory behind a symlinked home
     }
     eprintln!("GOLDEN {check}: {} cases, {bad} mismatches", cases.len());
     assert_eq!(bad, 0, "{check}: {bad} of {} cases differ from the compiled port", cases.len());
