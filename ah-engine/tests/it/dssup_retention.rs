@@ -673,7 +673,11 @@ fn the_engine_dry_switch_reports_nothing_to_disk_in_the_first_run_phase() {
     assert!(!h.join(".anti-hall/devswarm/retention-dry-run.json").exists());
     let (d0, d1) = (dump(&c.home), dump(&h));
     let diff: Vec<(&str, &str)> = d0.lines().zip(d1.lines()).filter(|(x, y)| x != y).collect();
-    assert!(diff.is_empty() && d0.lines().count() == d1.lines().count(), "{:?}", diff.iter().map(|(x, y)| (&x[..x.len().min(200)], &y[..y.len().min(200)])).collect::<Vec<_>>());
+    assert!(
+        diff.is_empty() && d0.lines().count() == d1.lines().count(),
+        "{:?}",
+        diff.iter().map(|(x, y)| (&x[..x.len().min(200)], &y[..y.len().min(200)])).collect::<Vec<_>>()
+    );
 }
 
 #[test]

@@ -5,7 +5,7 @@ use ah_engine::db::{Db, TempDir};
 use ah_engine::devswarm_rt::reconcile::{Cause, Rt};
 use ah_engine::devswarm_rt::shadow;
 use ah_engine::devswarm_rt::sources::{self, AppRead, GhPr, GithubState, Probe};
-use ah_engine::devswarm_rt::state::{self, Activity, Ci, Cfg, EdgeKind, Inputs, Lifecycle, Paused, PrState, Snapshot};
+use ah_engine::devswarm_rt::state::{self, Activity, Cfg, Ci, EdgeKind, Inputs, Lifecycle, Paused, PrState, Snapshot};
 use ah_engine::devswarm_rt::{self, Detection, Mode};
 use proptest::prelude::*;
 use rusqlite::{Connection, params};
@@ -97,7 +97,12 @@ fn paused_is_a_question_until_the_signal_is_proven() {
     let (_t, db) = fixture();
     make_db(
         &db,
-        &[("allres", 1, 0, vec![("resumable", 1), ("resumable", 0)], None), ("mixed", 1, 0, vec![("resumable", 1), ("pending", 1)], None), ("none", 1, 0, vec![], None), ("old", 0, 1, vec![("resumable", 1)], None)],
+        &[
+            ("allres", 1, 0, vec![("resumable", 1), ("resumable", 0)], None),
+            ("mixed", 1, 0, vec![("resumable", 1), ("pending", 1)], None),
+            ("none", 1, 0, vec![], None),
+            ("old", 0, 1, vec![("resumable", 1)], None),
+        ],
         &[],
     );
     let mut c = cfg();
@@ -121,7 +126,14 @@ fn activity_stuck_waiting_done_and_suppression() {
     let (_t, db) = fixture();
     make_db(
         &db,
-        &[("work", 1, 0, vec![], None), ("stuck", 1, 0, vec![], None), ("ci", 1, 0, vec![], Some("p1")), ("done", 1, 0, vec![], Some("p2")), ("arch", 0, 1, vec![], Some("p1")), ("nohb", 1, 0, vec![], None)],
+        &[
+            ("work", 1, 0, vec![], None),
+            ("stuck", 1, 0, vec![], None),
+            ("ci", 1, 0, vec![], Some("p1")),
+            ("done", 1, 0, vec![], Some("p2")),
+            ("arch", 0, 1, vec![], Some("p1")),
+            ("nohb", 1, 0, vec![], None),
+        ],
         &[("p1", 5, "open", "Pending", "2026-10-08T04:51:07.250Z"), ("p2", 6, "merged", "None", "2026-10-08T04:51:07.250Z")],
     );
     let c = cfg();
@@ -132,7 +144,10 @@ fn activity_stuck_waiting_done_and_suppression() {
     p.hb.insert("stuck".into(), NOW - c.stall_ms - 1);
     let s = snap_of(&c, Some(&read(&db)), &p, None, NOW, &Snapshot::default());
     let a = |id: &str| s.workspaces[id].activity.value;
-    assert_eq!((a("work"), a("stuck"), a("ci"), a("done"), a("arch"), a("nohb")), (Activity::Working, Activity::Stuck, Activity::WaitingCi, Activity::Done, Activity::Unknown, Activity::Unknown));
+    assert_eq!(
+        (a("work"), a("stuck"), a("ci"), a("done"), a("arch"), a("nohb")),
+        (Activity::Working, Activity::Stuck, Activity::WaitingCi, Activity::Done, Activity::Unknown, Activity::Unknown)
+    );
     // no heartbeat is unknown, never guessed
     assert_eq!(s.workspaces["nohb"].last_activity_ms.value, None);
 }

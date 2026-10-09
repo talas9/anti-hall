@@ -10,8 +10,8 @@ use super::apply::{Settings, log_event, obj_mut};
 use super::{Witness, ask_node, choose, disagreement, witness_log};
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::dssup::tick::{Ctx, node};
 use crate::dsact::runner::Runner;
+use crate::dssup::tick::{Ctx, node};
 use crate::meshw::ident::Defer;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -196,7 +196,10 @@ pub(super) fn node_fold_dry(ctx: &Ctx, runner: &dyn Runner, hash: &str) -> Resul
     let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
     let r = node(runner, ctx, d.str_field("fold_dry_snippet"), &[hash], timeout);
     if !r.ok {
-        return Err(r.error.clone().unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { crate::dssup::tick::cut(&r.stderr) }));
+        return Err(r
+            .error
+            .clone()
+            .unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { crate::dssup::tick::cut(&r.stderr) }));
     }
     serde_json::from_str::<Value>(r.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default()).map_err(|e| e.to_string())
 }

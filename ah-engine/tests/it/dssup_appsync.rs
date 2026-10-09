@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn have_tools() -> bool {
-    Command::new("node").args(["-e", "require('node:sqlite')"]).output().is_ok_and(|o| o.status.success()) && Command::new("git").arg("--version").output().is_ok()
+    Command::new("node").args(["-e", "require('node:sqlite')"]).output().is_ok_and(|o| o.status.success())
+        && Command::new("git").arg("--version").output().is_ok()
 }
 
 fn support(name: &str) -> PathBuf {
@@ -119,7 +120,11 @@ fn tree(home: &Path) -> BTreeMap<String, Vec<u8>> {
 }
 
 fn held_log(home: &Path) -> Vec<Value> {
-    std::fs::read_to_string(home.join(".anti-hall/logs/devswarm-sup-witness.ndjson")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    std::fs::read_to_string(home.join(".anti-hall/logs/devswarm-sup-witness.ndjson"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
 }
 
 /// One golden case: Node's sync on one copy, the engine's on the other, everything identical, twice (the second pass finds
@@ -170,7 +175,10 @@ fn the_engine_syncs_like_node_on_realistic_installations() {
         gaps += n["gapTotal"].as_i64().unwrap_or(0);
         retired += n["retiredMarkers"]["retired"].as_i64().unwrap();
     }
-    assert!(marked >= 6 && deleted >= 2 && refreshed >= 20 && gaps >= 5 && retired >= 2, "the corpora must exercise every step: {marked} {deleted} {refreshed} {gaps} {retired}");
+    assert!(
+        marked >= 6 && deleted >= 2 && refreshed >= 20 && gaps >= 5 && retired >= 2,
+        "the corpora must exercise every step: {marked} {deleted} {refreshed} {gaps} {retired}"
+    );
 }
 
 #[test]
@@ -319,7 +327,8 @@ fn a_witness_that_disagrees_writes_no_marker_and_retires_none() {
         }
         assert_eq!(seed_markers, files(&h, "archived/"), "{name}: a marker was written or moved");
         assert_eq!(seed_ws, files(&h, "workspaces/"), "{name}: a descriptor changed");
-        let mism: Vec<Value> = held_log(&h).into_iter().filter(|l| l["match"] == false && l["duty"].as_str().is_some_and(|d| d.starts_with("app_sync-"))).collect();
+        let mism: Vec<Value> =
+            held_log(&h).into_iter().filter(|l| l["match"] == false && l["duty"].as_str().is_some_and(|d| d.starts_with("app_sync-"))).collect();
         assert!(!mism.is_empty(), "{name}: the disagreement was not logged");
         // the derived caches are still kept (they replace nothing of the user's)
         assert!(h.join(".anti-hall/devswarm/app-state.json").exists());
@@ -389,7 +398,8 @@ fn a_marker_is_never_overwritten_and_a_descriptor_never_changed_by_the_mark_step
     assert_eq!(ws_before, files(&h, "workspaces/"), "a descriptor was changed");
     assert!(std::fs::read_dir(&adir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")), "a temporary file was left");
     // writing a marker that exists is a no-op
-    let m = ah_engine::dssup::appsync::plan::Mark { id: archived_id.clone(), deleted: false, body: ah_engine::checks::guardkit::ojson::OVal::parse("{}").unwrap() };
+    let m =
+        ah_engine::dssup::appsync::plan::Mark { id: archived_id.clone(), deleted: false, body: ah_engine::checks::guardkit::ojson::OVal::parse("{}").unwrap() };
     assert_eq!(ah_engine::dssup::appsync::plan::write_marker(&h, &m, 1), ah_engine::dssup::appsync::plan::Wrote::Exists);
     assert_eq!(std::fs::read(adir.join(format!("{archived_id}.json"))).unwrap(), b"HAND MADE, DO NOT TOUCH");
 }
@@ -410,7 +420,10 @@ fn databases_of_other_shapes_sync_like_nodes() {
         ("no-hidden", "ALTER TABLE builders DROP COLUMN isHidden"),
         ("no-rank-pinned", "ALTER TABLE builders DROP COLUMN rank; ALTER TABLE builders DROP COLUMN isPinned"),
         ("no-prompt", "ALTER TABLE builder_terminals DROP COLUMN initialPrompt"),
-        ("odd-values", "UPDATE builders SET rank = '7' WHERE rank IS NOT NULL AND rowid % 2 = 0; UPDATE builders SET isPinned = NULL WHERE rowid % 3 = 0; UPDATE builders SET lastSelectedAt = 'not a date' WHERE rowid % 5 = 0"),
+        (
+            "odd-values",
+            "UPDATE builders SET rank = '7' WHERE rank IS NOT NULL AND rowid % 2 = 0; UPDATE builders SET isPinned = NULL WHERE rowid % 3 = 0; UPDATE builders SET lastSelectedAt = 'not a date' WHERE rowid % 5 = 0",
+        ),
     ];
     for (i, (name, sql)) in variants.iter().enumerate() {
         let c = generate(&format!("as-var-{i}"), 60 + i as u32, "small");
@@ -451,7 +464,10 @@ fn what_the_engine_cannot_read_like_javascript_goes_to_node_which_then_decides()
     // each case plants one thing the engine will not guess: it must hand over (the record names Node) and the outcome must be
     // exactly what Node alone does
     let plant: [(&str, Box<dyn Fn(&Corpus)>); 4] = [
-        ("relative worktree", Box::new(|c| std::fs::write(c.home.join(".anti-hall/devswarm/workspaces/rel.json"), r#"{"id":"rel","worktreePath":"relative/dir"}"#).unwrap())),
+        (
+            "relative worktree",
+            Box::new(|c| std::fs::write(c.home.join(".anti-hall/devswarm/workspaces/rel.json"), r#"{"id":"rel","worktreePath":"relative/dir"}"#).unwrap()),
+        ),
         ("blob label", Box::new(|c| with_db(c, "UPDATE builders SET label = x'00ff10' WHERE rowid = 3"))),
         ("huge integer", Box::new(|c| with_db(c, "UPDATE builders SET rank = 9007199254740993 WHERE rowid = 4"))),
         ("odd id type", Box::new(|c| std::fs::write(c.home.join(".anti-hall/devswarm/workspaces/odd.json"), r#"{"id":{"a":1},"worktreePath":"/x"}"#).unwrap())),

@@ -83,11 +83,26 @@ fn loop_is_asked_only_to_confirm_a_rule_found_candidate() {
         facts(&p)
     };
     assert_eq!(gate(&cfg, &facts(&[("tool_calls", 9.0)]), &d), Gate::Insufficient(vec!["tool_calls:10".into()]));
-    assert_eq!(gate(&cfg, &base(&[("minutes_since_progress", 20.0), ("repeat_cmd_max", 5.0)]), &d), Gate::Label { rule: "recent_progress".into(), label: "not_looping".into() });
-    assert_eq!(gate(&cfg, &base(&[("repeat_cmd_max", 2.0), ("minutes_since_progress", 200.0)]), &d), Gate::NoCandidate("not_looping".into()), "no repeat, no revert: no candidate");
-    assert_eq!(gate(&cfg, &base(&[("repeat_cmd_max", 3.0), ("commits_on_step", 1.0)]), &d), Gate::NoCandidate("not_looping".into()), "a commit in between is not a loop");
+    assert_eq!(
+        gate(&cfg, &base(&[("minutes_since_progress", 20.0), ("repeat_cmd_max", 5.0)]), &d),
+        Gate::Label { rule: "recent_progress".into(), label: "not_looping".into() }
+    );
+    assert_eq!(
+        gate(&cfg, &base(&[("repeat_cmd_max", 2.0), ("minutes_since_progress", 200.0)]), &d),
+        Gate::NoCandidate("not_looping".into()),
+        "no repeat, no revert: no candidate"
+    );
+    assert_eq!(
+        gate(&cfg, &base(&[("repeat_cmd_max", 3.0), ("commits_on_step", 1.0)]), &d),
+        Gate::NoCandidate("not_looping".into()),
+        "a commit in between is not a loop"
+    );
     assert_eq!(gate(&cfg, &base(&[("repeat_cmd_max", 3.0), ("minutes_since_progress", 200.0), ("git_known", 1.0)]), &d), Gate::Ask);
-    assert_eq!(gate(&cfg, &base(&[("repeat_cmd_max", 3.0), ("minutes_since_progress", 200.0)]), &d), Gate::NoCandidate("not_looping".into()), "without a readable git log a missing commit proves nothing");
+    assert_eq!(
+        gate(&cfg, &base(&[("repeat_cmd_max", 3.0), ("minutes_since_progress", 200.0)]), &d),
+        Gate::NoCandidate("not_looping".into()),
+        "without a readable git log a missing commit proves nothing"
+    );
     assert_eq!(gate(&cfg, &base(&[("reverts", 1.0)]), &d), Gate::Ask, "a reverted change is a candidate too");
 }
 
@@ -241,7 +256,10 @@ fn an_off_integration_is_not_looked_at_and_writes_nothing() {
     let unknown = evaluate(&h, &Env::from_pairs(ON), &json!({"id": "speculation"}));
     *TEST_MODEL.lock().unwrap() = None;
     assert!(inputs.lock().unwrap().is_empty() && rows(&h).is_empty());
-    assert_eq!((jev_off.reason.as_deref(), int_off.reason.as_deref(), unknown.reason.as_deref()), (Some("mode-off"), Some("mode-off"), Some("unknown-integration")));
+    assert_eq!(
+        (jev_off.reason.as_deref(), int_off.reason.as_deref(), unknown.reason.as_deref()),
+        (Some("mode-off"), Some("mode-off"), Some("unknown-integration"))
+    );
 }
 
 #[test]

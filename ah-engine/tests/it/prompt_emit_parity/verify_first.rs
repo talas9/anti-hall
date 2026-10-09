@@ -573,7 +573,7 @@ pub fn scenarios() -> Vec<Scn> {
         vec![w(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":\"off\"}}")],
         false,
     ));
-        // the repo's own documents and the configured list decide whether the tier sentence is withheld
+    // the repo's own documents and the configured list decide whether the tier sentence is withheld
     let dsx = |name: &str, kv: &[(&str, &str)], files: Vec<W>, cwd: &str, defers: bool| {
         let raw = payload(json!({"session_id": "dx", "transcript_path": TP, "prompt": "x", "cwd": cwd, "hook_event_name": "UserPromptSubmit"}));
         let sc = scn(format!("vf-dsx-{name}"), "verify-first", vec![step(raw.clone()), step(raw)]).env(kv).seed(files);
@@ -591,12 +591,30 @@ pub fn scenarios() -> Vec<Scn> {
     v.push(dsx("doc-dir-named-claude", p1, vec![w("proj/CLAUDE.md/x", "y")], "$HOME/proj", false));
     v.push(dsx("doc-in-git-root", p1, vec![w("proj/.git/HEAD", "ref: refs/heads/main\n"), w("proj/CLAUDE.md", rule)], "$HOME/proj/sub", false));
     v.push(dsx("doc-above-git-root", p1, vec![w("proj/.git/HEAD", "ref: refs/heads/main\n"), w("CLAUDE.md", rule)], "$HOME/proj/sub", false));
-    v.push(dsx("detect-off", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES", "0")], vec![w("proj/CLAUDE.md", rule)], "$HOME/proj", false));
-    v.push(dsx("detect-off-file", p1, vec![w("proj/CLAUDE.md", rule), w(".anti-hall/settings.json", "{\"jev\":{\"dispatchTierDetectNoWorkspaces\":false}}")], "$HOME/proj", false));
+    v.push(dsx(
+        "detect-off",
+        &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES", "0")],
+        vec![w("proj/CLAUDE.md", rule)],
+        "$HOME/proj",
+        false,
+    ));
+    v.push(dsx(
+        "detect-off-file",
+        p1,
+        vec![w("proj/CLAUDE.md", rule), w(".anti-hall/settings.json", "{\"jev\":{\"dispatchTierDetectNoWorkspaces\":false}}")],
+        "$HOME/proj",
+        false,
+    ));
     v.push(dsx("list-star", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "*")], vec![], "$HOME/proj", false));
     v.push(dsx("list-name", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", " a , proj ,b")], vec![], "$HOME/proj/sub", false));
     v.push(dsx("list-name-miss", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "other")], vec![], "$HOME/proj", false));
-    v.push(dsx("list-abs-prefix", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "$HOME/proj")], vec![], "$HOME/proj/sub", false));
+    v.push(dsx(
+        "list-abs-prefix",
+        &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "$HOME/proj")],
+        vec![],
+        "$HOME/proj/sub",
+        false,
+    ));
     v.push(dsx("list-abs-sibling", &[("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "$HOME/pro")], vec![], "$HOME/proj", false));
     v.push(dsx("list-file", p1, vec![w(".anti-hall/settings.json", "{\"jev\":{\"dispatchTierNoWorkspaceRepos\":\"proj\"}}")], "$HOME/proj", false));
     v.push(dsx("list-file-array", p1, vec![w(".anti-hall/settings.json", "{\"jev\":{\"dispatchTierNoWorkspaceRepos\":[\"proj\"]}}")], "$HOME/proj", false));
@@ -608,12 +626,8 @@ pub fn scenarios() -> Vec<Scn> {
         v.push(scn(format!("vf-dsx-cwd-{n}"), "verify-first", vec![step(raw)]).env(p1));
     }
     // the rotation and the dedupe: a Primary block and a plain block are distinct, a burst collapses
-    v.push(
-        scn("vf-dsx-primary-then-child", "verify-first", vec![step(pl("pc", TP, "x")), step(pl("pc", TP, "y"))])
-            .env(p1)
-            .seed(vec![base_transcript(now)]),
-    );
-// the verify-first switch off wins before any DevSwarm question
+    v.push(scn("vf-dsx-primary-then-child", "verify-first", vec![step(pl("pc", TP, "x")), step(pl("pc", TP, "y"))]).env(p1).seed(vec![base_transcript(now)]));
+    // the verify-first switch off wins before any DevSwarm question
     v.push(
         scn("vf-ds-turn-off-first", "verify-first", vec![step(pl("ds", TP, "x"))])
             .env(&[("DEVSWARM_REPO_ID", "r1")])

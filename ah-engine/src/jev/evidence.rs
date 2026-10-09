@@ -257,7 +257,8 @@ fn gate(cfg: &Cfg, facts: &Facts, derived: &Derived) -> Gate {
             }
         }
     }
-    let missing: Vec<String> = cfg.required.iter().filter(|(name, min)| facts.get(name).copied().unwrap_or(0.0) < *min).map(|(n, m)| format!("{n}:{m}")).collect();
+    let missing: Vec<String> =
+        cfg.required.iter().filter(|(name, min)| facts.get(name).copied().unwrap_or(0.0) < *min).map(|(n, m)| format!("{n}:{m}")).collect();
     if !missing.is_empty() {
         return Gate::Insufficient(missing);
     }
@@ -480,13 +481,8 @@ fn ask_haiku(home: &Path, cfg: &Cfg, q: &Question, pack: &str, ids: &[String], o
         Err(e) => Err(e.word().to_string()),
         Ok(t) => parse_haiku(q, t).ok_or_else(|| w.to_string()),
     };
-    let mut row = telemetry::Row {
-        integration: &cfg.id,
-        backend: defaults::text("judge.backend_haiku_cli"),
-        model: Some(&model),
-        ms: res.ms,
-        ..Default::default()
-    };
+    let mut row =
+        telemetry::Row { integration: &cfg.id, backend: defaults::text("judge.backend_haiku_cli"), model: Some(&model), ms: res.ms, ..Default::default() };
     match verdict {
         Err(reason) => {
             row.error = Some(&reason);

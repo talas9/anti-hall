@@ -250,7 +250,11 @@ fn scrollback_stat(db: &Path, terminal_id: &str) -> Option<(f64, u64)> {
     if !regex::Regex::new(defaults::text("devswarm_sup.as_scrollback_id_re")).ok()?.is_match(terminal_id) {
         return None;
     }
-    let file = db.parent()?.join(defaults::text("devswarm_sup.as_scrollback_dir")).join(format!("{}{}", terminal_id.replace('.', "_"), defaults::text("devswarm_sup.as_scrollback_ext")));
+    let file = db.parent()?.join(defaults::text("devswarm_sup.as_scrollback_dir")).join(format!(
+        "{}{}",
+        terminal_id.replace('.', "_"),
+        defaults::text("devswarm_sup.as_scrollback_ext")
+    ));
     let m = std::fs::metadata(file).ok()?;
     Some((crate::checks::jsport::fsx::mtime_ms(&m), m.len()))
 }
@@ -277,10 +281,19 @@ pub fn read(file: &str) -> R<Option<Snap>> {
     }
     let mut missing = Vec::new();
     let t = |k: &str| defaults::text(k);
-    let Some(builders) = table_rows(&conn, t("mesh_write.app_table_builders"), &defaults::list("mesh_write.app_cols_builders"), &mut missing)? else { return Ok(None) };
-    let Some(terminals) = table_rows(&conn, t("mesh_write.app_table_terminals"), &defaults::list("mesh_write.app_cols_builder_terminals"), &mut missing)? else { return Ok(None) };
-    let Some(prs) = table_rows(&conn, t("mesh_write.app_table_pull_requests"), &defaults::list("mesh_write.app_cols_pull_requests"), &mut missing)? else { return Ok(None) };
-    let Some(repos) = table_rows(&conn, t("mesh_write.app_table_repositories"), &defaults::list("mesh_write.app_cols_repositories"), &mut missing)? else { return Ok(None) };
+    let Some(builders) = table_rows(&conn, t("mesh_write.app_table_builders"), &defaults::list("mesh_write.app_cols_builders"), &mut missing)? else {
+        return Ok(None);
+    };
+    let Some(terminals) = table_rows(&conn, t("mesh_write.app_table_terminals"), &defaults::list("mesh_write.app_cols_builder_terminals"), &mut missing)?
+    else {
+        return Ok(None);
+    };
+    let Some(prs) = table_rows(&conn, t("mesh_write.app_table_pull_requests"), &defaults::list("mesh_write.app_cols_pull_requests"), &mut missing)? else {
+        return Ok(None);
+    };
+    let Some(repos) = table_rows(&conn, t("mesh_write.app_table_repositories"), &defaults::list("mesh_write.app_cols_repositories"), &mut missing)? else {
+        return Ok(None);
+    };
     // workspace_messages is only schema-checked here
     match col_set(&conn, t("devswarm_sup.as_msg_table")) {
         None => missing.push(format!("{}{}", t("devswarm_sup.as_msg_table"), t("devswarm_sup.as_missing_table"))),
@@ -459,7 +472,11 @@ impl Snap {
                 _ => continue,
             }
             let grace = defaults::num("devswarm_sup.as_brief_grace_ms") as f64;
-            return Some(if age.is_some_and(|a| a >= grace) { defaults::text("devswarm_sup.as_brief_not_delivered") } else { defaults::text("devswarm_sup.as_brief_pending") });
+            return Some(if age.is_some_and(|a| a >= grace) {
+                defaults::text("devswarm_sup.as_brief_not_delivered")
+            } else {
+                defaults::text("devswarm_sup.as_brief_pending")
+            });
         }
         None
     }
@@ -520,7 +537,8 @@ pub fn transcript_cwd_matches(home: &Path, session: &str, worktree: &str) -> R<O
         return Ok(None);
     }
     let enc: String = worktree.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '.') { '-' } else { c }).collect();
-    let file = home.join(defaults::text("devswarm_sup.as_projects_dir")).join(enc).join(format!("{session}{}", defaults::text("devswarm_sup.as_transcript_ext")));
+    let file =
+        home.join(defaults::text("devswarm_sup.as_projects_dir")).join(enc).join(format!("{session}{}", defaults::text("devswarm_sup.as_transcript_ext")));
     let Ok(f) = std::fs::File::open(file) else { return Ok(None) };
     let mut buf = Vec::new();
     if f.take(defaults::num("devswarm_sup.as_transcript_bytes")).read_to_end(&mut buf).is_err() {

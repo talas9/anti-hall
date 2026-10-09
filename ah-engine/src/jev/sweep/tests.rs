@@ -28,7 +28,8 @@ fn put(path: PathBuf, text: &str) {
 }
 
 fn tool(t: i64, cmd: &str) -> String {
-    json!({"type": "assistant", "timestamp": iso_ms(t as u64), "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": cmd}}]}}).to_string()
+    json!({"type": "assistant", "timestamp": iso_ms(t as u64), "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": cmd}}]}})
+        .to_string()
 }
 fn said(t: i64, text: &str) -> String {
     json!({"type": "assistant", "timestamp": iso_ms(t as u64), "message": {"content": [{"type": "text", "text": text}]}}).to_string()
@@ -95,7 +96,8 @@ fn transcript_lines_become_tool_text_error_prompt_and_note_events() {
     let lines = [
         tool(NOW, "git reset --hard HEAD~1"),
         said(NOW + 1000, "hello"),
-        json!({"type": "user", "timestamp": iso_ms(NOW as u64 + 2000), "message": {"content": [{"type": "tool_result", "is_error": true, "content": "boom"}]}}).to_string(),
+        json!({"type": "user", "timestamp": iso_ms(NOW as u64 + 2000), "message": {"content": [{"type": "tool_result", "is_error": true, "content": "boom"}]}})
+            .to_string(),
         json!({"type": "user", "timestamp": iso_ms(NOW as u64 + 3000), "message": {"content": "<task-notification>x"}}).to_string(),
         json!({"type": "user", "timestamp": iso_ms(NOW as u64 + 4000), "message": {"content": "please continue"}}).to_string(),
         json!({"type": "user", "timestamp": iso_ms(NOW as u64 + 5000), "message": {"content": "<system-reminder>x"}}).to_string(),
@@ -120,7 +122,10 @@ fn a_quiet_child_with_a_question_unanswered_by_its_parent_is_decided_by_rule_and
     assert!(seen.lock().unwrap().is_empty(), "a rule decided; no model was called");
     assert_eq!(r["children"], 1);
     let d = &r["decided"][0];
-    assert_eq!((d["integration"].as_str(), d["phase"].as_str(), d["label"].as_str(), d["rule"].as_str()), (Some("devswarmWaitKind"), Some("rule"), Some("waiting"), Some("unanswered_question_to_parent")));
+    assert_eq!(
+        (d["integration"].as_str(), d["phase"].as_str(), d["label"].as_str(), d["rule"].as_str()),
+        (Some("devswarmWaitKind"), Some("rule"), Some("waiting"), Some("unanswered_question_to_parent"))
+    );
     let log = rows(&h);
     assert_eq!((log.len(), log[0]["child"].as_str()), (1, Some("kid")));
     let present: Vec<&str> = log[0]["present"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
@@ -138,9 +143,18 @@ fn a_quiet_child_with_no_outside_reason_is_asked_with_a_pack_of_its_own_transcri
     let r = sweep(&h, &env("on", "off", "off"), NOW);
     *TEST_MODEL.lock().unwrap() = None;
     let d = &r["decided"][0];
-    assert_eq!((d["phase"].as_str(), d["source"].as_str(), d["label"].as_str(), d["actionable"].as_bool()), (Some("asked"), Some("haiku"), Some("stuck"), Some(true)));
+    assert_eq!(
+        (d["phase"].as_str(), d["source"].as_str(), d["label"].as_str(), d["actionable"].as_bool()),
+        (Some("asked"), Some("haiku"), Some("stuck"), Some(true))
+    );
     let input = seen.lock().unwrap()[0].clone();
-    assert!(input.contains("No step progress for 40m") && input.contains("cargo test 1") && input.contains("waiting for the next step") && input.contains("mesh_coverage = 1"), "{input}");
+    assert!(
+        input.contains("No step progress for 40m")
+            && input.contains("cargo test 1")
+            && input.contains("waiting for the next step")
+            && input.contains("mesh_coverage = 1"),
+        "{input}"
+    );
     // the same subject is not asked again until the re-ask window passes
     let again = sweep(&h, &env("on", "off", "off"), NOW + MIN);
     assert_eq!(again["decided"].as_array().unwrap().len(), 0);
@@ -186,7 +200,12 @@ fn a_looping_candidate_is_found_from_reverts_and_repeats_and_a_model_only_confir
     let r = sweep(&h, &env("off", "on", "off"), NOW);
     *TEST_MODEL.lock().unwrap() = None;
     let d = &r["decided"][0];
-    assert_eq!((d["integration"].as_str(), d["phase"].as_str(), d["label"].as_str()), (Some("devswarmLoop"), Some("asked"), Some("looping")), "{d}\n{:?}", seen.lock().unwrap());
+    assert_eq!(
+        (d["integration"].as_str(), d["phase"].as_str(), d["label"].as_str()),
+        (Some("devswarmLoop"), Some("asked"), Some("looping")),
+        "{d}\n{:?}",
+        seen.lock().unwrap()
+    );
     let input = seen.lock().unwrap()[0].clone();
     assert!(input.contains("\"cargo test -p x\" x") && input.contains("reverts = 1") && input.contains("tool_calls = 12"), "{input}");
 }
@@ -213,7 +232,11 @@ fn a_summary_that_quotes_a_step_is_mapped_by_rule_and_a_plan_with_no_earlier_rep
     fixture(&h, p.clone(), &[]);
     let r = sweep(&h, &env("off", "off", "shadow"), NOW);
     let d = &r["decided"][0];
-    assert_eq!((d["integration"].as_str(), d["reason"].as_str()), (Some("devswarmStepMap"), Some("insufficient")), "needs one earlier summary with a reported step");
+    assert_eq!(
+        (d["integration"].as_str(), d["reason"].as_str()),
+        (Some("devswarmStepMap"), Some("insufficient")),
+        "needs one earlier summary with a reported step"
+    );
     // with an earlier summary that was sent with step 1 (the step whose own timestamp sits next to it) the quote decides
     let mut p2 = p;
     p2["steps"][0]["ts"] = json!(NOW - 20 * MIN);
@@ -238,10 +261,15 @@ fn with_all_three_integrations_off_no_child_is_read_and_no_row_is_written() {
 fn the_held_list_and_the_stall_override_come_from_the_environment() {
     let h = home("env");
     fixture(&h, plan(40), &six_tools(NOW - 45 * MIN));
-    let held = Env::from_pairs([("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_DEVSWARM_WAIT_KIND", "on"), ("ANTIHALL_DEVSWARM_HELD_PARTITIONS", "other, kid")]);
+    let held = Env::from_pairs([
+        ("ANTIHALL_JEV", "1"),
+        ("CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_DEVSWARM_WAIT_KIND", "on"),
+        ("ANTIHALL_DEVSWARM_HELD_PARTITIONS", "other, kid"),
+    ]);
     let r = sweep(&h, &held, NOW);
     assert_eq!(r["decided"][0]["rule"], "child_on_hold");
-    let calm = Env::from_pairs([("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_DEVSWARM_WAIT_KIND", "on"), ("ANTIHALL_DEVSWARM_STEP_STALL_MIN", "90")]);
+    let calm =
+        Env::from_pairs([("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_DEVSWARM_WAIT_KIND", "on"), ("ANTIHALL_DEVSWARM_STEP_STALL_MIN", "90")]);
     let h2 = home("env2");
     fixture(&h2, plan(40), &six_tools(NOW - 45 * MIN));
     assert_eq!(sweep(&h2, &calm, NOW)["children"], 0, "40 quiet minutes is under a 90 minute stall window");

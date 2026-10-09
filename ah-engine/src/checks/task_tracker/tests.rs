@@ -160,7 +160,10 @@ fn what_the_engine_cannot_reproduce_is_left_to_node_before_anything_is_written()
     assert!(t.contains("Primary dispatch tier: classify each task"), "{t}");
     assert!(!text_of(&decide(&prompt("s2"), &env(&h, &[]))).contains("Primary dispatch tier"));
     assert!(!text_of(&decide(&prompt("s3"), &env(&h, &[("DEVSWARM_REPO_ID", "r"), ("DEVSWARM_SOURCE_BRANCH", "b")]))).contains("Primary dispatch tier"));
-    assert!(!text_of(&decide(&prompt("s4"), &env(&h, &[("DEVSWARM_REPO_ID", "r"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "*")]))).contains("Primary dispatch tier"));
+    assert!(
+        !text_of(&decide(&prompt("s4"), &env(&h, &[("DEVSWARM_REPO_ID", "r"), ("ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS", "*")])))
+            .contains("Primary dispatch tier")
+    );
     let mut nocwd = prompt("s5");
     nocwd.as_object_mut().unwrap().remove("cwd");
     assert_eq!(decide(&nocwd, &primary), Verdict::Defer, "Node would use its own working directory");

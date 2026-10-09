@@ -251,7 +251,8 @@ pub const RT_EDGE_PUT: &str = "INSERT INTO rt_edges (ns, key, kind, from_v, to_v
 pub const RT_EDGE_TRIM: &str = "DELETE FROM rt_edges WHERE ns = ?1 AND id <= (SELECT COALESCE(MAX(id), 0) FROM rt_edges WHERE ns = ?1) - ?2";
 
 /// The newest ?2 change records of a namespace, oldest first.
-pub const RT_EDGE_RECENT: &str = "SELECT key, kind, from_v, to_v, generation, at_ms, while_down FROM (SELECT * FROM rt_edges WHERE ns = ?1 ORDER BY id DESC LIMIT ?2) ORDER BY id";
+pub const RT_EDGE_RECENT: &str =
+    "SELECT key, kind, from_v, to_v, generation, at_ms, while_down FROM (SELECT * FROM rt_edges WHERE ns = ?1 ORDER BY id DESC LIMIT ?2) ORDER BY id";
 
 /// archive.db v4: the daily telemetry rollups (D78), one row per day and (k, h, e, o); a re-run replaces a day's rows.
 const ARCHIVE_V4: &str = "
