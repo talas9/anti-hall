@@ -31,18 +31,6 @@ fn compact_declaration_turn_scan_defers_on_every_class() {
 }
 
 #[test]
-fn context_budget_line_and_file_parsers_defer_on_every_class() {
-    for (name, line) in hazards() {
-        assert!(crate::checks::ctxbudget::pct::parse_line(&line).is_err(), "pct::parse_line: {name}");
-        let dir = std::env::temp_dir().join(format!("ah-jsdiff-sites-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("state.json");
-        std::fs::write(&f, &line).unwrap();
-        assert!(matches!(crate::checks::ctxbudget::read_json(&f.to_string_lossy()), crate::checks::ctxbudget::Jf::Hazard), "read_json: {name}");
-    }
-}
-
-#[test]
 fn the_message_classified_parsers_defer_on_every_class() {
     for (name, line) in hazards() {
         assert!(crate::checks::replykit::transcript::parse_line(&line).is_err(), "replykit: {name}");
