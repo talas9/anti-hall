@@ -29,6 +29,28 @@ value = ".js"
 doc = "Global function a check script defines; it is called with the hook payload and returns the verdict."
 value = "decide"
 
+[script.check_scope]
+doc = "How a check's own files (its includes, then its script, joined by newlines) are evaluated in the one context a worker thread shares between all checks: as the body of a function, so the check's top-level declarations (its entry and helpers) stay private to it while the lib files are evaluated once per thread. The value it evaluates to must be the check's entry function. Placeholders: {entry} (script.entry), {source}. Measured 2026-10-09 (DECISIONS.md 1.111, one thread, the 16 shipped scripts): a context per check held 3.3 MB of interpreter heap (about 150 KB per check for the intrinsics, host bindings and lib files again), one shared context 1.0 MB."
+value = "(function () {\n{source}\n;return typeof {entry} === 'function' ? {entry} : undefined;\n}).call(globalThis)"
+
+[script.heap_budget_base_bytes]
+doc = "Memory budget the interpreter test holds one worker thread to (DECISIONS.md 1.111): this much for the runtime, the shared context, the host bindings and the lib files, plus script.heap_budget_per_check_bytes for every check script it has run. Measured 2026-10-09: 224 KB base, 1.04 MB with all 16 shipped scripts (git.js 365 KB, the others 1-195 KB); a context per check held 3.3 MB."
+value = 524288
+unit = "bytes"
+
+[script.heap_budget_per_check_bytes]
+doc = "Per check script share of the interpreter budget above (DECISIONS.md 1.111)."
+value = 98304
+unit = "bytes"
+
+[script.registry_global]
+doc = "Global object of the shared context that holds each loaded check's entry function, by check name."
+value = "__ahCheckEntries"
+
+[script.msg_no_entry]
+doc = "Reason logged (then the failure policy applies) when a check's script defines no entry function. Placeholders: {check}, {entry}."
+value = "{check}: the script defines no {entry} function"
+
 [script.time_limit_ms]
 doc = "Wall-clock limit of one script call; past it the interpreter is interrupted and the call defers to Node (never a silent allow)."
 value = 50

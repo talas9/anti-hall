@@ -23,7 +23,8 @@ ring = { version = "0.17", default-features = false }
 # Heap profiler for the opt-in `diag` feature only (a dependency no default or release build compiles).
 dhat = { version = "0.3.3", optional = true }
 # Scripted check logic (D88): an embedded QuickJS-NG interpreter runs the plugin's editable check scripts. Default features
-# off: no module loader, no async, no Rust allocator hook (so `set_memory_limit` stays enforced), pre-generated bindings.
+# off: no module loader, no async, pre-generated bindings. The runtime allocates through the Rust allocator
+# (`Runtime::new_with_alloc`, DECISIONS.md 1.111); QuickJS-NG checks `set_memory_limit` against its own count before calling it.
 rquickjs = { version = "0.14.0", default-features = false }
 
 # Allocator that returns freed pages (the system allocators keep them, so RSS stayed at the largest transient). Only on the targets

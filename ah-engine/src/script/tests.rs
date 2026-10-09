@@ -48,6 +48,66 @@ fn an_owner_override_wins_and_an_edit_reloads_without_a_restart() {
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
+/// DECISIONS.md 1.111: every check of a worker thread shares ONE context, so a check's top-level declarations (its entry and helpers) must
+/// stay private to it, a lib file is evaluated once per thread (not once per check), and a lib edit rebuilds the context.
+#[test]
+fn checks_share_one_context_but_not_their_declarations() {
+    let h = home("shared");
+    let e = env(&h);
+    let lib = format!("{h}/.anti-hall/logic/{}", defaults::text("script.lib_dir"));
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(format!("{lib}/zz-count.js"), "var zzLoads = (typeof zzLoads === 'number' ? zzLoads : 0) + 1;").unwrap();
+    put_override(&h, "zz-a", "var helper = 'a'; function decide() { return {block: helper + zzLoads}; }");
+    put_override(&h, "zz-b", "function decide() { return {block: (typeof helper) + zzLoads}; }");
+    put_override(&h, "zz-none", "function notTheEntry() { return 'allow'; }");
+    std::thread::spawn(move || {
+        assert_eq!(run_forced("zz-a", &json!({}), &e), Some(Some(Verdict::Block("a1".into()))));
+        assert_eq!(run_forced("zz-b", &json!({}), &e), Some(Some(Verdict::Block("undefined1".into()))), "zz-a's helper leaked");
+        assert_eq!(run_forced("zz-a", &json!({}), &e), Some(Some(Verdict::Block("a1".into()))), "zz-b replaced zz-a's entry");
+        assert_eq!(run_forced("zz-none", &json!({}), &e), Some(Some(Verdict::Defer)), "no entry: a failure, Node decides");
+        assert_eq!(super::pool_usage().map(|u| u.0), Some(2), "two checks loaded");
+        // a lib edit rebuilds the shared context: the counter starts over
+        std::fs::write(format!("{lib}/zz-count.js"), "var zzLoads = 10;").unwrap();
+        let f = std::fs::File::options().write(true).open(format!("{lib}/zz-count.js")).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(run_forced("zz-b", &json!({}), &e), Some(Some(Verdict::Block("undefined10".into()))));
+        assert_eq!(super::pool_usage().map(|u| u.0), Some(1), "the rebuilt context holds only what was loaded since");
+    })
+    .join()
+    .expect("assertions hold");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// Memory budget (DECISIONS.md 1.111): one worker thread that has run EVERY shipped check script holds at most
+/// `script.heap_budget_base_bytes` + `script.heap_budget_per_check_bytes` per script in its interpreter. A context per check
+/// (about 150 KB each before any check code, 3.3 MB for the 16 scripts of 2026-10-09) fails this; the shared context
+/// (1.0 MB) passes, and the budget grows with the number of scripted checks, not with the calls.
+#[test]
+fn one_thread_running_every_shipped_script_stays_within_the_interpreter_budget() {
+    let h = home("budget");
+    let ext = defaults::text("script.ext"); // the root is known once the defaults are loaded
+    let dir = defaults::root().expect("plugin root").join(defaults::text("script.logic_dir"));
+    let names: Vec<String> =
+        std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| e.file_name().to_string_lossy().strip_suffix(ext).map(str::to_string)).collect();
+    assert!(names.len() > 1, "{names:?}");
+    let n = names.len();
+    let used = std::thread::spawn(move || {
+        let e = env(&h);
+        for name in &names {
+            for _ in 0..3 {
+                assert!(super::run_forced(name, &json!({"hook_event_name": "Notification", "cwd": h}), &Value::Null, "Notification", &e).is_some(), "{name}");
+            }
+        }
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        super::pool_usage().expect("the thread ran scripts")
+    })
+    .join()
+    .expect("the scripts ran");
+    assert_eq!(used.0, n, "every script loaded once into the shared context");
+    let budget = defaults::num("script.heap_budget_base_bytes") + defaults::num("script.heap_budget_per_check_bytes") * n as u64;
+    assert!(used.1 as u64 <= budget, "{n} scripts hold {} bytes in one thread's interpreter, over the budget of {budget}", used.1);
+}
+
 #[test]
 fn a_runaway_script_is_interrupted_and_defers() {
     let h = home("loop");
@@ -348,7 +408,13 @@ fn golden_report(check: &str, limit: usize) {
                 shown += 1;
                 let mut p = c["payload"].to_string();
                 p.truncate(300);
-                eprintln!("MISMATCH {check} n={}\n  payload={p}\n  expect={}\n  got   ={}\n  errors={:?}", c["n"], c["expect"].to_string().chars().take(500).collect::<String>(), got.to_string().chars().take(500).collect::<String>(), crate::discard::captured());
+                eprintln!(
+                    "MISMATCH {check} n={}\n  payload={p}\n  expect={}\n  got   ={}\n  errors={:?}",
+                    c["n"],
+                    c["expect"].to_string().chars().take(500).collect::<String>(),
+                    got.to_string().chars().take(500).collect::<String>(),
+                    crate::discard::captured()
+                );
             }
         }
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
@@ -647,7 +713,8 @@ mod sibling {
         );
         assert_eq!(go(&d, &stop(&d, &after, CAUSE)), Verdict::Allow);
         assert_eq!(results(&d, "cause", "result"), ["swept"]);
-        let before = write(&d, "b.jsonl", &[user("fix"), tool("Grep", json!({"pattern": "read_window"})), result(), tool("Edit", json!({})), result(), say(CAUSE)]);
+        let before =
+            write(&d, "b.jsonl", &[user("fix"), tool("Grep", json!({"pattern": "read_window"})), result(), tool("Edit", json!({})), result(), say(CAUSE)]);
         let mut p = stop(&d, &before, CAUSE);
         p["session_id"] = json!("s2");
         assert!(is_adv(&go(&d, &p)), "the investigation grep came before the statement");
@@ -738,7 +805,10 @@ mod sibling {
     fn follow_through_is_counted_within_the_window_and_resolved_once() {
         let d = h("sw-ft1");
         let p = fire(&d, "t");
-        append(&p, &[tool("Read", json!({})), result(), tool("Grep", json!({"pattern": "read_window"})), result(), say("Searched: no other occurrences. Done.")]);
+        append(
+            &p,
+            &[tool("Read", json!({})), result(), tool("Grep", json!({"pattern": "read_window"})), result(), say("Searched: no other occurrences. Done.")],
+        );
         go(&d, &continuation(&d, &p, "Searched: no other occurrences. Done."));
         assert_eq!(results(&d, "followthrough", "outcome"), ["followed"]);
         assert_eq!(rows(&d).iter().find(|x| x["event"] == "followthrough").unwrap()["tool_calls"], 2);
@@ -817,7 +887,8 @@ mod sibling {
 
     #[test]
     fn the_matcher_keeps_its_precision_and_recall_over_the_message_corpus() {
-        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/sibling-sweep-corpus.ndjson")).expect("the corpus file is readable");
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/sibling-sweep-corpus.ndjson"))
+            .expect("the corpus file is readable");
         let d = h("sw-corpus");
         let (mut n, mut wrong) = (0, Vec::new());
         for l in text.lines() {
