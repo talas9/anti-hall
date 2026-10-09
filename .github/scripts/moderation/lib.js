@@ -296,14 +296,30 @@ function validate(obj, schema) {
 
 // Privacy scrub. Returns hits [{rule, line}] - never the matched value. denylist: names from the
 // PRIVATE_DENYLIST secret (newline-separated); empty = that rule is skipped.
+// Compiled once per config object and denylist string (a scan calls this once per added line;
+// recompiling there made a 376k-line release diff exceed the 6-minute job limit).
+const PRIVACY_COMPILED = new WeakMap();
+function privacyCompiled(p, denylist) {
+  const key = String(denylist || '');
+  let c = PRIVACY_COMPILED.get(p);
+  if (!c || c.key !== key) {
+    const deny = key.split(/\r?\n/).map((x) => x.trim()).filter((x) => x.length >= 3);
+    c = {
+      key,
+      rules: Object.entries(p.rules).map(([rule, src]) => [rule, new RegExp(src, 'g')]),
+      denyRes: deny.map((d) => new RegExp('(^|[^A-Za-z0-9])' + d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^A-Za-z0-9])', 'i')),
+    };
+    PRIVACY_COMPILED.set(p, c);
+  }
+  return c;
+}
+
 function privacyScan(text, cfg, denylist) {
   const p = cfg.privacy;
   const hits = [];
-  const deny = String(denylist || '').split(/\r?\n/).map((x) => x.trim()).filter((x) => x.length >= 3);
-  const denyRes = deny.map((d) => new RegExp('(^|[^A-Za-z0-9])' + d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^A-Za-z0-9])', 'i'));
+  const { rules, denyRes } = privacyCompiled(p, denylist);
   String(text || '').split(/\r?\n/).forEach((ln, i) => {
-    for (const [rule, src] of Object.entries(p.rules)) {
-      const r = new RegExp(src, 'g');
+    for (const [rule, r] of rules) {
       for (const m of ln.matchAll(r)) {
         if (rule === 'email' && p.email_allow.some((a) => re(a).test(m[0]))) continue;
         hits.push({ rule, line: i + 1 });

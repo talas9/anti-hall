@@ -187,7 +187,7 @@
     "_doc": "Privacy scrub for PR diffs (added lines) and new issue/comment/discussion text. Private names come from the PRIVATE_DENYLIST secret, never from this file.",
     "rules": {
       "home-path": "(/Users/|/home/|[Cc]:\\\\Users\\\\)(?!(you|user|username|me|name|runner|example|someone|alice|bob|jane|john|dev|test|foo|bar|x|USER|USERNAME)[/\\\\])[A-Za-z0-9._-]{2,}[/\\\\]",
-      "email": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
+      "email": "(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
       "session-id": "session[\\s_-]?(id)?[\"'\\s:=]{0,4}[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     },
     "email_allow": ["@example\\.(com|org|net|test|invalid)$", "\\.(test|invalid|example|local)$", "noreply", "@users\\.noreply\\.github\\.com$", "@anthropic\\.com$", "@github\\.com$", "^git@github\\.com$"],

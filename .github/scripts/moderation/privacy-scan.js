@@ -9,14 +9,15 @@ const L = require('./lib.js');
 
 function scan(diff, cfg, deny) {
   const hits = [];
-  let file = null, ln = 0;
+  let file = null, ln = 0, skipFile = false;
+  const skipRes = cfg.privacy.skip_paths.map((p) => new RegExp(p));
   for (const row of diff.split('\n')) {
-    if (row.startsWith('+++ ')) { file = row.startsWith('+++ b/') ? row.slice(6) : null; continue; }
+    if (row.startsWith('+++ ')) { file = row.startsWith('+++ b/') ? row.slice(6) : null; skipFile = file !== null && skipRes.some((r) => r.test(file)); continue; }
     const h = row.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
     if (h) { ln = Number(h[1]); continue; }
     if (!file || row.startsWith('---')) continue;
     if (row.startsWith('+')) {
-      if (!cfg.privacy.skip_paths.some((p) => new RegExp(p).test(file))) {
+      if (!skipFile) {
         for (const x of L.privacyScan(row.slice(1), cfg, deny)) hits.push({ rule: x.rule, file, line: ln });
       }
       ln++;
