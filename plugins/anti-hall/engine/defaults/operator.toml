@@ -1274,8 +1274,8 @@ doc = "The report left by a mismatching comparison."
 value = "mismatch.txt"
 
 [ops.shadow_masks]
-doc = "Patterns replaced before comparing (`regex => replacement`): clock values and animation frames."
-value = ["[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z => TS", "corrupt-[0-9]+ => corrupt-N", "[◐◓◑◒] => S", "\\.[0-9]+\\.[0-9a-f]{8}\\.tmp => .tmp", "\"ts\":[0-9]+ => \"ts\":N", "\"started\":[0-9]+ => \"started\":N", "[0-9]+[hms]( |\\x1b|$) => D$1"]
+doc = "Patterns replaced before comparing (`regex => replacement`): clock values and animation frames, and the engine-first status line command (the launcher form) read as the Node installer's own `node \"<dispatcher>\"`."
+value = ["[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z => TS", "corrupt-[0-9]+ => corrupt-N", "[◐◓◑◒] => S", "\\.[0-9]+\\.[0-9a-f]{8}\\.tmp => .tmp", "\"ts\":[0-9]+ => \"ts\":N", "\"started\":[0-9]+ => \"started\":N", "[0-9]+[hms]( |\\x1b|$) => D$1", 'sh \\"[^"]*/ah-run\.sh\\" --stdin statusline -- \\"([^"]*)\\" => node \"$1\"']
 
 [statusline.poll_ms]
 doc = "How often a bounded child is checked, in milliseconds."

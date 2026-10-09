@@ -45,3 +45,14 @@ test('engine exit 75 and 70 fall back to Node', () => {
 test('an unknown verb is refused', () => {
   assert.strictEqual(run(['nope']).status, 64);
 });
+test('jev-report is a known verb: the engine answers, exit 75 falls back to the Node report', () => {
+  fakeEngine(0);
+  const answered = run(['jev-report', '--weekly']);
+  assert.strictEqual(answered.status, 0);
+  assert.match(answered.stdout, /^engine jev-report --weekly/);
+  fakeEngine(75);
+  const fell = run(['jev-report', '--weekly', '--home', HOME]);
+  assert.strictEqual(fell.status, 0, fell.stderr);
+  assert.match(fell.stdout, /engine jev-report/);
+  assert.match(fell.stdout, /jev weekly scorecard/);
+});

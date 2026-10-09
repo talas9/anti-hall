@@ -684,3 +684,35 @@ value = "h:"
 [ops.shadow_inst_cwd_tag]
 doc = "Prefix of a working-directory-relative file in the installer shadow's state digest."
 value = "c:"
+
+[env.statusline_node_only]
+doc = "When non-empty the installer writes the Node-only status line command (as the Node installer does) and the upgrade leaves an existing one alone. Used by the parity tests, which compare the two installers' output."
+value = "ANTIHALL_STATUSLINE_NODE_ONLY"
+
+[slcfg.launcher_rel]
+doc = "The launcher that runs the engine's command first and the Node script when the engine is absent or defers, relative to the directory of the status line dispatcher."
+value = "../scripts/ah-run.sh"
+
+[slcfg.command_launcher]
+doc = "The statusLine command when the launcher exists: it reads the host's JSON once and hands it to the engine's `statusline`, or to the dispatcher after the `--`. {launcher} {dispatcher}. It still names the dispatcher, so the Node installer, uninstaller and doctor recognise it as anti-hall's."
+value = 'sh "{launcher}" --stdin statusline -- "{dispatcher}"'
+
+[slcfg.mig_fixed]
+doc = "Migration row: an existing status line command now runs the engine first. {path} {command}."
+value = "statusLine in {path} now runs the engine first, with the Node dispatcher as the fallback: {command}"
+
+[slcfg.mig_dry_run]
+doc = "Migration row (dry run): what would change. {path} {command}."
+value = "would update the statusLine in {path} to run the engine first: {command}"
+
+[slcfg.mig_ambiguous]
+doc = "Migration row: the command appears other than once in the file's text, or the edit does not read back as intended, so the file is left exactly as it is. {path}."
+value = "left the statusLine in {path} as it is (its command text is not a single plain string the migration can replace in place)"
+
+[slcfg.mig_backup_failed]
+doc = "Migration row: the one-time backup could not be made, so the file is left exactly as it is. {path}."
+value = "left the statusLine in {path} as it is (its one-time backup could not be written)"
+
+[slcfg.mig_write_failed]
+doc = "Migration row: the settings file could not be written. {path}."
+value = "could not write {path}; the statusLine there is unchanged"

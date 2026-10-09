@@ -67,7 +67,34 @@ pub struct Ran {
 
 /// Run `cmd` with `input` on its stdin for at most `timeout`, killing its process group at the limit or when its output passes
 /// `max_bytes` (Node's `spawnSync` treats both as a failed run). `None` when it could not be started or was cut off.
-pub fn run_with_input(mut cmd: Command, input: &[u8], timeout: Duration, max_bytes: usize) -> Option<Ran> {
+pub fn run_with_input(cmd: Command, input: &[u8], timeout: Duration, max_bytes: usize) -> Option<Ran> {
+    match run_with_input_detail(cmd, input, timeout, max_bytes) {
+        Finished::Done { code, stdout } => Some(Ran { ok: code == Some(0), stdout }),
+        Finished::TimedOut | Finished::Failed => None,
+    }
+}
+
+/// How a bounded child ended, for a caller that must tell a time-out from a failure (the doctor's render check).
+pub enum Finished {
+    /// It exited; `code` is `None` when a signal ended it.
+    Done {
+        /// The exit code.
+        code: Option<i32>,
+        /// Standard output.
+        stdout: Vec<u8>,
+    },
+    /// It was still running at the timeout and its group was killed.
+    TimedOut,
+    /// It could not be started, or its output passed the cap.
+    Failed,
+}
+
+/// [`run_with_input`], saying how the run ended.
+pub fn run_with_input_detail(mut cmd: Command, input: &[u8], timeout: Duration, max_bytes: usize) -> Finished {
+    run_inner(&mut cmd, input, timeout, max_bytes).unwrap_or(Finished::Failed)
+}
+
+fn run_inner(cmd: &mut Command, input: &[u8], timeout: Duration, max_bytes: usize) -> Option<Finished> {
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     let mut child = cmd.spawn().ok()?;
     let mut stdin = child.stdin.take()?;
@@ -116,7 +143,7 @@ pub fn run_with_input(mut cmd: Command, input: &[u8], timeout: Duration, max_byt
             Ok(None) if start.elapsed() < timeout => std::thread::sleep(poll),
             _ => {
                 kill(&mut child);
-                return None;
+                return Some(Finished::TimedOut);
             }
         }
     };
@@ -127,5 +154,5 @@ pub fn run_with_input(mut cmd: Command, input: &[u8], timeout: Duration, max_byt
         kill(&mut child);
         return None;
     }
-    Some(Ran { ok: status.success(), stdout })
+    Some(Finished::Done { code: status.code(), stdout })
 }

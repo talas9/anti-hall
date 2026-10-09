@@ -29,10 +29,10 @@ hooks via `install-codex.js`), so its read-only default and opt-in repair mode a
 identically here:
 
 ```bash
-node "$ANTI_HALL_ROOT/hooks/doctor.js"           # diagnose only (default, read-only — no repair pass)
-node "$ANTI_HALL_ROOT/hooks/doctor.js" --repair  # diagnose + apply the safe repairs (alias --fix)
-node "$ANTI_HALL_ROOT/hooks/doctor.js" --dry-run # print what --repair would fix; writes nothing
-node "$ANTI_HALL_ROOT/hooks/doctor.js" --check   # read-only — the CI/scripting path
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" doctor           # diagnose only (default, read-only — no repair pass)
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" doctor --repair  # diagnose + apply the safe repairs (alias --fix)
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" doctor --dry-run # print what --repair would fix; writes nothing
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" doctor --check   # read-only — the CI/scripting path
 ```
 
 Doctor also warns (report-only, nothing moved) about handover files tracked by git or

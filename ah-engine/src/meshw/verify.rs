@@ -15,6 +15,14 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    copy_tree_linked(src, dst, &mut std::collections::HashMap::new())
+}
+
+/// [`copy_tree`] that keeps hard links: a file with several names (a descriptor and its archived twin) is copied once and the
+/// other names are links to that copy, as in the original. `seen` carries the copies across trees, so two roots of one home
+/// that share a file keep sharing it (`unarchive` proves "the archived anchor" by inode).
+pub(crate) fn copy_tree_linked(src: &Path, dst: &Path, seen: &mut std::collections::HashMap<(u64, u64), PathBuf>) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
     std::fs::create_dir_all(dst)?;
     // what the engine could not read, the witness cannot read either: an unreadable directory is copied as an empty one and
     // an unreadable file as an empty file, each with the permissions of the original
@@ -23,10 +31,21 @@ pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
             let (s, d) = (e.path(), dst.join(e.file_name()));
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
-                copy_tree(&s, &d)?;
-            } else if ft.is_file() && std::fs::copy(&s, &d).is_err() {
-                std::fs::write(&d, b"")?;
-                std::fs::set_permissions(&d, std::fs::metadata(&s)?.permissions())?;
+                copy_tree_linked(&s, &d, seen)?;
+            } else if ft.is_file() {
+                let key = std::fs::metadata(&s).ok().filter(|m| m.nlink() > 1).map(|m| (m.dev(), m.ino()));
+                if let Some(first) = key.and_then(|k| seen.get(&k))
+                    && std::fs::hard_link(first, &d).is_ok()
+                {
+                    continue;
+                }
+                if std::fs::copy(&s, &d).is_err() {
+                    std::fs::write(&d, b"")?;
+                    std::fs::set_permissions(&d, std::fs::metadata(&s)?.permissions())?;
+                }
+                if let Some(k) = key {
+                    seen.insert(k, d);
+                }
             }
         }
     }

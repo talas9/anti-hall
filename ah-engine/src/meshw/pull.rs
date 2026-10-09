@@ -87,14 +87,14 @@ pub(crate) struct Outcome {
     pub wal_blocked: bool,
 }
 
-fn field_str(d: &OVal, key: &str) -> Option<String> {
+pub(crate) fn field_str(d: &OVal, key: &str) -> Option<String> {
     match d.get(key) {
         Some(OVal::Str(x)) if !x.is_empty() => Some(x.clone()),
         _ => None,
     }
 }
 
-fn text_or_null(d: &OVal, key: &str) -> R<Option<String>> {
+pub(crate) fn text_or_null(d: &OVal, key: &str) -> R<Option<String>> {
     match d.get(key) {
         None | Some(OVal::Null) => Ok(None),
         Some(OVal::Str(t)) => Ok(Some(t.clone())),
@@ -103,7 +103,7 @@ fn text_or_null(d: &OVal, key: &str) -> R<Option<String>> {
 }
 
 /// `inboxDefaultPath(home, id)`.
-fn inbox_default(home: &Path, id: &str) -> String {
+pub(crate) fn inbox_default(home: &Path, id: &str) -> String {
     devswarm_root(home)
         .join(defaults::text("mesh_write.dir_inbox"))
         .join(format!("{id}{}", defaults::text("mesh_write.ndjson_suffix")))
@@ -112,7 +112,7 @@ fn inbox_default(home: &Path, id: &str) -> String {
 }
 
 /// `cursorDefaultPath(home, id)`.
-fn cursor_default(home: &Path, id: &str) -> String {
+pub(crate) fn cursor_default(home: &Path, id: &str) -> String {
     devswarm_root(home)
         .join(defaults::text("mesh_write.dir_cursors"))
         .join(format!("{id}{}", defaults::text("mesh_write.cursor_file_suffix")))
@@ -406,7 +406,7 @@ pub(crate) fn prepare(inv: &Inv, id: &str, desc: Option<&OVal>) -> R<Plan> {
 /// `readerCursors.declare(store, { partition, reader, home })` for a registration the pull creates: the caller's own `store` and
 /// `nd` rows, seeded at the partition's floor (INSERT-if-absent; a retired row of the caller's is revived). Declared only when
 /// the floor rows exist and no legacy per-instance cursor file maps the caller; the import of the legacy cursors is Node's.
-fn plan_declare(inv: &Inv, store: &MeshStore, id: &str) -> R<Vec<CursorPut>> {
+pub(crate) fn plan_declare(inv: &Inv, store: &MeshStore, id: &str) -> R<Vec<CursorPut>> {
     let Some(reader) = crate::meshw::cursors::reader_key(tick::reader_nonce_cached(&inv.home).as_deref()) else { return Ok(Vec::new()) };
     let rows = crate::meshw::cursors::rows_of(store, id).map_err(|e| ident::Defer(format!("cursor-rows:{e}")))?;
     if crate::meshw::cursors::needs_import(&rows) {
@@ -517,7 +517,7 @@ impl Plan {
     }
 }
 
-fn write_descriptor(inv: &Inv, id: &str, d: &OVal) -> std::io::Result<()> {
+pub(crate) fn write_descriptor(inv: &Inv, id: &str, d: &OVal) -> std::io::Result<()> {
     let dir = devswarm_root(&inv.write_home).join(defaults::text("mesh_write.dir_workspaces"));
     let file = dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let mut tmp = file.as_os_str().to_os_string();
@@ -529,7 +529,7 @@ fn write_descriptor(inv: &Inv, id: &str, d: &OVal) -> std::io::Result<()> {
 }
 
 /// `precreateCursorAndInbox(desc)`: the cursor at `0` (exclusive: never clobbered), the inbox by an empty append.
-fn precreate(d: &OVal) {
+pub(crate) fn precreate(d: &OVal) {
     if let Some(c) = field_str(d, defaults::text("mesh_write.field_cursor_path")) {
         let p = Path::new(&c);
         if let Some(dir) = p.parent() {

@@ -162,6 +162,11 @@ fn pid_namespace() -> String {
 
 /// The owner record, in the key order Node writes it.
 fn owner_record(ts: u64, token: &str) -> String {
+    owner_record_with(ts, token, &[])
+}
+
+/// [`owner_record`] followed by caller fields (`Object.assign(ownerRecord, fields)`; a field Node leaves `undefined` is not passed).
+fn owner_record_with(ts: u64, token: &str, fields: &[(String, serde_json::Value)]) -> String {
     let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
     let mut out = format!("{{\"pid\":{},\"host\":{},\"ts\":{ts},\"token\":{}", std::process::id(), q(&hostname()), q(token));
     if let Some(b) = boot_time() {
@@ -171,13 +176,41 @@ fn owner_record(ts: u64, token: &str) -> String {
     if !ns.is_empty() {
         out.push_str(&format!(",\"pidns\":{}", q(&ns)));
     }
+    for (k, v) in fields {
+        out.push_str(&format!(",{}:{v}", q(k)));
+    }
     out.push('}');
     out
+}
+
+/// Who held a lock the caller was refused (`onRefused(holder)`).
+#[derive(Debug, Clone, Default)]
+pub struct Refused {
+    /// The holder's pid.
+    pub pid: Option<i64>,
+    /// How old its record is (`None`: unknown).
+    pub age_ms: Option<f64>,
+    /// The `version` field it stamped.
+    pub version: Option<String>,
+    /// The `sessionId` field it stamped.
+    pub session_id: Option<String>,
+    /// Its `ts`.
+    pub ts: Option<f64>,
+}
+
+/// Extra owner-record fields and the refusal report of [`acquire_ex`].
+#[derive(Debug, Default)]
+pub struct Extra {
+    /// Fields appended to the owner record.
+    pub fields: Vec<(String, serde_json::Value)>,
+    /// Filled when the lock is refused.
+    pub refused: Option<Refused>,
 }
 
 #[derive(Debug)]
 struct Holder {
     token: Option<serde_json::Value>,
+    record: Option<serde_json::Map<String, serde_json::Value>>,
     ts_from_mtime: bool,
     ts: Option<f64>,
     pid: Option<i64>,
@@ -233,7 +266,7 @@ fn inspect(path: &str, p: &Params) -> Option<Holder> {
     let age_ms = ts.map_or(f64::INFINITY, |t| (now_ms() as f64 - t).max(0.0));
     let known = pid.is_some() && (host.is_none() || host.as_deref() == Some(hostname().as_str()) || rec.as_ref().is_some_and(|r| same_machine(r, p)));
     let dead = known && !pid_alive(pid.unwrap_or(0));
-    Some(Holder { token, ts_from_mtime, ts, pid, age_ms, dead, known })
+    Some(Holder { token, record: rec, ts_from_mtime, ts, pid, age_ms, dead, known })
 }
 
 enum Published {
@@ -399,6 +432,21 @@ pub fn acquire_respecting_live(path: &str, p: Params) -> Option<Held> {
 }
 
 fn acquire_with(path: &str, p: Params, respect_live: Steal) -> Option<Held> {
+    acquire_core(path, p, respect_live, &mut Extra::default())
+}
+
+/// `acquire` with extra owner-record fields and the holder reported on refusal (`fields`, `onRefused` of `companion/lib/lock.js`);
+/// the takeover rule is the age-only one of [`acquire`].
+pub fn acquire_ex(path: &str, p: Params, extra: &mut Extra) -> Option<Held> {
+    acquire_core(path, p, Steal::Default, extra)
+}
+
+fn refused_of(h: &Holder) -> Refused {
+    let field = |k: &str| h.record.as_ref().and_then(|r| r.get(k)).and_then(serde_json::Value::as_str).map(str::to_string);
+    Refused { pid: h.pid, age_ms: h.ts.map(|_| h.age_ms), version: field("version"), session_id: field("sessionId").filter(|s| !s.is_empty()), ts: h.ts }
+}
+
+fn acquire_core(path: &str, p: Params, respect_live: Steal, extra: &mut Extra) -> Option<Held> {
     if let Some(i) = path.rfind('/')
         && i > 0
     {
@@ -407,20 +455,24 @@ fn acquire_with(path: &str, p: Params, respect_live: Steal) -> Option<Held> {
     let deadline = std::time::Instant::now() + Duration::from_millis(p.wait_ms);
     let mut retry_now = false;
     let mut first = true;
+    let mut last: Option<Refused> = None;
+    let refuse = |extra: &mut Extra, last: &Option<Refused>| extra.refused = last.clone();
     loop {
         if !first && !retry_now && std::time::Instant::now() >= deadline {
+            refuse(extra, &last);
             return None;
         }
         first = false;
         retry_now = false;
         let ts = now_ms();
         let token = new_token(ts);
-        match publish(path, &owner_record(ts, &token)) {
+        match publish(path, &owner_record_with(ts, &token, &extra.fields)) {
             Published::Yes => return Some(Held { path: path.to_string(), token, p }),
             Published::Exists => {}
             Published::Failed => return None,
         }
         let Some(h) = inspect(path, &p) else { continue };
+        last = Some(refused_of(&h));
         if stealable(&h, &p, respect_live) {
             // reclaimGuarded: only a holder of the takeover marker may rename or remove the lock, and it re-judges first.
             let r = match take_sidecar(path, &p) {
@@ -436,7 +488,10 @@ fn acquire_with(path: &str, p: Params, respect_live: Steal) -> Option<Held> {
                 }
             };
             match r {
-                Some(Reclaimed::Caught | Reclaimed::Failed) => return None,
+                Some(Reclaimed::Caught | Reclaimed::Failed) => {
+                    refuse(extra, &last);
+                    return None;
+                }
                 Some(other) => {
                     retry_now = other == Reclaimed::Done;
                     continue;
@@ -445,6 +500,7 @@ fn acquire_with(path: &str, p: Params, respect_live: Steal) -> Option<Held> {
             }
         }
         if std::time::Instant::now() >= deadline {
+            refuse(extra, &last);
             return None;
         }
         std::thread::sleep(Duration::from_millis(p.step_ms));

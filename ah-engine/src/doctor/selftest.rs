@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// What a check did with a payload, in the terms of the Node hook's exit code and output.
-enum Got {
+pub(super) enum Got {
     /// Exit 0.
     Allow(String),
     /// Exit 2.
@@ -40,7 +40,7 @@ fn classify(v: Option<Verdict>) -> Got {
 }
 
 /// Run the named check on a payload the way the dispatcher would, with `env` as the request's environment.
-fn evaluate(name: &str, payload: &Value, env: BTreeMap<String, String>) -> Option<Got> {
+pub(super) fn evaluate(name: &str, payload: &Value, env: BTreeMap<String, String>) -> Option<Got> {
     let check = checks::get(name)?;
     let null = Value::Null;
     let subject = Subject {
@@ -56,7 +56,7 @@ fn evaluate(name: &str, payload: &Value, env: BTreeMap<String, String>) -> Optio
 
 /// The Node hook the dispatcher would run when the engine defers: the payload on stdin, the test environment only. `None` when it
 /// cannot be run (no Node, no such hook, killed after the time limit); the reason is noted.
-fn node_hook(ctx: &Ctx, plugin_root: Option<&str>, script: &str, payload: &Value, env: &BTreeMap<String, String>) -> Option<Got> {
+pub(super) fn node_hook(ctx: &Ctx, plugin_root: Option<&str>, script: &str, payload: &Value, env: &BTreeMap<String, String>) -> Option<Got> {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     let path = Path::new(plugin_root?).join(defaults::text("doctor.hooks_dir")).join(script);
@@ -126,13 +126,13 @@ fn node_hook(ctx: &Ctx, plugin_root: Option<&str>, script: &str, payload: &Value
 }
 
 /// A throwaway directory under the temp directory, removed when it goes out of scope. A failure to remove it is noted.
-struct Scratch<'a> {
-    dir: PathBuf,
+pub(super) struct Scratch<'a> {
+    pub(super) dir: PathBuf,
     ctx: &'a Ctx,
 }
 
 impl<'a> Scratch<'a> {
-    fn new(ctx: &'a Ctx, label: &str) -> Option<Scratch<'a>> {
+    pub(super) fn new(ctx: &'a Ctx, label: &str) -> Option<Scratch<'a>> {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "{}{label}-{}-{}",
@@ -159,7 +159,7 @@ impl Drop for Scratch<'_> {
 }
 
 /// The environment of one self-test: the throwaway home, the plugin root, the process's `PATH` and `TMPDIR`, and the test's own.
-fn test_env(ctx: &Ctx, home: &Path, plugin_root: Option<&str>, extra: &[&str]) -> BTreeMap<String, String> {
+pub(super) fn test_env(ctx: &Ctx, home: &Path, plugin_root: Option<&str>, extra: &[&str]) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     for k in defaults::list("doctor.passthrough_env") {
         if let Some(v) = ctx.env.get(k) {
@@ -180,12 +180,12 @@ fn test_env(ctx: &Ctx, home: &Path, plugin_root: Option<&str>, extra: &[&str]) -
     env
 }
 
-fn now_ms() -> String {
+pub(super) fn now_ms() -> String {
     crate::checks::jsport::num::to_js_string(crate::checks::jsport::date::now_ms())
 }
 
 /// Replace each `{NAME}` in every string of a payload.
-fn fill_value(v: &mut Value, pairs: &[(&str, String)]) {
+pub(super) fn fill_value(v: &mut Value, pairs: &[(&str, String)]) {
     match v {
         Value::String(s) => {
             for (k, x) in pairs {
@@ -307,4 +307,22 @@ pub(super) fn run(doc: &mut Doc, ctx: &Ctx, plugin_root: Option<&str>, version: 
         one(doc, ctx, &home, &fixtures, plugin_root, t);
     }
     version_alert(doc, ctx, plugin_root, version);
+}
+
+/// A built-in check run on a payload; when the engine defers it, its Node hook `script` runs instead, as the dispatcher would.
+pub(super) fn run_check(ctx: &Ctx, plugin_root: Option<&str>, check: &str, script: &str, payload: &Value, env: &BTreeMap<String, String>) -> Got {
+    match evaluate(check, payload, env.clone()) {
+        Some(Got::Defer) | None => node_hook(ctx, plugin_root, script, payload, env).unwrap_or(Got::Defer),
+        Some(g) => g,
+    }
+}
+
+impl Got {
+    /// What the check printed, `None` when it was deferred and could not be run.
+    pub(super) fn text(&self) -> Option<&str> {
+        match self {
+            Got::Allow(t) | Got::Block(t) => Some(t),
+            Got::Defer => None,
+        }
+    }
 }

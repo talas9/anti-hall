@@ -366,7 +366,7 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
     }
     let new_line = J::Obj(vec![
         ("type".into(), J::Str(t("slcfg.type_command").into())),
-        ("command".into(), J::Str(format!("{}{dispatcher}{}", t("slcfg.command_prefix"), t("slcfg.command_suffix")))),
+        ("command".into(), J::Str(statusline_command(&dispatcher, env))),
         ("padding".into(), J::Num(0.0)),
         ("refreshInterval".into(), J::Num(defaults::num("slcfg.refresh_interval") as f64)),
     ]);
@@ -422,6 +422,97 @@ fn backup_once(settings: &str, backup: &str, log: &mut Log, report_existing: boo
         }
         Err(e) => Some(copy_message(&e, settings, backup)),
     }
+}
+
+// ---- the command the host runs ----------------------------------------------------------------------------------------
+
+/// The launcher next to a dispatcher (`<dispatcher dir>/<slcfg.launcher_rel>`), when the plugin ships it.
+fn launcher_for(dispatcher: &str) -> Option<String> {
+    let dir = Path::new(dispatcher).parent()?;
+    let launcher = crate::meshw::ident::resolve_abs(&dir.join(t("slcfg.launcher_rel")).to_string_lossy());
+    exists(&launcher).then_some(launcher)
+}
+
+/// The Node-only form: `node "<dispatcher>"`.
+fn node_command(dispatcher: &str) -> String {
+    format!("{}{dispatcher}{}", t("slcfg.command_prefix"), t("slcfg.command_suffix"))
+}
+
+/// What the host runs each render. The engine's status line when the plugin ships its launcher (the launcher runs the engine
+/// first and the Node dispatcher when the engine is absent or leaves the render to Node), else the Node dispatcher alone. The Node
+/// installer always writes the Node-only form; `slcfg.node_only_env` makes this one do the same (the parity tests set it).
+fn statusline_command(dispatcher: &str, env: &BTreeMap<String, String>) -> String {
+    if env.get(defaults::env_name("statusline_node_only")).is_some_and(|v| !v.is_empty()) {
+        return node_command(dispatcher);
+    }
+    match launcher_for(dispatcher) {
+        Some(l) if shell_safe(&l) => fill("slcfg.command_launcher", &[("launcher", &l), ("dispatcher", &dispatcher)]),
+        _ => node_command(dispatcher),
+    }
+}
+
+/// What one settings file's upgrade did.
+pub(crate) struct Upgrade {
+    /// `fixed`, `skipped` or `failed` (a migration report's words).
+    pub status: &'static str,
+    /// The report text.
+    pub msg: String,
+}
+
+/// The dispatcher inside a Node-only statusLine command that anti-hall installed (`node "<…/anti-hall/…/statusline.js>"`).
+fn legacy_dispatcher(cmd: &str) -> Option<&str> {
+    let inner = cmd.strip_prefix(t("slcfg.command_prefix"))?.strip_suffix(t("slcfg.command_suffix"))?;
+    let norm = inner.replace('\\', "/");
+    (norm.contains(t("slcfg.installed_marker")) && norm.contains(t("slcfg.installed_dir_install"))).then_some(inner)
+}
+
+/// The persisted-shape migration of an existing install: a statusLine anti-hall wrote in the Node-only form becomes the launcher
+/// form. Idempotent (the new form is not the old one), fail-open (anything unclear is left exactly as it is), and it only ever
+/// changes that one string, in place in the file's own text, after the one-time backup the installer keeps. `None`: nothing to do.
+fn upgrade_file(path: &str, env: &BTreeMap<String, String>, cwd: &str, dry_run: bool) -> Option<Upgrade> {
+    if env.get(defaults::env_name("statusline_node_only")).is_some_and(|v| !v.is_empty()) || jsio::config_write_refused(path, env, cwd) {
+        return None;
+    }
+    let text = read_text(path)?;
+    let settings = parse(&text).ok()?;
+    let old = command_of(settings.get("statusLine"))?.to_string();
+    let dispatcher = legacy_dispatcher(&old)?;
+    let new = statusline_command(dispatcher, env);
+    if new == old || !shell_safe(dispatcher) {
+        return None;
+    }
+    let (old_lit, new_lit) = (json::quote(&old), json::quote(&new));
+    let report = |status: &'static str, key: &str| Some(Upgrade { status, msg: fill(key, &[("path", &path), ("command", &new)]) });
+    if text.matches(&old_lit).count() != 1 {
+        return report("skipped", "slcfg.mig_ambiguous");
+    }
+    let next = text.replacen(&old_lit, &new_lit, 1);
+    if parse(&next).ok().is_none_or(|n| command_of(n.get("statusLine")) != Some(new.as_str())) {
+        return report("skipped", "slcfg.mig_ambiguous");
+    }
+    if dry_run {
+        return report("skipped", "slcfg.mig_dry_run");
+    }
+    let backup = path.to_string() + t("slcfg.backup_suffix");
+    if !exists(&backup) && std::fs::copy(path, &backup).is_err() {
+        return report("failed", "slcfg.mig_backup_failed");
+    }
+    match jsio::write_file(path, next.as_bytes()) {
+        Ok(()) => report("fixed", "slcfg.mig_fixed"),
+        Err(_) => report("failed", "slcfg.mig_write_failed"),
+    }
+}
+
+/// The settings files an install may have written: the user's, and the project's own two.
+pub(crate) fn upgrade_commands(home: &str, cwd: &str, env: &BTreeMap<String, String>, dry_run: bool) -> Vec<Upgrade> {
+    let claude = t("slcfg.claude_dir");
+    let mut files = vec![join(home, &format!("{claude}/{}", t("slcfg.settings_file")))];
+    if !cwd.is_empty() {
+        files.push(join(cwd, &format!("{claude}/{}", t("slcfg.local_file"))));
+        files.push(join(cwd, &format!("{claude}/{}", t("slcfg.settings_file"))));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    files.into_iter().filter(|f| seen.insert(f.clone())).filter_map(|f| upgrade_file(&f, env, cwd, dry_run)).collect()
 }
 
 // ---- uninstall --------------------------------------------------------------------------------------------------------

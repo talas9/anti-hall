@@ -8,6 +8,7 @@
 //! `doctor`, `migrate` (the port of `migrate-state.js`) and `capability-scan` were ported earlier (`doctor/`, `migrate/`,
 //! `setup/`). The texts, paths, limits and patterns of both commands are in the plugin's `engine/defaults/update_cli.toml`.
 pub mod install_codex;
+pub mod postpull;
 pub mod update;
 
 use crate::defaults;

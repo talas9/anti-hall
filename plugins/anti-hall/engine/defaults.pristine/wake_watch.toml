@@ -1,0 +1,334 @@
+# ah-engine shipped defaults for the DevSwarm idle-wake Monitor (`ah-engine devswarm wake-watch [--auto]`, `src/wakew/`), the
+# engine's port of `companion/lib/devswarm-wake-watch.js`. Format: see the header of engine.toml.
+#
+# The event lines (`line_*`) are what the host's Monitor delivers to the session, one per stdout line: they are the Node
+# watcher's own, word for word, because the parity test compares the two watchers' output byte for byte. A `{name}` in a text
+# is filled in at run time. The diagnostics (`diag_*`) go to stderr and end in their own newline.
+
+[wake_watch.verb]
+doc = "The `ah-engine devswarm` verb that runs the idle-wake Monitor."
+value = "wake-watch"
+
+[wake_watch.flag_auto]
+doc = "The option the plugin's monitor entry passes: the harness started the watcher at session start, so the expected refusals (not a DevSwarm session, switched off) print nothing."
+value = "--auto"
+
+# ---- settings ----------------------------------------------------------------------------------------------------------------
+
+[wake_watch.set_enabled]
+doc = "The setting devswarm.wakeWatch: off refuses to arm (the cron wake fallback is unaffected)."
+value = { section = "devswarm", key = "wakeWatch", type = "boolean", option = "devswarm_wake_watch", default = true }
+
+[wake_watch.set_idle_skip]
+doc = "The setting devswarm.wakeWatchIdleSkip: a Primary with no live child workspace need not arm (Node prints its one idle line)."
+value = { section = "devswarm", key = "wakeWatchIdleSkip", type = "boolean", env = "ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP", option = "devswarm_wake_watch_idle_skip", default = true }
+
+[wake_watch.set_archived_stop]
+doc = "The setting devswarm.archivedChildStop: an archived child's watcher stays alive but silent."
+value = { section = "devswarm", key = "archivedChildStop", type = "boolean", env = "ANTIHALL_DEVSWARM_ARCHIVED_CHILD_STOP", option = "devswarm_archived_child_stop", default = true }
+
+[wake_watch.set_poll_ms]
+doc = "The setting devswarm.wakeWatchPollMs: the tick of the watcher in milliseconds (lock heartbeat, parent check, stale-build check, reads). A change of a watched file wakes the tick early."
+value = { section = "devswarm", key = "wakeWatchPollMs", type = "number", min = 250, max = 60000, default = 2000, env = "ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS" }
+
+[wake_watch.poll_min_ms]
+doc = "Floor of the tick in milliseconds."
+value = 250
+
+[wake_watch.poll_max_ms]
+doc = "Ceiling of the tick in milliseconds."
+value = 60000
+
+[wake_watch.error_tolerance]
+doc = "Consecutive failed ticks that stay silent; the next one prints an error line."
+value = 3
+
+[wake_watch.error_backoff_ms]
+doc = "Waits between repeated error lines, in milliseconds: the first repeat, the second, then the last one forever."
+value = [60000, 300000, 1800000]
+
+[wake_watch.archived_recheck_ms]
+doc = "How often a child watcher asks again whether its own workspace is archived (it reads the app database), in milliseconds."
+value = 120000
+
+[wake_watch.archived_recheck_floor_ms]
+doc = "Smallest accepted value of the archived re-check override."
+value = 100
+
+[wake_watch.env_archived_recheck]
+doc = "Test knob: overrides the archived re-check interval (milliseconds)."
+value = "ANTIHALL_DEVSWARM_WAKE_WATCH_ARCHIVED_RECHECK_MS"
+
+[wake_watch.env_handoff]
+doc = "Set by a watcher that hands over to a newer build: the version it handed over to, so a chain of handoffs only ever moves forward."
+value = "ANTIHALL_WAKE_WATCH_HANDED_OFF"
+
+[wake_watch.env_source_branch]
+doc = "The variable whose non-blank value marks a DevSwarm child workspace."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[wake_watch.session_env]
+doc = "The variables that name the session that armed the watcher, in order; the first non-empty one is stamped into the lock."
+value = ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "ANTIHALL_SESSION_ID"]
+
+# ---- the lock ----------------------------------------------------------------------------------------------------------------
+
+[wake_watch.lock_stale_ms]
+doc = "A watcher lock not re-stamped for this long is taken over, whoever holds it (a healthy watcher re-stamps every tick; a hung one does not), in milliseconds."
+value = 120000
+
+[wake_watch.lock_wait_ms]
+doc = "How long to keep retrying a lock another watcher holds, in milliseconds (0: refuse at once)."
+value = 0
+
+[wake_watch.lock_step_ms]
+doc = "The pause between retries, in milliseconds."
+value = 5
+
+[wake_watch.lock_reclaim_stale_ms]
+doc = "A takeover marker older than this is taken over, in milliseconds."
+value = 5000
+
+[wake_watch.lock_release_tries]
+doc = "How many times a release tries to take the takeover marker."
+value = 5
+
+[wake_watch.lock_release_step_ms]
+doc = "The pause between those tries, in milliseconds."
+value = 10
+
+[wake_watch.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot."
+value = 5
+
+[wake_watch.lock_prefix]
+doc = "Start of the watcher lock's file name (followed by the workspace id)."
+value = "wake-watch-"
+
+[wake_watch.lock_suffix]
+doc = "End of the watcher lock's file name."
+value = ".lock"
+
+[wake_watch.field_version]
+doc = "The lock record field that names the plugin build holding the lock."
+value = "version"
+
+[wake_watch.field_session]
+doc = "The lock record field that names the session that armed the watcher."
+value = "sessionId"
+
+# ---- files -------------------------------------------------------------------------------------------------------------------
+
+[wake_watch.dir_summaries]
+doc = "The directory of the projects' derived summaries, under the DevSwarm state directory."
+value = "summaries"
+
+[wake_watch.dir_wake]
+doc = "The directory of the watchers' private cursors, under the DevSwarm state directory."
+value = "wake"
+
+[wake_watch.dir_inbox]
+doc = "The directory of the children's durable inboxes, under the DevSwarm state directory."
+value = "inbox"
+
+[wake_watch.dir_archive_ignore]
+doc = "The directory of the owner's per-workspace archive-ignore markers, under the DevSwarm state directory."
+value = "archive-ignore"
+
+[wake_watch.inbox_suffix]
+doc = "End of an inbox file's name."
+value = ".ndjson"
+
+[wake_watch.seen_suffix]
+doc = "End of a watcher cursor file's name."
+value = ".seen"
+
+[wake_watch.json_suffix]
+doc = "End of a JSON state file's name."
+value = ".json"
+
+[wake_watch.tmp_suffix]
+doc = "End of the temporary file a cursor is written to before the rename."
+value = ".tmp"
+
+[wake_watch.active_cache_file]
+doc = "The supervisor's cache of the hivecontrol active list, under the DevSwarm state directory. While it exists the engine does not decide the idle-skip for a worktree the app database has no opinion on: Node does."
+value = "hivecontrol-active.json"
+
+[wake_watch.manifest_rel]
+doc = "The plugin manifest that names the build the watcher runs, relative to the plugin root."
+value = ".claude-plugin/plugin.json"
+
+[wake_watch.stale_script_rel]
+doc = "The watcher script of another build, relative to that build's cache directory: a newer build is handed over to only when this file exists."
+value = "companion/lib/devswarm-wake-watch.js"
+
+[wake_watch.node_bin]
+doc = "The interpreter that runs the newer build's watcher script on a handoff."
+value = "node"
+
+[wake_watch.repos_root_re]
+doc = "Regex source: a worktree under the DevSwarm repos root, the only kind the supervisor's active list can call archived."
+value = '[\\/]\.devswarm[\\/]repos[\\/]'
+
+[wake_watch.replacement_escape]
+doc = "The JSON escape a lone surrogate escape is rewritten to before parsing (the strict parser refuses it, JavaScript reads it)."
+value = '�'
+
+[wake_watch.seen_owned_keys]
+doc = "The members of a cursor file this build owns and always rewrites; any other member (a newer build's) is carried through untouched."
+value = ["lastTotal", "lastTotal2", "lastBroadcastUnread", "meshTotal", "ndjsonTotal"]
+
+[wake_watch.field_broadcast]
+doc = "The summary member that counts the unread broadcasts of others (heartbeats and the workspace's own sends excluded)."
+value = "broadcastUnreadFromOthers"
+
+# ---- words -------------------------------------------------------------------------------------------------------------------
+
+[wake_watch.role_primary]
+doc = "The role word of a Primary in the lines."
+value = "primary"
+
+[wake_watch.role_child]
+doc = "The role word of a child workspace in the lines."
+value = "child"
+
+[wake_watch.word_unknown]
+doc = "Said where a role, id or version is not known."
+value = "unknown"
+
+[wake_watch.word_unknown_error]
+doc = "Said where a failed read gave no reason."
+value = "unknown read error"
+
+[wake_watch.word_unavailable]
+doc = "Said where the session of a lock holder is not recorded."
+value = "unavailable"
+
+[wake_watch.label_sep]
+doc = "Between a channel label and the word after it."
+value = " "
+
+[wake_watch.label_ndjson]
+doc = "Label of the child's durable-inbox channel when two channels are watched."
+value = "ndjson"
+
+[wake_watch.label_mesh_direct]
+doc = "Label of the child's mesh-direct channel."
+value = "mesh-direct"
+
+[wake_watch.label_broadcast]
+doc = "Label of the broadcast channel."
+value = "broadcast"
+
+[wake_watch.reason_not_devswarm]
+doc = "Refusal reason (closed vocabulary): the session is not a DevSwarm session."
+value = "not-a-devswarm-session"
+
+[wake_watch.reason_identity]
+doc = "Refusal reason (closed vocabulary): no DevSwarm identity could be resolved."
+value = "identity-unresolved"
+
+[wake_watch.reason_lock_held]
+doc = "Refusal reason (closed vocabulary): another watcher holds the lock."
+value = "lock-held"
+
+[wake_watch.reason_disabled]
+doc = "Refusal reason (closed vocabulary): switched off by devswarm.wakeWatch."
+value = "disabled-by-settings"
+
+[wake_watch.err_unresolvable]
+doc = "Read error: the repo identity needed to find the summary could not be resolved."
+value = "unresolvable-repo-identity"
+
+[wake_watch.err_prefix_mesh]
+doc = "Start of a read error of the mesh-direct channel."
+value = "mesh-direct: "
+
+[wake_watch.err_prefix_broadcast]
+doc = "Start of a read error of the broadcast channel when it is the only failing one."
+value = "broadcast: "
+
+[wake_watch.err_sep_broadcast]
+doc = "Between the direct channels' read error and the broadcast channel's, when both failed."
+value = "; broadcast: "
+
+# ---- lines (stdout: one event per line) --------------------------------------------------------------------------------------
+
+[wake_watch.line_arm]
+doc = "Printed once, on the first tick: proof that the watcher is alive, so later silence means nothing new. {role} {id}."
+value = "[wake-watch] armed: watching {role} {id} for new direct mesh mail and new mesh broadcasts (read-only, poll-based)."
+
+[wake_watch.line_refused]
+doc = "Printed when the watcher declines to arm (a model-armed watcher always; an auto-started one only for an anomaly). {reason} is one of the closed reasons."
+value = "[wake-watch] REFUSED TO ARM: {reason}"
+
+[wake_watch.line_wake]
+doc = "New mail. {role} {id} {label} (a channel word and a space, or nothing) {prev} {total} {delta}."
+value = "[wake-watch] new mesh mail for {role} {id}: {label}direct total {prev} -> {total} (+{delta}). Drain your own inbox on your next turn."
+
+[wake_watch.line_dual]
+doc = "New mail on both of a child's channels in the same tick (one line, not two). {role} {id} {prev} {total} {delta} {prev2} {total2} {delta2}."
+value = "[wake-watch] new mesh mail for {role} {id}: ndjson total {prev} -> {total} (+{delta}), mesh-direct total {prev2} -> {total2} (+{delta2}). Drain your own inbox on your next turn."
+
+[wake_watch.line_error]
+doc = "A read has failed more often than the tolerance; repeated on a back-off. {role} {id} {n} {err}."
+value = "[wake-watch] ERROR watching {role} {id}: {n} consecutive read failures ({err}). Watcher still alive; will keep retrying."
+
+[wake_watch.line_stale]
+doc = "A newer build is installed and its watcher script exists, but the watcher may not hand over: the re-arm instruction, then exit. {role} {id} {own} {newest} {script}."
+value = "[wake-watch] STALE BUILD: this watcher for {role} {id} is running anti-hall {own}, but {newest} is registered/cached. Re-arm with `node {script}` (Monitor tool, persistent: true if supported — otherwise max timeout_ms + re-arm on the tool's final/expired event) to pick it up. Exiting now — never running on as a silent stale watcher."
+
+[wake_watch.line_update_registered]
+doc = "A newer version is registered but not yet copied into the cache: say so once and keep running. {role} {id} {own} {newest}."
+value = "[wake-watch] update available: anti-hall {newest} is registered, but no cache directory for it exists on disk yet (this watcher for {role} {id} stays on {own}). Not exiting — nothing to re-arm against yet; this will be re-checked on the next update sync."
+
+[wake_watch.line_update_unregistered]
+doc = "A newer version is only seen in the marketplace clone: it needs the update skill first. {role} {id} {own} {newest}."
+value = "[wake-watch] update available: anti-hall {newest} is newer (seen via the marketplace clone) but is not registered with the harness and has no cache directory yet (this watcher for {role} {id} stays on {own}). Not exiting; run /anti-hall:update to sync the cache and register it with the harness, then /reload-plugins — this will be re-checked on the next update sync."
+
+[wake_watch.line_handoff]
+doc = "The watcher handed over to a newer build's watcher (its output continues on the same stream). {newest}."
+value = "[wake-watch] handed off to {newest}"
+
+[wake_watch.handoff_cached_only]
+doc = "Added to the handoff line when the harness registry still names an older build. {still}."
+value = " (cached only: {still}, so this session's hooks are unchanged until the plugin update is registered and plugins are reloaded)"
+
+[wake_watch.handoff_still_registers]
+doc = "Part of the cached-only note: the registry's version. {version}."
+value = "the harness still registers {version}"
+
+[wake_watch.handoff_not_registered]
+doc = "Part of the cached-only note when the registry names no version."
+value = "the harness has not registered it"
+
+# ---- diagnostics (stderr) ----------------------------------------------------------------------------------------------------
+
+[wake_watch.line_parent_gone]
+doc = "Printed on stderr when the process that started the watcher is gone."
+value = "[wake-watch] parent gone — exiting"
+
+[wake_watch.line_lock_lost]
+doc = "Printed on stderr when another watcher took the lock over. {reason}."
+value = "[wake-watch] LOCK LOST: {reason}"
+
+[wake_watch.diag_not_devswarm]
+doc = "Printed on stderr when the session shows no sign of DevSwarm."
+value = "[wake-watch] not a DevSwarm session; exiting quietly (not arming).\n"
+
+[wake_watch.diag_no_identity]
+doc = "Printed on stderr when DevSwarm is active but no identity resolves. {cwd}."
+value = "[wake-watch] could not resolve a DevSwarm identity for cwd={cwd}; exiting quietly.\n"
+
+[wake_watch.diag_lock_held]
+doc = "Printed on stderr when a live watcher already holds the lock. {role} {id} {pid} {age} {session} {acquired} {version}."
+value = "[wake-watch] another watcher already holds the lock for {role} {id} (holder pid={pid} age={age} session={session} acquired={acquired} version={version}); that watcher is live, this is expected — exiting quietly (not double-arming).\n"
+
+[wake_watch.diag_restamp_transient]
+doc = "Printed once on stderr when the lock could not be re-stamped for a transient reason."
+value = "[wake-watch] lock restamp failed transiently (not lock loss) - retrying next tick\n"
+
+[wake_watch.diag_restamp_stale]
+doc = "Printed on stderr when the lock could not be re-stamped for longer than it stays valid."
+value = "[wake-watch] lock restamp failed transiently for longer than the lock stale threshold - treating the lock as lost\n"

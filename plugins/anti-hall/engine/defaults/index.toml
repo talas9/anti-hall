@@ -56,6 +56,7 @@ files = [
     "operator.toml",
     "slcfg.toml",
     "update_cli.toml",
+    "update_post.toml",
     "handovers.toml",
     "procwatch.toml",
     "resource_watch.toml",
@@ -69,5 +70,7 @@ files = [
     "devswarm_recon.toml",
     "realtime.toml",
     "github_rt.toml",
+    "jev_report.toml",
+    "wake_watch.toml",
 ]
 extra_dir = "hooks.d"

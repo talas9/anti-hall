@@ -78,6 +78,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("mesh", crate::mesh::run_cmd),
         ("settings", crate::ops::cmd_settings),
         ("defect", crate::ops::cmd_defect),
+        ("jev-report", crate::jev::report::run_cmd),
         ("statusline", crate::ops::cmd_statusline),
         ("phase", crate::ops::cmd_phase),
         ("install-statusline", crate::ops::cmd_install_statusline),

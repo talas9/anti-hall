@@ -474,14 +474,23 @@ fn has_fresh_heartbeat(inv: &Inv, id: &str) -> bool {
 }
 
 /// What `resolveArchiveId` settles on: the id to post to, or the refusal Node prints for an ambiguous prefix.
-enum Resolved {
+pub(crate) enum Resolved {
     Id(String),
-    Ambiguous(Answer),
+    /// The message template and the candidate ids.
+    Ambiguous(&'static str, Vec<String>),
+}
+
+impl Resolved {
+    /// The refusal of `action` for an ambiguous id (see [`ambiguous_for`]).
+    pub(crate) fn refusal(action: &str, id_first: bool, raw: &str, template: &str, ids: &[String]) -> Answer {
+        let list = ids.iter().map(String::as_str).collect::<Vec<_>>();
+        ambiguous_for(action, id_first, raw, template, &list)
+    }
 }
 
 /// `resolveArchiveId(raw, ctx)` for a safe id: an exact descriptor (active or archived) wins; else a unique prefix of the
 /// project's workspaces; else a unique registry row of that mesh label; else the id as given.
-fn resolve_archive_id(inv: &Inv, raw: &str) -> R<Resolved> {
+pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str) -> R<Resolved> {
     let root = devswarm_root(&inv.home);
     let file = format!("{raw}{}", defaults::text("mesh_write.json_suffix"));
     if lstat_exists(&root.join(defaults::text("mesh_write.dir_workspaces")).join(&file)) {
@@ -505,8 +514,7 @@ fn resolve_archive_id(inv: &Inv, raw: &str) -> R<Resolved> {
         1 => return Ok(Resolved::Id(cands[0].clone())),
         0 => {}
         _ => {
-            let list = cands.iter().map(|x| x.as_str()).collect::<Vec<_>>();
-            return Ok(Resolved::Ambiguous(ambiguous(raw, defaults::text("devswarm_cli.msg_ambig_prefix"), &list)));
+            return Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_prefix"), cands.into_iter().cloned().collect()));
         }
     }
     let rows = rows_of(&st)?;
@@ -516,8 +524,7 @@ fn resolve_archive_id(inv: &Inv, raw: &str) -> R<Resolved> {
         0 => Ok(Resolved::Id(raw.to_string())),
         1 => Ok(Resolved::Id(mesh.remove(0))),
         _ => {
-            let list = mesh.iter().map(String::as_str).collect::<Vec<_>>();
-            Ok(Resolved::Ambiguous(ambiguous(raw, defaults::text("devswarm_cli.msg_ambig_mesh"), &list)))
+            Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_mesh"), mesh))
         }
     }
 }
@@ -527,17 +534,22 @@ fn mesh_rows(rows: &[Row], mesh_id: &str) -> R<Vec<Row>> {
 }
 
 /// The refusal for an ambiguous prefix or mesh label: `{ action, ok:false, error, candidates, id }`.
-fn ambiguous(raw: &str, template: &str, ids: &[&str]) -> Answer {
+/// The refusal of `verb` for an ambiguous id. `id_first` is the shape `Object.assign({ action, id }, resolved)` prints
+/// (`unarchive`): `action, id, ok, error, candidates`; else `action, ok, error, candidates, id` (`archive-request`).
+fn ambiguous_for(action: &str, id_first: bool, raw: &str, template: &str, ids: &[&str]) -> Answer {
     let msg = crate::checks::devswarm_role::text::fill_once(
         template,
         &[("id", &quote(raw)), ("n", &ids.len().to_string()), ("ids", &ids.join(defaults::text("devswarm_cli.msg_ids_join")))],
     );
     let mut o = Obj::default();
-    o.put("action", s(defaults::text("devswarm_cli.action_archive_request")))
-        .put("ok", OVal::Bool(false))
-        .put("error", s(&msg))
-        .put("candidates", OVal::Arr(ids.iter().map(|x| s(x)).collect()))
-        .put("id", s(raw));
+    o.put("action", s(action));
+    if id_first {
+        o.put("id", s(raw));
+    }
+    o.put("ok", OVal::Bool(false)).put("error", s(&msg)).put("candidates", OVal::Arr(ids.iter().map(|x| s(x)).collect()));
+    if !id_first {
+        o.put("id", s(raw));
+    }
     answer(2, o.done())
 }
 
@@ -547,9 +559,10 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
     if !is_safe_id(id) {
         return Ok(refusal(&[("error", s(defaults::text("devswarm_cli.msg_bad_id")))]));
     }
+    let raw_id = id;
     let id = match resolve_archive_id(inv, id)? {
         Resolved::Id(x) => x,
-        Resolved::Ambiguous(ans) => return Ok(ans),
+        Resolved::Ambiguous(tpl, ids) => return Ok(Resolved::refusal(defaults::text("devswarm_cli.action_archive_request"), false, raw_id, tpl, &ids)),
     };
     let heal = common::self_heal(inv)?;
     let cwd = inv.cwd.as_str();

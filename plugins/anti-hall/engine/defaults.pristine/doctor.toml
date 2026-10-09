@@ -48,7 +48,7 @@ value = 48
 
 [doctor.unhandled_flags]
 doc = "Flags of the Node doctor that the engine doctor does not handle yet; each is reported and the run continues."
-value = ["--prune-cache", "--reclaim-ingest-lock", "--repair-ingest-orphans", "--repair-test-stores", "--repair-resurrected", "--logs"]
+value = ["--prune-cache", "--reclaim-ingest-lock", "--logs"]
 
 [doctor.selftest_home_prefix]
 doc = "The name prefix of the throwaway home the live self-tests run against."
@@ -1223,3 +1223,903 @@ value = "a symlink to nothing"
 [doctor_msg.kind_other]
 doc = "What a path turned out to be."
 value = "not a file"
+
+# ---- the statusline render check ----------------------------------------------------------------------------------------------------
+
+[doctor.statusline_dispatcher]
+doc = "The statusline dispatcher script, relative to the plugin root; the render check requires it to be installed."
+value = "statusline/statusline.js"
+
+[doctor.statusline_rich]
+doc = "The line-1 renderer script, relative to the plugin root."
+value = "statusline/statusline-rich.js"
+
+
+[doctor.statusline_sample]
+doc = "The session payload the render check pipes to the statusline; {cwd} is the working directory as a JSON string."
+value = "{\"workspace\":{\"current_dir\":{cwd}},\"cwd\":{cwd},\"model\":{\"display_name\":\"doctor-test\"},\"context_window\":{\"used_percentage\":50}}"
+
+[doctor.statusline_min_lines]
+doc = "How many lines the statusline must print for the render check to pass (line 1 plus the context gauge on line 2)."
+value = 2
+min = 1
+
+[doctor.statusline_timeout_ms]
+doc = "How long the render check lets the statusline run before it warns (CPU contention under parallel runs is the usual cause)."
+value = 30000
+unit = "ms"
+min = 1
+
+[doctor.statusline_max_bytes]
+doc = "The most bytes of statusline output the render check keeps."
+value = 1048576
+unit = "bytes"
+min = 1
+
+[doctor.statusline_script_env]
+doc = "Test-only: the environment variable that names a stand-in script (run under Node) for the render check instead of the engine's own statusline."
+value = "ANTIHALL_DOCTOR_SL_SCRIPT"
+
+[doctor.statusline_timeout_env]
+doc = "Test-only: the environment variable that shortens the render check's timeout, in milliseconds."
+value = "ANTIHALL_DOCTOR_SL_TIMEOUT_MS"
+
+[doctor.node_check_flag]
+doc = "The Node flag that checks a script's syntax without running it."
+value = "--check"
+
+[doctor_msg.statusline_dispatcher_missing]
+doc = "The statusline dispatcher script is not installed."
+value = "statusline.js dispatcher missing"
+
+[doctor_msg.statusline_renders]
+doc = "The statusline printed both lines. Placeholder: {n}."
+value = "statusline renders {n} lines (line 1 + live context gauge on line 2)"
+
+[doctor_msg.statusline_one_line]
+doc = "The statusline printed only one line although the payload carried a context window."
+value = "statusline rendered only 1 line — line 2 (context gauge) did NOT render despite context_window in the payload"
+
+[doctor_msg.statusline_timeout]
+doc = "The statusline did not finish within the render check's timeout."
+value = "statusline.js timed out under load (30s) — likely CPU contention, not a real failure; re-run outside contention to confirm"
+
+[doctor_msg.statusline_no_output]
+doc = "The statusline printed nothing, or failed. Placeholder: {code}."
+value = "statusline.js produced no output (exit {code})"
+
+[doctor_msg.statusline_rich_ok]
+doc = "The line-1 renderer script is present and its syntax is valid."
+value = "statusline-rich.js (line-1 renderer) present, syntax valid"
+
+[doctor_msg.statusline_rich_bad]
+doc = "The line-1 renderer script is missing or invalid."
+value = "statusline-rich.js missing/invalid — line 1 falls back to the simple renderer"
+
+# ---- OMC, Codex and other plugins ---------------------------------------------------------------------------------------------------
+
+[doctor.omc_probe_session]
+doc = "The session id the OMC loop probe presents (a loop pinned to another session does not count)."
+value = "doctor-omc-probe"
+
+[doctor.codex_double_backslash]
+doc = "Two backslashes in a row: the doctor reads them as one slash when it falls back to the coarse Codex registration test."
+value = "\\\\"
+
+[doctor.codex_coarse_marker]
+doc = "The text a Codex hooks.json holds when anti-hall hooks are registered in it (the coarse test, used only when the plugin has no Codex registration to compare)."
+value = "/plugins/anti-hall/hooks/"
+
+[doctor.codex_hooks_enabled_re]
+doc = "A Codex config.toml whose [features] table sets hooks = true."
+value = "(?m)\\[features\\][\\s\\S]*?^\\s*hooks\\s*=\\s*true"
+
+[doctor.foreign_script_re]
+doc = "The script name a foreign hook command runs (its first .js, .mjs or .cjs token); only this name is ever shown, never the command."
+value = "[A-Za-z0-9_-]+\\.(?:js|mjs|cjs)"
+
+[doctor.foreign_non_script]
+doc = "What is shown for a foreign hook whose command names no script."
+value = "(non-script hook)"
+
+[doctor.foreign_bash]
+doc = "A foreign PreToolUse matcher that contains this (any case) counts as matching the shell tool."
+value = "bash"
+
+[doctor.foreign_pre]
+doc = "The hook event whose foreign shell hooks compete with the guards."
+value = "PreToolUse"
+
+[doctor.foreign_stop]
+doc = "The hook event whose foreign hooks sit beside the Stop guards."
+value = "Stop"
+
+[doctor.foreign_additive]
+doc = "The hook events where a foreign hook only adds to anti-hall's (reported as information)."
+value = ["UserPromptSubmit", "SessionStart"]
+
+[doctor.foreign_max_bytes]
+doc = "The largest settings or hook registration file read when scanning other plugins."
+value = 524288
+
+[doctor.installed_max_bytes]
+doc = "The largest plugin registry file read when scanning other plugins."
+value = 4194304
+
+[doctor.skills_dir]
+doc = "The skills directory of a plugin, relative to its root."
+value = "skills"
+
+[doctor.self_plugin_key]
+doc = "The enabledPlugins key of anti-hall itself, left out of the scan of other plugins."
+value = "anti-hall@anti-hall"
+
+[doctor.installed_plugins_rel]
+doc = "The host's registry of installed plugins, relative to the home directory."
+value = ".claude/plugins/installed_plugins.json"
+
+[doctor.claude_settings_local_rel]
+doc = "A project's local host settings file, relative to the project."
+value = ".claude/settings.local.json"
+
+[doctor_msg.head_omc]
+doc = "The heading of the oh-my-claudecode section."
+value = "OMC (oh-my-claudecode) — detected"
+
+[doctor_msg.omc_none]
+doc = "oh-my-claudecode is not enabled."
+value = "OMC (oh-my-claudecode) not detected — skipped"
+
+[doctor_msg.omc_enabled]
+doc = "oh-my-claudecode is enabled. Placeholder: {key}."
+value = "OMC plugin enabled in settings (enabledPlugins[\"{key}\"])"
+
+[doctor_msg.omc_loop_active]
+doc = "An oh-my-claudecode autonomous loop is active."
+value = "an OMC autonomous loop is ACTIVE right now — anti-hall task-guard/tasklist-guard defer to it (no double-block)"
+
+[doctor_msg.omc_loop_idle]
+doc = "No oh-my-claudecode loop is active."
+value = "no active OMC autonomous loop detected — anti-hall Stop-hook guards run normally"
+
+[doctor_msg.head_codex]
+doc = "The heading of the Codex section."
+value = "Codex / OMX port — detected"
+
+[doctor_msg.codex_none]
+doc = "No Codex configuration was found."
+value = "Codex / OMX not detected — no <cwd>/.codex or ~/.codex config.toml — skipped"
+
+[doctor_msg.codex_label_project]
+doc = "The label of the project's Codex directory."
+value = "project"
+
+[doctor_msg.codex_label_global]
+doc = "The label of the home directory's Codex directory."
+value = "global"
+
+[doctor_msg.codex_hooks_on]
+doc = "The Codex config enables hooks. Placeholder: {label}."
+value = "Codex config.toml ({label}) has the hooks feature enabled"
+
+[doctor_msg.codex_hooks_off]
+doc = "The Codex config does not enable hooks. Placeholder: {label}."
+value = "Codex config.toml ({label}) found but [features] hooks is not enabled"
+
+[doctor_msg.codex_wired]
+doc = "The Codex hooks file registers anti-hall's hooks. Placeholder: {label}."
+value = "Codex hooks.json ({label}) has anti-hall hooks registered"
+
+[doctor_msg.codex_unwired]
+doc = "The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}."
+value = "Codex hooks.json ({label}) present but no anti-hall hooks found — run plugins/anti-hall/codex/install-codex.js"
+
+[doctor_msg.codex_missing]
+doc = "There is no Codex hooks file. Placeholder: {label}."
+value = "Codex hooks.json ({label}) missing — run plugins/anti-hall/codex/install-codex.js"
+
+[doctor_msg.head_foreign]
+doc = "The heading of the other-plugins section."
+value = "Foreign skill/hook conflict scan"
+
+[doctor_msg.foreign_none]
+doc = "No other enabled plugin conflicts."
+value = "no foreign hook/skill conflicts detected among enabled plugins"
+
+[doctor_msg.foreign_pre]
+doc = "Another plugin hooks the shell tool before it runs. Placeholders: {plugin}, {script}, {matcher}."
+value = "foreign PreToolUse hook on Bash: plugin \"{plugin}\" registers {script} (matcher {matcher}) — may compete with anti-hall's own allow/deny (git-guard/command-guard/edit-guard)"
+
+[doctor_msg.foreign_stop]
+doc = "Another plugin has a Stop hook. Placeholders: {plugin}, {script}, {tail}."
+value = "foreign Stop hook: plugin \"{plugin}\" registers {script}{tail}"
+
+[doctor_msg.foreign_stop_tail]
+doc = "Appended when anti-hall has its own Stop hook."
+value = " — a second Stop hook alongside anti-hall's own"
+
+[doctor_msg.foreign_additive]
+doc = "Another plugin hooks the same event without competing. Placeholders: {event}, {plugin}, {script}."
+value = "additive {event} overlap: plugin \"{plugin}\" also registers {script} (both run; non-competing)"
+
+[doctor_msg.foreign_skill]
+doc = "Another plugin ships a skill with the same name. Placeholders: {plugin}, {skill}."
+value = "skill-name collision: plugin \"{plugin}\" also ships a skill named \"{skill}\" (anti-hall ships one too)"
+
+[doctor_msg.head_integrations]
+doc = "The heading of the notes about companions that are not installed (oh-my-claudecode, the Codex port)."
+value = "Integrations"
+
+[doctor.omc_time_fields]
+doc = "The timestamp fields of an oh-my-claudecode loop state file; the loop counts as active when any of them is within the freshness window."
+value = ["last_checked_at", "updated_at", "started_at"]
+
+[doctor.no_exit_code]
+doc = "What the render check shows as the exit code when the statusline was ended by a signal or never started."
+value = "null"
+
+# ---- ingest orphans (loaded in the scheduler, explained by nothing on disk) -------------------------------------------------------------
+
+[doctor.os_darwin]
+doc = "The platform name of macOS in the scheduler checks."
+value = "darwin"
+
+[doctor.os_linux]
+doc = "The platform name of Linux in the scheduler checks."
+value = "linux"
+
+[doctor.ingest_label]
+doc = "The launchd label prefix of the DevSwarm ingest daemon."
+value = "com.anti-hall.devswarm-ingest"
+
+[doctor.ingest_unit]
+doc = "The systemd unit name prefix of the DevSwarm ingest daemon."
+value = "anti-hall-devswarm-ingest"
+
+[doctor.orphans_no_pid]
+doc = "What `launchctl list` prints as the pid of a loaded label that is not running."
+value = "-"
+
+[doctor.service_ext]
+doc = "The extension of a systemd unit file."
+value = ".service"
+
+[doctor.plist_ext]
+doc = "The extension of a launchd property list."
+value = ".plist"
+
+[doctor.launchd_dir]
+doc = "The user LaunchAgents directory, as path segments under the home directory."
+value = ["Library", "LaunchAgents"]
+
+[doctor.systemd_dir]
+doc = "The user systemd unit directory, as path segments under the home directory."
+value = [".config", "systemd", "user"]
+
+[doctor.unit_hash_re]
+doc = "The suffix of a legacy per-worktree unit name: eight hexadecimal digits."
+value = "^([0-9a-fA-F]{8})$"
+
+[doctor.unit_key_re]
+doc = "The suffix of a per-project unit name: a project key."
+value = "^([a-z0-9-]{1,40}-[0-9a-f]{6})$"
+
+[doctor.kind_base]
+doc = "The kind of a unit whose name has no suffix."
+value = "legacy-base"
+
+[doctor.kind_hash]
+doc = "The kind of a unit named for a worktree hash."
+value = "hash"
+
+[doctor.kind_key]
+doc = "The kind of a unit named for a project key."
+value = "repoKey"
+
+[doctor.kind_unknown]
+doc = "The kind of a unit whose name is in no known shape (it is never touched)."
+value = "unknown"
+
+[doctor.class_no_plist]
+doc = "The class of a loaded unit with no unit file on disk (the only class that may be unloaded)."
+value = "orphan-no-plist"
+
+[doctor.class_path_gone]
+doc = "The class of a loaded unit whose unit file exists but whose directory is gone."
+value = "orphan-path-gone"
+
+[doctor.class_unknown]
+doc = "The class of a loaded unit that cannot be proven dead or alive."
+value = "unknown"
+
+[doctor.class_healthy]
+doc = "The class of a loaded unit that is in use."
+value = "healthy"
+
+[doctor.class_duplicate]
+doc = "The class of two loaded units for one project."
+value = "duplicate-label-same-project"
+
+[doctor.heartbeat_dir]
+doc = "The directory of the ingest daemons' heartbeat files under the DevSwarm directory."
+value = "heartbeats"
+
+[doctor.lock_dir]
+doc = "The directory of the ingest daemons' lock files under the DevSwarm directory."
+value = "locks"
+
+[doctor.ingest_file]
+doc = "The heartbeat file name of an ingest daemon. Placeholder: {key}."
+value = "ingest-{key}.json"
+
+[doctor.ingest_lock_file]
+doc = "The lock file name of a legacy per-worktree ingest daemon. Placeholder: {key}."
+value = "ingest-{key}.lock"
+
+[doctor.project_lock_file]
+doc = "The lock file name of a per-project ingest daemon. Placeholder: {key}."
+value = "ingest-project-{key}.lock"
+
+[doctor.heartbeat_stale_ms]
+doc = "How old an ingest heartbeat may be and still prove the daemon is running."
+value = 180000
+
+[doctor.orphans_timeout_ms]
+doc = "How long a scheduler or crontab listing may take."
+value = 5000
+
+[doctor.orphans_launchctl_list]
+doc = "The command that lists what launchd has loaded."
+value = ["launchctl", "list"]
+
+[doctor.orphans_systemctl_list]
+doc = "The command that lists the user systemd units."
+value = ["systemctl", "--user", "list-units", "--all", "--no-legend", "--plain"]
+
+[doctor.orphans_crontab]
+doc = "The command that prints the user crontab."
+value = ["crontab", "-l"]
+
+[doctor.orphans_bootout]
+doc = "The command that unloads a launchd label. Placeholders: {uid}, {label}."
+value = ["launchctl", "bootout", "gui/{uid}/{label}"]
+
+[doctor.orphans_stop]
+doc = "The command that stops a user systemd unit. Placeholder: {unit}."
+value = ["systemctl", "--user", "stop", "{unit}.service"]
+
+[doctor.orphans_table_cap]
+doc = "How many orphan rows the report lists before it summarises the rest."
+value = 10
+
+[doctor.yes_short]
+doc = "The short yes of the orphan rows."
+value = "y"
+
+[doctor.no_short]
+doc = "The short no of the orphan rows."
+value = "n"
+
+[doctor.dash]
+doc = "What an orphan row shows for a value it does not have."
+value = "-"
+
+[doctor.unknown_name]
+doc = "What an orphan row shows for an entry with no name."
+value = "(unknown)"
+
+[doctor.ingest_dry_env]
+doc = "The environment variable that makes every scheduler command a no-op (scratch homes and tests set it)."
+value = "ANTIHALL_INGEST_DRY_RUN"
+
+[doctor.tmpdir_env]
+doc = "The environment variable that names the temp directory."
+value = "TMPDIR"
+
+[doctor.tmpdir_default]
+doc = "The temp directory when the variable is not set."
+value = "/tmp"
+
+[doctor.exit_word]
+doc = "The word before an exit code in a failure reason."
+value = "exit"
+
+[doctor.repair_orphans_id]
+doc = "The row id of the orphan repair when there is nothing to do."
+value = "repair-ingest-orphans"
+
+[doctor.repair_orphan_id]
+doc = "The row id of the orphan repair of one entry. Placeholder: {name}."
+value = "repair-ingest-orphan-{name}"
+
+[doctor.pair_sep]
+doc = "The separator inside a pair in a list of replacements."
+value = "|"
+
+[doctor.xml_unescape]
+doc = "The XML entities a property list value is read back through, in order, as `entity|text`."
+value = ["&lt;|<", "&gt;|>", "&quot;|\"", "&apos;|'", "&amp;|&"]
+
+[doctor.plist_wd_re]
+doc = "The working directory of a launchd property list."
+value = "<key>WorkingDirectory</key>\\s*<string>([\\s\\S]*?)</string>"
+
+[doctor.plist_args_re]
+doc = "The program arguments of a launchd property list."
+value = "<key>ProgramArguments</key>\\s*<array>([\\s\\S]*?)</array>"
+
+[doctor.plist_string_re]
+doc = "One string of a property list array."
+value = "<string>([\\s\\S]*?)</string>"
+
+[doctor.service_wd_re]
+doc = "The working directory of a systemd unit file."
+value = "(?m)^WorkingDirectory=(.*)$"
+
+[doctor.service_exec_re]
+doc = "The command of a systemd unit file."
+value = "(?m)^ExecStart=(.*)$"
+
+[doctor.service_quoted_re]
+doc = "A double-quoted word of a systemd command."
+value = "\"((?:[^\"\\\\]|\\\\.)*)\""
+
+[doctor.cron_marker]
+doc = "The start of a managed crontab marker comment."
+value = "# "
+
+[doctor.cron_cd_re]
+doc = "The `cd 'dir' &&` prefix of a managed crontab command."
+value = "cd\\s+('((?:[^'\\\\]|\\\\.)*)')\\s*&&"
+
+[doctor.cron_assign_re]
+doc = "The `NAME=value` assignments before the command of a managed crontab line."
+value = "^\\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:'(?:[^'\\\\]|\\\\.)*'|[^\\s']*)\\s+)*"
+
+[doctor.cron_quoted_re]
+doc = "A single-quoted word of a managed crontab command."
+value = "'((?:[^'\\\\]|\\\\.)*)'"
+
+[doctor_msg.head_orphans]
+doc = "The heading of the report of orphaned ingest registrations."
+value = "Orphaned launchd/systemd ingest registrations"
+
+[doctor_msg.orphans_summary]
+doc = "How many loaded ingest entries are not healthy. Placeholders: {n}, {total}."
+value = "{n} loaded label(s) not classified 'healthy' (of {total} total). Run doctor --repair-ingest-orphans to preview a repair plan."
+
+[doctor_msg.orphan_row]
+doc = "One orphaned entry. Placeholders: {name}, {pid}, {script}, {plist}, {path}, {class}."
+value = "{name}  pid={pid}  script={script}  plist={plist}  path={path}  class={class}"
+
+[doctor_msg.orphans_more]
+doc = "How many more entries the report did not list. Placeholder: {n}."
+value = "+{n} more (run doctor --repair-ingest-orphans for the full plan)"
+
+[doctor_msg.orphans_platform]
+doc = "The orphan repair on a platform without launchd or systemd. Placeholder: {platform}."
+value = "{platform}: no launchd/systemd orphan class on this platform — nothing to repair"
+
+[doctor_msg.orphans_none_loaded]
+doc = "No ingest entry is loaded."
+value = "no loaded ingest label found — nothing to repair"
+
+[doctor_msg.orphans_none_eligible]
+doc = "Entries are loaded but none may be unloaded. Placeholder: {n}."
+value = "zero eligible orphans ({n} loaded label(s), none eligible) — nothing to repair"
+
+[doctor_msg.orphans_cmd_darwin]
+doc = "The unload command the dry run shows on macOS. Placeholder: {name}."
+value = "launchctl bootout gui/$(id -u)/{name}"
+
+[doctor_msg.orphans_cmd_linux]
+doc = "The stop command the dry run shows on Linux. Placeholder: {name}."
+value = "systemctl --user stop {name}.service"
+
+[doctor_msg.orphans_would]
+doc = "The dry run of one unload. Placeholders: {cmd}, {class}."
+value = "[dry-run] would run: {cmd} (class {class})"
+
+[doctor_msg.orphans_unloaded]
+doc = "One entry unloaded. Placeholders: {name}, {class}."
+value = "unloaded {name} (class {class})"
+
+[doctor_msg.orphans_failed]
+doc = "One unload that failed. Placeholders: {name}, {class}, {why}."
+value = "failed to unload {name} (class {class}) — {why}"
+
+# ---- leaked test-fixture stores and the explicit repair flags -----------------------------------------------------------------------
+
+[doctor.store_backend_env]
+doc = "The environment variable that forces a DevSwarm store backend."
+value = "ANTIHALL_DEVSWARM_STORE_BACKEND"
+
+[doctor.backend_journal]
+doc = "The name of the journal store backend."
+value = "journal"
+
+[doctor.backend_sqlite]
+doc = "The name of the SQLite store backend."
+value = "sqlite"
+
+[doctor.backend_marker]
+doc = "The file in a store directory that pins its backend."
+value = "BACKEND"
+
+[doctor.store_db]
+doc = "The SQLite database file of a store."
+value = "devswarm.db"
+
+[doctor.registry_query]
+doc = "The query that reads the worktree path of every registry row of a store."
+value = "SELECT worktree_path FROM registry ORDER BY id ASC"
+
+[doctor.tmp_prefixes]
+doc = "Path prefixes that mark a worktree as a temporary fixture, besides the temp directory itself."
+value = ["/private/var/folders/", "/var/folders/", "/tmp/"]
+
+[doctor.leaks_examples]
+doc = "How many leaked stores the report names."
+value = 5
+
+[doctor.repair_stores_id]
+doc = "The row id of the leaked-store repair when it has nothing to do."
+value = "repair-test-stores"
+
+[doctor.repair_store_id]
+doc = "The row id of the repair of one leaked store. Placeholder: {hash}."
+value = "repair-test-store-{hash}"
+
+[doctor.stores_aside_dir]
+doc = "The directory under the DevSwarm directory that leaked stores are moved into."
+value = "stores-aside"
+
+[doctor.repair_resurrected_id]
+doc = "The row id of the resurrected-rows repair."
+value = "repair-resurrected"
+
+[doctor.explicit_flags]
+doc = "The explicit repair flags, in the order their sections run."
+value = ["--repair-ingest-orphans", "--repair-test-stores", "--repair-resurrected"]
+
+[doctor.apply_flag]
+doc = "The flag that makes an explicit repair act instead of only previewing."
+value = "--apply"
+
+[doctor_msg.head_leaks]
+doc = "The heading of the report of leaked test-fixture stores."
+value = "leaked test-fixture stores"
+
+[doctor_msg.leak_example]
+doc = "One leaked store. Placeholders: {hash}, {worktree}."
+value = "{hash} -> {worktree}"
+
+[doctor_msg.leak_more]
+doc = "How many more leaked stores are not listed. Placeholder: {n}."
+value = ", +{n} more"
+
+[doctor_msg.leak_summary]
+doc = "The leaked stores. Placeholders: {count}, {shown}, {more}."
+value = "(warn) leaked test-fixture stores: {count} (run doctor --repair-test-stores to preview a repair plan). Examples: {shown}{more}."
+
+[doctor_msg.stores_none]
+doc = "No leaked test-fixture store."
+value = "no leaked test-fixture stores found — nothing to repair"
+
+[doctor_msg.stores_would]
+doc = "The dry run of moving a leaked store aside. Placeholders: {dir}, {worktree}."
+value = "[dry-run] would move {dir} aside (worktreePath {worktree} no longer exists)"
+
+[doctor_msg.stores_changed]
+doc = "A store that no longer matches when the repair runs."
+value = "no longer eligible at apply time (registry changed or worktree reappeared) — left untouched"
+
+[doctor_msg.stores_moved]
+doc = "A leaked store moved aside. Placeholders: {dir}, {dest}, {worktree}."
+value = "moved {dir} aside to {dest} (worktreePath {worktree} no longer exists); nothing was deleted"
+
+[doctor_msg.stores_failed]
+doc = "A leaked store that could not be moved. Placeholders: {dir}, {error}."
+value = "failed to move {dir} aside — {error}"
+
+[doctor_msg.stores_uninspected]
+doc = "Stores the engine does not read. Placeholder: {n}."
+value = "{n} store(s) use the journal backend, which the engine doctor does not inspect; run node hooks/doctor.js --repair-test-stores for them"
+
+[doctor_msg.resurrected_none]
+doc = "No store exists, so no row can be resurrected."
+value = "no resurrected registry rows found — nothing to repair"
+
+[doctor_msg.resurrected_deferred]
+doc = "Stores exist; the engine doctor leaves the resurrected-row repair to the Node doctor."
+value = "the resurrected-row repair needs the Node doctor (node hooks/doctor.js --repair-resurrected [--apply]); the engine doctor did not touch the stores"
+
+[doctor_msg.repair_head_explicit]
+doc = "The heading of an explicit repair section. Placeholders: {title}, {mode}, {flag}."
+value = "{title}{mode} [explicit {flag}]"
+
+[doctor_msg.repair_mode_apply]
+doc = "The heading suffix of an explicit repair that acts."
+value = " [--apply]"
+
+[doctor_msg.repair_mode_dry]
+doc = "The heading suffix of an explicit repair that only previews."
+value = " (dry-run — no changes written)"
+
+[doctor_msg.repair_title_orphans]
+doc = "The title of the ingest-orphan repair section."
+value = "Repair ingest orphans"
+
+[doctor_msg.repair_title_stores]
+doc = "The title of the leaked-store repair section."
+value = "Repair test stores"
+
+[doctor_msg.repair_title_resurrected]
+doc = "The title of the resurrected-rows repair section."
+value = "Repair resurrected registry rows"
+
+[doctor_msg.explicit_nothing]
+doc = "An explicit repair with no rows."
+value = "nothing to repair"
+
+[doctor_msg.explicit_unloaded]
+doc = "The mark of an unloaded orphan."
+value = "UNLOADED "
+
+[doctor_msg.explicit_moved]
+doc = "The mark of a leaked store moved aside."
+value = "MOVED ASIDE "
+
+[doctor_msg.explicit_retired]
+doc = "The mark of a re-retired resurrected row."
+value = "RE-RETIRED "
+
+[doctor_msg.explicit_failed]
+doc = "The mark of a failed explicit repair."
+value = "FAILED "
+
+[doctor_msg.explicit_gated]
+doc = "The mark of an explicit repair the engine doctor defers."
+value = "DEFERRED "
+
+[doctor_msg.explicit_skipped]
+doc = "The mark of an explicit repair row that changed nothing."
+value = "skipped "
+
+# ---- the DevSwarm supervisor section ----------------------------------------------------------------------------------------------
+
+[doctor.ds_supervisor_files]
+doc = "The supervisor's own scripts (relative to the plugin root) that must parse; a present file that does not is a failure."
+value = ["hooks/lib/devswarm-detect.js", "companion/lib/target-session.js", "companion/lib/liveness.js", "companion/lib/recovery.js", "companion/lib/doctor-devswarm.js", "companion/lib/doctor-descriptors.js", "companion/lib/doctor-runtime.js", "companion/devswarm-supervisor.js", "companion/install-devswarm-supervisor.js", "companion/install-devswarm-ingest.js", "companion/devswarm-ingest.js"]
+
+[doctor.ds_label]
+doc = "The launchd label of the DevSwarm liveness supervisor."
+value = "com.anti-hall.devswarm-supervisor"
+
+[doctor.ds_unit]
+doc = "The systemd unit name of the DevSwarm liveness supervisor."
+value = "anti-hall-devswarm-supervisor"
+
+[doctor.timer_ext]
+doc = "The extension of a systemd timer file."
+value = ".timer"
+
+[doctor.ds_inbox_dir]
+doc = "The directory of workspace inbox files under the DevSwarm directory."
+value = "inbox"
+
+[doctor.ds_inbox_ext]
+doc = "The extension of a workspace inbox file."
+value = ".ndjson"
+
+[doctor.ds_cursor_dir]
+doc = "The directory of workspace cursor files under the DevSwarm directory."
+value = "cursor"
+
+[doctor.ds_wt_dir]
+doc = "The directory the self-test workspaces' worktree paths are under."
+value = "wt"
+
+[doctor.ds_session_prefix]
+doc = "The prefix of a self-test workspace's session id."
+value = "sess-"
+
+[doctor.ds_heartbeat_dir]
+doc = "The directory of heartbeat files under the DevSwarm directory."
+value = "heartbeats"
+
+[doctor.ds_summaries_dir]
+doc = "The directory of the shared project summaries under the DevSwarm directory."
+value = "summaries"
+
+[doctor.ds_label_turn]
+doc = "The scratch directory label of the child-turn self-test."
+value = "ds-turn"
+
+[doctor.ds_label_cgate]
+doc = "The scratch directory label of the child-gate self-test."
+value = "ds-cgate"
+
+[doctor.ds_label_inbox]
+doc = "The scratch directory label of the parent-inbox self-test."
+value = "ds-inbox"
+
+[doctor.ds_label_pgate]
+doc = "The scratch directory label of the parent-gate self-test."
+value = "ds-pgate"
+
+[doctor.ds_script_turn]
+doc = "The Node hook behind the child-turn self-test (run when the engine defers)."
+value = "devswarm-child-turn.js"
+
+[doctor.ds_script_cgate]
+doc = "The Node hook behind the child-gate self-test."
+value = "devswarm-child-gate.js"
+
+[doctor.ds_script_inbox]
+doc = "The Node hook behind the parent-inbox self-test."
+value = "devswarm-parent-inbox.js"
+
+[doctor.ds_script_pgate]
+doc = "The Node hook behind the parent-gate self-test."
+value = "devswarm-parent-gate.js"
+
+[doctor.ds_child_env]
+doc = "The environment of a DevSwarm child workspace in the self-tests: supervisor forced on, a source branch set."
+value = ["DISABLE_ANTIHALL_DEVSWARM=", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x", "DEVSWARM_SOURCE_BRANCH=feature-x"]
+
+[doctor.ds_primary_env]
+doc = "The environment of a DevSwarm Primary in the self-tests: supervisor forced on, no source branch."
+value = ["DISABLE_ANTIHALL_DEVSWARM=", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x", "DEVSWARM_SOURCE_BRANCH="]
+
+[doctor.ds_payload_turn]
+doc = "The prompt payload of the child-turn self-test."
+value = "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"ct\",\"prompt\":\"hi\"}"
+
+[doctor.ds_payload_stop]
+doc = "The Stop payload of the gate self-tests; {SID} is a fresh session id."
+value = "{\"hook_event_name\":\"Stop\",\"session_id\":\"{SID}\"}"
+
+[doctor.ds_payload_inbox]
+doc = "The prompt payload of the parent-inbox self-test; {CWD} is the working directory."
+value = "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"pi\",\"prompt\":\"hi\",\"cwd\":\"{CWD}\"}"
+
+[doctor.ds_turn_re]
+doc = "What a child-turn reminder contains."
+value = "devswarm-child-workspace"
+
+[doctor.ds_builder_id]
+doc = "The id of the self-test child workspace."
+value = "cg-self-test-child"
+
+[doctor.ds_builder_env]
+doc = "The environment variable that names a child's workspace id."
+value = "DEVSWARM_BUILDER_ID"
+
+[doctor.ds_summary_json]
+doc = "The shared summary the parent-inbox self-test publishes: one workspace with three unread messages."
+value = "{\"workspaces\":{\"wsA\":{\"total\":3,\"cursor\":0,\"unread\":3,\"directUnread\":3}}}"
+
+[doctor.ds_inbox_re]
+doc = "What the parent-inbox notice names."
+value = "devswarm-parent-inbox"
+
+[doctor.ds_inbox_re2]
+doc = "What the parent-inbox notice says about the backlog."
+value = "3 unread"
+
+[doctor.ds_workspace_id]
+doc = "The id of the neglected workspace in the parent-gate self-test."
+value = "wsA"
+
+[doctor.ds_inbox_lines]
+doc = "The unread messages in the parent-gate self-test's workspace."
+value = ["{\"m\":1}", "{\"m\":2}"]
+
+[doctor.ds_log_cron_found]
+doc = "The log of cron ticks that found mail while a watcher was armed."
+value = "cron-found-mail.jsonl"
+
+[doctor.ds_log_not_draining]
+doc = "The log of suppressed \"child not draining\" nudges."
+value = "not-draining-suppressed.jsonl"
+
+[doctor.ds_log_rearm]
+doc = "The log of wake-watch re-arm decisions."
+value = "rearm-cues.jsonl"
+
+[doctor.ds_log_cron_missing]
+doc = "The log of \"mailbox cron missing\" warnings."
+value = "cron-missing-warned.jsonl"
+
+[doctor.ds_trigger_idle]
+doc = "The re-arm log trigger of a Primary with no live children."
+value = "idle-skip"
+
+[doctor.ds_trigger_limit]
+doc = "The re-arm log trigger of a deferred re-arm under limit conservation."
+value = "limit-skip"
+
+[doctor_msg.head_devswarm]
+doc = "The heading of the DevSwarm supervisor section."
+value = "DevSwarm liveness supervisor (optional)"
+
+[doctor_msg.ds_syntax]
+doc = "A supervisor script that does not parse. Placeholders: {file}, {error}."
+value = "supervisor lib SYNTAX ERROR: {file} — {error}"
+
+[doctor_msg.ds_turn_ok]
+doc = "The child-turn hook still works."
+value = "devswarm-child-turn writes a turn-authored heartbeat + reminds the child to update its parent"
+
+[doctor_msg.ds_turn_bad]
+doc = "The child-turn hook failed. Placeholders: {said}, {beat}."
+value = "devswarm-child-turn did NOT heartbeat/remind a child session (said={said}, heartbeat={beat})"
+
+[doctor_msg.ds_cgate_ok]
+doc = "The child-gate hook still works."
+value = "devswarm-child-gate forces a child to self-report to its parent before stopping"
+
+[doctor_msg.ds_cgate_bad]
+doc = "The child-gate hook failed."
+value = "devswarm-child-gate did NOT force a child heartbeat at Stop"
+
+[doctor_msg.ds_inbox_ok]
+doc = "The parent-inbox hook still works."
+value = "devswarm-parent-inbox surfaces a workspace unread backlog to the Primary"
+
+[doctor_msg.ds_inbox_bad]
+doc = "The parent-inbox hook failed."
+value = "devswarm-parent-inbox did NOT surface unread backlog to the Primary"
+
+[doctor_msg.ds_inbox_skip]
+doc = "The parent-inbox self-test does not apply here. Placeholder: {cwd}."
+value = "devswarm-parent-inbox self-test SKIPPED: repoKey unresolvable for {cwd} (not a git worktree?)"
+
+[doctor_msg.ds_pgate_ok]
+doc = "The parent-gate hook still works."
+value = "devswarm-parent-gate blocks the Primary turn while a child inbox is unread"
+
+[doctor_msg.ds_pgate_bad]
+doc = "The parent-gate hook failed."
+value = "devswarm-parent-gate did NOT block on a neglected child at Stop"
+
+[doctor_msg.ds_scheduler_launchd]
+doc = "The name of the macOS scheduler in the installed line."
+value = "launchd"
+
+[doctor_msg.ds_scheduler_systemd]
+doc = "The name of the Linux scheduler in the installed line."
+value = "systemd"
+
+[doctor_msg.ds_installed]
+doc = "The background supervisor is installed. Placeholder: {kind}."
+value = "supervisor companion INSTALLED ({kind} background sweep)"
+
+[doctor_msg.ds_not_installed]
+doc = "The background supervisor is not installed."
+value = "supervisor companion not installed — background auto-recovery is off; the in-session checks below (if any) still run"
+
+[doctor_msg.ds_runtime_deferred]
+doc = "A DevSwarm session is active; the runtime checks the engine doctor does not make yet. Placeholder: {n}."
+value = "DevSwarm is active ({n} workspace descriptor(s)); the per-workspace liveness verdicts, the app-database view, the delivery log, the wake monitor and the other DevSwarm runtime checks are not made by the engine doctor yet - run node hooks/doctor.js for them"
+
+[doctor_msg.ds_cron_found]
+doc = "Cron ticks that found mail while a watcher was armed. Placeholder: {n}."
+value = "cron ticks that found mail while a watcher was armed: {n} (cron-found-mail.jsonl — empty after a week of normal use means this cron fallback is removable; see docs/KB-claude-monitor-tool.md §7)"
+
+[doctor_msg.ds_not_draining]
+doc = "Suppressed \"child not draining\" nudges. Placeholder: {n}."
+value = "CHILD NOT DRAINING nudges suppressed by the repeat cap: {n} (not-draining-suppressed.jsonl)"
+
+[doctor_msg.ds_idle_skips]
+doc = "Idle skips of the wake watch. Placeholder: {n}."
+value = "wake-watch idle-skips: {n} (rearm-cues.jsonl, trigger idle-skip — a Primary with 0 live children declining to arm)"
+
+[doctor_msg.ds_limit_skips]
+doc = "Limit skips of the wake watch. Placeholder: {n}."
+value = "wake-watch limit-skips: {n} (rearm-cues.jsonl, trigger limit-skip — LIMIT CONSERVATION active, re-arm deliberately deferred)"
+
+[doctor_msg.ds_cron_missing]
+doc = "\"Mailbox cron missing\" warnings shown. Placeholder: {n}."
+value = "mailbox-cron-missing warnings shown: {n} (cron-missing-warned.jsonl — a cron that keeps going missing after restores may need a supervisor-level recreate instead of relying on the per-session Stop-gate nudge)"

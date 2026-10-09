@@ -581,7 +581,7 @@ value = "devswarm-cli-verify"
 
 [devswarm_cli.witness_copy_paths]
 doc = "Files and directories under the home copied into the witness's scratch home before the engine writes: what Node reads or rewrites for these verbs, and what the summary projection reads."
-value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/token-usage", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1", ".anti-hall/logs/devswarm-supervision.ndjson", ".anti-hall/logs/devswarm-supervision.ndjson.1", ".anti-hall/logs/devswarm-supervision.ndjson.2", ".anti-hall/logs/devswarm-supervision.ndjson.3", ".anti-hall/logs/devswarm-supervision.ndjson.4", ".anti-hall/logs/devswarm-supervision.ndjson.5", ".anti-hall/logs/devswarm-supervision-daily"]
+value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/stray", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/token-usage", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1", ".anti-hall/logs/devswarm-supervision.ndjson", ".anti-hall/logs/devswarm-supervision.ndjson.1", ".anti-hall/logs/devswarm-supervision.ndjson.2", ".anti-hall/logs/devswarm-supervision.ndjson.3", ".anti-hall/logs/devswarm-supervision.ndjson.4", ".anti-hall/logs/devswarm-supervision.ndjson.5", ".anti-hall/logs/devswarm-supervision-daily"]
 
 [devswarm_cli.witness_node_snippet]
 doc = "The Node program of the witness: pins the clock, then loads the real devswarm.js as the main module so its own main() prints and exits. Arguments: the CLI path, the clock, then the verb's argv."
@@ -1884,3 +1884,207 @@ value = ["|", "\\|"]
 [devswarm_cli.rr_text_name]
 doc = "A row's name cell when a name is known. `{name}` is the name, `{short}` the first characters of the id."
 value = "{name} ({short})"
+
+# ---- lane l8h: lifecycle verbs ------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_unarchive]
+doc = "The verb that moves an archived workspace's descriptor back and revives its registry row."
+value = "unarchive"
+
+[devswarm_cli.action_unarchive]
+doc = "The `action` an unarchive result and its refusals carry."
+value = "unarchive"
+
+[devswarm_cli.verb_migrate_owner_keys]
+doc = "The verb that backfills a missing ownerKey on every workspace descriptor."
+value = "migrate-owner-keys"
+
+[devswarm_cli.action_migrate_owner_keys]
+doc = "The `action` a migrate-owner-keys result carries."
+value = "migrate-owner-keys"
+
+[devswarm_cli.migrate_tmp_suffix]
+doc = "The ending of the staging file a descriptor rewrite is made in before it is renamed over the descriptor."
+value = "tmp"
+
+# ---- ensure / register (lane l8h) ---------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_ensure]
+doc = "The verb that registers a workspace if it is not registered yet (idempotent)."
+value = "ensure"
+
+[devswarm_cli.verb_register]
+doc = "The verb that registers (or updates) a workspace's descriptor and registry row."
+value = "register"
+
+[devswarm_cli.action_exists]
+doc = "The `action` an ensure of an already registered workspace reports."
+value = "exists"
+
+[devswarm_cli.action_updated]
+doc = "The `action` a register over an existing descriptor reports."
+value = "updated"
+
+[devswarm_cli.action_registered]
+doc = "The `action` a register of a new workspace reports."
+value = "registered"
+
+[devswarm_cli.flag_reg_inbox]
+doc = "The flag naming the durable inbox file of a registration."
+value = "inbox"
+
+[devswarm_cli.flag_reg_cursor]
+doc = "The flag naming the cursor file of a registration."
+value = "cursor"
+
+[devswarm_cli.flag_reg_nudge]
+doc = "The flag (repeatable) holding the words of a workspace's nudge command."
+value = "nudge"
+
+[devswarm_cli.flag_reg_repo_id]
+doc = "The flag naming the DevSwarm repository id of a registration."
+value = "repo-id"
+
+# ---- correct (lane l8h) -------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_correct]
+doc = "The verb that sends a straying child its correction (the step to return to)."
+value = "correct"
+
+[devswarm_cli.action_correct]
+doc = "The `action` a correct result and its refusals carry."
+value = "correct"
+
+[devswarm_cli.dir_stray]
+doc = "The directory (under the DevSwarm root) holding the supervisor's stray-state file of each plan."
+value = "stray"
+
+[devswarm_cli.corr_final_report]
+doc = "The step text of a correction when every step is done."
+value = "final report"
+
+[devswarm_cli.corr_no_progress]
+doc = "The reason of a correction when the supervisor named none; {d} is the time since the last step progress."
+value = "no progress {d}"
+
+[devswarm_cli.corr_reason_join]
+doc = "What joins the reasons of a correction."
+value = " / "
+
+[devswarm_cli.corr_text]
+doc = "The correction message; {n} the step number, {text} its text, {reasons} the joined reasons, {id} the workspace id."
+value = "step {n} '{text}': {reasons}. Return to step {n} or reply BLOCKED <why>. If the user asked you for this extra work, record it with `devswarm.js scope add {id} --glob '<glob>' --note '<what they asked>'`."
+
+[devswarm_cli.corr_reason_no_plan]
+doc = "The `reason` of the refusal when the workspace has no step plan."
+value = "no-plan"
+
+[devswarm_cli.corr_event]
+doc = "The supervision event a sent correction records."
+value = "correction"
+
+[devswarm_cli.msg_corr_usage]
+doc = "The refusal for a missing or unsafe workspace id."
+value = "usage: devswarm.js correct <id> [--dry-run]"
+
+[devswarm_cli.msg_corr_no_plan]
+doc = "The refusal when there is no step plan; {id} is the workspace id."
+value = "no step plan for {id} — a correction needs a step to return to"
+
+[devswarm_cli.msg_corr_send_failed]
+doc = "The error when the correction message could not be sent."
+value = "send failed — warned_at not recorded"
+
+[devswarm_cli.msg_corr_not_recorded]
+doc = "The error when the correction was sent but the plan could not be updated."
+value = "the correction was sent, but warned_at could not be recorded (plan file locked or gone) — retry"
+
+# ---- reap-orphans (lane l8h) --------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_reap_orphans]
+doc = "The verb that retires orphaned mesh partitions (dry run unless --apply --max N)."
+value = "reap-orphans"
+
+[devswarm_cli.action_reap_orphans]
+doc = "The `action` a reap-orphans result and its refusals carry."
+value = "reap-orphans"
+
+[devswarm_cli.flag_apply]
+doc = "The reap-orphans flag that acts instead of only listing."
+value = "apply"
+
+[devswarm_cli.flag_max]
+doc = "The reap-orphans flag giving the most partitions one pass may retire."
+value = "max"
+
+[devswarm_cli.flag_human]
+doc = "The reap-orphans flag by which a person claims to be driving a non-interactive shell."
+value = "i-am-a-human"
+
+[devswarm_cli.reap_automation_env]
+doc = "The environment variable a supervisor, cron or hook context sets; reap-orphans --apply refuses while it is set."
+value = "ANTIHALL_DEVSWARM_AUTOMATION"
+
+[devswarm_cli.reap_automation_value]
+doc = "The value of that variable that marks an automated context."
+value = "1"
+
+[devswarm_cli.reap_dir]
+doc = "The directory (under the DevSwarm root) where a reap archives the unread rows of a retired partition."
+value = "reaped"
+
+[devswarm_cli.reap_mode_dry_run]
+doc = "The `mode` of a reap-orphans listing."
+value = "dry-run"
+
+[devswarm_cli.reap_mode_apply]
+doc = "The `mode` of a reap-orphans pass that acted."
+value = "apply"
+
+[devswarm_cli.reap_reason_no_project]
+doc = "The `reason` of the refusal outside a git worktree."
+value = "no-project"
+
+[devswarm_cli.reap_reason_max_required]
+doc = "The `reason` of the refusal of --apply without --max."
+value = "max-required"
+
+[devswarm_cli.reap_reason_bad_max]
+doc = "The `reason` of the refusal of a --max that is no positive integer."
+value = "bad-max"
+
+[devswarm_cli.reap_reason_automation]
+doc = "The `reason` of the refusal of --apply in an automated context."
+value = "automation-refused"
+
+[devswarm_cli.reap_reason_non_interactive]
+doc = "The `reason` of the refusal of --apply from a non-interactive shell."
+value = "non-interactive-refused"
+
+[devswarm_cli.msg_reap_no_project]
+doc = "The refusal outside a git worktree."
+value = "reap-orphans must run inside a git worktree (the mesh store is per-project)"
+
+[devswarm_cli.msg_reap_max_required]
+doc = "The refusal of --apply without --max."
+value = "--apply requires --max N (the maximum number of partitions this pass may retire). There is deliberately no unbounded apply."
+
+[devswarm_cli.msg_reap_bad_max]
+doc = "The refusal of a bad --max; {got} is the value as JSON."
+value = "--max must be a positive integer (got {got})"
+
+[devswarm_cli.msg_reap_automation]
+doc = "The refusal of --apply in an automated context."
+value = "refusing to --apply with ANTIHALL_DEVSWARM_AUTOMATION=1 set: retiring a partition is a human decision, never a scheduled sweep. Run it yourself from an interactive shell."
+
+[devswarm_cli.msg_reap_non_interactive]
+doc = "The refusal of --apply from a non-interactive shell."
+value = "refusing to --apply from a non-interactive stdin (cron/pipeline/subagent shape). If a human really is driving this, pass --i-am-a-human as well."
+
+[devswarm_cli.msg_reap_none]
+doc = "The note of a listing that found no orphaned partition."
+value = "no orphaned partitions with unread mail in this project"
+
+[devswarm_cli.msg_reap_applied]
+doc = "The note of a pass that acted; {dir} is the directory the archives go to."
+value = "unread rows were archived + verified under {dir} and each partition retired by advancing its cursor; NO message rows were deleted"

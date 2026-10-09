@@ -42,6 +42,7 @@ pub mod hivecontrol;
 pub mod ident;
 pub mod idlock;
 pub mod inbox;
+pub mod lifeverbs;
 pub mod plan;
 pub mod planverbs;
 pub mod pull;

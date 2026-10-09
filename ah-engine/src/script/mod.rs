@@ -385,6 +385,18 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
         let ctx = ensure_entry(pool, &key, &libs, &own, func)?;
         let raw = serde_json::to_string(args).map_err(|e| e.to_string())?;
         let limit = limit_ms(name, func);
+        // a rules script with its own heap allowance (`script.call_memory_by_check`): the ceiling is raised for this call only
+        let own_heap = defaults::raw("script.call_memory_by_check").get(name).and_then(defaults::V::as_integer).map(|b| b.max(1) as usize);
+        if let Some(extra) = own_heap {
+            pool.rt.run_gc();
+            pool.rt.set_memory_limit(pool.rt.memory_usage().malloc_size.max(0) as usize + extra);
+        }
+        let reset_heap = |pool: &Pool| {
+            if own_heap.is_some() {
+                pool.rt.run_gc();
+                pool.rt.set_memory_limit(pool.rt.memory_usage().malloc_size.max(0) as usize + defaults::num("script.call_memory_bytes") as usize);
+            }
+        };
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
             pool.arm(limit);
@@ -398,6 +410,7 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
             });
             pool.disarm();
             host::set_deadline(None);
+            reset_heap(pool);
             serde_json::from_str(&out?).map_err(|e| e.to_string())
         })
     });

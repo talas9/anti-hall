@@ -21,6 +21,7 @@
 //! | `shared` | `jev-assist.js` `turnRefFromTranscript` | the process-wide lanes the checks ask through |
 //! | `evidence` | (new) | the evidence gate: rules, sufficiency and a labelled pack before any Jev or Haiku call (jev_evidence.toml) |
 //! | `cascade` | (new) | re-judges a Jev answer under the escalation threshold with the Claude CLI |
+//! | `report` | `scripts/jev-report.js` | the `jev-report` command: reads the logs and settings, the plugin script `rules/jev-report` renders the report |
 //! | `assist` | `jev-assist.js` `ask`, `finalize` | modes, trust rules, budget, async queue, metrics |
 //!
 //! The decision record's rules for this lane: static checks never route to Jev (D34); every Jev decision has a
@@ -41,6 +42,7 @@ pub mod keep;
 pub mod log;
 pub mod loopback;
 pub mod question;
+pub mod report;
 pub mod scrub;
 pub mod settings;
 pub mod shared;
