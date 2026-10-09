@@ -1758,3 +1758,68 @@ value = "\\+(\\d+)\\s+-(\\d+)"
 [statusline.worktree_re]
 doc = "A git directory of a linked worktree."
 value = "[/\\\\]\\.git[/\\\\]worktrees[/\\\\]"
+
+# ---- tunables: the engine's own keys, listed from the shipped defaults themselves (`ah-engine settings tunables`) ----------
+
+[ops.tunable_verb]
+doc = "The `settings` sub-verb that lists every key of the plugin's engine/defaults/*.toml (the keys the Node schema does not hold)."
+value = "tunables"
+
+[ops.tunable_file_suffix]
+doc = "Suffix of a defaults file name that is dropped to name the category of its keys."
+value = ".toml"
+
+[ops.tunable_title]
+doc = "Heading of the tunables listing."
+value = "Engine tunables"
+
+[ops.tunable_intro]
+doc = "Intro line of the tunables listing."
+value = "Every key of the plugin's engine/defaults/*.toml (the single source; category = the file). Change one by editing that file in the plugin, or through the environment variable in its Env column; the engine re-reads it on change. Node-schema settings are listed by `settings show`."
+
+[ops.tunable_headers]
+doc = "Column headers of the tunables table."
+value = ["Key", "Category", "Default", "Env", "Range", "What it does"]
+
+[ops.tunable_cat_headers]
+doc = "Column headers of the tunables category table."
+value = ["Category", "Keys"]
+
+[ops.tunable_more]
+doc = "Closing line of the category table. Placeholder: total."
+value = "{total} keys. `settings tunables <category|key prefix>` lists one group, `settings tunables --all` every key, `--json` the full data (descriptions in full)."
+
+[ops.tunable_unknown]
+doc = "Error when no engine key or category matches. Placeholder: name."
+value = "💡 anti-hall · settings: no engine key or category matches '{name}' (see `settings tunables`)"
+
+[ops.tunable_value_max]
+doc = "Longest default shown in a table cell, in characters (longer ones are cut; --json has them whole)."
+value = 60
+min = 10
+
+[ops.tunable_doc_max]
+doc = "Longest description shown in a table cell, in characters (the first sentence, cut at a word)."
+value = 120
+min = 20
+
+[ops.tunable_ellipsis]
+doc = "Appended to a cut cell."
+value = "…"
+
+[ops.tunable_sentence_end]
+doc = "The text that ends the first sentence of a description."
+value = ". "
+
+[ops.tunable_list]
+doc = "Cell for a list default. Placeholder: n."
+value = "[{n} items]"
+
+[ops.tunable_table]
+doc = "Cell for a table default. Placeholder: n."
+value = "[{n} keys]"
+
+[ops.tunable_json_depth]
+doc = "Deepest nesting read back when a default is rendered in `--json`."
+value = 64
+min = 8

@@ -30,6 +30,9 @@ the API keys. Every other setting lives in `~/.anti-hall/settings.json`, grouped
 2. Then show only the category they care about:
    `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --section <category> [--all]`
 3. Change with `set <section.key> <value>`, undo with `reset <section.key>` (below).
+4. The engine's own keys (polling cadences, audit and stall limits, statusline widgets, script deadlines, ...) live in the plugin's
+   `engine/defaults/*.toml`, not in the schema above; list them with their defaults, env variables and descriptions:
+   `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings tunables [<category|key prefix>] [--all]` (read-only: edit the file to change one).
 
 A non-default value set in Claude Code's plugin options in earlier versions is copied into
 `~/.anti-hall/settings.json` by the update or `doctor --repair` run of the first release that

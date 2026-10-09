@@ -362,3 +362,30 @@ fn the_role_checks_are_in_the_dispatch_table_for_both_hosts() {
     );
     assert!(has("codex", "SessionStart", "engine-role-note") && has("codex", "PreToolUse", "engine-role-guard"));
 }
+
+/// Dogfood 2026-10-09: every key of the plugin's engine defaults is listed by `settings tunables`, from the shipped files
+/// alone (a key added to a defaults file shows up with no registry edit).
+#[test]
+fn settings_tunables_lists_every_shipped_default_key() {
+    let bin = env!("CARGO_BIN_EXE_ah-engine");
+    let go = |a: &[&str]| {
+        let o = Command::new(bin).args(a).env("AH_ENGINE_PLUGIN_ROOT", plugin()).env_remove("AH_ENGINE_STATE_DIR").output().unwrap();
+        (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string())
+    };
+    let (code, json) = go(&["settings", "tunables", "--json"]);
+    assert_eq!(code, 0);
+    let rows: Vec<Value> = serde_json::from_str(&json).unwrap();
+    let keys: Vec<&str> = rows.iter().filter_map(|r| r["key"].as_str()).collect();
+    assert!(keys.len() > 1000, "{} keys", keys.len());
+    for k in ["github_rt.enabled", "ops.tunable_verb", "devswarm_act.hc_timeout_ms"] {
+        assert!(keys.contains(&k), "{k} listed");
+    }
+    assert!(rows.iter().all(|r| r["description"].as_str().is_some_and(|d| !d.is_empty()) && r["category"].is_string()), "description + category on every key");
+    let (_, table) = go(&["settings", "tunables", "github_rt.poll_"]);
+    assert!(table.contains("| github_rt.poll_running_ms |") && !table.contains("devswarm_act"), "{table}");
+    let (code, _) = go(&["settings", "tunables", "no_such_category"]);
+    assert_eq!(code, 1);
+    let (code, one) = go(&["settings", "get", "github_rt.enabled"]);
+    assert_eq!(code, 0);
+    assert!(one.contains("github_rt.enabled"), "{one}");
+}

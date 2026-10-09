@@ -114,8 +114,8 @@ doc = "A derived inventory of a plugin tree (D81, the port of scripts/briefing.j
 value = { args = "[--root <plugin dir>]", read_only = true, status = "implemented" }
 
 [cmd.settings]
-doc = "Show or change any anti-hall setting (L9a, the port of scripts/settings.js): `show [--section <key>] [--all]`, `get <section.key>`, `set <section.key> <value> [--confirmed]`, `reset <section.key> [--confirmed]`, `judge on|off|status`, and `trust-command-allow` / `trust-edit-allow [<repo>] [--confirmed]`; the settings.json file and the registry are the plugin's own."
-value = { args = "<show|get|set|reset|judge|trust-command-allow|trust-edit-allow> [args] [--json]", read_only = false, status = "implemented" }
+doc = "Show or change any anti-hall setting (L9a, the port of scripts/settings.js): `show [--section <key>] [--all]`, `get <section.key>`, `set <section.key> <value> [--confirmed]`, `reset <section.key> [--confirmed]`, `judge on|off|status`, `tunables [<category|key prefix>] [--all]` (every key of the plugin's engine/defaults/*.toml with its default, env variable and description, grouped by file; read-only, edit the file to change one), and `trust-command-allow` / `trust-edit-allow [<repo>] [--confirmed]`; the settings.json file and the registry are the plugin's own."
+value = { args = "<show|get|set|reset|judge|tunables|trust-command-allow|trust-edit-allow> [args] [--json]", read_only = false, status = "implemented" }
 
 [cmd.jev-report]
 doc = "The Jev report of the /anti-hall:jev skill (the port of scripts/jev-report.js): per-integration calls, agreement, changed decisions, precision, cost and the KEEP / REVIEW / REMOVE verdict from the decision log, with `--json`, `--days`, `--window 24h|7d`, `--by project|session`, `--project`, `--weekly`, `--since`, `--until`, `--exclude-window`, `--exclude-project`; `label <hash> [tp|fp]` reads or records a human precision label and `prune-audit --days N` trims the audit snippets (the only two forms that write)."
