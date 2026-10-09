@@ -279,6 +279,12 @@ impl MeshStore {
         Ok(true)
     }
 
+    /// `setGate({ workspaceId, name, value, setBy })`: one more row of the gate history (`set_at` is the clock).
+    pub fn set_gate(&self, id: &str, name: &str, value: bool, set_by: &str, now: i64) -> Res<()> {
+        retry_busy(|| self.conn().prepare_cached(sql::MESHW_SET_GATE)?.execute(params![id, name, i64::from(value), now, set_by]))?;
+        Ok(())
+    }
+
     /// `setCursor(id, value)`.
     pub fn set_cursor(&self, id: &str, value: i64, now: i64) -> Res<()> {
         self.conn().prepare_cached(sql::MESHW_SET_CURSOR)?.execute(params![id, value.max(0), now])?;

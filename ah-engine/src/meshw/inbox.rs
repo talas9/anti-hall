@@ -64,7 +64,7 @@ fn read_receipt(home: &Path, id: &str, rid: &str, dir_id: &str) -> Option<(OVal,
 
 /// `descriptorRegisteredRepoKey(desc, id)` (`devswarm-repokey.js` `registeredRepoKey`): the project the id is registered
 /// under, from its worktree when that still resolves, else the key the descriptor persisted (never the legacy hash bucket).
-fn registered_repo_key(desc: &OVal, id: &str) -> R<Option<String>> {
+pub(crate) fn registered_repo_key(desc: &OVal, id: &str) -> R<Option<String>> {
     let text = |k: &str| match desc.get(k) {
         Some(OVal::Str(x)) if !x.is_empty() => Some(x.clone()),
         _ => None,

@@ -13,7 +13,7 @@
 //! * `on`: the engine runs the verb; wherever it cannot reproduce Node exactly (an [`ident::Defer`]) Node runs it.
 //!
 //! Ported verbs: `send` (direct, `--to-primary`, `--broadcast`), `mesh read` (consuming and `--peek`), `mesh history`,
-//! `roster --ack` and `inbox ack-primary`. Every other verb runs in Node whatever the switch says.
+//! `roster --ack`, `inbox ack-primary`, the plain `heartbeat`, `inbox tick <id>`, the single-partition `inbox read-primary` and the empty-project plain `roster`; and the store-free verbs of [`simple`] (`help`, the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`, `gate-intent`, `notice --list`). Every other verb runs in Node whatever the switch says.
 //!
 //! The exit-code contract (`mesh_write.exit_defer`, `mesh_write.exit_committed_failure`):
 //!
@@ -33,16 +33,23 @@ pub mod args;
 pub mod common;
 pub mod cursors;
 pub mod heartbeat;
+pub mod hivecontrol;
 pub mod ident;
 pub mod idlock;
 pub mod inbox;
 pub mod plan;
+pub mod planverbs;
 pub mod read;
+pub mod readprimary;
+pub mod roster;
 pub mod send;
+pub mod simple;
 pub mod store;
 pub mod summary;
+pub mod tick;
 pub mod union;
 pub mod verify;
+pub mod wsverbs;
 
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
@@ -144,19 +151,59 @@ pub enum Verb {
     InboxAckPrimary,
     /// `heartbeat` (the plain form).
     Heartbeat,
+    /// `inbox tick <id> --quiet`.
+    InboxTick,
+    /// `inbox read-primary <id>`.
+    InboxReadPrimary,
+    /// Plain `roster` (no `--ack`).
+    Roster,
+    /// A verb that needs no store: `help` and the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`,
+    /// `gate-intent`, `notice --list` (see [`simple`]).
+    Simple(simple::Simple),
+    /// `plan set|show <id>` (see [`planverbs`]).
+    Plan,
+    /// `scope add <id>` (see [`planverbs`]).
+    Scope,
+    /// `gate <id> --set ... --clear ...` (see [`wsverbs`]).
+    Gate,
+    /// `workspaces list` (see [`wsverbs`]).
+    Workspaces,
+}
+
+/// Whether the verb is checked by the CLI-verb Node witness (`simple::prepare` / `launch` / `run_witness`).
+fn cli_witnessed(v: Option<Verb>) -> bool {
+    matches!(v, Some(Verb::Simple(_) | Verb::Plan | Verb::Scope | Verb::Gate | Verb::Workspaces))
 }
 
 /// The verb's name as the telemetry log spells it (`Send`, `MeshRead`, `MeshHistory`, `InboxAckPrimary`).
 pub fn verb_label(a: &args::Args) -> String {
-    verb_of(a).map(|v| format!("{v:?}")).unwrap_or_default()
+    match verb_of(a) {
+        Some(Verb::Simple(v)) => format!("{v:?}"),
+        v => v.map(|v| format!("{v:?}")).unwrap_or_default(),
+    }
 }
 
 /// The ported verb of a parsed argv.
 pub fn verb_of(a: &args::Args) -> Option<Verb> {
+    if let Some(v) = simple::classify(a) {
+        return Some(Verb::Simple(v));
+    }
     let p0 = a.positionals.first().map(String::as_str)?;
     let p1 = a.positionals.get(1).map(String::as_str);
     if p0 == defaults::text("mesh_write.verb_send") {
         return Some(Verb::Send);
+    }
+    if p0 == defaults::text("devswarm_cli.verb_plan") {
+        return Some(Verb::Plan);
+    }
+    if p0 == defaults::text("devswarm_cli.verb_scope") {
+        return Some(Verb::Scope);
+    }
+    if p0 == defaults::text("devswarm_cli.verb_gate") {
+        return Some(Verb::Gate);
+    }
+    if p0 == defaults::text("devswarm_cli.verb_workspaces") {
+        return Some(Verb::Workspaces);
     }
     if p0 == defaults::text("mesh_write.verb_mesh") && p1 == Some(defaults::text("mesh_write.verb_read")) {
         return Some(Verb::MeshRead);
@@ -167,11 +214,20 @@ pub fn verb_of(a: &args::Args) -> Option<Verb> {
     if p0 == defaults::text("mesh_write.verb_roster") && a.has(defaults::text("mesh_write.flag_ack")) {
         return Some(Verb::MeshRead);
     }
+    if p0 == defaults::text("mesh_write.verb_roster") {
+        return Some(Verb::Roster);
+    }
     if p0 == defaults::text("mesh_write.verb_inbox") && p1 == Some(defaults::text("mesh_write.verb_ack_primary")) {
         return Some(Verb::InboxAckPrimary);
     }
     if p0 == defaults::text("mesh_write.verb_heartbeat") {
         return Some(Verb::Heartbeat);
+    }
+    if p0 == defaults::text("mesh_write.verb_inbox") && p1 == Some(defaults::text("mesh_write.verb_tick")) {
+        return Some(Verb::InboxTick);
+    }
+    if p0 == defaults::text("mesh_write.verb_inbox") && p1 == Some(defaults::text("mesh_write.verb_read_primary")) {
+        return Some(Verb::InboxReadPrimary);
     }
     None
 }
@@ -184,6 +240,14 @@ pub fn run_native(inv: &Inv, a: &args::Args) -> R<Answer> {
         Some(Verb::MeshHistory) => read::run(inv, a, true),
         Some(Verb::InboxAckPrimary) => inbox::run(inv, a),
         Some(Verb::Heartbeat) => heartbeat::run(inv, a),
+        Some(Verb::InboxTick) => tick::run(inv, a),
+        Some(Verb::InboxReadPrimary) => readprimary::run(inv, a),
+        Some(Verb::Roster) => roster::run(inv, a),
+        Some(Verb::Simple(v)) => simple::run(inv, a, v),
+        Some(Verb::Plan) => planverbs::run_plan(inv, a),
+        Some(Verb::Scope) => planverbs::run_scope(inv, a),
+        Some(Verb::Gate) => wsverbs::run_gate(inv, a),
+        Some(Verb::Workspaces) => wsverbs::run_workspaces(inv, a),
         None => ident::defer("not-ported"),
     }
 }
@@ -262,12 +326,16 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
     if argv.first().map(String::as_str) == Some(defaults::text("mesh_write.verify_flag")) {
         return verify::run_verifier(&argv[1..]);
     }
+    if argv.first().map(String::as_str) == Some(defaults::text("devswarm_cli.witness_flag")) {
+        return simple::run_witness(&argv[1..]);
+    }
     let a = args::parse(&argv);
     let m = mode();
     if m == Mode::Off || verb_of(&a).is_none() {
         return exec_node(&argv);
     }
-    let wants_stdin = a.has(defaults::text("mesh_write.flag_message_stdin"));
+    // a help request (or any verb of `simple`) never reads fd 0
+    let wants_stdin = a.has(defaults::text("mesh_write.flag_message_stdin")) && !cli_witnessed(verb_of(&a));
     let stdin = wants_stdin.then(read_stdin);
     match m {
         Mode::On => {
@@ -281,8 +349,14 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                 return node_with(&argv, stdin.as_deref());
             };
             // a writing verb keeps Node as a background check on a scratch copy (never a second write on the real home)
-            let scratch =
-                (verb_of(&a) == Some(Verb::Heartbeat)).then(|| verify::prepare(&inv, a.one(defaults::text("mesh_write.flag_summary")).is_some())).flatten();
+            let scratch = match verb_of(&a) {
+                Some(Verb::Heartbeat) => verify::prepare(&inv, a.one(defaults::text("mesh_write.flag_summary")).is_some()),
+                Some(Verb::InboxTick) => verify::prepare_tick(&inv),
+                Some(Verb::InboxReadPrimary) => verify::prepare_read_primary(&inv),
+                Some(Verb::Roster) => verify::prepare_roster(&inv),
+                v if cli_witnessed(v) => simple::prepare(&inv, matches!(v, Some(Verb::Gate | Verb::Workspaces))),
+                _ => None,
+            };
             let r = std::panic::catch_unwind(|| run_native(&inv, &a));
             let (step, result, reason) = next_step(r, committed());
             shadow_log(
@@ -291,21 +365,25 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
             match step {
                 Next::Print(ans) => {
                     if let Some(sc) = &scratch {
-                        verify::launch(sc, &inv, a.positionals.get(1).map_or("", String::as_str), &argv, &ans.stdout);
+                        if cli_witnessed(verb_of(&a)) {
+                            simple::launch(sc, &inv, &argv, &ans);
+                        } else {
+                            verify::launch(sc, &inv, &argv, &ans.stdout);
+                        }
                     }
                     emit(ans.stdout.as_bytes());
                     ans.code
                 }
                 Next::CommittedFailure => {
                     if let Some(sc) = &scratch {
-                        crate::discard::harmless(std::fs::remove_dir_all(sc)); // keep: nothing to verify
+                        verify::discard_tree(sc);
                     }
                     eprintln!("{}", defaults::text("mesh_write.msg_committed_failure"));
                     defaults::num("mesh_write.exit_committed_failure") as i32
                 }
                 Next::RunNode => {
                     if let Some(sc) = &scratch {
-                        crate::discard::harmless(std::fs::remove_dir_all(sc)); // keep: Node ran it, nothing to verify
+                        verify::discard_tree(sc);
                     }
                     node_with(&argv, stdin.as_deref())
                 }
@@ -313,7 +391,22 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
         }
         // the write verbs replay on a copy of the store; a verb whose inputs are files outside it (a read receipt that
         // Node consumes while it runs) cannot be replayed, so it only runs in Node and is counted
-        _ if matches!(verb_of(&a), Some(Verb::InboxAckPrimary | Verb::Heartbeat)) => {
+        _ if matches!(
+            verb_of(&a),
+            Some(
+                Verb::InboxAckPrimary
+                    | Verb::Heartbeat
+                    | Verb::InboxTick
+                    | Verb::InboxReadPrimary
+                    | Verb::Roster
+                    | Verb::Simple(_)
+                    | Verb::Plan
+                    | Verb::Scope
+                    | Verb::Gate
+                    | Verb::Workspaces
+            )
+        ) =>
+        {
             // logged BEFORE Node runs: with no stdin to forward the engine replaces itself with Node and never returns
             shadow_log(
                 &serde_json::json!({"ts": common::now_ms(), "verb": verb_label(&a), "mode": defaults::text("mesh_write.mode_shadow"), "result": defaults::text("mesh_write.shadow_skipped"), "reason": "", "ms": 0}),

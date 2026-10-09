@@ -63,7 +63,7 @@ test('on: send and mesh read go to ah-engine mesh with the same argv and its exi
 
 test('on: other verbs stay in Node; an engine native nonzero result is passed through', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 2' });
-  const h = run(['inbox', 'tick', 'w1']);
+  const h = run(['inbox', 'peek-primary', 'w1']);
   assert.strictEqual(h.code, 3);
   assert.doesNotMatch(h.trace, /engine/);
   assert.strictEqual(run(['send', '--to', 'w']).code, 2);
@@ -102,23 +102,66 @@ test('on, engine exit 70 (committed failure, it already wrote): passed through, 
 test('on: inbox ack-primary is routed; the other inbox verbs stay in Node', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 0' });
   assert.strictEqual(run(['inbox', 'ack-primary', 'p1', '--receipt', 'r1']).code, 0);
-  const r = run(['inbox', 'read-primary', 'p1']);
+  const r = run(['inbox', 'peek-primary', 'p1']);
   assert.strictEqual(r.code, 3);
-  assert.match(r.trace, /engine mesh inbox ack-primary p1 --receipt r1\nnode inbox read-primary p1/);
+  assert.match(r.trace, /engine mesh inbox ack-primary p1 --receipt r1\nnode inbox peek-primary p1/);
 });
 
-test('on: mesh history, roster --ack and heartbeat are routed; plain roster and the other verbs stay in Node', () => {
+test('on: mesh history, roster (plain and --ack) and heartbeat are routed; the other verbs stay in Node', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 0' });
   assert.strictEqual(run(['mesh', 'history']).code, 0);
   assert.strictEqual(run(['roster', '--ack']).code, 0);
   assert.strictEqual(run(['roster', '--json', '--ack=1']).code, 0);
   assert.strictEqual(run(['heartbeat', 'w1', '--session', 's']).code, 0);
-  const plain = run(['roster']);
-  assert.strictEqual(plain.code, 3);
+  assert.strictEqual(run(['roster']).code, 0);
   assert.strictEqual(run(['mesh', 'peek']).code, 3);
-  const last = run(['inbox', 'tick', 'w1']);
+  const last = run(['inbox', 'peek-primary', 'w1']);
   assert.strictEqual(last.code, 3);
-  assert.match(last.trace, /engine mesh mesh history\nengine mesh roster --ack\nengine mesh roster --json --ack=1\nengine mesh heartbeat w1 --session s\nnode roster stdin=\nnode mesh peek stdin=\nnode inbox tick w1 stdin=\n$/);
+  assert.match(last.trace, /engine mesh mesh history\nengine mesh roster --ack\nengine mesh roster --json --ack=1\nengine mesh heartbeat w1 --session s\nengine mesh roster\nnode mesh peek stdin=\nnode inbox peek-primary w1 stdin=\n$/);
+});
+
+test('on: inbox read-primary is routed (the engine decides; a deferral runs Node)', () => {
+  const ok = setup({ mode: 'on', engine: 'exit 0' });
+  const r = ok.run(['inbox', 'read-primary', 'w1', '--format', 'text']);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.trace, /engine mesh inbox read-primary w1 --format text\n$/);
+  const d = setup({ mode: 'on', engine: 'exit 75' });
+  const r2 = d.run(['inbox', 'read-primary', 'w1']);
+  assert.strictEqual(r2.code, 3);
+  assert.match(r2.trace, /engine mesh inbox read-primary w1[\s\S]*node inbox read-primary w1/);
+});
+
+test('on: help requests and the CLI verbs the engine answers (skip, archive-ignore, archive-unignore, gate-intent, notice, plan, scope, gate, workspaces, logs, wake-directive) are routed; a bare unknown verb stays in Node', () => {
+  const { run } = setup({ mode: 'on', engine: 'exit 0' });
+  for (const argv of [['help'], ['help', 'send', '--json'], ['-h'], ['--help'], ['--h'], ['inbox', 'x', '--help'], ['skip', 'edit-guard', '--ttl', '5'],
+    ['archive-ignore', 'w1'], ['archive-unignore', 'w1'], ['gate-intent', '--reason', 'r'], ['notice', '--list'], ['plan', 'show', 'w1'],
+    ['scope', 'add', 'w1', '--glob', 'a', '--note', 'n'], ['gate', 'w1', '--set', 'x'], ['workspaces', 'list'], ['logs', '--limit', '5'], ['wake-directive', 'w1']]) {
+    const r = run(argv);
+    assert.strictEqual(r.code, 0, argv.join(' '));
+    assert.ok(r.trace.endsWith('engine mesh ' + argv.join(' ') + '\n'), argv.join(' ') + ' -> ' + r.trace);
+    assert.doesNotMatch(r.trace, /^node /m);
+  }
+  const u = run(['bogus-verb']);
+  assert.strictEqual(u.code, 3);
+  assert.doesNotMatch(u.trace, /engine mesh bogus-verb/);
+  assert.match(u.trace, /node bogus-verb stdin=\n$/);
+  const d = setup({ mode: 'on', engine: 'exit 75' }).run(['skip', 'g']);
+  assert.strictEqual(d.code, 3);
+  assert.match(d.trace, /engine mesh skip g\nnode skip g/);
+});
+
+test('on: inbox tick is routed; a deferral (exit 75) runs Node, a committed failure (exit 70) never reruns it', () => {
+  const ok = setup({ mode: 'on', engine: 'exit 0' });
+  assert.strictEqual(ok.run(['inbox', 'tick', 'w1', '--quiet']).code, 0);
+  assert.match(ok.run(['inbox', 'tick', 'w1', '--quiet']).trace, /engine mesh inbox tick w1 --quiet/);
+  const d = setup({ mode: 'on', engine: 'exit 75' });
+  const r = d.run(['inbox', 'tick', 'w1', '--quiet']);
+  assert.strictEqual(r.code, 3);
+  assert.match(r.trace, /engine mesh inbox tick w1 --quiet\nnode inbox tick w1 --quiet/);
+  const f = setup({ mode: 'on', engine: 'exit 70' });
+  const r2 = f.run(['inbox', 'tick', 'w1', '--quiet']);
+  assert.strictEqual(r2.code, 70);
+  assert.doesNotMatch(r2.trace, /^node /m);
 });
 
 test('on, heartbeat deferred (exit 75): Node runs it; a committed failure (exit 70) is never rerun', () => {

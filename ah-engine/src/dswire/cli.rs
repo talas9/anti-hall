@@ -77,12 +77,16 @@ pub fn run(p: &Parsed) -> i32 {
 pub fn run_with(p: &Parsed, env: &dyn Fn(&str) -> Option<String>) -> i32 {
     let verb = p.rest.first().cloned().unwrap_or_default();
     let (usage, deferred) = (defaults::num("devswarm_wire.usage_exit") as i32, defaults::num("devswarm_wire.deferred_exit") as i32);
-    if !defaults::list("devswarm_wire.owner_verbs").contains(&verb.as_str()) {
+    let compat = defaults::list("devswarm_wire.compat_verbs").contains(&verb.as_str());
+    if !compat && !defaults::list("devswarm_wire.owner_verbs").contains(&verb.as_str()) {
         return fail(p, defaults::render("devswarm_wire.msg_unknown_verb", &[("verb", &verb)]), usage);
     }
     let r = role(env);
     if !allowed(r, &verb) {
         return fail(p, defaults::render("devswarm_wire.msg_role_refused", &[("verb", &verb), ("role", &r)]), usage);
+    }
+    if compat {
+        return compat_run(p);
     }
     if verb == "create" || verb == "merge" {
         out(p, json!({"outcome": Word::Deferred.text(), "verb": verb, "why": defaults::render("devswarm_wire.msg_deferred", &[("verb", &verb)])}));
@@ -123,6 +127,19 @@ pub fn run_with(p: &Parsed, env: &dyn Fn(&str) -> Option<String>) -> i32 {
         }
         _ => act_verb(p, &verb, rest, &rt, &home, &state_dir),
     }
+}
+
+/// A `devswarm.js` verb ported to the engine (`devswarm_wire.compat_verbs`): the same argv as `node scripts/devswarm.js`, the same
+/// front as `ah-engine mesh <argv>` (which keeps `--json` and every word in place: `parseArgs` lets a flag swallow its neighbour).
+fn compat_run(p: &Parsed) -> i32 {
+    let mut args = std::env::args_os();
+    let from_process = args.nth(1).is_some_and(|w| w.to_str() == Some(defaults::text("devswarm_wire.command_word")));
+    let raw: Vec<std::ffi::OsString> = if from_process {
+        args.collect()
+    } else {
+        p.rest.iter().cloned().chain(p.json.then(|| defaults::text("devswarm_cli.json_word").to_string())).map(Into::into).collect()
+    };
+    crate::meshw::run_front(&raw)
 }
 
 /// The state summary the `status` verb and the daemon's control verb print.

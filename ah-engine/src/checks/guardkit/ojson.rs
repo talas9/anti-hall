@@ -71,6 +71,51 @@ impl OVal {
         out
     }
 
+    /// `JSON.stringify(value, null, 2)` (two-space indent, `{}` and `[]` for empty containers).
+    pub fn stringify_pretty(&self) -> String {
+        let mut out = String::new();
+        self.write_pretty(&mut out, 0);
+        out
+    }
+
+    fn write_pretty(&self, out: &mut String, depth: usize) {
+        let pad = |n: usize| "  ".repeat(n);
+        match self {
+            OVal::Arr(a) if !a.is_empty() => {
+                out.push_str("[\n");
+                for (i, x) in a.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(",\n");
+                    }
+                    out.push_str(&pad(depth + 1));
+                    x.write_pretty(out, depth + 1);
+                }
+                out.push('\n');
+                out.push_str(&pad(depth));
+                out.push(']');
+            }
+            OVal::Obj(o) if !o.is_empty() => {
+                let mut idx: Vec<(u32, &(String, OVal))> = o.iter().filter_map(|e| array_index(&e.0).map(|n| (n, e))).collect();
+                idx.sort_by_key(|(n, _)| *n);
+                let rest = o.iter().filter(|e| array_index(&e.0).is_none());
+                out.push_str("{\n");
+                for (i, e) in idx.into_iter().map(|(_, e)| e).chain(rest).enumerate() {
+                    if i > 0 {
+                        out.push_str(",\n");
+                    }
+                    out.push_str(&pad(depth + 1));
+                    out.push_str(&serde_json::to_string(&e.0).unwrap_or_default());
+                    out.push_str(": ");
+                    e.1.write_pretty(out, depth + 1);
+                }
+                out.push('\n');
+                out.push_str(&pad(depth));
+                out.push('}');
+            }
+            other => other.write(out),
+        }
+    }
+
     fn write(&self, out: &mut String) {
         match self {
             OVal::Null => out.push_str("null"),
@@ -113,6 +158,11 @@ fn array_index(k: &str) -> Option<u32> {
         return None;
     }
     k.parse::<u64>().ok().filter(|n| *n < 4_294_967_295).map(|n| n as u32)
+}
+
+/// Whether `k` is a canonical array index, the keys a JavaScript object lists first.
+pub fn is_array_index_key(k: &str) -> bool {
+    array_index(k).is_some()
 }
 
 /// `String(n)` for a finite number.

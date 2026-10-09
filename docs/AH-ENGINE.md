@@ -245,7 +245,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Agent-targeted jobs delivered to a session's mailbox | planned (D45) | D45 |
 | Adding and removing jobs from the command line, schedules in versioned config | planned (D33, D18) | D33, D18 |
 | Mesh messaging, Monitor push, chat database | planned (D45) | D45 |
-| Read-only reader of the per-repo DevSwarm stores Node writes (`ah-engine mesh`, `src/mesh.rs`): roster, per-workspace counts, messages, gates, cursors, reader cursors; byte-equal to Node's reader on every live store copy (parity P1). Stage 2 (`src/meshw/`, switch `mesh.engine_writes`, default off): `send`, `mesh read`, `mesh history`, `roster --ack` and `inbox ack-primary` (the successful path: the caller's own-partition cursor moves of a read receipt) with Node's store writes, locking and output, the summary projection refresh those verbs make (`summaries/<repoKey>.json`), a shadow mode that replays each store-writing verb on a store copy and logs the comparison, and deferral to Node for anything not reproduced exactly (decided before any write; after its own write the engine never reruns the verb in Node, it exits 70 instead). Turn it off with `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. Still Node: `inbox read-primary`, `heartbeat`, `inbox tick`, plain `roster`, and ingest (their shared unread count, the loss-free NDJSON-plus-store union, is not ported yet), and the sibling and NDJSON-inbox cursor moves of `ack-primary` | implemented in part | D45 |
+| Read-only reader of the per-repo DevSwarm stores Node writes (`ah-engine mesh`, `src/mesh.rs`): roster, per-workspace counts, messages, gates, cursors, reader cursors; byte-equal to Node's reader on every live store copy (parity P1). Stage 2 (`src/meshw/`, switch `mesh.engine_writes`, default off): `send`, `mesh read`, `mesh history`, `roster --ack` and `inbox ack-primary` (the successful path: the caller's own-partition cursor moves of a read receipt) with Node's store writes, locking and output, the summary projection refresh those verbs make (`summaries/<repoKey>.json`), a shadow mode that replays each store-writing verb on a store copy and logs the comparison, and deferral to Node for anything not reproduced exactly (decided before any write; after its own write the engine never reruns the verb in Node, it exits 70 instead). Turn it off with `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. Still Node: ingest, a mesh group (sibling partitions) in `inbox read-primary` and `inbox tick`, plain `roster` for any project that has a row, and the sibling and NDJSON-inbox cursor moves of `ack-primary` | implemented in part | D45 |
 | Jev lane: Vercel and TypeSafe transports with fallback and breaker, Noul and Choice calls, off/shadow/on modes, add-block and advisory trust, cache, async queue with budgets, the `jev-assist.ndjson` rows, `ah-engine jev` | implemented, one-shot only | D34-D38 |
 | Jev wired into the dispatcher and the daemon, spend budget watch, audit snippets, daily rollups, persisted breaker and cache | planned (D58, D38) | D38, D58 |
 | Operator helpers: `ah-engine jev-setup` (status, enable, disable, set-key, bind-generic-key, mode), `capability-scan`, `harvest`, `briefing`, byte-for-byte with the Node scripts | implemented | D81 |
@@ -370,8 +370,8 @@ arguments, is in the generated reference.
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
 | `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 | `ah-engine mesh <roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | Read a repo's DevSwarm store in place, read-only (D45 stage S0): the registered workspaces, the per-workspace counts, a workspace's messages (capped, with a resume position), and the full canonical dump the parity harness compares with Node's reader. Refuses a journal-backed store; never creates or writes one. |
-| `ah-engine devswarm <status\|line\|advisory\|archive\|plan-prune\|prune>` | no | The DevSwarm realtime state and owner actions (lane dswire): `status` / `line` print the live workspace state and its statusline segment, `advisory --session <id>` the changes that session has not seen, `archive --id <ws> --request <id>`, `plan-prune --older-than <days>` and `prune --confirm-ids <ids> --plan <nonce>` run the hivecontrol actions at the owner's request with Node's preconditions, ledger and confirmations. Role matrix (`devswarm_wire.role_matrix`): reads are open to every role, the acting verbs are for the main session only (a subagent, a Codex session or a workspace child gets exit 64 before anything is read). `create` and `merge` stay with `scripts/devswarm.js` (exit 75, nothing done). |
-| `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary` and the plain `heartbeat` itself (store write, lock and summary refresh) where it reproduces Node exactly and hands the rest to Node before writing anything; a failure after its own write exits 70 without rerunning Node (exit-code contract and per-verb telemetry: see Mesh verbs below). Off again: `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. |
+| `ah-engine devswarm <status\|line\|advisory\|archive\|plan-prune\|prune\|help\|skip\|archive-ignore\|archive-unignore\|gate-intent\|notice\|plan\|scope\|gate\|workspaces\|logs\|wake-directive>` | no | The DevSwarm realtime state and owner actions (lane dswire), and the store-free `scripts/devswarm.js` verbs (lane l8: `help [<verb>]` and `<verb> --help`, `skip <guard> [--ttl <min>]`, `archive-ignore <id>`, `archive-unignore <id>`, `gate-intent --reason <text>`, `notice --list`, `plan set|show <id>`, `scope add <id>`, `gate <id> --set/--clear` (every gate but `merged`), `workspaces list`, `logs`, `wake-directive <id>` (child workspaces); same arguments, same stdout and files as Node, `--json` kept in place, role matrix `devswarm_wire.role_matrix`: `help` open to every role, the others main session only; `mesh.engine_writes` off sends them to Node, on makes the engine answer and defer the cases it cannot reproduce, `notice --post` and unreadable state included; the launcher routes the same verbs to `ah-engine mesh`, and a background Node witness logs a match or mismatch per answered call to `mesh-verify.jsonl`): `status` / `line` print the live workspace state and its statusline segment, `advisory --session <id>` the changes that session has not seen, `archive --id <ws> --request <id>`, `plan-prune --older-than <days>` and `prune --confirm-ids <ids> --plan <nonce>` run the hivecontrol actions at the owner's request with Node's preconditions, ledger and confirmations. Role matrix (`devswarm_wire.role_matrix`): reads are open to every role, the acting verbs are for the main session only (a subagent, a Codex session or a workspace child gets exit 64 before anything is read). `create` and `merge` stay with `scripts/devswarm.js` (exit 75, nothing done). |
+| `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary`, the plain `heartbeat`, `inbox tick <id>` (line and JSON form), the single-partition `inbox read-primary` and plain `roster` for a project with no rows itself (store write, lock and summary refresh) where it reproduces Node exactly and hands the rest to Node before writing anything; a failure after its own write exits 70 without rerunning Node (exit-code contract and per-verb telemetry: see Mesh verbs below). Off again: `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. |
 
 ## Metrics and the impact ledger
 
@@ -417,7 +417,7 @@ one pure function (`meshw::next_step`) unit-tested for every combination; `tests
 `inbox ack-primary`, that an engine that cannot run Node exits 75, prints nothing, and leaves the store and the home tree byte-identical.
 
 **Telemetry per verb.** Each `on`-mode call appends one JSON line to `mesh-shadow.jsonl` in the state directory:
-`{"ts", "verb", "mode", "result", "reason", "ms"}`, with `verb` one of `Send`, `MeshRead` (also `roster --ack`), `MeshHistory`, `InboxAckPrimary`, `Heartbeat` and `result`:
+`{"ts", "verb", "mode", "result", "reason", "ms"}`, with `verb` one of `Send`, `MeshRead` (also `roster --ack`), `MeshHistory`, `InboxAckPrimary`, `Heartbeat`, `InboxTick`, `InboxReadPrimary`, `Roster` and `result`:
 
 | `result` | counts as | `reason` |
 |---|---|---|
@@ -475,11 +475,65 @@ verdict and app-cache files it wrote with the engine's. Node's write never runs 
 the state directory: `{"ts","verb","result","ms"}` with `result` `match`, `mismatch` (plus both outputs, capped, and `sameHeartbeat`/`sameVerdict`/`sameCache`) or `error` (Node could not run);
 count mismatches per verb before trusting a port. Keys: `mesh_write.verify_*`.
 
-**Still in Node, on purpose:** `inbox read-primary` (receipt write, sibling-partition merge, gap withholding and the caps are one
-transaction of about 700 lines of Node), `inbox tick` (needs `inbox count` plus the wake-watch lock, live-children, limit-conserve and re-arm
-cues) and the plain `roster` (it spawns `hivecontrol` for native children and renders the archived-row hints). In `shadow` mode a verb that can be replayed on a store copy logs
-`match`/`mismatch`/`concurrent`/`defer`; `inbox ack-primary` cannot (it consumes a receipt file outside the store), so Node runs it and the line
-says `skipped`.
+**`inbox tick <id> [--quiet] [--json]` (`src/meshw/tick.rs`; Node: `cmdInboxTick`, `inboxTickQuietLine`, the `count` it runs).** A tick counts the unread mail of the
+workspace (the same NDJSON + store union as the heartbeat, read at the caller's own `reader_cursors` rows when the caller is a declared
+reader, else at the floor), refreshes three records and prints one line (`--quiet`), or `count`'s JSON with `action` renamed, `idMismatch` and
+`watcherArmed` (no flag, or `--json`). Writes, all best effort as in Node: `wake-tick/<id>.json` (`ts`,
+`unreadTotal`, `meshGapWithheld`, `known`, the carried-over `seq`), the heartbeat refresh (`ts`, `state_ts`, `version` of the existing
+`heartbeats/<id>.json`, or a minimal `inbox-tick` record) and, when it found unread mail and a wake-watch lock exists, a line of
+`cron-found-mail.jsonl` (kept to `mesh_write.cron_found_mail_cap`). The engine answers the steady state only: a descriptor with an inbox and
+cursor file, one store partition (a second registry row of the same worktree is a mesh group that Node folds: defers), floor rows in place, a
+live wake-watch lock (fresh within `mesh_write.wake_lock_stale_ms`, its pid not provably gone) so `watcherArmed` is `true`, no delivery-log
+batch pending, spilled or left in the temp directory, and no trace of the `devswarm.tickRosterEvery` setting. An UNKNOWN count (the inbox or
+its cursor file does not read) is answered in the line form: the union is then the store alone, `known` is `false` in the marker and the
+line, and the `known:false` warning goes to stderr as Node prints it; the JSON form of an unknown count defers (its cursor and total
+fields come from a second read of the broken files). Everything else defers before the first write: `--child` (it first imports the
+native queue), an unarmed watcher (the idle, archived and limit skips and the re-arm cue stay in Node), a Primary whose anchor session
+Node would refresh, a child addressing another id, a JSON form with more unread store rows than one call returns. Telemetry: `InboxTick`
+lines. The background Node check (`mesh-verify.jsonl`) re-runs the real tick on a scratch copy of the DevSwarm root (store linked) with the
+engine's clock and reader nonce and compares its output (the scratch home swapped for the real one), its refreshed heartbeat, its wake-tick
+marker and its cron-found-mail file with the engine's. One difference from Node: Node opens the
+store read-write (and would apply a pending schema migration); the engine opens it read only, so the migration waits for the next Node writer.
+
+**`inbox read-primary <id> [--format text] [--json] [--session S]` (`src/meshw/readprimary.rs`; Node: `inbox-cmd.js`, `inbox-read.js`
+`cmdInboxMessagesInner`, `cursors.js` `writeReadReceipt`).** A read that is not read-only: it files a read receipt, named by a fresh random
+id (`r` + the clock in base 36 + 12 random hex digits), in `read-receipts/<id>/` and prints the unread rows with the `ackCommand` that applies it.
+The engine reproduces the single-partition read: the unread store rows after the caller's read base (its own `reader_cursors` row, else the
+floor), merged with the NDJSON inbox lines when the descriptor has one (sorted by `ts`, a row without one last), the forward marker, the instance
+digest, `from`/`text`/`kind`/`bodyLength`, the `--format text` rendering, and the receipt record (`ops` own + nd, `hashes`, `reader`, `createdAt`) so that
+`inbox ack-primary --receipt` (Node's, or the engine's for the own-partition op) accepts it. The parity test checks stdout, exit code, the store and the
+whole home tree with the receipt id made equal, then has Node ack both receipts and compares the cursors again. Defers before the receipt is
+written (Node then runs the verb): a flag the engine does not read (`--limit`, `--since`, `--tail`, `--ack-as-owner`, `--ack-after-print`,
+`--legacy-ack-now`, `--unread`, `--with-broadcasts`, another `--format`), a missing descriptor, a descriptor or registry row whose session is the
+`unclaimed:` marker (Node promotes it), a mesh group (sibling partitions are merged with gap withholding and caps), a caller that does not own the id,
+a project mismatch, a store that does not exist yet, a partition without floor rows, a descriptor whose inbox or cursor file does not read, more unread
+rows than `mesh_write.inbox_read_limit` (Node truncates per source), a legacy forward whose original hash Node derives, Jev triage that may be
+enabled while there is mail to label (Node labels it and records outcome tracking), no stable launcher on disk (the `ackCommand` names the path
+Node resolves), and an old receipt in the directory (Node prunes receipts past `mesh_write.receipt_keep_ms` as it writes). Once the receipt
+exists nothing defers; if the receipt cannot be written the verb defers with only a directory created. Telemetry: `InboxReadPrimary` lines. The
+background Node check runs the real verb on a scratch copy (a consistent copy of the store, the descriptors' NDJSON inbox and cursor files copied
+under the scratch home so a later ack cannot race it) and compares its output and its receipt with both random ids and both homes made equal.
+
+**Plain `roster` (`src/meshw/roster.rs`, `src/meshw/hivecontrol.rs`; Node: `cmdRoster`, `rosterHumanText`, `hcRun`).** Every roster row comes from
+the liveness, transcript, idle, plan, app-database, name and alias machinery, which the engine does not have, so the engine answers only a
+project whose roster has NO rows: no registered workspace (the shared summary projection is empty), no archived descriptor OWNED by the project
+(the archived directory is shared by every project; `ownerKey`, else `repoKey`, else the worktree's key decides), no split-brain fallback
+summary of the Primary, and no native child. Then it prints `no live workspaces` (or, with `--json`, the empty result with the summary's `recent`).
+The cheap checks run first, so a project that has rows defers before `hivecontrol` is started. `hivecontrol workspace list children` is one bounded
+call (`mesh_write.hivecontrol_timeout_ms`; the child gets a closed stdin; more than `mesh_write.hivecontrol_max_stdout_bytes` of output fails it; a
+child that ignores the termination signal is killed after `mesh_write.hivecontrol_kill_grace_ms`, where Node would wait for it for ever); a missing
+binary, a spawn error, a timeout, a signal, a non-zero exit, an empty or unparsable answer are all "no children", as in Node's fail-open
+`fetchNativeChildren`, and a child it does report (an object or array element) is a row, so that defers. In front of the call sits Node's capability
+gate: the binary is found as Node finds it (`ANTIHALL_DEVSWARM_HIVECONTROL`, `PATH`, `hivecontrol-path.json`, the DevSwarm app's copy on macOS), its probe is read
+from `capabilities.json` (keyed by path, mtime and size), and a missing or stale probe, which makes Node spawn the binary and rewrite the cache with the
+clock in it, defers; a build whose `workspace --help` lacks `list` and whose dormant line Node already recorded is refused without a spawn, as Node does.
+Telemetry: `Roster` lines; the background Node check compares the output on a scratch copy.
+
+**Still in Node, on purpose:** `inbox read-primary` and `inbox tick` for a mesh group (the sibling partitions are merged with gap withholding, caps
+and a liveness gate on each sibling's ack), `inbox read-primary` when Jev triage may label what it prints, `inbox tick --child`, an unarmed watcher
+(idle, archived and limit skips), and every plain `roster` of a project that has a row. In `shadow` mode a verb that can be replayed on a store copy logs
+`match`/`mismatch`/`concurrent`/`defer`; `inbox ack-primary`, `heartbeat`, `inbox tick`, `inbox read-primary` and `roster` cannot (they consume or write
+files outside the store, or spawn), so Node runs them and the line says `skipped`.
 
 ## DevSwarm realtime state (lane B1)
 
@@ -892,6 +946,7 @@ Files:
 | `devswarm_sup.toml` | the DevSwarm supervisor duties (lane l7, `src/dssup`): the switch `mode` (witness / engine), the tick and its budget, the double-run guard, the sweep lock, the duty table (native or a Node function run bounded), Node's cool-down settings, the verdict mirror, recover's refusals and texts |
 | `devswarm_ingest.toml` | the native ingest drain (lane l7b, `src/dssup/ingest`): the switch `mode` (witness / engine), the projects, the monitor call and its breaker ladders, the lock and the legacy-consumer probe, the delivery WAL, quarantine and heartbeat files, the batch shape and hash, the Node witness and every log line |
 | `devswarm_wire.toml` | the DevSwarm wiring (`src/dswire`): the per-action cutover switches `devswarm_rt.act.<action>.executor`, the thread's wait and sweep gap, which changes trigger sweeps, the git time limit, the watched directories, the advisory / statusline / Jev-dirty settings and texts, the owner verbs and their role matrix, and the fact-reader file names |
+| `devswarm_cli.toml` | the DevSwarm CLI verbs ported from `scripts/devswarm.js` that need no store (`src/meshw/simple.rs`): the verb list in dispatch order, the help table (synopsis and side-effect note of every verb), the texts, flag names, limits and paths of `help`, the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`, `gate-intent`, `notice --list`, `plan`, `scope`, `gate`, `workspaces`, `logs` and `wake-directive`, and the Node witness's scratch paths and program |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |

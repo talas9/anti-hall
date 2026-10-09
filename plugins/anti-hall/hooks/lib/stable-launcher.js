@@ -67,8 +67,9 @@ function launcherPath(kind, home) {
 
 // meshRoute(argv, segments) -> a thin routing shim EMBEDDED in the devswarm
 // launcher (via Function#toString, so it must stay self-contained). For exactly
-// the ported verbs (the ROUTES table below: `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary`,
-// `heartbeat`), when settings.json `mesh.engine_writes`
+// the ported verbs (the ROUTES table below: `send`, `mesh read`, `mesh history`, `roster` (with or without `--ack`), `inbox ack-primary`,
+// `heartbeat`, `inbox tick`, `inbox read-primary`, `help` and any `-h`/`--help` request, `skip`, `archive-ignore`,
+// `archive-unignore`, `gate-intent`, `notice`, `plan`, `scope`, `gate`, `workspaces`, `logs`, `wake-directive`), when settings.json `mesh.engine_writes`
 // is "on" and the engine binary exists, it runs `ah-engine mesh <argv>` with a time
 // limit and returns {done: exitCode}; otherwise {input} (stdin already consumed
 // for --message-stdin, to be replayed) and the caller runs the Node script.
@@ -83,15 +84,19 @@ function meshRoute(argv, segments) {
   try {
     if (!segments || segments[1] !== 'devswarm.js') return out;
     // ROUTES: the verbs `ah-engine mesh` can answer. Each row is the leading words of the argv, plus an optional flag that
-    // must also be present (`roster` is routed only with --ack: the plain roster stays in Node). A verb the engine decides
-    // it cannot answer is handed to Node by the engine itself, so a row here only says "ask the engine first".
+    // must also be present. A verb the engine decides it cannot answer is handed to Node by the engine itself, so a row
+    // here only says "ask the engine first".
     var ROUTES = [
-      { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'], flag: '--ack' },
-      { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] },
+      { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'] },
+      { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] }, { words: ['inbox', 'tick'] }, { words: ['inbox', 'read-primary'] },
+      { words: ['help'] }, { words: [], anyOf: ['-h', '--h', '--help'] }, { words: ['skip'] }, { words: ['archive-ignore'] },
+      { words: ['archive-unignore'] }, { words: ['gate-intent'] }, { words: ['notice'] }, { words: ['plan'] }, { words: ['scope'] },
+      { words: ['gate'] }, { words: ['workspaces'] }, { words: ['logs'] }, { words: ['wake-directive'] },
     ];
     var routed = ROUTES.some(function (r) {
       return r.words.every(function (w, i) { return argv[i] === w; })
-        && (!r.flag || argv.some(function (a) { return a === r.flag || a.indexOf(r.flag + '=') === 0; }));
+        && (!r.flag || argv.some(function (a) { return a === r.flag || a.indexOf(r.flag + '=') === 0; }))
+        && (!r.anyOf || argv.some(function (a) { return r.anyOf.indexOf(a) >= 0; }));
     });
     if (!routed) return out;
     var fs = require('fs'), path = require('path'), os = require('os');
