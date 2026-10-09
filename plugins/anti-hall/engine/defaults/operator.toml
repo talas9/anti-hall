@@ -1291,6 +1291,19 @@ value = 200
 doc = "Longest the status line waits for its input, in milliseconds."
 value = 3000
 
+[statusline.total_deadline_ms]
+doc = "Longest the whole status line run may take, input wait included, in milliseconds. Past it the first line already rendered is printed and the run ends, and every step's own limit (git, base command) is cut to what is left, so a loaded machine costs a late second line, never a status line the host has stopped waiting for. Set it just under the host's own wait."
+value = 3000
+env = "AH_ENGINE_STATUSLINE_DEADLINE_MS"
+min = 500
+max = 30000
+
+[statusline.cut_grace_ms]
+doc = "How long past the overall deadline the run waits for a step that is finishing, before it prints what it has."
+value = 100
+min = 0
+max = 5000
+
 [statusline.inner_timeout_ms]
 doc = "Longest a base command may run, in milliseconds."
 value = 2500

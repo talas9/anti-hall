@@ -65,7 +65,11 @@ fn decide(bin: &str, path_env: Option<&str>, allowed: &[PathBuf]) -> Result<(), 
         Some(r) if allowed.iter().any(|root| r.starts_with(root)) => Ok(()),
         other => Err(defaults::render(
             "devswarm_act.hc_guard_refused",
-            &[("bin", &bin), ("resolved", &other.map_or(String::new(), |p| p.display().to_string())), ("var", &defaults::text("devswarm_act.hc_guard_stub_env"))],
+            &[
+                ("bin", &bin),
+                ("resolved", &other.map_or(String::new(), |p| p.display().to_string())),
+                ("var", &defaults::text("devswarm_act.hc_guard_stub_env")),
+            ],
         )),
     }
 }
