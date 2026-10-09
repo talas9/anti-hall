@@ -114,6 +114,12 @@ pub static CLAIM_LEDGER: Scripted = Scripted::new("claim-ledger", "claim_ledger.
 /// `idle-agent-sweep`.
 pub static IDLE_AGENT_SWEEP: Scripted = Scripted::new("idle-agent-sweep", "idle_sweep.summary");
 
+/// `auto-handover-pause-nag`.
+pub static AUTO_HANDOVER_PAUSE_NAG: Scripted = Scripted::new("auto-handover-pause-nag", "ctxbudget.summary_pause_nag");
+
+/// `compact-advice-guard`.
+pub static COMPACT_ADVICE_GUARD: Scripted = Scripted::new("compact-advice-guard", "ctxbudget.summary_compact_advice");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

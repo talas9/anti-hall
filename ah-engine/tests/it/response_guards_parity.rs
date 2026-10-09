@@ -320,7 +320,7 @@ fn claim_ledger_cases() -> Vec<Case> {
     v.push(c("no-session-id").transcript(&[asst("took 12 seconds")]).same(without(stop(json!({})), "session_id")));
     v.push(c("numeric-session-id").transcript(&[asst("took 12 seconds")]).same(stop(json!({"session_id": 77}))));
     v.push(c("weird-session-id").transcript(&[asst("took 12 seconds")]).same(stop(json!({"session_id": "a/b c:d😀"}))));
-    v.push(c("object-session-id-defers").transcript(&[asst("took 12 seconds")]).defer(stop(json!({"session_id": {"a": 1}}))));
+    v.push(c("object-session-id").transcript(&[asst("took 12 seconds")]).same(stop(json!({"session_id": {"a": 1}}))));
     v.push(c("last-file-stale").file(".anti-hall/claim-ledger/s1.last", "deadbeef").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
     // switches
     v.push(
@@ -400,7 +400,7 @@ fn claim_ledger_cases() -> Vec<Case> {
     // context and limits
     v.push(c("context-long-line").transcript(&[asst(&format!("{} took 12 seconds {}", "word ".repeat(60), "tail ".repeat(60)))]).same(stop(json!({}))));
     v.push(c("context-multi-line").transcript(&[asst("line one\ntook 12 seconds here\nline three")]).same(stop(json!({}))));
-    v.push(c("context-astral-cut-defers").transcript(&[asst(&format!("{}😀 took 12 seconds", "a".repeat(159)))]).defer(stop(json!({}))));
+    v.push(c("context-astral-cut").transcript(&[asst(&format!("{}😀 took 12 seconds", "a".repeat(159)))]).same(stop(json!({}))));
     v.push(c("context-astral-before-cut").transcript(&[asst("😀😀 took 12 seconds 😀")]).same(stop(json!({}))));
     v.push(c("max-flags").transcript(&[asst(&(1..=60).map(|i| format!("took {i}1 seconds")).collect::<Vec<_>>().join("\n"))]).same(stop(json!({}))));
     v.push(

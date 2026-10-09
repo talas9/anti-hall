@@ -1,6 +1,5 @@
 # D88 v1.0 gate: the most checks that may still decide in compiled Rust (see tests/compiled_logic_gate.rs).
 # Batch 1 (lane d88) took it from 62 to 55. The nodeonly lane then added three checks as compiled Rust (task-tracker,
-<<<<<<< HEAD
 # session-end-mcp-reaper, verify-first-orch-codex): 58. Batch 2 (lane d88b2) moved ship-it-guard, compact-declaration-guard,
 # devswarm-parent-inbox and devswarm-child-turn to scripts and batch 5 (lane d88b5) git, git-audit, swarm-guard and
 # sibling-sweep: 50.
@@ -10,16 +9,12 @@
 # precompact-snapshot, handover-resume, limit-conserve-inject and auto-handover to scripts.
 # Lane d88fd moved command (command-guard, which is also the shared command classifier) and coordinator-work-guard to scripts.
 # The dswire lane's devswarm-rt-advisory decides in a script (no net change).
-18
-=======
-# session-end-mcp-reaper, verify-first-orch-codex): 58. Migrating those three to scripts lowers it again.
-# Batch 5 (lane d88b5) moved git, git-audit, swarm-guard and sibling-sweep to scripts: 54.
-# Batch 6 (lanes d88fb and d88fc, merged) moved the checks listed in DECISIONS 1.106 and 1.107 to scripts: 32.
-<<<<<<< HEAD
-# Batch 7 (lane d88e) moves the last decision checks: stale-agent-stop-note 31, claim-ledger 30.
-30
->>>>>>> 3499b8a9 (feat(script): claim-ledger decides in a plugin script (D88 batch 7); compiled_logic_checks_remaining 31 to 30)
+16
 =======
 # Batch 7 (lane d88e) moves the last decision checks: stale-agent-stop-note 31, claim-ledger 30, idle-agent-sweep 29.
 29
 >>>>>>> 6502de07 (feat(script): idle-agent-sweep decides in a plugin script (D88 batch 7); compiled_logic_checks_remaining 30 to 29)
+=======
+# Batch 7 (lane d88e) moves the last decision checks: stale-agent-stop-note 31, claim-ledger 30, idle-agent-sweep 29, auto-handover-pause-nag 28, compact-advice-guard 27.
+27
+>>>>>>> c4793439 (feat(script): auto-handover-pause-nag and compact-advice-guard decide in plugin scripts (D88 batch 7); the parity suites follow the checks that now decide what Node decides; compiled_logic_checks_remaining 29 to 27)

@@ -43,10 +43,6 @@ doc = "How many bytes of the end of a transcript the guards read (hooks/lib/tran
 value = 1572864
 unit = "bytes"
 
-[ctxbudget.deep_json_depth]
-doc = "Nesting depth beyond which a transcript or state line the engine cannot parse is deferred to Node (the Node parser has no such limit)."
-value = 100
-
 [ctxbudget.session_tag_max]
 doc = "Characters of a session id kept in a state file tag (hooks/lib/auto-handover-state.js sessionTag)."
 value = 64
@@ -331,22 +327,6 @@ value = ["none", "n/a", "-", "—", "(none)"]
 doc = "The whole-section texts (an optional trailing dot allowed, any case) that say Next action is done."
 value = ["none", "done", "complete", "nothing"]
 
-[ctxbudget.ah_rollout_prefix]
-doc = "The file name prefix of a Codex rollout transcript."
-value = "rollout-"
-
-[ctxbudget.ah_rollout_suffix]
-doc = "The file name suffix of a Codex rollout transcript."
-value = ".jsonl"
-
-[ctxbudget.ah_codex_dir]
-doc = "The directory name whose presence in a transcript path marks a Codex session."
-value = ".codex"
-
-[ctxbudget.ah_unknown_session]
-doc = "The session directory name a handover path uses when the session id sanitizes to nothing."
-value = "unknown-session"
-
 [ctxbudget.ah_handover_dir_rel]
 doc = "The handovers directory relative to the repository, as the fire directive shows it."
 value = ".anti-hall/handovers"
@@ -535,17 +515,9 @@ value = "stop-"
 doc = "The stdout line of a Stop hook that blocks with {reason} (already JSON-quoted), newline included."
 value = "{\"decision\":\"block\",\"reason\":{reason}}\n"
 
-[ctxbudget.inferred_json]
-doc = "The inferred-window latch body; {ts} is the time it was written, in ms."
-value = "{\"inferred\":true,\"ts\":{ts}}"
-
 [ctxbudget.ah_hash_tag_len]
 doc = "Hex digits of the transcript path's SHA-1 that tag a session without a usable id (auto-handover-state.js sessionTag)."
 value = 16
-
-[ctxbudget.ah_proto_key]
-doc = "The object key Object.assign does not copy as data; a latch holding it defers to Node."
-value = "__proto__"
 
 [ctxbudget.ah_via_pct]
 doc = "The firedVia word of a percent crossing."
@@ -601,146 +573,6 @@ value = { section = "guards", key = "compactAdviceMarginPct", kind = "num", env 
 doc = "The guards.compactAdviceRecentTurns setting: a compact boundary within this many turns makes a /compact recommendation a block (0: off)."
 value = { section = "guards", key = "compactAdviceRecentTurns", kind = "num", env = "", aliases = [], option = "guards_compact_advice_recent_turns", manifest_default = "10", default = 10, min = 0, max = 100 }
 
-[ctxbudget.ca_advice]
-doc = "The recommendation patterns of compact-advice.js ADVICE_RES, in order (keys of this file); see the pattern entries for their token syntax."
-value = ["ctxbudget.ca_advice_safe_to", "ctxbudget.ca_advice_good_point", "ctxbudget.ca_advice_safe_for", "ctxbudget.ca_advice_command", "ctxbudget.ca_advice_line"]
-
-[ctxbudget.ca_advice_safe_to]
-doc = "Rust regex source, matched against the text with ASCII letters lowered ({S} JavaScript white space, \\b ASCII): the bare safe-to-compact wording."
-value = '\bsafe{S}+to{S}+(?:/compact|compact|/clear)\b'
-
-[ctxbudget.ca_advice_good_point]
-doc = "Rust regex source (as ca_advice_safe_to): the good point/time/moment to compact wording."
-value = '\bgood{S}+(?:point|time|moment){S}+(?:to|for){S}+(?:/?compact|/?clear|/new)\b'
-
-[ctxbudget.ca_advice_safe_for]
-doc = "Rust regex source (as ca_advice_safe_to): the Codex safe-for-a-reset wording."
-value = '\bsafe{S}+for{S}+(?:a{S}+)?(?:context{S}+)?(?:reset|compaction|/?compact|/new)\b'
-
-[ctxbudget.ca_advice_command]
-doc = "Rust regex source (as ca_advice_safe_to): /compact offered as an instruction (run, then, now ...)."
-value = '\b(?:run|type|use|do|then|now|recommend(?:ed)?|suggest(?:ed)?){S}*:?{S}*`*/compact\b'
-
-[ctxbudget.ca_advice_line]
-doc = "Rust regex source (as ca_advice_safe_to, multiline; {NS} JavaScript non-white space): a standalone /compact invocation line."
-value = '(?m)^[ \t]*(?:[-*+]|[0-9]+[.)])?[ \t]*`*/compact\b(?:[ \t]+(?:now|focus:{S}*{NS}[^\n]*))?[ \t]*`*[ \t]*$'
-
-[ctxbudget.ca_bare_safe_index]
-doc = "Position in ca_advice of the bare safe-to wording (it counts only at a sentence or line start unless written in capitals)."
-value = 0
-
-[ctxbudget.ca_command_index]
-doc = "Position in ca_advice of the instruction wording (it counts only at a sentence or line start)."
-value = 3
-
-[ctxbudget.ca_negation_before]
-doc = "Rust regex source (lowered text) tested on the units before a match: a negation or a not-yet condition (NEGATION_BEFORE_RE)."
-value = '''(?:\bnot{S}+yet\b|\bnot\b|n['’]t\b|\bnever\b|\bno{S}+need\b|\bno{S}+reason\b|\bfar{S}+from\b|\bnowhere{S}+near\b|\bonce\b(?s:.){0,60}\bit{S}+will{S}+be\b|\bretract(?:ed|ing)?\b)[^.!?\n]{0,20}$'''
-
-[ctxbudget.ca_negation_after]
-doc = "Rust regex source (lowered text) tested on the units after a match: a declaration gated on something first (NEGATION_AFTER_RE)."
-value = '^[^.!?\n]{0,30}[,;]{S}*(?:but{S}+|and{S}+)?first\b|^{S}*(?:after|once|when|if)\b'
-
-[ctxbudget.ca_conditional_before]
-doc = "Rust regex source (lowered text) tested on the units before a match: a conditional lead-in ending in a colon (CONDITIONAL_BEFORE_RE)."
-value = '\b(?:if|when|once|after|until)\b[^:\n]{0,60}:{S}*$'
-
-[ctxbudget.ca_meta_before]
-doc = "Rust regex source (lowered text) tested on the units before a match: a sentence about when the marker is written (META_BEFORE_RE)."
-value = '\bwill{S}+(?:only{S}+)?(?:say|write|declare){S}*$|\bwhen{S}+i{S}+(?:say|write|declare){S}*$'
-
-[ctxbudget.ca_window_before]
-doc = "UTF-16 units before a match the negation patterns look at."
-value = 60
-
-[ctxbudget.ca_window_after]
-doc = "UTF-16 units after a match the negation pattern looks at."
-value = 40
-
-[ctxbudget.ca_all_caps]
-doc = "Rust regex source (case kept) of the capitalized SAFE TO COMPACT form, which counts wherever it sits except in a table cell."
-value = '^SAFE{S}+TO{S}+(?:/?COMPACT|/CLEAR)$'
-
-[ctxbudget.ca_marker_line]
-doc = "Rust regex source (case kept, real characters) of a line that holds only the declaration marker (MARKER_LINE_RE)."
-value = '^[ \t]*(?:#{1,6}[ \t]+)?(?:[-*+•][ \t]+)?[*_`✅🟢⏳ \t]*(?:HANDOVER[ \t]+COMPLETE[ \t]*[—–-]+[ \t]*)?[*_`]*SAFE[ \t]+TO[ \t]+(?:/?COMPACT|/CLEAR)(?:[ \t]+(?:OR|AND)[ \t]+/?(?:CLEAR|COMPACT|NEW))?(?:[ \t]+NOW)?[*_`]*[ \t]*[.!]?[ \t]*$'
-
-[ctxbudget.ca_retract]
-doc = "Rust regex source (lowered text; {ws} the white space set in a class, {G1}/{G2} the stand-ins of the green circle's two UTF-16 units) of a retraction (RETRACT_RE)."
-value = '''\bretract(?:ed|ing)?\b[{ws}:,\-—–*_`"'“”]*(?:the{S}+)?(?:[*_`✅{G1}{G2}]{S}*)*(?:safe[{ws}\-]+(?:to|for)[{ws}\-]+(?:compact|clear|reset|a{S}+(?:context{S}+)?reset)|good{S}+point{S}+(?:to|for){S}+/?compact|/compact)'''
-
-[ctxbudget.ca_line_retract]
-doc = "Rust regex source (lowered text, multiline) of a line that begins with a retraction (LINE_RETRACT_RE)."
-value = '(?m)^[ \t]*[*_`>\-•]*[ \t]*retract(?:ed|ing)?\b'
-
-[ctxbudget.ca_green_hi]
-doc = "The high UTF-16 unit of the green circle emoji, which the non-unicode pattern classes of compact-advice.js name one unit at a time."
-value = 55357
-
-[ctxbudget.ca_green_lo]
-doc = "The low UTF-16 unit of the green circle emoji."
-value = 57314
-
-[ctxbudget.ca_fenced]
-doc = "Rust regex source of a fenced code block, blanked before the phrase analysis."
-value = '```(?s:.)*?```'
-
-[ctxbudget.ca_blockquote]
-doc = "Rust regex source (multiline) of a blockquote line, blanked before the phrase analysis."
-value = '(?m)^[ \t]*>[^\n]*$'
-
-[ctxbudget.ca_dquote]
-doc = "Rust regex source of a double-quoted span (curly or straight), blanked before the phrase analysis."
-value = '”[^”\n]{0,400}”|“[^”\n]{0,400}”|"[^"\n]{0,400}"'
-
-[ctxbudget.ca_backtick]
-doc = "Rust regex source of an inline-code span, blanked unless it is an instruction naming a slash command."
-value = '`[^`\n]{0,400}`'
-
-[ctxbudget.ca_slash_cmd]
-doc = "Rust regex source (lowered text) of a slash command a quoted or inline-code span may name and still count."
-value = '/(?:compact|clear|new)\b'
-
-[ctxbudget.ca_instr_line]
-doc = "Rust regex source tested on the units before an inline-code span: it opens its own (optionally bulleted) line."
-value = '(?:^|\n)[ \t]*(?:[-*+]|[0-9]+[.)])?[ \t]*$'
-
-[ctxbudget.ca_instr_verb]
-doc = "Rust regex source (lowered text) tested on the units before an inline-code span: it follows an instruction verb."
-value = '\b(?:run|type|use|do|then|now|recommend(?:ed)?|suggest(?:ed)?){S}*:?{S}*$'
-
-[ctxbudget.ca_backtick_lookback]
-doc = "UTF-16 units before an inline-code span the instruction tests look at."
-value = 40
-
-[ctxbudget.ca_quote_max]
-doc = "The most UTF-16 units between two single quotes that count as a quoted span."
-value = 400
-
-[ctxbudget.ca_quote_open_after]
-doc = "Characters (besides white space) after which a single quote opens a quoted span."
-value = "([{"
-
-[ctxbudget.ca_quote_close_before]
-doc = "Characters (besides white space and the end) before which a single quote closes a quoted span."
-value = ".,;:!?)]}"
-
-[ctxbudget.ca_lead_deco]
-doc = "Decoration (besides white space and the green circle) walked over back to a sentence or line start; one character per UTF-16 unit."
-value = "*_`\"'“”✅⏳❌⚠️-•>"
-
-[ctxbudget.ca_sentence_end]
-doc = "Characters that end a sentence before a declaration."
-value = ".!?:"
-
-[ctxbudget.ca_lead_words]
-doc = "Short interjections that may open a sentence before a comma and a declaration (LEAD_INTERJECTION_RE, any ASCII case)."
-value = ["yes", "yeah", "yep", "no", "nope", "ok", "okay", "sure", "right", "correct", "agreed", "indeed", "actually", "honestly", "overall", "great", "good", "alright", "well", "so", "also", "anyway", "regardless"]
-
-[ctxbudget.ca_codex_tool_types]
-doc = "Words whose presence in a Codex response item's type makes it a tool call."
-value = ["function_call", "tool_call", "shell_call"]
-
 [ctxbudget.ca_guard]
 doc = "The guard name of the compact-advice block."
 value = "compact-advice-guard"
@@ -748,10 +580,6 @@ value = "compact-advice-guard"
 [ctxbudget.ca_state_dir]
 doc = "The directory under the state root that holds the once-per-declaration records of the compact-advice guard."
 value = "compact-advice"
-
-[ctxbudget.ca_state_json]
-doc = "The once-per-declaration record; {hash} is the JSON-quoted SHA-1 of the final text, {at} the time in ms."
-value = '{"hash":{hash},"at":{at}}'
 
 [ctxbudget.ca_tokens_vias]
 doc = "The firedVia words of a token-ceiling fire, whose SAFE declaration is allowed even at a low percent."

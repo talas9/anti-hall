@@ -2099,7 +2099,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ah_ceiling` | ` ({k}K)` |  |  | The ceiling clause of the token fire line; {k} is the ceiling in thousands. |
 | `ctxbudget.ah_clear_claude` | `/clear` |  |  | The command that starts a fresh session on Claude. |
 | `ctxbudget.ah_clear_codex` | `/new` |  |  | The command that starts a fresh session on Codex. |
-| `ctxbudget.ah_codex_dir` | `.codex` |  |  | The directory name whose presence in a transcript path marks a Codex session. |
 | `ctxbudget.ah_compact_claude` | `/compact focus: continuation state is in {path}; keep pending tasks, the user...` |  |  | The compact command on Claude; {path} is the expected handover path. |
 | `ctxbudget.ah_compact_codex` | `/compact` |  |  | The compact command on Codex. |
 | `ctxbudget.ah_compact_no_path` | `<the HANDOVER*.md path you wrote>` |  |  | The compact command's path when no handover path is known. |
@@ -2148,11 +2147,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ah_parts_sep` | `\n\n` |  |  | What joins the parts of one auto-handover context (backstop, gate, nag). |
 | `ctxbudget.ah_pause_instead` | `{bloat} Mention {reset} to the user now.` |  |  | The pause nag's instructions; {bloat} the bloat sentence, {reset} the reset commands. |
 | `ctxbudget.ah_pause_what` | `good stopping point: context is still ~{pct}% and a handover is already saved.` |  |  | The pause nag's first line; {pct} is the rounded percent. |
-| `ctxbudget.ah_proto_key` | `__proto__` |  |  | The object key Object.assign does not copy as data; a latch holding it defers to Node. |
 | `ctxbudget.ah_reset_claude` | `/compact or /clear` |  |  | How the Claude texts name the reset commands. |
 | `ctxbudget.ah_reset_codex` | `/compact or /new` |  |  | How the Codex texts name the reset commands. |
-| `ctxbudget.ah_rollout_prefix` | `rollout-` |  |  | The file name prefix of a Codex rollout transcript. |
-| `ctxbudget.ah_rollout_suffix` | `.jsonl` |  |  | The file name suffix of a Codex rollout transcript. |
 | `ctxbudget.ah_skill_claude` | `the /anti-hall:handover skill` |  |  | How the Claude texts name the handover skill. |
 | `ctxbudget.ah_skill_codex` | `the anti-hall-handover skill (pick it with /skills if it is not already loaded)` |  |  | How the Codex texts name the handover skill. |
 | `ctxbudget.ah_soft_instead` | `consider checking with the user about writing a handover and compacting/clear...` |  |  | The soft advisory's instructions; {bloat} the bloat sentence. |
@@ -2166,69 +2162,30 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ah_suffix_unknown` | `\n\nEnd your reply to the user with exactly this line, verbatim: 📝 Handover s...` |  |  | The decisive suffix when the handover's freshness is unknown; {path} is the handover path. |
 | `ctxbudget.ah_task_id_keys` | `taskId, id, task_id` |  |  | The input fields a task update names its task by, in order. |
 | `ctxbudget.ah_task_tools` | `TodoWrite, TaskCreate, TaskUpdate` |  |  | The tool names whose calls the open-task scan reads: the list writer, the task creator, the task updater (in that order). |
-| `ctxbudget.ah_unknown_session` | `unknown-session` |  |  | The session directory name a handover path uses when the session id sanitizes to nothing. |
 | `ctxbudget.ah_via_pct` | `pct` |  |  | The firedVia word of a percent crossing. |
 | `ctxbudget.ah_via_stop_prefix` | `stop-` |  |  | The prefix the Stop-side fire records in the latch's firedVia. |
 | `ctxbudget.ah_via_tokens` | `tokens` |  |  | The firedVia word of a token-ceiling crossing. |
 | `ctxbudget.ah_what_pct` | `context is at ~{pct}%{label}: write a handover now.` |  |  | The fire directive's first line for a percent crossing; {pct} is the rounded percent, {label} the estimate clause. |
 | `ctxbudget.ah_what_tokens` | `context is ~{usedK}K tokens, past your autoHandover.maxTokens ceiling{ceiling...` |  |  | The fire directive's first line for a token-ceiling crossing; {usedK} is the tokens in thousands, {ceiling} the ceiling clause. |
-| `ctxbudget.ca_advice` | `ctxbudget.ca_advice_safe_to, ctxbudget.ca_advice_good_point, ctxbudget.ca_adv...` |  |  | The recommendation patterns of compact-advice.js ADVICE_RES, in order (keys of this file); see the pattern entries for their token syntax. |
-| `ctxbudget.ca_advice_command` | `\b(?:run\|type\|use\|do\|then\|now\|recommend(?:ed)?\|suggest(?:ed)?){S}*:?{S}*`*/co...` |  |  | Rust regex source (as ca_advice_safe_to): /compact offered as an instruction (run, then, now ...). |
-| `ctxbudget.ca_advice_good_point` | `\bgood{S}+(?:point\|time\|moment){S}+(?:to\|for){S}+(?:/?compact\|/?clear\|/new)\b` |  |  | Rust regex source (as ca_advice_safe_to): the good point/time/moment to compact wording. |
-| `ctxbudget.ca_advice_line` | `(?m)^[ \t]*(?:[-*+]\|[0-9]+[.)])?[ \t]*`*/compact\b(?:[ \t]+(?:now\|focus:{S}*{...` |  |  | Rust regex source (as ca_advice_safe_to, multiline; {NS} JavaScript non-white space): a standalone /compact invocation line. |
-| `ctxbudget.ca_advice_safe_for` | `\bsafe{S}+for{S}+(?:a{S}+)?(?:context{S}+)?(?:reset\|compaction\|/?compact\|/new)\b` |  |  | Rust regex source (as ca_advice_safe_to): the Codex safe-for-a-reset wording. |
-| `ctxbudget.ca_advice_safe_to` | `\bsafe{S}+to{S}+(?:/compact\|compact\|/clear)\b` |  |  | Rust regex source, matched against the text with ASCII letters lowered ({S} JavaScript white space, \b ASCII): the bare safe-to-compact wording. |
-| `ctxbudget.ca_all_caps` | `^SAFE{S}+TO{S}+(?:/?COMPACT\|/CLEAR)$` |  |  | Rust regex source (case kept) of the capitalized SAFE TO COMPACT form, which counts wherever it sits except in a table cell. |
-| `ctxbudget.ca_backtick` | ``[^`\n]{0,400}`` |  |  | Rust regex source of an inline-code span, blanked unless it is an instruction naming a slash command. |
-| `ctxbudget.ca_backtick_lookback` | `40` |  |  | UTF-16 units before an inline-code span the instruction tests look at. |
-| `ctxbudget.ca_bare_safe_index` | `0` |  |  | Position in ca_advice of the bare safe-to wording (it counts only at a sentence or line start unless written in capitals). |
-| `ctxbudget.ca_blockquote` | `(?m)^[ \t]*>[^\n]*$` |  |  | Rust regex source (multiline) of a blockquote line, blanked before the phrase analysis. |
-| `ctxbudget.ca_codex_tool_types` | `function_call, tool_call, shell_call` |  |  | Words whose presence in a Codex response item's type makes it a tool call. |
-| `ctxbudget.ca_command_index` | `3` |  |  | Position in ca_advice of the instruction wording (it counts only at a sentence or line start). |
-| `ctxbudget.ca_conditional_before` | `\b(?:if\|when\|once\|after\|until)\b[^:\n]{0,60}:{S}*$` |  |  | Rust regex source (lowered text) tested on the units before a match: a conditional lead-in ending in a colon (CONDITIONAL_BEFORE_RE). |
 | `ctxbudget.ca_ctx_low` | `low` |  |  | The context clause of the instructions when the percent is unknown. |
 | `ctxbudget.ca_ctx_pct` | `{pct}%` |  |  | The context clause of the instructions when the percent is known ({pct} rounded). |
-| `ctxbudget.ca_dquote` | `”[^”\n]{0,400}”\|“[^”\n]{0,400}”\|"[^"\n]{0,400}"` |  |  | Rust regex source of a double-quoted span (curly or straight), blanked before the phrase analysis. |
-| `ctxbudget.ca_fenced` | ````(?s:.)*?```` |  |  | Rust regex source of a fenced code block, blanked before the phrase analysis. |
-| `ctxbudget.ca_green_hi` | `55357` |  |  | The high UTF-16 unit of the green circle emoji, which the non-unicode pattern classes of compact-advice.js name one unit at a time. |
-| `ctxbudget.ca_green_lo` | `57314` |  |  | The low UTF-16 unit of the green circle emoji. |
 | `ctxbudget.ca_guard` | `compact-advice-guard` |  |  | The guard name of the compact-advice block. |
 | `ctxbudget.ca_instead` | `retract it in one line, e.g. "RETRACT SAFE TO COMPACT: context is {ctx}; no n...` |  |  | The block's instructions; {ctx} is the context clause. |
-| `ctxbudget.ca_instr_line` | `(?:^\|\n)[ \t]*(?:[-*+]\|[0-9]+[.)])?[ \t]*$` |  |  | Rust regex source tested on the units before an inline-code span: it opens its own (optionally bulleted) line. |
-| `ctxbudget.ca_instr_verb` | `\b(?:run\|type\|use\|do\|then\|now\|recommend(?:ed)?\|suggest(?:ed)?){S}*:?{S}*$` |  |  | Rust regex source (lowered text) tested on the units before an inline-code span: it follows an instruction verb. |
-| `ctxbudget.ca_lead_deco` | `*_`"'“”✅⏳❌⚠️-•>` |  |  | Decoration (besides white space and the green circle) walked over back to a sentence or line start; one character per UTF-16 unit. |
-| `ctxbudget.ca_lead_words` | `23 items` |  |  | Short interjections that may open a sentence before a comma and a declaration (LEAD_INTERJECTION_RE, any ASCII case). |
-| `ctxbudget.ca_line_retract` | `(?m)^[ \t]*[*_`>\-•]*[ \t]*retract(?:ed\|ing)?\b` |  |  | Rust regex source (lowered text, multiline) of a line that begins with a retraction (LINE_RETRACT_RE). |
-| `ctxbudget.ca_marker_line` | `^[ \t]*(?:#{1,6}[ \t]+)?(?:[-*+•][ \t]+)?[*_`✅🟢⏳ \t]*(?:HANDOVER[ \t]+COMPLET...` |  |  | Rust regex source (case kept, real characters) of a line that holds only the declaration marker (MARKER_LINE_RE). |
-| `ctxbudget.ca_meta_before` | `\bwill{S}+(?:only{S}+)?(?:say\|write\|declare){S}*$\|\bwhen{S}+i{S}+(?:say\|write...` |  |  | Rust regex source (lowered text) tested on the units before a match: a sentence about when the marker is written (META_BEFORE_RE). |
-| `ctxbudget.ca_negation_after` | `^[^.!?\n]{0,30}[,;]{S}*(?:but{S}+\|and{S}+)?first\b\|^{S}*(?:after\|once\|when\|if)\b` |  |  | Rust regex source (lowered text) tested on the units after a match: a declaration gated on something first (NEGATION_AFTER_RE). |
-| `ctxbudget.ca_negation_before` | `(?:\bnot{S}+yet\b\|\bnot\b\|n['’]t\b\|\bnever\b\|\bno{S}+need\b\|\bno{S}+reason\b\|...` |  |  | Rust regex source (lowered text) tested on the units before a match: a negation or a not-yet condition (NEGATION_BEFORE_RE). |
-| `ctxbudget.ca_quote_close_before` | `.,;:!?)]}` |  |  | Characters (besides white space and the end) before which a single quote closes a quoted span. |
-| `ctxbudget.ca_quote_max` | `400` |  |  | The most UTF-16 units between two single quotes that count as a quoted span. |
-| `ctxbudget.ca_quote_open_after` | `([{` |  |  | Characters (besides white space) after which a single quote opens a quoted span. |
 | `ctxbudget.ca_recent_n` | `a compact happened {n} turns ago` |  |  | The reason when a compact happened {n} turns ago. |
 | `ctxbudget.ca_recent_now` | `a compact happened earlier in this turn` |  |  | The reason when a compact happened in this very turn. |
 | `ctxbudget.ca_recent_one` | `a compact happened {n} turn ago` |  |  | The reason when a compact happened one turn ago ({n}). |
-| `ctxbudget.ca_retract` | `\bretract(?:ed\|ing)?\b[{ws}:,\-—–*_`"'“”]*(?:the{S}+)?(?:[*_`✅{G1}{G2}]{S}*)*...` |  |  | Rust regex source (lowered text; {ws} the white space set in a class, {G1}/{G2} the stand-ins of the green circle's two UTF-16 units) of a retraction (RETRACT_RE). |
-| `ctxbudget.ca_sentence_end` | `.!?:` |  |  | Characters that end a sentence before a declaration. |
-| `ctxbudget.ca_slash_cmd` | `/(?:compact\|clear\|new)\b` |  |  | Rust regex source (lowered text) of a slash command a quoted or inline-code span may name and still count. |
 | `ctxbudget.ca_state_dir` | `compact-advice` |  |  | The directory under the state root that holds the once-per-declaration records of the compact-advice guard. |
-| `ctxbudget.ca_state_json` | `{"hash":{hash},"at":{at}}` |  |  | The once-per-declaration record; {hash} is the JSON-quoted SHA-1 of the final text, {at} the time in ms. |
 | `ctxbudget.ca_tokens_vias` | `tokens, stop-tokens` |  |  | The firedVia words of a token-ceiling fire, whose SAFE declaration is allowed even at a low percent. |
 | `ctxbudget.ca_what` | `your reply recommends compacting ("{phrase}") but {why}.` |  |  | The block's first line; {phrase} is the recommendation, {why} the reasons. |
 | `ctxbudget.ca_why` | `"No background agents running" is necessary, not sufficient; only the auto-ha...` |  |  | The block's Why line. |
 | `ctxbudget.ca_why_join` | `, and ` |  |  | What joins the reasons. |
 | `ctxbudget.ca_why_pct` | `context is {pct}% (auto-handover threshold {threshold}%)` |  |  | The reason when the context is known; {pct} rounded, {threshold} the auto-handover threshold. |
 | `ctxbudget.ca_why_unknown` | `context % is unknown` |  |  | The reason when the context is unknown. |
-| `ctxbudget.ca_window_after` | `40` |  |  | UTF-16 units after a match the negation pattern looks at. |
-| `ctxbudget.ca_window_before` | `60` |  |  | UTF-16 units before a match the negation patterns look at. |
 | `ctxbudget.claude_json` | `.claude.json` |  |  | The host file whose top-level userID names the logged-in account, relative to the home directory (read only that field). |
 | `ctxbudget.context_window_env` | `ANTIHALL_CONTEXT_WINDOW_TOKENS` |  |  | Environment variable that overrides the context window size, in tokens (always wins over the other window sources). |
-| `ctxbudget.deep_json_depth` | `100` |  |  | Nesting depth beyond which a transcript or state line the engine cannot parse is deferred to Node (the Node parser has no such limit). |
 | `ctxbudget.default_window` | `200000` |  | tokens | The context window assumed when no source states one, in tokens (the reading is then flagged as unknown). |
 | `ctxbudget.env_pct_off` | `ANTIHALL_AUTO_HANDOVER_PCT` |  |  | Environment variable that, when it parses to 0, disables auto-handover outright (the one rule the settings schema cannot express). |
 | `ctxbudget.home_env` | `HOME` |  |  | Environment variable that holds the home directory (Node's os.homedir() reads it first on POSIX). |
-| `ctxbudget.inferred_json` | `{"inferred":true,"ts":{ts}}` |  |  | The inferred-window latch body; {ts} is the time it was written, in ms. |
 | `ctxbudget.inferred_suffix` | `.inferred-1m.json` |  |  | File name suffix of the inferred one-million-token window latch next to a session's context reading. |
 | `ctxbudget.inferred_window` | `1000000` |  | tokens | The window assumed once the observed usage has exceeded the default window, in tokens. |
 | `ctxbudget.json_null` | `null` |  |  | The JSON literal null. |

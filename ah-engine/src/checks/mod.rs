@@ -13,7 +13,6 @@
 pub mod agent_scan;
 pub mod codex;
 pub mod compact_decl;
-pub mod ctxbudget;
 pub mod devswarm_comms;
 pub mod devswarm_gates;
 pub mod devswarm_role;
@@ -197,8 +196,8 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::EMIT_DEDUPE_RESET,
         &scripted::LIMIT_CONSERVE_INJECT,
         &scripted::AUTO_HANDOVER,
-        &ctxbudget::handover::AutoHandoverPauseNag,
-        &ctxbudget::advice::CompactAdviceGuard,
+        &scripted::AUTO_HANDOVER_PAUSE_NAG,
+        &scripted::COMPACT_ADVICE_GUARD,
         &scripted::VERSION_ALERT,
         &scripted::DEVSWARM_VERSION,
         &scripted::CLAUDE_CLI_VERSION,

@@ -104,3 +104,13 @@ mod claim_ledger_jev {
 fn idle_agent_sweep_script_matches_the_compiled_port() {
     golden_report("idle-agent-sweep", 12);
 }
+
+#[test]
+fn auto_handover_pause_nag_script_matches_the_compiled_port() {
+    golden_report("auto-handover-pause-nag", 12);
+}
+
+#[test]
+fn compact_advice_guard_script_matches_the_compiled_port() {
+    golden_report("compact-advice-guard", 12);
+}

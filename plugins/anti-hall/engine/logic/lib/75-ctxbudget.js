@@ -247,4 +247,150 @@ var cb = {
       instead: cb.r('ctxbudget.ah_backstop_instead', { skill: w.skill, reset: w.reset }),
     });
   },
+  // ---- the pause nag and the decisive prompt (hooks/auto-handover-pause-nag.js, hooks/lib/handover-freshness.js) ----
+  pause: function (pct, p) {
+    return text.message('tip', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_pause_what', { pct: Math.round(pct) }), instead: cb.r('ctxbudget.ah_pause_instead', { bloat: cb.c('ctxbudget.ah_bloat'), reset: cb.words(p).reset }) });
+  },
+  // `relativeHandoverPath(payload, filePath)`: the path relative to the working directory when it lies under it.
+  relativeHandoverPath: function (p, file) {
+    var cwd = p && typeof p.cwd === 'string' && p.cwd ? p.cwd : null;
+    if (!cwd || !file || !ah.path.isAbsolute(cwd)) return file;
+    var rel = ah.path.relative(cwd, file);
+    return rel && rel.indexOf('..') !== 0 ? rel : file;
+  },
+  // `buildDecisiveSuffix(payload, handoverPath, freshness, taskComplete)`.
+  decisiveSuffix: function (p, path, fresh, complete) {
+    var clear = cb.codexPayload(p) ? cb.c('ctxbudget.ah_clear_codex') : cb.c('ctxbudget.ah_clear_claude'), shown = path || cb.c('ctxbudget.ah_suffix_no_path');
+    var line = function () { return cb.r(complete ? 'ctxbudget.ah_line_complete' : 'ctxbudget.ah_line_continue', { clear: clear, path: shown }); };
+    if (fresh === false) return cb.r('ctxbudget.ah_suffix_stale', { line: line() });
+    if (fresh === null) return cb.r('ctxbudget.ah_suffix_unknown', { path: shown });
+    return cb.r('ctxbudget.ah_suffix_fresh', { line: line() });
+  },
+  // The tool uses inside an entry (`collectToolUses`).
+  toolUses: function (node, out) {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
+    if (node.type === 'tool_use' && node.name) out.push(node);
+    var keys = ah.cfg('taskstate.tools_collect_keys');
+    for (var i = 0; i < keys.length; i++) {
+      var v = node[keys[i]];
+      if (Array.isArray(v)) v.forEach(function (it) { cb.toolUses(it, out); });
+      else if (v !== null && typeof v === 'object') cb.toolUses(v, out);
+    }
+  },
+  // `isFresh(lines, handoverMtimeMs)`: null (unknown), true (no counted work after the handover) or false; 'defer' where the host cannot say.
+  isFresh: function (lines, mtime) {
+    if (typeof mtime !== 'number' || !isFinite(mtime)) return null;
+    var cx = { tmp: wd.tmpdir(), cwd: null }, recognized = false, last = 0;
+    for (var i = 0; i < (lines || []).length; i++) {
+      var line = lines[i];
+      if (!line) continue;
+      var r = jx.parse(line);
+      if (r.unsure) return 'defer';
+      if (r.invalid) continue;
+      var e = r.v;
+      if (!e || typeof e !== 'object' || !e.message || typeof e.message !== 'object') continue;
+      recognized = true;
+      var ts = typeof e.timestamp === 'string' ? jx.isoMs(e.timestamp) : NaN;
+      if (ts === undefined) return 'defer';
+      if (!isFinite(ts)) continue;
+      var uses = [];
+      cb.toolUses(e, uses);
+      for (var u = 0; u < uses.length; u++) {
+        try { if (wd.counted(uses[u], cx) && ts > last) last = ts; } catch (x) { if (x === wd.UNSURE) return 'defer'; throw x; }
+      }
+    }
+    return recognized ? last <= mtime + cb.n('ctxbudget.ah_freshness_grace_ms') : null;
+  },
+  extractSection: function (t, heading) {
+    var escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    var m = new RegExp('^' + cb.c('ctxbudget.ah_heading_mark') + '\\s+' + escaped + '\\s*$', 'im').exec(t);
+    if (!m) return null;
+    var rest = t.slice(m.index + m[0].length), next = rest.search(new RegExp('^' + cb.c('ctxbudget.ah_heading_mark') + '\\s+', 'm'));
+    return (next === -1 ? rest : rest.slice(0, next)).trim();
+  },
+  wholeWords: function (key) { return new RegExp('^(?:' + cb.c(key).map(function (w) { return w.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&'); }).join('|') + ')\\.?$', 'i'); },
+  // `isTaskCompleteFromFile(filePath)`: false on any read problem; 'defer' for a file over the read cap (a capped read shows another file).
+  taskComplete: function (file) {
+    var f = jx.read(file);
+    if (f.big) return 'defer';
+    if (f.absent || !f.text) return false;
+    var open = cb.extractSection(f.text, cb.c('ctxbudget.ah_heading_open'));
+    if (open !== null && cb.wholeWords('ctxbudget.ah_open_empty_words').test(open)) return true;
+    var next = cb.extractSection(f.text, cb.c('ctxbudget.ah_heading_next'));
+    return next !== null && cb.wholeWords('ctxbudget.ah_next_done_words').test(next);
+  },
+  // `hasOpenTasks(lines)`: true, false, or null when no task tool appeared in the tail.
+  hasOpenTasks: function (lines) {
+    if (!lines) return null;
+    var tools = cb.c('ctxbudget.ah_task_tools'), todo = tools[0], create = tools[1], update = tools[2], dflt = cb.c('ctxbudget.ah_default_status');
+    var saw = false, map = {}, keys = cb.c('ctxbudget.ah_task_id_keys'), i, j;
+    for (i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (!line) continue;
+      if (!tools.some(function (t) { return line.indexOf(t) !== -1; })) continue;
+      var r = jx.parse(line);
+      if (r.invalid) continue;
+      if (r.unsure) return 'defer';
+      var e = r.v;
+      if (!e || e.type !== 'assistant' || e.isSidechain === true) continue;
+      var content = e.message && Array.isArray(e.message.content) ? e.message.content : [];
+      for (j = 0; j < content.length; j++) {
+        var item = content[j];
+        if (!item || item.type !== 'tool_use') continue;
+        if (item.name === todo) {
+          var todos = item.input && Array.isArray(item.input.todos) ? item.input.todos : [], n = 0;
+          map = {};
+          saw = true;
+          for (var k = 0; k < todos.length; k++) {
+            var t = todos[k], id = (t && (t.id || t.content)) || String(n++);
+            map['todo:' + id] = (t && t.status) || dflt;
+          }
+          continue;
+        }
+        if (item.name === create) {
+          saw = true;
+          var inp = item.input || {}, tuid = item.id || '';
+          if (tuid) map['task:' + tuid] = inp.status || dflt;
+          continue;
+        }
+        if (item.name === update) {
+          saw = true;
+          var up = item.input || {}, uid = null;
+          for (var q = 0; q < keys.length && uid === null; q++) if (up[keys[q]] !== undefined && up[keys[q]] !== null) uid = String(up[keys[q]]);
+          if (uid !== null && up.status) map['task:' + uid] = up.status;
+        }
+      }
+    }
+    if (!saw) return null;
+    var open = cb.c('ctxbudget.ah_open_statuses');
+    return Object.keys(map).some(function (key) { return open.indexOf(map[key]) !== -1; });
+  },
+  // `hasRecentSpawn(tag, now)`: a `<ms> <tag>` line of the spawn log within the activity window; 'defer' for a log over the read cap.
+  recentSpawn: function (tag, now) {
+    if (!tag) return false;
+    var rel = cb.c('ctxbudget.ah_spawn_log'), size = ah.fs.size(ah.home() + '/' + rel);
+    if (size !== null && size > ah.cfgNum('script.read_max_bytes')) return 'defer';
+    var txt = ah.state.readText(rel);
+    if (txt === null) return false;
+    var win = cb.n('ctxbudget.ah_spawn_activity_ms');
+    return txt.trim().split(/\r?\n/).some(function (line) {
+      if (!line) return false;
+      var sp = line.indexOf(' ');
+      if (sp < 0) return false;
+      var ms = parseInt(line.slice(0, sp), 10);
+      return line.slice(sp + 1) === tag && isFinite(ms) && (now - ms) <= win;
+    });
+  },
+  // `decisiveSuffixFor(payload, settings, lines)`: '' when off or without a handover file; 'defer' where the host cannot say.
+  decisiveSuffixFor: function (p, cfg, lines) {
+    if (!cfg.decisivePrompt) return '';
+    var h = cb.sessionHandover(p);
+    if (h === false) return 'defer';
+    if (!h) return '';
+    var fresh = cb.isFresh(lines, h.mtimeMs);
+    if (fresh === 'defer') return 'defer';
+    var complete = fresh === true ? cb.taskComplete(h.filePath) : false;
+    if (complete === 'defer') return 'defer';
+    return cb.decisiveSuffix(p, cb.relativeHandoverPath(p, h.filePath), fresh, complete);
+  },
 };
