@@ -62,6 +62,11 @@ pub fn has_deferred_work(home: &Path, stage: &str) -> bool {
 
 /// The duty's record: Node's `{ stage, ran, reason | budgetMs, result }`.
 pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
+    duty_with(ctx, runner, &super::recon::Hooks::none())
+}
+
+/// [`duty`] with kill points for the crash tests.
+pub fn duty_with(ctx: &Ctx, runner: &dyn Runner, hooks: &super::recon::Hooks) -> Value {
     let d = defaults::raw("devswarm_sup.duty.deferred");
     let stages = defaults::list("devswarm_sup.ds_stages");
     let fallback = |why: &str| {
@@ -85,6 +90,11 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
         return json!({"duty": "deferred", "outcome": "ran", "detail": {"stage": stage, "ran": false, "reason": defaults::text("devswarm_sup.ds_reason_no_marker")}});
     }
     let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
+    // With `devswarm_sup.sweep_tail_mode = engine` the engine walks the stage's pending items itself (see `recon::stage`); a stage it
+    // does not take (an unusable marker, an unknown stage) falls through to Node's whole `runDeferredStage` below.
+    if let Some(out) = super::recon::stage::run(ctx, runner, stage, hooks) {
+        return json!({"duty": "deferred", "outcome": "ran", "detail": {"stage": stage, "ran": true, "budgetMs": out.budget_ms, "result": out.result}, "engine": {"items": out.items}});
+    }
     let r = node(runner, ctx, d.str_field("stage_snippet"), &[stage], timeout);
     if r.ok {
         json!({"duty": "deferred", "outcome": "ran", "detail": super::tick::parse(&r.stdout)})

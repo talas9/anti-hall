@@ -71,7 +71,10 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.retention.days` = 30: Days of message bodies kept before they are archived and tombstoned; 0 switches retention off
 - `devswarm.retention.keepPerPartition` = 200: The newest messages of each partition that are never tombstoned (by age or by size)
 - `devswarm.retention.maxStoreMB` = 100: Store size limit in MB: above it the oldest eligible bodies are tombstoned whatever their age; 0 = no limit
+- `devswarm.supervisorSweepBudgetMs` = 20000: Time budget for one deferred stage of the sweep tail (one stage per tick)
+- `devswarm.sweepTailMode` = "node": Who decides the sweep tail (archived registry rows, twin descriptors; the reconcile port): node (the default; Node's scheduled functions...
 - `devswarm.dormantMs` = 1800000: How long a workspace whose session transcript resolves may stay silent before the roster calls it dormant (Node: devswarm.dormantMs, a...
 - `devswarm.monitorTimeoutSec` = 30: The -t of every monitor call: it long-polls at most this long, then exits (an empty exit is a quiet poll, not an error)
+- `devswarm.activeFloorPct` = 50: Least percent of a project's previous active-workspace snapshot a new one must hold, or the previous one is kept (0 turns the floor off)
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

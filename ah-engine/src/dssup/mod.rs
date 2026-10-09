@@ -34,6 +34,7 @@ pub mod housekeep;
 pub mod ingest;
 pub mod kill;
 pub mod liveness;
+pub mod recon;
 pub mod recover;
 pub mod retention;
 pub mod tick;

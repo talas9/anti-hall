@@ -67,7 +67,7 @@ fn lock_params() -> nodelock::Params {
 }
 
 /// `writeEntry`: append one finished line, rotating first when it would not fit. Fail-open.
-fn write_line(dir: &std::path::Path, line: &str) {
+pub(crate) fn write_line(dir: &std::path::Path, line: &str) {
     crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: Node's mkdirSync is try/caught; the append below fails the same way
     let target = dir.join(defaults::text("devswarm_cli.log_file"));
     let lock_path = format!("{}{}", target.display(), defaults::text("devswarm_cli.log_lock_suffix"));

@@ -12,6 +12,14 @@
 doc = "Who owns the supervisor duties: witness (the Node supervisor job does; the engine runs none of them) | engine (the engine's scheduler runs them, poke and escalate follow). Anything else reads as witness, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit."
 value = "witness"
 
+[devswarm_sup.reconcile_mode]
+doc = "Who runs the reconcile sweep duty while devswarm_sup.mode is `engine`: node (Node's reconcileSweepIfDue, unchanged; the default until the proof window) | engine (the engine reconciles each project natively, every state change witnessed against Node on scratch copies first, and Node runs the rest of the sweep: the mesh fold, the active-workspace probe, start-up sampling). Anything else reads as node, so a typo never starts a second actor."
+value = "node"
+
+[devswarm_sup.reconcile_mode_words]
+doc = "The words of devswarm_sup.reconcile_mode, in the order node, engine."
+value = ["node", "engine"]
+
 [devswarm_sup.mode_words]
 doc = "The words of devswarm_sup.mode, in the order witness, engine."
 value = ["witness", "engine"]
@@ -92,6 +100,10 @@ value = { type = "enum", section = "devswarm", key = "reconcileSweep", env = "AN
 doc = "Least time between two reconcile sweeps. Node: devswarm.reconcileSweepSec (floor 300)."
 value = { type = "number", section = "devswarm", key = "reconcileSweepSec", env = "ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC", min = 300, max = 100000000, default = 900 }
 
+[devswarm_sup.sweep_tail_mode]
+doc = "Who decides the sweep tail (archived registry rows, twin descriptors; the reconcile port): node (the default; Node's scheduled functions do it) or engine (the engine decides each step after Node's own function, run on a scratch mirror, agrees)."
+value = { type = "enum", section = "devswarm", key = "sweepTailMode", env = "ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE", values = ["node", "engine"], default = "node" }
+
 [devswarm_sup.set_housekeeping_mode]
 doc = "Housekeeping sweep switch: auto / on / off. Node: devswarm.housekeepingSweep."
 value = { type = "enum", section = "devswarm", key = "housekeepingSweep", env = "ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP", values = ["auto", "on", "off"], default = "auto" }
@@ -99,6 +111,10 @@ value = { type = "enum", section = "devswarm", key = "housekeepingSweep", env = 
 [devswarm_sup.set_housekeeping_sec]
 doc = "Least time between two housekeeping sweeps. Node: devswarm.housekeepingSweepSec (floor 300)."
 value = { type = "number", section = "devswarm", key = "housekeepingSweepSec", env = "ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC", min = 300, max = 100000000, default = 3600 }
+
+[devswarm_sup.set_sweep_budget_ms]
+doc = "Time budget for one deferred stage of the sweep tail (one stage per tick). Node: devswarm.supervisorSweepBudgetMs."
+value = { type = "number", section = "devswarm", key = "supervisorSweepBudgetMs", env = "ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS", min = 0, max = 86400000, default = 20000 }
 
 [devswarm_sup.set_max_recoveries]
 doc = "Most kill-and-resume recoveries of one workspace. Node: devswarm.maxRecoveries."
@@ -1454,3 +1470,6 @@ value = "ids"
 [devswarm_sup.ds_reason_no_marker]
 doc = "The answer of a tick whose stage has nothing deferred."
 value = "no-marker"
+
+# ---- who runs the sweep tail (reconcile port) ----------------------------------------------------------------------------------
+

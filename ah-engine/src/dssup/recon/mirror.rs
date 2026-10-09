@@ -1,0 +1,132 @@
+//! The scratch mirrors the witness works on. A mirror is a home of its own holding exactly the inputs of one job: named files
+//! (bytes and modification time kept, a link kept as a link), whole small directories, and SQLite stores copied with the
+//! online backup API (a consistent snapshot whatever a live writer does; a raw copy of a live database and its `-wal` file is
+//! never taken). The source is only ever read.
+use super::Scope;
+use super::view::{store_db, store_rel};
+use crate::defaults;
+use crate::meshw::idlock::devswarm_root;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
+
+/// Source files that have a second name, by `(device, inode)`, with the mirror path the first of them was copied to: a second
+/// name is hard-linked to that copy, so a descriptor retired by hard link (two names, one file) is the same shape in the mirror.
+type Links = std::collections::HashMap<(u64, u64), std::path::PathBuf>;
+
+fn copy_file(src: &Path, dst: &Path, links: &mut Links) -> Result<(), String> {
+    let md = std::fs::symlink_metadata(src).map_err(|e| e.to_string())?;
+    if let Some(p) = dst.parent() {
+        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
+    if md.is_file() && md.nlink() > 1 {
+        match links.get(&(md.dev(), md.ino())) {
+            Some(first) if first != dst => {
+                crate::discard::harmless(std::fs::remove_file(dst)); // keep: the mirror's own earlier copy of this name, if any
+                return std::fs::hard_link(first, dst).map_err(|e| e.to_string());
+            }
+            Some(_) => {}
+            None => {
+                links.insert((md.dev(), md.ino()), dst.to_path_buf());
+            }
+        }
+    }
+    if md.file_type().is_symlink() {
+        let target = std::fs::read_link(src).map_err(|e| e.to_string())?;
+        return std::os::unix::fs::symlink(target, dst).map_err(|e| e.to_string());
+    }
+    if !md.is_file() {
+        return Ok(());
+    }
+    std::fs::copy(src, dst).map_err(|e| e.to_string())?;
+    let when = std::time::UNIX_EPOCH + std::time::Duration::new(md.mtime().max(0) as u64, md.mtime_nsec().max(0) as u32);
+    std::fs::File::options().write(true).open(dst).and_then(|f| f.set_modified(when)).map_err(|e| e.to_string())
+}
+
+fn copy_dir(src: &Path, dst: &Path, left: &mut usize, links: &mut Links) -> Result<(), String> {
+    let Ok(rd) = std::fs::read_dir(src) else { return Ok(()) };
+    for e in rd.flatten() {
+        let from = e.path();
+        let to = dst.join(e.file_name());
+        let md = std::fs::symlink_metadata(&from).map_err(|x| x.to_string())?;
+        if md.is_dir() {
+            copy_dir(&from, &to, left, links)?;
+        } else {
+            if *left == 0 {
+                return Err(defaults::text("devswarm_recon.why_mirror_cap").to_string());
+            }
+            *left -= 1;
+            copy_file(&from, &to, links)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy one store's database with the online backup API into the mirror, with its backend marker.
+fn copy_store(src: &Path, dst: &Path, hash: &str) -> Result<(), String> {
+    let mut links = Links::new();
+    let from_dir = src.join(store_rel(hash));
+    let to_dir = dst.join(store_rel(hash));
+    std::fs::create_dir_all(&to_dir).map_err(|e| e.to_string())?;
+    let marker = defaults::text("mesh.backend_marker");
+    if from_dir.join(marker).exists() {
+        copy_file(&from_dir.join(marker), &to_dir.join(marker), &mut links)?;
+    }
+    let db = store_db(src, hash);
+    if !db.is_file() {
+        return Ok(());
+    }
+    let from = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .map_err(|e| e.to_string())?;
+    from.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).map_err(|e| e.to_string())?;
+    let mut to = rusqlite::Connection::open(store_db(dst, hash)).map_err(|e| e.to_string())?;
+    let b = rusqlite::backup::Backup::new(&from, &mut to).map_err(|e| e.to_string())?;
+    b.run_to_completion(defaults::num("mesh_write.shadow_backup_pages") as i32, defaults::millis("mesh_write.shadow_backup_pause_ms"), None)
+        .map_err(|e| e.to_string())
+}
+
+/// Build the mirror of `scope` (taken from `src`) at `dst`. An input that is not there is simply absent from the mirror; a
+/// directory with more files than `devswarm_recon.mirror_max_files` is an error (a comparison is never partial).
+pub fn make(src: &Path, dst: &Path, scope: &Scope) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    let mut left = defaults::num("devswarm_recon.mirror_max_files") as usize;
+    let mut links = Links::new();
+    for rel in &scope.files {
+        if std::fs::symlink_metadata(src.join(rel)).is_ok() {
+            copy_file(&src.join(rel), &dst.join(rel), &mut links)?;
+        }
+    }
+    for rel in &scope.dirs {
+        copy_dir(&src.join(rel), &dst.join(rel), &mut left, &mut links)?;
+    }
+    for hash in &scope.stores {
+        copy_store(src, dst, hash)?;
+    }
+    rebase(src, dst, &scope.rebase)
+}
+
+/// Rewrite the DevSwarm state directory a copied file names (a descriptor's absolute inbox and cursor path) to the mirror's own,
+/// so nothing that follows such a path can leave the mirror. Both spellings of the directory (as given and canonical) are
+/// rewritten; a worktree path elsewhere under the home is left alone.
+fn rebase(src: &Path, dst: &Path, files: &[String]) -> Result<(), String> {
+    let spellings = |p: &Path| {
+        let mut v = vec![p.to_string_lossy().into_owned()];
+        if let Ok(c) = std::fs::canonicalize(p) {
+            let c = c.to_string_lossy().into_owned();
+            if !v.contains(&c) {
+                v.push(c);
+            }
+        }
+        v
+    };
+    let (from, to) = (spellings(&devswarm_root(src)), devswarm_root(dst).to_string_lossy().into_owned());
+    for rel in files {
+        let f = dst.join(rel);
+        let Ok(bytes) = std::fs::read(&f) else { continue };
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        for h in &from {
+            text = text.replace(h.as_str(), &to);
+        }
+        std::fs::write(&f, text).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

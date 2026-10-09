@@ -509,3 +509,27 @@ pub const RT_ROW_BROADCAST: &str = "SELECT seq, is_heartbeat FROM messages WHERE
 pub const AS_MESSAGES: &str = "SELECT repositoryId, toBranch, createdAt FROM workspace_messages WHERE createdAt >= ?1 AND createdAt < ?2";
 /// The timestamps of the app messages a store has ingested.
 pub const AS_NATIVE_TS: &str = "SELECT ts FROM messages WHERE hash LIKE ?1";
+/// The reconcile port: every registry row with the two columns the conditional operations compare.
+pub const RECON_REGISTRY_ALL: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry ORDER BY id ASC;";
+/// The reconcile port, orphan heal: the workspace ids a store holds messages for (`listWorkspaceIds`, first source).
+pub const RECON_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages;";
+/// The reconcile port, orphan heal: the ids of the registry rows (`listWorkspaceIds`, second source).
+pub const RECON_IDS_REGISTRY: &str = "SELECT id FROM registry;";
+/// The reconcile port, orphan heal: the ids that hold a cursor (`listWorkspaceIds`, third source).
+pub const RECON_IDS_CURSORS: &str = "SELECT DISTINCT workspace_id AS id FROM cursors;";
+/// The reconcile port, orphan heal: the ids that hold a gate (`listWorkspaceIds`, fourth source).
+pub const RECON_IDS_GATES: &str = "SELECT DISTINCT workspace_id AS id FROM gates;";
+/// The reconcile port's normaliser: the user tables of a store.
+pub const RECON_TABLES: &str = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name;";
+/// The reconcile port's normaliser: every row of a table in storage order (`{table}` is filled from `RECON_TABLES`).
+pub const RECON_DUMP: &str = "SELECT * FROM \"{table}\" ORDER BY rowid;";
+/// The reconcile port: the registry row of one id, every column.
+pub const RECON_REGISTRY_ONE: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry WHERE id = ?;";
+/// The reconcile port: a partition's message rows in storage order, with the columns the fold copies.
+pub const RECON_MESSAGES_OF: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce FROM messages WHERE workspace_id = ? ORDER BY id ASC;";
+/// The reconcile port: whether any partition of the store already holds a row with this hash.
+pub const RECON_HASH_PRESENT: &str = "SELECT 1 FROM messages WHERE hash = ? LIMIT 1;";
+/// The reconcile port: the number of message rows in a partition.
+pub const RECON_MESSAGE_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?;";
+/// The reconcile port: `removeRegistryIf` (the guard compares session, `updated_at` and `write_seq`, NULL-safe).
+pub const RECON_REGISTRY_DELETE_IF: &str = "DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;";

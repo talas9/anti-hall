@@ -302,7 +302,7 @@ fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, id: &str, nd: bool) 
 }
 
 /// `archiveCompleteIds(home)`: `archived/<id>.json` present and `workspaces/<id>.json` absent.
-fn archive_complete_ids(home: &Path) -> HashSet<String> {
+pub(crate) fn archive_complete_ids(home: &Path) -> HashSet<String> {
     let root = devswarm_root(home);
     let dir = root.join(defaults::text("mesh_write.dir_archived"));
     let mut out = HashSet::new();
@@ -599,6 +599,11 @@ fn csv_parts(v: &str) -> Vec<String> {
         return Vec::new();
     }
     v.split(defaults::text("mesh_write.csv_separator")).map(|p| js_trim(p).to_string()).filter(|p| !p.is_empty()).collect()
+}
+
+/// `heldPartitionIdsFrom(env)`: the partition ids the owner holds (the `devswarm.heldPartitions` setting).
+pub(crate) fn held_ids(inv: &Inv) -> R<HashSet<String>> {
+    Ok(csv_parts(&csv_setting(inv, &held_partitions_keys())?).into_iter().collect())
 }
 
 /// `jev-triage.js` `hashMessage(text)`.
