@@ -422,7 +422,12 @@ fn a_daemon_whose_state_dir_is_removed_exits_by_itself() {
     let e = Env::new("orphan", &[]);
     e.warm();
     let pid = e.pid().unwrap();
-    std::fs::remove_dir_all(e.eng()).unwrap();
+    // the daemon may still be writing into its directory while it is removed (DirectoryNotEmpty): remove again until it is gone
+    let gone = Instant::now();
+    while std::fs::remove_dir_all(e.eng()).is_err() && gone.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!e.eng().exists(), "the state dir could not be removed");
     let t = Instant::now();
     while alive(pid) && t.elapsed() < Duration::from_secs(15) {
         std::thread::sleep(Duration::from_millis(50));

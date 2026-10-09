@@ -19,8 +19,10 @@ if cargo nextest --version >/dev/null 2>&1; then
   # The wall-clock budget tests (a p95 in microseconds) measure the machine when the suite's own Node sweeps load every
   # core, so they run after the suite, one at a time, and nothing of the suite runs beside them. The memory soak is one of
   # them: its daemon's watchdog (daemon.stuck_ms) restarts it when a single request takes 8 s, which a 4-core runner shared
-  # with three Node sweeps did three times (CI run 37854799458), and the test asserts zero restarts.
-  timed='binary(telemetry_overhead) | binary(script_latency) | test(/^memory_soak::/)'
+  # with three Node sweeps did three times (CI run 37854799458), and the test asserts zero restarts. The reliability and spool
+  # tests are timing-driven too (queue overflow, a 1.5 s client deadline, a state dir removed under a running daemon) and
+  # each failed once on a loaded runner for a different reason, so they run alone as well.
+  timed='binary(telemetry_overhead) | binary(script_latency) | test(/^memory_soak::/) | test(/^reliability::/) | test(/^spool::/)'
   cargo nextest run --release --profile "$profile" -E "not ($timed)" "$@"
   rc=$?
   cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass -E "$timed" "$@" || rc=1

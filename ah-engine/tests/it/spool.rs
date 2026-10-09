@@ -46,7 +46,7 @@ impl Env {
             // the two seconds a client waits for an answer are the machine's on a loaded CI runner; one late answer must not
             // count toward the breaker that makes the client skip the engine
             .env("AH_ENGINE_DEADLINE_MS", "30000")
-            .env("AH_ENGINE_SPOOL_RETRIES", "1")
+            .env("AH_ENGINE_SPOOL_RETRIES", "4") // a write carries its id, so a retry after a late answer is applied once
             .env("AH_ENGINE_SPOOL_BACKOFF_MS", "1");
         c
     }
