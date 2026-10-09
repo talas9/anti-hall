@@ -509,3 +509,11 @@ pub const RT_ROW_BROADCAST: &str = "SELECT seq, is_heartbeat FROM messages WHERE
 pub const AS_MESSAGES: &str = "SELECT repositoryId, toBranch, createdAt FROM workspace_messages WHERE createdAt >= ?1 AND createdAt < ?2";
 /// The timestamps of the app messages a store has ingested.
 pub const AS_NATIVE_TS: &str = "SELECT ts FROM messages WHERE hash LIKE ?1";
+/// The reconcile port: every registry row with the two columns the conditional operations compare.
+pub const RECON_REGISTRY_ALL: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry ORDER BY id ASC;";
+/// The reconcile port's normaliser: the user tables of a store.
+pub const RECON_TABLES: &str = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name;";
+/// The reconcile port's normaliser: every row of a table in storage order (`{table}` is filled from `RECON_TABLES`).
+pub const RECON_DUMP: &str = "SELECT * FROM \"{table}\" ORDER BY rowid;";
+/// The reconcile port: the registry row of one id, every column.
+pub const RECON_REGISTRY_ONE: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry WHERE id = ?;";

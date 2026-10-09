@@ -5322,6 +5322,37 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_ingest.witness_snippet` | `const fs=require("fs");process.env.HOME=process.argv[2];const root=process.ar...` |  |  | What Node runs for the witness: ingestPayload over each mirrored batch against a scratch store, printing per batch {total, lossy, rows: [{hash, ts, body}]}. Arguments: the plugin root, the scratch HOME, the Primary's id, the repo key, the mirror file, the worktree. |
 | `devswarm_ingest.witness_timeout_ms` | `60000` |  | ms | Bound of one witness run. The drain of that project waits while it runs (messages queue up natively, nothing is lost), so it stays far under the three minutes after which a daemon's heartbeat reads stale. |
 
+### devswarm_recon.toml / devswarm_recon
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_recon.diff_chars` | `160` |  |  | Most characters of each side's line quoted in a difference text. |
+| `devswarm_recon.mirror_eng` | `engine` |  |  | The name of the mirror the engine's op list is applied to, inside a job's scratch directory. |
+| `devswarm_recon.mirror_max_files` | `20000` |  |  | Most files a job's directory mirrors may hold; a larger input makes the job defer to Node (never a partial comparison). |
+| `devswarm_recon.mirror_node` | `node` |  |  | The name of the mirror Node works on, inside a job's scratch directory. |
+| `devswarm_recon.msg_call_differs` | `call {i} returned {got} (engine says {want})` |  |  | A Node call returned a value other than the engine's. Placeholders: {i}, {got}, {want}. |
+| `devswarm_recon.msg_diff_length` | `{path}: length {node} vs {engine}` |  |  | A path whose lines agree but whose lengths differ. Placeholders: {path}, {node}, {engine}. |
+| `devswarm_recon.msg_diff_line` | `{path}: node `{node}` vs engine `{engine}`` |  |  | The first differing line of a path. Placeholders: {path}, {node}, {engine}. |
+| `devswarm_recon.msg_diff_only_engine` | `{path}: only in engine` |  |  | A path only the engine's mirror holds. Placeholder: {path}. |
+| `devswarm_recon.msg_diff_only_node` | `{path}: only in node` |  |  | A path only Node's mirror holds. Placeholder: {path}. |
+| `devswarm_recon.msg_nothing` | `nothing` |  |  | What a missing return value is called in a difference text. |
+| `devswarm_recon.node_snippet` | `const NOW=Number(process.argv[3]);Date.now=()=>NOW;const root=process.argv[1]...` |  |  | What Node runs for the witness: a dispatcher over the recorded calls, each run in order against the scratch mirror with Date.now pinned to the engine's clock and HOME, USERPROFILE and the central log directory pointed into the mirror. Arguments: the plugin root, the mirror home, the pinned clock, the calls as JSON. It prints the list of return values. |
+| `devswarm_recon.node_timeout_ms` | `120000` |  | ms | How long the Node witness may run for one job. |
+| `devswarm_recon.norm_db_companions` | `-wal, -shm, -journal` |  |  | Endings of the files that belong to a SQLite database and are not part of its content. |
+| `devswarm_recon.norm_db_suffix` | `.db` |  |  | The ending of a store database file; the normaliser dumps it logically instead of comparing pages. |
+| `devswarm_recon.norm_log_suffixes` | `.jsonl, .jsonl.1` |  |  | Endings of the log files under the logs directory whose lines are masked (entry time and writer pid) before comparing. |
+| `devswarm_recon.norm_unreadable_db` | `unreadable-db` |  |  | What the normaliser records for a database it cannot open. |
+| `devswarm_recon.scratch_prefix` | `recon-` |  |  | The start of a job's scratch directory name (under devswarm_sup.witness_dir). |
+| `devswarm_recon.why_drift` | `drift:` |  |  | The start of the reason when a precondition changed between the plan and the apply (followed by what changed). |
+| `devswarm_recon.why_lock_busy` | `lock-busy` |  |  | Why a unit was handed back: its workspace lock is held by a live writer. |
+| `devswarm_recon.why_mirror` | `mirror-failed` |  |  | Why a unit was handed back: a scratch mirror could not be built or the engine's pass over it failed. |
+| `devswarm_recon.why_mirror_cap` | `mirror-too-large` |  |  | Why a mirror could not be built: a directory held more files than devswarm_recon.mirror_max_files. |
+| `devswarm_recon.why_mismatch` | `witness-mismatch` |  |  | Why a unit was handed back: Node and the engine ended in different states on the scratch mirrors. |
+| `devswarm_recon.why_node_answer` | `node-answer-unparsable` |  |  | Why the witness failed: Node's answer was not the list of return values. |
+| `devswarm_recon.why_node_unavailable` | `node-unavailable` |  |  | Why a unit was handed back: Node could not be run, so the decision is unwitnessed. |
+| `devswarm_recon.witness_diffs` | `20` |  |  | Most differences one witness log line lists. |
+| `devswarm_recon.witness_file` | `.anti-hall/logs/devswarm-recon-witness.ndjson` |  |  | The reconcile-port witness log, one JSON line per gated job (match: true / false, or null when Node could not run), relative to the home directory. |
+
 ### devswarm_cli.toml / devswarm_cli
 
 | Key | Default | Env override | Unit | What it is |

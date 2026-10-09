@@ -1,0 +1,123 @@
+# ah-engine shipped defaults for the native port of DevSwarm `reconcile` and the sweep tail (src/dssup/recon). Format: see the header of
+# engine.toml. Nothing here is compiled into the binary. Every decision the engine takes over from Node here is witnessed first: Node's
+# own function runs on a scratch mirror, the engine's op list runs on another, and only when the two end in the same state is the op
+# list applied to the real home (design: RECONCILE-SWEEP-DESIGN.md).
+
+[devswarm_recon.node_snippet]
+doc = "What Node runs for the witness: a dispatcher over the recorded calls, each run in order against the scratch mirror with Date.now pinned to the engine's clock and HOME, USERPROFILE and the central log directory pointed into the mirror. Arguments: the plugin root, the mirror home, the pinned clock, the calls as JSON. It prints the list of return values."
+value = 'const NOW=Number(process.argv[3]);Date.now=()=>NOW;const root=process.argv[1],home=process.argv[2],calls=JSON.parse(process.argv[4]);process.env.HOME=home;process.env.USERPROFILE=home;process.env.ANTI_HALL_LOG_DIR=home+"/.anti-hall/logs";const fs=require("fs"),path=require("path");const L=(m)=>require(root+"/"+m);const run=(c)=>{const a=c.args||{};switch(c.fn){case "sweepState":L("companion/devswarm-supervisor.js").writeReconcileSweepState(home,fs,{lastRunAt:a.lastRunAt});return null;case "resumeWrite":L("scripts/devswarm-lib/reconcile.js").writeReconcileResume(home,a.repoKey,a.ids);return null;case "nameWrite":return L("companion/lib/devswarm-names.js").writeName(home,a.id,a.name,a.now);case "repoUnknownRecord":return L("companion/lib/devswarm-repo-unknown.js").record(home,a.repoKey,a.scope,a.reason,a.now);case "repoUnknownClear":L("companion/lib/devswarm-repo-unknown.js").clear(home,a.repoKey,a.scope);return null;case "activeCache":{process.env.ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT=String(a.floorPct);const r=L("companion/lib/devswarm-archived-cache.js").writeActiveCache({home,byRepoKey:a.byRepoKey,now:a.now,env:process.env});return r===null?null:path.relative(home,r)}case "sampling":{const S=L("companion/lib/devswarm-startup-sampling.js");return S.runSamplingPass(a.ids.map((id)=>({id})),{home,env:process.env,now:a.now,maxProbe:a.maxProbe,run:(id)=>a.probes[id]||{ok:false,error:"no probe"}})}case "healRegistry":return L("scripts/devswarm-lib/fold.js").healRegistry(home,a.repoKey,{});case "healRows":{const F=L("scripts/devswarm-lib/fold.js");return a.ids.map((id)=>F.rehomeMiskeyedRow(home,id,a.repoKey,{}))}default:throw new Error("unknown call "+c.fn)}};const out=[];for(const c of calls){try{const r=run(c);out.push(r===undefined?null:r)}catch(e){out.push({threw:String(e&&e.message||e)})}}console.log(JSON.stringify(out))'
+
+[devswarm_recon.node_timeout_ms]
+doc = "How long the Node witness may run for one job."
+value = 120000
+min = 1000
+max = 3600000
+unit = "ms"
+
+[devswarm_recon.mirror_max_files]
+doc = "Most files a job's directory mirrors may hold; a larger input makes the job defer to Node (never a partial comparison)."
+value = 20000
+min = 1
+max = 10000000
+
+[devswarm_recon.mirror_node]
+doc = "The name of the mirror Node works on, inside a job's scratch directory."
+value = "node"
+
+[devswarm_recon.mirror_eng]
+doc = "The name of the mirror the engine's op list is applied to, inside a job's scratch directory."
+value = "engine"
+
+[devswarm_recon.scratch_prefix]
+doc = "The start of a job's scratch directory name (under devswarm_sup.witness_dir)."
+value = "recon-"
+
+[devswarm_recon.witness_file]
+doc = "The reconcile-port witness log, one JSON line per gated job (match: true / false, or null when Node could not run), relative to the home directory."
+value = ".anti-hall/logs/devswarm-recon-witness.ndjson"
+
+[devswarm_recon.witness_diffs]
+doc = "Most differences one witness log line lists."
+value = 20
+min = 1
+max = 1000
+
+# ---- the normaliser ------------------------------------------------------------------------------------------------------------
+
+[devswarm_recon.norm_db_suffix]
+doc = "The ending of a store database file; the normaliser dumps it logically instead of comparing pages."
+value = ".db"
+
+[devswarm_recon.norm_db_companions]
+doc = "Endings of the files that belong to a SQLite database and are not part of its content."
+value = ["-wal", "-shm", "-journal"]
+
+[devswarm_recon.norm_log_suffixes]
+doc = "Endings of the log files under the logs directory whose lines are masked (entry time and writer pid) before comparing."
+value = [".jsonl", ".jsonl.1"]
+
+[devswarm_recon.norm_unreadable_db]
+doc = "What the normaliser records for a database it cannot open."
+value = "unreadable-db"
+
+# ---- the witness's difference texts --------------------------------------------------------------------------------------------
+
+[devswarm_recon.diff_chars]
+doc = "Most characters of each side's line quoted in a difference text."
+value = 160
+min = 10
+max = 100000
+
+[devswarm_recon.msg_diff_only_node]
+doc = "A path only Node's mirror holds. Placeholder: {path}."
+value = "{path}: only in node"
+
+[devswarm_recon.msg_diff_only_engine]
+doc = "A path only the engine's mirror holds. Placeholder: {path}."
+value = "{path}: only in engine"
+
+[devswarm_recon.msg_diff_line]
+doc = "The first differing line of a path. Placeholders: {path}, {node}, {engine}."
+value = "{path}: node `{node}` vs engine `{engine}`"
+
+[devswarm_recon.msg_diff_length]
+doc = "A path whose lines agree but whose lengths differ. Placeholders: {path}, {node}, {engine}."
+value = "{path}: length {node} vs {engine}"
+
+[devswarm_recon.msg_call_differs]
+doc = "A Node call returned a value other than the engine's. Placeholders: {i}, {got}, {want}."
+value = "call {i} returned {got} (engine says {want})"
+
+[devswarm_recon.msg_nothing]
+doc = "What a missing return value is called in a difference text."
+value = "nothing"
+
+# ---- why a unit was handed back to Node ------------------------------------------------------------------------------------------
+
+[devswarm_recon.why_drift]
+doc = "The start of the reason when a precondition changed between the plan and the apply (followed by what changed)."
+value = "drift:"
+
+[devswarm_recon.why_lock_busy]
+doc = "Why a unit was handed back: its workspace lock is held by a live writer."
+value = "lock-busy"
+
+[devswarm_recon.why_mismatch]
+doc = "Why a unit was handed back: Node and the engine ended in different states on the scratch mirrors."
+value = "witness-mismatch"
+
+[devswarm_recon.why_node_unavailable]
+doc = "Why a unit was handed back: Node could not be run, so the decision is unwitnessed."
+value = "node-unavailable"
+
+[devswarm_recon.why_node_answer]
+doc = "Why the witness failed: Node's answer was not the list of return values."
+value = "node-answer-unparsable"
+
+[devswarm_recon.why_mirror]
+doc = "Why a unit was handed back: a scratch mirror could not be built or the engine's pass over it failed."
+value = "mirror-failed"
+
+[devswarm_recon.why_mirror_cap]
+doc = "Why a mirror could not be built: a directory held more files than devswarm_recon.mirror_max_files."
+value = "mirror-too-large"
