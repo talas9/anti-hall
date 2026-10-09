@@ -852,6 +852,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `transcript.assistant_text_max_bytes` | `1048576` |  | bytes | Longest last-assistant text kept; the rest is cut at a character boundary and flagged. |
+| `transcript.ev_role_assistant` | `assistant` |  |  | The role of an assistant transcript entry. |
+| `transcript.ev_role_attachment` | `attachment` |  |  | The role of a hook attachment transcript entry. |
+| `transcript.ev_role_user` | `user` |  |  | The role of a user transcript entry. |
+| `transcript.ev_type_text` | `text` |  |  | The content block type of a text block. |
+| `transcript.ev_type_tool_result` | `tool_result` |  |  | The content block type of a tool result. |
+| `transcript.ev_type_tool_use` | `tool_use` |  |  | The content block type of a tool call. |
+| `transcript.evidence_max_bytes` | `8388608` |  | bytes | Largest window `ah.transcript.evidence` reads from the end of a transcript, whatever the script asks for. |
+| `transcript.evidence_max_chars` | `16777216` |  |  | Most characters of text `ah.transcript.evidence` returns in all; a transcript whose evidence is larger is reported as unsure. |
 | `transcript.final_statuses` | `completed failed stopped` |  |  | Task-notification statuses the DevSwarm idle gate treats as final (companion/lib/devswarm-idle.js FINAL_STATUS), case-insensitive. |
 | `transcript.fingerprint_bytes` | `256` |  | bytes | Leading bytes of the file hashed to notice a rewritten or rotated transcript. |
 | `transcript.idle_ttl_ms` | `21600000` |  | ms | How long the registry keeps an index nobody asked for; a dropped index is rebuilt from the file on the next request. |

@@ -36,6 +36,8 @@
 pub mod host;
 pub mod host_b3;
 pub mod host_d;
+pub mod host_proc;
+pub mod host_ts;
 mod host_io;
 pub mod sysmem;
 
@@ -409,6 +411,9 @@ mod tests;
 #[cfg(test)]
 #[path = "host_tests/tests.rs"]
 mod tests_host;
+#[cfg(test)]
+#[path = "host_tests_e/tests.rs"]
+mod tests_host_e;
 #[cfg(test)]
 #[path = "host_tests_d/tests.rs"]
 mod tests_host_d;
