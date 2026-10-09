@@ -1,0 +1,49 @@
+[message] src/cli.rs: Some(job) => format!("schedule run job={job}"),
+[message] src/hookcfg/mod.rs: return Err(bad(path, &key, "hooks.msg_cfg_project_guard", &[("what", &format!("{id} on {event}"))]));
+[message] src/hookcfg/when.rs: .ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &format!("{k} needs a non-empty list"))]))?;
+[message] src/hookcfg/when.rs: return Err(bad(&format!("{k} is not a session field")));
+[message] src/jev/cli.rs: other => Err(JevError::Request(format!("unknown trust rule {other:?}"))),
+[message] src/spool.rs: let req = format!("P {cwd}\nW {id}\n{verb} {args}");
+[message] src/telemetry/cli.rs: let mut verb = format!("telemetry {sub} window={}", window);
+[number] src/checks/agent_scan/mod.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 59 {
+[number] src/checks/agent_scan/mod.rs: if oh > 23 || om > 59 {
+[number] src/checks/agent_scan/mod.rs: let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+[number] src/checks/agent_scan/mod.rs: let era = if y >= 0 { y } else { y - 399 } / 400;
+[number] src/checks/agent_scan/mod.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 };
+[number] src/checks/agent_scan/mod.rs: let y = yoe + doe_era * 400 + i64::from(m <= 2);
+[number] src/dispatch/inject.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 59 {
+[number] src/dispatch/inject.rs: if oh > 23 || om > 59 {
+[number] src/checks/guardkit/jsval/mod.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 24 || mi > 59 || se > 59 || (h == 24 && (mi != 0 || se != 0 || ms != 0)) {
+[number] src/checks/guardkit/jsval/mod.rs: if oh > 23 || om > 59 {
+[number] src/checks/guardkit/jsval/mod.rs: k.parse::<u64>().ok().filter(|n| *n <= 4_294_967_294).map(|n| n as u32)
+[number] src/checks/guardkit/jsval/mod.rs: let body = if k <= n && n <= 21 {
+[number] src/checks/guardkit/jsval/mod.rs: let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+[number] src/checks/guardkit/jsval/mod.rs: let era = if y >= 0 { y } else { y - 399 } / 400;
+[number] src/checks/guardkit/jsval/mod.rs: } else if 0 < n && n <= 21 {
+[number] src/checks/guardkit/ojson.rs: k.parse::<u64>().ok().filter(|n| *n < 4_294_967_295).map(|n| n as u32)
+[number] src/checks/guardkit/text.rs: if m >= 2_147_483_648 { m - 4_294_967_296 } else { m }
+[number] src/checks/jsport/date.rs: None if h > 23 => return Parsed::Unknown,
+[number] src/checks/jsport/date.rs: if !(1..=12).contains(&mo) || d < 1 || d > days_in_month(y, mo) {
+[number] src/checks/jsport/date.rs: if h > 23 || mi > 59 || sec > 59 {
+[number] src/checks/jsport/date.rs: if mi > 59 || sec > 59 {
+[number] src/checks/jsport/date.rs: if oh > 23 || om > 59 {
+[number] src/checks/jsport/date.rs: let era = if y >= 0 { y } else { y - 399 } / 400;
+[number] src/checks/jsport/date.rs: let era = if z >= 0 { z } else { z - 146096 } / 146097;
+[number] src/checks/jsport/date.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 };
+[number] src/checks/jsport/date.rs: let year = if (0..=9999).contains(&y) { format!("{y:04}") } else { format!("{}{:06}", if y < 0 { '-' } else { '+' }, y.abs()) };
+[number] src/checks/jsport/num.rs: Ok(v) if v <= (1u64 << 53) => JsNum::Val(v as f64),
+[number] src/checks/jsport/num.rs: let body = if k <= n && n <= 21 {
+[number] src/checks/jsport/num.rs: } else if 0 < n && n <= 21 {
+[number] src/checks/replykit/json.rs: !k.is_empty() && k.bytes().all(|c| c.is_ascii_digit()) && (k == "0" || !k.starts_with('0')) && k.parse::<u64>().is_ok_and(|n| n < 4_294_967_295)
+[number] src/checks/replykit/json.rs: let body = if k <= point && point <= 21 {
+[number] src/checks/replykit/json.rs: } else if 0 < point && point <= 21 {
+[number] src/checks/session/jval.rs: let body = if k <= point && point <= 21 {
+[number] src/checks/session/jval.rs: } else if 0 < point && point <= 21 {
+[number] src/checks/taskkit/time.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+[number] src/checks/taskstate/tail.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 59 {
+[number] src/checks/taskstate/tail.rs: let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
+[number] src/jev/assist.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 };
+[number] src/jev/assist.rs: let y = yoe + era * 400 + i64::from(m <= 2);
+[number] src/jev/client.rs: defaults::num("jev.fallback_reserve_ms").min(total_ms.saturating_mul(defaults::num("jev.fallback_reserve_pct")) / 100)
+[number] src/jev/keep.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 59 {
+[number] src/transcript/record.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 24 || mi > 59 || sec > 59 {

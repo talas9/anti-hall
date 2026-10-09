@@ -1,0 +1,578 @@
+# ah-engine shipped defaults for the response-correctness checks ported from Node: speculation-guard, speculation-judge,
+# claim-ledger and output-verify-guard, and the helpers they share (checks::replykit). Format: see the header of
+# engine.toml. Regex sources use JavaScript syntax (the Node hooks are the authority) and are translated by
+# `checks::guardkit::jsre`; they are TOML literal strings so no backslash is doubled.
+
+# ---- shared helpers (checks::replykit) --------------------------------------------------------------------
+
+[replykit.state_dir]
+doc = "The per-user state directory under the home directory, where the guards keep their state files."
+value = ".anti-hall"
+
+[replykit.json_ext]
+doc = "File extension of the JSON state files (also the suffix the stale-file sweep looks for)."
+value = ".json"
+
+[replykit.json_max_depth]
+doc = "Deepest JSON nesting the state-file parser reads; deeper input is left to the Node hook, which has a larger stack."
+value = 256
+min = 16
+max = 4096
+
+[replykit.prune_stamp_prefix]
+doc = "Prefix of the stamp file that records the last sweep of stale state files of one writer (the writer's own prefix and the JSON extension follow)."
+value = ".prune-stamp-"
+
+[replykit.prune_ttl_ms]
+doc = "A per-session state file untouched for this long is removed by the sweep (7 days: long enough that no live session is ever swept)."
+value = 604800000
+unit = "ms"
+min = 60000
+
+[replykit.prune_throttle_ms]
+doc = "The sweep of stale state files runs at most once per this long for each writer (6 hours)."
+value = 21600000
+unit = "ms"
+min = 1000
+
+[replykit.unsure_parse_errors]
+doc = "Fragments of the JSON parser's error text that mark input the Node hook might still parse (a lone surrogate escape or a short hex escape, a number beyond the double range, nesting beyond the recursion limit): the whole call is then left to Node instead of the line being skipped."
+value = ["surrogate", "hex escape", "recursion limit", "out of range"]
+
+[replykit.role_assistant]
+doc = "The role value of an assistant transcript entry."
+value = "assistant"
+
+# ---- once-per-turn gate (hooks/lib/turn-gate.js) ----------------------------------------------------------
+
+# ---- speculation-guard (hooks/speculation-guard.js) -------------------------------------------------------
+
+[speculation_guard.summary]
+doc = "One-line description of the speculation-guard check in the generated reference."
+value = "Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair (port of speculation-guard.js)."
+
+[speculation_guard.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "speculation-guard"
+
+[speculation_guard.setting]
+doc = "Where the on/off switch is read from (guards.speculationGuard, default on)."
+value = { section = "guards", key = "speculationGuard", env = "", aliases = [], option = "guards_speculation_guard", default = true }
+
+[speculation_guard.inference_setting]
+doc = "The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence and stays on Node, so with the switch on a reply without a hedge is left to Node."
+value = { section = "guards", key = "inferenceCheck", env = "ANTIHALL_INFERENCE_CHECK", aliases = [], option = "", default = false }
+
+[speculation_guard.state_prefix]
+doc = "Prefix of the per-session state file name under the state directory (the sanitised session id and the JSON extension follow)."
+value = "speculation-guard-state-"
+
+[speculation_guard.prune_prefix]
+doc = "Prefix of the stale-file sweep of the per-session state files."
+value = "speculation-guard-state"
+
+[speculation_guard.source_regex]
+doc = "The source recorded in the pending outcome of a block this check made (the Node hook reads it when it reports the outcome)."
+value = "regex"
+
+[speculation_guard.window_bytes]
+doc = "How much of the end of the transcript is read to find the last assistant message when the payload does not carry it."
+value = 524288
+unit = "bytes"
+min = 4096
+
+[speculation_guard.max_blocks]
+doc = "Most blocks per session: after this many the guard stays quiet whatever the reply says (the text changes as the model reworks it, which defeats the per-text dedupe)."
+value = 3
+min = 1
+max = 100
+
+[speculation_guard.markers]
+doc = "Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried."
+value = [
+  '\bvery plausibly\b',
+  '\bplausibly\b',
+  '\bpresumably\b',
+  '\bi suspect\b',
+  '\bmy guess\b',
+  '''\bi'?d guess\b''',
+  '\bi bet\b',
+  '\blikely\b',
+  '\bprobably\b',
+  '\bmust be\b',
+  '\bshould be\b',
+  '\bseems to be\b',
+  '\bappears to be\b',
+  '''\bi think it'?s\b''',
+  '\bmy hunch\b',
+]
+
+[speculation_guard.modal_markers]
+doc = "Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own."
+value = ["must be", "should be"]
+
+[speculation_guard.ack_ci]
+doc = "Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block."
+value = [
+  '\bverified\b',
+  '''i don'?t know\b''',
+  '''haven'?t checked\b''',
+  '\bnot verified\b',
+  '\bunverified\b',
+  '\blet me verify\b',
+  '''i'?ll check\b''',
+  '\bi will check\b',
+  '\bneed to confirm\b',
+  '\bto confirm\b',
+  '\brunning\b',
+  '\bper the data\b',
+  '\bthe data shows\b',
+]
+
+[speculation_guard.ack_cs]
+doc = "Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42."
+value = ['\b\w+\.\w+:\d+\b']
+
+[speculation_guard.obligation_re]
+doc = "Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess."
+value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run)\b'
+
+[speculation_guard.obligation_window]
+doc = "How many UTF-16 units after a must-be or should-be are read for the obligation word."
+value = 40
+min = 8
+max = 400
+
+[speculation_guard.requirement_line_re]
+doc = "Regex source (case-insensitive) of a line that starts with an explicit requirement label, after an optional list bullet."
+value = '^\s*(?:(?:[-*+•]|\d+[.)])\s+)?(?:requirement|acceptance(?:\s+criteria)?|ac|spec)\s*:'
+
+[speculation_guard.quote_line_re]
+doc = "Regex source of a blockquote line (up to three spaces of indent, then a greater-than sign)."
+value = '^[ \t]{0,3}>'
+
+[speculation_guard.fence_line_re]
+doc = "Regex source of a code fence line; the first group is the fence marker."
+value = '^[ \t]{0,3}(`{3,}|~{3,})'
+
+[speculation_guard.quote_separators]
+doc = "Where a blockquote line turns from the quoted material to the session's own words (an em dash, a double hyphen between spaces, a semicolon or comma then so); the earliest wins."
+value = [
+  { src = '—', ci = false },
+  { src = '\s--\s', ci = false },
+  { src = ';\s*so\b', ci = true },
+  { src = ',\s*so\b', ci = true },
+]
+
+[speculation_guard.quote_char]
+doc = "The straight double quote that pairs within one line."
+value = '"'
+
+[speculation_guard.straight_re]
+doc = "Regex source of a straight-quoted span inside one line."
+value = '"[^"\n]*"'
+
+[speculation_guard.backtick_re]
+doc = "Regex source of an inline code span."
+value = '`[^`\n]+`'
+
+[speculation_guard.curly_double_re]
+doc = "Regex source of a curly double-quoted span."
+value = '“[^“”\n]*”'
+
+[speculation_guard.curly_single_re]
+doc = "Regex source of a curly single-quoted span."
+value = '‘[^‘’\n]*’'
+
+[speculation_guard.msg_what]
+doc = "Block headline; {marker} is the hedge found."
+value = "your reply states something speculative ('{marker}') without verifying it or flagging it as unverified."
+
+[speculation_guard.msg_why]
+doc = "Block reason."
+value = "Unverified claims read as facts."
+
+[speculation_guard.msg_instead]
+doc = "Block advice."
+value = "verify it with a tool, or say what is unverified ('I don't know, here is what I would check'), then continue."
+
+[speculation_guard.jev_id]
+doc = "The Jev integration id of the speculation question (add-block trust)."
+value = "speculation"
+
+[speculation_guard.jev_framed_id]
+doc = "The Jev integration id of the framed-expectation question (relax-block trust)."
+value = "speculationFramed"
+
+[speculation_guard.jev_instructions]
+doc = "The Noul question of the speculation ask (byte-identical to the Node hook's JEV_QUESTION)."
+value = "Is this assistant message speculative, i.e. does it assert a cause or an outcome about the project without cited evidence?"
+
+[speculation_guard.jev_true]
+doc = "The label for a true answer of the speculation question."
+value = "Speculative: it asserts a cause, a fix, or a done/works/passes/resolved outcome about the project with no cited command output, test result, or file:line reference. Hedged guesses (\"probably\", \"should work\", \"I think\", \"it seems\") and confident but unsupported statements (\"Fixed.\", \"All done\") are both speculative."
+
+[speculation_guard.jev_false]
+doc = "The label for a false answer of the speculation question."
+value = "Not speculative: it reports what a tool actually showed (command output such as \"12 pass, 0 fail\", a commit hash, grep results, a file:line reference like src/app.js:42); or it honestly says something is not yet verified and names the check to run; or it makes no claim about the project at all (a question, a plan, code the user asked for, general technical knowledge, an explicit hypothetical, or small talk)."
+
+[speculation_guard.framed_instructions]
+doc = "The Noul question of the framed-expectation ask (byte-identical to the Node hook's FRAMED_JEV_QUESTION)."
+value = "This hedge sits under a heading or line labelled as a plan/expectation (e.g. \"Expected\", \"Plan\", \"Should be blocked:\", \"Unverified\", \"not yet measured\"). Is it still an unverified claim about the project's CURRENT/actual state presented as fact, or is it a stated expectation/plan/acceptance-criterion for work not yet done or measured?"
+
+[speculation_guard.framed_true]
+doc = "The label for a true answer of the framed-expectation question."
+value = "Unverified claim presented as fact: despite the label, it asserts what IS true right now about the project (a cause, a fix, a done/works/passes outcome) with no cited evidence — the framing is decorative, not honest."
+
+[speculation_guard.framed_false]
+doc = "The label for a false answer of the framed-expectation question."
+value = "Genuine expectation/plan: a test-plan entry, acceptance criterion, or hypothesis about future or hypothetical work (\"Should be blocked: X\", \"Expected: Y\", \"not yet measured\") — not a claim about the project's actual current state."
+
+[speculation_guard.jev_state_chars]
+doc = "How many UTF-16 units of the reply the two Jev asks evaluate (Node: jevText.slice(0, 8000))."
+value = 8000
+min = 1
+
+[speculation_guard.judge_log]
+doc = "The speculation guard's own Jev decision log, relative to the anti-hall home directory (Node: logs/jev-judge.ndjson); holds no message text and no key."
+value = "logs/jev-judge.ndjson"
+
+[speculation_guard.judge_log_max_bytes]
+doc = "The judge log is emptied before an append once it is larger than this (Node: JEV_LOG_MAX_BYTES)."
+value = 1048576
+unit = "bytes"
+min = 1024
+
+[speculation_guard.frame_label]
+doc = "Regex source of the labels that frame a hedge as an expectation or a plan (Node: FRAME_LABEL_CORE)."
+value = '(?:expected|plan|should\s+be\s+\w+|should\s+still(?:\s+\w+)?|unverified|not\s+yet\s+measured)'
+
+[speculation_guard.frame_line_prefix]
+doc = "Regex source of a line that starts with a frame label, with an optional list marker (the token LABEL is replaced by frame_label); case-insensitive."
+value = '^\s*(?:(?:[-*+\u2022]|\d+[.)])\s+)?LABEL\s*[:)]'
+
+[speculation_guard.frame_heading]
+doc = "Regex source of a markdown heading line; group 1 is its text."
+value = '^\s*#{1,6}\s+(.+?)\s*#*\s*$'
+
+[speculation_guard.frame_heading_label]
+doc = "Regex source (case-insensitive) a heading's text must start with to frame what is under it (the token LABEL is replaced by frame_label)."
+value = '^LABEL\b'
+
+[speculation_guard.frame_inline]
+doc = "Regex source (case-insensitive) of an inline frame on the hit's own line."
+value = '\(unverified\)|\bnot yet measured\b'
+
+[speculation_guard.msg_what_jev]
+doc = "Block headline when Jev added the block."
+value = "your reply asserts a cause or outcome without citing evidence (command output, a test result, or a file:line reference)."
+
+[speculation_guard.outcome_override]
+doc = "Outcome recorded for the previous block when the user skipped the guard."
+value = "user-override"
+
+[speculation_guard.outcome_evidence]
+doc = "Outcome recorded for the previous block when this reply carries an acknowledgment."
+value = "evidence-added"
+
+[speculation_guard.outcome_repeat]
+doc = "Outcome recorded for the previous block when this reply hedges again."
+value = "repeat-speculation"
+
+[speculation_guard.source_jev]
+doc = "The source recorded in the pending outcome of a block Jev added."
+value = "jev"
+
+# ---- speculation-judge (hooks/speculation-judge.js) -------------------------------------------------------
+
+[speculation_judge.summary]
+doc = "One-line description of the speculation-judge check in the generated reference."
+value = "Stop: the opt-in semantic judge; answers every path without a model call, and in a one-shot process asks the Claude CLI judge itself (jev.judgeBackend cli); an Anthropic API call, and a model call inside the daemon, stay with Node (port of speculation-judge.js)."
+
+[speculation_judge.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "speculation-judge"
+
+[speculation_judge.setting]
+doc = "Where the opt-in switch is read from (jev.semanticJudge, default off)."
+value = { section = "jev", key = "semanticJudge", env = "ANTIHALL_SEMANTIC_JUDGE", aliases = [], option = "jev_semantic_judge", default = false }
+
+[speculation_judge.child_env]
+doc = "The environment variable the judge's own `claude -p` child carries; a hook that runs inside the child does nothing (no recursion)."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[speculation_judge.child_value]
+doc = "The value of the judge-child variable that means this process is the judge's child."
+value = "1"
+
+# ---- claim-ledger (hooks/claim-ledger.js) -----------------------------------------------------------------
+
+[claim_ledger.summary]
+doc = "One-line description of the claim-ledger check in the generated reference."
+value = "Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js)."
+
+[claim_ledger.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "claim-ledger"
+
+[claim_ledger.setting]
+doc = "Where the on/off switch is read from (guards.claimLedger, default on)."
+value = { section = "guards", key = "claimLedger", env = "", aliases = [], option = "guards_claim_ledger", default = true }
+
+[claim_ledger.jev_id]
+doc = "The Jev integration id of the shadow question asked for each flagged claim."
+value = "claimLedger"
+
+[claim_ledger.jev_instructions]
+doc = "The Noul question text of the claimLedger shadow ask (byte-identical to the Node hook's)."
+value = "Is this claim unsupported by evidence in the message (no matching value/SHA/state appears anywhere in the session's own tool output and prior messages)?"
+
+[claim_ledger.jev_true]
+doc = "The label for a true answer of the claimLedger question."
+value = "unsupported by evidence"
+
+[claim_ledger.jev_false]
+doc = "The label for a false answer of the claimLedger question."
+value = "supported by evidence"
+
+[claim_ledger.dir]
+doc = "Directory of the ledger files under the state directory."
+value = "claim-ledger"
+
+[claim_ledger.last_ext]
+doc = "Extension of the file that holds the hash of the last message recorded for a session."
+value = ".last"
+
+[claim_ledger.ledger_ext]
+doc = "Extension of the per-session ledger of flagged claims (one JSON line per flagged reply)."
+value = ".jsonl"
+
+[claim_ledger.window_bytes]
+doc = "How much of the end of the transcript counts as evidence (a huge transcript cannot slow the hook)."
+value = 2097152
+unit = "bytes"
+min = 65536
+
+[claim_ledger.context_chars]
+doc = "How many UTF-16 units of the line around a flagged token are recorded."
+value = 160
+min = 16
+max = 4000
+
+[claim_ledger.max_flags]
+doc = "Most flags recorded for one reply."
+value = 40
+min = 1
+max = 1000
+
+[claim_ledger.cls_hard]
+doc = "The class of a flag that would block once blocking is turned on."
+value = "hard"
+
+[claim_ledger.cls_soft]
+doc = "The class of a flag that would only nudge."
+value = "soft"
+
+[claim_ledger.kind_count]
+doc = "The kind of a flag for a count with a unit noun."
+value = "count"
+
+[claim_ledger.kind_sha]
+doc = "The kind of a flag for a git SHA."
+value = "sha"
+
+[claim_ledger.kind_task]
+doc = "The kind of a flag for a task N of claim."
+value = "task"
+
+[claim_ledger.kind_state]
+doc = "The kind of a flag for a runtime-state claim made in a turn with no tool call."
+value = "state-no-tool"
+
+[claim_ledger.kind_days_ago]
+doc = "The kind of a flag for an N days ago claim."
+value = "days-ago"
+
+[claim_ledger.count_js_re]
+doc = "JavaScript regex source (flags gi) of a count with a unit noun, as the Node hook has it: it starts with a look-behind that rejects a number glued to an identifier character (`V2-4 workspace` is a name, not a count of 4 workspaces)."
+value = '(?<![\w.-])(\d{1,6}(?:[.,]\d+)?)\s*(ms|s|sec|seconds|minutes|min|hours|days?|weeks?|workspaces?|rows?|files?|lines?|tests?|bytes?|KB|MB|chars?|items?|entries|messages?|hooks?|agents?|commits?|matches|unread|live)\b'
+
+[claim_ledger.sha_re]
+doc = "Regex source of a git SHA (7 to 40 lower-case hex digits)."
+value = '\b[0-9a-f]{7,40}\b'
+
+[claim_ledger.task_re]
+doc = "Regex source (case-insensitive) of a task N of claim."
+value = '\btask\s+\d+\s+of\b'
+
+[claim_ledger.state_re]
+doc = "Regex source (case-insensitive) of a runtime-state claim."
+value = '\b(?:still|currently)\s+(?:running|live|active|pending|blocked)\b'
+
+[claim_ledger.days_ago_re]
+doc = "Regex source (case-insensitive) of an N days ago claim."
+value = '\b\d+\s+days?\s+ago\b'
+
+[claim_ledger.number_re]
+doc = "Regex source of a number in the evidence (thousands separators allowed)."
+value = '\d[\d,]*(?:\.\d+)?'
+
+# ---- output-verify-guard (hooks/output-verify-guard.js) ---------------------------------------------------
+
+[output_verify.summary]
+doc = "One-line description of the output-verify-guard check in the generated reference."
+value = "PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js)."
+
+[output_verify.guard_name]
+doc = "The guard id this check answers to in skip.json, in messages and as the once-per-turn key."
+value = "output-verify-guard"
+
+[output_verify.event]
+doc = "The only event this check answers."
+value = "PostToolUse"
+
+[output_verify.tool]
+doc = "The only tool whose output is read."
+value = "Bash"
+
+[output_verify.setting]
+doc = "Where the on/off switch is read from (guards.outputVerifyGuard, default on)."
+value = { section = "guards", key = "outputVerifyGuard", env = "ANTIHALL_OUTPUT_VERIFY_GUARD", aliases = [], option = "guards_output_verify_guard", default = true }
+
+[output_verify.once_setting]
+doc = "Where the once-per-turn switch is read from (guards.outputVerifyOncePerTurn, default on)."
+value = { section = "guards", key = "outputVerifyOncePerTurn", env = "ANTIHALL_OUTPUT_VERIFY_ONCE_PER_TURN", aliases = [], option = "", default = true }
+
+[output_verify.jev_id]
+doc = "The Jev integration id of the shadow question asked for each test-runner output."
+value = "outputVerifyGuard"
+
+[output_verify.jev_instructions]
+doc = "The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's)."
+value = "Does this test-runner output show a GENUINELY mixed pass/fail result (some tests failed alongside others passing), as opposed to both words merely appearing in unrelated text?"
+
+[output_verify.jev_true]
+doc = "The label for a true answer of the outputVerifyGuard question."
+value = "genuinely mixed pass/fail"
+
+[output_verify.jev_false]
+doc = "The label for a false answer of the outputVerifyGuard question."
+value = "not a genuine mixed result"
+
+[output_verify.jev_state_chars]
+doc = "How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000))."
+value = 4000
+min = 1
+
+[output_verify.blob_fields]
+doc = "The payload fields the scanned text is built from, in order."
+value = ["tool_response", "tool_output"]
+
+[output_verify.scan_cap]
+doc = "Longest scanned text, in UTF-16 units; a longer one is cut to its head and its tail so the trailing summary line survives."
+value = 200000
+min = 1000
+
+[output_verify.truncation_marker]
+doc = "What joins the head and the tail of a cut scan text."
+value = "\n...(truncated)...\n"
+
+[output_verify.exit_fields]
+doc = "The fields of an object tool response that may hold the exit code, in the order they are tried."
+value = ["exit_code", "exitCode", "exit_status", "exitStatus"]
+
+[output_verify.exit_code_re]
+doc = "Regex source (case-insensitive) of an exit code written as text in the output."
+value = '''exit[_ ]?code["']?\s*[:=]\s*(-?\d+)'''
+
+[output_verify.count_marker]
+doc = "Text in a signal pattern that marks a captured count: such a pattern only hits on a non-zero count, so a clean summary like 0 failed is not a failure."
+value = '(\d+)'
+
+[output_verify.fail_patterns]
+doc = "The failing signals, in the order they are tried: regex source, case-insensitive flag, and whether it must start a line."
+value = [
+  { src = '\bFAIL\b', ci = false },
+  { src = '--- FAIL:', ci = false },
+  { src = '^FAIL\t', ci = false, multiline = true },
+  { src = '\b(\d+)\s+failing\b', ci = true },
+  { src = '\b(\d+)\s+failed\b', ci = true },
+  { src = 'error TS\d+:', ci = false },
+  { src = 'ERROR in ', ci = false },
+  { src = '\bBuild failed\b', ci = true },
+  { src = 'AssertionError', ci = false },
+  { src = 'Traceback \(most recent call last\)', ci = false },
+]
+
+[output_verify.pass_patterns]
+doc = "The passing signals, in the order they are tried: regex source, case-insensitive flag, and whether it must start a line."
+value = [
+  { src = '\bPASS\b', ci = false },
+  { src = '--- PASS:', ci = false },
+  { src = '^ok\s+\S+', ci = false, multiline = true },
+  { src = '\b(\d+)\s+passing\b', ci = true },
+  { src = '\b(\d+)\s+passed\b', ci = true },
+  { src = '\bCompiled successfully\b', ci = true },
+  { src = '\bFound 0 errors\b', ci = true },
+  { src = '\bAll tests passed\b', ci = true },
+]
+
+[output_verify.segment_split_re]
+doc = "Regex source that splits a command into simple commands (and, or, semicolon, ampersand, pipe, newline)."
+value = '&&|\|\||[;&|\n]'
+
+[output_verify.ws_split_re]
+doc = "Regex source that splits a simple command into words."
+value = '\s+'
+
+[output_verify.env_assign_re]
+doc = "Regex source of a leading environment assignment word, which is skipped."
+value = '^[A-Za-z_][A-Za-z0-9_]*='
+
+[output_verify.path_sep_re]
+doc = "Regex source of a path separator; the last part of a command word is its verb, so /usr/bin/pytest counts as pytest."
+value = '[\\/]'
+
+[output_verify.runner_verbs]
+doc = "Command verbs that are test runners on their own."
+value = ["pytest", "jest", "vitest", "cargo"]
+
+[output_verify.runner_subcommands]
+doc = "Command verbs that are test runners with this first argument (an optional run word may come before it)."
+value = { node = "test", go = "test", flutter = "test", dart = "test", npm = "test", yarn = "test", pnpm = "test" }
+
+[output_verify.run_word]
+doc = "The optional word between a package manager and its test script (npm run test)."
+value = "run"
+
+[output_verify.bit_pass]
+doc = "One signal of the advisory; {hit} is the quoted passing text."
+value = "a passing signal ({hit})"
+
+[output_verify.bit_fail]
+doc = "One signal of the advisory; {hit} is the quoted failing text."
+value = "a failure signal ({hit})"
+
+[output_verify.bit_exit]
+doc = "One signal of the advisory; {code} is the exit code."
+value = "a non-zero exit code ({code})"
+
+[output_verify.bits_sep]
+doc = "What joins the signals in the advisory headline."
+value = " AND "
+
+[output_verify.sig_sep]
+doc = "What joins the signals into the once-per-turn signature."
+value = "|"
+
+[output_verify.msg_what]
+doc = "Advisory headline; {bits} are the signals found."
+value = "this Bash command's output contains {bits} in the same run (advisory, not a block)."
+
+[output_verify.msg_why]
+doc = "Advisory reason."
+value = "A mixed summary is not a clean pass."
+
+[output_verify.msg_instead]
+doc = "Advisory advice."
+value = "before reporting \"tests pass\" / \"build succeeded\", re-read the full output and confirm the actual pass/fail counts and exit code."

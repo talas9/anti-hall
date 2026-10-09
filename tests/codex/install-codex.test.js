@@ -40,7 +40,7 @@ test('install-codex: dry-run does not write project files', () => {
   } finally { t.cleanup(); }
 });
 
-test('install-codex: writes supported Codex hook subset and enables hooks feature', () => {
+test('install-codex: writes the generated thin trigger (one wrapper call per event) and enables hooks feature', () => {
   const t = tmpProject();
   try {
     const r = run(t.root);
@@ -49,26 +49,18 @@ test('install-codex: writes supported Codex hook subset and enables hooks featur
     const hooksPath = path.join(t.root, '.codex', 'hooks.json');
     const configPath = path.join(t.root, '.codex', 'config.toml');
     const hooks = readJSON(hooksPath).hooks;
-    assert.ok(Array.isArray(hooks.SessionStart));
-    assert.ok(Array.isArray(hooks.UserPromptSubmit));
-    assert.ok(Array.isArray(hooks.PreToolUse));
-    assert.ok(Array.isArray(hooks.Stop));
-
-    const preCommands = hooks.PreToolUse.flatMap(g => g.hooks || []).map(h => h.command).join('\n');
-    assert.match(preCommands, /git-guard\.js/);
-    assert.match(preCommands, /command-guard\.js/);
-    // Codex apply_patch edit guards (codex-cli >= 0.134: apply_patch PreToolUse +
-    // agent_id on subagent payloads), registered on matcher "apply_patch".
-    const patchGroups = hooks.PreToolUse.filter(g => g.matcher === 'apply_patch');
-    const patchCommands = patchGroups.flatMap(g => g.hooks || []).map(h => h.command).join('\n');
-    assert.match(patchCommands, /edit-guard\.js/);
-    assert.match(patchCommands, /api-guard\.js/);
-    assert.match(patchCommands, /ship-it-guard\.js/);
-    const bashCommands = hooks.PreToolUse.filter(g => g.matcher === 'Bash').flatMap(g => g.hooks || []).map(h => h.command).join('\n');
-    assert.doesNotMatch(bashCommands, /(edit|api|ship-it)-guard\.js/);
-
-    const startCommands = hooks.SessionStart.flatMap(g => g.hooks || []).map(h => h.command).join('\n');
-    assert.match(startCommands, /handover-resume\.js/, 'handover-resume must be registered on Codex SessionStart');
+    const thin = readJSON(path.join(REPO, 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.json')).hooks;
+    // Same events, one group each, same timeouts as the generated file; only ${PLUGIN_ROOT} is resolved.
+    assert.deepStrictEqual(Object.keys(hooks).sort(), Object.keys(thin).sort());
+    const root = path.join(REPO, 'plugins', 'anti-hall');
+    for (const ev of Object.keys(thin)) {
+      assert.strictEqual(hooks[ev].length, 1, ev);
+      assert.strictEqual(hooks[ev][0].matcher, undefined, ev);
+      const want = JSON.stringify(thin[ev]).split('${PLUGIN_ROOT}').join(root);
+      assert.strictEqual(JSON.stringify(hooks[ev]), want, ev);
+      assert.match(hooks[ev][0].hooks[0].command, new RegExp('ah-hook\\.sh" ' + ev + ' --host codex$'));
+    }
+    assert.doesNotMatch(JSON.stringify(hooks), /\$\{PLUGIN_ROOT\}|\.js/, 'no per-hook node registration is written');
 
     assert.match(fs.readFileSync(configPath, 'utf8'), /\[features\]\s+hooks = true/s);
   } finally { t.cleanup(); }
@@ -94,7 +86,7 @@ test('install-codex: preserves non anti-hall hooks and replaces stale anti-hall 
     const commands = pre.flatMap(g => g.hooks || []).map(h => h.command);
     assert.ok(commands.includes('echo keep-me'));
     assert.ok(!commands.some(c => c.includes('/old.js')));
-    assert.ok(commands.some(c => /[\\/]git-guard\.js$/.test(c.replace(/\"$/, ''))));
+    assert.ok(commands.some(c => /ah-hook\.sh" PreToolUse --host codex$/.test(c)));
   } finally { t.cleanup(); }
 });
 
@@ -120,7 +112,39 @@ test('install-codex: dedups stale anti-hall groups that used backslash (Windows)
     const pre = readJSON(path.join(codexDir, 'hooks.json')).hooks.PreToolUse;
     const commands = pre.flatMap(g => g.hooks || []).map(h => h.command);
     assert.ok(commands.includes('echo keep-me'));
-    const gitGuardCount = commands.filter(c => /git-guard\.js/.test(c)).length;
-    assert.strictEqual(gitGuardCount, 1, `expected exactly one git-guard.js entry after dedup, got ${gitGuardCount}: ${JSON.stringify(commands)}`);
+    assert.ok(!commands.some(c => /git-guard\.js/.test(c)), 'the stale per-hook group is gone');
+    const wrapperCount = commands.filter(c => /ah-hook\.sh" PreToolUse/.test(c)).length;
+    assert.strictEqual(wrapperCount, 1, `expected exactly one PreToolUse trigger after dedup, got ${wrapperCount}: ${JSON.stringify(commands)}`);
+  } finally { t.cleanup(); }
+});
+
+test('install-codex: a second run is byte-identical (idempotent) and a thin install is not duplicated', () => {
+  const t = tmpProject();
+  try {
+    assert.strictEqual(run(t.root).status, 0);
+    const first = fs.readFileSync(path.join(t.root, '.codex', 'hooks.json'), 'utf8');
+    assert.strictEqual(run(t.root).status, 0);
+    assert.strictEqual(fs.readFileSync(path.join(t.root, '.codex', 'hooks.json'), 'utf8'), first);
+  } finally { t.cleanup(); }
+});
+
+test('install-codex: migrates a full old per-hook registry install to the thin trigger, keeping user hooks', () => {
+  const t = tmpProject();
+  try {
+    const codexDir = path.join(t.root, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    const reg = readJSON(path.join(REPO, 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.registry.json')).hooks;
+    const old = JSON.parse(JSON.stringify(reg).split('${PLUGIN_ROOT}').join('/Users/x/.codex/plugins/anti-hall'));
+    old.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo keep-me', timeout: 1 }] });
+    fs.writeFileSync(path.join(codexDir, 'hooks.json'), JSON.stringify({ hooks: old }, null, 2));
+    const r = run(t.root);
+    assert.strictEqual(r.status, 0, r.stderr || r.stdout);
+    const hooks = readJSON(path.join(codexDir, 'hooks.json')).hooks;
+    const all = Object.values(hooks).flat().flatMap(g => g.hooks || []).map(h => h.command);
+    assert.ok(all.includes('echo keep-me'));
+    assert.ok(!all.some(c => /\/hooks\/[a-z-]+\.js/.test(c)), 'no old per-hook registration survives');
+    for (const ev of ['SessionStart', 'PreToolUse', 'Stop']) {
+      assert.strictEqual(hooks[ev].filter(g => g.hooks.some(h => /ah-hook\.sh"/.test(h.command))).length, 1, ev);
+    }
   } finally { t.cleanup(); }
 });

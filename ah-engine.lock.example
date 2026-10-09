@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "version": "0.1.0",
+  "tag": "ah-engine-v0.1.0",
+  "fingerprint": "20b6b6c9b2e52f6386d1abfa71c7a68004a95a9de30091fe4149072367d5d2c1",
+  "assets": {
+    "ah-engine-v0.1.0-aarch64-apple-darwin.tar.gz": "e3d65ae01956f19b977ba802c1ebbc636b9f7c380f6bcd4cb3271eacf9d00100"
+  }
+}

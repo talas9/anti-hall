@@ -306,7 +306,9 @@ head('Hooks (present + syntax)');
 let registered = [];
 let hooksConfig = null;
 try {
-  hooksConfig = JSON.parse(fs.readFileSync(path.join(HOOKS, 'hooks.json'), 'utf8'));
+  // D87: hooks.json is one thin trigger per event; the per-hook registry the table generates lists the hook scripts.
+  JSON.parse(fs.readFileSync(path.join(HOOKS, 'hooks.json'), 'utf8'));
+  hooksConfig = JSON.parse(fs.readFileSync(path.join(HOOKS, 'hooks.registry.json'), 'utf8'));
   const cmds = JSON.stringify(hooksConfig).match(/[\w-]+\.js/g) || [];
   registered = [...new Set(cmds)];
   ok(`hooks.json is valid JSON (${registered.length} hook script(s) registered)`);

@@ -1,0 +1,548 @@
+# ah-engine shipped defaults for handover hygiene (`ah-engine handovers`, the `handover-hygiene` SessionStart check and the
+# `handovers` scheduled job). Format: see the header of engine.toml.
+#
+# The decision logic is the plugin script engine/logic/handover-hygiene.js; the engine only lists, reads and atomically writes
+# what it asks for. Regex sources use JavaScript syntax (the script runs them with the interpreter's own RegExp) and are TOML
+# literal strings so no backslash is doubled. Paths are relative to the project root unless a doc says otherwise.
+#
+# Layout (never changes the handover files themselves, never deletes anything):
+#   .anti-hall/handovers/BRIEF.md + BRIEF.json          the root brief: one row per day, one per session
+#   .anti-hall/handovers/<date>/BRIEF.md + BRIEF.json   the day brief: one entry per handover, typed fields in the sidecar
+#   .anti-hall/handovers/INDEX.md                        the append-only row index the handover skill writes: left alone
+
+[handovers.summary]
+doc = "One-line description of the handover-hygiene check in the generated reference."
+value = "SessionStart advisory (engine-only, no Node twin): reports handovers that are unindexed, stale, missing a brief or malformed (no front matter, no Situation or Next action, a broken reference) once per distinct problem set; the same script builds the handover brief tree (`ah-engine handovers index|check|search`) and runs as the `handovers` scheduled job."
+
+[handovers.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "handover-hygiene"
+
+[handovers.setting]
+doc = "Where the on/off switch is read from (guards.handoverHygiene, default on). Off silences the SessionStart advisory and the scheduled job; the CLI verbs still work."
+value = { section = "guards", key = "handoverHygiene", env = "", aliases = [], option = "guards_handover_hygiene", default = true }
+
+[handovers.child_env]
+doc = "The environment variable the judge and Jev children carry; a hook that runs inside one does nothing."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[handovers.child_value]
+doc = "The value of the child variable that means this process is a judge or Jev child."
+value = "1"
+
+[handovers.events]
+doc = "The hook events the check answers."
+value = ["SessionStart"]
+
+[handovers.cli_event]
+doc = "The event name the CLI verbs and the scheduled job pass to the script (it selects the larger time limit of script.time_limit_by_check)."
+value = "Cli"
+
+[handovers.schema]
+doc = "Version of the sidecar layout. A sidecar of another version is rebuilt (never read as current)."
+value = 1
+min = 1
+
+# ---- where things are ----------------------------------------------------------------------------------------
+
+[handovers.dir]
+doc = "The handovers directory, relative to the project root. It must start with the state directory (script.write_root) because the briefs are written there."
+value = ".anti-hall/handovers"
+
+[handovers.walk_up_max]
+doc = "How many parent directories are tried when the working directory has no handovers directory (a session started in a sub-directory)."
+value = 8
+min = 0
+max = 32
+
+[handovers.root_brief]
+doc = "File name of the root brief (a tree root: it references one brief per day)."
+value = "BRIEF.md"
+
+[handovers.root_sidecar]
+doc = "File name of the root brief's machine-readable sidecar."
+value = "BRIEF.json"
+
+[handovers.day_brief]
+doc = "File name of a day brief, inside the day directory."
+value = "BRIEF.md"
+
+[handovers.day_sidecar]
+doc = "File name of a day brief's machine-readable sidecar, inside the day directory."
+value = "BRIEF.json"
+
+[handovers.legacy_index]
+doc = "File name of the append-only row index the handover skill writes. The engine only links to it and never edits it."
+value = "INDEX.md"
+
+[handovers.registry_file]
+doc = "The registry of project roots whose handovers the scheduled job keeps indexed, relative to the home directory. A SessionStart in a project with handovers registers it."
+value = ".anti-hall/handover-projects.json"
+
+[handovers.registry_max]
+doc = "Most projects the registry keeps; the least recently seen is dropped past this."
+value = 64
+min = 1
+
+[handovers.registry_refresh_ms]
+doc = "A project already in the registry is re-recorded at most this often (the registry is a file in the home directory; a session start must not rewrite it every time)."
+value = 3600000
+unit = "ms"
+min = 0
+
+[handovers.lock_file_prefix]
+doc = "Prefix of the per-project index lock file in the state directory (relative to the home directory); the project root's hash follows."
+value = ".anti-hall/handover-index-"
+
+[handovers.lock_file_suffix]
+doc = "Suffix of the per-project index lock file."
+value = ".lock"
+
+[handovers.lock_stale_ms]
+doc = "An index lock older than this is taken over, whatever its holder."
+value = 60000
+unit = "ms"
+min = 100
+
+[handovers.lock_wait_ms]
+doc = "How long an index run waits for another run on the same project before it reports `busy`."
+value = 2000
+unit = "ms"
+min = 1
+
+[handovers.lock_step_ms]
+doc = "The pause between attempts to take the index lock."
+value = 20
+unit = "ms"
+min = 1
+
+[handovers.lock_reclaim_stale_ms]
+doc = "A lock-takeover marker older than this belongs to a reclaimer that died and may be taken over."
+value = 5000
+unit = "ms"
+min = 100
+
+[handovers.lock_release_tries]
+doc = "How many times releasing the lock tries to take the takeover marker before it removes its own lock unguarded."
+value = 5
+min = 1
+max = 100
+
+[handovers.lock_release_step_ms]
+doc = "The pause between those tries."
+value = 10
+unit = "ms"
+min = 1
+
+[handovers.lock_boot_slop_s]
+doc = "Slack (seconds) when a lock's recorded boot time is compared with this machine's."
+value = 5
+min = 0
+
+# ---- what a name means -------------------------------------------------------------------------------------
+
+[handovers.date_re]
+doc = "A day directory name."
+value = '^\d{4}-\d{2}-\d{2}$'
+
+[handovers.handover_re]
+doc = "A numbered handover file (group 1 = its sequence number, absent = 1). The same pattern as the Node handover finder (hooks/lib/handover-find.js)."
+value = '^HANDOVER(?:-(\d+))?\.md$'
+
+[handovers.named_re]
+doc = "A named handover file (group 1 = its name), e.g. HANDOVER-ENGINE-LANES.md."
+value = '^HANDOVER-([A-Za-z][A-Za-z0-9_.-]*)\.md$'
+
+[handovers.snapshot_re]
+doc = "A PreCompact snapshot file (group 1 = its number). A snapshot is attached to the handover it names, never indexed as a handover."
+value = '^PRECOMPACT-(\d+)\.md$'
+
+[handovers.companion_kinds]
+doc = "Session companion files and what they are (file name to kind). Any other .md file in a session directory is kind `other`."
+value = { "state.md" = "state", "decisions.md" = "decisions", "trials.md" = "trials", "knowledge.md" = "knowledge" }
+
+[handovers.other_kind]
+doc = "The kind of a .md file in a session directory that is neither a handover, a snapshot nor a known companion."
+value = "other"
+
+[handovers.legacy_dir_re]
+doc = "A session directory of a handover written before the session layout existed (it has no session id): its entries are kind `legacy` and are not held to the front-matter rules."
+value = '^legacy'
+
+[handovers.md_ext]
+doc = "The extension of the files the index looks at."
+value = ".md"
+
+[handovers.hidden_prefix]
+doc = "Directories and files whose name starts with this are skipped (tool state such as .omc)."
+value = "."
+
+# ---- how a handover is read --------------------------------------------------------------------------------
+
+[handovers.read_max_bytes]
+doc = "Most bytes read from one handover; a larger file is indexed from this head and flagged `too_large`."
+value = 262144
+unit = "bytes"
+min = 1024
+
+[handovers.front_matter_max_lines]
+doc = "Most lines a front-matter block may span before it is taken as not closed."
+value = 60
+min = 1
+
+[handovers.fm_title_key]
+doc = "Front-matter key of the handover's own one-line title."
+value = "handover"
+
+[handovers.fm_situation_key]
+doc = "Front-matter key of the situation summary."
+value = "Situation"
+
+[handovers.fm_next_key]
+doc = "Front-matter key of the next action."
+value = "Next action"
+
+[handovers.fm_predecessor_key]
+doc = "Front-matter key of the predecessor handover (a path)."
+value = "Predecessor"
+
+[handovers.situation_heading_re]
+doc = "A heading that opens the situation section when the front matter has no Situation."
+value = '^(?:situation|executive summary|summary|current state|where we are|state of play)\b'
+
+[handovers.next_heading_re]
+doc = "A heading that opens the next-action section when the front matter has no Next action."
+value = '^(?:next action|next actions|next step|next steps|what to do next|resume)\b'
+
+[handovers.open_decisions_heading_re]
+doc = "A heading whose bullets are decisions still open (checked before the decisions pattern)."
+value = '^(?:open|pending|undecided)\b.*\b(?:decisions?|questions?)\b'
+
+[handovers.decisions_heading_re]
+doc = "A heading whose bullets are decisions taken."
+value = '\b(?:decisions?|decided|rulings?)\b'
+
+[handovers.preferences_heading_re]
+doc = "A heading whose bullets are the owner's standing rules and preferences."
+value = '\b(?:owner rules|owner preferences|preferences|standing rules|rules in force)\b'
+
+[handovers.predecessor_re]
+doc = "A body line that names the predecessor handover (group 1 = the path)."
+value = '^\s*(?:Predecessor|Previous handover|Continues|Resumes)\s*:\s*`?([^\s`)]+)'
+
+[handovers.path_ref_re]
+doc = "A handover path mentioned in the text (checked: it must resolve). Matched globally."
+value = "\\.anti-hall/handovers/[^\\s`)\\]'\"<>*…]+\\.md"
+
+[handovers.file_ref_re]
+doc = "A backtick-quoted file path in the text: group 1 = the path (it has a directory part and an extension). Recorded in the typed `files` field."
+value = '`((?:[A-Za-z0-9_.~@-]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})`'
+
+[handovers.commit_re]
+doc = "A commit-like hash (7 to 40 hex characters with a letter and a digit) written in backticks, in parentheses, after @ or after the word commit. Matched globally; group 1 = the hash."
+value = '(?:`|\(|@|\bcommit\s)((?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40})(?![\w-])'
+
+[handovers.md_link_re]
+doc = "A Markdown link whose target is checked when it is relative (group 1 = the target)."
+value = '\]\(([^)\s]+)\)'
+
+[handovers.external_re]
+doc = "A link target that is not a file (scheme, anchor, mail)."
+value = '^(?:[a-z][a-z0-9+.-]*:|#)'
+
+[handovers.meta_line_re]
+doc = "A metadata line at the top of an older handover (`Trigger: ...`, `Date: ...`): when a handover has no Situation, the first paragraph after such lines is taken instead."
+value = '^\s*(?:\*\*)?(?:Trigger|Date|Repository|Repo|Predecessor|Current release|Current HEAD|Primary target)\b[^:]{0,24}:'
+
+[handovers.bullet_re]
+doc = "A bullet or numbered list line; group 1 = its text."
+value = '^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$'
+
+[handovers.heading_re]
+doc = "A Markdown heading: group 1 = the hashes, group 2 = its text."
+value = '^(#{1,6})\s+(.*?)\s*#*\s*$'
+
+[handovers.title_prefix_re]
+doc = "A leading `Handover` word that is dropped from a title when something follows it."
+value = '^Handover\s*[:—–-]\s*(?=\S)'
+
+[handovers.snapshot_handover_re]
+doc = "The line of a snapshot that names the newest handover it was taken beside (group 1 = the path)."
+value = '^(\S+\.md)(?:\s|$)'
+
+[handovers.snapshot_heading_re]
+doc = "The heading of a snapshot section that holds the handover path."
+value = '^newest handover\b'
+
+[handovers.snapshot_head_bytes]
+doc = "Bytes read from the top of a PreCompact snapshot (it only needs its title line and the handover it names)."
+value = 4096
+unit = "bytes"
+min = 256
+
+[handovers.snapshot_stamp_re]
+doc = "The timestamp in a snapshot's title line (group 1)."
+value = '(\d{4}-\d{2}-\d{2}T[\d:.]+Z)'
+
+# ---- caps of the typed fields -----------------------------------------------------------------------------------
+
+[handovers.summary_chars]
+doc = "Longest situation or next-action text kept in an entry (characters; longer is cut with an ellipsis)."
+value = 600
+min = 40
+
+[handovers.item_chars]
+doc = "Longest single decision, preference or title kept (characters)."
+value = 300
+min = 20
+
+[handovers.headline_chars]
+doc = "Longest day or session headline in the root brief (characters)."
+value = 140
+min = 20
+
+[handovers.decisions_max]
+doc = "Most decisions (and, separately, open decisions) kept per handover."
+value = 24
+min = 1
+
+[handovers.preferences_max]
+doc = "Most preferences kept per handover."
+value = 24
+min = 1
+
+[handovers.files_max]
+doc = "Most file paths kept per handover."
+value = 60
+min = 1
+
+[handovers.commits_max]
+doc = "Most commit-like hashes kept per handover."
+value = 40
+min = 1
+
+[handovers.refs_max]
+doc = "Most references (handover paths and relative links) kept and checked per handover."
+value = 60
+min = 1
+
+[handovers.problems_max]
+doc = "Most problems kept per handover entry."
+value = 12
+min = 1
+
+[handovers.ellipsis]
+doc = "Appended where a text was cut."
+value = "…"
+
+[handovers.emphasis_re]
+doc = "Markdown emphasis markers and a leading `Situation:` / `Next action:` label that are removed from a summary text. Matched globally."
+value = '\*\*|^(?:Situation|Next action)\s*:\s*'
+
+[handovers.first_paragraph_fallback]
+doc = "1: a handover with neither front-matter Situation nor a situation heading takes the first paragraph after its title as the situation (source `first_paragraph`); 0: it is left empty and reported."
+value = 1
+min = 0
+max = 1
+
+# ---- problems --------------------------------------------------------------------------------------------------
+
+[handovers.sig_keys]
+doc = "The settings that decide what a brief contains. A change to any of them (or to handovers.schema) rebuilds every day brief on the next index run, so a tuned rule never leaves stale briefs behind."
+value = ["handovers.date_re", "handovers.handover_re", "handovers.named_re", "handovers.snapshot_re", "handovers.companion_kinds", "handovers.other_kind", "handovers.legacy_dir_re", "handovers.md_ext", "handovers.hidden_prefix", "handovers.read_max_bytes", "handovers.front_matter_max_lines", "handovers.fm_title_key", "handovers.fm_situation_key", "handovers.fm_next_key", "handovers.fm_predecessor_key", "handovers.situation_heading_re", "handovers.next_heading_re", "handovers.open_decisions_heading_re", "handovers.decisions_heading_re", "handovers.preferences_heading_re", "handovers.predecessor_re", "handovers.path_ref_re", "handovers.file_ref_re", "handovers.commit_re", "handovers.md_link_re", "handovers.external_re", "handovers.bullet_re", "handovers.heading_re", "handovers.title_prefix_re", "handovers.meta_line_re", "handovers.emphasis_re", "handovers.snapshot_handover_re", "handovers.snapshot_heading_re", "handovers.snapshot_stamp_re", "handovers.snapshot_head_bytes", "handovers.summary_chars", "handovers.item_chars", "handovers.headline_chars", "handovers.decisions_max", "handovers.preferences_max", "handovers.files_max", "handovers.commits_max", "handovers.refs_max", "handovers.problems_max", "handovers.ellipsis", "handovers.first_paragraph_fallback", "handovers.severities", "handovers.exempt_kinds", "handovers.required_by_kind", "handovers.labels", "handovers.generated_note", "handovers.root_title", "handovers.day_title", "handovers.none_text", "handovers.list_show_max", "handovers.msg_more_items", "handovers.root_days_max", "handovers.msg_search_howto", "handovers.msg_loose_title", "handovers.root_brief", "handovers.root_sidecar", "handovers.day_brief", "handovers.day_sidecar", "handovers.legacy_index"]
+
+[handovers.run_budget_ms]
+doc = "How long one index run keeps rebuilding days before it stops and reports `partial` (the rest is picked up by the next run). It must stay under the script's time limit (script.time_limit_by_check)."
+value = 20000
+unit = "ms"
+min = 100
+
+[handovers.severities]
+doc = "Severity of each problem code: error, warn or info. The SessionStart advisory counts error and warn; info problems (a missing front matter or Situation, a legacy layout) show in `check` and in the briefs only."
+value = { missing_brief = "error", unindexed = "error", stale = "warn", orphan = "info", no_front_matter = "info", no_situation = "info", no_next_action = "warn", broken_ref = "warn", duplicate_seq = "warn", too_large = "info", unreadable = "warn", empty = "warn", unrecognized_dir = "info", write_refused = "error", no_handover = "info", recorded = "warn" }
+
+[handovers.exempt_kinds]
+doc = "Entry kinds not held to the front-matter, Situation and Next-action rules."
+value = ["legacy"]
+
+[handovers.required_by_kind]
+doc = "Which problem codes apply to which entry kind: a handover must carry front matter, a Situation and a Next action; a named handover (an addendum) needs only a Situation."
+value = { handover = ["no_front_matter", "no_situation", "no_next_action"], named = ["no_situation"] }
+
+# ---- advisory ----------------------------------------------------------------------------------------------------
+
+[handovers.advisory_max_lines]
+doc = "Most problem lines the SessionStart advisory lists."
+value = 6
+min = 1
+
+[handovers.advisory_max_files]
+doc = "A SessionStart check looks at no more than this many files; a larger tree is checked by the scheduled job and the CLI only."
+value = 2000
+min = 1
+
+[handovers.msg_advisory_what]
+doc = "The advisory's first line. Placeholders: {count} (problems), {days} (days needing a rebuild), {project}."
+value = "{count} handover problem(s), {days} day brief(s) out of date in {project}"
+
+[handovers.msg_advisory_why]
+doc = "Why it matters."
+value = "later searches for changes, work and decisions read the handover briefs; an unindexed or malformed handover is invisible to them"
+
+[handovers.msg_advisory_instead]
+doc = "What to do. Placeholder: {cmd}."
+value = "run `{cmd}` (the scheduled job also repairs the briefs); handover files are never edited by it"
+
+[handovers.cmd_index]
+doc = "The command the advisory tells the owner to run."
+value = "ah-engine handovers index"
+
+[handovers.msg_problem_line]
+doc = "One problem line of the advisory and of `check`. Placeholders: {severity}, {code}, {where}, {detail}."
+value = "[{severity}] {code} {where} {detail}"
+
+[handovers.msg_more]
+doc = "The last advisory line when more problems exist. Placeholder: {n}."
+value = "... and {n} more (run `ah-engine handovers check`)"
+
+# ---- CLI ---------------------------------------------------------------------------------------------------------
+
+[handovers.verbs]
+doc = "The sub-commands of `ah-engine handovers`."
+value = ["index", "check", "search"]
+
+[handovers.registered_flag]
+doc = "The flag that makes `index` walk every registered project instead of one."
+value = "--registered"
+
+[handovers.project_flag]
+doc = "The flag that names the project root (default: the working directory, then its parents)."
+value = "--project"
+
+[handovers.force_flag]
+doc = "The flag that makes `index` rebuild every day, not only the changed ones."
+value = "--force"
+
+[handovers.limit_flag]
+doc = "The flag that caps the number of search hits."
+value = "--limit"
+
+[handovers.search_limit]
+doc = "Default number of search hits."
+value = 20
+min = 1
+
+[handovers.search_limit_max]
+doc = "Most search hits whatever the flag asks."
+value = 200
+min = 1
+
+[handovers.search_weights]
+doc = "How much a query word is worth in each field of an entry (a word must match somewhere; the score ranks the hits)."
+value = { title = 5, situation = 3, next_action = 3, decisions = 4, preferences = 4, open_decisions = 2, files = 2, commits = 2, session = 2, id = 1 }
+
+[handovers.search_filters]
+doc = "Filter prefixes a query may use (`date:2026-09`, `from:`, `to:`, `session:`, `kind:`, `file:`, `commit:`, `decision:`, `pref:`): the prefix to the entry field it narrows."
+value = { date = "date", from = "date", to = "date", session = "session", kind = "kind", file = "files", commit = "commits", decision = "decisions", pref = "preferences" }
+
+[handovers.search_snippet_chars]
+doc = "Characters of context a hit's snippet shows around the first match."
+value = 160
+min = 20
+
+[handovers.msg_usage]
+doc = "Printed for `ah-engine handovers` without a known verb."
+value = "usage: ah-engine handovers index [--project DIR] [--registered] [--force] | check [--project DIR] | search <query> [--project DIR] [--limit N]. Query words must all match; filters: date:YYYY-MM[-DD] from:DATE to:DATE session:ID kind:KIND file:PATH commit:HASH decision:WORD pref:WORD."
+
+[handovers.msg_no_project]
+doc = "Printed when no handovers directory is found from the working directory upward."
+value = "no .anti-hall/handovers directory found from here upward"
+
+[handovers.msg_busy]
+doc = "Printed when another index run holds the project's lock."
+value = "another handover index run is in progress for this project; try again shortly"
+
+[handovers.msg_index_done]
+doc = "Summary of an index run. Placeholders: {project}, {handovers}, {days}, {rebuilt}, {written}, {problems}."
+value = "{project}: {handovers} handover(s) in {days} day(s); rebuilt {rebuilt} day(s), wrote {written} file(s); {problems} problem(s)"
+
+[handovers.msg_check_clean]
+doc = "Printed by `check` when everything is indexed and valid. Placeholders: {project}, {handovers}, {days}."
+value = "{project}: {handovers} handover(s) in {days} day(s): indexed, no problems"
+
+[handovers.msg_check_summary]
+doc = "Summary line of `check` with problems. Placeholders: {project}, {problems}, {stale}."
+value = "{project}: {problems} problem(s), {stale} day brief(s) out of date"
+
+[handovers.msg_search_none]
+doc = "Printed when a search finds nothing. Placeholder: {query}."
+value = "no handover matches: {query}"
+
+[handovers.msg_search_hit]
+doc = "One search hit. Placeholders: {score}, {id}, {title}, {path}, {snippet}."
+value = "{score}  {id}  {title}\n    {path}\n    {snippet}"
+
+[handovers.msg_search_total]
+doc = "Heading of the hit list. Placeholders: {shown}, {total}."
+value = "{shown} of {total} match(es)"
+
+[handovers.msg_not_indexed]
+doc = "Printed by `search` when the project has handovers but no sidecars yet. Placeholder: {cmd}."
+value = "no handover index yet; run `{cmd}` first"
+
+[handovers.msg_script_failed]
+doc = "Printed by the CLI when the handover script could not answer. Placeholder: {why}."
+value = "the handover-hygiene script could not run ({why}); the plugin's engine/logic/handover-hygiene.js is missing, broken or switched off (script.enabled)"
+
+# ---- rendering ---------------------------------------------------------------------------------------------------
+
+[handovers.generated_note]
+doc = "The line every generated brief carries under its title."
+value = "Generated by `ah-engine handovers index` from the handover files; do not edit (it is rebuilt, and the handovers themselves are never changed). Machine-readable twin: {sidecar}."
+
+[handovers.root_title]
+doc = "Title of the root brief."
+value = "Handover brief (root)"
+
+[handovers.day_title]
+doc = "Title of a day brief. Placeholder: {date}."
+value = "Handover brief {date}"
+
+[handovers.none_text]
+doc = "Shown for an empty field."
+value = "(none)"
+
+[handovers.labels]
+doc = "Labels of the rendered briefs."
+value = { situation = "Situation", next_action = "Next action", decisions = "Decisions", open_decisions = "Open decisions", preferences = "Owner rules and preferences", files = "Files", commits = "Commits", predecessor = "Continues", successor = "Continued by", snapshots = "Snapshots", companions = "Companions", problems = "Problems", file = "File", id = "Id", days = "Days", sessions = "Sessions", handovers = "Handovers", session = "Session", seq = "Seq", first = "First", last = "Last", headline = "Headline", problem_count = "Problems", search_howto = "Search", index_row_index = "Append-only row index", root = "Root brief", totals = "Totals", refs = "References" }
+
+[handovers.msg_loose_title]
+doc = "Heading of the day-brief section that lists session directories with snapshots or companion files but no handover."
+value = "Without a handover"
+
+[handovers.msg_recorded]
+doc = "Detail of the advisory line that stands for problems recorded in the index by the last run. Placeholder: {n}."
+value = "{n} problem(s) recorded in the index"
+
+[handovers.msg_search_howto]
+doc = "The search hint in the root brief."
+value = "`ah-engine handovers search <words> [date:2026-09] [session:ID] [decision:WORD] [file:PATH]`; the sidecars (BRIEF.json) hold the same fields for any other tool."
+
+[handovers.list_show_max]
+doc = "Most items of a list field shown in a rendered brief before `+N more` (the sidecar holds all that were kept)."
+value = 8
+min = 1
+
+[handovers.msg_more_items]
+doc = "Shown after a cut list. Placeholder: {n}."
+value = "+{n} more"
+
+[handovers.root_days_max]
+doc = "Most days the root brief's table lists (newest first); the sidecar lists them all."
+value = 400
+min = 1
+
+[handovers.job_max_projects]
+doc = "Most registered projects one scheduled run walks."
+value = 16
+min = 1

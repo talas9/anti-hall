@@ -1,0 +1,584 @@
+# ah-engine shipped defaults for the native ingest drain (lane l7b, `src/dssup/ingest`): what the Node ingest daemon
+# (companion/devswarm-ingest.js, one launchd / systemd unit per project) does - the single-consumer drain of `hivecontrol workspace
+# monitor` into the per-repo store - taken over by the engine so those units can be uninstalled. Format: see the header of
+# engine.toml. Every key can be overridden in the `devswarm_ingest` section of settings.json. Nothing here is compiled into the binary.
+#
+# THE SWITCH: `devswarm_ingest.mode`. `witness` (the default) leaves the drain to the Node daemons and the engine starts nothing.
+# `engine` makes the engine's daemon run one drain per project. While a Node daemon still holds a project's lock the engine waits for
+# it (a live holder's lock is never taken over, so a destructive queue is never read by two consumers) and takes over as soon as the
+# holder is gone. The go-live steps are in docs/AH-ENGINE.md, "DevSwarm supervisor and ingest cutover".
+
+[devswarm_ingest.mode]
+doc = "Who drains the DevSwarm native queue: witness (the Node ingest daemons do; the engine starts nothing) | engine (the engine's daemon runs one drain per project). Anything else reads as witness, so a typo never starts a second consumer. The engine never edits any settings file or any launchd / systemd unit."
+value = "witness"
+
+[devswarm_ingest.mode_words]
+doc = "The words of devswarm_ingest.mode, in the order witness, engine."
+value = ["witness", "engine"]
+
+[devswarm_ingest.projects]
+doc = "Extra projects to drain, as paths of a git repository separated by the character in projects_separator (any worktree of it will do). Projects with a fresh Node ingest heartbeat and the ones an earlier run remembered are drained too."
+value = ""
+
+[devswarm_ingest.projects_separator]
+doc = "The character that separates paths in devswarm_ingest.projects."
+value = ":"
+
+[devswarm_ingest.remembered]
+doc = "The projects the engine has drained or found, a JSON list of paths, in the engine state directory. Nothing is ever removed from it."
+value = "devswarm-ingest-projects.json"
+
+[devswarm_ingest.discover_ms]
+doc = "How often the engine looks for projects it does not drain yet."
+value = 60000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_ingest.discover_max_age_ms]
+doc = "A Node ingest heartbeat written within this long names a project the Node daemon serves, so the engine serves it after the cutover."
+value = 900000
+min = 60000
+max = 31536000000
+unit = "ms"
+
+# ---- the monitor call ------------------------------------------------------------------------------------------------------
+
+[devswarm_ingest.set_timeout_sec]
+doc = "The -t of every monitor call: it long-polls at most this long, then exits (an empty exit is a quiet poll, not an error). Node: devswarm.monitorTimeoutSec. A value that is not a positive number reads as the default."
+value = { type = "number", section = "devswarm", key = "monitorTimeoutSec", env = "ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC", default = 30 }
+
+[devswarm_ingest.interval_sec]
+doc = "The -i of every monitor call, and the least time between two calls after a successful one (Node: DEFAULT_MONITOR_INTERVAL_SEC)."
+value = 3
+min = 1
+max = 3600
+unit = "s"
+
+[devswarm_ingest.hard_margin_ms]
+doc = "How long beyond its own -t a monitor call may run before the engine kills its own child (a hivecontrol that ignores its timeout must not park the drain). What it printed before the kill is kept."
+value = 10000
+min = 1000
+max = 600000
+unit = "ms"
+
+[devswarm_ingest.max_pace_ms]
+doc = "The ceiling of the pause after a successful call, whatever interval_sec says."
+value = 300000
+min = 1000
+max = 3600000
+unit = "ms"
+
+[devswarm_ingest.output_cap_bytes]
+doc = "Most bytes of one monitor call's output kept. The read is destructive, so this is far above any real batch; a batch that still exceeds it is logged, quarantined and kept whole in the WAL only up to this size."
+value = 67108864
+min = 1048576
+max = 1073741824
+
+[devswarm_ingest.monitor_args]
+doc = "The words after the executable of a monitor call."
+value = ["workspace", "monitor"]
+
+[devswarm_ingest.flag_interval]
+doc = "The monitor option for the poll interval."
+value = "-i"
+
+[devswarm_ingest.flag_timeout]
+doc = "The monitor option for the long-poll timeout."
+value = "-t"
+
+[devswarm_ingest.scrub_env_prefixes]
+doc = "Environment variables whose name starts with one of these are removed from the monitor child, so a daemon started from inside a workspace never reads the queue as that workspace."
+value = ["DEVSWARM_"]
+
+[devswarm_ingest.env_hivecontrol]
+doc = "The environment variable that names the hivecontrol executable (the installer baked it into the unit; the engine reads it too)."
+value = "ANTIHALL_DEVSWARM_HIVECONTROL"
+
+[devswarm_ingest.hc_cache]
+doc = "The path cache the installer writes, relative to the DevSwarm state directory."
+value = "hivecontrol-path.json"
+
+[devswarm_ingest.hc_cache_key]
+doc = "The key of the path cache that holds the executable."
+value = "hivecontrol"
+
+[devswarm_ingest.env_path]
+doc = "The environment variable the heartbeat records the daemon's PATH from."
+value = "PATH"
+
+[devswarm_ingest.src_env]
+doc = "The heartbeat's word for an executable named by the environment variable."
+value = "env"
+
+[devswarm_ingest.src_cache]
+doc = "The heartbeat's word for an executable taken from the path cache."
+value = "cache"
+
+[devswarm_ingest.src_path]
+doc = "The heartbeat's word for a bare executable name left to the OS to resolve."
+value = "path"
+
+[devswarm_ingest.stderr_tail_chars]
+doc = "Most characters of a failed monitor call's stderr kept in the error."
+value = 2048
+min = 0
+max = 1000000
+
+[devswarm_ingest.code_timeout]
+doc = "The error code of a monitor call the engine killed at its hard limit."
+value = "ETIMEDOUT"
+
+[devswarm_ingest.spawn_error_codes]
+doc = "How the operating system's words for a failed spawn map to the configuration-fault codes of the breaker: the first entry whose text the error contains."
+value = [
+  { text = "No such file or directory", code = "ENOENT" },
+  { text = "Permission denied", code = "EACCES" },
+  { text = "Not a directory", code = "ENOTDIR" },
+]
+
+[devswarm_ingest.permanent_codes]
+doc = "The error codes that are CONFIGURATION faults (retrying every few seconds cannot fix them): the breaker escalates the backoff and logs only on a change."
+value = ["ENOENT", "EACCES", "ENOTDIR"]
+
+[devswarm_ingest.permanent_steps]
+doc = "Multipliers of backoff_base_ms for the successive configuration failures (the last one repeats)."
+value = ["1", "2.5", "15", "60", "150"]
+
+[devswarm_ingest.backoff_base_ms]
+doc = "The base of both backoff ladders: a transient failure waits base x 2^(n-1), a configuration failure base x the n-th step."
+value = 2000
+min = 10
+max = 600000
+unit = "ms"
+
+[devswarm_ingest.backoff_shift_max]
+doc = "The largest doubling exponent of a transient failure's backoff, before transient_cap_ms."
+value = 30
+min = 0
+max = 62
+
+[devswarm_ingest.transient_cap_ms]
+doc = "The longest backoff after a transient failure."
+value = 300000
+min = 1000
+max = 3600000
+unit = "ms"
+
+[devswarm_ingest.permanent_cap_ms]
+doc = "The longest backoff after a configuration failure."
+value = 300000
+min = 1000
+max = 3600000
+unit = "ms"
+
+[devswarm_ingest.rollup_ms]
+doc = "Once the configuration-failure ladder is capped, one 'still failing' line at most this often."
+value = 900000
+min = 1000
+max = 86400000
+unit = "ms"
+
+# ---- lock, legacy consumers, loop ------------------------------------------------------------------------------------------
+
+
+[devswarm_ingest.lock_prefix]
+doc = "The start of a project's lock file name (followed by the repo key and the lock suffix), relative to the DevSwarm locks directory. Node's file."
+value = "ingest-project-"
+
+[devswarm_ingest.legacy_lock_prefix]
+doc = "The start of a legacy per-worktree consumer's lock file name (followed by the worktree hash)."
+value = "ingest-"
+
+[devswarm_ingest.lock_stale_ms]
+doc = "A lock record older than this whose holder is not a live local process is taken over (Node: INGEST_LOCK_STALE_MS). A live holder's lock is never taken over."
+value = 900000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_ingest.lock_retry_ms]
+doc = "How long the drain of a project waits before trying the lock (and the other start conditions) again after a refusal."
+value = 30000
+min = 100
+max = 3600000
+unit = "ms"
+
+[devswarm_ingest.legacy_probe]
+doc = "1: do not drain a repo while a legacy per-worktree ingest consumer of it is alive (the reap-before-drain probe; it removes nothing). 0: skip the probe, for after the Node units are uninstalled."
+value = 1
+min = 0
+max = 1
+
+[devswarm_ingest.git_worktree_args]
+doc = "The words after git of the command that lists a repo's worktrees."
+value = ["worktree", "list", "--porcelain"]
+
+[devswarm_ingest.porcelain_worktree]
+doc = "The start of a worktree line in that listing."
+value = "worktree "
+
+[devswarm_ingest.shutdown_wait_ms]
+doc = "How long the daemon waits at shutdown for the drain threads to finish the monitor call in flight (it has already taken its messages off the native queue, so they must reach the WAL and the store before the process exits)."
+value = 60000
+min = 1000
+max = 600000
+unit = "ms"
+
+[devswarm_ingest.stop_poll_ms]
+doc = "How often a waiting drain checks whether it must stop."
+value = 200
+min = 10
+max = 10000
+unit = "ms"
+
+[devswarm_ingest.beat_every_ms]
+doc = "While the drain waits, how often it re-stamps its lock and heartbeat (consumers judge a daemon dead after 3 minutes)."
+value = 30000
+min = 1000
+max = 170000
+unit = "ms"
+
+# ---- files -----------------------------------------------------------------------------------------------------------------
+
+
+[devswarm_ingest.dir_heartbeats]
+doc = "The heartbeat directory, relative to the DevSwarm state directory."
+value = "heartbeats"
+
+[devswarm_ingest.hb_prefix]
+doc = "The start of a drain's heartbeat file name (followed by the repo key and .json). Node's file."
+value = "ingest-"
+
+[devswarm_ingest.json_suffix]
+doc = "The suffix of a JSON file."
+value = ".json"
+
+[devswarm_ingest.ndjson_suffix]
+doc = "The suffix of an NDJSON file."
+value = ".ndjson"
+
+[devswarm_ingest.log_file]
+doc = "The ingest log, relative to the home directory (the file the Node daemon's unit writes its output to); one `[ISO time] line` each."
+value = ".anti-hall/devswarm-ingest.log"
+
+[devswarm_ingest.plugin_json]
+doc = "The plugin manifest the heartbeat's codeVersion is read from, relative to the plugin root."
+value = ".claude-plugin/plugin.json"
+
+[devswarm_ingest.dir_quarantine]
+doc = "Where a batch of no known shape is preserved, relative to the DevSwarm state directory."
+value = "quarantine"
+
+[devswarm_ingest.quarantine_prefix]
+doc = "The start of a quarantine file name."
+value = "lost-batch-"
+
+[devswarm_ingest.quarantine_suffix]
+doc = "The suffix of a quarantine file."
+value = ".raw"
+
+[devswarm_ingest.dir_wal]
+doc = "The delivery write-ahead log directory, relative to the DevSwarm state directory."
+value = "wal"
+
+[devswarm_ingest.wal_kind]
+doc = "The WAL kind of the monitor reader (the file is `<kind>-<repo key>.ndjson`)."
+value = "monitor"
+
+[devswarm_ingest.wal_suffix]
+doc = "The suffix of a WAL file."
+value = ".ndjson"
+
+[devswarm_ingest.dir_wal_spill]
+doc = "Where bytes go when the WAL is not writable, relative to the DevSwarm state directory."
+value = "wal-spill"
+
+[devswarm_ingest.spill_probe]
+doc = "The name of the file the spill directory is probed with (nothing is written to it)."
+value = ".probe"
+
+[devswarm_ingest.absorbed_suffix]
+doc = "The suffix a spill file gets once it is back in the WAL (kept, never deleted)."
+value = ".absorbed"
+
+[devswarm_ingest.dir_adopted]
+doc = "Where a prior reader key's WAL is claimed to, under the WAL directory."
+value = "adopted"
+
+[devswarm_ingest.dir_archive]
+doc = "Where a full, fully-processed WAL is renamed to, under the WAL directory (kept, never deleted)."
+value = "archive"
+
+[devswarm_ingest.last_resort_prefix]
+doc = "The start of the file name of the last-resort copy of a batch (written to the temporary directory when both the WAL and the spill failed)."
+value = "anti-hall-wal-lastresort-"
+
+[devswarm_ingest.wal_prefix_wal]
+doc = "The text before the reason when the WAL itself cannot be written."
+value = "WAL "
+
+[devswarm_ingest.wal_prefix_spill]
+doc = "The text before the reason when the spill directory cannot be written."
+value = "spill "
+
+[devswarm_ingest.reason_unparseable]
+doc = "The WAL closing reason of a batch of no known shape."
+value = "unparseable"
+
+[devswarm_ingest.entry_rand_len]
+doc = "How many random base-36 characters end a WAL entry id (`<time>-<pid>-<seq>-<random>`)."
+value = 8
+min = 4
+max = 32
+
+[devswarm_ingest.last_resort_hex]
+doc = "How many hex digits of the WAL path's hash name its last-resort files."
+value = 16
+min = 4
+max = 40
+
+[devswarm_ingest.wal_rotate_bytes]
+doc = "A WAL at least this big with nothing pending is renamed into the archive."
+value = 1048576
+min = 1024
+max = 1073741824
+
+[devswarm_ingest.quarantine_max_files]
+doc = "The quarantine directory takes no more files than this (an existing file is never pruned)."
+value = 20
+min = 1
+max = 100000
+
+[devswarm_ingest.quarantine_max_bytes]
+doc = "The most of a lost batch one quarantine file keeps (the WAL keeps it whole)."
+value = 65536
+min = 1024
+max = 67108864
+
+[devswarm_ingest.quarantine_rate_ms]
+doc = "At most one quarantine write and log line per this long; the rest are counted into the next."
+value = 30000
+min = 0
+max = 3600000
+unit = "ms"
+
+[devswarm_ingest.hb_error_chars]
+doc = "Most characters of the last monitor error the heartbeat keeps."
+value = 300
+min = 10
+max = 100000
+
+[devswarm_ingest.hb_path_chars]
+doc = "Most characters of the daemon's PATH the heartbeat keeps."
+value = 1024
+min = 10
+max = 100000
+
+# ---- the batch -------------------------------------------------------------------------------------------------------------
+
+
+[devswarm_ingest.container_keys]
+doc = "The object keys that hold a batch's message list, tried in order."
+value = ["messages", "data"]
+
+[devswarm_ingest.message_keys]
+doc = "An object with any of these keys is one message."
+value = ["message", "fromBranch", "toBranch"]
+
+[devswarm_ingest.hash_fields]
+doc = "The fields of a message that make its dedupe hash, in order (the partition id comes first)."
+value = ["fromBranch", "toBranch", "message", "status", "createdAt"]
+
+[devswarm_ingest.hash_prefix]
+doc = "The start of a native message's dedupe hash."
+value = "native:"
+
+[devswarm_ingest.created_key]
+doc = "The message field that holds its creation time."
+value = "createdAt"
+
+[devswarm_ingest.body_key]
+doc = "The message field that holds its text."
+value = "message"
+
+[devswarm_ingest.js_object_text]
+doc = "What JavaScript's String() makes of an object."
+value = "[object Object]"
+
+# ---- the Node witness ------------------------------------------------------------------------------------------------------
+# Node's own ingestPayload runs over a MIRROR of the batches the engine drained (their raw bytes), in a scratch HOME against an
+# empty scratch store, and the rows it would write are compared with the ones the engine wrote. Node never reads the live queue or
+# the live store.
+
+
+[devswarm_ingest.witness_every_ms]
+doc = "Least time between two witness comparisons of one project."
+value = 21600000
+min = 1000
+max = 31536000000
+unit = "ms"
+
+[devswarm_ingest.witness_max_bytes]
+doc = "The mirror of one project stops growing at this size until a comparison consumes it."
+value = 8388608
+min = 1024
+max = 1073741824
+
+[devswarm_ingest.witness_timeout_ms]
+doc = "Bound of one witness run. The drain of that project waits while it runs (messages queue up natively, nothing is lost), so it stays far under the three minutes after which a daemon's heartbeat reads stale."
+value = 60000
+min = 1000
+max = 900000
+unit = "ms"
+
+[devswarm_ingest.witness_prefix]
+doc = "The start of a project's mirror file name, under the witness directory (devswarm_sup.witness_dir)."
+value = "ingest-"
+
+[devswarm_ingest.witness_scratch]
+doc = "The start of the scratch HOME's name for one comparison."
+value = "ingest-scratch-"
+
+[devswarm_ingest.witness_file]
+doc = "The witness log, one JSON line per comparison, relative to the home directory."
+value = ".anti-hall/logs/devswarm-ingest-witness.ndjson"
+
+[devswarm_ingest.status_scratch]
+doc = "The start of the temporary directory the read-only status verb uses so it remembers nothing."
+value = "ah-ingest-status-"
+
+[devswarm_ingest.witness_snippet]
+doc = "What Node runs for the witness: ingestPayload over each mirrored batch against a scratch store, printing per batch {total, lossy, rows: [{hash, ts, body}]}. Arguments: the plugin root, the scratch HOME, the Primary's id, the repo key, the mirror file, the worktree."
+value = 'const fs=require("fs");process.env.HOME=process.argv[2];const root=process.argv[1],h=process.argv[2],ws=process.argv[3],key=process.argv[4],mp=process.argv[5],wt=process.argv[6];const I=require(root+"/companion/devswarm-ingest.js");const store=require(root+"/companion/lib/devswarm-store.js");const s=store.openStore({home:h,workspaceId:ws,hash:key,backend:"sqlite"});s.upsertRegistry({id:ws,worktreePath:wt,sessionId:ws,inboxPath:null,cursorPath:null,nudgeCommand:null});const out=[];for(const line of fs.readFileSync(mp,"utf8").split("\n")){if(!line)continue;let l;try{l=JSON.parse(line)}catch(e){continue}const rows=I.normalizeMonitorPayload(l.raw).map((m)=>{const t=Date.parse(m.createdAt);return{hash:I.messageHash(ws,m),ts:Number.isFinite(t)?t:l.now,body:m.message!=null?String(m.message):I.stableJson(m)}});const r=I.ingestPayload(s,l.raw,{workspaceId:ws,home:h,now:l.now});out.push({total:r.total,lossy:r.lossy,rows})}console.log(JSON.stringify(out))'
+
+# ---- log lines -------------------------------------------------------------------------------------------------------------
+
+
+[devswarm_ingest.msg_refused_prefix]
+doc = "The start of the log line when a drain does not start."
+value = "ingest drain not started: "
+
+[devswarm_ingest.msg_lock_held]
+doc = "Why a drain did not start: another consumer holds the project's lock."
+value = "another monitor consumer is already running (ingest lock held)"
+
+[devswarm_ingest.msg_legacy_alive]
+doc = "Why a drain did not start: a legacy per-worktree consumer of the repo is alive. {holders}."
+value = "legacy per-worktree ingest holder(s) still alive for this repo - backing off before the first drain: {holders}"
+
+[devswarm_ingest.msg_store_unavailable]
+doc = "Why a drain did not start: the store cannot be written by the engine. {why}."
+value = "the project's store is not available to the engine ({why})"
+
+[devswarm_ingest.msg_started]
+doc = "The log line of a started drain. {worktree} {ws} {bin} {src}."
+value = "ingest drain started (engine), worktree={worktree}, workspaceId={ws}, hivecontrol={bin} ({src})"
+
+[devswarm_ingest.msg_hc_unusable]
+doc = "Logged once when the configured hivecontrol path is not a file. {bin} {src}."
+value = "WARN: configured hivecontrol binary is not a readable file: {bin} (source: {src}). Set ANTIHALL_DEVSWARM_HIVECONTROL to the absolute path of the hivecontrol CLI. The drain runs in degraded mode (backed-off retries)."
+
+[devswarm_ingest.msg_lock_lost]
+doc = "The log line when the project's lock was found taken by another consumer."
+value = "ingest drain stopping: the lock was reclaimed by another consumer (lost heartbeat)"
+
+[devswarm_ingest.msg_hb_transient]
+doc = "Logged once when re-stamping the lock failed for a reason that is not loss."
+value = "WARN: ingest lock heartbeat failed transiently (not lock loss) - will keep retrying, logged once"
+
+[devswarm_ingest.msg_register_failed]
+doc = "The log line when the Primary's registry row could not be written. {ws} {err}."
+value = "WARN: self-registration failed (workspaceId={ws}): {err}"
+
+[devswarm_ingest.msg_summary_deferred]
+doc = "The log line when the engine could not refresh the summary after an import. {why}."
+value = "summary refresh deferred ({why}); the next refresh by any writer updates it"
+
+[devswarm_ingest.msg_no_store]
+doc = "The refusal when the store is not open."
+value = "the store is not open"
+
+[devswarm_ingest.msg_wal_spill_blocked]
+doc = "The log line when spilled batches could not go back into the WAL. {err} {dir}."
+value = "WARN: delivery WAL not writable ({err}) - spilled batch(es) kept in {dir}; no destructive monitor read until the WAL is writable"
+
+[devswarm_ingest.msg_wal_unreadable]
+doc = "The log line when the WAL cannot be read. {err} {file}."
+value = "WARN: delivery WAL unreadable ({err}) at {file} - no new destructive monitor read until it is readable"
+
+[devswarm_ingest.msg_wal_blocked]
+doc = "The log line when the WAL cannot be written before a read. {why} {file}."
+value = "WARN: delivery WAL not writable ({why}) at {file} - destructive monitor read refused until it is writable"
+
+[devswarm_ingest.msg_wal_write_failed]
+doc = "The log line when a batch could not be put in the WAL. {what}."
+value = "WARN: delivery WAL write failed ({what}) - the batch is imported from memory; destructive reads are blocked until the WAL is writable"
+
+[devswarm_ingest.msg_wal_both_failed]
+doc = "Printed to stderr when neither the WAL nor the spill took a batch. {file} {err} {raw}."
+value = "anti-hall delivery WAL: WAL AND spill write failed for {file} ({err}) - raw batch follows\n{raw}"
+
+[devswarm_ingest.msg_spill_no_id]
+doc = "The error of a spill file without an entry id."
+value = "spill file has no entry id"
+
+[devswarm_ingest.msg_replay_deferred]
+doc = "The log line when a WAL replay could not import a batch. {why}."
+value = "WARN: delivery WAL replay deferred ({why}) - batch kept pending"
+
+[devswarm_ingest.msg_import_refused]
+doc = "The log line when the store refused a batch. {why} {kept}."
+value = "store refused the batch ({why}); kept pending in the delivery WAL: {kept}"
+
+[devswarm_ingest.msg_output_truncated]
+doc = "The log line when a monitor call printed more than could be kept. {bytes}."
+value = "WARN: monitor output exceeded the cap ({bytes} bytes kept) - the excess is unrecoverable"
+
+[devswarm_ingest.msg_loss]
+doc = "The log line for a batch of no known shape. {bytes} {where} {suppressed}."
+value = "hivecontrol monitor returned {bytes} non-empty byte(s) of an unrecognised shape - the native queue is destructive so the batch is otherwise UNRECOVERABLE; preserved in the delivery WAL and quarantined: {where} ({suppressed} further loss event(s) since the last line)"
+
+[devswarm_ingest.msg_quarantine_capped]
+doc = "What the loss line says when the quarantine directory is full."
+value = "not written (quarantine directory at its file cap; existing files preserved)"
+
+[devswarm_ingest.msg_quarantine_failed]
+doc = "What the loss line says when the quarantine file could not be written."
+value = "quarantine write failed"
+
+[devswarm_ingest.msg_truncated_at]
+doc = "Appended to a quarantine file that was cut. {n}."
+value = "\n...[truncated at {n} bytes]"
+
+[devswarm_ingest.msg_no_detail]
+doc = "The error text of a failed monitor call that carried none."
+value = "monitor run failed (no error detail)"
+
+[devswarm_ingest.msg_spawn_failed]
+doc = "The error of a monitor child that could not be started. {bin} {code}."
+value = "spawn {bin} {code}"
+
+[devswarm_ingest.msg_timeout]
+doc = "The error of a monitor child killed at its hard limit. {bin} {ms}."
+value = "monitor {bin} ETIMEDOUT after {ms}ms"
+
+[devswarm_ingest.msg_exit_stderr]
+doc = "The note of a monitor child that exited non-zero. {bin} {status} {tail}."
+value = "monitor {bin} exited {status} - stderr: {tail}"
+
+[devswarm_ingest.msg_exit_no_stderr]
+doc = "The note of a monitor child that exited non-zero with no stderr. {bin} {status}."
+value = "monitor {bin} exited {status} (no stderr output)"
+
+[devswarm_ingest.msg_log_transient]
+doc = "The log line of a transient monitor failure. {error}."
+value = "monitor call failed (transient): {error}"
+
+[devswarm_ingest.msg_log_permanent]
+doc = "The log line of a configuration monitor failure. {code} {n} {since} {backoff} {error}."
+value = "monitor spawn failing with a CONFIGURATION error ({code}): {error} - {n} consecutive, {since} since the last line. Retrying is futile until it is fixed: set ANTIHALL_DEVSWARM_HIVECONTROL to the absolute path of the hivecontrol CLI. Backing off {backoff} ms."
+
+[devswarm_ingest.msg_log_recovered]
+doc = "The log line when the monitor works again after configuration failures. {n}."
+value = "monitor spawn recovered after {n} consecutive configuration failure(s)"

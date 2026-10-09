@@ -270,11 +270,11 @@ test('compaction/clear/resume each re-arm: a new epochId per SessionStart', () =
 
 test('Claude and Codex hooks.json: only the Claude verify-first-orch command carries --host=claude', () => {
   const cmds = (f) => { const out = []; for (const g of Object.values(JSON.parse(fs.readFileSync(f, 'utf8')).hooks)) for (const x of g) for (const hk of x.hooks) out.push(hk.command); return out; };
-  const claude = cmds(path.join(T.PLUGIN, 'hooks', 'hooks.json'));
+  const claude = cmds(path.join(T.PLUGIN, 'hooks', 'hooks.registry.json'));
   const withFlag = claude.filter((c) => /--host=/.test(c));
   assert.strictEqual(withFlag.length, 1);
   assert.ok(/verify-first-orch\.js"? --host=claude$/.test(withFlag[0]));
-  assert.deepStrictEqual(cmds(path.join(T.PLUGIN, 'codex', 'hooks', 'hooks.json')).filter((c) => /--host=/.test(c)), []);
+  assert.deepStrictEqual(cmds(path.join(T.PLUGIN, 'codex', 'hooks', 'hooks.registry.json')).filter((c) => /--host=/.test(c)), []);
   const { ANTI_HALL_HOOKS } = require(path.join(T.PLUGIN, 'codex', 'install-codex.js'));
   const inst = [];
   for (const g of Object.values(ANTI_HALL_HOOKS)) for (const x of g) for (const hk of x.hooks) inst.push(hk.command);

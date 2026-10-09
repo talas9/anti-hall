@@ -31,32 +31,14 @@ function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (
 // anti-hall group so scanCodex's `wired` check reports true for this scope —
 // proving the cleanup step fires independently of that coarse per-event
 // check, not because the installer re-ran anyway.
-const STALE_CONFIG = {
-  hooks: {
-    SessionStart: [
-      { hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/verify-first-full.js', timeout: 10 }] },
-      { hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/graphify-session.js', timeout: 10 }] },
-    ],
-    UserPromptSubmit: [
-      { hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/verify-first.js', timeout: 10 }] },
-    ],
-    Stop: [
-      { hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/task-guard.js', timeout: 30 }] },
-      { hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/graphify-reminder.js', timeout: 30 }] },
-    ],
-    PreToolUse: [
-      { matcher: 'Bash', hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/git-guard.js', timeout: 10 }] },
-      { matcher: 'Bash', hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/graphify-guard.js', timeout: 10 }] },
-    ],
-    PostToolUse: [
-      { matcher: 'Bash', hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/devswarm-parent-reply-tracker.js', timeout: 10 }] },
-    ],
-    // v0.108.0: PreCompact joined ANTI_HALL_HOOKS (precompact-snapshot.js).
-    PreCompact: [
-      { hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/precompact-snapshot.js', timeout: 10 }] },
-    ],
-  },
-};
+// The installer writes ONE generated thin trigger per event (ah-hook.sh <Event> --host codex). A scope is "wired" when
+// every expected event has such a group; the graphify groups are the stale leftovers the cleanup step strips.
+const EVENTS = Object.keys(require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'codex', 'install-codex.js')).ANTI_HALL_HOOKS);
+const thin = (ev) => ({ hooks: [{ type: 'command', command: 'sh "/x/plugins/anti-hall/hooks/ah-hook.sh" ' + ev + ' --host codex', timeout: 10 }] });
+const STALE_CONFIG = { hooks: Object.fromEntries(EVENTS.map((ev) => [ev, [thin(ev)]])) };
+STALE_CONFIG.hooks.SessionStart.push({ hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/graphify-session.js', timeout: 10 }] });
+STALE_CONFIG.hooks.Stop.push({ hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/graphify-reminder.js', timeout: 30 }] });
+STALE_CONFIG.hooks.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/graphify-guard.js', timeout: 10 }] });
 
 function setupCodexScope(dir) {
   fs.mkdirSync(path.join(dir, '.codex'), { recursive: true });

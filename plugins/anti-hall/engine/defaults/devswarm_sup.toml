@@ -1,0 +1,559 @@
+# ah-engine shipped defaults for the DevSwarm supervisor duties (lane l7, `src/dssup`): everything the Node liveness supervisor
+# (companion/devswarm-supervisor.js, run by launchd / systemd / cron every 60-120 s) does besides auto-archive, so the engine's
+# scheduler can take them over and the Node job can be switched off as a whole. Format: see the header of engine.toml. Every key
+# can be overridden in the `devswarm_sup` section of settings.json. Nothing here is compiled into the binary.
+#
+# THE SWITCH: `devswarm_sup.mode`. `witness` (the default) leaves every duty to the Node supervisor and the engine runs none of
+# them. `engine` makes the engine's scheduler job `devswarm_supervisor` run the duties below, takes poke and escalate (their
+# executors default to `auto`, which follows this mode), and refuses to act while the Node supervisor is still running (the
+# double-run guard). The go-live steps are in docs/AH-ENGINE.md, "DevSwarm supervisor cutover".
+
+[devswarm_sup.mode]
+doc = "Who owns the supervisor duties: witness (the Node supervisor job does; the engine runs none of them) | engine (the engine's scheduler runs them, poke and escalate follow). Anything else reads as witness, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit."
+value = "witness"
+
+[devswarm_sup.mode_words]
+doc = "The words of devswarm_sup.mode, in the order witness, engine."
+value = ["witness", "engine"]
+
+[devswarm_sup.tick_ms]
+doc = "How often the scheduler job `devswarm_supervisor` runs while the mode is `engine` (Node's installer sweeps every 60-120 s). The job does nothing where DevSwarm is absent or the mode is witness."
+value = 60000
+min = 10000
+max = 3600000
+unit = "ms"
+
+[devswarm_sup.tick_budget_ms]
+doc = "Most time one tick spends starting duties; a duty not yet started when it is spent waits for the next tick. Each duty is also bounded by its own timeout_ms."
+value = 900000
+min = 1000
+max = 3600000
+unit = "ms"
+
+# ---- the double-run guard --------------------------------------------------------------------------------------------------
+
+[devswarm_sup.guard_ms]
+doc = "The Node supervisor counts as running when its log (or the rotated copy) was written within this long. While it runs, the engine's supervisor duties AND the engine's poke / escalate stand down, so two actors never run one duty. Node writes one line per sweep and sweeps at least every 120 s."
+value = 360000
+min = 60000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.node_log]
+doc = "The Node supervisor's log, relative to the home directory (the launchd / systemd / cron job writes its sweep line there)."
+value = ".anti-hall/devswarm-supervisor.log"
+
+[devswarm_sup.log_backup_suffix]
+doc = "The suffix of the one rotated generation of a log."
+value = ".1"
+
+[devswarm_sup.reason_no_log]
+doc = "The rotation answer when the log does not exist yet (Node's words, so the two reports read alike)."
+value = "no log file yet"
+
+[devswarm_sup.reason_under]
+doc = "The rotation answer when the log is not over the threshold."
+value = "under threshold"
+
+[devswarm_sup.reason_rotated]
+doc = "The rotation answer after a rotation. {backup} is the rotated file."
+value = "rotated to {backup}"
+
+[devswarm_sup.reason_rotate_failed]
+doc = "The rotation answer when the rename failed. {err}."
+value = "rotation failed: {err}"
+
+[devswarm_sup.engine_log]
+doc = "The engine's own record of its ticks (one JSON line each), relative to the home directory. Kept apart from the Node log so the engine never trips its own guard."
+value = ".anti-hall/logs/devswarm-supervisor-engine.ndjson"
+
+[devswarm_sup.lock_file]
+doc = "The single-flight sweep lock, relative to the DevSwarm state directory: the Node supervisor's own file, taken the same way (a dead holder or one older than lock_stale_ms is taken over), so while a tick runs a Node sweep exits at once."
+value = "locks/sweep.lock"
+
+[devswarm_sup.lock_stale_ms]
+doc = "A sweep lock older than this is taken over (Node: SWEEP_LOCK_STALE_MS)."
+value = 300000
+min = 1000
+max = 86400000
+unit = "ms"
+
+# ---- settings Node reads for these duties (same keys, tiers and defaults) --------------------------------------------------
+
+[devswarm_sup.set_log_rotate_bytes]
+doc = "Size above which the supervisor log is rotated to its .1 copy. Node: devswarm.supervisorLogRotateBytes."
+value = { type = "number", section = "devswarm", key = "supervisorLogRotateBytes", env = "ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES", min = 1, max = 1099511627776, default = 10485760 }
+
+[devswarm_sup.set_reconcile_mode]
+doc = "Reconcile sweep switch: auto / on / off. Node: devswarm.reconcileSweep."
+value = { type = "enum", section = "devswarm", key = "reconcileSweep", env = "ANTIHALL_DEVSWARM_RECONCILE_SWEEP", values = ["auto", "on", "off"], default = "auto" }
+
+[devswarm_sup.set_reconcile_sec]
+doc = "Least time between two reconcile sweeps. Node: devswarm.reconcileSweepSec (floor 300)."
+value = { type = "number", section = "devswarm", key = "reconcileSweepSec", env = "ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC", min = 300, max = 100000000, default = 900 }
+
+[devswarm_sup.set_housekeeping_mode]
+doc = "Housekeeping sweep switch: auto / on / off. Node: devswarm.housekeepingSweep."
+value = { type = "enum", section = "devswarm", key = "housekeepingSweep", env = "ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP", values = ["auto", "on", "off"], default = "auto" }
+
+[devswarm_sup.set_housekeeping_sec]
+doc = "Least time between two housekeeping sweeps. Node: devswarm.housekeepingSweepSec (floor 300)."
+value = { type = "number", section = "devswarm", key = "housekeepingSweepSec", env = "ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC", min = 300, max = 100000000, default = 3600 }
+
+[devswarm_sup.set_max_recoveries]
+doc = "Most kill-and-resume recoveries of one workspace. Node: devswarm.maxRecoveries."
+value = { type = "number", section = "devswarm", key = "maxRecoveries", env = "ANTIHALL_DEVSWARM_MAX_RECOVERIES", min = 1, max = 20, default = 3 }
+
+# ---- the duties ------------------------------------------------------------------------------------------------------------
+# One table per duty, run in this order by the tick. kind `native` is done by the engine itself; kind `node` runs the Node
+# supervisor's own function for the duty in a bounded `node` subprocess (the engine owns the schedule, the cool-down gate, the
+# lock, the bound and the record; the function keeps writing the files it writes today, so every shared file stays byte-for-byte
+# Node's). gate `tick` runs on every tick, gate `cooldown` only when its state file's lastRunAt plus the `sec` setting has passed
+# and the `mode` setting is not off. The snippet's arguments are: the plugin root, the home directory, and `engine` or `node`
+# (who pokes: `node` only when both executors are node).
+
+[devswarm_sup.duties]
+doc = "The duties of one tick, in order (the order of Node's main(): log rotation, the liveness sweep, reconcile, deferred stage, app sync, retention, housekeeping; auto-archive is the engine's own action layer and poke / escalate its action sweeps)."
+value = ["log_rotate", "verdicts", "reconcile", "deferred", "app_sync", "retention", "housekeeping"]
+
+[devswarm_sup."duty.log_rotate"]
+doc = "Rotate the supervisor log (and the engine's own tick log) to one .1 generation when it passes set_log_rotate_bytes. Native. Only the supervisor's own bounded log is touched."
+value = { kind = "native", gate = "tick", timeout_ms = 5000, witness_snippet = 'process.env.HOME=process.argv[2];const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const env=Object.assign({},process.env,{ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES:process.argv[3]});console.log(JSON.stringify(S.rotateSupervisorLogIfNeeded({home:process.argv[2],env})))' }
+
+[devswarm_sup."duty.verdicts"]
+doc = "The liveness sweep: compute and write every workspace's liveness verdict file, apply the suppressors (post-spawn grace, archive-ready, session alive, Primary row), force the parent notice for an urgent mesh unread, record straying and the Jev blocker label, and re-send parked escalation notices. When the engine owns poke and escalate it runs with Node's poke step switched off (the engine's action layer pokes)."
+value = { kind = "node", gate = "tick", timeout_ms = 300000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const o=Object.assign({home:process.argv[2]},S.resolveThresholdsFromEnv(process.env));if(process.argv[3]==="engine")o.deps={pokeOrEscalate:()=>({action:"engine-owned"})};const r=S.sweepOnce(o);console.log(JSON.stringify({sweep:r.length,drained:r.escalationsDrained}))' }
+
+[devswarm_sup."duty.reconcile"]
+doc = "The reconcile sweep: drain stranded per-worktree queues into the shared store (reconcile), fold duplicate mesh rows, probe the active workspace list for the app-side archive cache, and sample start-up. Node's state file reconcile-sweep-state.json keeps the cool-down, so either side finding it fresh does nothing."
+value = { kind = "node", gate = "cooldown", state = "reconcile-sweep-state.json", sec = "devswarm_sup.set_reconcile_sec", mode = "devswarm_sup.set_reconcile_mode", timeout_ms = 900000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const r=S.reconcileSweepIfDue({home:process.argv[2]});console.log(JSON.stringify(S.compactReconcileForLog(r,null).line))' }
+
+[devswarm_sup."duty.deferred"]
+doc = "One stage of the deferred post-update sweep per tick (fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows, in rotation), only when its marker says work is pending. Node's deferred-sweep-state.json keeps the rotation cursor."
+value = { kind = "node", gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.deferredSweepIfDue({home:process.argv[2]})))' }
+
+[devswarm_sup."duty.app_sync"]
+doc = "Sync the DevSwarm app state (archived flags, names, message gaps) into app-state.json and the descriptors."
+value = { kind = "node", gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.appDbSyncIfDue({home:process.argv[2]})))' }
+
+[devswarm_sup."duty.retention"]
+doc = "Bounded growth of the message stores: archive-first tombstoning of old message bodies under Node's own retention rules, state and lock (retention-state.json, locks/retention.lock). No row is deleted."
+value = { kind = "node", gate = "tick", timeout_ms = 300000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";console.log(JSON.stringify(require(process.argv[1]+"/companion/lib/devswarm-retention.js").sweep({home:process.argv[2]})))' }
+
+[devswarm_sup."duty.housekeeping"]
+doc = "Disk hygiene: sweep the reaped-workspace logs and the child-gate files by the doctor's repair rules. Node's housekeeping-sweep-state.json keeps the cool-down. Native: removes only files older than the retention window, one directory level, only the sweep's own suffix."
+value = { kind = "node", native = true, gate = "cooldown", state = "housekeeping-sweep-state.json", sec = "devswarm_sup.set_housekeeping_sec", mode = "devswarm_sup.set_housekeeping_mode", timeout_ms = 300000, witness_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const env=Object.assign({},process.env,{ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS:process.argv[3],ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS:process.argv[4]});const r=S.housekeepingSweepIfDue({home:process.argv[2],env,now:Number(process.argv[5])});const rows=[];for(const k of Object.keys((r&&r.results)||{}))for(const x of r.results[k])rows.push([x.status,x.file]);console.log(JSON.stringify(rows))', snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.housekeepingSweepIfDue({home:process.argv[2]})))' }
+
+[devswarm_sup.node_duties]
+doc = "Duties that have a native implementation but are to run as Node's own function instead (the rollback lever for one duty: name it here and the next tick runs Node's function in a bounded subprocess, as before the port). Empty: every ported duty runs natively."
+value = []
+
+# ---- the non-acting Node witness ---------------------------------------------------------------------------------------------
+# For a duty the engine ran natively, Node's own function runs in a scratch HOME over a scratch MIRROR of the inputs (names,
+# sizes, modification times; never contents) and the two outcomes are compared; one line per comparison goes to witness_file.
+
+[devswarm_sup.set_witness]
+doc = "Run the non-acting Node witness for the native supervisor duties: on | off. The witness only ever touches scratch copies; it costs one short Node run per duty per witness_every_ms."
+value = { type = "enum", section = "devswarm_sup", key = "witness", env = "ANTIHALL_DEVSWARM_SUP_WITNESS", values = ["on", "off"], default = "on" }
+
+[devswarm_sup.witness_off]
+doc = "The word of devswarm_sup.witness that switches the witness off."
+value = "off"
+
+[devswarm_sup.witness_every_ms]
+doc = "Least time between two witness comparisons of one duty."
+value = 21600000
+min = 1000
+max = 31536000000
+unit = "ms"
+
+[devswarm_sup.witness_max_files]
+doc = "Most files a witness mirror holds for one directory; a larger one is not mirrored and that comparison is skipped (never a partial one)."
+value = 50000
+min = 1
+max = 10000000
+
+[devswarm_sup.witness_keep_sample]
+doc = "How many files still inside the retention window a witness mirror also holds, so a Node that removes too much shows up."
+value = 50
+min = 0
+max = 100000
+
+[devswarm_sup.witness_dir]
+doc = "Where the witness builds its scratch mirrors, relative to the home directory. Each is removed when its comparison is done."
+value = ".anti-hall/witness"
+
+[devswarm_sup.witness_state]
+doc = "When each duty was last compared (a JSON object duty -> ms), relative to the home directory."
+value = ".anti-hall/logs/devswarm-sup-witness-state.json"
+
+[devswarm_sup.witness_file]
+doc = "The witness log, one JSON line per comparison (`match`: true / false, or null when Node could not run), relative to the home directory."
+value = ".anti-hall/logs/devswarm-sup-witness.ndjson"
+
+[devswarm_sup.env_disable]
+doc = "The environment variable that is the hard kill switch of every DevSwarm job (Node: DISABLE_ANTIHALL_DEVSWARM)."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[devswarm_sup.env_disable_on]
+doc = "The value of the kill switch that disables."
+value = "1"
+
+[devswarm_sup.env_supervisor]
+doc = "The environment variable that switches the supervisor off (Node: ANTIHALL_DEVSWARM_SUPERVISOR)."
+value = "ANTIHALL_DEVSWARM_SUPERVISOR"
+
+[devswarm_sup.env_supervisor_off]
+doc = "The value of the supervisor switch that disables."
+value = "off"
+
+# ---- housekeeping (native) ---------------------------------------------------------------------------------------------------
+
+[devswarm_sup.hk_sweeps]
+doc = "The age sweeps of the housekeeping duty, in order: name (the key in the result), dir (under the DevSwarm state directory), suffix (only files ending so are touched) and days (the setting holding the retention window in days)."
+value = [
+  { name = "reapedLogs", dir = "reaped", suffix = ".ndjson", days = "devswarm_sup.set_reaped_days" },
+  { name = "childGate", dir = "child-gate", suffix = ".json", days = "devswarm_sup.set_child_gate_days" },
+]
+
+[devswarm_sup.set_reaped_days]
+doc = "Days a reaped-workspace log is kept before the housekeeping sweep removes it. Node: devswarm.reapedRetentionDays. A value that is not a positive number reads as the default."
+value = { type = "number", section = "devswarm", key = "reapedRetentionDays", env = "ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS", default = 30 }
+
+[devswarm_sup.set_child_gate_days]
+doc = "Days a per-session child-gate state file is kept before the housekeeping sweep removes it. Node: devswarm.childGateRetentionDays. A value that is not a positive number reads as the default."
+value = { type = "number", section = "devswarm", key = "childGateRetentionDays", env = "ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS", default = 14 }
+
+[devswarm_sup.hk_day_ms]
+doc = "Milliseconds in the retention sweep's day."
+value = 86400000
+min = 1000
+max = 86400000
+
+[devswarm_sup.hk_max_depth]
+doc = "How many directory levels below the swept directory the age sweep looks (one: a date-partitioned directory). Bounds the walk against a link loop."
+value = 1
+min = 0
+max = 4
+
+[devswarm_sup.hk_state]
+doc = "The housekeeping cool-down state file, relative to the DevSwarm state directory (Node's file: {lastRunAt}). Written before the sweep runs."
+value = "housekeeping-sweep-state.json"
+
+[devswarm_sup.hk_status_fixed]
+doc = "The result status of a removed file (doctor-repair's word)."
+value = "fixed"
+
+[devswarm_sup.hk_status_failed]
+doc = "The result status of a file or directory the sweep could not handle."
+value = "failed"
+
+[devswarm_sup.hk_msg_removed]
+doc = "The result message of a removed file. {file}, {days} (its age in days, rounded)."
+value = "removed {file} (age {days}d)"
+
+[devswarm_sup.hk_msg_remove_failed]
+doc = "The result message of a file that could not be removed. {file} {err}."
+value = "could not remove {file}: {err}"
+
+[devswarm_sup.hk_msg_list_failed]
+doc = "The result message of a directory that could not be listed. {dir} {err}."
+value = "could not list {dir}: {err}"
+
+[devswarm_sup.notify_escalation]
+doc = "The Node function the engine runs once after it escalates a workspace, so the parent (Primary) gets the same one-time notice Node's escalation sends (a store message with the hash escalate:<id>:<staleSince>, parked and retried by the liveness sweep when the Primary is not registered). Arguments: the plugin root, the home directory, the workspace id."
+value = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const R=require(process.argv[1]+"/companion/lib/recovery.js");const L=require(process.argv[1]+"/companion/lib/liveness.js");const h=process.argv[2];const d=S.readDescriptors(h).find((x)=>x.id===process.argv[3]);let v={};try{v=JSON.parse(require("fs").readFileSync(L.livenessPathFor(process.argv[3],h),"utf8"))}catch(e){}if(d)R.notifyParentEscalation(d,v,{home:h});console.log(JSON.stringify({notified:!!d}))'
+
+[devswarm_sup.notify_timeout_ms]
+doc = "Bound of the escalation-notice subprocess."
+value = 60000
+min = 1000
+max = 600000
+unit = "ms"
+
+# ---- the worker process ----------------------------------------------------------------------------------------------------
+
+[devswarm_sup.node_bin]
+doc = "The Node executable the `node` duties run through (resolved on PATH). A missing one fails the duty with a recorded error; nothing else is affected."
+value = "node"
+
+[devswarm_sup.node_args]
+doc = "The arguments before the duty's snippet (the snippet, the plugin root, the home directory and the poke owner follow)."
+value = ["-e"]
+
+[devswarm_sup.owner_engine]
+doc = "The poke-owner argument given to the liveness sweep when the engine owns poke and escalate."
+value = "engine"
+
+[devswarm_sup.owner_node]
+doc = "The poke-owner argument given to the liveness sweep when Node's own poke step should run (both executors are node)."
+value = "node"
+
+[devswarm_sup.detail_chars]
+doc = "Most characters of a duty's output kept in the tick record."
+value = 600
+min = 40
+max = 20000
+
+# ---- verdict mirror of an engine poke / escalate ---------------------------------------------------------------------------
+
+[devswarm_sup.liveness_dir]
+doc = "The liveness verdict files, relative to the DevSwarm state directory (Node: livenessPathFor)."
+value = "liveness"
+
+[devswarm_sup.verdict_fields]
+doc = "The fields of a liveness verdict Node's recovery keeps across an update, in its order (PRESERVED_VERDICT_FIELDS); a nudge or an escalation rewrites the file as status + these + the new fields."
+value = ["recoveries", "recoveredAt", "nudgeAttempts", "nudgedAt", "staleSince", "lastOutboundTs", "lastNudgeError"]
+
+[devswarm_sup.verdict_zero_fields]
+doc = "The preserved verdict fields whose value before the first write is 0, not null (Node: recoveries and nudgeAttempts)."
+value = ["recoveries", "nudgeAttempts"]
+
+[devswarm_sup.status_nudged]
+doc = "The verdict status after a poke."
+value = "nudged"
+
+[devswarm_sup.status_escalated]
+doc = "The verdict status after an escalation."
+value = "escalated"
+
+[devswarm_sup.recovery_log]
+doc = "Node's recovery log (one JSON line per poke / escalation / recovery step), relative to the DevSwarm state directory."
+value = "recovery.log"
+
+[devswarm_sup.reason_exhausted]
+doc = "The reason Node records when an escalation follows used-up pokes."
+value = "poke-exhausted"
+
+# ---- recover (on demand only) ----------------------------------------------------------------------------------------------
+
+[devswarm_sup.recover_snippet]
+doc = "What runs Node's on-demand recovery (companion/devswarm-recover.js `run`, the same call its CLI makes) for ONE workspace. It resolves the ONE process of the workspace (exactly one match or it abstains), confirms its identity and working directory right before SIGTERM and again before SIGKILL, and resumes the session headless. The engine decides whether it may start; the kill stays Node's. Arguments: the plugin root, the home directory, the workspace id."
+value = 'process.env.HOME=process.argv[2];const o=require(process.argv[1]+"/companion/devswarm-recover.js").run([process.argv[3]],{});console.log(JSON.stringify(o));process.exit(o.ok?0:1)'
+
+[devswarm_sup.recover_timeout_ms]
+doc = "Bound of one recovery run (it waits the grace period and the resume readiness)."
+value = 180000
+min = 5000
+max = 900000
+unit = "ms"
+
+[devswarm_sup.recover_ledger]
+doc = "The record of recover requests already run, under the engine state directory: a request id is never run twice."
+value = "rt-recover.ndjson"
+
+[devswarm_sup.recover_descriptor_keys]
+doc = "The descriptor fields a recovery needs: worktree path and session id."
+value = { worktree = "worktreePath", session = "sessionId" }
+
+[devswarm_sup.msg_recover_caller]
+doc = "Printed when an automated caller asks for a recovery. {caller}."
+value = "recover is for the owner's own session; refused for the {caller} caller"
+
+[devswarm_sup.msg_recover_id]
+doc = "Printed when the workspace id is missing or not a safe name."
+value = "recover needs --id <workspace> (a plain workspace id)"
+
+[devswarm_sup.msg_recover_request]
+doc = "Printed when the request id is missing."
+value = "recover needs --request <id> (the same request is never run twice)"
+
+[devswarm_sup.msg_recover_duplicate]
+doc = "Printed for a request id that already ran. {request}."
+value = "recover request {request} already ran; use a new request id for a new recovery"
+
+[devswarm_sup.msg_recover_descriptor]
+doc = "Printed when the workspace has no readable descriptor with a worktree and a session. {id}."
+value = "no usable descriptor for workspace {id} (needs worktreePath and sessionId)"
+
+[devswarm_sup.msg_recover_max]
+doc = "Printed when the workspace was already recovered the most times allowed. {id} {n} {max}."
+value = "workspace {id} was already recovered {n} time(s) (limit {max}); needs a manual continue in the DevSwarm app"
+
+[devswarm_sup.msg_recover_failed]
+doc = "Printed when the recovery run could not be completed. {why}."
+value = "recover did not complete: {why}"
+
+# ---- recover, native ---------------------------------------------------------------------------------------------------------
+# The kill-and-resume of ONE workspace's session (src/dssup/kill.rs): target-session.js and recovery.js `recover` in Rust. Node's
+# findTarget runs as a read-only witness first; naming `recover` in node_duties hands the whole kill back to Node.
+
+
+[devswarm_sup.recover_duty]
+doc = "The name `recover` goes by in devswarm_sup.node_duties and in the witness log."
+value = "recover"
+
+[devswarm_sup.recover_witness_veto]
+doc = "1: when Node's read-only target lookup does not confirm the process the engine would signal, the engine stands down (reason `witness-disagrees`) instead of signalling. 0: the witness only logs. A Node that cannot be run never vetoes."
+value = 1
+min = 0
+max = 1
+
+[devswarm_sup.recover_witness_timeout_ms]
+doc = "Bound of the witness's target lookup."
+value = 20000
+min = 1000
+max = 300000
+unit = "ms"
+
+[devswarm_sup.recover_witness_snippet]
+doc = "What Node runs as the recover witness: findTarget (read-only: ps and the working-directory probe) for the descriptor's worktree and session, allowing an interactive session as the owner's explicit recover does. Arguments: the plugin root, the home directory, the worktree, the session id."
+value = 'process.env.HOME=process.argv[2];const T=require(process.argv[1]+"/companion/lib/target-session.js");console.log(JSON.stringify(T.findTarget({worktreePath:process.argv[3],sessionId:process.argv[4],home:process.argv[2],allowInteractive:true})))'
+
+[devswarm_sup.set_grace_sec]
+doc = "How long after SIGTERM the engine waits before it checks whether the process is still there. Node: devswarm.graceSec."
+value = "{ type = \"number\", section = \"devswarm\", key = \"graceSec\", env = \"ANTIHALL_DEVSWARM_GRACE_SEC\", min = 1, max = 60, default = 5 }"
+
+[devswarm_sup.kill_witness_disagrees]
+doc = "The abstain reason when the Node witness did not confirm the target."
+value = "witness-disagrees"
+
+[devswarm_sup.kill_no_target]
+doc = "The abstain reason when there is no target."
+value = "no-target"
+
+[devswarm_sup.kill_status_ambiguous]
+doc = "The liveness verdict status after an abstain."
+value = "ambiguous"
+
+[devswarm_sup.kill_status_recovering]
+doc = "The liveness verdict status while a recovery runs and after a resume."
+value = "recovering"
+
+[devswarm_sup.kill_no_conversation]
+doc = "What the resumed session prints when the conversation no longer exists (a handled failure: escalate)."
+value = "No conversation found"
+
+[devswarm_sup.kill_resume_guardrail]
+doc = "Prepended to every resume prompt: the interrupted session must check with a read-only command whether a side-effecting step already completed before it repeats it."
+value = "You were interrupted mid-task and resumed. Before re-running ANY command with side effects (git push, deploy, file writes), FIRST verify via a read-only check (git status/log, file mtime, log tail) whether it already completed. Do NOT blindly re-run a mutating command just because you don't see its result."
+
+[devswarm_sup.kill_claude_re]
+doc = "Matches a `claude` invocation in a command line (case-insensitive, a whole word)."
+value = "(?i)(^|[\\s/])claude(\\s|$)"
+
+[devswarm_sup.kill_session_re]
+doc = "Captures the session id after --session-id or --resume."
+value = "(?:--session-id|--resume)\\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+
+[devswarm_sup.kill_headless_re]
+doc = "Matches the headless flag (-p or --print) as a token of the command line."
+value = "(^|\\s)(-p|--print)(\\s|=|$)"
+
+[devswarm_sup.kill_ps_line_re]
+doc = "Captures pid, parent pid and command from a line of the process table."
+value = "^\\s*(\\d+)\\s+(\\d+)\\s+(.*)$"
+
+[devswarm_sup.kill_ps_bin]
+doc = "The process-table executable."
+value = "ps"
+
+[devswarm_sup.kill_ps_args]
+doc = "Its arguments (the same on macOS and Linux)."
+value = ["-axo", "pid=,ppid=,command="]
+
+[devswarm_sup.kill_lsof_bin]
+doc = "The executable that reports a process's working directory where /proc is not available (macOS)."
+value = "lsof"
+
+[devswarm_sup.kill_lsof_args]
+doc = "Its arguments; {pid} is the process."
+value = ["-p", "{pid}", "-a", "-d", "cwd", "-Fn"]
+
+[devswarm_sup.kill_lsof_name_prefix]
+doc = "The prefix of the output line that names the directory."
+value = "n"
+
+[devswarm_sup.kill_proc_cwd]
+doc = "The Linux link to a process's working directory; {pid}."
+value = "/proc/{pid}/cwd"
+
+[devswarm_sup.kill_probe_timeout_ms]
+doc = "Bound of one process-table or working-directory probe; a probe that times out yields no data and the gate abstains."
+value = 4000
+min = 500
+max = 60000
+unit = "ms"
+
+[devswarm_sup.kill_ps_cap_bytes]
+doc = "Most bytes of the process table read; a longer one is treated as unreadable (the gate abstains)."
+value = 33554432
+min = 1048576
+max = 1073741824
+
+[devswarm_sup.kill_claude_dir]
+doc = "The Claude state directory under the home directory."
+value = ".claude"
+
+[devswarm_sup.kill_projects_dir]
+doc = "The directory of session transcripts under it."
+value = "projects"
+
+[devswarm_sup.kill_transcript_suffix]
+doc = "The suffix of a session's transcript file."
+value = ".jsonl"
+
+[devswarm_sup.kill_claude_bin]
+doc = "The Claude Code executable the resume starts."
+value = "claude"
+
+[devswarm_sup.kill_claude_dirs]
+doc = "Directories searched for it after PATH (`~/` is the home directory); the daemon's PATH is often minimal."
+value = ["~/.local/bin", "~/.claude/local", "/opt/homebrew/bin", "/usr/local/bin"]
+
+[devswarm_sup.kill_resume_args]
+doc = "The arguments of the resume; {uuid} is the session."
+value = ["-p", "--resume", "{uuid}", "--dangerously-skip-permissions"]
+
+[devswarm_sup.kill_resume_log_prefix]
+doc = "The start of the temporary file the resumed session's first output goes to."
+value = "antihall-resume-"
+
+[devswarm_sup.kill_readiness_ms]
+doc = "How long a fresh resume is watched for an immediate failure. Never a kill deadline."
+value = 4000
+min = 500
+max = 60000
+unit = "ms"
+
+[devswarm_sup.kill_poll_ms]
+doc = "How often the readiness watch checks whether the resumed session has exited."
+value = 100
+min = 10
+max = 5000
+unit = "ms"
+
+# ---- the supervisor verb ---------------------------------------------------------------------------------------------------
+
+[devswarm_sup.msg_witness]
+doc = "The tick's answer while the mode is witness."
+value = "witness mode: the Node supervisor owns the supervisor duties"
+
+[devswarm_sup.msg_inert]
+doc = "The tick's answer where DevSwarm is absent."
+value = "DevSwarm is not installed or the realtime layer is off"
+
+[devswarm_sup.msg_guard]
+doc = "The tick's answer while the Node supervisor is still running. {age} is how long ago its log was written, in seconds."
+value = "the Node supervisor is still running (its log was written {age} s ago); the engine stands down. Switch it off, then this tick runs."
+
+[devswarm_sup.msg_locked]
+doc = "The tick's answer when another sweep holds the sweep lock."
+value = "another sweep holds the sweep lock; this tick is skipped"
+
+[devswarm_sup.msg_budget]
+doc = "The reason a duty was not started because the tick's time was spent."
+value = "tick budget spent"
+
+[devswarm_sup.msg_cooldown]
+doc = "The reason a cool-down duty was not started."
+value = "cooldown"
+
+[devswarm_sup.msg_disabled]
+doc = "The reason a duty was not started because its switch is off."
+value = "disabled"
+
+[devswarm_sup.msg_no_node]
+doc = "The error of a duty whose Node worker could not be started."
+value = "node could not be started"
+

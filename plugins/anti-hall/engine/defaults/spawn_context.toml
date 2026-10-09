@@ -1,0 +1,329 @@
+# ah-engine shipped defaults for the spawn/path context checks ported from Node: inbox-read-guard, phase-tracker,
+# orch-on-spawn and verify-first-orch (port batch 3). Every name, path, switch, message and limit of those checks lives
+# here; the Node hooks stay the reference. Format: see the header of engine.toml.
+
+# ---- shared (checks::spawnctx) ----------------------------------------------------------------------------
+
+[spawn_ctx.state_root]
+doc = "Directory under the home directory that holds every state file these hooks read or write."
+value = ".anti-hall"
+
+[spawn_ctx.judge_child_env]
+doc = "Environment variable that marks a judge child process; a hook that sees it set to the judge value does nothing (hooks/lib/judge-child-exit.js)."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[spawn_ctx.judge_child_value]
+doc = "The value of the judge-child variable that turns a hook into a no-op."
+value = "1"
+
+[spawn_ctx.test_markers]
+doc = "Environment variables that mark a test run; under one of them a state path inside the real user home is refused (companion/lib/test-home-guard.js)."
+value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST", "ANTIHALL_TEST_ISOLATION"]
+
+[spawn_ctx.real_home_optout_env]
+doc = "Environment variable that lets a test run use the real home anyway (companion/lib/test-home-guard.js)."
+value = "ANTIHALL_ALLOW_REAL_HOME_TEST"
+
+[spawn_ctx.unknown_session]
+doc = "Session id used in a state file name when the real one sanitizes to nothing (hooks/lib/handover-find.js)."
+value = "unknown-session"
+
+[spawn_ctx.devswarm_kill_env]
+doc = "Environment variable that, set to the kill value, turns DevSwarm detection off entirely (hooks/lib/devswarm-detect.js)."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[spawn_ctx.devswarm_kill_value]
+doc = "The value of the DevSwarm kill variable that disables detection."
+value = "1"
+
+[spawn_ctx.devswarm_repo_env]
+doc = "Environment variable DevSwarm sets in the processes it spawns; a non-blank value means the session runs under DevSwarm."
+value = "DEVSWARM_REPO_ID"
+
+[spawn_ctx.supervisor_setting]
+doc = "Where the DevSwarm supervisor mode (auto, on, off) is read from (devswarm.supervisorMode)."
+value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", aliases = [], option = "devswarm_supervisor_mode", default = "auto", values = ["auto", "on", "off"] }
+
+# ---- inbox-read-guard (hooks/inbox-read-guard.js, hooks/lib/devswarm-inbox-paths.js) -----------------------
+
+[inbox_read.summary]
+doc = "One-line description of the inbox-read-guard check in the generated reference."
+value = "Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes the wrapper; dormant unless DevSwarm is active (port of inbox-read-guard.js)."
+
+[inbox_read.setting]
+doc = "Where the on/off switch is read from (devswarm.inboxReadGuard, default on; it has no environment variable)."
+value = { section = "devswarm", key = "inboxReadGuard", env = "", aliases = [], option = "devswarm_inbox_read_guard", default = true }
+
+[inbox_read.skip_name]
+doc = "Name of the skip-file entry that disables the guard (a broad skip of everything does not cover it)."
+value = "devswarm-read-guard"
+
+[inbox_read.tool]
+doc = "The only tool the guard looks at."
+value = "Read"
+
+[inbox_read.devswarm_root]
+doc = "Path of the DevSwarm state root under the home directory."
+value = ".anti-hall/devswarm"
+
+[inbox_read.inbox_segment]
+doc = "First path segment under the DevSwarm root whose files are the raw inbox."
+value = "inbox"
+
+[inbox_read.store_segment]
+doc = "First path segment under the DevSwarm root whose files are the raw store."
+value = "store"
+
+[inbox_read.store_patterns]
+doc = "Store-relative paths that are the raw store (JavaScript regex sources): the database and its sidecars and the journal files, per project key and in the old flat layout."
+value = [
+  '^[a-z0-9-]{1,40}-[0-9a-f]{6}/devswarm\.db$',
+  '^[a-z0-9-]{1,40}-[0-9a-f]{6}/devswarm\.db-(wal|shm|journal)$',
+  '^[a-z0-9-]{1,40}-[0-9a-f]{6}/journal/[^/]+\.ndjson$',
+  '^[0-9a-fA-F]{8}/devswarm\.db$',
+  '^[0-9a-fA-F]{8}/devswarm\.db-(wal|shm|journal)$',
+  '^[0-9a-fA-F]{8}/journal/[^/]+\.ndjson$',
+  '^devswarm\.db$',
+  '^devswarm\.db-(wal|shm|journal)$',
+  '^journal/[^/]+\.ndjson$',
+]
+
+[inbox_read.guard_inbox]
+doc = "Guard name in the message that blocks a raw inbox read."
+value = "devswarm-inbox-read"
+
+[inbox_read.msg_inbox_what]
+doc = "What the inbox block says was blocked."
+value = "reading the raw DevSwarm inbox file directly is blocked."
+
+[inbox_read.msg_inbox_why]
+doc = "Why the inbox block applies."
+value = "It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped."
+
+[inbox_read.msg_inbox_instead]
+doc = "What to do instead of reading the inbox."
+value = "`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`."
+
+[inbox_read.msg_override]
+doc = "How to disable the guard entirely."
+value = "set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely"
+
+# ---- phase-tracker (hooks/phase-tracker.js) ---------------------------------------------------------------
+
+[phase_tracker.summary]
+doc = "One-line description of the phase-tracker check in the generated reference."
+value = "Records each Agent or Task spawn in ~/.anti-hall (the statusline's live swarm bar and the running-agents heartbeat); never blocks (port of phase-tracker.js)."
+
+[phase_tracker.log_file]
+doc = "The spawn log, relative to the state root."
+value = "agent-spawns.log"
+
+[phase_tracker.keep_ms]
+doc = "How long a spawn timestamp stays in the log."
+value = 300000
+unit = "ms"
+min = 1000
+max = 86400000
+
+[phase_tracker.agents_dir]
+doc = "Directory of the running-agents heartbeats, relative to the state root."
+value = "agents"
+
+[phase_tracker.heartbeat_file]
+doc = "The rolling heartbeat file written on every spawn, inside the agents directory."
+value = "recent-spawn.json"
+
+[phase_tracker.tag_max]
+doc = "Longest session tag written next to a spawn timestamp."
+value = 64
+min = 1
+max = 1024
+
+[phase_tracker.unknown_tag]
+doc = "The session tag when the payload names neither a session nor a directory."
+value = "unknown"
+
+[phase_tracker.cwd_tag_prefix]
+doc = "Prefix of the session tag derived from the working directory."
+value = "cwd-"
+
+[phase_tracker.cwd_hash_len]
+doc = "How many hex characters of the working directory's SHA-1 the derived tag keeps."
+value = 12
+min = 1
+max = 40
+
+# ---- orchestration state and delivery (hooks/lib/orch-full-state.js, hooks/orch-on-spawn.js, hooks/verify-first-orch.js) ----
+
+[orch_state.dir]
+doc = "Directory of the orchestration markers and claims, relative to the state root."
+value = "orch-full"
+
+[orch_state.prefix]
+doc = "File-name prefix of every marker, claim and temporary file."
+value = "orch-full"
+
+[orch_state.stamp_prefix]
+doc = "File-name prefix of the prune stamp (the prefix is appended)."
+value = ".prune-stamp-"
+
+[orch_state.ttl_ms]
+doc = "How old a marker or claim must be (by modification time) before the prune sweep removes it."
+value = 604800000
+unit = "ms"
+min = 60000
+max = 31536000000
+
+[orch_state.throttle_ms]
+doc = "Shortest time between two prune sweeps."
+value = 21600000
+unit = "ms"
+min = 1000
+max = 604800000
+
+[orch_state.decisions]
+doc = "The decisions a marker may hold: the first is the one meaning the full text is still owed to the first spawn."
+value = ["pending", "none"]
+
+[orch_state.setting]
+doc = "Where the orchestration on/off switch is read from (context.verifyFirstOrchestration, default on; it has no environment variable)."
+value = { section = "context", key = "verifyFirstOrchestration", env = "", aliases = [], option = "context_verify_first_orchestration", default = true }
+
+[orch_state.protocol_setting]
+doc = "Where the protocol level (compact or full) is read from (context.protocolLevel)."
+value = { section = "context", key = "protocolLevel", env = "ANTIHALL_PROTOCOL_LEVEL", aliases = [], option = "", default = "compact", values = ["compact", "full"] }
+
+[orch_state.orch_full_on_setting]
+doc = "Where the delivery mode of the full orchestration rules is read from (context.orchFullOn)."
+value = { section = "context", key = "orchFullOn", env = "ANTIHALL_ORCH_FULL_ON", aliases = [], option = "", default = "auto", values = ["auto", "spawn", "session", "off"] }
+
+[orch_state.codex_orch_full_on_setting]
+doc = "Where the Codex delivery mode of the full orchestration rules is read from (context.codexOrchFullOn)."
+value = { section = "context", key = "codexOrchFullOn", env = "ANTIHALL_CODEX_ORCH_FULL_ON", aliases = [], option = "", default = "session", values = ["session", "spawn"] }
+
+[orch_state.skip_name]
+doc = "Name of the skip-file entry that turns the spawn-time delivery off."
+value = "orch-on-spawn"
+
+[orch_state.full_level]
+doc = "The protocol level that sends today's full text everywhere."
+value = "full"
+
+# ---- orch-on-spawn (hooks/orch-on-spawn.js) ---------------------------------------------------------------
+
+[orch_on_spawn.summary]
+doc = "One-line description of the orch-on-spawn check in the generated reference."
+value = "Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker defers to Node, which owns the claim race (port of orch-on-spawn.js)."
+
+[orch_on_spawn.spawn_tools]
+doc = "Tool names that are a spawn: a call to any other named tool is ignored."
+value = ["Agent", "Task", "Workflow", "spawn_agent", "collaborationspawn_agent"]
+
+[orch_on_spawn.agent_markers]
+doc = "Payload fields whose mere presence (not null) marks a subagent's own call."
+value = ["agent_id", "agent_type"]
+
+# ---- verify-first-orch (hooks/verify-first-orch.js, hooks/verify-first-core.js) ----------------------------
+
+[verify_first_orch.summary]
+doc = "One-line description of the verify-first-orch check in the generated reference."
+value = "SessionStart orchestration text for the Claude entry: composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node (port of verify-first-orch.js --host=claude)."
+
+[verify_first_orch.summary_codex]
+doc = "One-line description of the verify-first-orch-codex check in the generated reference."
+value = "SessionStart orchestration text for the Codex entry (the same hook without --host=claude, so never Claude-confident): composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node."
+
+[verify_first_orch.event]
+doc = "The only event the hook answers."
+value = "SessionStart"
+
+[verify_first_orch.projects_dir]
+doc = "Directory of the host's transcripts, relative to the host's config directory."
+value = "projects"
+
+[verify_first_orch.config_dir_env]
+doc = "Environment variable that moves the host's config directory."
+value = "CLAUDE_CONFIG_DIR"
+
+[verify_first_orch.config_dir_default]
+doc = "The host's config directory under the home directory when the variable is not set."
+value = ".claude"
+
+[verify_first_orch.codex_transcript_patterns]
+doc = "Transcript paths that identify a Codex session (JavaScript regex sources): a rollout file, or any path under a .codex directory."
+value = ['(^|[\\/])rollout-[^\\/]*\.jsonl$', '[\\/]\.codex[\\/]']
+
+[verify_first_orch.root_placeholder]
+doc = "Placeholder in the compact text that is replaced by the plugin root."
+value = "<abs>"
+
+[verify_first_orch.delivery_placeholder]
+doc = "Placeholder in the compact first line that is replaced by the spawn-delivery phrase, or by nothing."
+value = "<delivery>"
+
+[verify_first_orch.mn_prefix]
+doc = "How the compact body's model-routing line starts (that line is swapped for the Codex one)."
+value = "M/N."
+
+[verify_first_orch.compact_first]
+doc = "First line of the compact orchestration text."
+value = "ORCHESTRATION (main thread = coordinator; letters match the full rules A-N in <abs>/PROTOCOL.md#orchestration<delivery>):"
+
+[verify_first_orch.compact_body]
+doc = "Lines of the compact orchestration text, after the first line."
+value = [
+  "A/E. Delegate builds/tests/deploys/installs, noisy commands and broad searches to a subagent that returns a tight summary. Inline only atomic work: an answer, one known-path read, synthesis.",
+  "B. Keep a priority-sorted task list; dispatch unblocked tasks to background agents in parallel (cap ~min(16, cores-2)); never end a turn idle with dispatchable tasks.",
+  "L. A subagent's \"done/passing\" is a claim: re-run the check or use a separate verifier.",
+  "G. Synthesize; never paste raw subagent output. Give workers an output budget.",
+  "M/N. Workers do not re-delegate; read-only research -> Explore; 3+ parallel/nested spawns -> a Workflow. Set the model per seat (build: sonnet/haiku, correctness review: Codex, design: opus); never all-Opus. Inside a Workflow script no guard polices models: you set them.",
+  "K. Report concisely in scannable markdown (tables, bold verdicts, `code`).",
+]
+
+[verify_first_orch.compact_mn_codex]
+doc = "The compact model-routing line for a Codex session."
+value = "M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent; 3+ parallel/nested spawns -> one flat spawn_agent fan-out. Set the model per seat (planning/review: frontier tier, build: workhorse tier, mechanical: fast tier); never all-frontier."
+
+[verify_first_orch.compact_delivery]
+doc = "The phrase added to the compact first line when the full text follows on the first spawn."
+value = "; sent in full on your first spawn"
+
+[verify_first_orch.full_lines]
+doc = "Lines of the full orchestration text for a Claude session, joined with a newline."
+value = [
+  "ORCHESTRATION DISCIPLINE (always apply; the main thread is a coordinator, not a worker):",
+  "  A. COMMAND DELEGATION (TOP RULE): NEVER run verbose/long/state-changing commands (build, test, deploy, push, pull, install, migrate, dumps, bulk scripts) OR broad reads/Grep/Glob/code-nav searches (git grep, find, rg, ag, multi-file sweeps) inline. ALWAYS delegate to a subagent that returns a tight summary. Raw output bloats the orchestrator and INDUCES HALLUCINATION - the failure this plugin prevents.",
+  "  B. Keep the MAIN thread non-blocking. Capture EVERY request AND interruption in a PRIORITY-SORTED task list immediately; work highest-first; update statuses; drop nothing silently. As each task COMPLETES, DELEGATE the write to a cheap model (Haiku) rather than composing it inline: hand it the cause/fix/verification facts and have it append the entry to .anti-hall/history/<today>/<session-id>.md (one entry per task: Cause / Fix / Verified) so the fix history persists for the knowledge layer without spending the coordinator's own tokens on a mechanical write.",
+  "  C. ACTIVELY DRAIN THE LIST - DISPATCH PROACTIVELY, do NOT wait to be told: the MOMENT a task is pending, unblocked (no open blockedBy), and unassigned, fire a background agent for it WITHOUT being asked - never let it sit idle waiting for the user to say \"spin agents\". Run INDEPENDENT tasks in PARALLEL (one agent each, cap ~min(16, cores-2)); never spawn unbounded agents; let in-flight agents finish before the next wave - a runaway swarm can wedge the OS. Ending a turn with non-blocked, unassigned tasks and NO agents running is IDLE NEGLECT - the failure mode to avoid; only stop idle if a task genuinely needs the user, and then say which and why.",
+  "  D. BIAS TOWARD DELEGATION: default to a subagent for any work touching files/tools/commands/search/build/test or that could balloon - avoid the \"just do it inline\" trap.",
+  "  E. Handle INLINE only genuinely atomic things: a direct answer, one known-path file read, and the synthesis/decisions the coordinator must do. If an inline task balloons, delegate.",
+  "  F. Run independent agents in PARALLEL (one per task, within the cap). Run builds/tests/deploys/dumps/noisy commands via a cheap subagent (Haiku, or Codex when available) OFF the main thread. DEFAULT delegated heavy/long/parallel work to the BACKGROUND yourself (pass run_in_background so the user never has to background it manually); the main thread stays free during execution, and you act on each completion notification - then VERIFY it (rule L). Never fire-and-forget: a backgrounded task must still be drained and checked. Do NOT background genuinely-atomic inline work (rule E) - match the mechanism to the weight.",
+  "  G. SYNTHESIZE, NEVER RELAY (the #1 cause of message-context bloat): the coordinator reports progress in its OWN words and NEVER pastes a subagent's raw return into the user thread - relaying a worker's full output verbatim is what bloats the message context. Subagents must return TIGHT summaries under an explicit OUTPUT BUDGET: findings only, no transcript, no re-pasted file bodies. For a SUBSTANTIAL result (a review/audit/research dump, many claims), require a compact structured return - {claim, evidence:\"file:line\", verdict, blockers/uncertainty, next} - which MEASURED ~5x smaller than verbose prose with zero decision-relevant loss (judged on a claim/evidence/uncertainty/blockers/next rubric); for a SMALL result a single prose line is better (a schema is only ~1.4x denser there, and JSON overhead can make tiny outputs LARGER - do not impose it). To ENFORCE the format rather than just request it, pass a schema to the Agent/Task tool so the structured return is validated. The biggest levers are the output budget + no-raw-relay; the schema is the multiplier on large returns.",
+  "  H. COMMUNICATE CONCISELY: enough to convey meaning, not pages; offer to expand if wanted.",
+  "  I. WATCH/BABYSIT agents: poll TaskOutput on an interval (ScheduleWakeup or loop). Output/transcript file quiet ~20 min = stalled: TaskStop, re-dispatch tighter. \"running\" in an agent list is not progress - verify via process/output evidence. Bounded horizon.",
+  "  J. UPDATE THE PHASE STATUSLINE as phases progress: call statusline/phase.js (set/advance/step/agents/clear) from the coordinator. Never from subagents - they report back; the coordinator writes phase state.",
+  "  K. PRESENT FOR SCANNABILITY (do not overdo it): organize output with GitHub-flavored markdown - tables for comparisons/status, **bold** verdicts, *italic* caveats, `code` for flags/paths/commands, fenced blocks for commands/output, at most a leading status glyph as SIGNAL (✅/❌/⚠️), never decoration. This rich, scannable shape is the DEFAULT for every user-facing report, not an occasional flourish; sliding back to bare plain text over a long session is DRIFT - correct it. Styling organizes, never pads - rule H still rules. Avoid renderer-dropped syntax: strikethrough, [label](url) link labels (paste the bare URL), nested blockquotes, task-list checkboxes; underline and per-word color do not exist.",
+  "  L. VERIFY DELEGATED WORK (Rule 6 applies to a subagent's report too): a subagent's \"done / fixed / tests pass / N passing\" is an UNVERIFIED CLAIM, never a fact. Before marking any delegated task complete, RE-RUN the authoritative check yourself (or dispatch a SEPARATE verifier) and read the REAL result - workers run in their own context and can be optimistic, wrong, or measuring stale/partial state. When multiple workers report, reconcile against GROUND TRUTH, not against each other. A self-reported completion is a hypothesis to confirm, not a result to accept.",
+  "  M. PREFER SHALLOW+WIDE; LIFT DEEP NESTING INTO A WORKFLOW. Delegation rules are for the ORCHESTRATOR; a spawned subagent is a WORKER - it does the work itself and does NOT re-delegate unless its task says to (deep general-purpose->general-purpose chains cost ~7x tokens by depth 5, drift intent each hop, add no quality). Route read-only research to Explore (it has no Agent tool, cannot recurse). When a task is breadth-first/parallelizable and would otherwise need 3+ subagents or a nested chain, use a deterministic WORKFLOW (one flat script with parallel/pipeline) instead of ad-hoc nesting - it is repeatable, keeps intermediate output off the main context, and runs in the background. Trigger it deliberately on that SHAPE, never as a blanket rule for routine work.",
+  "  N. DISTRIBUTE MODELS - NEVER ALL-OPUS (esp. in a Workflow). An OMITTED model inherits the orchestrator (a flagship), so a fan-out of omitted/Opus seats silently becomes an all-flagship swarm that torches the usage limit. Set model/effort EXPLICITLY per seat by task shape: implementation/mechanical -> sonnet (or haiku for trivial leaf/nav); correctness/verify/subtle-bug review -> CODEX (codex:codex-rescue when available - its strength); planning/architecture/design/ambiguous-reasoning + design-level review -> opus. The model-routing-guard hook does NOT police models INSIDE a workflow review fan-out (it exempts review tasks and workflow-spawn advisories are not surfaced), so distribution is YOUR authoring responsibility when you write the workflow script. ALWAYS use Codex for an independent SECOND OPINION on substantial code changes (correctness lens) - it is the deadly-loop/ship-it Critic seat and should be pulled for everyday code review too; keep the architecture/design lens on Opus. CODEX HAS ITS OWN LIMITS: if Codex is unavailable or rate-limited, fall back to a CHEAP Claude (Sonnet) for the review - NEVER retry-loop an unavailable Codex, and do not strand the main agent waiting on it.",
+]
+
+[verify_first_orch.full_lines_codex]
+doc = "Lines of the full orchestration text for a Codex session, joined with a newline."
+value = [
+  "ORCHESTRATION DISCIPLINE (always apply; the main thread is a coordinator, not a worker):",
+  "  A. COMMAND DELEGATION (TOP RULE): NEVER run verbose/long/state-changing commands (build, test, deploy, push, pull, install, migrate, dumps, bulk scripts) OR broad reads/Grep/Glob/code-nav searches (git grep, find, rg, ag, multi-file sweeps) inline. ALWAYS delegate to a subagent that returns a tight summary. Raw output bloats the orchestrator and INDUCES HALLUCINATION - the failure this plugin prevents.",
+  "  B. Keep the MAIN thread non-blocking. Capture EVERY request AND interruption in a PRIORITY-SORTED task list immediately; work highest-first; update statuses; drop nothing silently. As each task COMPLETES, DELEGATE the write to a cheap model (fast-tier sub-agent) rather than composing it inline: hand it the cause/fix/verification facts and have it append the entry to .anti-hall/history/<today>/<session-id>.md (one entry per task: Cause / Fix / Verified) so the fix history persists for the knowledge layer without spending the coordinator's own tokens on a mechanical write.",
+  "  C. ACTIVELY DRAIN THE LIST - DISPATCH PROACTIVELY, do NOT wait to be told: the MOMENT a task is pending, unblocked (no open blockedBy), and unassigned, fire a background agent for it WITHOUT being asked - never let it sit idle waiting for the user to say \"spin agents\". Run INDEPENDENT tasks in PARALLEL (one agent each, cap ~min(16, cores-2)); never spawn unbounded agents; let in-flight agents finish before the next wave - a runaway swarm can wedge the OS. Ending a turn with non-blocked, unassigned tasks and NO agents running is IDLE NEGLECT - the failure mode to avoid; only stop idle if a task genuinely needs the user, and then say which and why.",
+  "  D. BIAS TOWARD DELEGATION: default to a subagent for any work touching files/tools/commands/search/build/test or that could balloon - avoid the \"just do it inline\" trap.",
+  "  E. Handle INLINE only genuinely atomic things: a direct answer, one known-path file read, and the synthesis/decisions the coordinator must do. If an inline task balloons, delegate.",
+  "  F. Run independent agents in PARALLEL (one per task, within the cap). Run builds/tests/deploys/dumps/noisy commands via a cheap subagent (fast-tier sub-agent) OFF the main thread. DEFAULT delegated heavy/long/parallel work to the BACKGROUND yourself (spawn it with spawn_agent so the user never has to background it manually); the main thread stays free during execution, and you act on each completion notification - then VERIFY it (rule L). Never fire-and-forget: a backgrounded task must still be drained and checked. Do NOT background genuinely-atomic inline work (rule E) - match the mechanism to the weight.",
+  "  G. SYNTHESIZE, NEVER RELAY (the #1 cause of message-context bloat): the coordinator reports progress in its OWN words and NEVER pastes a subagent's raw return into the user thread - relaying a worker's full output verbatim is what bloats the message context. Subagents must return TIGHT summaries under an explicit OUTPUT BUDGET: findings only, no transcript, no re-pasted file bodies. For a SUBSTANTIAL result (a review/audit/research dump, many claims), require a compact structured return - {claim, evidence:\"file:line\", verdict, blockers/uncertainty, next} - which MEASURED ~5x smaller than verbose prose with zero decision-relevant loss (judged on a claim/evidence/uncertainty/blockers/next rubric); for a SMALL result a single prose line is better (a schema is only ~1.4x denser there, and JSON overhead can make tiny outputs LARGER - do not impose it). To ENFORCE the format rather than just request it, state the exact return shape in the spawn_agent brief. The biggest levers are the output budget + no-raw-relay; the schema is the multiplier on large returns.",
+  "  H. COMMUNICATE CONCISELY: enough to convey meaning, not pages; offer to expand if wanted.",
+  "  I. WATCH/BABYSIT agents: check each spawned agent's status/result on an interval. No new output for ~20 min = stalled: stop it, re-dispatch tighter. \"running\" is not progress - verify via process/output evidence. Bounded horizon.",
+  "  J. UPDATE THE PHASE STATUSLINE as phases progress: call statusline/phase.js (set/advance/step/agents/clear) from the coordinator. Never from subagents - they report back; the coordinator writes phase state.",
+  "  K. PRESENT FOR SCANNABILITY (do not overdo it): organize output with GitHub-flavored markdown - tables for comparisons/status, **bold** verdicts, *italic* caveats, `code` for flags/paths/commands, fenced blocks for commands/output, at most a leading status glyph as SIGNAL (✅/❌/⚠️), never decoration. This rich, scannable shape is the DEFAULT for every user-facing report, not an occasional flourish; sliding back to bare plain text over a long session is DRIFT - correct it. Styling organizes, never pads - rule H still rules. Avoid renderer-dropped syntax: strikethrough, [label](url) link labels (paste the bare URL), nested blockquotes, task-list checkboxes; underline and per-word color do not exist.",
+  "  L. VERIFY DELEGATED WORK (Rule 6 applies to a subagent's report too): a subagent's \"done / fixed / tests pass / N passing\" is an UNVERIFIED CLAIM, never a fact. Before marking any delegated task complete, RE-RUN the authoritative check yourself (or dispatch a SEPARATE verifier) and read the REAL result - workers run in their own context and can be optimistic, wrong, or measuring stale/partial state. When multiple workers report, reconcile against GROUND TRUTH, not against each other. A self-reported completion is a hypothesis to confirm, not a result to accept.",
+  "  M. PREFER SHALLOW+WIDE. Delegation rules are for the ORCHESTRATOR; a spawned sub-agent is a WORKER - it does the work itself and does NOT re-delegate unless its task says to (deep sub-agent chains cost ~7x tokens by depth 5, drift intent each hop, add no quality). Route read-only research to a read-only sub-agent. When a task is breadth-first/parallelizable and would otherwise need 3+ sub-agents or a nested chain, run one flat fan-out of spawn_agent workers instead of ad-hoc nesting - it keeps intermediate output off the main context. Trigger it deliberately on that SHAPE, never as a blanket rule for routine work.",
+  "  N. DISTRIBUTE MODELS - NEVER ALL-FRONTIER. An OMITTED model inherits the orchestrator (a flagship), so a fan-out of omitted seats silently becomes an all-flagship swarm that torches the usage limit. Set model/reasoning EXPLICITLY per seat by task shape: planning/architecture/validation/debate and correctness/subtle-bug review -> frontier tier (reasoning xhigh); implementation -> workhorse tier (reasoning medium); mechanical/leaf/navigation -> fast tier. Resolve the tier from the live model catalog when you act; if it cannot be resolved with confidence, omit the model and let the CLI use its configured default. Get an independent SECOND OPINION on substantial code changes from a separate frontier-tier reviewer sub-agent, never from the author. If a model is unavailable or rate-limited, fall back one tier down for the review - NEVER retry-loop it, and do not strand the main agent waiting on it.",
+]

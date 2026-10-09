@@ -1,0 +1,322 @@
+# ah-engine shipped defaults for the DevSwarm action layer (src/dsact): the engine runs the hivecontrol actions Node used to run
+# (auto-archive, poke/escalate, on-demand archive/create/merge, owner-approved delete). Format: see the header of engine.toml.
+# The decision logic is the plugin script engine/logic/devswarm-act.js; the values below are Node's own (cited per key).
+# Nothing here is compiled into the binary.
+
+# ---- what may run, and who may start it -------------------------------------------------------------------------
+
+[devswarm_act.automatic_kinds]
+doc = "The only actions a trigger without an owner request may start (Node's automatic set: the supervisor's auto-archive and its poke/escalate). Everything else needs an owner request; delete is never automatic."
+value = ["auto-archive", "poke", "escalate"]
+
+[devswarm_act.owner_kinds]
+doc = "The actions an owner request (a command, a skill or a mesh request) may start. `delete` additionally needs the approved plan (devswarm_act.plan_*)."
+value = ["archive", "create", "merge", "delete"]
+
+[devswarm_act.deferred_kinds]
+doc = "Actions the engine does not execute and answers with `deferred` (nothing written): `recover` as an act-layer request (the owner verb `ah-engine devswarm recover` is separate: the engine gates it and Node's recovery code does the kill), `drain` and `read-messages` are destructive reads that must be folded into the store in the same step."
+value = ["recover", "drain", "read-messages"]
+
+# ---- hivecontrol -------------------------------------------------------------------------------------------------
+
+[devswarm_act.hc_bin]
+doc = "The DevSwarm CLI executable, resolved on the process PATH (Node: `hivecontrol`). A missing binary means every action answers `unavailable` and nothing is written."
+value = "hivecontrol"
+
+[devswarm_act.hc_timeout_ms]
+doc = "Wall-clock bound of one hivecontrol call; on expiry only the engine's own child is killed (Node: lifecycle.js HC_TIMEOUT_MS and archive.js APP_ARCHIVE_TIMEOUT_MS)."
+value = 60000
+min = 1000
+max = 600000
+
+[devswarm_act.probe_timeout_ms]
+doc = "Bound of the `--version` capability probe (Node: devswarm-capabilities.js HELP_TIMEOUT_MS)."
+value = 8000
+min = 500
+max = 60000
+
+[devswarm_act.output_cap_bytes]
+doc = "Most bytes of stdout kept from one call (the rest is read and dropped so the child never blocks on a full pipe)."
+value = 1048576
+min = 1024
+max = 67108864
+
+[devswarm_act.poll_ms]
+doc = "How often the runner checks whether its child has exited while waiting for the timeout."
+value = 10
+min = 1
+max = 1000
+
+[devswarm_act.verbs]
+doc = "The hivecontrol verbs the engine may spawn, as `verb:minVersion` (empty version = any). Anything else is refused before a process starts (Node: capabilities.js default-deny registry)."
+value = ["archive:2.5.3", "delete:2.5.3", "create:", "update-title:", "check-merge:", "merge-into-source:"]
+
+[devswarm_act.id_verbs]
+doc = "Verbs that default to the CURRENT workspace when no id is given, so an explicit non-empty id (never starting with `-`) is mandatory (Node: lifecycle.js verbArgv, archive.js hcArchiveCall)."
+value = ["archive", "delete"]
+
+[devswarm_act.argv_archive]
+doc = "Argv of an archive; `{id}` is the workspace UUID (Node: ['workspace','archive',id])."
+value = ["workspace", "archive", "{id}"]
+
+[devswarm_act.argv_delete]
+doc = "Argv of a delete (Node: ['workspace','delete',id])."
+value = ["workspace", "delete", "{id}"]
+
+[devswarm_act.argv_create]
+doc = "Fixed head of a create; the owner's own arguments follow unchanged, except the anti-hall flag in devswarm_act.create_strip (Node: spawn.js)."
+value = ["workspace", "create"]
+
+[devswarm_act.create_strip]
+doc = "Arguments removed from a create request before it reaches hivecontrol (anti-hall's own flag; Node: spawn.js `--from-local`)."
+value = ["--from-local"]
+
+[devswarm_act.argv_title]
+doc = "Argv of the best-effort title follow-up of a create; `{branch}` and `{title}` are the request's (Node: spawn.js 1086)."
+value = ["workspace", "update-title", "-b", "{branch}", "{title}"]
+
+[devswarm_act.argv_check_merge]
+doc = "Argv of the informational check run before a merge (Node: spawn.js 1265)."
+value = ["workspace", "check-merge"]
+
+[devswarm_act.argv_merge]
+doc = "Fixed head of a merge; the owner's own arguments follow unchanged (Node: spawn.js 1271)."
+value = ["workspace", "merge-into-source"]
+
+[devswarm_act.archive_retry_re]
+doc = "A failed archive whose error matches this (case-insensitive) is retried once: the known-flaky terminal confirmation (Node: archive.js APP_ARCHIVE_RETRYABLE_RE)."
+value = "could not confirm"
+
+[devswarm_act.archive_refused_flag]
+doc = "A zero-exit archive whose JSON body has this key set to false did not archive anything and counts as a failure (Node: archive.js hcArchiveCall)."
+value = "archived"
+
+# ---- settings (same keys, tiers and defaults as Node's hooks/lib/settings-schema.js) ---------------------------------
+
+[devswarm_act.set_mode]
+doc = "Auto-archive mode: on (archive), dry-run (plan only, nothing spawned), off. Node: devswarm.autoArchive.mode."
+value = { type = "enum", section = "devswarm", key = "autoArchive.mode", env = "ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE", option = "devswarm_auto_archive_mode", values = ["on", "dry-run", "off"], default = "on" }
+
+[devswarm_act.set_idle_min]
+doc = "Minutes of inactivity before a finished workspace is archived. Node: devswarm.autoArchive.idleMin."
+value = { type = "number", section = "devswarm", key = "autoArchive.idleMin", env = "ANTIHALL_DEVSWARM_AUTO_ARCHIVE_IDLE_MIN", option = "devswarm_auto_archive_idle_min", min = 5, max = 100000000, default = 30 }
+
+[devswarm_act.set_max_per_sweep]
+doc = "Most auto-archives in one sweep. Node: devswarm.autoArchive.maxPerSweep."
+value = { type = "number", section = "devswarm", key = "autoArchive.maxPerSweep", env = "ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MAX_PER_SWEEP", option = "devswarm_auto_archive_max_per_sweep", min = 1, max = 20, default = 3 }
+
+[devswarm_act.set_ignore_pings]
+doc = "Whether the idle gate ignores the child's own wake/heartbeat/status turns. Node: devswarm.autoArchive.ignorePings."
+value = { type = "bool", section = "devswarm", key = "autoArchive.ignorePings", env = "ANTIHALL_DEVSWARM_AUTO_ARCHIVE_IGNORE_PINGS", option = "devswarm_auto_archive_ignore_pings", default = true }
+
+[devswarm_act.set_nudge_max_attempts]
+doc = "Pokes before a stale workspace is escalated. Node: devswarm.nudgeMaxAttempts."
+value = { type = "number", section = "devswarm", key = "nudgeMaxAttempts", env = "ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS", option = "", min = 1, max = 20, default = 2 }
+
+[devswarm_act.set_nudge_cooldown_sec]
+doc = "Seconds between two pokes of one workspace. Node: devswarm.nudgeCooldownSec."
+value = { type = "number", section = "devswarm", key = "nudgeCooldownSec", env = "ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC", option = "", min = 0, max = 86400, default = 120 }
+
+[devswarm_act.set_create_timeout_ms]
+doc = "Timeout of `workspace create` in ms. Node: devswarm.spawnCreateTimeoutMs."
+value = { type = "number", section = "devswarm", key = "spawnCreateTimeoutMs", env = "ANTIHALL_DEVSWARM_SPAWN_CREATE_TIMEOUT_MS", option = "devswarm_spawn_create_timeout_ms", min = 1000, max = 1800000, default = 180000 }
+
+[devswarm_act.viewed_grace_ms]
+doc = "A workspace selected in the DevSwarm app within this many ms is not auto-archived (Node: lifecycle.js VIEWED_GRACE_MS, gate f)."
+value = 600000
+min = 0
+max = 86400000
+
+# ---- ledger, plans, logs -------------------------------------------------------------------------------------------
+
+[devswarm_act.ledger_file]
+doc = "The action ledger (NDJSON, append-only) in the engine state directory: one `started` line before a spawn, one `finished` line after. A key that is started or done is never run again."
+value = "dsact.ledger"
+
+[devswarm_act.log_file]
+doc = "NDJSON log of every action decision and result (state directory)."
+value = "dsact.log"
+
+[devswarm_act.shadow_file]
+doc = "NDJSON of the witness comparison: what the engine did and what Node would have done, per trigger (state directory)."
+value = "dsact.shadow"
+
+[devswarm_act.plans_dir]
+doc = "Directory (under the state directory) of stored delete plans, one file per nonce."
+value = "dsact-plans"
+
+[devswarm_act.max_attempts]
+doc = "Most times one idempotency key is attempted after failures; a done or in-doubt key is never repeated (bounds a retry storm; Node had no bound and retried every sweep)."
+value = 3
+min = 1
+max = 100
+
+[devswarm_act.retry_backoff_ms]
+doc = "Minimum gap between two attempts of the same failed key."
+value = 60000
+min = 0
+max = 86400000
+
+[devswarm_act.plan_ttl_ms]
+doc = "How long a delete plan stays valid (Node: lifecycle.js PLAN_TTL_MS, 15 min)."
+value = 900000
+min = 1000
+max = 86400000
+
+[devswarm_act.plan_nonce_len]
+doc = "Length of a plan nonce in hex digits (Node: 16)."
+value = 16
+min = 8
+max = 64
+
+[devswarm_act.interactive_caller]
+doc = "The only value of ANTIHALL_CALLER (besides unset) under which a delete may run (Node: assertInteractiveCaller)."
+value = "interactive"
+
+[devswarm_act.caller_env]
+doc = "Environment variable naming the caller of a delete."
+value = "ANTIHALL_CALLER"
+
+[devswarm_act.node_archived_state]
+doc = "Node's durable gate-(h) file, relative to the home directory; the engine reads it so a workspace Node archived at a HEAD is never archived again at that HEAD."
+value = ".anti-hall/devswarm/auto-archived.json"
+
+[devswarm_act.node_archive_log]
+doc = "Node's auto-archive NDJSON log, relative to the home directory; the witness compares against what Node would have appended."
+value = ".anti-hall/logs/devswarm-auto-archive.ndjson"
+
+[devswarm_act.undo_hint]
+doc = "Text appended to the Primary's notice of an auto-archive (Node: lifecycle.js UNDO_HINT)."
+value = "undo: unarchive it from the archived workspaces list in the DevSwarm app"
+
+[devswarm_act.script_name]
+doc = "The plugin script (engine/logic/<name>.js; it lives in the `act` sub-directory because it is no hook check) that decides every action."
+value = "act/devswarm-act"
+
+[devswarm_act.script_event]
+doc = "The event name passed to the decision script."
+value = "Act"
+
+[devswarm_act.msg_inert]
+doc = "Reason recorded when DevSwarm is not installed or its app database is absent: the layer does nothing."
+value = "DevSwarm not installed"
+
+[devswarm_act.msg_no_script]
+doc = "Reason recorded when the decision script is missing or fails: nothing runs (fail closed)."
+value = "the decision script is missing or failed"
+
+# ---- words written in the ledger and the logs --------------------------------------------------------------------
+
+[devswarm_act.words]
+doc = "The outcome words of the ledger and the logs, in this order: started, done, failed, timeout, skipped, unavailable, deferred, in-doubt, inert, refused, stale, planned."
+value = ["started", "done", "failed", "timeout", "skipped", "unavailable", "deferred", "in-doubt", "inert", "refused", "stale", "planned"]
+
+[devswarm_act.auto_archive_state_file]
+doc = "Node's `auto-archive-state.json` (relative to the home directory): the ids the last sweep owns, read by the parent-inbox nag so it stays quiet for them. The engine writes the same shape after a sweep in mode on."
+value = ".anti-hall/devswarm/auto-archive-state.json"
+
+[devswarm_act.prune_log]
+doc = "Node's prune NDJSON log, relative to the home directory (one line per delete, same fields)."
+value = ".anti-hall/logs/devswarm-prune.ndjson"
+
+[devswarm_act.pruned_dir]
+doc = "Where a deleted workspace's tombstone `<id>.json` goes, relative to the home directory (anti-hall side only; no store row is deleted)."
+value = ".anti-hall/devswarm/pruned"
+
+[devswarm_act.auto_archive_kind]
+doc = "The kind word of the automatic archive in the Node log's `action` field."
+value = "auto-archive"
+
+[devswarm_act.prune_kind]
+doc = "The `action` word of a delete in the prune log."
+value = "prune-delete"
+
+[devswarm_act.version_min_parts]
+doc = "How many numeric parts a hivecontrol version needs to be compared (major.minor.patch)."
+value = 3
+min = 1
+max = 6
+
+[devswarm_act.type_enum]
+doc = "The `type` word of an enum setting entry in this file."
+value = "enum"
+
+[devswarm_act.type_bool]
+doc = "The `type` word of a boolean setting entry in this file."
+value = "bool"
+
+[devswarm_act.msg_timeout]
+doc = "Error recorded when a call hit its bound. Placeholder: {ms}."
+value = "the call did not finish within {ms} ms; only its own process was stopped"
+
+[devswarm_act.msg_version]
+doc = "Why a verb is unavailable on this DevSwarm. Placeholders: {verb}, {have}, {want}."
+value = "workspace {verb} needs DevSwarm {want} or newer (found {have})"
+
+[devswarm_act.msg_version_unknown]
+doc = "Why a verb with a minimum version is unavailable when the version cannot be read. Placeholder: {verb}."
+value = "workspace {verb} needs a known DevSwarm version and `--version` gave none"
+
+[devswarm_act.msg_verb]
+doc = "Why an argv was refused before any process started. Placeholder: {argv}."
+value = "refused: {argv} is not an allowed hivecontrol invocation"
+
+[devswarm_act.msg_origin]
+doc = "Why a kind was refused for its origin. Placeholders: {kind}, {origin}."
+value = "refused: {kind} may not be started by a {origin} trigger"
+
+[devswarm_act.msg_ledger]
+doc = "Why nothing ran: the ledger could not record the attempt. Placeholder: {why}."
+value = "the action ledger is not writable ({why}); nothing was run so no action can run twice"
+
+[devswarm_act.msg_plan_unknown]
+doc = "Delete refused: no stored plan has this nonce. Placeholder: {nonce}."
+value = "unknown plan nonce {nonce}"
+
+[devswarm_act.msg_plan_used]
+doc = "Delete refused: the plan was already used. Placeholder: {nonce}."
+value = "plan {nonce} was already used"
+
+[devswarm_act.msg_plan_expired]
+doc = "Delete refused: the plan is too old. Placeholder: {nonce}."
+value = "plan {nonce} expired; run the dry run again"
+
+[devswarm_act.msg_plan_ids]
+doc = "Delete refused: the confirmed ids differ from the plan's. Placeholder: {ids}."
+value = "the confirmed ids must exactly match the plan's eligible ids: {ids}"
+
+[devswarm_act.msg_caller]
+doc = "Delete refused: an automated caller. Placeholder: {caller}."
+value = "deletion refused: caller {caller} is automated (only an owner-approved interactive run may delete)"
+
+[devswarm_act.msg_plan_write]
+doc = "Delete refused: the plan could not be marked used. Placeholder: {why}."
+value = "could not mark the plan used: {why}"
+
+[devswarm_act.argv_version]
+doc = "Argv of the capability probe (Node: devswarm-capabilities.js `--version`)."
+value = ["--version"]
+
+[devswarm_act.plan_mode_words]
+doc = "The auto-archive mode words in this order: on, dry-run, off."
+value = ["on", "dry-run", "off"]
+
+[devswarm_act.origins]
+doc = "The origin words in this order: automatic, owner."
+value = ["automatic", "owner"]
+
+[devswarm_act.msg_unverified]
+doc = "Why an archive that exited 0 still counts as failed: the app database does not list the workspace as archived."
+value = "the app database does not show the workspace archived"
+
+[devswarm_act.err_chars]
+doc = "Most characters kept of a hivecontrol answer quoted in an error (Node: archive.js slice(0, 200))."
+value = 200
+min = 20
+max = 100000
+
+[devswarm_act.read_chunk_bytes]
+doc = "Size of one read from a child's output pipe."
+value = 65536
+min = 512
+max = 1048576

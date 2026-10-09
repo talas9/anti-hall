@@ -1,0 +1,68 @@
+# ah-engine shipped mesh defaults (D45, stage S0): the read-only reader of the per-repo DevSwarm stores Node writes
+# (`~/.anti-hall/devswarm/store/<repoKey>/devswarm.db`). Format: see the header of engine.toml.
+
+[mesh.backend_marker]
+doc = "File name of the marker that pins a store directory to one backend (Node's `BACKEND` file)."
+value = "BACKEND"
+
+[mesh.backend_sqlite]
+doc = "The marker text of a SQLite-backed store. Any other marker (the journal backend) means Node owns the store and the reader refuses it."
+value = "sqlite"
+
+[mesh.busy_timeout_ms]
+doc = "How long a read waits for a SQLite lock held by a Node writer, in milliseconds; the same 3 s Node's store uses."
+value = 3000
+min = 0
+max = 60000
+
+[mesh.cache_kib]
+doc = "SQLite page cache for one open store, in KiB. Keeps one open reader to well under a megabyte of resident memory (D45 section 7)."
+value = 256
+min = 16
+max = 8192
+
+[mesh.preview_chars]
+doc = "Characters of a pending question's body the reader returns as its preview; the same 120 Node's PREVIEW_MAX keeps."
+value = 120
+min = 1
+max = 4096
+
+[mesh.read_byte_cap]
+doc = "Most message-body bytes one `mesh read` call prints before it stops and reports where to resume (D45 section 7: bodies are never cached and a batch is capped)."
+value = 4194304
+min = 1024
+max = 268435456
+
+[mesh.missing_table_error]
+doc = "Lower-cased text of the SQLite error for a table the store does not have yet (an older Node schema); a reader that meets it answers with no rows, as Node does."
+value = "no such table"
+
+[mesh.last_default]
+doc = "How many of a workspace's newest messages `mesh read --last` returns when no count is given."
+value = 5
+min = 1
+max = 1000
+
+[mesh.last_max]
+doc = "The most messages `mesh read --last` returns whatever count is asked for; the reader never holds more message bodies than this at once."
+value = 100
+min = 1
+max = 10000
+
+[mesh.js_safe_int]
+doc = "The largest integer JavaScript represents exactly (2^53 - 1). Node's sqlite binding throws on a larger value, so the reader fails the same way instead of rounding, which keeps the two readers byte-equal."
+value = 9007199254740991
+
+# ---- D45 stage 2: the switch that decides who writes (see mesh_write.toml) ----------------------------------------
+
+[mesh.engine_writes]
+doc = "Who runs the mesh verbs that write the store (`ah-engine mesh send|mesh read|mesh history|roster --ack`): off (Node, the engine only forwards), shadow (Node acts; the engine replays each call on a scratch copy and logs whether it would have done the same, in mesh_write.shadow_log) or on (the engine acts where it reproduces Node exactly, Node elsewhere; after the engine's own write it never reruns the verb in Node). Set it in settings.json (`mesh.engine_writes`) or the engine's config.toml. To turn it off: `{\"mesh\":{\"engine_writes\":\"off\"}}` in ~/.anti-hall/settings.json (or delete the key; off is the default)."
+value = "off"
+
+[mesh.engine_writes_modes]
+doc = "The words of mesh.engine_writes, in this order: off, shadow, on. Anything else reads as off."
+value = ["off", "shadow", "on"]
+
+[mesh.db_flag]
+doc = "The flag that selects the read-only S0 reader (`ah-engine mesh <roster|unread|read|dump> --db <file>`); without it the words after `mesh` are a devswarm.js argv."
+value = "--db"

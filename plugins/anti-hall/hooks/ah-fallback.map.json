@@ -1,0 +1,109 @@
+{
+  "PostToolUse": {
+    "agent-reminders": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"",
+    "codex-quota-detect": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-quota-detect.js\"",
+    "coordinator-work-guard:post": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\" --post",
+    "devswarm-child-drain": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"",
+    "devswarm-parent-reply-tracker": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"",
+    "dispatch-tier": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-tier.js\"",
+    "git-guard:audit": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\" --audit",
+    "merge-side-pick:post": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post",
+    "output-verify-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/output-verify-guard.js\""
+  },
+  "PostToolUseFailure": {
+    "failure-root-cause-nudge": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/failure-root-cause-nudge.js\""
+  },
+  "PreCompact": {
+    "precompact-snapshot": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/precompact-snapshot.js\""
+  },
+  "PreToolUse": {
+    "api-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/api-guard.js\"",
+    "ask-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js\"",
+    "command-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/command-guard.js\"",
+    "compact-declaration-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-declaration-guard.js\"",
+    "coordinator-work-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\"",
+    "devswarm-comms-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js\"",
+    "edit-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/edit-guard.js\"",
+    "engine-role-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"",
+    "git-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\"",
+    "inbox-read-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/inbox-read-guard.js\"",
+    "merge-gate": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-gate.js\"",
+    "merge-side-pick": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\"",
+    "model-routing-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"",
+    "model-routing-guard#2": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"",
+    "orch-on-spawn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/orch-on-spawn.js\"",
+    "phase-tracker": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"",
+    "phase-tracker#2": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"",
+    "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
+    "scan-throttle": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scan-throttle.js\"",
+    "ship-it-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ship-it-guard.js\"",
+    "stale-agent-stop-note": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"",
+    "swarm-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"",
+    "swarm-guard#2": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\""
+  },
+  "SessionEnd": {
+    "session-end-mcp-reaper": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js\""
+  },
+  "SessionStart": {
+    "claude-cli-version": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/claude-cli-version.js\"",
+    "codex-availability": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-availability.js\"",
+    "defect-nudge": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js\"",
+    "devswarm-child-role": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-role.js\"",
+    "devswarm-version": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-version.js\"",
+    "emit-dedupe-reset": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"",
+    "engine-role-note": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note\"",
+    "fable-availability": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/fable-availability.js\"",
+    "handover-hygiene": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-hygiene\"",
+    "handover-resume": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-resume.js\"",
+    "jev-review-reminder": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-review-reminder.js\"",
+    "jev-weekly-scorecard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"",
+    "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
+    "progress-prune": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/progress-prune.js\"",
+    "repair-on-reload": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
+    "repo-self-drift": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repo-self-drift.js\"",
+    "verify-first-full": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-full.js\"",
+    "verify-first-orch:host=claude": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-orch.js\" --host=claude",
+    "version-alert": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/version-alert.js\""
+  },
+  "Stop": {
+    "auto-handover-pause-nag": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js\"",
+    "claim-ledger": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/claim-ledger.js\"",
+    "codex-nudge": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-nudge.js\"",
+    "compact-advice-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-advice-guard.js\"",
+    "devswarm-child-gate": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-gate.js\"",
+    "devswarm-parent-gate": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-gate.js\"",
+    "sibling-sweep": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"",
+    "silent-agent-nudge": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"",
+    "speculation-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-guard.js\"",
+    "speculation-judge": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-judge.js\"",
+    "task-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js\"",
+    "tasklist-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js\""
+  },
+  "SubagentStart": {
+    "engine-role-note": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note\"",
+    "verify-first-subagent": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\""
+  },
+  "SubagentStop": {
+    "sibling-sweep": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\""
+  },
+  "TaskCompleted": {
+    "task-lifecycle-log": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\""
+  },
+  "TaskCreated": {
+    "task-lifecycle-log": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\""
+  },
+  "UserPromptSubmit": {
+    "agent-reminders": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"",
+    "auto-handover": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js\"",
+    "devswarm-child-turn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"",
+    "devswarm-parent-inbox": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"",
+    "devswarm-rt-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"",
+    "gh-rt-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/gh-rt-advisory\"",
+    "idle-agent-sweep": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"",
+    "limit-conserve-inject": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"",
+    "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
+    "repair-on-reload": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
+    "task-tracker": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"",
+    "verify-first": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js\""
+  }
+}

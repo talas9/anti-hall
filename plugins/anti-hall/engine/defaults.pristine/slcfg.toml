@@ -1,0 +1,686 @@
+# ah-engine shipped defaults for the statusline helper commands (L9a): `phase` (statusline/phase.js), `install-statusline` and
+# `uninstall-statusline` (the `src/ops/phase.rs` and `src/ops/slcfg.rs` modules). Format: see the header of engine.toml.
+#
+# The message texts are the Node scripts' own, word for word: the parity tests compare the commands' output with the scripts'
+# byte for byte. A `{name}` in a text is filled in at run time.
+
+[slcfg.deferred]
+doc = "Said when the input needs the Node script to answer exactly (for example a settings file the engine cannot parse the way JavaScript does); nothing was written."
+value = "this input needs the Node script to answer exactly; nothing was written"
+
+[env.dispatcher_override]
+doc = "Test-only switch of the installer: names the dispatcher path to embed without checking that it exists (Node: ANTIHALL_DISPATCHER_OVERRIDE)."
+value = "ANTIHALL_DISPATCHER_OVERRIDE"
+
+[slcfg.tmp_env]
+doc = "The environment variables the operating system's temporary directory is read from, in order."
+value = ["TMPDIR", "TMP", "TEMP"]
+
+[slcfg.tmp_default]
+doc = "The temporary directory when none of those variables is set."
+value = "/tmp"
+
+[slcfg.tmp_roots]
+doc = "Directories that count as temporary for the test guard, besides the operating system's own."
+value = ["/tmp", "/private/tmp"]
+
+[slcfg.tmp_roots_macos]
+doc = "More temporary directories on macOS (a child started with a stripped environment has no TMPDIR)."
+value = ["/var/folders", "/private/var/folders"]
+
+[slcfg.test_markers]
+doc = "Environment variables whose presence means the installer runs under a test: it then refuses to write user configuration outside a temporary directory."
+value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST_ISOLATION"]
+
+[slcfg.flag_project]
+doc = "The option that selects the project scope."
+value = "--project"
+
+[slcfg.flag_consolidate]
+doc = "The install option that merges the existing status line and the anti-hall chip into one line."
+value = "--consolidate"
+
+[slcfg.flag_purge]
+doc = "The uninstall option that also removes the shared base configuration."
+value = "--purge-base"
+
+[slcfg.scope_user]
+doc = "The name of the user scope in messages."
+value = "user"
+
+[slcfg.scope_project]
+doc = "The name of the project scope in messages."
+value = "project"
+
+[slcfg.claude_dir]
+doc = "The host's configuration directory (in the home directory and in a project)."
+value = ".claude"
+
+[slcfg.settings_file]
+doc = "The host's settings file."
+value = "settings.json"
+
+[slcfg.local_file]
+doc = "The host's project-local settings file (highest precedence, not committed)."
+value = "settings.local.json"
+
+[slcfg.backup_suffix]
+doc = "Appended to a settings file's name for its one-time backup."
+value = ".bak-antihall"
+
+[slcfg.stable_dir]
+doc = "The status line directory of the marketplace installation, relative to the home directory (stable across plugin updates)."
+value = ".claude/plugins/marketplaces/anti-hall/plugins/anti-hall/statusline"
+
+[slcfg.dispatcher_file]
+doc = "The status line dispatcher script."
+value = "statusline.js"
+
+[slcfg.uninstall_file]
+doc = "The uninstaller script named in the installer's closing hint."
+value = "uninstall-statusline.js"
+
+[slcfg.gitignore_file]
+doc = "The project's ignore file."
+value = ".gitignore"
+
+[slcfg.installed_marker]
+doc = "A statusLine command that contains this names the dispatcher."
+value = "statusline.js"
+
+[slcfg.installed_dir_install]
+doc = "The installer treats a command that also contains this directory part as the anti-hall dispatcher."
+value = "/anti-hall/"
+
+[slcfg.installed_dir_uninstall]
+doc = "The uninstaller treats a command (backslashes turned into slashes) that also contains this directory part as the anti-hall dispatcher."
+value = "anti-hall/"
+
+[slcfg.shell_safe_extra]
+doc = "Characters besides ASCII letters and digits allowed in a path embedded into the statusLine command."
+value = " _.-:/\\~"
+
+[slcfg.command_prefix]
+doc = "Before the dispatcher path in the statusLine command."
+value = 'node "'
+
+[slcfg.command_suffix]
+doc = "After the dispatcher path in the statusLine command."
+value = '"'
+
+[slcfg.type_command]
+doc = "The statusLine type value."
+value = "command"
+
+[slcfg.refresh_interval]
+doc = "The statusLine refreshInterval written by the installer, in seconds."
+value = 1
+
+[slcfg.git_program]
+doc = "The program that tells whether the local settings file is tracked."
+value = "git"
+
+[slcfg.git_tracked_args]
+doc = "Its arguments."
+value = ["ls-files", "--error-unmatch", ".claude/settings.local.json"]
+
+[slcfg.git_timeout_ms]
+doc = "Longest the tracked-file question may take, in milliseconds."
+value = 2000
+
+[slcfg.local_entry]
+doc = "The ignore-file line that keeps the local settings out of version control."
+value = ".claude/settings.local.json"
+
+[slcfg.empty_settings]
+doc = "What a missing project-local settings file is created with."
+value = "{}\n"
+
+[slcfg.errno_table]
+doc = "Operating-system errors as Node words them (`number CODE description`); the same numbers on Linux and macOS."
+value = ["1 EPERM operation not permitted", "2 ENOENT no such file or directory", "13 EACCES permission denied", "17 EEXIST file already exists", "20 ENOTDIR not a directory", "21 EISDIR illegal operation on a directory", "28 ENOSPC no space left on device", "30 EROFS read-only file system"]
+
+[slcfg.errno_unknown]
+doc = "The words for an error the table does not know."
+value = "UNKNOWN: unknown error"
+
+[slcfg.err_open]
+doc = "Node's wording of a failed file open. Placeholders: err path."
+value = "{err}, open '{path}'"
+
+[slcfg.err_mkdir]
+doc = "Node's wording of a failed directory creation. Placeholders: err path."
+value = "{err}, mkdir '{path}'"
+
+[slcfg.err_copyfile]
+doc = "Node's wording of a failed file copy. Placeholders: err from to."
+value = "{err}, copyfile '{from}' -> '{to}'"
+
+[slcfg.dispatcher_line]
+doc = "The first line of the installer. Placeholders: path note."
+value = "Dispatcher: {path}{note}"
+
+[slcfg.dispatcher_stable]
+doc = "After the dispatcher path when it is the marketplace one."
+value = "  (stable marketplace path)"
+
+[slcfg.dispatcher_dev]
+doc = "After the dispatcher path when it is the one next to the installer."
+value = "  (dev/__dirname fallback)"
+
+[slcfg.inst_not_found_1]
+doc = "stderr: the dispatcher is missing. Placeholders: path."
+value = "❌ anti-hall · install-statusline: statusline.js not found at: {path}"
+
+[slcfg.inst_not_found_2]
+doc = "stderr: what to do about it."
+value = "Do instead: keep the installer in the same directory as statusline.js."
+
+[slcfg.inst_refused]
+doc = "stderr: the installer refuses to write user configuration under a test. Placeholders: path."
+value = "⛔ anti-hall · install-statusline: refused under a test: {path} is outside a temp dir."
+
+[slcfg.uninst_refused]
+doc = "stderr: the same for the uninstaller. Placeholders: path."
+value = "⛔ anti-hall · uninstall-statusline: refused under a test: {path} is outside a temp dir."
+
+[slcfg.refused_2]
+doc = "stderr: what to do about it."
+value = "Do instead: isolate HOME/cwd."
+
+[slcfg.scope_line]
+doc = "The scope line. Placeholders: scope."
+value = "Scope:    {scope}"
+
+[slcfg.settings_line]
+doc = "The settings file line. Placeholders: path."
+value = "Settings: {path}"
+
+[slcfg.note_project_1]
+doc = "A committed project statusLine exists."
+value = "NOTE: .claude/settings.json (committed) defines a statusLine:"
+
+[slcfg.indent_line]
+doc = "A value shown under a note. Placeholders: text."
+value = "  {text}"
+
+[slcfg.note_project_2]
+doc = "Why the installer writes the local file."
+value = "  Installing into settings.local.json so anti-hall takes precedence (local > project)."
+
+[slcfg.note_user_1]
+doc = "A user-level statusLine exists."
+value = "NOTE: ~/.claude/settings.json (user/global) defines a statusLine:"
+
+[slcfg.note_user_2]
+doc = "What the local file will do to it."
+value = "  Installing into settings.local.json will take precedence over it."
+
+[slcfg.already_1]
+doc = "The effective statusLine already is the dispatcher."
+value = "Already installed — the effective statusLine already points at anti-hall statusline.js."
+
+[slcfg.source_local]
+doc = "Where an installed statusLine came from."
+value = "  Source: settings.local.json (project-local, highest precedence)"
+
+[slcfg.source_project]
+doc = "Where an installed statusLine came from."
+value = "  Source: settings.json (project)"
+
+[slcfg.source_user]
+doc = "Where an installed statusLine came from."
+value = "  Source: ~/.claude/settings.json (user/global)"
+
+[slcfg.advisory_1]
+doc = "--consolidate on an existing plain install."
+value = "ADVISORY: --consolidate was requested but this install is not yet in consolidated mode."
+
+[slcfg.advisory_2]
+doc = "How to switch modes."
+value = "  To switch modes, uninstall first, then re-run with --consolidate:"
+
+[slcfg.advisory_3]
+doc = "The uninstall hint."
+value = "    node statusline/install-statusline.js --uninstall   # or remove statusLine from settings manually"
+
+[slcfg.advisory_4]
+doc = "The reinstall hint."
+value = "    node statusline/install-statusline.js --consolidate"
+
+[slcfg.no_changes]
+doc = "Nothing was changed."
+value = "No changes made."
+
+[slcfg.user_missing]
+doc = "stderr: the user settings file does not exist. Placeholders: path."
+value = "❌ anti-hall · install-statusline: {path} not found. Is Claude Code installed?"
+
+[slcfg.created]
+doc = "A local settings file was created. Placeholders: path."
+value = "Created: {path}"
+
+[slcfg.create_failed]
+doc = "stderr: it could not be created. Placeholders: path msg."
+value = "❌ anti-hall · install-statusline: Could not create {path}: {msg}"
+
+[slcfg.consolidated_saved]
+doc = "The existing statusLine was kept as the consolidated base."
+value = "CONSOLIDATED MODE: saved existing statusLine as passthrough base:"
+
+[slcfg.command_line]
+doc = "A command shown after its file. Placeholders: cmd."
+value = "  command: {cmd}"
+
+[slcfg.consolidated_2]
+doc = "What the consolidated mode does."
+value = "  The anti-hall statusline will run this base command, capture its output,"
+
+[slcfg.consolidated_3]
+doc = "What the consolidated mode does, continued."
+value = "  and APPEND the AH version chip (AH: Vx.x.x / ★) as a single merged line."
+
+[slcfg.consolidated_4]
+doc = "What happens when the base fails."
+value = "  Fail-open: if the base command errors, the full rich anti-hall line is shown."
+
+[slcfg.consolidated_write_failed]
+doc = "stderr: the consolidated base could not be written. Placeholders: path msg."
+value = "⚠️ anti-hall · install-statusline: Could not write {path}: {msg}"
+
+[slcfg.consolidated_do_instead]
+doc = "stderr: what to do about it."
+value = "Do instead: run without --consolidate to install normally (consolidated mode will not be active)."
+
+[slcfg.base_kept_1]
+doc = "The shared base configuration already exists."
+value = "Existing base-statusline.json kept (global, shared) — not overwritten:"
+
+[slcfg.base_kept_3]
+doc = "What line 1 does then."
+value = "  Line 1 for repos without their own helper falls back to the rich renderer."
+
+[slcfg.base_saved]
+doc = "The existing statusLine was saved as the line-1 base."
+value = "Saved existing statusLine as base (line 1 wrapper):"
+
+[slcfg.base_write_failed_1]
+doc = "stderr: the base could not be written. Placeholders: path msg."
+value = "⚠️ anti-hall · install-statusline: Could not write {path}: {msg}"
+
+[slcfg.base_write_failed_2]
+doc = "stderr: what that means."
+value = "Why: the statusline will still work but your previous statusline will not be line 1."
+
+[slcfg.consolidate_nothing_1]
+doc = "--consolidate without an existing statusLine."
+value = "NOTE: --consolidate requested but no existing statusLine found to wrap."
+
+[slcfg.consolidate_nothing_2]
+doc = "What happens instead."
+value = "  Installing anti-hall statusline directly (no consolidated base)."
+
+[slcfg.consolidate_nothing_3]
+doc = "How to set a base later."
+value = '  You can set ANTIHALL_STATUSLINE_BASE="<cmd>" env var in the statusLine command,'
+
+[slcfg.consolidate_nothing_4]
+doc = "How to set a base later, continued."
+value = "  or write ~/.anti-hall/consolidated-base.json manually later."
+
+[slcfg.no_command_1]
+doc = "The existing statusLine has no command string. Placeholders: kind."
+value = "Existing statusLine has no command string (type: {kind})"
+
+[slcfg.no_command_2]
+doc = "What happens then."
+value = "Nothing to wrap — line 1 will use own dispatch."
+
+[slcfg.no_existing]
+doc = "There is no statusLine yet."
+value = "No existing statusLine — line 1 will use own dispatch."
+
+[slcfg.gitignore_updated]
+doc = "The ignore file was extended. Placeholders: entry."
+value = "Updated .gitignore: added {entry}"
+
+[slcfg.gitignore_failed]
+doc = "stderr: the ignore file could not be extended. Placeholders: msg."
+value = "⚠️ anti-hall · install-statusline: Could not update .gitignore: {msg}"
+
+[slcfg.gitignore_has]
+doc = "The ignore file already has the entry. Placeholders: entry."
+value = ".gitignore already ignores {entry}"
+
+[slcfg.tracked_1]
+doc = "The local settings file is tracked by git."
+value = "⚠️ anti-hall · install-statusline: .claude/settings.local.json is currently tracked by git."
+
+[slcfg.tracked_2]
+doc = "Why that is a problem."
+value = "  It contains a machine-absolute path and should NOT be committed."
+
+[slcfg.tracked_3]
+doc = "How to fix it."
+value = "  To untrack it:"
+
+[slcfg.tracked_4]
+doc = "The command that fixes it."
+value = "    git rm --cached .claude/settings.local.json"
+
+[slcfg.backed_up_1]
+doc = "A backup was made. Placeholders: path."
+value = "Backed up: {path}"
+
+[slcfg.backed_up_2]
+doc = "A backup was made. Placeholders: path."
+value = "       to: {path}"
+
+[slcfg.backup_failed_1]
+doc = "stderr: the installer's backup failed. Placeholders: msg."
+value = "⚠️ anti-hall · install-statusline: Could not create backup: {msg}"
+
+[slcfg.backup_failed_2]
+doc = "stderr: it goes on."
+value = "Proceeding without backup."
+
+[slcfg.uninst_backup_failed]
+doc = "stderr: the uninstaller's backup failed. Placeholders: msg."
+value = "⚠️ anti-hall · uninstall-statusline: Could not create backup: {msg}"
+
+[slcfg.backup_exists]
+doc = "A backup exists already. Placeholders: path."
+value = "Backup already exists: {path} (not overwritten)"
+
+[slcfg.old_statusline]
+doc = "Heading of the old value."
+value = "Old statusLine:"
+
+[slcfg.no_old_statusline]
+doc = "There was no old value."
+value = "No existing statusLine."
+
+[slcfg.unsafe_1]
+doc = "stderr: the dispatcher path has shell metacharacters."
+value = "⛔ anti-hall · install-statusline: dispatcher path contains shell metacharacters — refusing to embed in statusLine.command."
+
+[slcfg.unsafe_2]
+doc = "stderr: the path. Placeholders: path."
+value = "  Path: {path}"
+
+[slcfg.unsafe_3]
+doc = "stderr: manual installation. Placeholders: path."
+value = "  To install manually, add to {path}:"
+
+[slcfg.unsafe_4]
+doc = "stderr: the manual entry."
+value = '    "statusLine": { "type": "command", "command": "node \"/path/to/statusline.js\"" }'
+
+[slcfg.write_failed_1]
+doc = "stderr: the settings file could not be written. Placeholders: path msg."
+value = "❌ anti-hall · install-statusline: Could not write {path}: {msg}"
+
+[slcfg.write_failed_2]
+doc = "stderr: how to get back."
+value = "Do instead: restore from backup:"
+
+[slcfg.write_failed_3]
+doc = "stderr: the restore command. Placeholders: path."
+value = '  node "{path}"'
+
+[slcfg.new_statusline]
+doc = "Heading of the new value."
+value = "New statusLine:"
+
+[slcfg.done]
+doc = "The settings file was updated. Placeholders: path."
+value = "Done. {path} updated."
+
+[slcfg.restart_1]
+doc = "The installer's restart reminder."
+value = "IMPORTANT: Restart Claude Code (close and reopen) for the change to take effect."
+
+[slcfg.restart_2]
+doc = "Why a restart is needed."
+value = "  statusLine is read only at startup — there is no hot-reload."
+
+[slcfg.scope_project_1]
+doc = "Closing note for the project scope."
+value = "Scope: project-local only (.claude/settings.local.json)."
+
+[slcfg.scope_project_2]
+doc = "Closing note for the project scope."
+value = "  This setting is gitignored and applies to this machine only."
+
+[slcfg.scope_phase_1]
+doc = "Closing note about the phase bar."
+value = "  The phase bar (line 2) appears once an orchestration phase writes"
+
+[slcfg.scope_phase_2]
+doc = "Closing note about the phase bar, continued."
+value = "  ~/.anti-hall/phase-state.json."
+
+[slcfg.scope_user_1]
+doc = "Closing note for the user scope."
+value = "Scope: user/global (~/.claude/settings.json)."
+
+[slcfg.scope_user_2]
+doc = "Closing note for the user scope."
+value = "  The bar appears in every repo on this machine."
+
+[slcfg.to_uninstall]
+doc = "Heading of the uninstall hint."
+value = "To uninstall:"
+
+[slcfg.uninstall_hint]
+doc = "The uninstall command. Placeholders: path."
+value = '  node "{path}"'
+
+[slcfg.u_not_found]
+doc = "stderr: the settings file does not exist. Placeholders: path."
+value = "❌ anti-hall · uninstall-statusline: {path} not found."
+
+[slcfg.u_not_antihall_1]
+doc = "The statusLine is not the dispatcher. Placeholders: path."
+value = "NOTE: the statusLine in {path} does not point at the"
+
+[slcfg.u_not_antihall_2]
+doc = "The statusLine is not the dispatcher, continued."
+value = "anti-hall dispatcher — leaving it untouched, skipping the base-config restore."
+
+[slcfg.u_current]
+doc = "The statusLine that is there. Placeholders: cmd."
+value = "  current statusLine: {cmd}"
+
+[slcfg.u_none]
+doc = "Shown for a missing command."
+value = "(none)"
+
+[slcfg.u_restored_base]
+doc = "The original command was restored. Placeholders: path."
+value = "Restored original statusLine from: {path}"
+
+[slcfg.u_purged_a]
+doc = "The shared base was removed. Placeholders: path."
+value = "Purged shared base config (--purge-base): {path}"
+
+[slcfg.u_purged_a2]
+doc = "A warning about other projects."
+value = "  NOTE: any OTHER project still pointing at the anti-hall dispatcher"
+
+[slcfg.u_purged_a3]
+doc = "A warning about other projects, continued."
+value = "  will lose its line-1 wrapper and fall back to the rich renderer."
+
+[slcfg.u_kept_base]
+doc = "The shared base was kept. Placeholders: path."
+value = "Kept shared base config (global, used by other projects): {path}"
+
+[slcfg.u_kept_base2]
+doc = "How to remove it."
+value = "  Pass --purge-base to remove it once anti-hall is uninstalled everywhere."
+
+[slcfg.u_restart]
+doc = "The uninstaller's restart reminder."
+value = "Restart Claude Code (close and reopen) for the change to take effect."
+
+[slcfg.u_restored_backup]
+doc = "The whole file was restored from the backup. Placeholders: path."
+value = "Restored {path} from backup:"
+
+[slcfg.u_backup_line]
+doc = "The backup path. Placeholders: path."
+value = "  {path}"
+
+[slcfg.u_restored_sl]
+doc = "The statusLine of the backup. Placeholders: json."
+value = "Restored statusLine: {json}"
+
+[slcfg.u_backup_no_sl]
+doc = "The backup had no statusLine."
+value = "Backup had no statusLine key — statusLine removed."
+
+[slcfg.u_restore_failed]
+doc = "stderr: the restore failed. Placeholders: path msg."
+value = "❌ anti-hall · uninstall-statusline: Could not restore {path}: {msg}"
+
+[slcfg.u_write_failed]
+doc = "stderr: the write failed. Placeholders: path msg."
+value = "❌ anti-hall · uninstall-statusline: Could not write {path}: {msg}"
+
+[slcfg.u_nothing]
+doc = "There is no statusLine to remove. Placeholders: path."
+value = "Nothing to uninstall — statusLine key is already absent from {path}"
+
+[slcfg.u_removed]
+doc = "The statusLine was removed. Placeholders: path."
+value = "Removed statusLine from {path}:"
+
+[slcfg.u_no_backup]
+doc = "No backup or base was available."
+value = "(No backup or base config was available; key deleted directly.)"
+
+[slcfg.phase_unknown]
+doc = "stderr of `phase` for an unknown subcommand. Placeholders: cmd."
+value = '❌ anti-hall · phase: unknown command "{cmd}"'
+
+[slcfg.phase_undefined]
+doc = "How a missing subcommand reads in that message."
+value = "undefined"
+
+[slcfg.phase_set]
+doc = "The `phase` subcommand that starts a phase."
+value = "set"
+
+[slcfg.phase_advance]
+doc = "The `phase` subcommand that advances the count."
+value = "advance"
+
+[slcfg.phase_step]
+doc = "The `phase` subcommand that sets the step text."
+value = "step"
+
+[slcfg.phase_agents]
+doc = "The `phase` subcommand that sets the agent count."
+value = "agents"
+
+[slcfg.phase_update]
+doc = "The `phase` subcommand that merges fields."
+value = "update"
+
+[slcfg.phase_clear]
+doc = "The `phase` subcommand that removes the state."
+value = "clear"
+
+[slcfg.phase_key_agents]
+doc = "The phase field that holds the agent count."
+value = "agents"
+
+[slcfg.phase_key_done]
+doc = "The phase field that holds the finished count."
+value = "done"
+
+[slcfg.phase_key_step]
+doc = "The phase field that holds the step text."
+value = "step"
+
+[slcfg.phase_set_keys]
+doc = "The fields `set` writes, in order."
+value = ["code", "desc", "done", "total", "started"]
+
+[slcfg.phase_proto_key]
+doc = "A field name the engine does not merge (JavaScript treats it as the object's prototype); `update` with it is left to the Node script."
+value = "__proto__"
+
+[ops.verb_phase]
+doc = "The shadow name of the phase command."
+value = "phase"
+
+[ops.verb_install]
+doc = "The shadow name of the status line installer."
+value = "install-statusline"
+
+[ops.verb_uninstall]
+doc = "The shadow name of the status line uninstaller."
+value = "uninstall-statusline"
+
+[ops.script_phase]
+doc = "The Node phase script, relative to the plugin root."
+value = "statusline/phase.js"
+
+[ops.script_install]
+doc = "The Node installer, relative to the plugin root."
+value = "statusline/install-statusline.js"
+
+[ops.script_uninstall]
+doc = "The Node uninstaller, relative to the plugin root."
+value = "statusline/uninstall-statusline.js"
+
+[ops.shadow_rate_phase]
+doc = "How many runs in a thousand of the phase command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one."
+value = 1000
+env = "AH_ENGINE_SHADOW_RATE_PHASE"
+min = 0
+max = 1000
+
+[ops.shadow_rate_install]
+doc = "How many runs in a thousand of install-statusline are also run by the Node installer in the background, on a scratch copy of the settings (never a second real write), and compared (0 turns the shadow off)."
+value = 1000
+env = "AH_ENGINE_SHADOW_RATE_INSTALL"
+min = 0
+max = 1000
+
+[ops.shadow_rate_uninstall]
+doc = "How many runs in a thousand of uninstall-statusline are also run by the Node uninstaller in the background, on a scratch copy of the settings, and compared (0 turns the shadow off)."
+value = 1000
+env = "AH_ENGINE_SHADOW_RATE_UNINSTALL"
+min = 0
+max = 1000
+
+[ops.shadow_inst_home]
+doc = "The files under the home directory the installer shadow copies into its scratch home and compares afterwards."
+value = [".claude/settings.json", ".claude/settings.json.bak-antihall", ".anti-hall/base-statusline.json", ".anti-hall/consolidated-base.json"]
+
+[ops.shadow_inst_link]
+doc = "The home entries the installer shadow reads through links (the Node installer only checks that the marketplace dispatcher exists)."
+value = [".claude/plugins"]
+
+[ops.shadow_inst_cwd]
+doc = "The files under the working directory the installer shadow copies into its scratch working directory and compares afterwards."
+value = [".claude/settings.json", ".claude/settings.local.json", ".claude/settings.json.bak-antihall", ".claude/settings.local.json.bak-antihall", ".gitignore"]
+
+[ops.shadow_cwd_dir]
+doc = "The scratch working directory of an installer shadow, inside its scratch directory."
+value = "cwd"
+
+[ops.shadow_cwd_word]
+doc = "Replaces the real and the scratch working directory in compared text."
+value = "CWD"
+
+[ops.shadow_inst_home_tag]
+doc = "Prefix of a home-relative file in the installer shadow's state digest."
+value = "h:"
+
+[ops.shadow_inst_cwd_tag]
+doc = "Prefix of a working-directory-relative file in the installer shadow's state digest."
+value = "c:"

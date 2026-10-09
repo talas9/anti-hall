@@ -6,6 +6,36 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Highlights
+
+- **Optional `ah-engine` (Rust) answers hook calls without starting Node per call.** One thin trigger per event; the engine decides natively what it can prove identical to the Node hook and defers the rest to Node, never weaker than Node. Claude and Codex ports alike. macOS and Linux; Windows is not supported yet.
+- **Everything tunable lives in plugin files** (`plugins/anti-hall/engine/`), read at run time with hot reload, layered failover and self-heal. Nothing is compiled into the binary.
+- **Local-only telemetry**: `ah-engine telemetry summary`.
+
+### Added
+
+- **Engine bootstrap with sha256 verification.** The plugin ships `ah-engine.lock` (engine version and the sha256 of each release asset). On SessionStart `hooks/ah-engine-bootstrap.sh` (POSIX sh, detached, never fails a session) downloads the archive for the detected target (macOS arm64/x86_64, Linux x86_64/arm64 glibc or musl, WSL as Linux) from the GitHub Release over HTTPS and installs `~/.anti-hall/ah-engine/bin/ah-engine` only if its sha256 equals the lock's entry (no trust on first use; a mismatch installs nothing). Atomic, idempotent, retried at most every 6 hours after a failure, previous binary kept as `ah-engine.prev`, a binary it did not install is never overwritten, log in `~/.anti-hall/ah-engine/bootstrap.log`. Opt out: `AH_ENGINE_BOOTSTRAP=0`. A plugin tree without `ah-engine.lock` installs nothing and stays on Node.
+- **One thin trigger per event.** `hooks/hooks.json` and `codex/hooks/hooks.json` are generated from the dispatch table (`engine/defaults/dispatch.toml`) and call `hooks/ah-hook.sh <Event>` (Codex: `--host codex`; ten Codex events, all Claude Code events except `WorktreeCreate`/`WorktreeRemove`). `hooks.registry.json` lists the individual hooks. The wrapper runs the Node hooks when the engine is absent, times out, crashes or defers (exit 75).
+- **Layered failover and self-heal for the engine files.** Per file and per setting: the edited `engine/defaults/`, then the last-known-good copy (`~/.anti-hall/ah-engine/defaults.lkg/`), then the read-only `engine/defaults.pristine/`, then Node. Every fallback is logged and marks the engine degraded. A setting the edited files lack is taken from the pristine copy and appended to the edited file (existing text kept, backed up once, idempotent; skipped in a version-controlled checkout). `ah-engine config heal` does it on request.
+- **Shadow and rollback.** Per-entry `mode = "shadow"` runs an engine check beside its Node hook (Node decides) and logs `dispatch_shadow`; `mode = "off"` skips the engine's check. Whole rollback: `ah-engine stop`, delete the binary, `AH_ENGINE_BOOTSTRAP=0`.
+- **Telemetry** (`ah-engine telemetry summary|events|rollup`): per hook and check, the event, outcome, latency histogram and bytes injected into context, identifiers only, stored in `~/.anti-hall/ah-engine/`, never uploaded. `telemetry.enabled`, `telemetry.retention_days`.
+- **Docs**: new "Install, go-live and rollback", "What still runs on Node" and "Measured results (pre-release)" sections in `docs/AH-ENGINE.md`; engine notes in the READMEs (both ports), GUIDE, CONTRACT-1.0, DEVELOPMENT, llms.txt and the system-briefing and settings skills (both ports); PRIVACY.md now lists the binary download, the local telemetry and the background process.
+
+### Changed
+
+- **PRIVACY and README wording**: "no telemetry" became "no analytics, nothing reported to anyone", because the engine keeps local-only counters; two requests are on by default (update check, one-time engine download).
+- **Documented model default**: `jev.judgeModel` is the alias `haiku` (the docs still said a pinned version).
+
+### Still on Node
+
+DevSwarm mesh writes and daemons (ingest, supervisor, reaper), every call that consults a Jev integration, the semantic judge's model call, the statusline, and the blocking branch of several guards (the engine answers the quiet cases and defers any case that could block).
+
+### Pre-release measurements
+
+From one replay of 2113 recorded payloads against the exact go-live bundle and the same-version Node hooks (not a field result): 0 of 68 blocks weaker than Node, 2059 identical outputs, 87.0 percent of hook rows answered natively, about 35.5 ms CPU per call for the engine against 158.2 ms for the Node hooks. Known gaps are listed in `docs/AH-ENGINE.md`.
+
 ## 0.203.1 (2026-10-09)
 
 ### Fixed

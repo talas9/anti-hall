@@ -1,0 +1,93 @@
+[package]
+name = "ah-engine"
+version = "0.1.0"
+edition = "2024"
+default-run = "ah-engine"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
+regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+unicode-normalization = "0.1.25"
+libc = "0.2.190"
+# Embedded storage (D19, D73): SQLite compiled in (`bundled`), so there is nothing for the user to install; `backup` is the
+# online backup API used by `ah-engine backup` (D27).
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "backup", "cache"] }
+# Jev (D34-D38): a pure-Rust HTTPS client. `ureq` over `rustls` (ring provider, webpki roots) is blocking, which suits the
+# daemon's thread model, has no OpenSSL or async runtime, and exposes the knobs the key rules need (no redirects, no proxy,
+# one global deadline). `ring` is already in the tree through rustls; it is named here only for its SHA-256.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+ring = { version = "0.17", default-features = false }
+# Heap profiler for the opt-in `diag` feature only (a dependency no default or release build compiles).
+dhat = { version = "0.3.3", optional = true }
+# Scripted check logic (D88): an embedded QuickJS-NG interpreter runs the plugin's editable check scripts. Default features
+# off: no module loader, no async, pre-generated bindings. The runtime allocates through the Rust allocator
+# (`Runtime::new_with_alloc`, DECISIONS.md 1.111); QuickJS-NG checks `set_memory_limit` against its own count before calling it.
+rquickjs = { version = "0.14.0", default-features = false }
+# Process watch (orphans, resource use): the cross-platform process table (parent, start time, CPU %, memory, environ, exe) and memory/swap
+# without parsing ps/vm_stat. Exact pin; only the `system` feature (no network, user, component or disk code); disk free is libc::statvfs.
+sysinfo = { version = "=0.39.6", default-features = false, features = ["system"] }
+# File-change events for the realtime watch facility (src/watch): FSEvents on macOS, inotify on Linux. Default features off,
+# only the macOS FSEvents backend on (no kqueue, no serde). Pinned exactly: 9.x is still a release candidate. Added because the
+# poll backend measured 15 permille of a core at 250 ms (4.5 at 800 ms) on a realistic watch set against 0.009 for events
+# (DECISIONS.md, "Realtime watch backend"). Directories on 9p, drvfs, NFS, SMB and FUSE are still polled.
+notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
+
+# Allocator that returns freed pages (the system allocators keep them, so RSS stayed at the largest transient). Only on the targets
+# the crate supports (see src/main.rs).
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu")))'.dependencies]
+tikv-jemallocator = "0.7"
+
+[features]
+# Developer diagnostics only (never in a release build): `ah-engine diag heap` reports heap peak/current bytes per check,
+# measured with the dhat allocator. Off by default; see docs/DEVELOPMENT.md.
+diag = ["dep:dhat"]
+
+[dev-dependencies]
+# Snapshot tests for long reply text (src/checks/idle_agent_sweep): one reviewable .snap file instead of two partial asserts.
+# Node stays the byte-parity oracle; a snapshot only pins the Rust wording. Review changes with `cargo insta review`
+# (cargo install --locked cargo-insta) or accept with INSTA_UPDATE=always.
+insta = "1.49.0"
+# Correctness tooling (tests/prop_*.rs, benches/): never linked into the release binary.
+proptest = { version = "1", default-features = false, features = ["std"] }
+criterion = { version = "0.8", default-features = false }
+
+[[bench]]
+name = "parsers"
+harness = false
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+# panic stays "unwind": the client wraps everything in catch_unwind so a bug fails open (exit 0), never SIGABRT.
+
+# The QuickJS-NG interpreter (C, built by rquickjs-sys) is the hot loop of every scripted check: build it for speed, not size
+# (D88 spike, measured: the interpreter runs about 2.4x faster at opt-level 3 than at "z").
+[profile.release.package.rquickjs-sys]
+opt-level = 3
+
+# Lint gate (clippy `-D warnings`, wired into test.sh). Rule ids are those of the Rust standards audit (rust-standards.md).
+#   E2   no unwrap/expect in non-test paths: a violated invariant is a Result or a stated `expect` with a one-line allow.
+#   E3   never silently discard a fallible result: use `crate::discard` (harmless / logged) instead of `let _ =`.
+#   U1   every `unsafe` block carries a `// SAFETY:` comment, and an unsafe fn body still needs explicit unsafe blocks.
+#   LI1  dbg!/todo!/unimplemented! never ship.
+# Tests are exempt from E2 through clippy.toml (`allow-*-in-tests`). A targeted `#[allow(clippy::x)]` needs a one-line reason.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny" # U1
+missing_docs = "deny"           # every public item is documented (was a crate attribute)
+
+[lints.clippy]
+unwrap_used = "deny"                 # E2
+expect_used = "deny"                 # E2
+let_underscore_must_use = "deny"     # E3
+undocumented_unsafe_blocks = "deny"  # U1
+dbg_macro = "deny"                   # LI1
+todo = "deny"                        # LI1
+unimplemented = "deny"               # LI1
+
+# Self-contained: this directory is its own Cargo workspace (never a submodule, D69), so it can move to its own repo unchanged.
+[workspace]

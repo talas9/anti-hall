@@ -1,0 +1,95 @@
+{"msg": "Root cause: `read_window` reads the whole file when the size is under the window, so a 16 MB transcript is held twice. Fixed by streaming the lines.", "cause": true}
+{"msg": "**Root cause:** the retry loop never resets `attempts`, so the second request starts at the cap. I reset it and added a test.", "cause": true}
+{"msg": "The root cause is that `parse_ts` treats a missing offset as UTC. I changed it to reject the value.", "cause": true}
+{"msg": "I found the root cause: the cache key omits the tenant id, so two tenants share one entry. Patched the key builder.", "cause": true}
+{"msg": "The actual root cause was the stale lockfile, not the network. Regenerated it and the build passes.", "cause": true}
+{"msg": "Root cause confirmed: the migration runs before the index exists, which is why the lookup times out. Reordered the two steps.", "cause": true}
+{"msg": "Traced it down to the root cause: `flush()` is called from two threads without the mutex. Added the lock and the race is gone.", "cause": true}
+{"msg": "The underlying root cause lies in the date parsing, which drops the timezone. Fixed in `parse_date`.", "cause": true}
+{"msg": "After bisecting, the root cause turned out to be the new default timeout of 0. I restored the 30 s default.", "cause": true}
+{"msg": "- Root cause: the hook exits before the pipe is flushed.\n- Fix: write with fs.writeSync.\n- Verified: node --test passes.", "cause": true}
+{"msg": "Root-cause: the build script globs `defaults/*.toml` but the new file was not in the list. Added it to FILES, fixed.", "cause": true}
+{"msg": "The crash was caused by a null `session_id` reaching `safe_session`. Fixed with a guard at the boundary.", "cause": true}
+{"msg": "This failure is caused by the lock being taken after the write, not before. I swapped the order and fixed it.", "cause": true}
+{"msg": "The flaky test was caused by a shared temp directory between the two suites. Gave each its own directory; fixed.", "cause": true}
+{"msg": "The cause is the off-by-one in `tail_lines`: it drops the first complete line. Patched the slice.", "cause": true}
+{"msg": "The cause was a missing await on `save()`, so the process exited before the write finished. Fixed.", "cause": true}
+{"msg": "The real cause is the glob ordering on macOS, which differs from Linux. I sorted the list and fixed the test.", "cause": true}
+{"msg": "Cause: `HOME` is unset in the daemon, so the state path resolves to the root. Fixed by forwarding it in the request env.", "cause": true}
+{"msg": "The regression was caused by the refactor in 4f216cee, which dropped the null check. Restored it, fixed.", "cause": true}
+{"msg": "The 500 was caused by an unescaped quote in the template. I escaped it and fixed the endpoint.", "cause": true}
+{"msg": "Found the bug: the loop condition uses `<=` so it reads one element past the end. Fixed to `<`.", "cause": true}
+{"msg": "I found a bug in the retry wrapper: it swallows the last error. Fixed by returning it.", "cause": true}
+{"msg": "The bug is in `merge_sets`: it keeps the left value on a tie instead of the newer one. I fixed the comparison.", "cause": true}
+{"msg": "The bug was that `normalize` lowercased the path before the existence check. Fixed the order.", "cause": true}
+{"msg": "Tracked down the culprit: a global regex with the `g` flag keeps `lastIndex` between calls. Replaced it with a fresh regex per call and fixed the flake.", "cause": true}
+{"msg": "Pinned down the bug: the cursor is advanced before the bounds check. Patched and verified.", "cause": true}
+{"msg": "Identified the culprit, a stale `Cargo.lock` pin on `ring`, and bumped it. Fixed.", "cause": true}
+{"msg": "The problem was that the hook read stdin twice, so the second read returned empty. I fixed it to read once.", "cause": true}
+{"msg": "The issue was in the wrapper script: it quotes `$@` wrongly, so arguments with spaces split. Fixed the quoting.", "cause": true}
+{"msg": "The failure is due to the timezone being applied twice. Fixed in `to_local`.", "cause": true}
+{"msg": "The crash was a null dereference in `render_row` when the cell is empty. Fixed with an early return.", "cause": true}
+{"msg": "The regression was in the cache invalidation: it never runs on delete. I fixed the delete path.", "cause": true}
+{"msg": "The slowdown stems from the O(n^2) rescan in `refresh`, and I fixed it with an index.", "cause": true}
+{"msg": "Good news, I have it. The root cause is the duplicated `export` in index.ts, so the bundler picks the stale one. Removed the duplicate, fixed.", "cause": true}
+{"msg": "Looking at the diff, the cause is clear: the new field defaults to `None` and the serializer skips it. I patched the default.", "cause": true}
+{"msg": "Update: the root cause was the symlink. `realpath` resolves it differently on CI. Fixed by canonicalising both sides.", "cause": true}
+{"msg": "Done. Root cause: the test pinned the order of a HashMap. Fixed by sorting before the comparison.", "cause": true}
+{"msg": "Found it. The bug is that `--quiet` is parsed as a path, so `git diff --quiet` runs on a file. Fixed the arg parser.", "cause": true}
+{"msg": "What is the root cause of the crash?", "cause": false}
+{"msg": "Can you find the root cause of the flaky test before we merge?", "cause": false}
+{"msg": "Could the failure be caused by the lockfile? Let me check.", "cause": false}
+{"msg": "Is the bug in the parser or in the lexer?", "cause": false}
+{"msg": "Please investigate the root cause and report back.", "cause": false}
+{"msg": "I need to find the root cause before I touch anything.", "cause": false}
+{"msg": "Let me look for the root cause of this timeout first.", "cause": false}
+{"msg": "Next I will trace the root cause through the call chain.", "cause": false}
+{"msg": "To find the root cause I will add a log line around the write.", "cause": false}
+{"msg": "We should identify the root cause rather than retry the job.", "cause": false}
+{"msg": "The root cause is probably the stale cache, but I have not checked.", "cause": false}
+{"msg": "I suspect the bug was introduced by the last refactor.", "cause": false}
+{"msg": "This might be caused by the proxy rewriting headers.", "cause": false}
+{"msg": "The failure may be caused by a race between the two writers.", "cause": false}
+{"msg": "It could be that the cause is the new timeout. Unverified.", "cause": false}
+{"msg": "The cause is unclear so far, and the root cause is not known yet.", "cause": false}
+{"msg": "Possibly the bug is in the serializer; I would need a repro to say.", "cause": false}
+{"msg": "I think the problem was the missing header, but I am not sure.", "cause": false}
+{"msg": "The crash seems to be caused by the empty list.", "cause": false}
+{"msg": "My hypothesis: the root cause is the shared mutex.", "cause": false}
+{"msg": "The failure was not caused by the network; the DNS answers are fine.", "cause": false}
+{"msg": "There is no single root cause here, it is three separate problems.", "cause": false}
+{"msg": "The timeout isn't the root cause, it only exposes it.", "cause": false}
+{"msg": "It is not caused by the new release, the old one fails the same way.", "cause": false}
+{"msg": "The root-cause skill is loaded and the nudge fires after a failed Bash command.", "cause": false}
+{"msg": "I updated the root-cause nudge text and the protocol section of the skill.", "cause": false}
+{"msg": "Run /anti-hall:root-cause before proposing a fix.", "cause": false}
+{"msg": "The root-cause analysis template has a Cause column and a Fix column.", "cause": false}
+{"msg": "failure-root-cause-nudge is on by default and the root cause guard is advisory.", "cause": false}
+{"msg": "Here is the log:\n```\nerror: the root cause is a missing file\ncaused by: ENOENT\n```\nI will read the file next.", "cause": false}
+{"msg": "> The root cause is the cache.\nThat is what the ticket says; I have not verified it.", "cause": false}
+{"msg": "The commit message reads `fix: root cause was the lock`, which is the owner's wording.", "cause": false}
+{"msg": "```rust\n// the bug was here, caused by the cast\nlet x = y as u8;\n```\nThat snippet is from the old version.", "cause": false}
+{"msg": "The cause of the French Revolution was fiscal crisis.", "cause": false}
+{"msg": "The bug report template asks for the version and the steps to reproduce.", "cause": false}
+{"msg": "I added the new endpoint and the tests pass.", "cause": false}
+{"msg": "The problem statement is in the README and the issue tracker has the history.", "cause": false}
+{"msg": "Deploying now. The build finished and the smoke test passed.", "cause": false}
+{"msg": "The failure message is shown in the footer, in red.", "cause": false}
+{"msg": "Here is the plan: add a test, change the parser, run the suite.", "cause": false}
+{"msg": "The new function returns early when the list is empty. Tests added.", "cause": false}
+{"msg": "Summary: 3 files changed, 12 tests added, all passing.", "cause": false}
+{"msg": "The cache is described in docs/CACHE.md; the bug tracker is linked there.", "cause": false}
+{"msg": "Ok, the refactor is done. Renamed the module and updated the imports.", "cause": false}
+{"msg": "Which fix do you prefer: the quick patch or the proper change?", "cause": false}
+{"msg": "The reason for the change is the owner's request to remove the Node code.", "cause": false}
+{"msg": "Read the file, nothing stands out; moving on to the next module.", "cause": false}
+{"msg": "The workaround is documented, and the upstream issue is open.", "cause": false}
+{"msg": "Test run: 214 passed, 0 failed. Clippy clean.", "cause": false}
+{"msg": "- Cause: the watcher never notices when the session that started it dies. Fixed by checking the parent pid.", "cause": true}
+{"msg": "Cause: under heavy load, the comparison test's timeout sometimes killed the run. Raised the bound and fixed the flake.", "cause": true}
+{"msg": "The real cause was a mismatch between the old and new hooks, which I fixed by sharing one resolver.", "cause": true}
+{"msg": "Found the cause: the guard splits a command into parts at `)` even inside a shell comment. Patched the splitter.", "cause": true}
+{"msg": "Its cause is inferred from the code, not observed, so I will add a log line first.", "cause": false}
+{"msg": "The root-cause claim is partly inferred, so I am not acting on it yet.", "cause": false}
+{"msg": "The cause is unresolved, and I would rather say so than give a plausible wrong answer.", "cause": false}
+{"msg": "The root cause attribution was inferred, not proven.", "cause": false}

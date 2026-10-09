@@ -1,0 +1,175 @@
+# ah-engine shipped defaults for the session-start and prompt-time gates ported from Node: jev-weekly-scorecard,
+# jev-review-reminder and repair-on-reload. Each check answers "nothing to say" itself when the Node hook would print and
+# write nothing, and defers to the Node hook otherwise (the notices and the repair need the Jev report, the review log and
+# the migration engine, which stay in Node). Format: see the header of engine.toml.
+
+[session_gates.judge_child_env]
+doc = "Environment variable the judge child process runs with; every one of these hooks does nothing in it."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[session_gates.judge_child_value]
+doc = "The value of that variable that marks the judge child."
+value = "1"
+
+[session_gates.child_branch_env]
+doc = "Environment variable DevSwarm sets in a child workspace (a non-blank value marks the session as a child)."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[session_gates.entrypoint_env]
+doc = "Environment variable that names how the host was started."
+value = "CLAUDE_CODE_ENTRYPOINT"
+
+[session_gates.headless_prefix]
+doc = "Entry point names starting with this are non-interactive (SDK) runs."
+value = "sdk-"
+
+[session_gates.anti_hall_dir]
+doc = "The anti-hall directory under the home directory."
+value = ".anti-hall"
+
+[session_gates.jev_config_file]
+doc = "The legacy Jev configuration file, relative to the anti-hall directory."
+value = "jev.json"
+
+[session_gates.codex_tool]
+doc = "The tool name only Codex has; its presence marks a Codex payload."
+value = "apply_patch"
+
+[session_gates.codex_fields]
+doc = "Payload fields that are both non-empty strings on every Codex turn."
+value = ["turn_id", "model"]
+
+[session_gates.agent_key_markers]
+doc = "Payload keys whose presence (with a value other than null) marks a subagent turn."
+value = ["agent_id", "agent_type"]
+
+[session_gates.sidechain_flags]
+doc = "Payload keys that mark a sidechain (subagent) turn when exactly true."
+value = ["isSidechain", "is_sidechain"]
+
+[session_gates.jev_enabled_setting]
+doc = "The setting jev.enabled (off by default; a legacy jev.json value is honoured)."
+value = { section = "jev", key = "enabled", type = "boolean", env = "ANTIHALL_JEV", option = "jev_enabled", default = false, legacy_file = "jev.json", legacy_key = "enabled" }
+
+[session_gates.jev_semantic_judge_setting]
+doc = "The setting jev.semanticJudge (off by default)."
+value = { section = "jev", key = "semanticJudge", type = "boolean", env = "ANTIHALL_SEMANTIC_JUDGE", option = "jev_semantic_judge", default = false }
+
+[session_gates.default_event]
+doc = "The hook event name an advisory carries when the payload names none (a non-empty string hook_event_name wins)."
+value = "SessionStart"
+
+[session_gates.test_markers]
+doc = "Environment variables that mark a test run; with one set, the Node hook refuses to use the real (password database) home directory (companion/lib/test-home-guard.js)."
+value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST", "ANTIHALL_TEST_ISOLATION"]
+
+[session_gates.allow_real_home_env]
+doc = "Environment variable that lets a test run use the real home directory anyway."
+value = "ANTIHALL_ALLOW_REAL_HOME_TEST"
+
+# ---- jev-weekly-scorecard ----------------------------------------------------------------------------------
+
+[jev_weekly.summary]
+doc = "One-line description of the jev-weekly-scorecard check in the generated reference."
+value = "Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); when the check is due and the Jev decision log holds no rows it stamps the weekly latch itself; otherwise defers to the Node hook, which builds the report (port of jev-weekly-scorecard.js)."
+
+[jev_weekly.notice_setting]
+doc = "The setting jev.weeklyNotice (on by default; a legacy jev.json value is honoured)."
+value = { section = "jev", key = "weeklyNotice", type = "boolean", env = "", option = "jev_weekly_notice", default = true, legacy_file = "jev.json", legacy_key = "weeklyNotice" }
+
+[jev_weekly.latch_file]
+doc = "The weekly latch, relative to the anti-hall directory: the time of the last check."
+value = "state/jev-weekly-notice.json"
+
+[jev_weekly.latch_key]
+doc = "The key of the weekly latch that holds the time of the last check."
+value = "lastCheckedTs"
+
+[jev_weekly.decision_log]
+doc = "The Jev decision log the weekly report reads, relative to the anti-hall directory; its rotated generations are this name plus a dot and a number."
+value = "logs/jev-assist.ndjson"
+
+[jev_weekly.period_ms]
+doc = "How often the scorecard check may run."
+value = 604800000
+unit = "ms"
+min = 1000
+max = 31536000000
+
+# ---- jev-review-reminder -----------------------------------------------------------------------------------
+
+[jev_review.summary]
+doc = "One-line description of the jev-review-reminder check in the generated reference."
+value = "Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn, a non-interactive run); shows the recommend-Jev notice and stamps its latch itself when that is the only notice due; otherwise defers to the Node hook (port of jev-review-reminder.js)."
+
+[jev_review.recommend_setting]
+doc = "The setting jev.recommendNotice (on by default): the one-in-30-days notice recommending Jev while it is off."
+value = { section = "jev", key = "recommendNotice", type = "boolean", env = "ANTIHALL_JEV_RECOMMEND_NOTICE", option = "jev_recommend_notice", default = true }
+
+[jev_review.recommend_latch_file]
+doc = "The recommend notice latch, relative to the anti-hall directory: the time it was last shown."
+value = "state/jev-recommend-notice.json"
+
+[jev_review.latch_key]
+doc = "The key of the recommend notice latch that holds the time it was last shown."
+value = "lastShownTs"
+
+[jev_review.headless_setting]
+doc = "The setting jev.recommendNoticeHeadless (off by default): show the recommend notice in a non-interactive run too."
+value = { section = "jev", key = "recommendNoticeHeadless", type = "boolean", env = "ANTIHALL_JEV_NOTICE_HEADLESS", option = "", default = false }
+
+[jev_review.protocol_level_setting]
+doc = "The setting context.protocolLevel; while jev.recommendNoticeHeadless is not set anywhere, the full level turns the headless notice on."
+value = { section = "context", key = "protocolLevel", type = "enum", values = ["compact", "full"], env = "ANTIHALL_PROTOCOL_LEVEL", option = "", default = "compact" }
+
+[jev_review.protocol_full]
+doc = "The protocol level that turns the headless recommend notice on by default."
+value = "full"
+
+[jev_review.recommend_notice]
+doc = "The recommend-Jev notice the session receives (hooks/lib/jev-recommend.js: the directive line, then shortNotice()), byte for byte."
+value = "Tell the user now, verbatim, bold kept:\n**Recommended: enable Jev, the optional classifier, for more accurate guards.**\nWithout it the guards rely on pattern matching alone; with it they also get a model's second opinion (by default it can only add blocks the patterns miss, never remove one).\nOptional and off by default: needs your own API key, sends the text a guard judges to the provider you choose, uses credits. Details: README \"Enable Jev\" and PRIVACY.md.\nEnable: say \"activate jev\". Turn this reminder off: set `jev.recommendNotice` to false."
+
+[jev_review.remind_every_ms]
+doc = "How long after it was shown the recommend notice stays quiet."
+value = 2592000000
+unit = "ms"
+min = 1000
+max = 31536000000
+
+# ---- repair-on-reload --------------------------------------------------------------------------------------
+
+[repair_reload.summary]
+doc = "One-line description of the repair-on-reload check in the generated reference."
+value = "Stays silent when no repair can start (switch off, subagent turn, skipped, nothing pending at the running version, cooldown); otherwise defers to the Node hook, which takes the lock and starts the detached repair (port of the gates of repair-on-reload.js)."
+
+[repair_reload.guard_name]
+doc = "Hook name in the skip file."
+value = "repair-on-reload"
+
+[repair_reload.setting]
+doc = "The switch maintenance.repairOnReload (on by default)."
+value = { section = "maintenance", key = "repairOnReload", type = "boolean", env = "ANTIHALL_REPAIR_ON_RELOAD", option = "maintenance_repair_on_reload", default = true }
+
+[repair_reload.cooldown_file]
+doc = "The record of the last repair start, relative to the anti-hall directory."
+value = "repair-on-reload.last.json"
+
+[repair_reload.cooldown_ms]
+doc = "How long after a repair start no other one starts at the same plugin version."
+value = 3600000
+unit = "ms"
+min = 1000
+max = 31536000000
+
+[repair_reload.migration_keys]
+doc = "The keys of the data migrations a reload repairs (the non-opt-in migrations of companion/lib/migrations.js); a test compares this list with the Node one, so a migration added there fails the build until it is added here."
+value = [
+  "mergeSplitBackendStores", "foldAllStores", "healOrphanPartitions", "foldArchivedRows", "foldArchivedFamilyDescriptors",
+  "repairReaderFloors", "reconcileDualPartitionAcks", "markAppArchived", "retireStaleArchivedMarkers",
+  "repairChildSenderLabels", "foldReadReceipts",
+]
+
+[repair_reload.version_re]
+doc = "A plain three-part version (JavaScript regex)."
+value = '^\d+\.\d+\.\d+$'

@@ -273,7 +273,7 @@ for (const host of ['claude', 'codex']) {
 // ------------------------------------------------------------ registration
 test('api-guard and ship-it-guard are registered on Bash for both hosts', () => {
   const root = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
-  for (const [file, re] of [['hooks/hooks.json', /Bash/], ['codex/hooks/hooks.json', /Bash/]]) {
+  for (const [file, re] of [['hooks/hooks.registry.json', /Bash/], ['codex/hooks/hooks.registry.json', /Bash/]]) {
     const cfg = JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
     for (const hook of ['api-guard.js', 'ship-it-guard.js']) {
       const entry = cfg.hooks.PreToolUse.find((g) => g.hooks.some((h) => h.command.includes(hook)));

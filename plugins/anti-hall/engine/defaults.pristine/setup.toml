@@ -1,0 +1,1206 @@
+# ah-engine shipped defaults for the operator helper commands (D81): `jev-setup`, `capability-scan`, `harvest` and `briefing`
+# (the `src/setup/` module). Format: see the header of engine.toml.
+#
+# Every entry names the Node script it mirrors. The message texts are the Node ones word for word, because the parity tests
+# compare the commands' output with the scripts' byte for byte.
+
+[env.setup_host_plugin_root]
+doc = "The plugin-root variable the host exports to hooks and skills; `capability-scan` and `briefing` read the plugin tree it names when `--root` is not given."
+value = "CLAUDE_PLUGIN_ROOT"
+
+# ---- shared ---------------------------------------------------------------------------------------------------------
+
+[setup.json_max_depth]
+doc = "Nesting past which a JSON file the helper commands read is treated as unreadable (JSON.parse reads deeper than the port does)."
+value = 512
+min = 8
+max = 100000
+
+[setup.read_max_bytes]
+doc = "Largest configuration or state file the helper commands read; a larger file is refused, never read in part or held in memory."
+value = 8388608
+unit = "bytes"
+min = 1024
+
+[setup.stdin_max_bytes]
+doc = "Most bytes `jev-setup set-key` reads from stdin; a key is a short single line."
+value = 65536
+unit = "bytes"
+min = 16
+
+[setup.log_max_bytes]
+doc = "Most bytes of one Jev decision-log file `jev-setup status` reads to count the last day's calls; the log rotates at 2 MB."
+value = 16777216
+unit = "bytes"
+min = 1024
+
+[setup.msg_too_large]
+doc = "Why a file was not read: it is larger than the limit. Placeholders: path, max."
+value = "{path} is larger than {max} bytes, so it is not read"
+
+[setup.msg_treated_absent]
+doc = "A file or directory could not be read and is treated as absent, as the Node script treats it. Placeholder: error."
+value = "warning: {error}; treated as absent"
+
+[setup.msg_git_reader_panicked]
+doc = "The thread that reads git's answer ended abnormally, so the file has no last-commit time."
+value = "warning: reading git's answer failed; the file has no last-commit time"
+
+[setup.what_write_stdout]
+doc = "What was being done when writing to standard output failed."
+value = "write to standard output"
+
+[setup.what_cwd]
+doc = "What was being done when the current directory could not be read."
+value = "read the current directory"
+
+[setup.what_read]
+doc = "What was being done when a file could not be read, followed by its path."
+value = "read"
+
+[setup.what_list]
+doc = "What was being done when a directory could not be listed, followed by its path."
+value = "list"
+
+[setup.what_resolve]
+doc = "What was being done when the plugin tree named by --root could not be resolved, followed by its path."
+value = "resolve"
+
+[setup.what_stat]
+doc = "What was being done when a path could not be examined, followed by its path."
+value = "examine"
+
+[setup.what_git]
+doc = "What was being done when git could not be run for a last-commit time."
+value = "ask git for a last-commit time"
+
+[setup.compare_chunk_bytes]
+doc = "Size of the chunks two files are compared in, so that neither is held in memory whole."
+value = 65536
+unit = "bytes"
+min = 16
+
+[setup.what_crontab]
+doc = "What was being done when the crontab could not be read."
+value = "ask crontab for the managed cron markers"
+
+[setup.brief_scan_bytes]
+doc = "How much of a hook file's start is read to find its header comment (Node reads the file and looks at its first 38 lines)."
+value = 262144
+unit = "bytes"
+min = 1024
+
+[setup.git_binary]
+doc = "The git program `harvest` asks for a file's last commit time."
+value = "git"
+
+[setup.git_timeout_ms]
+doc = "Longest `harvest` waits for git to name one file's last commit time (Node: 5000 ms); a slower answer counts as no answer."
+value = 5000
+unit = "ms"
+min = 100
+max = 60000
+
+[setup.msg_no_plugin_root]
+doc = "Printed when a command that reads a plugin tree was given neither --root nor a plugin-root variable."
+value = "no plugin tree to read: pass --root <plugin directory>, or run it where the host exports the plugin root"
+
+[setup.msg_no_home]
+doc = "Printed by the helper commands when the home directory variable is not set, because their files live under it."
+value = "the home directory is not set"
+
+# ---- harvest (scripts/harvest-debt.js) ---------------------------------------------------------------------------------
+
+[setup.harvest_leaders]
+doc = "The comment leaders a debt marker may follow, in the order the Node pattern tries them."
+value = ["//", "#", "--", "/*", "<!--"]
+
+[setup.harvest_tag]
+doc = "The word that makes a comment a debt marker, after the comment leader."
+value = "anti-hall:"
+
+[setup.harvest_closers]
+doc = "The comment terminators trimmed off a marker's text (block comments and HTML comments)."
+value = ["*/", "-->"]
+
+[setup.harvest_max_file_bytes]
+doc = "Largest file `harvest` reads (Node: 2 MB); bigger files are skipped."
+value = 2097152
+unit = "bytes"
+min = 1
+
+[setup.harvest_binary_check_bytes]
+doc = "How much of a file's start is checked for a NUL byte before it is treated as binary and skipped (Node: 4096)."
+value = 4096
+unit = "bytes"
+min = 1
+
+[setup.harvest_skip_dirs]
+doc = "Directory names `harvest` never descends into (names starting with a dot are skipped too)."
+value = [".git", "node_modules"]
+
+[setup.harvest_default_stale_days]
+doc = "Days after which an untouched file's marker counts as stale when --stale-days is not given (Node: 90)."
+value = 90
+unit = "days"
+min = 1
+
+[setup.harvest_w_file]
+doc = "Width of the file column of the `harvest` text table (Node: 40)."
+value = 40
+min = 8
+
+[setup.harvest_w_line]
+doc = "Width of the line column of the `harvest` text table (Node: 6)."
+value = 6
+min = 1
+
+[setup.harvest_w_ceiling]
+doc = "Width of the ceiling column of the `harvest` text table (Node: 20)."
+value = 20
+min = 3
+
+[setup.harvest_w_when]
+doc = "Width of the trigger column of the `harvest` text table (Node: 26)."
+value = 26
+min = 3
+
+[setup.harvest_w_rot]
+doc = "Longest rot-risk text of the `harvest` text table (Node: 40)."
+value = 40
+min = 5
+
+[setup.harvest_rule_extra]
+doc = "How much longer than the four columns the rule under the `harvest` table header is (Node: 30)."
+value = 30
+min = 0
+
+[setup.git_output_max_bytes]
+doc = "Most bytes of git's answer to a last-commit-time question that are read; the answer is one number."
+value = 64
+min = 16
+max = 4096
+
+[setup.msg_no_trigger]
+doc = "The rot reason of a marker with no payback trigger."
+value = "no payback trigger (when is absent)"
+
+[setup.msg_stale]
+doc = "The rot reason of a marker in a file not touched for the stale window. Placeholder: days."
+value = "file not touched in >{days} days"
+
+[setup.msg_none_found]
+doc = "Printed by `harvest` when the tree holds no marker."
+value = "No anti-hall debt markers found."
+
+[setup.msg_table_title]
+doc = "The title line of the `harvest` text table."
+value = "anti-hall debt markers"
+
+# ---- capability-scan (scripts/capability-scan.js) ----------------------------------------------------------------------
+
+[setup.cap_listing_fn]
+doc = "The name of the installer export that lists every installed unit; an installer that exports it is checked with it (the per-worktree readback contract)."
+value = "listInstalledIngestUnits"
+
+[setup.cap_crontab_binary]
+doc = "The program `capability-scan` asks for the managed cron markers on Linux."
+value = "crontab"
+
+[setup.cap_statusline_marker]
+doc = "The file name a status line command must contain for the statusline capability to count as active."
+value = "statusline.js"
+
+[setup.cap_legacy_files]
+doc = "The legacy root progress and history files whose copy under .anti-hall/history/legacy is the state migration."
+value = [".anti-hall-progress.md", ".anti-hall-history.md"]
+
+[setup.cap_how_companion]
+doc = "How a companion is enabled. Placeholder: file."
+value = 'node "${CLAUDE_PLUGIN_ROOT}/companion/{file}"'
+
+[setup.cap_how_statusline]
+doc = "How the status line is enabled."
+value = 'node "${CLAUDE_PLUGIN_ROOT}/statusline/install-statusline.js" --user'
+
+[setup.cap_how_migrations]
+doc = "How pending state migrations are applied."
+value = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/migrate-state.js"'
+
+# ---- briefing (scripts/briefing.js) ------------------------------------------------------------------------------------
+
+[setup.brief_registry_file]
+doc = "The per-hook registry under hooks/ that the briefing groups by event."
+value = "hooks.registry.json"
+
+[setup.brief_project_tag]
+doc = "The project name a hook's header comment may lead with, removed from its purpose line."
+value = "anti-hall"
+
+[setup.brief_dashes]
+doc = "The dash characters (em dash, en dash) that separate a file name from its purpose in a header comment."
+value = "—–"
+
+[setup.brief_code_words]
+doc = "Words that, starting a line before any header comment, mean the file has no header comment."
+value = ["const", "let", "var", "require", "module", "function", "import"]
+
+[setup.brief_header_lines]
+doc = "How many lines of a file's start are searched for its header comment (Node: 30)."
+value = 30
+min = 1
+
+[setup.brief_lookahead_lines]
+doc = "How many comment lines after a bare module name are searched for the real purpose (Node: 8)."
+value = 8
+min = 1
+
+[setup.brief_caps_header_max]
+doc = "Longest all-capitals comment line that is treated as a section header and skipped (Node: 40)."
+value = 40
+min = 1
+
+[setup.brief_purpose_max]
+doc = "Longest purpose line, in UTF-16 units (Node: 240)."
+value = 240
+min = 10
+
+[setup.brief_skill_desc_max]
+doc = "Longest skill description before it is cut with an ellipsis (Node: 200)."
+value = 200
+min = 10
+
+[setup.brief_heading_max]
+doc = "Longest knowledge-base heading (Node: 160)."
+value = 160
+min = 10
+
+[setup.brief_unreadable]
+doc = "The purpose shown for a hook file that cannot be read."
+value = "(unreadable)"
+
+[setup.brief_no_header]
+doc = "The purpose shown for a hook file with no header comment."
+value = "(no header comment)"
+
+[setup.brief_unknown_version]
+doc = "The version shown when plugin.json cannot be read."
+value = "(unknown)"
+
+[setup.brief_mechanical_hooks]
+doc = "The DevSwarm mechanical-trigger hooks the briefing lists when present."
+value = ["devswarm-parent-inbox.js", "devswarm-parent-gate.js", "devswarm-child-turn.js", "devswarm-child-gate.js", "devswarm-child-role.js"]
+
+[setup.brief_migration_files]
+doc = "The DevSwarm migration companions the briefing lists when present."
+value = ["devswarm-migrate.js", "devswarm-ingest.js"]
+
+[setup.brief_supervisor_files]
+doc = "The DevSwarm supervisor and recovery companions the briefing lists when present."
+value = ["devswarm-supervisor.js", "devswarm-recover.js", "install-devswarm-supervisor.js", "install-devswarm-ingest.js"]
+
+[setup.brief_docs_note]
+doc = "What the briefing says when the repository docs are not part of the install."
+value = "docs/ is repo-clone-only and not bundled with /plugin install — clone github.com/talas9/anti-hall to read the KB set"
+
+[setup.brief_derived_line]
+doc = "The second line of the briefing."
+value = "Derived live from hooks.json + the files on disk — not a hardcoded list."
+
+[setup.brief_migration_title]
+doc = "The heading of the DevSwarm migration group."
+value = "migration (auto-safe: idempotent, non-destructive, single-consumer-locked, count-verified)"
+
+[setup.brief_doctor_line]
+doc = "The last line of the briefing."
+value = "Health check (do the guards actually fire?): node hooks/doctor.js"
+
+# ---- jev-setup (scripts/jev-setup.js) ----------------------------------------------------------------------------------
+
+[setup.known_integrations]
+doc = "The integrations `jev-setup status` always lists, in the order the Node script lists them (every one has a settings key)."
+value = ["speculation", "triage", "modelRouting", "claimLedger", "mergeGateHedge", "newRequest", "outputVerifyGuard", "gitGuardSelfCredit", "parentGateQuestion", "tasklistTrivial", "supervisorBlockerLabel", "codexNudgeSubstantial", "findingDedup", "postHandoverGate", "speculationFramed", "dispatchTier", "devswarmOnBrief", "devswarmExtraSanctioned", "devswarmWaitKind", "devswarmLoop", "devswarmStepMap"]
+
+[setup.valid_transports]
+doc = "The vendors a primary transport or a key may name."
+value = ["vercel", "typesafe"]
+
+[setup.valid_fallbacks]
+doc = "The values a fallback transport may take."
+value = ["none", "vercel", "typesafe"]
+
+[setup.valid_modes]
+doc = "The modes an integration may be set to."
+value = ["on", "shadow", "off"]
+
+[setup.settings_entries]
+doc = "The settings keys `jev-setup` writes, by section.key, with what a value must be: boolean, or the name of the list of allowed words."
+value = { "jev.enabled" = "boolean", "jev.transport" = "setup.valid_transports", "jev.fallbackTransport" = "setup.valid_fallbacks", "jev.genericKeyVendor" = "setup.valid_transports" }
+
+[setup.lock_stale_ms]
+doc = "A settings lock held longer than this is taken over (Node: 30000 ms)."
+value = 30000
+unit = "ms"
+min = 100
+
+[setup.lock_wait_ms]
+doc = "How long a settings write waits for the lock (Node: 2000 ms)."
+value = 2000
+unit = "ms"
+min = 1
+
+[setup.lock_step_ms]
+doc = "The pause between tries for the settings lock (Node: 20 ms)."
+value = 20
+unit = "ms"
+min = 1
+
+[setup.lock_reclaim_stale_ms]
+doc = "A takeover marker of the settings lock older than this is taken over (Node: 5000 ms)."
+value = 5000
+unit = "ms"
+min = 100
+
+[setup.lock_release_tries]
+doc = "How many times releasing the settings lock tries to take the takeover marker."
+value = 5
+min = 1
+max = 100
+
+[setup.lock_release_step_ms]
+doc = "The pause between those tries."
+value = 10
+unit = "ms"
+min = 1
+
+[setup.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot."
+value = 5
+unit = "s"
+min = 0
+
+[setup.credits_endpoint]
+doc = "The Vercel AI Gateway credit-balance endpoint `jev-setup status` reads (Node: CREDITS_ENDPOINT)."
+value = "https://ai-gateway.vercel.sh/v1/credits"
+
+[setup.credits_cache_file]
+doc = "The cached credit balance, relative to the anti-hall home directory, the same file the Node report reads."
+value = "cache/jev-credits.json"
+
+[setup.credits_ttl_ms]
+doc = "How long a cached credit balance is served before the endpoint is asked again (Node: 15 minutes)."
+value = 900000
+unit = "ms"
+min = 1000
+
+[setup.fail_prefix]
+doc = "The prefix of every error line `jev-setup` prints."
+value = "❌ anti-hall · jev-setup: "
+
+[setup.msg_usage]
+doc = "Usage line of `ah-engine jev-setup`."
+value = "\U0001f4a1 anti-hall · jev-setup: usage: ah-engine jev-setup status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|bind-generic-key --vendor V|mode <integration> on|shadow|off (test, review-due, reviewed and snooze stay in node scripts/jev-setup.js)"
+
+[setup.msg_unknown_setting]
+doc = "Why a settings write was refused: the key is not one this command writes. Placeholder: setting."
+value = "unknown setting: {setting}"
+
+[setup.msg_expected_boolean]
+doc = "Why a settings write was refused: the value is not a boolean. Placeholder: got."
+value = "expected a boolean (true/false/on/off/1/0), got {got}"
+
+[setup.msg_must_be_one_of]
+doc = "Why a settings write was refused: the value is not an allowed word. Placeholder: values."
+value = "must be one of: {values}"
+
+[setup.msg_settings_busy]
+doc = "Why a settings write was refused: another process holds the lock. Placeholder: pid."
+value = "settings.json is being written by another process (pid {pid}); retry"
+
+[setup.msg_unsupported_json]
+doc = "Why a file was not rewritten: it holds JSON this build cannot read faithfully, so it is left unchanged. Placeholder: path."
+value = "{path} holds JSON this build cannot rewrite safely; it was left unchanged"
+
+[setup.msg_lock_not_released]
+doc = "The settings lock was not ours any more when it was released, and was left alone."
+value = "warning: the settings lock had changed hands and was left in place"
+
+[setup.msg_setkey_too_large]
+doc = "Why `set-key` refused: more than the limit arrived on stdin. Placeholder: max."
+value = "set-key: more than {max} bytes on stdin; a key is a short single line"
+
+[setup.warn_prefix]
+doc = "The prefix of a warning line the Jev client prints on stderr."
+value = "\u26a0\ufe0f anti-hall \u00b7 jev: "
+
+[setup.diag_prefix]
+doc = "The prefix of a diagnostic line the Jev client prints on stderr."
+value = "anti-hall jev: "
+
+[setup.day_ms]
+doc = "The window of the `calls (last 24h)` count, in milliseconds."
+value = 86400000
+unit = "ms"
+min = 1000
+
+[setup.lock_record_max_bytes]
+doc = "Most bytes read of a settings lock file, which holds one small JSON record."
+value = 4096
+unit = "bytes"
+min = 64
+
+[setup.disagreement_keys]
+doc = "The `jev.*` keys a status warning compares between the legacy jev.json and the value the hooks use."
+value = ["enabled", "transport", "fallbackTransport"]
+
+[setup.credit_local_reasons]
+doc = "Credit-balance answers that are local configuration answers, never cached."
+value = ["unsupported-transport", "disabled", "no-key"]
+
+[setup.credit_silent_reasons]
+doc = "Credit-balance answers `status` prints nothing for."
+value = ["unsupported-transport", "disabled"]
+
+[setup.what_set_aside]
+doc = "What was being done when a corrupt file could not be moved aside."
+value = "move aside"
+
+[setup.what_create_dir]
+doc = "What was being done when a directory could not be created, followed by its path."
+value = "create directory"
+
+[setup.what_remove]
+doc = "What was being done when a leftover temporary file could not be removed, followed by its path."
+value = "remove"
+
+[setup.what_write]
+doc = "What was being done when a file could not be written, followed by its path."
+value = "write"
+
+[setup.what_read_stdin]
+doc = "What was being done when standard input could not be read."
+value = "read standard input"
+
+[setup.msg_could_not_set]
+doc = "A settings write failed. Placeholders: key, error."
+value = "could not set jev.{key}: {error}"
+
+[setup.msg_settings_not_updated]
+doc = "A per-integration mode was written to jev.json but not to settings.json. Placeholder: error."
+value = "⚠️ anti-hall · jev-setup: settings.json not updated: {error}"
+
+[setup.msg_enable_bad_transport]
+doc = "Why `enable` refused a transport. Placeholder: value."
+value = 'enable: invalid --transport "{value}" (expected vercel|typesafe)'
+
+[setup.msg_enable_bad_fallback]
+doc = "Why `enable` refused a fallback. Placeholder: value."
+value = 'enable: invalid --fallback "{value}" (expected vercel|typesafe|none)'
+
+[setup.msg_fallback_equal]
+doc = "Said by `enable` when the fallback named equals the primary and so counts as none."
+value = "note: a fallback equal to the primary transport is treated as none"
+
+[setup.msg_unbound_warning]
+doc = "Said by `enable` when a chosen vendor has no key of its own and the generic key is bound to the other vendor. Placeholders: vendor, bound, option."
+value = "warning: no key for {vendor} is visible to this process, and the stored generic key (jev_api_key / jev.keyFile) is bound to {bound}, so it will NOT be sent to {vendor}. Enter a key for {vendor} with `set-key --transport {vendor}`, or set {option} in the plugin's options screen. (To deliberately re-bind the generic key: bind-generic-key --vendor {vendor}.)"
+
+[setup.msg_bind_usage]
+doc = "Why `bind-generic-key` refused: no vendor."
+value = "bind-generic-key: --vendor vercel|typesafe is required"
+
+[setup.msg_bound]
+doc = "Said by `bind-generic-key` after it re-bound the generic key. Placeholder: vendor."
+value = "jev.genericKeyVendor = {vendor}: the generic jev_api_key and jev.keyFile are now sent only to {vendor}, never to the other vendor (written to ~/.anti-hall/settings.json)."
+
+[setup.msg_setkey_bad_transport]
+doc = "Why `set-key` refused a transport. Placeholder: value."
+value = 'set-key: invalid --transport "{value}" (expected vercel|typesafe)'
+
+[setup.msg_setkey_bad_role]
+doc = "Why `set-key` refused a role. Placeholder: value."
+value = 'set-key: invalid --role "{value}" (expected fallback)'
+
+[setup.msg_setkey_no_fallback]
+doc = "Why `set-key --role fallback` refused: no fallback is configured."
+value = "set-key --role fallback: no fallback transport is configured — run `enable --fallback vercel|typesafe` first"
+
+[setup.msg_setkey_empty]
+doc = "Why `set-key` refused: nothing arrived on stdin."
+value = "set-key: no key received on stdin — pipe the key in, e.g. `printf '%s' \"$KEY\" | node jev-setup.js set-key`"
+
+[setup.msg_setkey_nonprintable]
+doc = "Why `set-key` refused: the key holds a control character."
+value = "set-key: key contains non-printable characters — aborting"
+
+[setup.msg_setkey_note]
+doc = "Said by `set-key` while the hooks do not read the key file. Placeholder: option."
+value = "note: the hooks only read this key file when jev.allowLegacyKeyRead is on (currently off). Preferred: store the key in the plugin's options screen (anti-hall -> {option}), or enable the setting."
+
+[setup.msg_mode_usage]
+doc = "Why `mode` refused: a missing integration or a mode that is not on, shadow or off."
+value = "mode: usage is `mode <integration> on|shadow|off`"
+
+[setup.msg_disagree]
+doc = "A status warning: the legacy jev.json holds another value than the one the hooks use. Placeholders: key, legacy, winner, effective."
+value = "  warning: ~/.anti-hall/jev.json says {key}={legacy} but {winner} wins with {effective} (what the hooks use)"
+
+[setup.winner_file]
+doc = "How a status warning names the settings file when it is the tier that wins."
+value = "~/.anti-hall/settings.json"
+
+[setup.winner_env]
+doc = "How a status warning names the environment when it is the tier that wins."
+value = "the environment"
+
+[setup.winner_option]
+doc = "How a status warning names the plugin option when it is the tier that wins."
+value = "the /config plugin option"
+
+[setup.msg_generic_bound]
+doc = "A status line naming the vendor the generic key is bound to. Placeholder: vendor."
+value = "generic key (jev_api_key / jev.keyFile) bound to: {vendor} (change only with bind-generic-key)"
+
+[setup.msg_fallback_note]
+doc = "A status line warning that a fallback can send text to a second vendor."
+value = "  note: with a fallback, text can be sent to the second vendor when the primary fails"
+
+[setup.msg_no_key_notice]
+doc = "Why a process other than a hook finds no Jev key."
+value = "no Jev key visible to this process: a key stored as a plugin option (the plugin's options screen: jev_vercel_api_key / jev_typesafe_api_key) is only visible to hooks; enable jev.allowLegacyKeyRead with a key file to make it available to background tools (CLI, finding-dedup, jev-report)."
+
+[setup.msg_rejected]
+doc = "Why a present Jev key file was refused. Placeholder: why."
+value = "Jev key file rejected ({why}): it must be a regular file under ~/.config or ~/.anti-hall, at most 4096 bytes, one line with no whitespace."
+
+[setup.msg_migration_notice]
+doc = "A legacy Jev key exists on the machine but is not read."
+value = "a legacy Jev key file/env var exists but anti-hall no longer reads credentials from this machine: re-enter your key in the plugin's options screen (anti-hall -> jev_api_key), or enable jev.allowLegacyKeyRead to keep using the existing key."
+
+[setup.diag_generic_bound]
+doc = "Why a present vendor-less key was not used. Placeholders: bound, vendor, option."
+value = "jev_api_key is bound to {bound}; set {option} for {vendor} (or re-bind the generic key deliberately: jev-setup.js bind-generic-key --vendor {vendor})"
+
+[setup.reason_outside]
+doc = "Why a key file was refused: its real path lies outside the allowed directories."
+value = "path is outside ~/.config and ~/.anti-hall"
+
+[setup.reason_not_file]
+doc = "Why a key file was refused: it is not a regular file."
+value = "not a regular file"
+
+[setup.reason_too_large]
+doc = "Why a key file was refused: it is too large. Placeholder: max."
+value = "larger than {max} bytes"
+
+[setup.reason_multiline]
+doc = "Why a key file was refused: it is not one line without white space."
+value = "content is not a single line without whitespace"
+
+[setup.reason_unreadable]
+doc = "Why a key file was refused: it could not be read."
+value = "unreadable"
+
+[setup.msg_credit_ok]
+doc = "A status line with the Vercel credit balance. Placeholders: amount, cached."
+value = "credit balance (vercel): ${amount}{cached}"
+
+[setup.msg_credit_nokey]
+doc = "A status line: the credit balance needs a Vercel key this process cannot see."
+value = "credit balance (vercel): n/a (no vercel key visible to this process)"
+
+[setup.msg_credit_na]
+doc = "A status line: the credit balance could not be read. Placeholder: reason."
+value = "credit balance (vercel): n/a ({reason})"
+
+[setup.msg_credit_typesafe]
+doc = "A status line: TypeSafe has no credit-balance endpoint."
+value = "credit balance (typesafe): not available (TypeSafe has no balance endpoint)"
+
+# ---- everything the commands print or look for that is not a JSON field name or a command-line word ------------------
+# (the rule: no text, name, list, threshold or setting is a Rust literal; only the JSON field names of the output and the
+# verbs and flags of the command line are written in code)
+
+[setup.err_io]
+doc = "How an operating-system failure reads. Placeholders: what, source."
+value = "{what}: {source}"
+
+[setup.word_yes]
+doc = "The word `status` prints for a true answer."
+value = "yes"
+
+[setup.word_no]
+doc = "The word `status` prints for a false answer."
+value = "no"
+
+[setup.word_none]
+doc = "The word for no fallback transport."
+value = "none"
+
+[setup.word_undefined]
+doc = "How a missing value reads in a message (JavaScript's word for it)."
+value = "undefined"
+
+[setup.word_unknown]
+doc = "The word for an answer that could not be determined."
+value = "unknown"
+
+[setup.git_args]
+doc = "The arguments of the git call that gives a file's last commit time, before the `--` and the file."
+value = ["log", "-1", "--format=%ct", "--"]
+
+[setup.git_poll_ms]
+doc = "How often `harvest` checks whether git has answered."
+value = 5
+unit = "ms"
+min = 1
+
+[setup.harvest_headers]
+doc = "The column headings of the `harvest` text table: file, line, ceiling, trigger, rot risk."
+value = ["FILE", "LINE", "CEILING", "WHEN", "ROT-RISK"]
+
+[setup.harvest_rule_char]
+doc = "The character the rule under the `harvest` table header is drawn with."
+value = "-"
+
+[setup.harvest_ellipsis]
+doc = "What replaces the start of a file name that is too long for its column."
+value = "..."
+
+[setup.harvest_file_gap]
+doc = "A file name longer than its column width minus this is shortened (Node: 2)."
+value = 2
+min = 0
+
+[setup.harvest_file_tail_gap]
+doc = "A shortened file name keeps the last (column width minus this) characters (Node: 5)."
+value = 5
+min = 0
+
+[setup.harvest_cell_gap]
+doc = "The ceiling and trigger cells are cut to their column width minus this (Node: 2)."
+value = 2
+min = 0
+
+[setup.harvest_none]
+doc = "What the trigger cell shows when a marker has no trigger."
+value = "(none)"
+
+[setup.harvest_rot_yes]
+doc = "What the rot-risk cell starts with when a marker is a rot risk. Placeholder: reason."
+value = "YES: {reason}"
+
+[setup.harvest_reason_sep]
+doc = "What joins two rot reasons."
+value = "; "
+
+[setup.fmt_harvest_title]
+doc = "The title block of the `harvest` text table. Placeholder: title."
+value = "\n{title}\n"
+
+[setup.fmt_harvest_total]
+doc = "The last line of the `harvest` text table. Placeholders: total, rot, trigger."
+value = "\nTotal: {total}  Rot-risk: {rot}  With-trigger: {trigger}"
+
+[setup.cap_os_names]
+doc = "Operating-system names as Node reports them, by the name Rust reports."
+value = { macos = "darwin", windows = "win32" }
+
+[setup.cap_plat_darwin]
+doc = "The platform name of macOS."
+value = "darwin"
+
+[setup.cap_plat_win32]
+doc = "The platform name of Windows."
+value = "win32"
+
+[setup.cap_plat_linux]
+doc = "The platform name of Linux."
+value = "linux"
+
+[setup.cap_const_fmt]
+doc = "How an installer declares a constant on its own line. Placeholder: name."
+value = "const {name} = "
+
+[setup.cap_const_label]
+doc = "The name of the installer constant that holds its launchd label."
+value = "LABEL"
+
+[setup.cap_const_unit]
+doc = "The name of the installer constant that holds its systemd unit name."
+value = "UNIT"
+
+[setup.cap_fn_decl_fmt]
+doc = "How an installer declares its unit-listing function. Placeholder: name."
+value = "function {name}("
+
+[setup.cap_export_fmts]
+doc = "The two ways an installer lists the function among its exports (a shorthand entry, a keyed entry). Placeholder: name."
+value = ["{name},", "{name}:"]
+
+[setup.cap_companion_dir]
+doc = "The directory of a plugin tree that holds the companion installers."
+value = "companion"
+
+[setup.cap_installer_prefix]
+doc = "What a companion installer's file name starts with."
+value = "install-"
+
+[setup.cap_installer_suffix]
+doc = "What a companion installer's file name ends with."
+value = ".js"
+
+[setup.cap_launchagents_dir]
+doc = "The macOS per-user launchd directory, under the home directory."
+value = "Library/LaunchAgents"
+
+[setup.cap_plist_suffix]
+doc = "The end of a launchd job file's name."
+value = ".plist"
+
+[setup.cap_systemd_dir]
+doc = "The Linux per-user systemd directory, under the home directory."
+value = ".config/systemd/user"
+
+[setup.cap_service_suffix]
+doc = "The end of a systemd service file's name."
+value = ".service"
+
+[setup.cap_timer_suffix]
+doc = "The end of a systemd timer file's name."
+value = ".timer"
+
+[setup.cap_enabled_service]
+doc = "Where an enabled continuous service shows up under the systemd directory. Placeholder: unit."
+value = "default.target.wants/{unit}.service"
+
+[setup.cap_enabled_timer]
+doc = "Where an enabled timer shows up under the systemd directory. Placeholder: unit."
+value = "timers.target.wants/{unit}.timer"
+
+[setup.cap_cron_marker]
+doc = "The managed marker line of a unit in the crontab. Placeholder: unit."
+value = "# {unit}"
+
+[setup.cap_label_sep]
+doc = "What separates a launchd label from its per-worktree or per-project suffix."
+value = "."
+
+[setup.cap_unit_sep]
+doc = "What separates a systemd unit name from its per-worktree or per-project suffix."
+value = "-"
+
+[setup.cap_hash_len]
+doc = "The length of a per-worktree suffix, in hexadecimal digits."
+value = 8
+min = 1
+
+[setup.cap_key_max]
+doc = "The longest head of a per-project suffix, in characters."
+value = 40
+min = 1
+
+[setup.cap_key_tail]
+doc = "The length of the hexadecimal tail of a per-project suffix."
+value = 6
+min = 1
+
+[setup.cap_status_project_files]
+doc = "The project-scope settings files a status line may be configured in, strongest first, relative to the working directory."
+value = [".claude/settings.local.json", ".claude/settings.json"]
+
+[setup.cap_status_user_files]
+doc = "The user-scope settings files a status line may be configured in, relative to the home directory."
+value = [".claude/settings.json"]
+
+[setup.cap_status_key]
+doc = "The settings member that configures the status line."
+value = "statusLine"
+
+[setup.cap_status_command_key]
+doc = "The member of the status-line setting that holds its command."
+value = "command"
+
+[setup.cap_legacy_dir]
+doc = "Where the legacy progress and history files are copied, relative to the project root."
+value = ".anti-hall/history/legacy"
+
+[setup.cap_name_statusline]
+doc = "The capability name of the status line."
+value = "statusline"
+
+[setup.cap_name_migrations]
+doc = "The capability name of the state migrations."
+value = "state-migrations"
+
+[setup.cap_state_active]
+doc = "How the text report says a capability is active."
+value = "active"
+
+[setup.cap_state_inactive]
+doc = "How the text report says a capability is shipped but not active."
+value = "available, not active"
+
+[setup.fmt_cap_line]
+doc = "One line of the text report. Placeholders: name, state, hint."
+value = "{name}: {state}{hint}"
+
+[setup.fmt_cap_hint]
+doc = "The hint after an inactive capability. Placeholder: how."
+value = "  -> {how}"
+
+[setup.brief_hooks_dir]
+doc = "The hooks directory of a plugin tree."
+value = "hooks"
+
+[setup.brief_lib_dir]
+doc = "The helper directory inside the hooks directory."
+value = "lib"
+
+[setup.brief_skills_dir]
+doc = "The skills directory of a plugin tree."
+value = "skills"
+
+[setup.brief_skill_file]
+doc = "The file in a skill directory that describes the skill."
+value = "SKILL.md"
+
+[setup.brief_plugin_json]
+doc = "The plugin manifest, relative to the plugin root."
+value = ".claude-plugin/plugin.json"
+
+[setup.brief_store_file]
+doc = "The DevSwarm store module, relative to the plugin root."
+value = "companion/lib/devswarm-store.js"
+
+[setup.brief_cli_file]
+doc = "The DevSwarm command-line script, relative to the plugin root."
+value = "scripts/devswarm.js"
+
+[setup.brief_companion_dir]
+doc = "The companion directory, relative to the plugin root, as it prefixes a companion's name."
+value = "companion/"
+
+[setup.brief_docs_rel]
+doc = "The repository docs directory, relative to the plugin root."
+value = "../../docs"
+
+[setup.brief_docs_prefix]
+doc = "What a docs file's name is shown with."
+value = "docs/"
+
+[setup.brief_kb_prefix]
+doc = "What a knowledge-base file's name starts with."
+value = "KB"
+
+[setup.brief_kb_suffix]
+doc = "What a knowledge-base file's name ends with."
+value = ".md"
+
+[setup.brief_js_suffix]
+doc = "What a hook script's name ends with."
+value = ".js"
+
+[setup.brief_comment]
+doc = "The line-comment leader of the hook scripts, whose first comment is the purpose line."
+value = "//"
+
+[setup.brief_shebang]
+doc = "The start of an interpreter line, which is skipped when looking for the header comment."
+value = "#!"
+
+[setup.brief_strict_word]
+doc = "The text of the strict-mode directive, which is skipped when looking for the header comment."
+value = "use strict"
+
+[setup.brief_fence]
+doc = "The line that opens and closes a skill file's frontmatter."
+value = "---"
+
+[setup.brief_key_name]
+doc = "The frontmatter key that holds a skill's name."
+value = "name:"
+
+[setup.brief_key_desc]
+doc = "The frontmatter key that holds a skill's description."
+value = "description:"
+
+[setup.brief_heading_mark]
+doc = "The mark that starts a Markdown heading."
+value = "#"
+
+[setup.brief_sub_marker]
+doc = "The comment line after which the DevSwarm script documents its subcommands."
+value = "// SUBCOMMANDS"
+
+[setup.brief_file_min]
+doc = "The shortest file-name lead (one character and the extension) removed from a purpose line, in characters (Node: 4)."
+value = 4
+min = 1
+
+[setup.brief_rule_min]
+doc = "The fewest characters of a rule line (dashes, equals signs, asterisks) that is skipped in a header comment (Node: 3)."
+value = 3
+min = 1
+
+[setup.brief_rule_chars]
+doc = "The characters a rule line in a header comment is made of."
+value = "-=*"
+
+[setup.brief_scope_sep]
+doc = "What joins a scope tag to the purpose that follows it."
+value = " — "
+
+[setup.brief_sub_sep]
+doc = "What separates the DevSwarm subcommands in the briefing."
+value = " · "
+
+[setup.brief_ellipsis]
+doc = "What ends a skill description that was cut."
+value = "…"
+
+[setup.brief_ellipsis_cut]
+doc = "How many characters shorter than the limit a cut description is before the ellipsis (Node: 3)."
+value = 3
+min = 0
+
+[setup.brief_colors]
+doc = "The terminal colour codes of the briefing: bold, cyan, dim, yellow, green, reset (used only when the output is a terminal)."
+value = { b = "\u001b[1m", c = "\u001b[36m", d = "\u001b[2m", y = "\u001b[33m", g = "\u001b[32m", x = "\u001b[0m" }
+
+[setup.fmt_brief_title]
+doc = "The first line of the briefing. Placeholders: c, b, d, x (colours), version."
+value = "{c}{b}anti-hall system briefing{x} {d}v{version}{x}"
+
+[setup.fmt_brief_derived]
+doc = "The second line of the briefing. Placeholders: d, x, line."
+value = "{d}{line}{x}"
+
+[setup.fmt_brief_hooks_h]
+doc = "The heading of the hook list. Placeholders: b, x."
+value = "\n{b}Hooks (by event){x}"
+
+[setup.fmt_brief_event]
+doc = "An event heading. Placeholders: y, x, event."
+value = "  {y}{event}{x}"
+
+[setup.fmt_brief_hook]
+doc = "One registered hook. Placeholders: g, x, file, matcher, purpose."
+value = "    {g}{file}{x}{matcher} — {purpose}"
+
+[setup.fmt_brief_matcher]
+doc = "A hook's tool matcher. Placeholders: d, x, matcher."
+value = " {d}[{matcher}]{x}"
+
+[setup.fmt_brief_shared_h]
+doc = "The heading of the helper list. Placeholders: b, x."
+value = "\n{b}Shared helpers (not registered as hooks){x}"
+
+[setup.fmt_brief_shared]
+doc = "One helper. Placeholders: g, x, file, purpose."
+value = "  {g}{file}{x} — {purpose}"
+
+[setup.fmt_brief_skills_h]
+doc = "The heading of the skill list. Placeholders: b, x."
+value = "\n{b}Skills{x}"
+
+[setup.fmt_brief_skill]
+doc = "One skill. Placeholders: g, x, name, description."
+value = "  {g}{name}{x} — {description}"
+
+[setup.fmt_brief_dev_h]
+doc = "The heading of the DevSwarm section. Placeholders: b, x."
+value = "\n{b}DevSwarm coordination substrate{x}"
+
+[setup.fmt_brief_group]
+doc = "A group heading inside the DevSwarm section. Placeholders: y, x, title."
+value = "  {y}{title}{x}"
+
+[setup.brief_group_mechanical]
+doc = "The title of the group of mechanical-trigger hooks."
+value = "mechanical triggers (hooks)"
+
+[setup.brief_group_store]
+doc = "The title of the store group."
+value = "store"
+
+[setup.brief_group_cli]
+doc = "The title of the command-line group."
+value = "CLI"
+
+[setup.brief_group_supervisor]
+doc = "The title of the supervisor group."
+value = "liveness supervisor + recovery"
+
+[setup.fmt_brief_item]
+doc = "One file of a DevSwarm group. Placeholders: g, x, file, purpose."
+value = "    {g}{file}{x} — {purpose}"
+
+[setup.fmt_brief_subs]
+doc = "The subcommand list of the DevSwarm script. Placeholders: d, x, list."
+value = "    {d}subcommands: {list}{x}"
+
+[setup.fmt_brief_docs_h]
+doc = "The heading of the docs map. Placeholders: b, x."
+value = "\n{b}docs / KB map{x}"
+
+[setup.fmt_brief_doc]
+doc = "One knowledge-base file. Placeholders: g, x, file, title."
+value = "  {g}{file}{x} — {title}"
+
+[setup.fmt_brief_note]
+doc = "A dim note. Placeholders: d, x, note."
+value = "  {d}{note}{x}"
+
+[setup.fmt_brief_last]
+doc = "The last line of the briefing. Placeholders: d, x, line."
+value = "\n{d}{line}{x}"
+
+[setup.fmt_status_enabled]
+doc = "The first line of `jev-setup status`. Placeholder: value."
+value = "enabled: {value}"
+
+[setup.fmt_status_transport]
+doc = "The transport line of `jev-setup status`. Placeholder: value."
+value = "transport: {value}"
+
+[setup.fmt_status_key]
+doc = "The key line of `jev-setup status`. Placeholder: value."
+value = "key present: {value}"
+
+[setup.fmt_status_fallback]
+doc = "The fallback line of `jev-setup status`. Placeholder: value."
+value = "fallback transport: {value}"
+
+[setup.fmt_status_fallback_key]
+doc = "The fallback key line of `jev-setup status`. Placeholder: value."
+value = "fallback key present: {value}"
+
+[setup.fmt_status_indent]
+doc = "An indented note line of `jev-setup status`. Placeholder: text."
+value = "  {text}"
+
+[setup.fmt_status_fallback_diag]
+doc = "A fallback diagnostic line of `jev-setup status`. Placeholder: text."
+value = "  fallback: {text}"
+
+[setup.fmt_status_notice]
+doc = "A notice line of `jev-setup status`. Placeholder: text."
+value = "notice: {text}"
+
+[setup.fmt_status_integrations]
+doc = "The heading of the integration list."
+value = "integrations:"
+
+[setup.fmt_status_integration]
+doc = "One integration line. Placeholders: id, mode."
+value = "  {id}: {mode}"
+
+[setup.fmt_status_calls]
+doc = "The call-count line. Placeholder: count."
+value = "calls (last 24h): {count}"
+
+[setup.fmt_enabled]
+doc = "Said by `enable` when it is done. Placeholders: transport, fallback."
+value = "jev enabled (transport: {transport}, fallback: {fallback})"
+
+[setup.fmt_disabled]
+doc = "Said by `disable` when it is done."
+value = "jev disabled"
+
+[setup.fmt_key_saved]
+doc = "Said by `set-key` when it is done. Placeholder: vendor."
+value = "key saved for {vendor}"
+
+[setup.fmt_mode_set]
+doc = "Said by `mode` when it is done. Placeholders: integration, value."
+value = "{integration} mode set to {value}"
+
+[setup.fmt_cached]
+doc = "What follows a credit balance that came from the cache."
+value = " (cached)"
+
+[setup.option_name_fmt]
+doc = "The plugin option that holds a vendor's key. Placeholder: vendor."
+value = "jev_{vendor}_api_key"
+
+[setup.role_fallback]
+doc = "The value of --role that names the fallback transport."
+value = "fallback"
+
+[setup.log_outcome_type]
+doc = "The `type` of a decision-log row that records an outcome, not a call."
+value = "outcome"
+
+[setup.log_rotated_suffix]
+doc = "The end of the first rotated decision-log file's name."
+value = ".1"
+
+[setup.lock_suffix]
+doc = "What is added to the settings file's name to name its lock file."
+value = ".lock"
+
+[setup.tmp_fmt]
+doc = "The temporary file a write goes through. Placeholders: file, pid."
+value = "{file}.tmp.{pid}"
+
+[setup.corrupt_fmt]
+doc = "Where a file that is not a JSON object is moved. Placeholders: file, ms."
+value = "{file}.corrupt-{ms}"
+
+[setup.json_keys]
+doc = "The settings keys `jev-setup` writes and reads: the settings section, the integration sections, and the keys of the section."
+value = { section = "jev", integrations_section = "jevIntegrations", legacy_integrations = "integrations", enabled = "enabled", transport = "transport", fallback = "fallbackTransport", generic_vendor = "genericKeyVendor" }
+
+[setup.tier_keys]
+doc = "How each key that a status warning compares is read: what it must be (boolean, or the list of allowed words), its default, and the plugin-option suffix."
+value = { enabled = { kind = "boolean", default = "false", option = "JEV_ENABLED" }, transport = { kind = "setup.valid_transports", default = "vercel", option = "JEV_TRANSPORT" }, fallbackTransport = { kind = "setup.valid_fallbacks", default = "none", option = "JEV_FALLBACK_TRANSPORT" } }
+
+[setup.credit_reason_unsupported]
+doc = "The credit answer when neither transport is Vercel."
+value = "unsupported-transport"
+
+[setup.credit_fields]
+doc = "The field names of the credit endpoint's answer: the balance and the total used."
+value = ["balance", "total_used"]
+
+[setup.brief_lead_sep]
+doc = "What follows the project name in a header comment's lead (`anti-hall :: name`)."
+value = "::"
+
+[setup.brief_name_seps]
+doc = "The characters, besides white space and the dashes, that may follow a hook's own name at the start of its purpose line."
+value = ":"
+
+[setup.brief_sub_indent]
+doc = "The number of white-space characters before a subcommand name in the DevSwarm script's comment block (Node: 3)."
+value = 3
+min = 1
+
+[setup.brief_version_key]
+doc = "The member of the plugin manifest that holds the version."
+value = "version"
+
+[setup.brief_hooks_key]
+doc = "The member of the hook registry that holds the events, and of each group that holds its hooks."
+value = "hooks"
+
+[setup.brief_matcher_key]
+doc = "The member of a hook group that holds its tool matcher."
+value = "matcher"
+
+[setup.brief_command_key]
+doc = "The member of a hook that holds its command."
+value = "command"
+
+[setup.kind_boolean]
+doc = "The word the settings-key tables use for a key that must be true or false."
+value = "boolean"
+
+[setup.kill_switch_value]
+doc = "The value of a per-integration kill-switch variable that turns the integration off."
+value = "0"
+
+[setup.fmt_what]
+doc = "How an action and its target read together in an error. Placeholders: action, path."
+value = "{action} {path}"

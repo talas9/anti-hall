@@ -16,6 +16,8 @@ Thanks for helping. anti-hall is pure Node (built-ins only, no dependencies) and
 
 ## Set up and run the tests
 
+Building the Rust engine, running every suite and the porting workflow are in the [Development guide](docs/DEVELOPMENT.md).
+
 Node.js **22 or newer** (CI runs ubuntu on Node 22 and 24; macOS runs Node 24 on pull requests and on `main`, and Node 22 as well only on `rc-v*` release-candidate tags). There is no install step; run from the repo root.
 
 ```bash
@@ -36,8 +38,8 @@ Tests must never touch the real home directory or the real `~/.anti-hall`. Anyth
 
 ## Adding or changing a guard
 
-1. Implement the hook in `plugins/anti-hall/hooks/<name>.js`, pure Node, and register it in `plugins/anti-hall/hooks/hooks.json`.
-2. Register the Codex twin in `plugins/anti-hall/codex/hooks/hooks.json` (and `plugins/anti-hall/codex/install-codex.js` where it lists hooks), or state in the PR why Codex does not apply. `tests/codex/codex-hook-parity.test.js` checks the two stay in step.
+1. Implement the hook in `plugins/anti-hall/hooks/<name>.js`, pure Node, and register it as a row of the dispatch table in `plugins/anti-hall/engine/defaults/dispatch.toml` (`dispatch.hooks_claude_<Event>`: id, matcher, command, timeout, check). `hooks.json` is one thin trigger per event, generated from that table: run `cargo run --manifest-path ah-engine/Cargo.toml --bin ah-gen-fallback-list -- --repo .` to regenerate it, the per-hook registry (`hooks/hooks.registry.json`, which the Node readers and tests read) and the fallback lists.
+2. Add the Codex twin as a row of `dispatch.hooks_codex_<Event>` in the same table (and `plugins/anti-hall/codex/install-codex.js` where it lists hooks), or state in the PR why Codex does not apply. `tests/codex/codex-hook-parity.test.js` checks the two stay in step.
 3. Add the user-facing setting to `plugins/anti-hall/hooks/lib/settings-schema.js`. Give it a `section`, a key and a default, nothing else: it is reachable through `/anti-hall:settings`, grouped by category. Do NOT add a `userConfig` row to `plugins/anti-hall/.claude-plugin/plugin.json`: it declares only the 10 headline switches (`headline: true` in the schema) and the 4 sensitive keys, and `tests/hooks/settings-schema.test.js` pins exactly those 14.
 4. Document it: a row in the hook table and the settings table of `docs/GUIDE.md`, the hook in `llms.txt`, and the operator guide `plugins/anti-hall/skills/system-briefing/SKILL.md` (plus its Codex mirror).
 5. `tests/hygiene/docs-coverage.test.js` derives these lists from the code and fails, naming what is undocumented and where it belongs. `tests/hygiene/docs-links.test.js` and `tests/hygiene/readme-doc-links.test.js` check links.

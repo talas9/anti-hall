@@ -1,0 +1,88 @@
+{"id":1,"rule":"whitespace-parity","command":"gitpush--forceoriginmain","source":"ws:U+0085","expect_relevant":false}
+{"id":2,"rule":"whitespace-parity","command":"gitpush-foriginmain","source":"ws:U+0085","expect_relevant":false}
+{"id":3,"rule":"whitespace-parity","command":"git push--force origin main","source":"ws:U+0085","expect_relevant":false}
+{"id":4,"rule":"whitespace-parity","command":"git push --forceorigin main","source":"ws:U+0085","expect_relevant":false}
+{"id":5,"rule":"whitespace-parity","command":"gitcommit-m\"x\"","source":"ws:U+0085","expect_relevant":false}
+{"id":6,"rule":"whitespace-parity","command":"git commit -m \"x\"--amend","source":"ws:U+0085","expect_relevant":false}
+{"id":7,"rule":"whitespace-parity","command":"git push origin+main","source":"ws:U+0085","expect_relevant":false}
+{"id":8,"rule":"whitespace-parity","command":"gitstatus","source":"ws:U+0085","expect_relevant":false}
+{"id":9,"rule":"whitespace-parity","command":"git pushorigin--deleteb","source":"ws:U+0085","expect_relevant":false}
+{"id":10,"rule":"whitespace-parity","command":"echohi&&git push --force origin main","source":"ws:U+0085","expect_relevant":false}
+{"id":11,"rule":"whitespace-parity","command":"git push origin main;gitpush-f","source":"ws:U+0085","expect_relevant":false}
+{"id":12,"rule":"whitespace-parity","command":"git﻿push﻿--force﻿origin﻿main","source":"ws:U+FEFF","expect_relevant":false}
+{"id":13,"rule":"whitespace-parity","command":"git﻿push﻿-f﻿origin﻿main","source":"ws:U+FEFF","expect_relevant":false}
+{"id":14,"rule":"whitespace-parity","command":"git push﻿--force origin main","source":"ws:U+FEFF","expect_relevant":false}
+{"id":15,"rule":"whitespace-parity","command":"git push --force﻿origin main","source":"ws:U+FEFF","expect_relevant":false}
+{"id":16,"rule":"whitespace-parity","command":"git﻿commit﻿-m﻿\"x\"","source":"ws:U+FEFF","expect_relevant":false}
+{"id":17,"rule":"whitespace-parity","command":"git commit -m \"x\"﻿--amend","source":"ws:U+FEFF","expect_relevant":false}
+{"id":18,"rule":"whitespace-parity","command":"git push origin﻿+main","source":"ws:U+FEFF","expect_relevant":false}
+{"id":19,"rule":"whitespace-parity","command":"git﻿status","source":"ws:U+FEFF","expect_relevant":false}
+{"id":20,"rule":"whitespace-parity","command":"git push﻿origin﻿--delete﻿b","source":"ws:U+FEFF","expect_relevant":false}
+{"id":21,"rule":"whitespace-parity","command":"echo﻿hi﻿&&﻿git push --force origin main","source":"ws:U+FEFF","expect_relevant":false}
+{"id":22,"rule":"whitespace-parity","command":"git push origin main;﻿git﻿push﻿-f","source":"ws:U+FEFF","expect_relevant":false}
+{"id":23,"rule":"whitespace-parity","command":"git᠎push᠎--force᠎origin᠎main","source":"ws:U+180E","expect_relevant":false}
+{"id":24,"rule":"whitespace-parity","command":"git᠎push᠎-f᠎origin᠎main","source":"ws:U+180E","expect_relevant":false}
+{"id":25,"rule":"whitespace-parity","command":"git push᠎--force origin main","source":"ws:U+180E","expect_relevant":false}
+{"id":26,"rule":"whitespace-parity","command":"git push --force᠎origin main","source":"ws:U+180E","expect_relevant":false}
+{"id":27,"rule":"whitespace-parity","command":"git᠎commit᠎-m᠎\"x\"","source":"ws:U+180E","expect_relevant":false}
+{"id":28,"rule":"whitespace-parity","command":"git commit -m \"x\"᠎--amend","source":"ws:U+180E","expect_relevant":false}
+{"id":29,"rule":"whitespace-parity","command":"git push origin᠎+main","source":"ws:U+180E","expect_relevant":false}
+{"id":30,"rule":"whitespace-parity","command":"git᠎status","source":"ws:U+180E","expect_relevant":false}
+{"id":31,"rule":"whitespace-parity","command":"git push᠎origin᠎--delete᠎b","source":"ws:U+180E","expect_relevant":false}
+{"id":32,"rule":"whitespace-parity","command":"echo᠎hi᠎&&᠎git push --force origin main","source":"ws:U+180E","expect_relevant":false}
+{"id":33,"rule":"whitespace-parity","command":"git push origin main;᠎git᠎push᠎-f","source":"ws:U+180E","expect_relevant":false}
+{"id":34,"rule":"whitespace-parity","command":"git push --force origin main","source":"ws:U+2028","expect_relevant":false}
+{"id":35,"rule":"whitespace-parity","command":"git push -f origin main","source":"ws:U+2028","expect_relevant":false}
+{"id":36,"rule":"whitespace-parity","command":"git push --force origin main","source":"ws:U+2028","expect_relevant":false}
+{"id":37,"rule":"whitespace-parity","command":"git push --force origin main","source":"ws:U+2028","expect_relevant":false}
+{"id":38,"rule":"whitespace-parity","command":"git commit -m \"x\"","source":"ws:U+2028","expect_relevant":false}
+{"id":39,"rule":"whitespace-parity","command":"git commit -m \"x\" --amend","source":"ws:U+2028","expect_relevant":false}
+{"id":40,"rule":"whitespace-parity","command":"git push origin +main","source":"ws:U+2028","expect_relevant":false}
+{"id":41,"rule":"whitespace-parity","command":"git status","source":"ws:U+2028","expect_relevant":false}
+{"id":42,"rule":"whitespace-parity","command":"git push origin --delete b","source":"ws:U+2028","expect_relevant":false}
+{"id":43,"rule":"whitespace-parity","command":"echo hi && git push --force origin main","source":"ws:U+2028","expect_relevant":false}
+{"id":44,"rule":"whitespace-parity","command":"git push origin main; git push -f","source":"ws:U+2028","expect_relevant":false}
+{"id":45,"rule":"whitespace-parity","command":"git push --force origin main","source":"ws:U+2029","expect_relevant":false}
+{"id":46,"rule":"whitespace-parity","command":"git push -f origin main","source":"ws:U+2029","expect_relevant":false}
+{"id":47,"rule":"whitespace-parity","command":"git push --force origin main","source":"ws:U+2029","expect_relevant":false}
+{"id":48,"rule":"whitespace-parity","command":"git push --force origin main","source":"ws:U+2029","expect_relevant":false}
+{"id":49,"rule":"whitespace-parity","command":"git commit -m \"x\"","source":"ws:U+2029","expect_relevant":false}
+{"id":50,"rule":"whitespace-parity","command":"git commit -m \"x\" --amend","source":"ws:U+2029","expect_relevant":false}
+{"id":51,"rule":"whitespace-parity","command":"git push origin +main","source":"ws:U+2029","expect_relevant":false}
+{"id":52,"rule":"whitespace-parity","command":"git status","source":"ws:U+2029","expect_relevant":false}
+{"id":53,"rule":"whitespace-parity","command":"git push origin --delete b","source":"ws:U+2029","expect_relevant":false}
+{"id":54,"rule":"whitespace-parity","command":"echo hi && git push --force origin main","source":"ws:U+2029","expect_relevant":false}
+{"id":55,"rule":"whitespace-parity","command":"git push origin main; git push -f","source":"ws:U+2029","expect_relevant":false}
+{"id":56,"rule":"whitespace-parity","command":"git push --force origin main","source":"ws:U+00A0","expect_relevant":false}
+{"id":57,"rule":"whitespace-parity","command":"git push -f origin main","source":"ws:U+00A0","expect_relevant":false}
+{"id":58,"rule":"whitespace-parity","command":"git push --force origin main","source":"ws:U+00A0","expect_relevant":false}
+{"id":59,"rule":"whitespace-parity","command":"git push --force origin main","source":"ws:U+00A0","expect_relevant":false}
+{"id":60,"rule":"whitespace-parity","command":"git commit -m \"x\"","source":"ws:U+00A0","expect_relevant":false}
+{"id":61,"rule":"whitespace-parity","command":"git commit -m \"x\" --amend","source":"ws:U+00A0","expect_relevant":false}
+{"id":62,"rule":"whitespace-parity","command":"git push origin +main","source":"ws:U+00A0","expect_relevant":false}
+{"id":63,"rule":"whitespace-parity","command":"git status","source":"ws:U+00A0","expect_relevant":false}
+{"id":64,"rule":"whitespace-parity","command":"git push origin --delete b","source":"ws:U+00A0","expect_relevant":false}
+{"id":65,"rule":"whitespace-parity","command":"echo hi && git push --force origin main","source":"ws:U+00A0","expect_relevant":false}
+{"id":66,"rule":"whitespace-parity","command":"git push origin main; git push -f","source":"ws:U+00A0","expect_relevant":false}
+{"id":67,"rule":"whitespace-parity","command":"git　push　--force　origin　main","source":"ws:U+3000","expect_relevant":false}
+{"id":68,"rule":"whitespace-parity","command":"git　push　-f　origin　main","source":"ws:U+3000","expect_relevant":false}
+{"id":69,"rule":"whitespace-parity","command":"git push　--force origin main","source":"ws:U+3000","expect_relevant":false}
+{"id":70,"rule":"whitespace-parity","command":"git push --force　origin main","source":"ws:U+3000","expect_relevant":false}
+{"id":71,"rule":"whitespace-parity","command":"git　commit　-m　\"x\"","source":"ws:U+3000","expect_relevant":false}
+{"id":72,"rule":"whitespace-parity","command":"git commit -m \"x\"　--amend","source":"ws:U+3000","expect_relevant":false}
+{"id":73,"rule":"whitespace-parity","command":"git push origin　+main","source":"ws:U+3000","expect_relevant":false}
+{"id":74,"rule":"whitespace-parity","command":"git　status","source":"ws:U+3000","expect_relevant":false}
+{"id":75,"rule":"whitespace-parity","command":"git push　origin　--delete　b","source":"ws:U+3000","expect_relevant":false}
+{"id":76,"rule":"whitespace-parity","command":"echo　hi　&&　git push --force origin main","source":"ws:U+3000","expect_relevant":false}
+{"id":77,"rule":"whitespace-parity","command":"git push origin main;　git　push　-f","source":"ws:U+3000","expect_relevant":false}
+{"id":78,"rule":"whitespace-parity","command":"git​push​--force​origin​main","source":"ws:U+200B","expect_relevant":false}
+{"id":79,"rule":"whitespace-parity","command":"git​push​-f​origin​main","source":"ws:U+200B","expect_relevant":false}
+{"id":80,"rule":"whitespace-parity","command":"git push​--force origin main","source":"ws:U+200B","expect_relevant":false}
+{"id":81,"rule":"whitespace-parity","command":"git push --force​origin main","source":"ws:U+200B","expect_relevant":false}
+{"id":82,"rule":"whitespace-parity","command":"git​commit​-m​\"x\"","source":"ws:U+200B","expect_relevant":false}
+{"id":83,"rule":"whitespace-parity","command":"git commit -m \"x\"​--amend","source":"ws:U+200B","expect_relevant":false}
+{"id":84,"rule":"whitespace-parity","command":"git push origin​+main","source":"ws:U+200B","expect_relevant":false}
+{"id":85,"rule":"whitespace-parity","command":"git​status","source":"ws:U+200B","expect_relevant":false}
+{"id":86,"rule":"whitespace-parity","command":"git push​origin​--delete​b","source":"ws:U+200B","expect_relevant":false}
+{"id":87,"rule":"whitespace-parity","command":"echo​hi​&&​git push --force origin main","source":"ws:U+200B","expect_relevant":false}
+{"id":88,"rule":"whitespace-parity","command":"git push origin main;​git​push​-f","source":"ws:U+200B","expect_relevant":false}

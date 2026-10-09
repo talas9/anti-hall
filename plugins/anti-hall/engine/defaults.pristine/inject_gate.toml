@@ -1,0 +1,169 @@
+# ah-engine shipped defaults for the injection gate (src/gate.rs, src/dispatch/inject.rs): the engine-side cut of repeated
+# hook context. The Node hooks keep running unchanged; the dispatcher reads what they printed and, per session, passes it on
+# only when it is new, changed, or due again (a keepalive). Switching a cut off hands the Node output through byte for byte.
+# Format: see the header of engine.toml.
+
+# ---- settings (all in the `context` section of settings.json; each cut has a switch and a keepalive in turns) ----
+
+[inject_gate.sw_master]
+doc = "Master switch of the injection gate (context.injectGate, default on): off hands every gated hook's Node output through unchanged."
+value = { section = "context", key = "injectGate", env = "ANTIHALL_INJECT_GATE", option = "", default = true }
+
+[inject_gate.sw_limit]
+doc = "Cut 1 (context.injectGateLimit, default on): limit-conserve-inject is passed on only when the conservation directive changed (usage band, reset time to the minute), else a short keepalive every N turns."
+value = { section = "context", key = "injectGateLimit", env = "ANTIHALL_INJECT_GATE_LIMIT", option = "", default = true }
+
+[inject_gate.num_limit_every]
+doc = "Turns between keepalives of an unchanged limit-conservation directive (context.injectGateLimitEvery)."
+value = { section = "context", key = "injectGateLimitEvery", env = "ANTIHALL_INJECT_GATE_LIMIT_EVERY", option = "", default = 10, min = 1 }
+
+[inject_gate.sw_task]
+doc = "Cut 2 (context.injectGateTask, default on): task-tracker's short reminder is passed on only every N turns (its long form always passes), and its freshness note only when it changed."
+value = { section = "context", key = "injectGateTask", env = "ANTIHALL_INJECT_GATE_TASK", option = "", default = true }
+
+[inject_gate.num_task_every]
+doc = "Turns between short task-tracker reminders and unchanged freshness notes (context.injectGateTaskEvery)."
+value = { section = "context", key = "injectGateTaskEvery", env = "ANTIHALL_INJECT_GATE_TASK_EVERY", option = "", default = 10, min = 1 }
+
+[inject_gate.sw_comms]
+doc = "Cut 3 (context.injectGateComms, default on): the DevSwarm comms-override line and the workspace-title instruction are passed on once per session, when changed, and as a keepalive every N turns."
+value = { section = "context", key = "injectGateComms", env = "ANTIHALL_INJECT_GATE_COMMS", option = "", default = true }
+
+[inject_gate.num_comms_every]
+doc = "Turns between keepalives of the unchanged comms-override line (context.injectGateCommsEvery)."
+value = { section = "context", key = "injectGateCommsEvery", env = "ANTIHALL_INJECT_GATE_COMMS_EVERY", option = "", default = 30, min = 1 }
+
+[inject_gate.sw_swarm]
+doc = "Cut 4 (context.injectGateSwarm, default on): swarm-guard's shared-tree advisory is passed on when new or changed, and again only after N turns."
+value = { section = "context", key = "injectGateSwarm", env = "ANTIHALL_INJECT_GATE_SWARM", option = "", default = true }
+
+[inject_gate.num_swarm_every]
+doc = "Turns between repeats of an unchanged shared-tree advisory (context.injectGateSwarmEvery)."
+value = { section = "context", key = "injectGateSwarmEvery", env = "ANTIHALL_INJECT_GATE_SWARM_EVERY", option = "", default = 20, min = 1 }
+
+# ---- what is gated -------------------------------------------------------------------------------------------
+
+[inject_gate.limit_hook]
+doc = "Dispatch entry id of the limit-conservation injector."
+value = "limit-conserve-inject"
+
+[inject_gate.task_hook]
+doc = "Dispatch entry id of the task tracker."
+value = "task-tracker"
+
+[inject_gate.comms_hooks]
+doc = "Dispatch entry ids whose output carries the DevSwarm comms-override line."
+value = ["devswarm-child-turn", "devswarm-parent-inbox"]
+
+[inject_gate.swarm_hooks]
+doc = "Dispatch entry ids of swarm-guard (Agent and Task matchers)."
+value = ["swarm-guard", "swarm-guard#2"]
+
+[inject_gate.cut_limit]
+doc = "Telemetry label of cut 1."
+value = "limit"
+
+[inject_gate.cut_task]
+doc = "Telemetry label of cut 2."
+value = "task"
+
+[inject_gate.cut_comms]
+doc = "Telemetry label of cut 3."
+value = "comms"
+
+[inject_gate.cut_swarm]
+doc = "Telemetry label of cut 4."
+value = "swarm"
+
+[inject_gate.limit_keepalive]
+doc = "What an unchanged limit-conservation directive becomes on its keepalive turn (the full directive was injected earlier in the same context)."
+value = "⚠️ anti-hall · limit-conserve: still active (directive unchanged since it was injected earlier this session). Route heavy work to Codex or cheaper Claude models; defer non-urgent heavy work until the usage reset."
+
+[inject_gate.task_short]
+doc = "The exact short task-tracker reminder hooks/task-tracker.js prints on a turn that is not the long form (a test keeps it equal to the Node text)."
+value = "💡 anti-hall · task-tracker: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing."
+
+[inject_gate.task_long_prefix]
+doc = "How the long task-tracker directive starts (it is always passed on and restarts the short reminder's turn count)."
+value = "💡 anti-hall · task-tracker: capture EVERY user request"
+
+[inject_gate.comms_markers]
+doc = "Segment prefixes (segments are separated by a blank line) of the static DevSwarm comms lines the comms cut gates."
+value = ["💡 anti-hall · devswarm-comms: mesh only", "When mentioning a workspace to the human, use its TITLE"]
+
+[inject_gate.swarm_marker]
+doc = "Text that marks a swarm-guard advisory as the shared-tree one (any other advisory passes untouched)."
+value = "anti-hall · shared-tree"
+
+[inject_gate.segment_sep]
+doc = "Separator the gated hooks put between the segments of one additionalContext."
+value = "\n\n"
+
+[inject_gate.note_sep]
+doc = "Separator task-tracker puts between its reminder and its freshness note."
+value = " "
+
+[inject_gate.iso_re]
+doc = "An ISO 8601 timestamp (a reset time whose milliseconds jitter from one reading to the next); the hash sees it rounded to the minute."
+value = '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})'
+
+[inject_gate.ups_event]
+doc = "The event whose dispatch counts as one turn of the session."
+value = "UserPromptSubmit"
+
+[inject_gate.start_event]
+doc = "The event whose dispatch means the context may have been lost (start, resume, clear, compaction): the session's gate state is cleared so the next injection is whole."
+value = "SessionStart"
+
+[inject_gate.field_hso]
+doc = "The object of a hook's JSON output that carries the context."
+value = "hookSpecificOutput"
+
+[inject_gate.field_ctx]
+doc = "The field of that object the gate rewrites."
+value = "additionalContext"
+
+# ---- state bounds (the daemon holds this in memory) ----------------------------------------------------------------
+
+[inject_gate.max_sessions]
+doc = "Sessions the gate remembers; past it the least recently used session is evicted (an evicted session simply gets its next injection whole)."
+value = 128
+min = 1
+max = 100000
+
+[inject_gate.max_slots]
+doc = "Gated blocks remembered per session (the oldest is dropped past it)."
+value = 32
+min = 1
+max = 1000
+
+[inject_gate.slot_overhead_bytes]
+doc = "Bytes counted per remembered block besides its name, for the memory figure shown beside the cap."
+value = 96
+
+[inject_gate.id_max]
+doc = "Characters of a session or agent id kept (longer ids are cut)."
+value = 128
+
+[inject_gate.hash_chars]
+doc = "Hex characters of the SHA-1 kept as a block's fingerprint."
+value = 16
+
+[inject_gate.hash_input_max_chars]
+doc = "Most characters of a client-sent block fingerprint the gate keeps before comparing (twice `hash_chars`, so every string the daemon holds is bounded whatever a client sends)."
+value = 32
+min = 1
+
+# ---- wire (client to daemon) ----------------------------------------------------------------------------------------
+
+[inject_gate.reply_emit]
+doc = "Reply word: pass the block on as it is."
+value = "e"
+
+[inject_gate.reply_suppress]
+doc = "Reply word: drop the block (the model already holds it)."
+value = "s"
+
+[inject_gate.reply_keepalive]
+doc = "Reply word: pass the block's short keepalive form instead."
+value = "k"

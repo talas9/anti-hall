@@ -878,7 +878,7 @@ test('HANDOVER-DELEGATION: independent of the block-vs-advisory model-tier table
 
 test('ORDER: model-routing-guard is FIRST (before swarm-guard) in BOTH Agent and Task', () => {
   const hooksJson = path.join(
-    __dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'hooks.json',
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'hooks.registry.json',
   );
   const cfg = JSON.parse(fs.readFileSync(hooksJson, 'utf8'));
   const pre = cfg.hooks.PreToolUse;

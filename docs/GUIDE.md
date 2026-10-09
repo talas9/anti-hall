@@ -123,14 +123,31 @@ The synthetic corpus is 84 labelled cases (`eval/inference-bench.js`), written b
 
 ### Hook latency
 
+The numbers below are for the Node hooks. With the optional engine installed most calls skip the Node start-up; its pre-release replay numbers are in [AH-ENGINE.md](AH-ENGINE.md#measured-results-pre-release) and are not part of these tables.
+
 Hooks are small per call but not free. On a quiet machine a bare `node -e 0` costs about 16 to 18 ms of CPU and most hooks cost 22 to 35 ms. Claude Code runs a matcher's hooks in parallel, so a tool call costs about its slowest hook, while CPU adds up across hooks. The DevSwarm hooks exit before loading their libraries in a session that is not a DevSwarm Primary or child, which saves about 20 ms of CPU per Stop and about 25 ms per prompt. The measured tables, method and caveats are in [HOOK-LATENCY](HOOK-LATENCY.md).
+
+### The optional engine
+
+An optional small Rust program, `ah-engine`, can answer the hook calls without starting Node per call. The plugin's hooks are one
+thin trigger per event; when the engine binary is installed it decides natively what it can prove identical to the Node hook and
+defers the rest to Node (never weaker than Node), and with no binary the Node hooks run as before. The binary is downloaded once
+from the GitHub Release by a shell bootstrap and installed only if its sha256 equals the one pinned in the plugin's `ah-engine.lock`
+(the setting `engine.bootstrap` = false, or `AH_ENGINE_BOOTSTRAP=0`, skips it). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
+time with hot reload and fallbacks (edited, then last-known-good, then pristine, then Node), and `ah-engine config heal` restores a
+missing key. Still on Node: the DevSwarm mesh writes and daemons, every call that consults Jev, the semantic judge's model call and the
+statusline. macOS and Linux only; Windows is not supported yet.
+
+Full description (install, go-live, rollback, failover, telemetry, what runs on Node, pre-release measurements): [AH-ENGINE.md](AH-ENGINE.md).
 
 ## Network and data
 
 The short form is in the README; the full table is [PRIVACY.md](../PRIVACY.md). Nothing
-here goes beyond it: no telemetry; one default-on update check (a tag-list request to
+here goes beyond it: no analytics and nothing reported to anyone; one default-on update check (a tag-list request to
 `github.com/talas9/anti-hall`, no project data; off via `versionAlerts.antiHall` or
-`ANTIHALL_VERSION_ALERT=off`); the Jev classifier, the semantic judge
+`ANTIHALL_VERSION_ALERT=off`); a one-time download of the optional `ah-engine` binary from the GitHub Release
+(sha256-pinned in the plugin, nothing about you sent; off via the setting `engine.bootstrap` or `AH_ENGINE_BOOTSTRAP=0`); local-only engine usage counters
+(identifiers and counts, never content; `telemetry.enabled`; read with `ah-engine telemetry summary`); the Jev classifier, the semantic judge
 (`jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1`) and mesh message triage are off by default and send the
 text they judge only to the provider you configure. API keys come from sensitive plugin
 options; reading a key from the environment or a key file is opt-in
@@ -195,7 +212,7 @@ node install-devswarm-ingest.js --uninstall       # DevSwarm ingest daemon (com.
 ## Requirements
 
 **Node.js ≥ 22 on `PATH`.** Every hook and the statusline are pure Node (built-ins
-only), launched as `node <hook>.js`. No `node` on the hook shell's `PATH` means Claude
+only), launched as `node <hook>.js` (directly, or by the optional `ah-engine` for the cases it hands back to Node). No `node` on the hook shell's `PATH` means Claude
 Code silently skips every anti-hall hook — verify with `node --version`. No npm
 install, no native deps, no other config. There is intentionally no shell-based
 preflight. Install Node from <https://nodejs.org>.
@@ -455,9 +472,10 @@ safety guard is never left silently disabled.
 
 > **Several Stop hooks are registered** (`task-guard`, `speculation-guard`,
 > `speculation-judge`, `tasklist-guard`, `codex-nudge`), all emitting the top-level `{"decision":"block","reason":...}`
-> Stop schema. Claude Code does not merge `reason` strings across Stop hooks: if multiple fire on
-> the same Stop, all block but only one reason is shown that turn. `task-guard` is registered
-> **first** because open-task discipline is higher-stakes, so its reason wins precedence.
+> Stop schema. When several fire on the same Stop, all block and Claude Code gives the model each
+> reason as its own message; the engine's dispatcher answers them as one block that carries every
+> reason in registration order. `task-guard` is registered **first** because open-task discipline
+> is higher-stakes, so its reason comes first.
 > Each is capped (task-guard caps at `MAX_BLOCKS`;
 > speculation-guard blocks once per distinct speculative message hash; speculation-judge
 > blocks once per distinct message hash; `tasklist-guard` has its own independent block cap
@@ -594,9 +612,12 @@ false positives, but some misfires will occur — particularly on messages that 
 what code does based on reading it (which IS verified by inspection). If misfires are
 frequent in your workflow, turn the semantic judge off (`jev.semanticJudge` false, `ANTIHALL_SEMANTIC_JUDGE` unset) and rely on Tiers 1 + 2.
 
-**Cost and latency detail:** one `claude-haiku-4-5` call per Stop event when enabled
-(env-overridable via `ANTIHALL_JUDGE_MODEL`; the one hardcoded model id in this codebase,
-since it's a direct Anthropic API call with no alias-resolution support).
+**Cost and latency detail:** one model call per Stop event when enabled, to `jev.judgeModel`
+(default the `haiku` alias, which resolves to the latest Haiku; env-overridable via `ANTIHALL_JUDGE_MODEL`).
+With `jev.judgeBackend` `cli` the engine can make this call itself (`engine/defaults/judge.toml`) in a one-shot
+`ah-engine check speculation-judge`, leaving a row (backend, model, latency, error) in
+`~/.anti-hall/logs/judge-calls.ndjson`; the resident daemon cannot wait seconds for a model, so there it leaves the call to
+the Node hook.
 At current Haiku pricing this is roughly $0.0001-0.001 per turn; latency is roughly
 1-3 s added to each Stop (an estimate: the API backend has not been timed or
 evaluated). The keyless `cli` backend is measured: precision 0.78-0.81, recall 1.0 on
@@ -1376,11 +1397,25 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `context.handoverResume` | `true` | — | handover-resume (SessionStart): point a fresh or compacted session at the newest handover. |
 | `context.defectNudge` | `true` | — | defect-nudge (SessionStart): the once-a-day note about the defect channel. |
 | `context.dedupeWindowMin` adv | `20` [0..] | `ANTIHALL_DEDUPE_WINDOW_MIN` | Fallback per-session suppression window (minutes) for repeated UserPromptSubmit injection blocks (LIMIT CONSERVATION, TASK-LIST, DEVSWARM COMMS OVERRIDE, DEVSWARM WORKSPACES) when a burst of queued prompts is delivered in one turn and the transcript cannot confirm the earlier copy was already read; content that changed always re-emits. `0` disables emit-dedupe entirely (same as `guards.emitDedupe=false`). Suppression counts surface in `/anti-hall:doctor`. |
+| `context.injectGate` | `true` | `ANTIHALL_INJECT_GATE` | Master switch of the engine's injection gate: the hooks that re-send the same context every turn (limit conservation, task-tracker, the DevSwarm comms-override line, swarm-guard's shared-tree advisory) are injected only when the model does not already hold it. Off: every hook's output passes through unchanged. Counters: `ah-engine metrics` (`inject_*`), per session `ah-engine ctl gate`. |
+| `context.roleGuard` | `true` | `ANTIHALL_ROLE_GUARD` | Refuses an `ah-engine` verb the caller's role may not run (role matrix in `engine/defaults/roles.toml`: owner-level verbs main session only, a workspace child acts on itself only); applies to the PreToolUse Bash check and the command line. |
+| `context.roleNote` | `true` | `ANTIHALL_ROLE_NOTE` | SessionStart / SubagentStart note telling the session its role and the engine verbs it may use, pointing at the `anti-hall:engine` skill. |
+| `context.injectGateLimit` | `true` | `ANTIHALL_INJECT_GATE_LIMIT` | Cut 1: the limit-conservation directive on a usage-band or reset-window change, else a short keepalive. |
+| `context.injectGateLimitEvery` adv | `10` [1..] | `ANTIHALL_INJECT_GATE_LIMIT_EVERY` | Turns between keepalives of an unchanged limit-conservation directive. |
+| `context.injectGateTask` | `true` | `ANTIHALL_INJECT_GATE_TASK` | Cut 2: task-tracker's long form always passes; its short reminder and an unchanged freshness note pass every N turns. |
+| `context.injectGateTaskEvery` adv | `10` [1..] | `ANTIHALL_INJECT_GATE_TASK_EVERY` | Turns between short task-tracker reminders and unchanged freshness notes. |
+| `context.injectGateComms` | `true` | `ANTIHALL_INJECT_GATE_COMMS` | Cut 3: the DevSwarm comms-override line and the workspace-title instruction once per session, when changed, and as a keepalive. |
+| `context.injectGateCommsEvery` adv | `30` [1..] | `ANTIHALL_INJECT_GATE_COMMS_EVERY` | Turns between keepalives of the unchanged comms-override line. |
+| `context.injectGateSwarm` | `true` | `ANTIHALL_INJECT_GATE_SWARM` | Cut 4: swarm-guard's shared-tree advisory when new or changed, and again only after N turns. |
+| `context.injectGateSwarmEvery` adv | `20` [1..] | `ANTIHALL_INJECT_GATE_SWARM_EVERY` | Turns between repeats of an unchanged shared-tree advisory. |
 | `maintenance.repairOnReload` | `true` | `ANTIHALL_REPAIR_ON_RELOAD` | repair-on-reload (SessionStart/UserPromptSubmit): re-apply safe doctor repairs after a plugin update. |
 | `maintenance.progressPrune` | `true` | — | progress-prune (SessionStart): archive stale per-session progress files into the history ledger. |
 | `maintenance.precompactSnapshot` | `true` | — | precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction. |
 | `maintenance.taskLifecycleLog` | `true` | — | task-lifecycle-log (TaskCreated/TaskCompleted): append task events to the per-session history ledger. |
 | `maintenance.sessionEndReaper` | `true` | `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`; canonical wins) | session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind. |
+| `agents.tracker` | `true` | `ANTIHALL_AGENT_TRACKER` | agent tracker (engine job `agent_tick`): follow every agent, raise hung / looping / token-waste / drift / stale-heartbeat / no-wake-path signals; off, a tick does nothing. |
+| `agents.reminders` | `true` | `ANTIHALL_AGENT_REMINDERS` | agent-reminders (UserPromptSubmit, PostToolUse): deliver the tracker's queued reminders to the agent that owns them; off, signals are recorded but nothing is queued. |
+| `agents.ownerNotify` | `false` | `ANTIHALL_AGENT_OWNER_NOTIFY` | agent tracker owner notices: also append hung / looping / token-waste advisories to the owner notices file. |
 | `versionAlerts.antiHall` | `true` | `ANTIHALL_VERSION_ALERT` | Alert when a newer anti-hall version is available. |
 | `versionAlerts.claudeCli` | `true` | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT` | Alert when a newer Claude CLI version is available. |
 | `versionAlerts.devswarm` | `true` | `ANTIHALL_DEVSWARM_VERSION_ALERT` | Alert when a newer DevSwarm/hivecontrol version is available. |
@@ -1395,8 +1430,12 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.enabled` | `false` | `ANTIHALL_JEV` | Enable Jev (ANTIHALL_JEV=0 always force-disables regardless of this). |
 | `jev.transport` | `vercel` (vercel/typesafe) | — | Vercel AI Gateway passthrough (default) or a direct TypeSafe API call. |
 | `jev.fallbackTransport` | `none` (none/vercel/typesafe) | — | Automatic backup vendor: when the primary transport times out, has a network error, returns 5xx (incl. 529), 402 or 429 (or a 400/403 naming insufficient balance), ONE retry goes to this transport inside the same time budget; 401/403 and other 4xx never fall back (a bad primary key must surface). Equal to `jev.transport` = off. Needs its OWN vendor-bound key (plugin option `jev_vercel_api_key` / `jev_typesafe_api_key`, or that vendor's key file with `jev.allowLegacyKeyRead`; keys are never sent to another vendor) and a per-vendor circuit breaker skips a vendor for 5 min after 3 consecutive eligible failures (both open = Jev skipped, no double timeouts). NOT full redundancy: both routes very likely reach the same TypeSafe model (inferred from the model ids and identical answers on a 40-item test, unconfirmed), so it covers the direct account's balance/quota or an endpoint outage, probably not a model outage; the guards then use their built-in rules as when Jev is off. With a fallback on, decision text can reach the second vendor. Decision rows record `transport` and `fellBack`. Set with `jev-setup.js enable --fallback <vercel\|typesafe\|none>` or `settings.js set jev.fallbackTransport <value>`. |
-| `jev.judgeModel` | `claude-haiku-4-5` | `ANTIHALL_JUDGE_MODEL` | Model used for speculation-judge / jev-triage LLM calls. |
+| `jev.judgeModel` | `haiku` | `ANTIHALL_JUDGE_MODEL` | Model alias used for speculation-judge / jev-triage LLM calls (an alias, never a pinned version: the CLI and API resolve it to the latest model). |
 | `jev.judgeBackend` adv | `api` (api/cli/auto) | `ANTIHALL_JUDGE_BACKEND` | How speculation-judge reaches the model. `api` = Anthropic API with the `anthropic_api_key` plugin option; `cli` = the local `claude -p` CLI on your own Claude login, no API key (no tools, no MCP servers, no settings files, all hooks disabled; about 5–6 s per turn end, measured); `auto` = `api` when a key is visible, else `cli`. Fail-open in every mode. |
+| `jev.speculationBackend` adv | `haiku` (haiku/jev/cascade) | `ANTIHALL_JEV_SPECULATION_BACKEND` | Which backend answers the semantic speculation question when `jev.semanticJudge` is on. `haiku` = the judge asks the model (`jev.judgeModel` through `jev.judgeBackend`), except while Jev's own `speculation` integration is `on`; `cascade` = as `jev`, with the Jev-first cascade switched on for `speculation`; `jev` = the judge never asks the model and speculation-guard's Jev path is the only semantic check. Answered by the engine; the Node fallback keeps `haiku`. |
+| `jev.triageBackend` adv | `jev` (jev/haiku/cascade) | `ANTIHALL_JEV_TRIAGE_BACKEND` | Which backend labels mesh messages in `ah-engine jev triage`. `jev` = Jev first, the Anthropic API fills a missing label when a key is visible (the Node worker's behaviour); `cascade` = as `jev`, then a label Jev left open is re-judged by the model shown Jev's answer; `haiku` = the model alone through `jev.judgeBackend` (the local `claude -p` takes about 3–4 s per message, so the triage budget must allow it). |
+| `jev.cascade` adv | `true` | `ANTIHALL_JEV_CASCADE` | Global kill switch of the Jev-first cascade: `false` means no Jev answer is ever re-judged by the model, whatever the per-integration `jevCascade.*` switches say. |
+| `jev.cascadeShowJevAnswer` adv | `true` | `ANTIHALL_JEV_CASCADE_SHOW_JEV_ANSWER` | Whether the model that re-judges an unsure Jev answer is shown Jev's answer and confidence (`true`) or only the evidence (`false`), so anchoring can be A/B tested. |
 | `jev.semanticJudge` | `false` | `ANTIHALL_SEMANTIC_JUDGE` | Enable the semantic speculation-judge hook (off = hook no-ops). |
 | `jev.allowLegacyKeyRead` adv safety | `false` | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env or project override). Opt-in: read the Jev key from `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` env vars and the key file. Default off: only the `jev_api_key` plugin option is used. Needed for background tools and Codex (see "Where a stored key is visible"). |
 | `jev.genericKeyVendor` adv safety | `vercel` (vercel/typesafe) | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env, `/config` or legacy-file route). The ONE vendor the legacy generic `jev_api_key` plugin option and `jev.keyFile` are bound to: they carry no vendor name, so they are never sent to any other vendor, whatever `jev.transport` / `jev.fallbackTransport` say (`jev.transport` does NOT decide this, because `enable --transport` rewrites it). Vendor-named keys (`jev_vercel_api_key`, `jev_typesafe_api_key`) need no binding. Change only with `jev-setup.js bind-generic-key --vendor <v>` (a deliberate human command). An existing install with a typesafe transport and a generic key is never auto-bound: it stays on `vercel`, so the generic key is refused for typesafe, and a one-time notice says how to bind or to enter a typesafe key. |
@@ -1434,6 +1473,27 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jevIntegrations.devswarmWaitKind` | `on` (on/shadow/off) | — | Recommendation: is an idle/stalled child stuck, or waiting on CI, the owner or a peer. Annotates the idle/stall warning. |
 | `jevIntegrations.devswarmLoop` | `on` (on/shadow/off) | — | Recommendation: is a busy child looping on its step (input includes the burn figure; threshold 0.9). Annotates a burn/stall warning, or adds an advisory `loop` warning. |
 | `jevIntegrations.devswarmStepMap` | `on` (on/shadow/off) | — | Recommendation: which step a heartbeat summary without --step describes (threshold 0.8); shows as `~N` only while the child never reported a step. |
+| `jevCascade.speculation` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_SPECULATION` | Re-judge a `speculation` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.triage` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_TRIAGE` | Re-judge a `triage` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.newRequest` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_NEW_REQUEST` | Re-judge a `newRequest` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.claimLedger` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_CLAIM_LEDGER` | Re-judge a `claimLedger` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.outputVerifyGuard` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_OUTPUT_VERIFY_GUARD` | Re-judge a `outputVerifyGuard` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.gitGuardSelfCredit` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_GIT_GUARD_SELF_CREDIT` | Re-judge a `gitGuardSelfCredit` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.modelRouting` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_MODEL_ROUTING` | Re-judge a `modelRouting` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.tasklistTrivial` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_TASKLIST_TRIVIAL` | Re-judge a `tasklistTrivial` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.codexNudgeSubstantial` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_CODEX_NUDGE_SUBSTANTIAL` | Re-judge a `codexNudgeSubstantial` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.mergeGateHedge` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_MERGE_GATE_HEDGE` | Re-judge a `mergeGateHedge` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.parentGateQuestion` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_PARENT_GATE_QUESTION` | Re-judge a `parentGateQuestion` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.supervisorBlockerLabel` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_SUPERVISOR_BLOCKER_LABEL` | Re-judge a `supervisorBlockerLabel` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.findingDedup` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_FINDING_DEDUP` | Re-judge a `findingDedup` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.postHandoverGate` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_POST_HANDOVER_GATE` | Re-judge a `postHandoverGate` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.speculationFramed` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_SPECULATION_FRAMED` | Re-judge a `speculationFramed` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.dispatchTier` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_DISPATCH_TIER` | Re-judge a `dispatchTier` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.devswarmOnBrief` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_DEVSWARM_ON_BRIEF` | Re-judge a `devswarmOnBrief` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.devswarmExtraSanctioned` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_DEVSWARM_EXTRA_SANCTIONED` | Re-judge a `devswarmExtraSanctioned` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.devswarmWaitKind` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_DEVSWARM_WAIT_KIND` | Re-judge a `devswarmWaitKind` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.devswarmLoop` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_DEVSWARM_LOOP` | Re-judge a `devswarmLoop` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
+| `jevCascade.devswarmStepMap` adv | `off` (on/off) | `ANTIHALL_JEV_CASCADE_DEVSWARM_STEP_MAP` | Re-judge a `devswarmStepMap` Jev answer with the model when Jev's confidence is under the integration's escalation threshold (`engine/defaults/judge.toml`, default its act threshold). A hook-blocking decision never waits: Jev's answer applies now, the re-judged one from the next ask; a background caller waits. One telemetry row per escalation in `logs/judge-calls.ndjson`. |
 | `jev.prices` adv | — | — | computed: per-model USD price table {model: {inPerMTok, outPerMTok}} (or a "default" entry), used only when the gateway reports tokens but no cost. File-only (no env, no CLI set) — edit ~/.anti-hall/settings.json directly. |
 | `jev.priceUsdPerMInput` adv | `0.042` [0..] | `ANTIHALL_JEV_PRICE_USD_PER_M_INPUT` | USD per 1M input tokens for the Jev judge call, used to compute costUsd when the gateway reports tokens but no cost and `jev.prices` has no matching entry — Jev's own published rate by default. |
 | `jev.priceUsdPerMOutput` adv | `0` [0..] | `ANTIHALL_JEV_PRICE_USD_PER_M_OUTPUT` | USD per 1M output tokens for the Jev judge call (default 0 — output is free on the verified rate). |
@@ -1540,7 +1600,32 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Suppress the email segment in the statusline. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |
 | `codexNudge.min` adv | `3` [1..] | `ANTIHALL_CODEX_NUDGE_MIN` | Minimum substantial code-file edits before the nudge fires. |
+| `engine.bootstrap` | `true` | `AH_ENGINE_BOOTSTRAP` | Download and install the sha256-pinned ah-engine binary from the GitHub Release on SessionStart (once per pinned release). Off: nothing is downloaded and the Node hooks answer everything. AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |
 | `defects.defaultProj` | — | `ANTIHALL_DEFECT_PROJ` | Default project tag used when filing an anti-hall defect (max 64 chars). |
+| `procwatch.enabled` | `true` | `ANTIHALL_PROCWATCH` | procwatch (scheduled sweep + SessionStart/UserPromptSubmit/PreToolUse advisory): look for processes a Claude session left behind (marked by the environment Claude Code sets, owner session gone, class pattern, minimum age) and for agents with no output. Never touches a live session, an unmarked process or a system process. |
+| `procwatch.devServerMode` | `report` | `ANTIHALL_PROCWATCH_DEV_SERVER` | dev_server class of the process watch: dev servers and watchers an agent started. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.testRunnerMode` | `report` | `ANTIHALL_PROCWATCH_TEST_RUNNER` | test_runner class of the process watch: test runners and their children. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.buildDaemonMode` adv | `report` | `ANTIHALL_PROCWATCH_BUILD_DAEMON` | build_daemon class of the process watch: build tool daemons. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.mcpServerMode` adv | `report` | `ANTIHALL_PROCWATCH_MCP_SERVER` | mcp_server class of the process watch: MCP servers of ended sessions (the SessionEnd reaper, maintenance.sessionEndReaper, is separate). off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.shellTaskMode` adv | `report` | `ANTIHALL_PROCWATCH_SHELL_TASK` | shell_task class of the process watch: background shell commands of ended sessions. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.otherMode` adv | `report` | `ANTIHALL_PROCWATCH_OTHER` | other (catch-all) class of the process watch: any other process a Claude session started and left behind, oldest first. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.stuckMinutes` | `20` | `ANTIHALL_PROCWATCH_STUCK_MINUTES` | Minutes without output after which a background agent of this session is named in a stuck-agent advisory (UserPromptSubmit; warn only, once per cooldown). Reuses the silent-agent-nudge detection. |
+| `resourceWatch.enabled` | `true` | `ANTIHALL_RESOURCE_WATCH` | resource-watch: sample the processes under live Claude sessions each sweep and warn the session (advisory only). |
+| `resourceWatch.cpuPercent` | `90` | `ANTIHALL_RESOURCE_WATCH_CPU` | Per-core CPU percent (100 = one core busy; a multi-threaded process can exceed it) every sample of the window must reach. |
+| `resourceWatch.cpuWindowSeconds` adv | `120` | `ANTIHALL_RESOURCE_WATCH_CPU_WINDOW` | Seconds the CPU reading must hold. |
+| `resourceWatch.memoryMb` | `4096` | `ANTIHALL_RESOURCE_WATCH_MEM` | Memory in MB (resident set on Linux, physical footprint on macOS) at which a process of a live session is named. |
+| `resourceWatch.swapMb` adv | `8192` | `ANTIHALL_RESOURCE_WATCH_SWAP` | System swap in use, MB, that triggers a warning; 0 = off. |
+| `resourceWatch.pressurePercent` adv | `25` | `ANTIHALL_RESOURCE_WATCH_PSI` | Linux memory pressure (PSI some avg10, percent) that triggers a warning; 0 = off. |
+| `resourceWatch.macPressureLevel` adv | `2` | `ANTIHALL_RESOURCE_WATCH_MAC_PRESSURE` | macOS memory pressure level (2 warn, 4 critical) that triggers a warning; 0 = off. |
+| `resourceWatch.cooldownSeconds` adv | `900` | `ANTIHALL_RESOURCE_WATCH_COOLDOWN` | Least seconds before the same process (or system warning) is named again. |
+| `resourceWatch.renice` | `false` | `ANTIHALL_RESOURCE_WATCH_RENICE` | Opt-in: lower the priority (nice 10) of a process the watch warned about, once. Off by default; the watch never kills. |
+| `diskWatch.enabled` | `true` | `ANTIHALL_DISK_WATCH` | disk-watch: warn (SessionStart/UserPromptSubmit) when the project, HOME or temp volume is below the warn floor, and before heavy commands (PreToolUse) at the critical floor; names the biggest build/cache directories as a suggestion. |
+| `diskWatch.warnGb` | `20` | `ANTIHALL_DISK_WATCH_WARN_GB` | Warn below this many GB free (0 = not used). |
+| `diskWatch.warnPercent` adv | `10` | `ANTIHALL_DISK_WATCH_WARN_PCT` | Warn below this percent free (0 = not used). |
+| `diskWatch.criticalGb` | `5` | `ANTIHALL_DISK_WATCH_CRITICAL_GB` | Critical below this many GB free (0 = not used). |
+| `diskWatch.criticalPercent` adv | `3` | `ANTIHALL_DISK_WATCH_CRITICAL_PCT` | Critical below this percent free (0 = not used). |
+| `diskWatch.cooldownSeconds` adv | `1800` | `ANTIHALL_DISK_WATCH_COOLDOWN` | Least seconds before the same level is warned about again (a worse level always is). |
+| `diskWatch.blockAtCritical` | `false` | `ANTIHALL_DISK_WATCH_BLOCK` | Opt-in: at the critical level, block heavy commands (builds, clones, worktree add) instead of only warning. Off by default. |
 
 ## Configuration / tuning
 

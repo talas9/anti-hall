@@ -1,0 +1,1161 @@
+# ah-engine shipped defaults for the task fact model and task Stop gates ported from Node (task-lifecycle-log,
+# dispatch-tier, task-tracker, task-guard, tasklist-guard) and the helpers they share (checks::taskkit) (D17, D30, D74).
+# Format: see the header of engine.toml. Regex sources use JavaScript syntax and are translated by checks::guardkit::jsre.
+
+# ---- shared helpers (checks::taskkit) ---------------------------------------------------------------------
+
+[taskkit.unknown_session]
+doc = "The session id used in a file name when the payload carries none, or only characters a file name part may not hold (the Node `UNKNOWN_SESSION`)."
+value = "unknown-session"
+
+[taskkit.session_id_unsafe]
+doc = "Characters that are removed from a session id before it becomes part of a ledger file name (JavaScript regex source of a negated class)."
+value = '[^A-Za-z0-9_-]'
+
+[taskkit.control_chars]
+doc = "Characters a ledger line replaces with a space (C0 controls, DEL and C1 controls), as the body of a JavaScript regex class."
+value = '[\x00-\x1F\x7F-\x9F]'
+
+[taskkit.exact_digits]
+doc = "Most significant digits a JSON number may have for its text to be taken as JavaScript prints it; a number with more digits is left to the Node hook (several shortest round-trip texts exist and the two languages may pick different ones)."
+value = 15
+min = 1
+max = 15
+
+[taskkit.tmp_env_names]
+doc = "The environment variables `os.tmpdir()` reads for the temp directory, in order; without any the temp directory is /tmp."
+value = ["TMPDIR", "TMP", "TEMP"]
+
+[taskkit.ellipsis]
+doc = "What is appended to a ledger field that was cut to its limit."
+value = "…"
+
+[taskkit.gitdir_line]
+doc = "JavaScript regex source of the line that names the git directory in a `.git` file (the `m` flag applies)."
+value = '^\s*gitdir:\s*(.+?)\s*$'
+
+[taskkit.git_entry]
+doc = "The name of the entry that marks a git checkout root."
+value = ".git"
+
+# ---- task-lifecycle-log (hooks/task-lifecycle-log.js) ---------------------------------------------------------
+
+[task_lifecycle_log.summary]
+doc = "One-line description of the task-lifecycle-log check in the generated reference."
+value = "Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js)."
+
+[task_lifecycle_log.setting]
+doc = "Where the on/off switch is read from (maintenance.taskLifecycleLog, default on)."
+value = { section = "maintenance", key = "taskLifecycleLog", env = "", aliases = [], option = "maintenance_task_lifecycle_log", default = true }
+
+[task_lifecycle_log.events]
+doc = "The hook events the ledger records."
+value = ["TaskCreated", "TaskCompleted"]
+
+[task_lifecycle_log.task_id_max]
+doc = "Longest task id kept in a ledger line, in UTF-16 units."
+value = 200
+min = 1
+
+[task_lifecycle_log.subject_max]
+doc = "Longest task subject kept in a ledger line, in UTF-16 units."
+value = 200
+min = 1
+
+[task_lifecycle_log.teammate_max]
+doc = "Longest teammate name kept in a ledger line, in UTF-16 units."
+value = 100
+min = 1
+
+[task_lifecycle_log.separator]
+doc = "The separator between the fields of a ledger line (a middle dot with a space on each side)."
+value = " · "
+
+[task_lifecycle_log.name_max]
+doc = "Longest file name (in bytes) the file system takes; a ledger name past it cannot be created, so the event is not recorded (Node: the append fails and the hook stops quietly)."
+value = 255
+min = 1
+
+[task_lifecycle_log.history_dir]
+doc = "The ledger directory under the project root, as path segments."
+value = [".anti-hall", "history"]
+
+[task_lifecycle_log.index_name]
+doc = "The index file name inside the history directory."
+value = "INDEX.md"
+
+[task_lifecycle_log.ledger_ext]
+doc = "The ledger file extension."
+value = ".md"
+
+# ---- dispatch-tier (hooks/dispatch-tier.js) -------------------------------------------------------------------------
+
+[dispatch_tier.summary]
+doc = "One-line description of the dispatch-tier check in the generated reference."
+value = "Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off (port of dispatch-tier.js)."
+
+[dispatch_tier.jev_id]
+doc = "The Jev integration id the dispatch-tier hook asks."
+value = "dispatchTier"
+
+[dispatch_tier.tools]
+doc = "The task tools whose text changes the hook classifies."
+value = ["TaskCreate", "TaskUpdate"]
+
+[dispatch_tier.owner_marker_setting]
+doc = "Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
+value = { section = "guards", key = "taskGuardOwnerBlockedMarker", env = "ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER", aliases = [], option = "guards_task_guard_owner_blocked_marker", default = true }
+
+[dispatch_tier.owner_values]
+doc = "The blockedOn values (trimmed, lowercase) that mark a task as waiting on the owner."
+value = ["owner", "user", "human", "external"]
+
+[dispatch_tier.owner_subject_re]
+doc = "JavaScript regex source (case-insensitive) of a subject that marks a task as waiting on the owner (OWNER: ... or OWNER DECISION ...)."
+value = '^\s*owner(:|\s+decision\b)'
+
+[dispatch_tier.text_cap]
+doc = "Most UTF-16 units of a task's text (subject, newline, description) that Jev is asked about."
+value = 600
+min = 1
+
+[dispatch_tier.request_ttl_ms]
+doc = "How long a request marker stops the same task text from being asked again while the first ask may still be in flight; older markers are dropped when the state is written."
+value = 600000
+min = 1
+unit = "ms"
+
+[dispatch_tier.max_sessions]
+doc = "Sessions the state file keeps recommendation tracking for; the longest untouched go first."
+value = 50
+min = 1
+
+[dispatch_tier.state_file]
+doc = "The state file (requested markers and per-session tracking), inside the anti-hall directory of the home."
+value = "dispatch-tier-state.json"
+
+[dispatch_tier.question_instructions]
+doc = "The question put to Jev (a choice question over the three tiers)."
+value = "Classify how an orchestrating agent should dispatch this task."
+
+[dispatch_tier.tier_workspace]
+doc = "The description of the workspace tier in the question."
+value = "a large multi-step feature, migration or release spanning several files or components over a long stretch of work, that needs its own branch and its own review (a separate child workspace). NOT a bug fix, UI text or copy change, or any task confined to one file or one component"
+
+[dispatch_tier.tier_workflow]
+doc = "The description of the workflow tier in the question."
+value = "breadth-first or parallelisable work: 3 or more clearly independent or nested agent spawns, or a review fan-out over many targets, best lifted into one deterministic workflow. NOT a single-file or single-component change, however important its priority label"
+
+[dispatch_tier.tier_subagent]
+doc = "The description of the subagent tier in the question."
+value = "the DEFAULT when unsure: a lookup, a bug fix, a UI text or copy change, any change confined to one file or one component, a single command, or a single review pass that one background agent can finish. A priority label (P0, P1, P2) says nothing about size"
+
+# ---- task fact model (checks::taskstate: lib/task-state.js, task-guard.js parseTasksFromFile, lib/task-subject-backfill.js) ----
+
+[taskstate.tail_bytes]
+doc = "How much of the end of a transcript the task reconstruction reads (the Node `MAX_TAIL_BYTES`, 1.5 MiB)."
+value = 1572864
+min = 1
+
+[taskstate.re_created]
+doc = "JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number."
+value = '^Task\s+#(\d+)\s+created\s+successfully'
+
+[taskstate.re_list_empty]
+doc = "JavaScript regex source (case-insensitive) of the TaskList result that says the task store is empty."
+value = '^\s*No\s+tasks\s+found\b'
+
+[taskstate.re_not_found]
+doc = "JavaScript regex source (case-insensitive) of the TaskGet or TaskUpdate result that says one task id does not exist."
+value = '^\s*Task\s*(?:#\S+)?\s*not\s+found\b'
+
+[taskstate.id_keys]
+doc = "The input fields a task tool call may name its task id in, in order: the harness's `taskId`, then `id`, then `task_id`."
+value = ["taskId", "id", "task_id"]
+
+[taskstate.tools_collect_keys]
+doc = "The object keys the tool-use collector descends into, in order (the Node `collectToolUses`)."
+value = ["content", "message", "messages", "tool_uses", "parts"]
+
+[taskstate.open_statuses]
+doc = "Statuses (lowercase) that make a task open."
+value = ["pending", "in_progress", "in-progress"]
+
+[taskstate.done_statuses]
+doc = "Statuses (lowercase) that count as completed for the completed-task advisory."
+value = ["completed", "done", "cancelled", "canceled"]
+
+[taskstate.since_status_re]
+doc = "JavaScript regex source (case-insensitive) of the TaskUpdate statuses that restart a task's clock (`sinceMs`, read by the idle-neglect proof)."
+value = '^(pending|in[-_]?progress)$'
+
+[taskstate.terminal_status_re]
+doc = "JavaScript regex source (case-insensitive) of the statuses that close a task for the backfill (`TERMINAL`)."
+value = '^(completed|done|cancelled|canceled|deleted)$'
+
+[taskstate.backfill_max_subject]
+doc = "Longest subject the backfill recovers, in UTF-16 units."
+value = 200
+min = 1
+
+[taskstate.backfill_max_candidates]
+doc = "How many unpaired task-creation results the backfill remembers while scanning backward."
+value = 256
+min = 1
+
+[taskstate.backfill_chunk_bytes]
+doc = "How much of the transcript the backfill reads at a time."
+value = 1048576
+min = 4096
+
+[taskstate.backfill_exact_bytes]
+doc = "How far back the backfill scans before the engine hands the call to Node. Node stops after 150 ms of wall clock (64 MiB at most); the engine scans a fixed number of bytes instead so its answer never depends on machine speed, and past this bound it defers rather than guess where Node would have stopped."
+value = 8388608
+min = 4096
+
+[taskstate.backfill_prefix_scan_bytes]
+doc = "How far past the window start the backfill looks for the end of the line that straddles it."
+value = 8388608
+min = 4096
+
+[taskstate.unknown_max_notes]
+doc = "How many times the unknown-state note may be printed for one session and tag."
+value = 3
+min = 1
+
+[taskstate.unknown_note_text]
+doc = "The unknown-state note; `{n}` is the number of tasks."
+value = "{n} task(s) in an unknown state (their records are too far back to read) — re-state each with TaskUpdate (status) to refresh."
+
+[taskstate.unknown_file_prefix]
+doc = "Prefix of the per-session file that remembers which unknown set was last announced."
+value = "last-unknown"
+
+[taskstate.prune_ttl_days]
+doc = "Per-session state files older than this many days are removed by the opportunistic sweep."
+value = 7
+min = 1
+
+[taskstate.prune_throttle_hours]
+doc = "The sweep of one file prefix runs at most once per this many hours."
+value = 6
+min = 1
+
+[taskstate.prune_stamp_prefix]
+doc = "Prefix of the stamp file that throttles one prefix's sweep."
+value = ".prune-stamp-"
+
+# ---- task-guard (hooks/task-guard.js) --------------------------------------------------------------------------------
+
+[task_guard.summary]
+doc = "One-line description of the task-guard check in the generated reference."
+value = "Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has no running agent, else the generic block), with the loop state, the per-prompt budget and the OMC and live-agent steps aside of the Node hook; hands a Stop whose answer needs the DevSwarm app database to Node (port of task-guard.js)."
+
+[task_guard.guard_name]
+doc = "The guard id of task-guard (the skip key and the message prefix)."
+value = "task-guard"
+
+[task_guard.setting]
+doc = "Where the on/off switch is read from (guards.taskGuard, default on)."
+value = { section = "guards", key = "taskGuard", env = "", aliases = [], option = "guards_task_guard", default = true }
+
+[task_guard.prune_setting]
+doc = "How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)."
+value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
+
+[task_guard.state_prefix]
+doc = "Prefix of the per-session file that holds the last blocked task set (`last-stop-taskset-<session>`)."
+value = "last-stop-taskset-"
+
+[task_guard.session_hash_len]
+doc = "How many hex characters of the transcript path hash name a session that has no id."
+value = 16
+min = 1
+
+[task_guard.prune_advisory]
+doc = "The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit."
+value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n"
+
+[task_guard.note_line]
+doc = "The line that carries the unknown-state note; `{note}` is the note."
+value = "[task-guard] {note}\n"
+
+[task_guard.unknown_tag]
+doc = "The tag of the unknown-state note's state file for task-guard."
+value = "guard"
+
+[task_guard.judge_child_env]
+doc = "The environment variable that marks a judge child process; every task hook is a no-op there."
+value = "ANTIHALL_JUDGE_CHILD"
+
+# -- task-guard: the open-task decision (sharp idle-neglect block, generic block, loop state)
+
+[task_guard.max_blocks]
+doc = "Most Stop blocks task-guard makes in one session (both kinds counted); after that every Stop is let through."
+value = 5
+min = 1
+
+[task_guard.hash_sep]
+doc = "The separator between the task ids hashed into the loop state (a NUL character)."
+value = "\u0000"
+
+[task_guard.idle_hash_tags]
+doc = "The words that start the hashed text of an idle-neglect block, so its loop state never equals a generic block's."
+value = ["idle", "no-agents"]
+
+[task_guard.state_hash_key]
+doc = "The loop state file's field for the hash of the last blocked set."
+value = "hash"
+
+[task_guard.state_blocks_key]
+doc = "The loop state file's field for the number of blocks made this session."
+value = "blocks"
+
+[task_guard.pending_status]
+doc = "The status (lowercase) of a task that can be dispatched now."
+value = "pending"
+
+[task_guard.coordinator_owner_re]
+doc = "JavaScript regex source (case-insensitive) of an owner that is the orchestrator itself; such a task still counts as unowned."
+value = '^(main|orchestrator|coordinator)$'
+
+[task_guard.workspace_prefix_re]
+doc = "JavaScript regex source (case-insensitive) of the prefix removed from an owner before it is looked up as a DevSwarm workspace."
+value = '^(workspace|ws|devswarm)\s*[:#]\s*'
+
+[task_guard.priority_rank_re]
+doc = "JavaScript regex source of a priority label with a rank (`p0`, `p1`, ...), matched on the trimmed lowercase label."
+value = '^p([0-9]+)$'
+
+[task_guard.priority_default_rank]
+doc = "The rank of a task with no priority or an unrecognised one (fail-open: it counts as P1)."
+value = 1
+min = 0
+
+[task_guard.priority_low]
+doc = "Priority words (lowercase) that rank below the default."
+value = ["low", "deferred"]
+
+[task_guard.priority_low_rank]
+doc = "The rank of a low or deferred task."
+value = 2
+min = 0
+
+[task_guard.min_priority_setting]
+doc = "The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
+value = { section = "guards", key = "idleNeglectMinPriority", type = "enum", values = ["p0", "p1", "p2", "p3"], env = "ANTIHALL_IDLE_NEGLECT_MIN_PRIORITY", aliases = [], default = "p1" }
+
+[task_guard.dispatch_demand_setting]
+doc = "Whether running agents are counted per task from this session's transcript (guards.dispatchDemand, default on); off restores the legacy rule (any fresh agent heartbeat silences the idle-neglect block)."
+value = { section = "guards", key = "dispatchDemand", env = "ANTIHALL_DISPATCH_DEMAND", aliases = [], default = true }
+
+[task_guard.proven_only_setting]
+doc = "Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
+value = { section = "guards", key = "idleNeglectProvenOnly", env = "ANTIHALL_IDLE_NEGLECT_PROVEN_ONLY", aliases = [], default = true }
+
+[task_guard.agent_max_age_setting]
+doc = "Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
+value = { section = "guards", key = "idleNeglectAgentMaxAgeMin", env = "ANTIHALL_IDLE_NEGLECT_AGENT_MAX_AGE_MIN", aliases = [], min = 0, default = 30 }
+
+[task_guard.agent_max_age_default_min]
+doc = "The agent age limit used when the setting does not resolve to a number, in minutes."
+value = 30
+min = 0
+
+[task_guard.ms_per_minute]
+doc = "Milliseconds in a minute (the unit conversion of the agent age limit)."
+value = 60000
+min = 1
+
+[task_guard.max_parallel_setting]
+doc = "A fixed cap on running background agents (guards.maxParallelDispatch); 0 uses the CPU-based cap."
+value = { section = "guards", key = "maxParallelDispatch", env = "ANTIHALL_MAX_PARALLEL_DISPATCH", aliases = [], min = 0, default = 0 }
+
+[task_guard.cap_ceiling]
+doc = "The highest CPU-based parallel cap."
+value = 16
+min = 1
+
+[task_guard.cap_reserve]
+doc = "CPUs kept free when the parallel cap is derived from the CPU count."
+value = 2
+min = 0
+
+[task_guard.cap_floor]
+doc = "The lowest CPU-based parallel cap."
+value = 1
+min = 1
+
+[task_guard.cap_fallback_cores]
+doc = "The CPU count assumed when none is reported."
+value = 4
+min = 1
+
+[task_guard.task_ref_re]
+doc = "JavaScript regex source of a task number named in an agent's description (`#12`); such an agent covers that task."
+value = '#(\d+)\b'
+
+[task_guard.in_progress_re]
+doc = "JavaScript regex source (case-insensitive) of an in-progress status (tested unanchored, as Node does)."
+value = 'in[-_]?progress'
+
+[task_guard.agents_dir]
+doc = "The directory of agent heartbeat files inside the anti-hall directory (the legacy liveness signal)."
+value = "agents"
+
+[task_guard.agents_ext]
+doc = "The file ending of an agent heartbeat file."
+value = ".json"
+
+[task_guard.agents_ts_key]
+doc = "The heartbeat file's time field (milliseconds); without it the file time is used."
+value = "ts"
+
+[task_guard.agents_fresh_ms]
+doc = "How long an agent heartbeat counts as a running agent."
+value = 1200000
+min = 1
+unit = "ms"
+
+[task_guard.label_max]
+doc = "Longest task subject in the idle-neglect block's list, in UTF-16 units."
+value = 40
+min = 1
+
+[task_guard.label_priority_prefix_re]
+doc = "JavaScript regex source (case-insensitive) of a priority prefix (`P1: `, `P0 - `) removed from a subject in the idle-neglect list."
+value = '^\s*P\d\s*[:\-—]\s*'
+
+[task_guard.label_sep]
+doc = "The separator between the tasks of the idle-neglect list."
+value = ", "
+
+[task_guard.dispatch_list_max]
+doc = "Most tasks the idle-neglect block names."
+value = 12
+min = 1
+
+[task_guard.list_max]
+doc = "Most tasks the generic block names."
+value = 5
+min = 1
+
+[task_guard.list_sep]
+doc = "The separator between the tasks of the generic block's list."
+value = "; "
+
+[task_guard.subject_max]
+doc = "Longest task subject in the generic block's list, in UTF-16 units."
+value = 60
+min = 1
+
+[task_guard.status_max]
+doc = "Longest task status in the generic block's list, in UTF-16 units."
+value = 24
+min = 1
+
+[task_guard.subject_unknown]
+doc = "What the generic block shows for a task whose subject was never seen."
+value = "(subject unknown)"
+
+[task_guard.status_open]
+doc = "What the generic block shows for a task without a status."
+value = "open"
+
+[task_guard.more]
+doc = "The tail of a block's list when tasks were left out; `{n}` is how many."
+value = " (and {n} more)"
+
+[task_guard.cap_formula]
+doc = "The parallel cap as the idle-neglect block names it when no number was computed (the legacy rule)."
+value = "~min(16, cores-2)"
+
+[task_guard.update_claude]
+doc = "How the block messages name the task update tool on Claude Code."
+value = "TaskUpdate"
+
+[task_guard.update_codex]
+doc = "How the block messages name the task update on Codex, which has no task tools."
+value = "update your task list"
+
+[task_guard.codex_patch_tool]
+doc = "The Codex tool name that marks a Codex payload on its own."
+value = "apply_patch"
+
+[task_guard.idle_what]
+doc = "The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail."
+value = "stop blocked: {n} non-blocked, unassigned task(s) have no in-flight agent: {list}{more}."
+
+[task_guard.idle_why]
+doc = "The why line of the idle-neglect block."
+value = "Dispatchable work is sitting idle."
+
+[task_guard.idle_instead]
+doc = "The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing)."
+value = "dispatch them now in parallel (one background agent each, cap {cap}), or stop only if a task truly needs the user (say which and why). A task waiting on an in-flight task: set its blockedBy ({upd} addBlockedBy). A running agent already covers a task: set the task owner to it ({upd} owner) and it counts as attended.{devswarm}"
+
+[task_guard.idle_allowed]
+doc = "The allowed-here line of the idle-neglect block."
+value = "a task blocked on the OWNER (hardware, a human decision): mark it metadata.blockedOn:'owner' (or 'user'/'human'/'external'), or give it an \"OWNER:\" / \"OWNER DECISION\" subject prefix. Never a fake blockedBy dependency."
+
+[task_guard.generic_what]
+doc = "The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail."
+value = "stop blocked: open tasks remain: {list}{more}."
+
+[task_guard.generic_why]
+doc = "The why line of the generic block."
+value = "Tasks should not sit neglected when the session stops."
+
+[task_guard.generic_instead]
+doc = "The do-instead line of the generic block; `{upd}` is the task update tool."
+value = "pick up pending tasks and dispatch subagents to finish them in parallel (up to the cap, ~min(16, cores-2)); or mark them completed/deferred ({upd}), or tell the user what is pending and why you are stopping."
+
+[task_guard.generic_allowed]
+doc = "The allowed-here line of the generic block; `{upd}` is the task update tool."
+value = "a genuinely blocked task: mark it via {upd} with blockedBy:[<open task id>] or metadata.blockedOn:'owner'/'user'/'human'/'external'; it is then no longer listed."
+
+[task_guard.block_json]
+doc = "The stdout line of a block; `{reason}` is the reason as a JSON string."
+value = "{\"decision\":\"block\",\"reason\":{reason}}\n"
+
+[task_guard.omc_line]
+doc = "The advisory printed instead of a block while an OMC autonomous loop is active."
+value = "[task-guard] OMC autonomous loop active — deferring Stop block to avoid deadlock.\n"
+
+[task_guard.agents_line]
+doc = "The advisory printed instead of the generic block while agents are live."
+value = "[task-guard] open tasks remain but live agents are active — deferring Stop block.\n"
+
+[task_guard.metrics_file]
+doc = "The dispatch-demand metrics file inside the anti-hall directory (the idle-neglect block counts itself there)."
+value = "dispatch-demand-metrics.json"
+
+[task_guard.metrics_counters]
+doc = "The counters of the metrics file, each reset to 0 when it is not a finite number of at least 0, in this order."
+value = ["demandsShown", "demandsFollowed", "demandsIgnored", "idleNeglectBlocks"]
+
+[task_guard.metrics_idle_key]
+doc = "The counter an idle-neglect block increments."
+value = "idleNeglectBlocks"
+
+[task_guard.metrics_pending_key]
+doc = "The metrics file's per-session pending-demand object (kept as is, made an empty object when it is not one)."
+value = "pending"
+
+# -- task-guard: the DevSwarm app database (companion/lib/devswarm-app-db.js appDbPath); its presence defers the answers that need it
+
+[task_guard.app_db_env]
+doc = "The environment variable that names the DevSwarm app database (or `off`)."
+value = "ANTIHALL_DEVSWARM_APP_DB"
+
+[task_guard.app_db_off]
+doc = "The override value (lowercase) that turns the DevSwarm app database off."
+value = "off"
+
+[task_guard.app_db_darwin_dir]
+doc = "The application data directory under the home directory on macOS, as path segments."
+value = ["Library", "Application Support"]
+
+[task_guard.app_db_xdg_env]
+doc = "The environment variable that moves the configuration directory on Linux."
+value = "XDG_CONFIG_HOME"
+
+[task_guard.app_db_linux_config]
+doc = "The configuration directory under the home directory on Linux."
+value = ".config"
+
+[task_guard.app_db_file]
+doc = "The DevSwarm app database under the application data directory, as path segments."
+value = ["DevSwarm", "devswarm.db"]
+
+# -- task-guard: OMC loop detection (hooks/omc-detect.js)
+
+[task_guard.omc_disable_env]
+doc = "The environment variable that turns OMC off."
+value = "DISABLE_OMC"
+
+[task_guard.omc_disable_value]
+doc = "The value of the OMC kill switch that turns it off."
+value = "1"
+
+[task_guard.omc_skip_env]
+doc = "The environment variable that lists OMC hooks to skip (comma separated)."
+value = "OMC_SKIP_HOOKS"
+
+[task_guard.omc_skip_token]
+doc = "The skip-list entry that turns OMC's persistent mode off."
+value = "persistent-mode"
+
+[task_guard.omc_claude_dir]
+doc = "The Claude Code settings directory (under the home directory and the project)."
+value = ".claude"
+
+[task_guard.omc_settings_file]
+doc = "The user's Claude Code settings file inside the settings directory."
+value = "settings.json"
+
+[task_guard.omc_project_settings]
+doc = "The project's Claude Code settings files, in the order read."
+value = ["settings.json", "settings.local.json"]
+
+[task_guard.omc_settings_max_bytes]
+doc = "Largest settings file read for the OMC plugin switch; a larger one counts as not enabling it."
+value = 262144
+min = 1
+
+[task_guard.omc_plugins_key]
+doc = "The settings field that lists enabled plugins."
+value = "enabledPlugins"
+
+[task_guard.omc_plugin_id]
+doc = "The OMC plugin's id in the enabled-plugins list."
+value = "oh-my-claudecode@omc"
+
+[task_guard.omc_state_dir]
+doc = "OMC's state directory (under the project, else under the home directory), as path segments."
+value = [".omc", "state"]
+
+[task_guard.omc_state_files]
+doc = "The OMC loop state files, in the order checked."
+value = ["ralph-state.json", "ultrawork-state.json", "autopilot-state.json", "ultraqa-state.json", "team-state.json", "ultrapilot-state.json", "pipeline-state.json", "omc-teams-state.json"]
+
+[task_guard.omc_state_max_bytes]
+doc = "Largest OMC state file read; a larger one counts as malformed."
+value = 65536
+min = 1
+
+[task_guard.omc_active_key]
+doc = "The state field that must be exactly true."
+value = "active"
+
+[task_guard.omc_ts_keys]
+doc = "The state fields that may carry a fresh time, in the order tried."
+value = ["last_checked_at", "updated_at", "started_at"]
+
+[task_guard.omc_fresh_ms]
+doc = "How old an OMC loop's newest time may be for the loop to count as active."
+value = 7200000
+min = 1
+unit = "ms"
+
+[task_guard.omc_session_key]
+doc = "The state field that ties a loop to one session."
+value = "session_id"
+
+# -- task-guard: the per-prompt budget (hooks/lib/stop-policy.js budgetSpent)
+
+[task_guard.budget_setting]
+doc = "Most Stop blocks per user prompt (guards.stopNagBudgetPerPrompt; 0 = no budget)."
+value = { section = "guards", key = "stopNagBudgetPerPrompt", env = "ANTIHALL_STOP_NAG_BUDGET", aliases = [], min = 0, default = 0 }
+
+[task_guard.stop_policy_dir]
+doc = "The budget files' directory inside the anti-hall directory, as path segments."
+value = ["devswarm", "stop-policy"]
+
+[task_guard.stop_policy_ext]
+doc = "The ending of a session's budget file."
+value = ".json"
+
+[task_guard.budget_bucket]
+doc = "The last part of the budget bucket key (`<session>|task-guard|<this>`)."
+value = "prompt"
+
+[task_guard.budget_key_field]
+doc = "The bucket field holding the prompt the count belongs to."
+value = "promptKey"
+
+[task_guard.budget_count_field]
+doc = "The bucket field holding the blocks made for that prompt."
+value = "count"
+
+[task_guard.budget_at_field]
+doc = "The bucket field holding the time of the last block."
+value = "lastAt"
+
+[task_guard.prompt_id_key]
+doc = "The Stop payload field that names the prompt."
+value = "prompt_id"
+
+[task_guard.user_type]
+doc = "The transcript entry type of a user turn."
+value = "user"
+
+[task_guard.tool_result_type]
+doc = "The content block type of a tool result (not a real user prompt)."
+value = "tool_result"
+
+# ---- work detection (checks::taskkit::workdetect: lib/work-detect.js) ---------------------------------------------------
+
+[workdetect.always_work]
+doc = "JavaScript regex source (case-insensitive) of the shell commands that always count as work: git history and dependency mutations, `sed -i`, installs and `patch`."
+value = '\bgit\s+(?:commit|rebase|merge|cherry-pick|stash|reset|apply|am)\b|\bgit\s+(?:checkout|switch|restore|clean)\b|\bsed\s+-i|\bnpm\s+(?:install|i|ci)\b|\b(?:pnpm|yarn)\s+(?:add|install)\b|\bpip\s+install\b|\bpatch\b'
+
+[workdetect.command_position]
+doc = "Regex source (case-insensitive) of the bare file verbs that count as work only at command position: at the start of a line, or after a separator, an opening parenthesis, a backtick or `$(`. A JavaScript `^` with the multiline flag also matches after a carriage return and the two Unicode line separators, which the character class lists."
+value = '(?:^|[\n\r\u2028\u2029;&|`(]|\$\()\s*(?:rm|cp|mv|tee|mkdir|touch|make|chmod)\b'
+
+[workdetect.scratchpad_path]
+doc = "Regex source of a path inside the session scratchpad (a segment literally named scratchpad); writes there are message passing, not project work."
+value = '\/scratchpad\/'
+
+[workdetect.state_dir]
+doc = "Regex source of a path inside anti-hall's own progress, history or handover directories; writing the bookkeeping the guard asks for is not work."
+value = '(?:^|[\s/])\.anti-hall\/(?:progress|history|handovers)\/'
+
+[workdetect.devswarm_housekeeping]
+doc = "Regex source (case-insensitive) of a command segment that is only DevSwarm mesh housekeeping through the stable launcher: an inbox, heartbeat, send, relay, notice, nudge, roster or wake-directive verb."
+value = '^\s*(?:node\s+)?(?:\S*[\\/])?devswarm\.js\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*(?:inbox\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*(?:pull|ack|ack-primary|read|read-primary|tick|count|peek-primary|messages)\b|heartbeat\b|send\b|relay\b|notice\b|nudge\b|roster\b|wake-directive\b)'
+
+[workdetect.crontab_segment]
+doc = "Regex source (case-insensitive) of the start of a crontab call at command position, optionally inside a leading subshell paren; a name that continues with a word character, dot or hyphen is not a crontab call (checked in code)."
+value = '^[({\s]*crontab'
+
+[workdetect.tmp_housekeeping_target]
+doc = "Regex source (case-insensitive) of the redirect targets a housekeeping crontab install may write to: the scratchpad or a tmp directory."
+value = '\/scratchpad\/|(?:^|\/)tmp\/'
+
+[workdetect.dev_null]
+doc = "Regex source of the null device, a redirect target that never counts as a write."
+value = '\/dev\/null'
+
+[workdetect.heredoc_delimiter]
+doc = "Regex source of a heredoc operator and its delimiter word, which may be partly quoted or escaped; group 1 is the word."
+value = '''^<<-?\s*((?:[^\s;&|()<>'"\\]|'[^'\n]*'|"[^"\n]*"|\\[^\n])+)'''
+
+[workdetect.never_work_tools]
+doc = "Tools that start or schedule work and never change a file themselves."
+value = ["Agent", "Task", "CronCreate", "CronDelete"]
+
+[workdetect.mutating_tools]
+doc = "File-mutating tools: each call counts as work unless it targets an excluded path."
+value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
+# ---- tasklist-guard (hooks/tasklist-guard.js) ---------------------------------------------------------------------------
+
+[tasklist_guard.summary]
+doc = "One-line description of the tasklist-guard check in the generated reference."
+value = "Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale progress file, with the Node hook's loop state, dedupe, cap, handover advisories, stop-policy budget and acknowledgement; answers the quiet Stops, plan mode and the resume-verification nudge with the same file effects (port of tasklist-guard.js)."
+
+[tasklist_guard.guard_name]
+doc = "The guard id of tasklist-guard (the skip key and the message prefix)."
+value = "tasklist-guard"
+
+[tasklist_guard.setting]
+doc = "Where the on/off switch is read from (guards.tasklistGuard, default on)."
+value = { section = "guards", key = "tasklistGuard", env = "", aliases = [], option = "guards_tasklist_guard", default = true }
+
+[tasklist_guard.threshold_setting]
+doc = "How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold)."
+value = { section = "guards", key = "tasklistWorkThreshold", env = "ANTIHALL_TASKLIST_WORK_THRESHOLD", aliases = [], min = 1, default = 3 }
+
+[tasklist_guard.fresh_setting]
+doc = "How long (ms) a progress file counts as fresh when no work time is known (guards.progressFreshMs)."
+value = { section = "guards", key = "progressFreshMs", env = "ANTIHALL_PROGRESS_FRESH_MS", aliases = [], min = 0, default = 1800000 }
+
+[tasklist_guard.window_bytes]
+doc = "How much of the end of the transcript the work and task scan reads (512 KiB)."
+value = 524288
+min = 1
+
+[tasklist_guard.wide_window_bytes]
+doc = "How much of the transcript the fallback search for any task activity reads when the scan window held none (16 MiB)."
+value = 16777216
+min = 1
+
+[tasklist_guard.fresh_grace_ms]
+doc = "How far the newest counted work may run ahead of a progress file's time and still count as covered by it."
+value = 1000
+min = 0
+
+[tasklist_guard.plan_mode_text]
+doc = "The advisory printed instead of a decision while the session is in plan mode."
+value = "[tasklist-guard] PLAN MODE — Stop not blocked (progress-file writes are not possible in plan mode). Track this work as tasks and refresh the progress file once you leave plan mode.\n"
+
+[tasklist_guard.plan_mode_value]
+doc = "The permission_mode value (compared in lowercase) that marks plan mode."
+value = "plan"
+
+[tasklist_guard.task_tool_names]
+doc = "The tool names that count as task activity."
+value = ["TaskCreate", "TaskUpdate", "TodoWrite"]
+
+[tasklist_guard.progress_dir]
+doc = "The progress directory under the project root, as path segments."
+value = [".anti-hall", "progress"]
+
+[tasklist_guard.history_dir]
+doc = "The history directory under the project root, as path segments."
+value = [".anti-hall", "history"]
+
+[tasklist_guard.resume_marker_prefix]
+doc = "Prefix of the per-session marker the handover resume writes (`<prefix><session>.json` under the anti-hall state directory)."
+value = "handover-resume-state-"
+
+[tasklist_guard.resume_nudged_prefix]
+doc = "Prefix of the per-session file that records the one resume-verification nudge."
+value = "resume-verify-nudged-"
+
+[tasklist_guard.resume_verified_marker]
+doc = "The text a resumed handover must contain once its resume has been verified."
+value = "resume-verified:"
+
+[tasklist_guard.resume_text]
+doc = "The resume-verification nudge; `{file}` is the handover file."
+value = "A session handover was resumed this session ({file}) but no `resume-verified:` marker was recorded in it. Run the resume-verification checklist (git status, pwd, smoke command) and append `resume-verified: <ISO timestamp> -- <summary>` to that file before continuing."
+
+[tasklist_guard.reason_max]
+doc = "Longest block reason, in UTF-16 units; longer text is cut and ends with an ellipsis."
+value = 2000
+min = 1
+
+# ---- tasklist-guard: the block path (the Stop that nudges) ---------------------------------------------------------------
+
+[tasklist_guard.max_blocks]
+doc = "How many blocks one session gets at most (MAX_BLOCKS); a session at the cap stops quietly."
+value = 3
+min = 1
+
+[tasklist_guard.work_bucket_max]
+doc = "Highest work bucket in the dedupe signal (the work count divided by the threshold, floored, capped here)."
+value = 8
+min = 1
+
+[tasklist_guard.state_prefix]
+doc = "Family name of the per-session loop state file (`<prefix>-<session>.json` under the anti-hall state directory); also the prune family."
+value = "tasklist-guard-state"
+
+[tasklist_guard.state_ext]
+doc = "File extension of the per-session state and marker files."
+value = ".json"
+
+[tasklist_guard.session_hash_len]
+doc = "How many hex digits of the transcript path's SHA-1 stand in for a missing session id."
+value = 16
+min = 1
+
+[tasklist_guard.open_hash_len]
+doc = "How many hex digits of the SHA-1 of the open task ids go into the dedupe signal."
+value = 16
+min = 1
+
+[tasklist_guard.signal_sep]
+doc = "Separator of the parts of the dedupe signal."
+value = "|"
+
+[tasklist_guard.open_ids_sep]
+doc = "Separator of the sorted open task ids that are hashed into the dedupe signal."
+value = "\u0000"
+
+[tasklist_guard.head_bytes]
+doc = "How much of the start of the transcript is read for the session start time (firstTranscriptIso)."
+value = 65536
+min = 1
+
+[tasklist_guard.header]
+doc = "The header a new progress file gets; {session} is the raw session id (or the unknown-session id), {started} the session start."
+value = "<!-- session: {session} | started: {started} -->"
+
+[tasklist_guard.what_reset]
+doc = "Block headline when the task store was reset (a session restore)."
+value = "the task store was reset (session restore)."
+
+[tasklist_guard.why_reset]
+doc = "Block reason when the task store was reset."
+value = "The old task ids are gone, not un-tracked."
+
+[tasklist_guard.what_no_tasks]
+doc = "Block headline when work was done and no task was tracked; {n} is the work count."
+value = "stop blocked: {n} file-changing actions this session but NO tasks tracked."
+
+[tasklist_guard.why_no_tasks]
+doc = "Block reason when no task was tracked."
+value = "Work this size needs a task list and a progress file."
+
+[tasklist_guard.prior_snapshot]
+doc = "Appended to the no-tasks reason when another session of today left a handover state file; {path} is its path."
+value = " A prior session's snapshot exists at {path}: recreate your task list from it first."
+
+[tasklist_guard.what_stalled]
+doc = "Block headline when tasks are in progress with no live agent; {n} is the count."
+value = "stop blocked: {n} tasks are in_progress but NO background agent is live."
+
+[tasklist_guard.why_stalled]
+doc = "Block reason when tasks are stalled in progress."
+value = "They are stalled, not worked in parallel."
+
+[tasklist_guard.what_progress]
+doc = "Block headline when the progress file is missing or stale; {n} is the work count, {path} the progress file."
+value = "stop blocked: {n} file-changing actions but {path} is missing or stale."
+
+[tasklist_guard.why_progress]
+doc = "Block reason when the progress file is missing or stale."
+value = "The progress file must track what was done."
+
+[tasklist_guard.what_reduced]
+doc = "Block headline of the reduced nag (a session without task tools); {n} is the work count."
+value = "stop blocked: {n} file-changing actions, no tasks tracked."
+
+[tasklist_guard.why_reduced]
+doc = "Block reason of the reduced nag."
+value = "Untracked work gets lost."
+
+[tasklist_guard.instead_reduced]
+doc = "What to do instead, reduced nag; {progress} and {history} are the files."
+value = "list the open tasks and status in your reply, priority first. Progress: {progress} History: {history}"
+
+[tasklist_guard.instead_reset]
+doc = "Lead of what to do instead after a task store reset (Claude wording)."
+value = "recreate the open tasks with TaskCreate (see the progress file / handover), then continue. "
+
+[tasklist_guard.instead_reset_codex]
+doc = "Lead of what to do instead after a task store reset (Codex wording)."
+value = "recreate the open tasks in your task list (see the progress file / handover), then continue. "
+
+[tasklist_guard.instead_stalled]
+doc = "What to do about tasks stalled in progress."
+value = "dispatch a background agent for EACH now (do not serialize to one), or set idle ones back to pending; start the highest-priority task's agent first but keep the rest running. "
+
+[tasklist_guard.instead_capture]
+doc = "What to do instead: capture the work as tasks (Claude wording)."
+value = "Capture the work as priority-sorted tasks via TaskCreate/TaskUpdate (TaskList first to dedup; link with addBlockedBy/addBlocks), set statuses, and update "
+
+[tasklist_guard.instead_capture_codex]
+doc = "What to do instead: capture the work as tasks (Codex wording)."
+value = "Capture the work as priority-sorted tasks in your task list (check it first to dedup; link related ones), set statuses, and update "
+
+[tasklist_guard.instead_files]
+doc = "The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in."
+value = "{progress} (done/in-progress/next); a new file gets this header on top: {header}. Gitignore it. Append each COMPLETED task to {history} (append-only ledger, one entry per task: Cause / Fix / Verified; gitignore it too; it usually exists already, so {append}). The progress file can be written freely. No Bash heredoc (git-guard scans its body as shell)."
+
+[tasklist_guard.append_claude]
+doc = "How to append to the history file (Claude wording)."
+value = "append with the Edit tool or a one-line `>>`, never the Write tool"
+
+[tasklist_guard.append_codex]
+doc = "How to append to the history file (Codex wording)."
+value = "append with a one-line `>>`, never overwrite it"
+
+[tasklist_guard.omc_text]
+doc = "Printed instead of the block while an oh-my-claudecode autonomous loop is active."
+value = "[tasklist-guard] OMC autonomous loop active — deferring Stop block to avoid deadlock.\n"
+
+[tasklist_guard.handovers_dir]
+doc = "The handovers directory under the project root, as path segments."
+value = [".anti-hall", "handovers"]
+
+[tasklist_guard.handover_state_file]
+doc = "The state file a session handover leaves (the prior-snapshot pointer looks for it)."
+value = "state.md"
+
+[tasklist_guard.handover_file_re]
+doc = "JavaScript regex source of a handover file name."
+value = '^HANDOVER(?:-\d+)?\.md$'
+
+[tasklist_guard.handover_grace_ms]
+doc = "How far the newest counted work may run past the newest handover's time before the handover counts as stale."
+value = 1000
+min = 0
+
+[tasklist_guard.advisory_prefix]
+doc = "Prefix of the once-per-session marker of the no-handover advisory (`<prefix><session>.json`)."
+value = "tasklist-guard-handover-advisory-"
+
+[tasklist_guard.advisory_body]
+doc = "Contents of the no-handover advisory marker."
+value = '{"advised":true}'
+
+[tasklist_guard.advisory_text]
+doc = "The no-handover advisory appended to a block."
+value = "\n💡 anti-hall · handover: no handover exists yet after significant work.\nDo instead: consider /anti-hall:handover before ending."
+
+[tasklist_guard.stale_prefix]
+doc = "Prefix of the once-per-session marker of the stale-handover advisory (`<prefix><session>.json`)."
+value = "tasklist-guard-handover-stale-"
+
+[tasklist_guard.stale_body]
+doc = "Contents of the stale-handover advisory marker."
+value = '{"warned":true}'
+
+[tasklist_guard.stale_text]
+doc = "The stale-handover advisory appended to a block."
+value = "\n⚠️ anti-hall · handover: the saved handover is stale (work happened after it was written).\nDo instead: refresh it before the user compacts."
+
+[tasklist_guard.jev_id]
+doc = "The Jev integration consulted before the nag (relax-block: a confident trivial verdict in on mode skips it)."
+value = "tasklistTrivial"
+
+[tasklist_guard.jev_instructions]
+doc = "The question put to Jev (a noul question)."
+value = "This session is about to be nudged to track its work as tasks / refresh its progress file. Judge the session summary below: does this look like a genuinely non-trivial, multi-part effort that benefits from task tracking, as opposed to a small, bounded, single-purpose chore?"
+
+[tasklist_guard.jev_true]
+doc = "What a true answer means."
+value = "genuinely non-trivial — multi-part, benefits from task tracking"
+
+[tasklist_guard.jev_false]
+doc = "What a false answer means."
+value = "a small bounded chore — task tracking would be overhead, not help"
+
+[tasklist_guard.jev_state]
+doc = "The session summary Jev judges; the fields are the work count, threshold, the three sub-causes and the open task count."
+value = "workCount={work} threshold={threshold} sawTaskActivity={saw} hasStaleInProgress={stale} progressFresh={fresh} openTaskCount={open}"
+
+[tasklist_guard.no_task_tools_setting]
+doc = "The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
+value = { section = "guards", key = "tasklistNoTaskTools", type = "enum", env = "ANTIHALL_TASKLIST_NO_TASK_TOOLS", aliases = [], option = "", default = "reduced", values = ["reduced", "full", "skip"] }
+
+[tasklist_guard.protocol_setting]
+doc = "context.protocolLevel: full makes the nag form default to full when guards.tasklistNoTaskTools is not set."
+value = { section = "context", key = "protocolLevel", type = "enum", env = "ANTIHALL_PROTOCOL_LEVEL", aliases = [], option = "", default = "compact", values = ["compact", "full"] }
+
+[tasklist_guard.form_full]
+doc = "The full nag form (and the protocol level that selects it)."
+value = "full"
+
+[tasklist_guard.form_skip]
+doc = "The nag form that says nothing."
+value = "skip"
+
+[tasklist_guard.form_reduced]
+doc = "The reduced nag form."
+value = "reduced"
+
+[tasklist_guard.evidence_names]
+doc = "Tool names, attachment types and prefixes that can make a transcript line evidence of task tools (the cheap pre-filter)."
+value = ["TaskCreate", "TaskUpdate", "TodoWrite", "task_reminder"]
+
+[tasklist_guard.evidence_reminder]
+doc = "Attachment type that proves task tools exist."
+value = "task_reminder"
+
+[tasklist_guard.evidence_deferred_prefix]
+doc = "Prefix of the attachment type that lists deferred tools."
+value = "deferred_tools"
+
+[tasklist_guard.evidence_tool]
+doc = "The deferred tool name that proves task tools exist."
+value = "TaskCreate"
+
+[tasklist_guard.version_setting]
+doc = "guards.stopHookVersionDowngrade: skip the block while the host registered a newer anti-hall than the running one."
+value = { section = "guards", key = "stopHookVersionDowngrade", env = "ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE", aliases = [], option = "", default = true }
+
+[tasklist_guard.ack_setting]
+doc = "guards.stopAck: honor a per-signature acknowledgement of this block for the rest of the session."
+value = { section = "guards", key = "stopAck", env = "ANTIHALL_STOP_ACK", aliases = [], option = "", default = true }
+
+[tasklist_guard.ack_dir]
+doc = "Directory of the acknowledgement files under the anti-hall state directory; also the file prefix (`<dir>/<dir>-<session>.json`)."
+value = "stop-ack"
+
+[tasklist_guard.ack_session_max]
+doc = "Longest session part of an acknowledgement file name."
+value = 128
+min = 1
+
+[tasklist_guard.ack_sig_len]
+doc = "How many hex digits of the SHA-1 of the dedupe hash make the acknowledgement signature."
+value = 16
+min = 1
+
+[tasklist_guard.ack_hint]
+doc = "The acknowledgement hint appended to a block; {key}, {now} and {path} are filled in."
+value = "Override (only if the user explicitly confirmed this exact condition is fine): write {\"{key}\": {now}} into {path} (merge with existing keys); it then stays advisory for the rest of the session."
+
+[tasklist_guard.budget_setting]
+doc = "guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off)."
+value = { section = "guards", key = "stopNagBudgetPerPrompt", env = "ANTIHALL_STOP_NAG_BUDGET", aliases = [], min = 0, default = 0 }
+
+[tasklist_guard.policy_dir]
+doc = "The stop-policy state directory under the anti-hall state directory, as path segments."
+value = ["devswarm", "stop-policy"]
+
+[tasklist_guard.policy_tail_bytes]
+doc = "How much of the end of the transcript is read for the prompt key (transcript-tail.js MAX_TAIL_BYTES)."
+value = 1572864
+min = 1
+
+[tasklist_guard.policy_prompt_kind]
+doc = "Stop-policy bucket kind of the per-prompt budget."
+value = "prompt"
+
+[tasklist_guard.policy_reduced_kind]
+doc = "Stop-policy bucket kind of the reduced nag (blocks at most once per session)."
+value = "no-task-tools"
+
+[tasklist_guard.policy_reduced_cap]
+doc = "How many reduced nags one session gets."
+value = 1
+min = 1
+
+[tasklist_guard.policy_user_marker]
+doc = "Text a transcript line must hold to be read as a possible user prompt."
+value = '"user"'
+
+[tasklist_guard.omc_state_files]
+doc = "The oh-my-claudecode loop state files (omc-detect.js)."
+value = ["ralph-state.json", "ultrawork-state.json", "autopilot-state.json", "ultraqa-state.json", "team-state.json", "ultrapilot-state.json", "pipeline-state.json", "omc-teams-state.json"]
+
+[tasklist_guard.omc_state_dir]
+doc = "The oh-my-claudecode state directory under the working directory, else the home directory, as path segments."
+value = [".omc", "state"]
+
+[tasklist_guard.omc_fresh_ms]
+doc = "How recent a loop state's timestamp must be for the loop to count as active."
+value = 7200000
+min = 1
+
+[tasklist_guard.omc_max_bytes]
+doc = "Largest loop state file read; a bigger one counts as malformed."
+value = 65536
+min = 1
+
+[tasklist_guard.omc_settings_max_bytes]
+doc = "Largest Claude settings file read when checking that oh-my-claudecode is enabled."
+value = 262144
+min = 1
+
+[tasklist_guard.omc_settings_files]
+doc = "The Claude settings files that can enable oh-my-claudecode: the home one, then the project's two."
+value = [".claude/settings.json", ".claude/settings.local.json"]
+
+[tasklist_guard.omc_plugin]
+doc = "The enabledPlugins key of oh-my-claudecode."
+value = "oh-my-claudecode@omc"
+
+[tasklist_guard.omc_kill_env]
+doc = "Environment variable that disables oh-my-claudecode (value 1)."
+value = "DISABLE_OMC"
+
+[tasklist_guard.omc_skip_env]
+doc = "Environment variable listing skipped oh-my-claudecode hooks (comma separated)."
+value = "OMC_SKIP_HOOKS"
+
+[tasklist_guard.omc_skip_token]
+doc = "The skipped hook that turns the loop detection off."
+value = "persistent-mode"
+
+[tasklist_guard.omc_ts_keys]
+doc = "Timestamp fields of a loop state, in order."
+value = ["last_checked_at", "updated_at", "started_at"]
+
+[tasklist_guard.codex_tool]
+doc = "A tool name only Codex payloads carry (isCodexPayload)."
+value = "apply_patch"
+
+[tasklist_guard.codex_fields]
+doc = "Payload fields that, all non-empty strings, mark a Codex payload (isCodexPayload)."
+value = ["turn_id", "model"]
+
+
+[taskkit.codex_rollout]
+doc = "JavaScript regex source of a Codex rollout transcript path."
+value = '(^|[\\/])rollout-[^\\/]*\.jsonl$'
+
+[taskkit.codex_dir]
+doc = "JavaScript regex source of a path with a `.codex` directory in it."
+value = '[\\/]\.codex[\\/]'
+
+[tasklist_guard.low_priorities]
+doc = "Priorities (lowercase) below the actionable floor for the stalled-in-progress count."
+value = ["p2", "low", "deferred"]
