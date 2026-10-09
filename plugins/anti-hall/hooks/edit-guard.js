@@ -93,6 +93,8 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const DEFAULT_ALLOW = [
   'CLAUDE.md', 'AGENTS.md', 'GEMINI.md',
   '.claude/**', '.omc/**', '.anti-hall/**',
+  // session notes/ledgers also from a subdirectory cwd (the glob above is root-relative): `echo >>` and a heredoc append alike
+  '**/.anti-hall/history/**', '**/.anti-hall/dogfood/**',
   'PLAN.md', 'plan.md', 'STATE.json',
   '**/.claude/projects/**/memory/**',
 ];

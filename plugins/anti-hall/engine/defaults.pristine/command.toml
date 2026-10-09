@@ -807,7 +807,7 @@ value = 8
 
 [command.eg_default_allow]
 doc = "Files and globs edit-guard always allows (edit-guard.js DEFAULT_ALLOW)."
-value = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude/**", ".omc/**", ".anti-hall/**", "PLAN.md", "plan.md", "STATE.json", "**/.claude/projects/**/memory/**"]
+value = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude/**", ".omc/**", ".anti-hall/**", "**/.anti-hall/history/**", "**/.anti-hall/dogfood/**", "PLAN.md", "plan.md", "STATE.json", "**/.claude/projects/**/memory/**"]
 
 [command.eg_project_deny_segments]
 doc = "Path segments the per-project edit allowlist never reaches (edit-guard.js PROJECT_EDIT_DENY_SEGMENTS)."

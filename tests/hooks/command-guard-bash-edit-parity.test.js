@@ -262,3 +262,20 @@ test('auto-memory write under a non-tmp HOME, cwd = repo: not WORK, exit 0', () 
     assert.strictEqual(run(c).status, 0, c);
   }
 });
+
+test('appends to .anti-hall/history and .anti-hall/dogfood are notes, whether echo or a heredoc, from the root or a subdirectory', () => {
+  fs.mkdirSync(path.join(REPO, 'sub'), { recursive: true });
+  for (const cwd of [REPO, path.join(REPO, 'sub')]) {
+    for (const target of ['.anti-hall/history/dogfood/ISSUES.md', '.anti-hall/dogfood/ISSUES.md']) {
+      const rel = cwd === REPO ? target : '../' + target;
+      for (const c of [`echo x >> ${target}`, `cat >> ${target} <<'EOF'\n- a | it's > b\nEOF`, `cat >> ${rel} <<EOF\nx\nEOF`]) {
+        const r = cg.classifyBashWork(c, { session_id: 't', cwd });
+        assert.deepStrictEqual(r.editBlocks, [], `${cwd} :: ${c}`);
+      }
+    }
+  }
+  // a doc outside the notes dirs is still refused the same way for both spellings
+  for (const c of ['echo x >> docs/x.md', "cat >> docs/x.md <<'EOF'\nx\nEOF"]) {
+    assert.strictEqual(cg.classifyBashWork(c, { session_id: 't', cwd: REPO }).editBlocks.length, 1, c);
+  }
+});
