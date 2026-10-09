@@ -517,3 +517,5 @@ pub const RECON_TABLES: &str = "SELECT name FROM sqlite_master WHERE type = 'tab
 pub const RECON_DUMP: &str = "SELECT * FROM \"{table}\" ORDER BY rowid;";
 /// The reconcile port: the registry row of one id, every column.
 pub const RECON_REGISTRY_ONE: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry WHERE id = ?;";
+/// The reconcile port's `removeRegistryIf`: delete the row only while it still is the one the plan read (NULL-safe `IS`).
+pub const RECON_REGISTRY_REMOVE_IF: &str = "DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;";

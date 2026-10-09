@@ -92,6 +92,10 @@ value = { type = "enum", section = "devswarm", key = "reconcileSweep", env = "AN
 doc = "Least time between two reconcile sweeps. Node: devswarm.reconcileSweepSec (floor 300)."
 value = { type = "number", section = "devswarm", key = "reconcileSweepSec", env = "ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC", min = 300, max = 100000000, default = 900 }
 
+[devswarm_sup.sweep_tail_mode]
+doc = "Who decides the sweep tail (archived registry rows, twin descriptors; the reconcile port): node (the default; Node's scheduled functions do it) or engine (the engine decides each step after Node's own function, run on a scratch mirror, agrees)."
+value = { type = "enum", section = "devswarm", key = "sweepTailMode", env = "ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE", values = ["node", "engine"], default = "node" }
+
 [devswarm_sup.set_housekeeping_mode]
 doc = "Housekeeping sweep switch: auto / on / off. Node: devswarm.housekeepingSweep."
 value = { type = "enum", section = "devswarm", key = "housekeepingSweep", env = "ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP", values = ["auto", "on", "off"], default = "auto" }

@@ -24,6 +24,7 @@
 // - an unreadable optional file is the absent one (Node's try/catch, fail-open)
 // - the witness is advisory: a scratch file that cannot be removed only costs disk
 pub mod apply;
+pub mod archive;
 pub mod gate;
 pub mod heal;
 pub mod mirror;
@@ -114,6 +115,36 @@ pub enum Op {
     Derive {
         /// The store (repo key).
         store: String,
+    },
+    /// `fs.linkSync(from, to)`: a second name for the same file. An existing `to` is fine (the step is idempotent; the next
+    /// op decides whether it is the same file). Never copies and never removes anything.
+    Link {
+        /// The existing file, relative to the home.
+        from: String,
+        /// The new name, relative to the home.
+        to: String,
+        /// What `from` must be right now.
+        pre: Pre,
+        /// The `(device, inode)` of `from` the plan classified (Node re-proves the generation under the lock). Checked on the
+        /// real home only: a scratch mirror's files have inodes of their own.
+        ino: Option<(u64, u64)>,
+    },
+    /// Remove the name `rel` only when `other` is another name of the very same file (same device and inode). This is the
+    /// second half of a retire / restore: the file always survives under `other`, so a crash between [`Op::Link`] and this
+    /// step leaves it under both names, never under none.
+    UnlinkLinked {
+        /// The name to remove, relative to the home.
+        rel: String,
+        /// The name that must stay, relative to the home.
+        other: String,
+    },
+    /// `removeRegistryIf(id, guard)` on one store: delete the registry row only if it is still exactly the row the plan read
+    /// (session, `updated_at` and `write_seq`, NULL-safe). The one statement is the whole step; no message row is touched.
+    Remove {
+        /// The store (repo key).
+        store: String,
+        /// The row as the plan read it.
+        guard: Box<RegRow>,
     },
     /// One line of the central log, as `anti-hall-log.js` `logEvent` writes it.
     Log {
