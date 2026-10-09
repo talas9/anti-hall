@@ -50,8 +50,21 @@ fn wait_dead(pid: i32, within: Duration) -> bool {
 pub fn reap(state_dir: &Path, stop: impl Fn()) {
     // the run marker, else the pid the singleton lock file names: a daemon whose marker was never written or already
     // removed (a failed start, a crash-loop test) must still be ended, or it outlives the test with its dir deleted
-    let pid = marker_pid(state_dir).or_else(|| lock_pid(state_dir)).filter(|p| is_daemon(*p));
+    let find = || marker_pid(state_dir).or_else(|| lock_pid(state_dir)).filter(|p| is_daemon(*p));
+    let mut pid = find();
     stop();
+    if pid.is_none() {
+        // A daemon a client spawned a moment before the test ended can still be starting (on a loaded CI runner that took
+        // seconds), with no marker or lock yet: wait for it to show itself, then stop it, or it outlives the test.
+        let t = Instant::now();
+        while pid.is_none() && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(50));
+            pid = find();
+        }
+        if pid.is_some() {
+            stop();
+        }
+    }
     let Some(pid) = pid else { return };
     if !wait_dead(pid, Duration::from_millis(1500)) {
         // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.

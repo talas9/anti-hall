@@ -52,7 +52,11 @@ impl Env {
     }
     fn proj(&self, session: &str, args: &[&str]) -> (String, i32) {
         let o = self.cmd().env("AH_ENGINE_SESSION", session).arg("proj").args(args).output().unwrap();
-        (String::from_utf8_lossy(&o.stdout).trim().to_string(), o.status.code().unwrap_or(-1))
+        let mut out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !o.status.success() {
+            out = format!("{out} [stderr: {}]", String::from_utf8_lossy(&o.stderr).trim()); // a failed call says why
+        }
+        (out, o.status.code().unwrap_or(-1))
     }
     fn start(&mut self) {
         self.start_with(&[]);
