@@ -8,20 +8,26 @@
 //!
 //! What it checks: the platform and versions, that the hook scripts the registry names are on disk, the live behaviour of the
 //! guards (each built-in check is run in-process on a crafted payload and must block or allow as the Node guard does; a payload
-//! the engine defers to its Node hook is reported as such, never as a pass), the statusline configuration, the saved Workflow
-//! templates, and the repair pass.
+//! the engine defers to its Node hook is reported as such, never as a pass), the statusline configuration and its render, the
+//! saved Workflow templates, oh-my-claudecode and the Codex port when present, other plugins' competing hooks and skills, the
+//! DevSwarm supervisor section (its files, the four mechanical hooks, the installed unit), orphaned ingest registrations and
+//! leaked test-fixture stores, and the repair pass. The explicit `--repair-ingest-orphans`, `--repair-test-stores` and
+//! `--repair-resurrected` flags (preview, `--apply` to act) run after the diagnostics, as in the Node doctor.
 //!
-//! What it does not do yet: the checks of the Node doctor that spawn or inspect other programs (the statusline render, the
-//! context-footprint measurement, the DevSwarm supervisor, the OMC and Codex detection, the ingest daemon units, the foreign
-//! plugin conflict scan, the leaked-store reports) and its explicit opt-in flags (`--prune-cache`, `--reclaim-ingest-lock`,
-//! `--repair-*`, `--logs`). Each such flag is reported when given; the Node doctor stays in place for them.
+//! What it does not do yet: the context-footprint measurement, the DevSwarm runtime checks of an active session (liveness
+//! verdicts, app-database view, delivery log, wake monitor; the report says so), the default repair rows that install or reap
+//! scheduler units, the leaked-unit and other store reports, and the flags `--prune-cache`, `--reclaim-ingest-lock` and `--logs`
+//! (each is reported when given; the Node doctor stays in place for them).
 mod detect;
+mod devswarm;
 mod facts;
 mod install;
+mod orphans;
 mod plugin;
 mod render;
 mod runtime;
 mod selftest;
+mod stores;
 mod system;
 
 use crate::checks::jsport::json::{self, J};
@@ -174,6 +180,10 @@ struct Flags {
     repair: bool,
     migrations_only: bool,
     quiet: bool,
+    /// The explicit repair flags given, in the order their sections run.
+    explicit: Vec<&'static str>,
+    /// `--apply`: the explicit repairs act instead of only previewing.
+    apply: bool,
 }
 
 fn flags(p: &Parsed) -> Flags {
@@ -184,6 +194,8 @@ fn flags(p: &Parsed) -> Flags {
         repair: has("--repair") || has("--fix"),
         migrations_only: has("--migrations-only"),
         quiet: has("--quiet"),
+        explicit: defaults::list("doctor.explicit_flags").into_iter().filter(|f| has(f)).collect(),
+        apply: has(defaults::text("doctor.apply_flag")),
     }
 }
 
@@ -362,10 +374,36 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
     }
 }
 
+/// The sections of the explicit repair flags (`--repair-ingest-orphans`, `--repair-test-stores`, `--repair-resurrected`), each a
+/// preview unless `--apply` is given. They run after the diagnostics and end the report, as the Node doctor's do.
+fn explicit_sections(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags) {
+    for flag in &f.explicit {
+        let (title, rows, retire) = match *flag {
+            "--repair-ingest-orphans" => ("doctor_msg.repair_title_orphans", orphans::repair(ctx, f.apply), "doctor_msg.explicit_unloaded"),
+            "--repair-test-stores" => ("doctor_msg.repair_title_stores", stores::repair_test_stores(ctx, f.apply), "doctor_msg.explicit_moved"),
+            _ => ("doctor_msg.repair_title_resurrected", stores::repair_resurrected(ctx), "doctor_msg.explicit_retired"),
+        };
+        let mode = defaults::text(if f.apply { "doctor_msg.repair_mode_apply" } else { "doctor_msg.repair_mode_dry" });
+        doc.head(&defaults::render("doctor_msg.repair_head_explicit", &[("title", &defaults::text(title)), ("mode", &mode), ("flag", flag)]));
+        if rows.is_empty() && doc.fail == 0 {
+            doc.infol(defaults::text("doctor_msg.explicit_nothing").to_string());
+        }
+        for (id, status, msg) in rows {
+            let label = format!("[{id}] {msg}");
+            match status {
+                "fixed" => doc.ok(format!("{}{label}", defaults::text(retire))),
+                "failed" => doc.bad(format!("{}{label}", defaults::text("doctor_msg.explicit_failed"))),
+                "gated" => doc.warnl(format!("{}{label}", defaults::text("doctor_msg.explicit_gated"))),
+                _ => doc.infol(format!("{}{label}", defaults::text("doctor_msg.explicit_skipped"))),
+            }
+        }
+    }
+}
+
 /// The `doctor` command.
 pub fn run_doctor(p: &Parsed) -> i32 {
     let f = flags(p);
-    let do_repair = (f.repair || f.dry_run) && !f.check;
+    let do_repair = (f.repair || f.dry_run) && !f.check && f.explicit.is_empty();
     if f.migrations_only && do_repair {
         let forwarded = Parsed { command: "migrate".into(), json: true, rest: p.rest.clone(), raw: p.rest.clone() };
         return migrate::cli::run_migrate(&forwarded);
@@ -419,6 +457,7 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     selftest::run(&mut doc, &ctx, root.as_deref(), &version);
     statusline_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
     render::statusline_render(&mut doc, &ctx, root_path);
+    devswarm::section(&mut doc, &ctx, root_path);
     let absent: Vec<&str> = [detect::omc_section(&mut doc, &ctx), detect::codex_section(&mut doc, &ctx, root_path)].into_iter().flatten().collect();
     if !absent.is_empty() {
         doc.head(defaults::text("doctor_msg.head_integrations"));
@@ -430,10 +469,13 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     detect::foreign_section(&mut doc, &ctx, root_path);
     if do_repair {
         repair_section(&mut doc, &ctx, &f, &fixes, root_path);
-    } else if !f.check {
+    } else if !f.check && f.explicit.is_empty() {
         doc.head(defaults::text("doctor_msg.repair_heading"));
         doc.infol(defaults::text("doctor_msg.repair_read_only").to_string());
     }
+    orphans::detect_section(&mut doc, &ctx);
+    stores::detect_section(&mut doc, &ctx);
+    explicit_sections(&mut doc, &ctx, &f);
 
     for n in ctx.take_notes() {
         eprintln!("{}", defaults::render("migrate_msg.note_line", &[("note", &n)]));

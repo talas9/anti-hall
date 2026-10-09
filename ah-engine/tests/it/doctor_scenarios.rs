@@ -65,7 +65,7 @@ impl Out {
 
     /// Assert no finding of any level contains `needle`.
     fn lacks(&self, needle: &str) {
-        assert!(!self.text.contains(needle), "unexpected {needle:?}\n{}", self.text);
+        assert!(!self.text.contains(needle), "unexpected {needle:?}\n{}\n--- stderr ---\n{}", self.text, self.err);
     }
 
     /// The lines of one section (heading line to the next blank line).
@@ -1429,4 +1429,36 @@ fn doctor_check_leaves_the_state_directory_alone() {
     // the repair, which does write, still may
     sc.doctor_raw(&["--repair"]);
     assert!(sc.state().exists());
+}
+
+#[test]
+fn ds_the_supervisor_files_must_parse_and_the_hook_tests_must_pass() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.programs(&[], &[]);
+    // the hooks the self-tests run need the companion libraries and the scripts beside them
+    for dir in ["companion", "scripts", "skills", "agents", "assets", "monitors", "docs"] {
+        copy_dir(&real_plugin().join(dir), &sc.plugin.join(dir));
+    }
+    // a supervisor script that does not parse is a failure, even with DevSwarm dormant
+    let live = sc.plugin.join("companion/lib/liveness.js");
+    let good = fs::read(&live).unwrap();
+    fs::write(&live, "function (((\n").unwrap();
+    let d = sc.doctor(&[]);
+    d.has("bad", &["supervisor lib SYNTAX ERROR: liveness.js"]);
+    assert_eq!(d.code, 1);
+    fs::write(&live, good).unwrap();
+    let d = sc.doctor(&[]);
+    d.lacks("DevSwarm liveness supervisor");
+    assert_eq!(d.code, 0);
+    // an installed supervisor (a launchd agent or a systemd timer file) makes the section appear
+    let unit = if host_os() == "macos" {
+        "Library/LaunchAgents/com.anti-hall.devswarm-supervisor.plist"
+    } else {
+        ".config/systemd/user/anti-hall-devswarm-supervisor.timer"
+    };
+    sc.put(unit, b"x");
+    let d = sc.doctor(&[]);
+    d.has("ok", &["supervisor companion INSTALLED (", "background sweep)"]);
+    assert_eq!(d.code, 0);
 }
