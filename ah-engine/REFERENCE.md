@@ -2748,6 +2748,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.isolation_values` | `worktree, remote` |  |  | Values of the spawn's isolation field that give the agent its own working tree, lower-case. |
 | `swarm_guard.lock_boot_slop_s` | `5` |  | s | Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution). |
 | `swarm_guard.lock_file` | `swarm-spawns.lock` |  |  | The lock that serializes the read-count-append of the spawn log. |
+| `swarm_guard.lock_hb_infix` | `.hb.` |  |  | The text between a lock file's name and the temporary file a heartbeat (refresh) of that lock is written through (lock.js: `<lock>.hb.<pid>-<rand>`). |
 | `swarm_guard.lock_reclaim_stale_ms` | `5000` |  | ms | A lock-takeover marker older than this belongs to a reclaimer that died and may be taken over. |
 | `swarm_guard.lock_release_step_ms` | `10` |  | ms | The pause between those tries. |
 | `swarm_guard.lock_release_tries` | `5` |  |  | How many times releasing the lock tries to take the takeover marker before it removes its own lock unguarded. |
@@ -6365,13 +6366,27 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.duties` | `7 items` |  |  | The duties of one tick, in order (the order of Node's main(): log rotation, the liveness sweep, reconcile, deferred stage, app sync, retention, housekeeping; auto-archive is the engine's own action layer and poke / escalate its action sweeps). |
 | `devswarm_sup.duty.app_sync` | `4 entries` |  |  | Sync the DevSwarm app state (archived flags, names, message gaps) into app-state.json and the descriptors. |
 | `devswarm_sup.duty.deferred` | `4 entries` |  |  | One stage of the deferred post-update sweep per tick (fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows, in rotation), only when its marker says work is pending. Node's deferred-sweep-state.json keeps the rotation cursor. |
-| `devswarm_sup.duty.housekeeping` | `7 entries` |  |  | Disk hygiene: sweep the reaped-workspace logs and the child-gate files by the doctor's repair rules. Node's housekeeping-sweep-state.json keeps the cool-down. |
-| `devswarm_sup.duty.log_rotate` | `3 entries` |  |  | Rotate the supervisor log (and the engine's own tick log) to one .1 generation when it passes set_log_rotate_bytes. Native. Only the supervisor's own bounded log is touched. |
+| `devswarm_sup.duty.housekeeping` | `9 entries` |  |  | Disk hygiene: sweep the reaped-workspace logs and the child-gate files by the doctor's repair rules. Node's housekeeping-sweep-state.json keeps the cool-down. Native: removes only files older than the retention window, one directory level, only the sweep's own suffix. |
+| `devswarm_sup.duty.log_rotate` | `4 entries` |  |  | Rotate the supervisor log (and the engine's own tick log) to one .1 generation when it passes set_log_rotate_bytes. Native. Only the supervisor's own bounded log is touched. |
 | `devswarm_sup.duty.reconcile` | `7 entries` |  |  | The reconcile sweep: drain stranded per-worktree queues into the shared store (reconcile), fold duplicate mesh rows, probe the active workspace list for the app-side archive cache, and sample start-up. Node's state file reconcile-sweep-state.json keeps the cool-down, so either side finding it fresh does nothing. |
 | `devswarm_sup.duty.retention` | `4 entries` |  |  | Bounded growth of the message stores: archive-first tombstoning of old message bodies under Node's own retention rules, state and lock (retention-state.json, locks/retention.lock). No row is deleted. |
 | `devswarm_sup.duty.verdicts` | `4 entries` |  |  | The liveness sweep: compute and write every workspace's liveness verdict file, apply the suppressors (post-spawn grace, archive-ready, session alive, Primary row), force the parent notice for an urgent mesh unread, record straying and the Jev blocker label, and re-send parked escalation notices. When the engine owns poke and escalate it runs with Node's poke step switched off (the engine's action layer pokes). |
 | `devswarm_sup.engine_log` | `.anti-hall/logs/devswarm-supervisor-engine.ndjson` |  |  | The engine's own record of its ticks (one JSON line each), relative to the home directory. Kept apart from the Node log so the engine never trips its own guard. |
+| `devswarm_sup.env_disable` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | The environment variable that is the hard kill switch of every DevSwarm job (Node: DISABLE_ANTIHALL_DEVSWARM). |
+| `devswarm_sup.env_disable_on` | `1` |  |  | The value of the kill switch that disables. |
+| `devswarm_sup.env_supervisor` | `ANTIHALL_DEVSWARM_SUPERVISOR` |  |  | The environment variable that switches the supervisor off (Node: ANTIHALL_DEVSWARM_SUPERVISOR). |
+| `devswarm_sup.env_supervisor_off` | `off` |  |  | The value of the supervisor switch that disables. |
 | `devswarm_sup.guard_ms` | `360000` |  | ms | The Node supervisor counts as running when its log (or the rotated copy) was written within this long. While it runs, the engine's supervisor duties AND the engine's poke / escalate stand down, so two actors never run one duty. Node writes one line per sweep and sweeps at least every 120 s. |
+| `devswarm_sup.hk_day_ms` | `86400000` |  |  | Milliseconds in the retention sweep's day. |
+| `devswarm_sup.hk_max_depth` | `1` |  |  | How many directory levels below the swept directory the age sweep looks (one: a date-partitioned directory). Bounds the walk against a link loop. |
+| `devswarm_sup.hk_msg_list_failed` | `could not list {dir}: {err}` |  |  | The result message of a directory that could not be listed. {dir} {err}. |
+| `devswarm_sup.hk_msg_remove_failed` | `could not remove {file}: {err}` |  |  | The result message of a file that could not be removed. {file} {err}. |
+| `devswarm_sup.hk_msg_removed` | `removed {file} (age {days}d)` |  |  | The result message of a removed file. {file}, {days} (its age in days, rounded). |
+| `devswarm_sup.hk_state` | `housekeeping-sweep-state.json` |  |  | The housekeeping cool-down state file, relative to the DevSwarm state directory (Node's file: {lastRunAt}). Written before the sweep runs. |
+| `devswarm_sup.hk_status_failed` | `failed` |  |  | The result status of a file or directory the sweep could not handle. |
+| `devswarm_sup.hk_status_fixed` | `fixed` |  |  | The result status of a removed file (doctor-repair's word). |
+| `devswarm_sup.hk_sweeps` | `4 entries, 4 entries` |  |  | The age sweeps of the housekeeping duty, in order: name (the key in the result), dir (under the DevSwarm state directory), suffix (only files ending so are touched) and days (the setting holding the retention window in days). |
+| `devswarm_sup.hk_tmp_infix` | `.tmp-` |  |  | The text between a state file's name and the process id in the temporary file it is written through. |
 | `devswarm_sup.liveness_dir` | `liveness` |  |  | The liveness verdict files, relative to the DevSwarm state directory (Node: livenessPathFor). |
 | `devswarm_sup.lock_file` | `locks/sweep.lock` |  |  | The single-flight sweep lock, relative to the DevSwarm state directory: the Node supervisor's own file, taken the same way (a dead holder or one older than lock_stale_ms is taken over), so while a tick runs a Node sweep exits at once. |
 | `devswarm_sup.lock_stale_ms` | `300000` |  | ms | A sweep lock older than this is taken over (Node: SWEEP_LOCK_STALE_MS). |
@@ -6395,6 +6410,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.msg_witness` | `witness mode: the Node supervisor owns the supervisor duties` |  |  | The tick's answer while the mode is witness. |
 | `devswarm_sup.node_args` | `-e` |  |  | The arguments before the duty's snippet (the snippet, the plugin root, the home directory and the poke owner follow). |
 | `devswarm_sup.node_bin` | `node` |  |  | The Node executable the `node` duties run through (resolved on PATH). A missing one fails the duty with a recorded error; nothing else is affected. |
+| `devswarm_sup.node_duties` | `` |  |  | Duties that have a native implementation but are to run as Node's own function instead (the rollback lever for one duty: name it here and the next tick runs Node's function in a bounded subprocess, as before the port). Empty: every ported duty runs natively. |
 | `devswarm_sup.node_log` | `.anti-hall/devswarm-supervisor.log` |  |  | The Node supervisor's log, relative to the home directory (the launchd / systemd / cron job writes its sweep line there). |
 | `devswarm_sup.notify_escalation` | `process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";con...` |  |  | The Node function the engine runs once after it escalates a workspace, so the parent (Primary) gets the same one-time notice Node's escalation sends (a store message with the hash escalate:<id>:<staleSince>, parked and retried by the liveness sweep when the Primary is not registered). Arguments: the plugin root, the home directory, the workspace id. |
 | `devswarm_sup.notify_timeout_ms` | `60000` |  | ms | Bound of the escalation-notice subprocess. |
@@ -6410,18 +6426,28 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.recover_snippet` | `process.env.HOME=process.argv[2];const o=require(process.argv[1]+"/companion/...` |  |  | What runs Node's on-demand recovery (companion/devswarm-recover.js `run`, the same call its CLI makes) for ONE workspace. It resolves the ONE process of the workspace (exactly one match or it abstains), confirms its identity and working directory right before SIGTERM and again before SIGKILL, and resumes the session headless. The engine decides whether it may start; the kill stays Node's. Arguments: the plugin root, the home directory, the workspace id. |
 | `devswarm_sup.recover_timeout_ms` | `180000` |  | ms | Bound of one recovery run (it waits the grace period and the resume readiness). |
 | `devswarm_sup.recovery_log` | `recovery.log` |  |  | Node's recovery log (one JSON line per poke / escalation / recovery step), relative to the DevSwarm state directory. |
+| `devswarm_sup.set_child_gate_days` | `5 entries` |  |  | Days a per-session child-gate state file is kept before the housekeeping sweep removes it. Node: devswarm.childGateRetentionDays. A value that is not a positive number reads as the default. |
 | `devswarm_sup.set_housekeeping_mode` | `6 entries` |  |  | Housekeeping sweep switch: auto / on / off. Node: devswarm.housekeepingSweep. |
 | `devswarm_sup.set_housekeeping_sec` | `7 entries` |  |  | Least time between two housekeeping sweeps. Node: devswarm.housekeepingSweepSec (floor 300). |
 | `devswarm_sup.set_log_rotate_bytes` | `7 entries` |  |  | Size above which the supervisor log is rotated to its .1 copy. Node: devswarm.supervisorLogRotateBytes. |
 | `devswarm_sup.set_max_recoveries` | `7 entries` |  |  | Most kill-and-resume recoveries of one workspace. Node: devswarm.maxRecoveries. |
+| `devswarm_sup.set_reaped_days` | `5 entries` |  |  | Days a reaped-workspace log is kept before the housekeeping sweep removes it. Node: devswarm.reapedRetentionDays. A value that is not a positive number reads as the default. |
 | `devswarm_sup.set_reconcile_mode` | `6 entries` |  |  | Reconcile sweep switch: auto / on / off. Node: devswarm.reconcileSweep. |
 | `devswarm_sup.set_reconcile_sec` | `7 entries` |  |  | Least time between two reconcile sweeps. Node: devswarm.reconcileSweepSec (floor 300). |
+| `devswarm_sup.set_witness` | `6 entries` |  |  | Run the non-acting Node witness for the native supervisor duties: on \| off. The witness only ever touches scratch copies; it costs one short Node run per duty per witness_every_ms. |
 | `devswarm_sup.status_escalated` | `escalated` |  |  | The verdict status after an escalation. |
 | `devswarm_sup.status_nudged` | `nudged` |  |  | The verdict status after a poke. |
 | `devswarm_sup.tick_budget_ms` | `900000` |  | ms | Most time one tick spends starting duties; a duty not yet started when it is spent waits for the next tick. Each duty is also bounded by its own timeout_ms. |
 | `devswarm_sup.tick_ms` | `60000` |  | ms | How often the scheduler job `devswarm_supervisor` runs while the mode is `engine` (Node's installer sweeps every 60-120 s). The job does nothing where DevSwarm is absent or the mode is witness. |
 | `devswarm_sup.verdict_fields` | `7 items` |  |  | The fields of a liveness verdict Node's recovery keeps across an update, in its order (PRESERVED_VERDICT_FIELDS); a nudge or an escalation rewrites the file as status + these + the new fields. |
 | `devswarm_sup.verdict_tmp_suffix` | `.tmp` |  |  | The suffix of the temporary file a verdict is written through (Node: writeVerdict). |
+| `devswarm_sup.witness_dir` | `.anti-hall/witness` |  |  | Where the witness builds its scratch mirrors, relative to the home directory. Each is removed when its comparison is done. |
+| `devswarm_sup.witness_every_ms` | `21600000` |  | ms | Least time between two witness comparisons of one duty. |
+| `devswarm_sup.witness_file` | `.anti-hall/logs/devswarm-sup-witness.ndjson` |  |  | The witness log, one JSON line per comparison (`match`: true / false, or null when Node could not run), relative to the home directory. |
+| `devswarm_sup.witness_keep_sample` | `50` |  |  | How many files still inside the retention window a witness mirror also holds, so a Node that removes too much shows up. |
+| `devswarm_sup.witness_max_files` | `50000` |  |  | Most files a witness mirror holds for one directory; a larger one is not mirrored and that comparison is skipped (never a partial one). |
+| `devswarm_sup.witness_off` | `off` |  |  | The word of devswarm_sup.witness that switches the witness off. |
+| `devswarm_sup.witness_state` | `.anti-hall/logs/devswarm-sup-witness-state.json` |  |  | When each duty was last compared (a JSON object duty -> ms), relative to the home directory. |
 
 ### devswarm_cli.toml / devswarm_cli
 

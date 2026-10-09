@@ -17,9 +17,11 @@
 // - an unreadable state file or log is the absent one (Node's try/catch parity): the duty is due, the log counts as not fresh
 // - an unparsable worker output is kept as text
 pub mod cli;
+pub mod housekeep;
 pub mod recover;
 pub mod tick;
 pub mod verdict;
+pub mod witness;
 
 use crate::checks::git::util::Settings;
 use crate::defaults;
@@ -78,4 +80,14 @@ pub fn node_running(home: &Path, now_ms: i64) -> Option<i64> {
     let newest = node_logs(home).iter().filter_map(|p| mtime_ms(p)).max()?;
     let age = (now_ms - newest).max(0);
     (age <= defaults::num("devswarm_sup.guard_ms") as i64).then_some(age)
+}
+
+/// Node's `supervisorEnabled(env)`: the hard kill switch (`DISABLE_ANTIHALL_DEVSWARM=1`) and the supervisor switch
+/// (`ANTIHALL_DEVSWARM_SUPERVISOR=off`) both read from the environment only.
+pub fn supervisor_enabled(st: &Settings) -> bool {
+    let var = |k: &str| st.env.get(defaults::text(k)).map(|v| v.trim().to_ascii_lowercase());
+    if var("devswarm_sup.env_disable").as_deref() == Some(defaults::text("devswarm_sup.env_disable_on")) {
+        return false;
+    }
+    var("devswarm_sup.env_supervisor").as_deref() != Some(defaults::text("devswarm_sup.env_supervisor_off"))
 }
