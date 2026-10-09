@@ -1244,3 +1244,79 @@ value = "  Jev: no answers yet"
 [devswarm_cli.sr_jev]
 doc = "The report line for one Jev integration."
 value = "  Jev {k}: {agree}/{n} agree with the deterministic result{rate} [{modes}]; Primary followed {fol} / overrode {ov}; progress after correction {ps} when Jev backed the warning, {pn} when not"
+
+# ---- sync-ui (lane l8c) -------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_sync_ui]
+doc = "The verb that reconciles a transcribed screenshot of the DevSwarm sidebar with the app database and anti-hall's records."
+value = "sync-ui"
+
+[devswarm_cli.sui_action]
+doc = "The `action` of a sync-ui result."
+value = "sync-ui"
+
+[devswarm_cli.flag_titles_json]
+doc = "The sync-ui flag naming a file with the sidebar titles, top to bottom."
+value = "titles-json"
+
+[devswarm_cli.flag_stdin]
+doc = "The sync-ui flag that reads the titles from standard input."
+value = "stdin"
+
+[devswarm_cli.flag_yes]
+doc = "The sync-ui flag that applies the plan instead of only showing it."
+value = "yes"
+
+[devswarm_cli.sui_msg_needs_titles]
+doc = "The sync-ui error when neither a titles file nor standard input was named."
+value = "sync-ui needs --titles-json <file> or --stdin (a JSON array of sidebar titles, top-to-bottom)"
+
+[devswarm_cli.sui_msg_bad_titles]
+doc = "The sync-ui error when the titles are not a list of strings."
+value = "titles must be a JSON array of strings (or {\"titles\": [...]})"
+
+[devswarm_cli.sui_ellipsis]
+doc = "The ellipsis character the sidebar ends a truncated title with."
+value = "…"
+
+[devswarm_cli.sui_dots]
+doc = "The three dots that stand for it once a title is normalised."
+value = "..."
+
+[devswarm_cli.sui_min_prefix]
+doc = "How many characters (UTF-16 units) the shorter of two titles must have for one to count as a prefix of the other."
+value = 12
+min = 1
+max = 200
+
+[devswarm_cli.sui_kind_visible_archived]
+doc = "The conflict kind: shown in the sidebar but archived in the app."
+value = "visible-but-app-archived"
+
+[devswarm_cli.sui_kind_marker_active]
+doc = "The conflict kind: archived in anti-hall but open in the app."
+value = "marker-but-app-active"
+
+[devswarm_cli.sui_app_archived]
+doc = "How the before table names a workspace archived (in the app, or by an anti-hall marker)."
+value = "archived"
+
+[devswarm_cli.sui_app_open]
+doc = "How the before table names a workspace open in the app."
+value = "open"
+
+[devswarm_cli.sui_app_closed]
+doc = "How the before table names a workspace the app has closed but not archived."
+value = "closed"
+
+[devswarm_cli.sui_ah_active]
+doc = "How the before table names a workspace anti-hall holds an active descriptor for."
+value = "active"
+
+[devswarm_cli.sui_setting_word]
+doc = "The word the screenshot-sync setting is named by: a settings tier or an environment variable that mentions it sends the verb to Node, which knows every way to resolve it."
+value = "screenshotsync"
+
+[devswarm_cli.sui_setting_files]
+doc = "The files under the anti-hall directory in which the screenshot-sync setting can be set."
+value = ["settings.json", "config.toml", "config.json"]

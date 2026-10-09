@@ -35,7 +35,7 @@ fn name_file(home: &Path, id: &str) -> PathBuf {
 }
 
 /// `readName(home, id)`: the cached title, if any.
-fn read_name(home: &Path, id: &str) -> Option<String> {
+pub(crate) fn read_name(home: &Path, id: &str) -> Option<String> {
     let bytes = std::fs::read(name_file(home, id)).ok()?;
     match OVal::parse(&String::from_utf8_lossy(&bytes))?.get("name") {
         Some(OVal::Str(t)) if !t.is_empty() => Some(t.clone()),

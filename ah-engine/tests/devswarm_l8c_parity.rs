@@ -562,3 +562,97 @@ fn supervision_report_matches_node() {
     ];
     check(&fx, &cases, &[], 15, 4);
 }
+
+const CORPUS_DIRS: &[&str] = &[".anti-hall", ".claude", ".devswarm", "appdata"];
+
+fn corpus(root: &Path, name: &str, seed: u32, now: i64) -> PathBuf {
+    let home = root.join(name);
+    let sup = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/dssup_support");
+    let o = Command::new("node").arg(sup.join("as_corpus.js")).arg(&home).arg(seed.to_string()).arg(now.to_string()).arg("small").output().unwrap();
+    assert!(o.status.success(), "corpus: {}", String::from_utf8_lossy(&o.stderr));
+    home
+}
+
+/// Node's own sync, run once on a copy of the corpus' state, so the next sync has nothing to mark or retire.
+fn settle(home: &Path, now: i64) {
+    let sup = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/dssup_support");
+    let db = home.join("appdata/DevSwarm/devswarm.db");
+    let o = Command::new("node").arg(sup.join("as_reference.js")).arg(home).arg(now.to_string()).arg(&db).output().unwrap();
+    assert!(o.status.success(), "settle: {}", String::from_utf8_lossy(&o.stderr));
+}
+
+// ---- sync-ui -------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn sync_ui_matches_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8csui");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let settled = corpus(&fx.root, "settled", 7, now);
+    settle(&settled, now - 1_000);
+    let conn = rusqlite::Connection::open_with_flags(settled.join("appdata/DevSwarm/devswarm.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let mut labels: Vec<String> = Vec::new();
+    {
+        let mut st = conn.prepare("SELECT label FROM builders WHERE builderType <> 'primary' AND label IS NOT NULL ORDER BY rank IS NULL, rank, id").unwrap();
+        let mut rows = st.query([]).unwrap();
+        while let Some(r) = rows.next().unwrap() {
+            labels.push(r.get::<_, String>(0).unwrap());
+        }
+    }
+    assert!(labels.len() >= 8, "the corpus has builders: {}", labels.len());
+    let json = |v: &[String]| serde_json::to_string(v).unwrap();
+    let write = |name: &str, body: &str| -> String {
+        let p = fx.root.join(name);
+        fs::write(&p, body).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let exact: Vec<String> = labels.iter().take(6).cloned().collect();
+    let trunc: Vec<String> = labels.iter().take(6).map(|l| format!("{}\u{2026}", l.chars().take(14).collect::<String>())).collect();
+    let upper: Vec<String> = labels.iter().take(4).map(|l| format!("  {}  ", l.to_uppercase())).collect();
+    let mixed: Vec<String> = vec!["nothing matches this title at all".into(), "   ".into(), labels[1].clone(), labels[1].clone(), "Ship it".into(), "Fix the gate...".into()];
+    let f_exact = write("t-exact.json", &json(&exact));
+    let f_trunc = write("t-trunc.json", &json(&trunc));
+    let f_upper = write("t-upper.json", &json(&upper));
+    let f_mixed = write("t-mixed.json", &json(&mixed));
+    let f_wrapped = write("t-wrapped.json", &format!("{{\"titles\":{}}}", json(&exact)));
+    let f_empty = write("t-empty.json", "[]");
+    let f_nonstring = write("t-nonstring.json", "[\"a\", 5]");
+    let f_garbage = write("t-garbage.json", "this is not json");
+    let f_scalar = write("t-scalar.json", "5");
+    let f_notitles = write("t-notitles.json", "{\"names\":[]}");
+    let missing = fx.root.join("t-missing.json").to_string_lossy().to_string();
+    let db = "{HOME}/appdata/DevSwarm/devswarm.db";
+    let su = |name: &str, argv: &[&str], native: bool| lc(name, argv, "nongit", native, "SyncUi").env("ANTIHALL_DEVSWARM_APP_DB", db);
+    let cases = vec![
+        su("sui-exact", &["sync-ui", "--titles-json", &f_exact], true),
+        su("sui-truncated-with-an-ellipsis", &["sync-ui", "--titles-json", &f_trunc], true),
+        su("sui-upper-case-and-padding", &["sync-ui", "--titles-json", &f_upper], true),
+        su("sui-unmatched-duplicates-and-short", &["sync-ui", "--titles-json", &f_mixed], true),
+        su("sui-wrapped-titles", &["sync-ui", "--titles-json", &f_wrapped], true),
+        su("sui-no-titles", &["sync-ui", "--titles-json", &f_empty], true),
+        su("sui-titles-json-equals", &["sync-ui", &format!("--titles-json={f_exact}")], true),
+        su("sui-non-string-title", &["sync-ui", "--titles-json", &f_nonstring], true),
+        su("sui-garbage", &["sync-ui", "--titles-json", &f_garbage], true),
+        su("sui-scalar", &["sync-ui", "--titles-json", &f_scalar], true),
+        su("sui-object-without-titles", &["sync-ui", "--titles-json", &f_notitles], true),
+        su("sui-needs-a-source", &["sync-ui"], true),
+        su("sui-bare-titles-flag", &["sync-ui", "--titles-json"], true),
+        lc("sui-db-off", &["sync-ui", "--titles-json", &f_mixed], "nongit", true, "SyncUi").env("ANTIHALL_DEVSWARM_APP_DB", "off"),
+        lc("sui-db-missing", &["sync-ui", "--titles-json", &f_exact], "nongit", true, "SyncUi").env("ANTIHALL_DEVSWARM_APP_DB", "{HOME}/nothing/here.db"),
+        su("sui-apply-is-node", &["sync-ui", "--titles-json", &f_exact, "--yes"], false),
+        su("sui-stdin-is-node", &["sync-ui", "--stdin"], false),
+        su("sui-missing-file-is-node", &["sync-ui", "--titles-json", &missing], false),
+        su("sui-setting-in-the-environment-is-node", &["sync-ui", "--titles-json", &f_exact], false).env("ANTIHALL_DEVSWARM_SCREENSHOT_SYNC", "false"),
+    ];
+    // the titles are not all unmatched: Node itself matches the exact and the truncated sets
+    let dbp = settled.join("appdata/DevSwarm/devswarm.db").to_string_lossy().to_string();
+    for f in [&f_exact, &f_trunc] {
+        let argv: Vec<String> = vec!["sync-ui".into(), "--titles-json".into(), f.clone()];
+        let r = node_cli(&settled, &fx.root, &argv, now, &[("ANTIHALL_DEVSWARM_APP_DB", dbp.as_str())]);
+        assert!(r.stdout.contains("\"matched\":[{"), "the titles match builders: {}", r.stdout);
+    }
+    check_from(&fx, &cases, &[], &settled, Some(CORPUS_DIRS), now, 15, 4);
+}

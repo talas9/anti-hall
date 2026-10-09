@@ -36,6 +36,8 @@ pub enum Ext {
     Nudge,
     /// `supervision-report [--days N] [--json]` (lane l8c).
     SupervisionReport,
+    /// `sync-ui --titles-json F` (lane l8c).
+    SyncUi,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -60,6 +62,8 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Nudge)
     } else if is("devswarm_cli.verb_supervision_report") {
         Some(Ext::SupervisionReport)
+    } else if is("devswarm_cli.verb_sync_ui") {
+        Some(Ext::SyncUi)
     } else {
         None
     }
@@ -82,5 +86,6 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::ArchiveRequest => super::actverbs::archive_request(inv, a),
         Ext::Nudge => super::actverbs::nudge(inv, a),
         Ext::SupervisionReport => super::reportverbs::supervision_report(inv, a),
+        Ext::SyncUi => super::reportverbs::sync_ui(inv, a),
     }
 }
