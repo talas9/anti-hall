@@ -95,6 +95,10 @@ pub fn run_with(p: &Parsed, env: &dyn Fn(&str) -> Option<String>) -> i32 {
         out(p, crate::dssup::cli::status(&home, &st, crate::dssup::owner(), crate::health::now_ms() as i64));
         return 0;
     }
+    if verb == "ingest" {
+        out(p, crate::dssup::ingest::status(&home, &state_dir, crate::health::now_ms() as i64));
+        return 0;
+    }
     if verb == "recover" {
         let (report, code) = crate::dssup::cli::recover(rest, &RequestEnv::capture(), &System::configured());
         out(p, report);

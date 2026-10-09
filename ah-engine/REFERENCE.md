@@ -14,7 +14,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `check` | `<name>` | yes | implemented | Run one built-in check in-process on a hook payload from stdin (used by the parity harness). |
 | `config` | `[validate <file>\|heal]` | no | implemented | Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the settings they lack from the pristine copy, also in a version-controlled checkout); versions, rollback and export are planned (D18, they need the config database). |
 | `ctl` | `<ping\|reload\|stop\|status>` | no | implemented | Send a control verb to the daemon: ping, reload, stop or status. |
-| `devswarm` | `<status\|line\|supervisor\|recover --id <ws> --request <id>\|advisory --session <id>\|archive --id <ws> --request <id>\|plan-prune --older-than <days>\|prune --confirm-ids <ids> --plan <nonce>>` | no | implemented | The DevSwarm realtime state and owner actions (lane dswire). `status` and `line` print the live workspace state and its statusline segment; `advisory --session <id>` prints the changes that session has not seen; `archive --id <ws> --request <id>`, `plan-prune --older-than <days>` and `prune --confirm-ids <a,b> --plan <nonce>` run the hivecontrol actions at the owner's request, with Node's preconditions, ledger and confirmations. `supervisor` prints who owns the supervisor duties (devswarm_sup.mode), whether the Node supervisor is still running and each duty's gate; `recover --id <ws> --request <id>` kills and resumes ONE session on demand (never from a sweep): the engine refuses an automated caller, an unsafe id, a repeated request, a workspace without a worktree and session and one already recovered the most times allowed, then Node's devswarm-recover.js `run` does the kill with its exactly-one-target, identity and working-directory confirmations. Roles (devswarm_wire.role_matrix): reads are open; the acting verbs are for the main session only. `create` and `merge` are left to scripts/devswarm.js (exit 75). Inert (exit 64) where DevSwarm is absent. |
+| `devswarm` | `<status\|line\|supervisor\|ingest\|recover --id <ws> --request <id>\|advisory --session <id>\|archive --id <ws> --request <id>\|plan-prune --older-than <days>\|prune --confirm-ids <ids> --plan <nonce>>` | no | implemented | The DevSwarm realtime state and owner actions (lane dswire). `status` and `line` print the live workspace state and its statusline segment; `advisory --session <id>` prints the changes that session has not seen; `archive --id <ws> --request <id>`, `plan-prune --older-than <days>` and `prune --confirm-ids <a,b> --plan <nonce>` run the hivecontrol actions at the owner's request, with Node's preconditions, ledger and confirmations. `supervisor` prints who owns the supervisor duties (devswarm_sup.mode), whether the Node supervisor is still running and each duty's gate; `ingest` prints who drains the native queue (devswarm_ingest.mode), the projects and each project's lock and heartbeat (read-only); `recover --id <ws> --request <id>` kills and resumes ONE session on demand (never from a sweep): the engine refuses an automated caller, an unsafe id, a repeated request, a workspace without a worktree and session and one already recovered the most times allowed, then Node's devswarm-recover.js `run` does the kill with its exactly-one-target, identity and working-directory confirmations. Roles (devswarm_wire.role_matrix): reads are open; the acting verbs are for the main session only. `create` and `merge` are left to scripts/devswarm.js (exit 75). Inert (exit 64) where DevSwarm is absent. |
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
 | `doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON. |
 | `gen-hooks` | `--host claude\|codex [--kind hooks\|registry\|list\|map]` | yes | implemented | Print a file generated from the dispatch table (D87): the thin hooks.json (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map, for one host. |
@@ -4773,12 +4773,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_wire.msg_separator` | `; ` |  |  | Between two changes in an advisory. |
 | `devswarm_wire.msg_unknown_verb` | `unknown devswarm verb {verb}` |  |  | Printed for an unknown verb. {verb}. |
 | `devswarm_wire.nudge_state_file` | `rt-nudges.json` |  |  | The engine's own record of pokes made (attempts, last time, escalated), under the engine state directory. |
-| `devswarm_wire.owner_verbs` | `10 items` |  |  | The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory and supervisor read the state; archive, plan-prune, prune and recover (kill and resume one session; Node's recovery code does the kill after the engine's refusals) act at the owner's request. `create` and `merge` answer deferred (the Node verbs keep them, because the engine cannot reproduce their source-freshness and merge-gate checks yet). |
+| `devswarm_wire.owner_verbs` | `11 items` |  |  | The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory, supervisor and ingest read the state; archive, plan-prune, prune and recover (kill and resume one session; Node's recovery code does the kill after the engine's refusals) act at the owner's request. `create` and `merge` answer deferred (the Node verbs keep them, because the engine cannot reproduce their source-freshness and merge-gate checks yet). |
 | `devswarm_wire.plan_flag` | `--plan` |  |  | The flag of prune that names the plan. |
 | `devswarm_wire.request_flag` | `--request` |  |  | The flag that carries an owner request's own id (the idempotency key's last part). |
 | `devswarm_wire.role_child_env` | `ANTIHALL_DEVSWARM_SOURCE_BRANCH` |  |  | The environment variable whose non-blank value marks a DevSwarm workspace child. |
 | `devswarm_wire.role_codex_env` | `` |  |  | Environment variables whose presence marks a Codex session (empty: no Codex marker is known). |
-| `devswarm_wire.role_matrix` | `10 entries` |  |  | Which roles may run each verb (the permission matrix). Reads are open to every role; the verbs that act are for the main session only. |
+| `devswarm_wire.role_matrix` | `11 entries` |  |  | Which roles may run each verb (the permission matrix). Reads are open to every role; the verbs that act are for the main session only. |
 | `devswarm_wire.role_words` | `main, child, subagent, codex` |  |  | The roles a caller can have, in this order: main (the interactive main session), child (a DevSwarm workspace child), subagent (a spawned agent or any automated caller), codex (a Codex session). |
 | `devswarm_wire.session_flag` | `--session` |  |  | The flag that names the session an advisory is for. |
 | `devswarm_wire.sql_last_selected` | `SELECT {col} FROM {table} WHERE {id} = ?1` |  |  | The statement that reads when a workspace was last selected in the app. {col} {table} {id} are the column, table and id column names. |
@@ -4880,6 +4880,130 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.witness_max_files` | `50000` |  |  | Most files a witness mirror holds for one directory; a larger one is not mirrored and that comparison is skipped (never a partial one). |
 | `devswarm_sup.witness_off` | `off` |  |  | The word of devswarm_sup.witness that switches the witness off. |
 | `devswarm_sup.witness_state` | `.anti-hall/logs/devswarm-sup-witness-state.json` |  |  | When each duty was last compared (a JSON object duty -> ms), relative to the home directory. |
+
+### devswarm_ingest.toml / devswarm_ingest
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_ingest.absorbed_suffix` | `.absorbed` |  |  | The suffix a spill file gets once it is back in the WAL (kept, never deleted). |
+| `devswarm_ingest.backoff_base_ms` | `2000` |  | ms | The base of both backoff ladders: a transient failure waits base x 2^(n-1), a configuration failure base x the n-th step. |
+| `devswarm_ingest.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a transient failure's backoff, before transient_cap_ms. |
+| `devswarm_ingest.beat_every_ms` | `30000` |  | ms | While the drain waits, how often it re-stamps its lock and heartbeat (consumers judge a daemon dead after 3 minutes). |
+| `devswarm_ingest.body_key` | `message` |  |  | The message field that holds its text. |
+| `devswarm_ingest.code_timeout` | `ETIMEDOUT` |  |  | The error code of a monitor call the engine killed at its hard limit. |
+| `devswarm_ingest.container_keys` | `messages, data` |  |  | The object keys that hold a batch's message list, tried in order. |
+| `devswarm_ingest.created_key` | `createdAt` |  |  | The message field that holds its creation time. |
+| `devswarm_ingest.dir_adopted` | `adopted` |  |  | Where a prior reader key's WAL is claimed to, under the WAL directory. |
+| `devswarm_ingest.dir_archive` | `archive` |  |  | Where a full, fully-processed WAL is renamed to, under the WAL directory (kept, never deleted). |
+| `devswarm_ingest.dir_heartbeats` | `heartbeats` |  |  | The heartbeat directory, relative to the DevSwarm state directory. |
+| `devswarm_ingest.dir_quarantine` | `quarantine` |  |  | Where a batch of no known shape is preserved, relative to the DevSwarm state directory. |
+| `devswarm_ingest.dir_wal` | `wal` |  |  | The delivery write-ahead log directory, relative to the DevSwarm state directory. |
+| `devswarm_ingest.dir_wal_spill` | `wal-spill` |  |  | Where bytes go when the WAL is not writable, relative to the DevSwarm state directory. |
+| `devswarm_ingest.discover_max_age_ms` | `900000` |  | ms | A Node ingest heartbeat written within this long names a project the Node daemon serves, so the engine serves it after the cutover. |
+| `devswarm_ingest.discover_ms` | `60000` |  | ms | How often the engine looks for projects it does not drain yet. |
+| `devswarm_ingest.entry_rand_len` | `8` |  |  | How many random base-36 characters end a WAL entry id (`<time>-<pid>-<seq>-<random>`). |
+| `devswarm_ingest.env_hivecontrol` | `ANTIHALL_DEVSWARM_HIVECONTROL` |  |  | The environment variable that names the hivecontrol executable (the installer baked it into the unit; the engine reads it too). |
+| `devswarm_ingest.env_path` | `PATH` |  |  | The environment variable the heartbeat records the daemon's PATH from. |
+| `devswarm_ingest.flag_interval` | `-i` |  |  | The monitor option for the poll interval. |
+| `devswarm_ingest.flag_timeout` | `-t` |  |  | The monitor option for the long-poll timeout. |
+| `devswarm_ingest.git_worktree_args` | `worktree, list, --porcelain` |  |  | The words after git of the command that lists a repo's worktrees. |
+| `devswarm_ingest.hard_margin_ms` | `10000` |  | ms | How long beyond its own -t a monitor call may run before the engine kills its own child (a hivecontrol that ignores its timeout must not park the drain). What it printed before the kill is kept. |
+| `devswarm_ingest.hash_fields` | `fromBranch, toBranch, message, status, createdAt` |  |  | The fields of a message that make its dedupe hash, in order (the partition id comes first). |
+| `devswarm_ingest.hash_prefix` | `native:` |  |  | The start of a native message's dedupe hash. |
+| `devswarm_ingest.hb_error_chars` | `300` |  |  | Most characters of the last monitor error the heartbeat keeps. |
+| `devswarm_ingest.hb_path_chars` | `1024` |  |  | Most characters of the daemon's PATH the heartbeat keeps. |
+| `devswarm_ingest.hb_prefix` | `ingest-` |  |  | The start of a drain's heartbeat file name (followed by the repo key and .json). Node's file. |
+| `devswarm_ingest.hc_cache` | `hivecontrol-path.json` |  |  | The path cache the installer writes, relative to the DevSwarm state directory. |
+| `devswarm_ingest.hc_cache_key` | `hivecontrol` |  |  | The key of the path cache that holds the executable. |
+| `devswarm_ingest.interval_sec` | `3` |  | s | The -i of every monitor call, and the least time between two calls after a successful one (Node: DEFAULT_MONITOR_INTERVAL_SEC). |
+| `devswarm_ingest.js_object_text` | `[object Object]` |  |  | What JavaScript's String() makes of an object. |
+| `devswarm_ingest.json_suffix` | `.json` |  |  | The suffix of a JSON file. |
+| `devswarm_ingest.last_resort_hex` | `16` |  |  | How many hex digits of the WAL path's hash name its last-resort files. |
+| `devswarm_ingest.last_resort_prefix` | `anti-hall-wal-lastresort-` |  |  | The start of the file name of the last-resort copy of a batch (written to the temporary directory when both the WAL and the spill failed). |
+| `devswarm_ingest.legacy_lock_prefix` | `ingest-` |  |  | The start of a legacy per-worktree consumer's lock file name (followed by the worktree hash). |
+| `devswarm_ingest.legacy_probe` | `1` |  |  | 1: do not drain a repo while a legacy per-worktree ingest consumer of it is alive (the reap-before-drain probe; it removes nothing). 0: skip the probe, for after the Node units are uninstalled. |
+| `devswarm_ingest.lock_prefix` | `ingest-project-` |  |  | The start of a project's lock file name (followed by the repo key and the lock suffix), relative to the DevSwarm locks directory. Node's file. |
+| `devswarm_ingest.lock_retry_ms` | `30000` |  | ms | How long the drain of a project waits before trying the lock (and the other start conditions) again after a refusal. |
+| `devswarm_ingest.lock_stale_ms` | `900000` |  | ms | A lock record older than this whose holder is not a live local process is taken over (Node: INGEST_LOCK_STALE_MS). A live holder's lock is never taken over. |
+| `devswarm_ingest.log_file` | `.anti-hall/devswarm-ingest.log` |  |  | The ingest log, relative to the home directory (the file the Node daemon's unit writes its output to); one `[ISO time] line` each. |
+| `devswarm_ingest.max_pace_ms` | `300000` |  | ms | The ceiling of the pause after a successful call, whatever interval_sec says. |
+| `devswarm_ingest.message_keys` | `message, fromBranch, toBranch` |  |  | An object with any of these keys is one message. |
+| `devswarm_ingest.mode` | `witness` |  |  | Who drains the DevSwarm native queue: witness (the Node ingest daemons do; the engine starts nothing) \| engine (the engine's daemon runs one drain per project). Anything else reads as witness, so a typo never starts a second consumer. The engine never edits any settings file or any launchd / systemd unit. |
+| `devswarm_ingest.mode_words` | `witness, engine` |  |  | The words of devswarm_ingest.mode, in the order witness, engine. |
+| `devswarm_ingest.monitor_args` | `workspace, monitor` |  |  | The words after the executable of a monitor call. |
+| `devswarm_ingest.msg_exit_no_stderr` | `monitor {bin} exited {status} (no stderr output)` |  |  | The note of a monitor child that exited non-zero with no stderr. {bin} {status}. |
+| `devswarm_ingest.msg_exit_stderr` | `monitor {bin} exited {status} - stderr: {tail}` |  |  | The note of a monitor child that exited non-zero. {bin} {status} {tail}. |
+| `devswarm_ingest.msg_hb_transient` | `WARN: ingest lock heartbeat failed transiently (not lock loss) - will keep re...` |  |  | Logged once when re-stamping the lock failed for a reason that is not loss. |
+| `devswarm_ingest.msg_hc_unusable` | `WARN: configured hivecontrol binary is not a readable file: {bin} (source: {s...` |  |  | Logged once when the configured hivecontrol path is not a file. {bin} {src}. |
+| `devswarm_ingest.msg_import_refused` | `store refused the batch ({why}); kept pending in the delivery WAL: {kept}` |  |  | The log line when the store refused a batch. {why} {kept}. |
+| `devswarm_ingest.msg_legacy_alive` | `legacy per-worktree ingest holder(s) still alive for this repo - backing off ...` |  |  | Why a drain did not start: a legacy per-worktree consumer of the repo is alive. {holders}. |
+| `devswarm_ingest.msg_lock_held` | `another monitor consumer is already running (ingest lock held)` |  |  | Why a drain did not start: another consumer holds the project's lock. |
+| `devswarm_ingest.msg_lock_lost` | `ingest drain stopping: the lock was reclaimed by another consumer (lost heart...` |  |  | The log line when the project's lock was found taken by another consumer. |
+| `devswarm_ingest.msg_log_permanent` | `monitor spawn failing with a CONFIGURATION error ({code}): {error} - {n} cons...` |  |  | The log line of a configuration monitor failure. {code} {n} {since} {backoff} {error}. |
+| `devswarm_ingest.msg_log_recovered` | `monitor spawn recovered after {n} consecutive configuration failure(s)` |  |  | The log line when the monitor works again after configuration failures. {n}. |
+| `devswarm_ingest.msg_log_transient` | `monitor call failed (transient): {error}` |  |  | The log line of a transient monitor failure. {error}. |
+| `devswarm_ingest.msg_loss` | `hivecontrol monitor returned {bytes} non-empty byte(s) of an unrecognised sha...` |  |  | The log line for a batch of no known shape. {bytes} {where} {suppressed}. |
+| `devswarm_ingest.msg_no_detail` | `monitor run failed (no error detail)` |  |  | The error text of a failed monitor call that carried none. |
+| `devswarm_ingest.msg_no_store` | `the store is not open` |  |  | The refusal when the store is not open. |
+| `devswarm_ingest.msg_output_truncated` | `WARN: monitor output exceeded the cap ({bytes} bytes kept) - the excess is un...` |  |  | The log line when a monitor call printed more than could be kept. {bytes}. |
+| `devswarm_ingest.msg_quarantine_capped` | `not written (quarantine directory at its file cap; existing files preserved)` |  |  | What the loss line says when the quarantine directory is full. |
+| `devswarm_ingest.msg_quarantine_failed` | `quarantine write failed` |  |  | What the loss line says when the quarantine file could not be written. |
+| `devswarm_ingest.msg_refused_prefix` | `ingest drain not started: ` |  |  | The start of the log line when a drain does not start. |
+| `devswarm_ingest.msg_register_failed` | `WARN: self-registration failed (workspaceId={ws}): {err}` |  |  | The log line when the Primary's registry row could not be written. {ws} {err}. |
+| `devswarm_ingest.msg_replay_deferred` | `WARN: delivery WAL replay deferred ({why}) - batch kept pending` |  |  | The log line when a WAL replay could not import a batch. {why}. |
+| `devswarm_ingest.msg_spawn_failed` | `spawn {bin} {code}` |  |  | The error of a monitor child that could not be started. {bin} {code}. |
+| `devswarm_ingest.msg_spill_no_id` | `spill file has no entry id` |  |  | The error of a spill file without an entry id. |
+| `devswarm_ingest.msg_started` | `ingest drain started (engine), worktree={worktree}, workspaceId={ws}, hivecon...` |  |  | The log line of a started drain. {worktree} {ws} {bin} {src}. |
+| `devswarm_ingest.msg_store_unavailable` | `the project's store is not available to the engine ({why})` |  |  | Why a drain did not start: the store cannot be written by the engine. {why}. |
+| `devswarm_ingest.msg_summary_deferred` | `summary refresh deferred ({why}); the next refresh by any writer updates it` |  |  | The log line when the engine could not refresh the summary after an import. {why}. |
+| `devswarm_ingest.msg_timeout` | `monitor {bin} ETIMEDOUT after {ms}ms` |  |  | The error of a monitor child killed at its hard limit. {bin} {ms}. |
+| `devswarm_ingest.msg_truncated_at` | `\n...[truncated at {n} bytes]` |  |  | Appended to a quarantine file that was cut. {n}. |
+| `devswarm_ingest.msg_wal_blocked` | `WARN: delivery WAL not writable ({why}) at {file} - destructive monitor read ...` |  |  | The log line when the WAL cannot be written before a read. {why} {file}. |
+| `devswarm_ingest.msg_wal_both_failed` | `anti-hall delivery WAL: WAL AND spill write failed for {file} ({err}) - raw b...` |  |  | Printed to stderr when neither the WAL nor the spill took a batch. {file} {err} {raw}. |
+| `devswarm_ingest.msg_wal_spill_blocked` | `WARN: delivery WAL not writable ({err}) - spilled batch(es) kept in {dir}; no...` |  |  | The log line when spilled batches could not go back into the WAL. {err} {dir}. |
+| `devswarm_ingest.msg_wal_unreadable` | `WARN: delivery WAL unreadable ({err}) at {file} - no new destructive monitor ...` |  |  | The log line when the WAL cannot be read. {err} {file}. |
+| `devswarm_ingest.msg_wal_write_failed` | `WARN: delivery WAL write failed ({what}) - the batch is imported from memory;...` |  |  | The log line when a batch could not be put in the WAL. {what}. |
+| `devswarm_ingest.ndjson_suffix` | `.ndjson` |  |  | The suffix of an NDJSON file. |
+| `devswarm_ingest.output_cap_bytes` | `67108864` |  |  | Most bytes of one monitor call's output kept. The read is destructive, so this is far above any real batch; a batch that still exceeds it is logged, quarantined and kept whole in the WAL only up to this size. |
+| `devswarm_ingest.permanent_cap_ms` | `300000` |  | ms | The longest backoff after a configuration failure. |
+| `devswarm_ingest.permanent_codes` | `ENOENT, EACCES, ENOTDIR` |  |  | The error codes that are CONFIGURATION faults (retrying every few seconds cannot fix them): the breaker escalates the backoff and logs only on a change. |
+| `devswarm_ingest.permanent_steps` | `1, 2.5, 15, 60, 150` |  |  | Multipliers of backoff_base_ms for the successive configuration failures (the last one repeats). |
+| `devswarm_ingest.plugin_json` | `.claude-plugin/plugin.json` |  |  | The plugin manifest the heartbeat's codeVersion is read from, relative to the plugin root. |
+| `devswarm_ingest.porcelain_worktree` | `worktree ` |  |  | The start of a worktree line in that listing. |
+| `devswarm_ingest.projects` | `` |  |  | Extra projects to drain, as paths of a git repository separated by the character in projects_separator (any worktree of it will do). Projects with a fresh Node ingest heartbeat and the ones an earlier run remembered are drained too. |
+| `devswarm_ingest.projects_separator` | `:` |  |  | The character that separates paths in devswarm_ingest.projects. |
+| `devswarm_ingest.quarantine_max_bytes` | `65536` |  |  | The most of a lost batch one quarantine file keeps (the WAL keeps it whole). |
+| `devswarm_ingest.quarantine_max_files` | `20` |  |  | The quarantine directory takes no more files than this (an existing file is never pruned). |
+| `devswarm_ingest.quarantine_prefix` | `lost-batch-` |  |  | The start of a quarantine file name. |
+| `devswarm_ingest.quarantine_rate_ms` | `30000` |  | ms | At most one quarantine write and log line per this long; the rest are counted into the next. |
+| `devswarm_ingest.quarantine_suffix` | `.raw` |  |  | The suffix of a quarantine file. |
+| `devswarm_ingest.reason_unparseable` | `unparseable` |  |  | The WAL closing reason of a batch of no known shape. |
+| `devswarm_ingest.remembered` | `devswarm-ingest-projects.json` |  |  | The projects the engine has drained or found, a JSON list of paths, in the engine state directory. Nothing is ever removed from it. |
+| `devswarm_ingest.rollup_ms` | `900000` |  | ms | Once the configuration-failure ladder is capped, one 'still failing' line at most this often. |
+| `devswarm_ingest.scrub_env_prefixes` | `DEVSWARM_` |  |  | Environment variables whose name starts with one of these are removed from the monitor child, so a daemon started from inside a workspace never reads the queue as that workspace. |
+| `devswarm_ingest.set_timeout_sec` | `5 entries` |  |  | The -t of every monitor call: it long-polls at most this long, then exits (an empty exit is a quiet poll, not an error). Node: devswarm.monitorTimeoutSec. A value that is not a positive number reads as the default. |
+| `devswarm_ingest.spawn_error_codes` | `2 entries, 2 entries, 2 entries` |  |  | How the operating system's words for a failed spawn map to the configuration-fault codes of the breaker: the first entry whose text the error contains. |
+| `devswarm_ingest.spill_probe` | `.probe` |  |  | The name of the file the spill directory is probed with (nothing is written to it). |
+| `devswarm_ingest.src_cache` | `cache` |  |  | The heartbeat's word for an executable taken from the path cache. |
+| `devswarm_ingest.src_env` | `env` |  |  | The heartbeat's word for an executable named by the environment variable. |
+| `devswarm_ingest.src_path` | `path` |  |  | The heartbeat's word for a bare executable name left to the OS to resolve. |
+| `devswarm_ingest.status_scratch` | `ah-ingest-status-` |  |  | The start of the temporary directory the read-only status verb uses so it remembers nothing. |
+| `devswarm_ingest.stderr_tail_chars` | `2048` |  |  | Most characters of a failed monitor call's stderr kept in the error. |
+| `devswarm_ingest.stop_poll_ms` | `200` |  | ms | How often a waiting drain checks whether it must stop. |
+| `devswarm_ingest.tmp_suffix` | `.tmp` |  |  | The suffix of the temporary file a heartbeat is written through. |
+| `devswarm_ingest.transient_cap_ms` | `300000` |  | ms | The longest backoff after a transient failure. |
+| `devswarm_ingest.wal_kind` | `monitor` |  |  | The WAL kind of the monitor reader (the file is `<kind>-<repo key>.ndjson`). |
+| `devswarm_ingest.wal_prefix_spill` | `spill ` |  |  | The text before the reason when the spill directory cannot be written. |
+| `devswarm_ingest.wal_prefix_wal` | `WAL ` |  |  | The text before the reason when the WAL itself cannot be written. |
+| `devswarm_ingest.wal_rotate_bytes` | `1048576` |  |  | A WAL at least this big with nothing pending is renamed into the archive. |
+| `devswarm_ingest.wal_suffix` | `.ndjson` |  |  | The suffix of a WAL file. |
+| `devswarm_ingest.witness_every_ms` | `21600000` |  | ms | Least time between two witness comparisons of one project. |
+| `devswarm_ingest.witness_file` | `.anti-hall/logs/devswarm-ingest-witness.ndjson` |  |  | The witness log, one JSON line per comparison, relative to the home directory. |
+| `devswarm_ingest.witness_max_bytes` | `8388608` |  |  | The mirror of one project stops growing at this size until a comparison consumes it. |
+| `devswarm_ingest.witness_prefix` | `ingest-` |  |  | The start of a project's mirror file name, under the witness directory (devswarm_sup.witness_dir). |
+| `devswarm_ingest.witness_scratch` | `ingest-scratch-` |  |  | The start of the scratch HOME's name for one comparison. |
+| `devswarm_ingest.witness_snippet` | `const fs=require("fs");process.env.HOME=process.argv[2];const root=process.ar...` |  |  | What Node runs for the witness: ingestPayload over each mirrored batch against a scratch store, printing per batch {total, lossy, rows: [{hash, ts, body}]}. Arguments: the plugin root, the scratch HOME, the Primary's id, the repo key, the mirror file, the worktree. |
+| `devswarm_ingest.witness_timeout_ms` | `120000` |  | ms | Bound of one witness run. |
 
 ### realtime.toml / realtime
 

@@ -616,7 +616,7 @@ fn the_real_runner_reports_success_failure_hang_and_missing() {
         std::fs::set_permissions(&p, perm).unwrap();
         p.to_string_lossy().into_owned()
     };
-    let spec = |ms: u64| RunSpec { bin: None, args: vec!["workspace".into(), "archive".into(), "i".into()], cwd: None, timeout_ms: ms };
+    let spec = |ms: u64| RunSpec { bin: None, args: vec!["workspace".into(), "archive".into(), "i".into()], cwd: None, timeout_ms: ms, ..RunSpec::default() };
     let okb = System { hc: script("ok", "echo '{\"archived\":true}'") };
     let r = okb.run(&spec(5000));
     assert!(r.ok && r.stdout.contains("archived"), "{r:?}");

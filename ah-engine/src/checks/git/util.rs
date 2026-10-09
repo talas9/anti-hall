@@ -220,6 +220,7 @@ pub fn run_capture(
 // settings + skip.json (read per call; tiny files)
 
 /// Process environment plus home, read once per request; every switch the Node guard consults resolves through it.
+#[derive(Clone)]
 pub struct Settings {
     /// The home directory (`HOME`, else `USERPROFILE`).
     pub home: String,

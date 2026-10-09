@@ -171,8 +171,8 @@ max = 100000
 # ---- owner verbs and roles --------------------------------------------------------------------------------------------------
 
 [devswarm_wire.owner_verbs]
-doc = "The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory and supervisor read the state; archive, plan-prune, prune and recover (kill and resume one session; Node's recovery code does the kill after the engine's refusals) act at the owner's request. `create` and `merge` answer deferred (the Node verbs keep them, because the engine cannot reproduce their source-freshness and merge-gate checks yet)."
-value = ["status", "line", "advisory", "supervisor", "archive", "plan-prune", "prune", "recover", "create", "merge"]
+doc = "The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory, supervisor and ingest read the state; archive, plan-prune, prune and recover (kill and resume one session; Node's recovery code does the kill after the engine's refusals) act at the owner's request. `create` and `merge` answer deferred (the Node verbs keep them, because the engine cannot reproduce their source-freshness and merge-gate checks yet)."
+value = ["status", "line", "advisory", "supervisor", "ingest", "archive", "plan-prune", "prune", "recover", "create", "merge"]
 
 [devswarm_wire.role_words]
 doc = "The roles a caller can have, in this order: main (the interactive main session), child (a DevSwarm workspace child), subagent (a spawned agent or any automated caller), codex (a Codex session)."
@@ -180,7 +180,7 @@ value = ["main", "child", "subagent", "codex"]
 
 [devswarm_wire.role_matrix]
 doc = "Which roles may run each verb (the permission matrix). Reads are open to every role; the verbs that act are for the main session only."
-value = { status = ["main", "child", "subagent", "codex"], line = ["main", "child", "subagent", "codex"], advisory = ["main", "child", "subagent", "codex"], supervisor = ["main", "child", "subagent", "codex"], archive = ["main"], plan-prune = ["main"], prune = ["main"], recover = ["main"], create = ["main"], merge = ["main"] }
+value = { status = ["main", "child", "subagent", "codex"], line = ["main", "child", "subagent", "codex"], advisory = ["main", "child", "subagent", "codex"], supervisor = ["main", "child", "subagent", "codex"], ingest = ["main", "child", "subagent", "codex"], archive = ["main"], plan-prune = ["main"], prune = ["main"], recover = ["main"], create = ["main"], merge = ["main"] }
 
 [devswarm_wire.role_codex_env]
 doc = "Environment variables whose presence marks a Codex session (empty: no Codex marker is known)."

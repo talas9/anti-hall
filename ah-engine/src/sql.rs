@@ -369,6 +369,16 @@ pub const MESHW_TABLE_INFO_REGISTRY: &str = "PRAGMA table_info(registry);";
 pub const MESHW_APPEND_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
 /// `appendMeshRow` without a hash.
 pub const MESHW_APPEND: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
+/// `appendMessage` with a hash (the native-ingest insert): no mesh columns, no seq; a duplicate hash is ignored.
+pub const MESHW_APPEND_MESSAGE_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+/// `appendMessage` without a hash.
+pub const MESHW_APPEND_MESSAGE: &str = "INSERT INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+/// One registry row (the columns `upsertRegistry` writes), for the merge-preserving self-registration.
+pub const MESHW_REGISTRY_ROW: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command FROM registry WHERE id = ?;";
+/// The ids of the registry (`listRegistry`), for the partition door's "still registered here" recheck.
+pub const MESHW_REGISTRY_HAS: &str = "SELECT 1 FROM registry WHERE id = ?;";
+/// A message row by hash, the columns the ingest witness compares.
+pub const MESHW_MESSAGE_BY_HASH: &str = "SELECT workspace_id, ts, body FROM messages WHERE hash = ?;";
 /// The seq of the row just inserted.
 pub const MESHW_SEQ_OF_ID: &str = "SELECT seq FROM messages WHERE id = ?;";
 /// `upsertRegistry`'s id-collision probe.
