@@ -1,6 +1,7 @@
 use super::*;
 use crate::jev::assist::iso_ms;
 use crate::jev::cascade::{MODEL_LOCK, TEST_MODEL};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 const NOW: i64 = 1_790_000_000_000;
@@ -273,4 +274,330 @@ fn the_held_list_and_the_stall_override_come_from_the_environment() {
     let h2 = home("env2");
     fixture(&h2, plan(40), &six_tools(NOW - 45 * MIN));
     assert_eq!(sweep(&h2, &calm, NOW)["children"], 0, "40 quiet minutes is under a 90 minute stall window");
+}
+
+// ---- acting on the answers (the way Node's supervisor did while these integrations were on) ----------------------------------
+
+fn stray_file(h: &Path) -> PathBuf {
+    h.join(".anti-hall/devswarm/stray/kid.json")
+}
+
+/// The straying state the supervisor wrote for `kid`: one warned `signal` on step 2 (stall or burn), as Node's `evaluateChild` leaves it.
+fn stray_with(h: &Path, signal: &str) {
+    let key = format!("{signal}:2:1");
+    let st = json!({"v": 1, "key": "kid", "id": "kid", "worktreePath": null, "warned": {key.clone(): {"at": NOW, "n": 1, "signal": signal, "step": 2}},
+        "perStep": {format!("{signal}:2"): 1}, "active": [{"key": key, "signal": signal, "step": 2, "reason": "no step progress 40m", "at": NOW, "n": 1}], "updated_at": NOW});
+    put(stray_file(h), &st.to_string());
+}
+
+fn stray(h: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(stray_file(h)).unwrap()).unwrap()
+}
+
+fn sup_log(h: &Path) -> Vec<Value> {
+    std::fs::read_to_string(h.join(".anti-hall/logs/devswarm-supervision.ndjson"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+/// What Node's own `strayingLine` prints for these active entries (None when node is not installed).
+fn node_line(active: &Value, scratch: &Path) -> Option<String> {
+    let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/companion/lib/devswarm-supervision.js");
+    let out = Command::new("node")
+        .args(["-e", "const s=require(process.argv[1]);const a=JSON.parse(process.argv[2]);console.log(s.strayingLine(a.map(e=>({id:'kid',step:e.step,reason:e.reason,jev:e.jev}))))"])
+        .arg(&lib)
+        .arg(active.to_string())
+        .env("HOME", scratch)
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[test]
+fn a_stuck_answer_is_attached_to_the_stall_warning_the_way_node_did_and_survives_a_supervisor_rewrite() {
+    let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("act-wait");
+    fixture(&h, plan(40), &six_tools(NOW - 45 * MIN));
+    mesh_store(&h, &[("kid", NOW - 90 * MIN, "parent", false)]);
+    stray_with(&h, "stall");
+    model_says(r#"{"answer":true,"confidence":0.92,"evidence_ref":"tool_calls.2"}"#, Arc::new(Mutex::new(Vec::new())));
+    let r = sweep(&h, &env("on", "off", "off"), NOW);
+    *TEST_MODEL.lock().unwrap() = None;
+    assert_eq!(r["decided"][0]["acted"], "annotated");
+    let active = stray(&h)["active"].clone();
+    assert_eq!(active[0]["jev"], json!([{"integration": "devswarmWaitKind", "verdict": "stuck", "confidence": 0.92, "supports": true}]));
+    if let Some(line) = node_line(&active, &h) {
+        assert!(line.contains("(Jev: stuck 0.92)"), "node prints the engine's note: {line}");
+    }
+    // telemetry: one `jev` event with Node's fields; `agree` is true because stuck agrees with the warning
+    let ev: Vec<Value> = sup_log(&h).into_iter().filter(|e| e["type"] == "jev").collect();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(
+        (ev[0]["integration"].as_str(), ev[0]["mode"].as_str(), ev[0]["agree"].as_bool(), ev[0]["confidence"].as_f64()),
+        (Some("devswarmWaitKind"), Some("on"), Some(true), Some(0.92))
+    );
+    // the supervisor rewrites its state from its own signals on its next pass: the note comes back, and no second event is written
+    stray_with(&h, "stall");
+    let again = sweep(&h, &env("on", "off", "off"), NOW + MIN);
+    assert_eq!(again["decided"].as_array().unwrap().len(), 0);
+    assert_eq!(stray(&h)["active"][0]["jev"][0]["verdict"], "stuck");
+    assert_eq!(sup_log(&h).iter().filter(|e| e["type"] == "jev").count(), 1);
+}
+
+#[test]
+fn a_waiting_rule_answer_says_so_with_full_confidence_and_a_shadow_integration_changes_nothing() {
+    let h = home("act-rule");
+    fixture(&h, plan(40), &six_tools(NOW - 45 * MIN));
+    mesh_store(&h, &[("kid", NOW - 90 * MIN, "parent", false), ("parent", NOW - 50 * MIN, "kid", true)]);
+    stray_with(&h, "idle");
+    sweep(&h, &env("on", "off", "off"), NOW);
+    assert_eq!(
+        stray(&h)["active"][0]["jev"],
+        json!([{"integration": "devswarmWaitKind", "verdict": "waiting on CI/owner/peer, not stuck", "confidence": 1.0, "supports": false}])
+    );
+    let sh = home("act-shadow");
+    fixture(&sh, plan(40), &six_tools(NOW - 45 * MIN));
+    mesh_store(&sh, &[("kid", NOW - 90 * MIN, "parent", false), ("parent", NOW - 50 * MIN, "kid", true)]);
+    stray_with(&sh, "idle");
+    let before = std::fs::read_to_string(stray_file(&sh)).unwrap();
+    let r = sweep(&sh, &env("shadow", "off", "off"), NOW);
+    assert_eq!(r["decided"][0]["acted"], Value::Null);
+    assert_eq!(std::fs::read_to_string(stray_file(&sh)).unwrap(), before, "shadow writes nothing");
+    assert!(sup_log(&sh).is_empty());
+}
+
+fn loop_fixture(h: &Path, tail_min: i64) {
+    let start = NOW - tail_min * MIN;
+    let mut p = plan(80);
+    p["steps"][1]["started_at"] = json!(start);
+    p["step_ts"] = json!(NOW - 100 * MIN);
+    let mut t: Vec<String> = (0..11).map(|i| tool(NOW - 50 * MIN + i * MIN, "cargo test -p x")).collect();
+    t.push(tool(NOW - 30 * MIN, "git reset --hard HEAD"));
+    fixture(h, p, &t);
+}
+
+#[test]
+fn a_looping_answer_joins_the_stall_warning_and_a_lower_confidence_than_the_floor_is_not_acted_on() {
+    let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("act-loop-host");
+    loop_fixture(&h, 100);
+    stray_with(&h, "stall");
+    model_says(r#"{"answer":true,"confidence":0.87,"evidence_ref":"repeats.1"}"#, Arc::new(Mutex::new(Vec::new())));
+    let r = sweep(&h, &env("off", "on", "off"), NOW);
+    assert_eq!(
+        (r["decided"][0]["actionable"].as_bool(), r["decided"][0]["acted"].clone()),
+        (Some(true), Value::Null),
+        "0.87 clears the gate but not Loop's 0.9 floor"
+    );
+    assert!(stray(&h)["active"][0]["jev"].is_null());
+    crate::discard::harmless(std::fs::remove_file(h.join(".anti-hall/devswarm/jev-sweep-state.json")));
+    model_says(r#"{"answer":true,"confidence":0.93,"evidence_ref":"repeats.1"}"#, Arc::new(Mutex::new(Vec::new())));
+    let r = sweep(&h, &env("off", "on", "off"), NOW);
+    *TEST_MODEL.lock().unwrap() = None;
+    assert_eq!(r["decided"][0]["acted"], "annotated");
+    assert_eq!(stray(&h)["active"][0]["jev"], json!([{"integration": "devswarmLoop", "verdict": "looping", "confidence": 0.93, "supports": true}]));
+    assert_eq!(stray(&h)["active"].as_array().unwrap().len(), 1, "no advisory warning when a warning exists");
+    // agree is Node's: a looping verdict disagrees with Loop's baseline (not looping)
+    assert_eq!(sup_log(&h).iter().find(|e| e["type"] == "jev").unwrap()["agree"], false);
+}
+
+#[test]
+fn a_looping_answer_with_no_warning_to_join_adds_its_own_advisory_warning_counted_against_the_cap() {
+    let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let calm = |max: &str| {
+        Env::from_pairs([
+            ("ANTIHALL_JEV", "1"),
+            ("CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_DEVSWARM_LOOP", "on"),
+            ("ANTIHALL_DEVSWARM_STEP_STALL_MIN", "120"),
+            ("ANTIHALL_DEVSWARM_STRAY_WARN_MAX", max),
+        ])
+    };
+    let h = home("act-loop-adv");
+    loop_fixture(&h, 300);
+    model_says(r#"{"answer":true,"confidence":0.95,"evidence_ref":"repeats.1"}"#, Arc::new(Mutex::new(Vec::new())));
+    let r = sweep(&h, &calm("2"), NOW);
+    *TEST_MODEL.lock().unwrap() = None;
+    assert_eq!(r["decided"][0]["acted"], "advisory_loop", "{r}");
+    let st = stray(&h);
+    let e = &st["active"][0];
+    assert_eq!((e["signal"].as_str(), e["step"].as_i64(), e["reason"].as_str()), (Some("loop"), Some(2), Some("Jev thinks it is looping on the step (5h)")));
+    assert_eq!(e["key"], format!("loop:2:{}", NOW - 300 * MIN));
+    assert_eq!(e["jev"][0]["verdict"], "looping");
+    assert_eq!((st["perStep"]["loop:2"].as_i64(), st["warned"][e["key"].as_str().unwrap()]["signal"].as_str()), (Some(1), Some("loop")));
+    if let Some(line) = node_line(&st["active"], &h) {
+        assert!(line.contains("step 2 Jev thinks it is looping on the step (5h) (Jev: looping 0.95)"), "{line}");
+    }
+    let warns: Vec<Value> = sup_log(&h).into_iter().filter(|e| e["type"] == "warn").collect();
+    assert_eq!((warns.len(), warns[0]["signal"].as_str(), warns[0]["repeat"].as_bool()), (1, Some("loop"), Some(false)));
+    // a rewrite by the supervisor drops the advisory entry (it has no such signal): the sweep restores it without a second count
+    let mut dropped = st.clone();
+    dropped["active"] = json!([]);
+    put(stray_file(&h), &dropped.to_string());
+    sweep(&h, &calm("2"), NOW + MIN);
+    let back = stray(&h);
+    assert_eq!((back["active"].as_array().unwrap().len(), back["perStep"]["loop:2"].as_i64()), (1, Some(1)));
+    assert_eq!(sup_log(&h).iter().filter(|e| e["type"] == "warn").count(), 1);
+    // strayWarnMax 0 turns warnings off: nothing is added
+    let off = home("act-loop-cap0");
+    loop_fixture(&off, 300);
+    model_says(r#"{"answer":true,"confidence":0.95,"evidence_ref":"repeats.1"}"#, Arc::new(Mutex::new(Vec::new())));
+    sweep(&off, &calm("0"), NOW);
+    *TEST_MODEL.lock().unwrap() = None;
+    assert!(!stray_file(&off).exists());
+}
+
+#[test]
+fn a_step_map_answer_writes_the_inferred_step_into_the_plan_once_and_leaves_the_rest_of_the_plan_alone() {
+    let h = home("act-stepmap");
+    let mut p = plan(10);
+    p["steps"][0]["ts"] = json!(NOW - 20 * MIN);
+    p["steps"][0]["status"] = json!("todo");
+    p["steps"][1]["status"] = json!("todo");
+    p["summaries"] = json!([{"ts": NOW - 20 * MIN + 1000, "text": "parser done", "stepped": true}, {"ts": NOW - 5 * MIN, "text": "finished the wire the cache work", "stepped": false}]);
+    fixture(&h, p.clone(), &[]);
+    let r = sweep(&h, &env("off", "off", "on"), NOW);
+    assert_eq!(r["decided"][0]["acted"], "inferred_step");
+    let after: Value = serde_json::from_str(&std::fs::read_to_string(h.join(".anti-hall/devswarm/plans/kid.json")).unwrap()).unwrap();
+    let mut want = p;
+    want["inferred_step"] = json!(2);
+    assert_eq!(after, want, "only inferred_step was added");
+    let ev: Vec<Value> = sup_log(&h).into_iter().filter(|e| e["type"] == "jev").collect();
+    assert_eq!(
+        (ev.len(), ev[0]["integration"].as_str(), ev[0]["agree"].as_bool()),
+        (1, Some("devswarmStepMap"), Some(false)),
+        "Node's agree: the plan's current step is the first open one, 1, not 2"
+    );
+    // the same step again changes nothing (no rewrite, no second event)
+    crate::discard::harmless(std::fs::remove_file(h.join(".anti-hall/devswarm/jev-sweep-state.json")));
+    let r = sweep(&h, &env("off", "off", "on"), NOW + MIN);
+    assert_eq!(r["decided"][0]["acted"], Value::Null);
+    assert_eq!(sup_log(&h).len(), 1);
+    // the plan label Node shows
+    let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/companion/lib/devswarm-plan.js");
+    if let Ok(o) = Command::new("node")
+        .args(["-e", "const p=require(process.argv[1]);console.log(p.finishLabel(JSON.parse(process.argv[2]),Date.now()))"])
+        .arg(&lib)
+        .arg({
+            let mut q = after.clone();
+            q.as_object_mut().unwrap().remove("step_ts");
+            q.to_string()
+        })
+        .env("HOME", &h)
+        .output()
+        && o.status.success()
+    {
+        assert!(String::from_utf8_lossy(&o.stdout).contains("~#2"));
+    }
+}
+
+#[test]
+fn hold_stall_and_warning_cap_read_settings_json_through_the_settings_layer() {
+    let plain = |w: &str| Env::from_pairs([("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_DEVSWARM_WAIT_KIND", w)]);
+    let h = home("settings-held");
+    fixture(&h, plan(40), &six_tools(NOW - 45 * MIN));
+    put(h.join(".anti-hall/settings.json"), r#"{"devswarm":{"heldPartitions":"other, kid"}}"#);
+    assert_eq!(sweep(&h, &plain("on"), NOW)["decided"][0]["rule"], "child_on_hold");
+    let h2 = home("settings-stall");
+    fixture(&h2, plan(40), &six_tools(NOW - 45 * MIN));
+    put(h2.join(".anti-hall/settings.json"), r#"{"devswarm":{"stepStallMin":90}}"#);
+    assert_eq!(sweep(&h2, &plain("on"), NOW)["children"], 0, "40 quiet minutes is under the 90 minute window set in settings.json");
+    // the environment still outranks the file, and a value under the schema minimum is raised to it
+    let h3 = home("settings-env");
+    fixture(&h3, plan(40), &six_tools(NOW - 45 * MIN));
+    put(h3.join(".anti-hall/settings.json"), r#"{"devswarm":{"stepStallMin":90}}"#);
+    let e =
+        Env::from_pairs([("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_DEVSWARM_WAIT_KIND", "on"), ("ANTIHALL_DEVSWARM_STEP_STALL_MIN", "10")]);
+    assert_eq!(sweep(&h3, &e, NOW)["children"], 1);
+    let h4 = home("settings-floor");
+    fixture(&h4, plan(4), &six_tools(NOW - 45 * MIN));
+    put(h4.join(".anti-hall/settings.json"), r#"{"devswarm":{"stepStallMin":1}}"#);
+    assert_eq!(sweep(&h4, &plain("on"), NOW)["children"], 0, "1 minute is raised to the schema minimum of 5, and 4 quiet minutes is under it");
+}
+
+#[test]
+fn the_same_error_again_and_again_on_a_step_is_a_loop_fact_and_a_loop_candidate() {
+    let h = home("loop-errors");
+    let start = NOW - 100 * MIN;
+    let err = |t: i64, text: &str| {
+        json!({"type": "user", "timestamp": iso_ms(t as u64), "message": {"content": [{"type": "tool_result", "is_error": true, "content": text}]}}).to_string()
+    };
+    let mut t: Vec<String> = (0..10).map(|i| tool(NOW - 50 * MIN + i * MIN, &format!("cargo build --step {i}"))).collect();
+    t.extend((0..3).map(|i| err(NOW - 40 * MIN + i * MIN, "error[E0432]: unresolved import `foo`")));
+    let mut p = plan(80);
+    p["steps"][1]["started_at"] = json!(start);
+    fixture(&h, p.clone(), &t);
+    let mut c = Child {
+        id: "kid".into(),
+        key: "kid".into(),
+        plan: p,
+        desc: json!({"worktreePath": "/nonexistent/wt/kid", "sessionId": "sess-1"}),
+        now: NOW,
+        base: h.join(".anti-hall"),
+        home: h.clone(),
+        events: Some(parse_events(t.iter().map(String::as_str))),
+        held: Vec::new(),
+        rt: None,
+    };
+    let req = looping(&mut c);
+    assert_eq!(req["facts"]["repeat_error_max"], 3.0);
+    assert!(req["sections"]["repeats"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().contains("error[e0432]: unresolved import `foo`\" x3")), "{req}");
+    // with git known and no commit on the step, the repeated error alone makes it a candidate for the model; without it, it is no candidate
+    let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut with = req.clone();
+    with["facts"]["git_known"] = json!(1.0);
+    with["facts"]["minutes_since_progress"] = json!(90.0);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    model_says(r#"{"answer":true,"confidence":0.9,"evidence_ref":"repeats.1"}"#, seen.clone());
+    let asked = evidence::evaluate(&h, &env("off", "on", "off"), &with);
+    assert_eq!((asked.phase.as_str(), asked.label.as_deref()), ("asked", Some("looping")));
+    let mut without = with.clone();
+    without["facts"]["repeat_error_max"] = json!(0.0);
+    let no = evidence::evaluate(&h, &env("off", "on", "off"), &without);
+    *TEST_MODEL.lock().unwrap() = None;
+    assert_eq!((no.phase.as_str(), no.reason.as_deref()), ("rule", Some("no-candidate")));
+}
+
+fn rt_snap(finished: bool, paused: bool, ci: Option<crate::devswarm_rt::state::Ci>) -> crate::devswarm_rt::Snapshot {
+    use crate::devswarm_rt::state::{Activity, Field, Lifecycle, Paused, PrState, PrView, Src, Workspace};
+    fn f<T>(v: T) -> Field<T> {
+        Field { value: v, source: Src::AppDb, observed_ms: NOW, sig: String::new() }
+    }
+    let w = Workspace {
+        id: "kid".into(),
+        label: None,
+        worktree: Some("/nonexistent/wt/kid".into()),
+        branch: None,
+        repo: None,
+        lifecycle: f(if finished { Lifecycle::Archived } else { Lifecycle::Active }),
+        paused: f(if paused { Paused::Yes("panel".into()) } else { Paused::No }),
+        activity: f(Activity::Working),
+        unread: f(None),
+        plan_step: f(None),
+        last_activity_ms: f(None),
+        pr: f(ci.map(|c| PrView { number: Some(12), state: PrState::Open, checks: c })),
+    };
+    crate::devswarm_rt::Snapshot { generation: 1, at_ms: NOW, seeded: true, app_readable: true, workspaces: [("kid".to_string(), w)].into_iter().collect() }
+}
+
+#[test]
+fn the_realtime_state_answers_archived_paused_and_ci_without_the_sweep_deriving_them_again() {
+    use crate::devswarm_rt::state::Ci;
+    let run = |tag: &str, snap: crate::devswarm_rt::Snapshot| {
+        let h = home(tag);
+        fixture(&h, plan(40), &six_tools(NOW - 45 * MIN));
+        mesh_store(&h, &[("kid", NOW - 90 * MIN, "parent", false)]);
+        let r = sweep_rt(&h, &env("on", "off", "off"), NOW, None, Some(&snap));
+        (r["decided"][0]["rule"].clone(), r["decided"][0]["label"].clone())
+    };
+    assert_eq!(run("rt-archived", rt_snap(true, false, None)).0, "child_archived");
+    assert_eq!(run("rt-paused", rt_snap(false, true, None)), (json!("workspace_paused"), json!("waiting")));
+    assert_eq!(run("rt-ci", rt_snap(false, false, Some(Ci::Running))).0, "ci_running");
+    // a finished CI run is a fact too, and decides nothing: the model is the one asked
+    let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    model_says(r#"{"answer":true,"confidence":0.9,"evidence_ref":"tool_calls.1"}"#, Arc::new(Mutex::new(Vec::new())));
+    let (rule, label) = run("rt-ci-pass", rt_snap(false, false, Some(Ci::Passing)));
+    *TEST_MODEL.lock().unwrap() = None;
+    assert_eq!((rule, label), (Value::Null, json!("stuck")));
 }

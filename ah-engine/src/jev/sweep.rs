@@ -301,6 +301,38 @@ struct Child {
     home: PathBuf,
     events: Option<Vec<Ev>>,
     held: Vec<String>,
+    /// The realtime state of this child's workspace (`devswarm_rt`), when the caller has it and it is fresh.
+    rt: Option<Rt>,
+}
+
+/// The facts the DevSwarm realtime layer already holds about a workspace, so the sweep does not derive them again.
+#[derive(Debug, Clone, Default)]
+pub struct Rt {
+    /// The app shows the workspace as archived, closed or hidden.
+    pub finished: bool,
+    /// The app shows the workspace as paused (a proven signal only).
+    pub paused: bool,
+    /// The linked PR's CI roll-up: `(running, status word)`.
+    pub ci: Option<(bool, String)>,
+    /// The linked PR's number.
+    pub pr: Option<i64>,
+}
+
+fn rt_of(snap: &crate::devswarm_rt::Snapshot, id: &str, wt: &str, now: i64) -> Option<Rt> {
+    use crate::devswarm_rt::state::{Ci, Lifecycle, Paused};
+    let cfg = crate::devswarm_rt::Cfg::from_defaults();
+    let w = snap.workspaces.get(id).or_else(|| snap.workspaces.values().find(|w| !wt.is_empty() && w.worktree.as_deref() == Some(wt)))?;
+    let fresh = |observed: i64| now.saturating_sub(observed) <= cfg.stale_ms;
+    let finished = fresh(w.lifecycle.observed_ms) && matches!(w.lifecycle.value, Lifecycle::Archived | Lifecycle::Closed | Lifecycle::Hidden);
+    let paused = fresh(w.paused.observed_ms) && matches!(w.paused.value, Paused::Yes(_));
+    let pr = w.pr.value.as_ref().filter(|_| fresh(w.pr.observed_ms));
+    let ci = pr.and_then(|p| match p.checks {
+        Ci::Running => Some((true, "running".to_string())),
+        Ci::Passing => Some((false, "passing".to_string())),
+        Ci::Failing => Some((false, "failing".to_string())),
+        Ci::Unknown => None,
+    });
+    Some(Rt { finished, paused, ci, pr: pr.and_then(|p| p.number) })
 }
 
 impl Child {
@@ -348,11 +380,17 @@ fn facts_map(pairs: Vec<(&str, f64)>) -> Value {
 
 fn wait_kind(c: &mut Child) -> Value {
     let (now, lookback) = (c.now, lim("lookback_min") * unit("ms_per_minute"));
-    let (done, archived, hold) = (c.plan["done_reported_at"].as_f64().is_some(), c.archived(), c.on_hold());
+    let rt = c.rt.clone().unwrap_or_default();
+    let (done, archived, hold) = (c.plan["done_reported_at"].as_f64().is_some(), c.archived() || rt.finished, c.on_hold());
     let quiet = now - last_progress(&c.plan, now);
     let (id, wt) = (c.id.clone(), c.wt());
     let mesh = mesh(&c.base, &c.desc, &id, now);
-    let ci = if wt.is_empty() { None } else { ci(&wt, now) };
+    let ci = if wt.is_empty() { None } else { ci(&wt, now) }.or_else(|| {
+        // the GitHub CLI told nothing: the realtime layer's roll-up of the linked PR stands in for it
+        let (running, status) = rt.ci.clone()?;
+        let name = act::pr_name(rt.pr);
+        Some((running, vec![fill(word("line_ci"), &[("name", &name), ("status", &status), ("ago", &ago(now, now))])]))
+    });
     let ev = c.events();
     let recent = |e: &&Ev| e.t >= now - lookback;
     let limit_pats = tr_list("usage_limit_patterns");
@@ -366,6 +404,7 @@ fn wait_kind(c: &mut Child) -> Value {
         ("archived", f64::from(u8::from(archived))),
         ("on_hold", f64::from(u8::from(hold))),
         ("usage_limit_pause", f64::from(u8::from(usage))),
+        ("paused", f64::from(u8::from(rt.paused))),
         ("tool_calls", tool_lines.len() as f64),
         ("assistant_texts", texts.len() as f64),
     ];
@@ -411,6 +450,13 @@ fn looping(c: &mut Child) -> Value {
     }
     let mut rep: Vec<(String, i64)> = counts.into_iter().filter(|(_, n)| *n >= lim("repeat_min")).collect();
     rep.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    // the same error text again and again on this step is a repeat as well (a command that keeps failing the same way)
+    let mut err_counts: BTreeMap<String, i64> = BTreeMap::new();
+    for e in ev.iter().filter(|e| e.kind == Kind::Err && e.t >= window && !e.text.trim().is_empty()) {
+        *err_counts.entry(cap(&e.text, lim("err_cap")).to_lowercase()).or_default() += 1;
+    }
+    let mut err_rep: Vec<(String, i64)> = err_counts.into_iter().filter(|(_, n)| *n >= lim("repeat_min")).collect();
+    err_rep.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     let mut edits: BTreeMap<&str, i64> = BTreeMap::new();
     for e in on_step.iter().filter(|e| !e.file.is_empty()) {
         *edits.entry(e.file.as_str()).or_default() += 1;
@@ -419,6 +465,7 @@ fn looping(c: &mut Child) -> Value {
     let reverts = on_step.iter().filter(|e| e.name == "Bash" && contains_ci(&e.text, &revert_pats)).count();
     let mut repeats: Vec<String> =
         rep.iter().take(lim("repeat_show") as usize).map(|(cmd, n)| fill(word("line_repeat"), &[("cmd", cmd), ("n", &n.to_string())])).collect();
+    repeats.extend(err_rep.iter().take(lim("repeat_show") as usize).map(|(txt, n)| fill(word("line_error_repeat"), &[("text", txt), ("n", &n.to_string())])));
     repeats.extend(edits.iter().filter(|(_, n)| **n >= lim("edit_repeat_min")).map(|(f, n)| fill(word("line_repeat"), &[("cmd", f), ("n", &n.to_string())])));
     let on_step_commits: Vec<&(i64, String)> = git.iter().flatten().filter(|(t, _)| *t >= start).collect();
     let git_lines: Vec<String> =
@@ -426,6 +473,7 @@ fn looping(c: &mut Child) -> Value {
     let mut f = vec![
         ("tool_calls", on_step.len() as f64),
         ("repeat_cmd_max", rep.first().map_or(0, |(_, n)| *n) as f64),
+        ("repeat_error_max", err_rep.first().map_or(0, |(_, n)| *n) as f64),
         ("reverts", reverts as f64),
         ("minutes_since_progress", progress_min as f64),
     ];
@@ -494,18 +542,30 @@ pub fn sweep(home: &Path, env: &Env, now: i64) -> Value {
 /// [`sweep`] restricted to the children `only` names: an entry matches a plan's id, its file name or its worktree. `None` is
 /// every child. The realtime DevSwarm layer calls this for the children whose plan, activity or PR just changed.
 pub fn sweep_only(home: &Path, env: &Env, now: i64, only: Option<&[String]>) -> Value {
+    sweep_rt(home, env, now, only, None)
+}
+
+/// [`sweep_only`] with the DevSwarm realtime snapshot, when the caller has one: what it already knows about a workspace (archived,
+/// paused, the linked PR's CI) is used instead of being derived again.
+pub fn sweep_rt(home: &Path, env: &Env, now: i64, only: Option<&[String]>, rt: Option<&crate::devswarm_rt::Snapshot>) -> Value {
     let ids: Vec<&str> = defaults::list("sweep.integrations");
     let live: Vec<&str> = ids.iter().copied().filter(|id| super::shared::mode_of(home, env, id) != Mode::Off).collect();
     if live.is_empty() {
         return json!({"children": 0, "decided": [], "idle": true});
     }
     let base = home.join(defaults::text("paths.base_dir"));
-    let var = |k: &str| env.get_nonempty(defaults::raw("sweep.env").str_field(k));
-    let held: Vec<String> = var("held_partitions").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
-    let stall = var("step_stall_min")
-        .and_then(|v| v.trim().parse::<f64>().ok())
-        .filter(|m| *m >= 1.0)
-        .map_or(lim("step_stall_ms"), |m| (m * unit("ms_per_minute") as f64) as i64);
+    // the owner's settings, read through the engine's settings layer (environment, settings.json, plugin option, default)
+    let st = crate::checks::git::util::Settings { home: home.to_string_lossy().to_string(), env: env.to_map() };
+    let get = |k: &str| defaults::raw(k);
+    let held: Vec<String> = crate::checks::guardkit::settings::get_string(&st, get("sweep.setting_held"))
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let stall_min = crate::checks::guardkit::settings::get_number(&st, get("sweep.setting_step_stall"))
+        .max(get("sweep.setting_step_stall").get("floor_min").and_then(defaults::V::as_integer).unwrap_or(1) as f64);
+    let stall = (stall_min * unit("ms_per_minute") as f64) as i64;
+    let warn_max = crate::checks::guardkit::settings::get_number(&st, get("sweep.setting_warn_max")) as i64;
     let state_path = base.join(path_cfg("state"));
     let mut state = load_state(&state_path);
     let mut files: Vec<PathBuf> = std::fs::read_dir(base.join(path_cfg("plans"))).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
@@ -525,6 +585,18 @@ pub fn sweep_only(home: &Path, env: &Env, now: i64, only: Option<&[String]>) -> 
         if key.is_empty() || plan["steps"].as_array().is_none_or(Vec::is_empty) || looked >= lim("max_children") {
             continue;
         }
+        let desc = std::fs::read_to_string(base.join(path_cfg("workspaces")).join(format!("{id}{}", path_cfg("plan_ext"))))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null);
+        let actx = act::Ctx { home, env, base: &base, now, key: &key, id: &id, plan: &plan, stall, warn_max };
+        // an answer acted on earlier is put back on the warnings the supervisor has rewritten since, while its subject still stands
+        for i in &live {
+            let mem = state.get(&format!("{key}|{i}")).unwrap_or(&Value::Null);
+            if mem["note"].is_object() && trigger(i, &plan, now, stall).is_some_and(|k| mem["subject"] == k.as_str()) {
+                act::reapply(&actx, i, &mem["note"]);
+            }
+        }
         let due: Vec<(&str, String)> = live
             .iter()
             .filter_map(|i| trigger(i, &plan, now, stall).map(|k| (*i, k)))
@@ -537,11 +609,20 @@ pub fn sweep_only(home: &Path, env: &Env, now: i64, only: Option<&[String]>) -> 
             continue;
         }
         looked += 1;
-        let desc = std::fs::read_to_string(base.join(path_cfg("workspaces")).join(format!("{id}{}", path_cfg("plan_ext"))))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or(Value::Null);
-        let mut child = Child { id, key: key.clone(), plan, desc, now, base: base.clone(), home: home.to_path_buf(), events: None, held: held.clone() };
+        let mut child = Child {
+            id: id.clone(),
+            key: key.clone(),
+            plan: plan.clone(),
+            desc,
+            now,
+            base: base.clone(),
+            home: home.to_path_buf(),
+            events: None,
+            held: held.clone(),
+            rt: None,
+        };
+        let wt = child.wt();
+        child.rt = rt.and_then(|s| rt_of(s, &id, &wt, now));
         for (integ, subject) in due {
             let req = match integ {
                 "devswarmWaitKind" => wait_kind(&mut child),
@@ -549,8 +630,13 @@ pub fn sweep_only(home: &Path, env: &Env, now: i64, only: Option<&[String]>) -> 
                 _ => step_map(&child),
             };
             let o = evidence::evaluate(home, env, &req);
-            state.insert(format!("{key}|{integ}"), json!({"subject": subject, "at": now}));
-            decided.push(json!({"child": key, "integration": integ, "phase": o.phase, "source": o.source, "label": o.label, "reason": o.reason, "rule": o.rule, "actionable": o.actionable}));
+            let acted = act::apply(&actx, integ, &o);
+            let mut mem = json!({"subject": subject, "at": now});
+            if let Some((note, _)) = acted.as_ref().filter(|(n, _)| n.is_object()) {
+                mem["note"] = note.clone();
+            }
+            state.insert(format!("{key}|{integ}"), mem);
+            decided.push(json!({"child": key, "integration": integ, "phase": o.phase, "source": o.source, "label": o.label, "reason": o.reason, "rule": o.rule, "actionable": o.actionable, "acted": acted.map(|(_, w)| w)}));
         }
     }
     if looked > 0 {
@@ -565,6 +651,8 @@ pub fn run(home: &Path) -> i32 {
     println!("{}", sweep(home, &Env::process(), now));
     0
 }
+
+mod act;
 
 #[cfg(test)]
 mod tests;

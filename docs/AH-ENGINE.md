@@ -996,9 +996,17 @@ judgement calls do.
   child's own transcript (tool calls, texts, errors, usage-limit text), `git log` of its worktree, the CI runs of its branch (the
   GitHub CLI) and the mesh store (what the child sent and was sent), builds the facts and sections, and hands them to the gate,
   which writes the decision row. A question whose subject has not changed is not asked again within `sweep.limits.reask_ms`. The
-  sweep does not edit a plan or a signal: acting on an answer is still each integration's mode (the `~N` inferred step and the
-  Node warning annotation for these three are not applied). Settings read from the environment only: held partitions and the
-  stall window. Everything tunable is in `jev_sweep.toml`.
+  sweep acts on an answer only when the integration is `on` and the gate called it actionable (`src/jev/sweep/act.rs`, as Node's
+  supervisor did): WaitKind attaches its verdict (`stuck`, or waiting on CI/owner/peer) as a `jev` note to the child's idle and
+  stall warnings in `devswarm/stray/<key>.json`; Loop attaches to the burn warning, else the stall warning, and a `looping` answer
+  with neither adds Jev's own advisory `loop` warning (counted against `devswarm.strayWarnMax`); StepMap writes `inferred_step`
+  into the plan under the plan lock (the plan label shows `~#N` while no step was reported). Loop needs 0.9 confidence. The
+  supervisor rewrites the stray state each pass, so the sweep keeps the last acted-on note per subject and puts it back. Each
+  effect appends the supervision log events Node wrote (`jev` once per subject, `warn` for the advisory warning). Loop counts the
+  same error text repeating on the step as well as repeated commands and reverts. Hold, the stall window and the warning cap are
+  read through the settings layer (`devswarm.heldPartitions`, `stepStallMin`, `strayWarnMax`: environment, `settings.json`,
+  plugin option, default). The realtime layer's snapshot (archived, paused, the linked PR's CI) is used when the per-child sweep
+  has it. Everything tunable is in `jev_sweep.toml`.
 - **GitHub realtime (`ghrt`, feature #20).** Independent of DevSwarm: the repos followed are the git repos of the working
   directories of the user's live sessions. The daemon records the `cwd` of every hook it answers (at most once per
   `github_rt.note_every_ms` per directory, in `ghrt/cwds.json` under the engine state directory); the scheduled job `gh_poll`
