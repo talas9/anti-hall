@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn a_report_maps_to_the_shared_act_schema() {
-        let r = Report { kind: "auto-archive".into(), id: "ws1".into(), key: "auto-archive:ws1:abc".into(), word: Word::Refused, detail: Value::Null };
+        let r = Report { kind: "auto-archive".into(), id: "ws1".into(), key: "auto-archive:ws1:abc".into(), word: Word::Refused, detail: Value::Null, inputs: Value::Null, latency_ms: 0 };
         let rec = act_rec(&r, 7);
         assert_eq!((rec.outcome, rec.reason, rec.feature, rec.action_id), (Outcome::Block, "refused", "auto-archive", "auto-archive:ws1:abc"));
         let ev = crate::telemetry::emit::act_call(&rec);

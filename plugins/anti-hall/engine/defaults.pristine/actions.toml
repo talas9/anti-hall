@@ -46,3 +46,16 @@ max = 6
 [actions.msg_mistake_usage]
 doc = "Printed when `telemetry actions --mistake` lacks its arguments."
 value = "usage: ah-engine telemetry actions --mistake <feature> <action> <target> <kind> [detail]"
+
+[actions.stall]
+doc = "How the stall feature (pokes and escalations of silent workspaces) names itself in the action log and its two mistake signals: a poke after which the workspace showed no new activity, an escalation after which it did."
+value = { feature = "stall", nudge_mistake = "nudge_no_change", nudge_detail = "no new activity after the poke", escalate_mistake = "escalation_then_active", escalate_detail = "new activity after the escalation" }
+
+[actions.token_chars]
+doc = "The characters besides letters and digits that a target, reason or feature keeps when it goes into a telemetry field (everything else is dropped, so a field never carries free text)."
+value = "-_:#@./"
+
+[actions.token_max]
+doc = "The most characters of one telemetry field of an action or mistake event."
+value = 120
+min = 8

@@ -8,6 +8,7 @@ pub mod api;
 pub mod cfg;
 pub mod parse;
 pub mod poll;
+pub mod ready;
 pub mod repos;
 #[cfg(test)]
 mod tests;

@@ -20,8 +20,9 @@ use crate::dsact::ledger::Word;
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 
-/// The feature name in the action log.
-pub const FEATURE: &str = "stall";
+fn word(k: &str) -> &'static str {
+    defaults::raw("actions.stall").str_field(k)
+}
 
 /// The action log outcome of an action layer word: `ok`, `failed` (it ran and did not work) or `refused` (it did not run).
 pub fn outcome(w: Word) -> &'static str {
@@ -42,12 +43,12 @@ impl Wire {
         let out = outcome(r.word);
         let reason = if out == "ok" { String::new() } else { format!("{} {}", r.word.text(), r.detail) };
         let inputs = r.inputs.get("inputs").cloned().unwrap_or_else(|| r.inputs.clone());
-        actlog::record(&self.state_dir, &Action { feature: FEATURE, action: &r.kind, target: &r.id, inputs, outcome: out, reason: &reason, latency_ms: r.latency_ms }, now as u64);
+        actlog::record(&self.state_dir, &Action { feature: word("feature"), action: &r.kind, target: &r.id, inputs, outcome: out, reason: &reason, latency_ms: r.latency_ms }, now as u64);
         self.count(&mut |m| m.inc("dswire_stall_actions", &[("kind", &r.kind), ("outcome", out)]));
         if out == "ok" {
             let last = r.inputs.pointer("/inputs/last_activity_ms").and_then(Value::as_i64).unwrap_or(0);
             let due = now as u64 + defaults::num("devswarm_rt.stall_followup_wait_ms");
-            actlog::followup_add(&self.state_dir, FEATURE, &r.kind, &r.id, due, json!({"last_activity_ms": last}), now as u64);
+            actlog::followup_add(&self.state_dir, word("feature"), &r.kind, &r.id, due, json!({"last_activity_ms": last}), now as u64);
         }
     }
 
@@ -77,12 +78,12 @@ impl Wire {
 
     /// Check the nudges and escalations whose wait has passed: did the workspace show new activity?
     pub fn stall_followups(&self, now: i64) {
-        for f in actlog::followups_due(&self.state_dir, FEATURE, now as u64) {
+        for f in actlog::followups_due(&self.state_dir, word("feature"), now as u64) {
             let (action, id) = (f["action"].as_str().unwrap_or_default(), f["target"].as_str().unwrap_or_default());
             let before = f.pointer("/ctx/last_activity_ms").and_then(Value::as_i64).unwrap_or(0);
             let snap = self.rt.current();
             let Some(w) = snap.workspaces.get(id) else {
-                actlog::followup_done(&self.state_dir, FEATURE, action, id, "unknown", None, now as u64); // the workspace is gone: nothing to judge
+                actlog::followup_done(&self.state_dir, word("feature"), action, id, "unknown", None, now as u64); // the workspace is gone: nothing to judge
                 continue;
             };
             let moved = match w.activity.value {
@@ -91,23 +92,23 @@ impl Wire {
                 Activity::Unknown => {
                     if w.lifecycle.value == Lifecycle::Active {
                         let again = now as u64 + defaults::num("devswarm_rt.stall_followup_wait_ms");
-                        actlog::followup_done(&self.state_dir, FEATURE, action, id, "", Some(again), now as u64); // not readable now: look again later
+                        actlog::followup_done(&self.state_dir, word("feature"), action, id, "", Some(again), now as u64); // not readable now: look again later
                     } else {
-                        actlog::followup_done(&self.state_dir, FEATURE, action, id, "unknown", None, now as u64); // archived or closed since: nothing to judge
+                        actlog::followup_done(&self.state_dir, word("feature"), action, id, "unknown", None, now as u64); // archived or closed since: nothing to judge
                     }
                     continue;
                 }
             };
             let kinds = defaults::list("devswarm_act.automatic_kinds");
             let (bad, kind, detail) = if action == kinds[1] {
-                (!moved, "nudge_no_change", "no new activity after the poke")
+                (!moved, word("nudge_mistake"), word("nudge_detail"))
             } else {
-                (moved, "escalation_then_active", "new activity after the escalation")
+                (moved, word("escalate_mistake"), word("escalate_detail"))
             };
             if bad {
-                actlog::mistake(&self.state_dir, FEATURE, action, id, kind, detail, now as u64);
+                actlog::mistake(&self.state_dir, word("feature"), action, id, kind, detail, now as u64);
             }
-            actlog::followup_done(&self.state_dir, FEATURE, action, id, if bad { "mistake" } else { "clean" }, None, now as u64);
+            actlog::followup_done(&self.state_dir, word("feature"), action, id, if bad { "mistake" } else { "clean" }, None, now as u64);
         }
     }
 }

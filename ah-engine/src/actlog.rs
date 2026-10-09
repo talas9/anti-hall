@@ -57,6 +57,13 @@ fn append(dir: &Path, rec: &Value) {
     crate::dsact::exec::append_line(&path, rec);
 }
 
+/// A value made safe for a telemetry field: only the characters of `actions.token_chars` besides letters and digits, at most
+/// `actions.token_max` of them.
+pub fn token(s: &str) -> String {
+    let extra = defaults::text("actions.token_chars");
+    s.chars().filter(|c| c.is_ascii_alphanumeric() || extra.contains(*c)).take(defaults::num("actions.token_max") as usize).collect()
+}
+
 /// Record an action.
 pub fn record(dir: &Path, a: &Action, now: u64) {
     append(
@@ -68,9 +75,9 @@ pub fn record(dir: &Path, a: &Action, now: u64) {
 /// Record a mistake signal for an action.
 pub fn mistake(dir: &Path, feature: &str, action: &str, target: &str, kind: &str, detail: &str, now: u64) {
     // the shared telemetry schema (kind `mistake`); the matching `act` event is emitted where the action runs (dsact for pokes)
-    let tok = |s: &str| s.chars().filter(|c| c.is_ascii_alphanumeric() || "-_:#@./".contains(*c)).collect::<String>();
+    let tok = token;
     crate::telemetry::emit::mistake(&crate::telemetry::emit::ActRec {
-        feature: &tok(feature), action: &tok(action), outcome: crate::telemetry::Outcome::Advise, latency_ms: 0, target: &tok(target), inputs: "", reason: &tok(kind), action_id: "",
+        feature: &tok(feature), action: &tok(action), outcome: crate::telemetry::event::Outcome::Advise, latency_ms: 0, target: &tok(target), inputs: "", reason: &tok(kind), action_id: "",
     });
     append(dir, &json!({"t": "mistake", "ts": now, "feature": feature, "action": action, "target": target, "kind": kind, "detail": detail}));
 }
