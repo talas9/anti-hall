@@ -99,6 +99,20 @@ pub fn dump(home: &Path) -> BTreeMap<String, String> {
     out
 }
 
+/// [`dump`] with the home's own path replaced by a placeholder in every value, so two mirrors whose files name their own home (a
+/// descriptor's inbox path rewritten into the mirror) compare equal.
+pub fn dump_masked(home: &Path) -> BTreeMap<String, String> {
+    let mut spellings = vec![home.to_string_lossy().into_owned()];
+    if let Ok(c) = std::fs::canonicalize(home) {
+        let c = c.to_string_lossy().into_owned();
+        if !spellings.contains(&c) {
+            spellings.push(c);
+        }
+    }
+    let mask = defaults::text("devswarm_recon.norm_home_mask");
+    dump(home).into_iter().map(|(k, v)| (k, spellings.iter().fold(v, |t, h| t.replace(h.as_str(), mask)))).collect()
+}
+
 /// What differs between two dumps: one entry per path, saying which side lacks it or showing the first differing line.
 pub fn diff(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> Vec<String> {
     let mut out = Vec::new();

@@ -12,6 +12,14 @@
 doc = "Who owns the supervisor duties: witness (the Node supervisor job does; the engine runs none of them) | engine (the engine's scheduler runs them, poke and escalate follow). Anything else reads as witness, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit."
 value = "witness"
 
+[devswarm_sup.reconcile_mode]
+doc = "Who runs the reconcile sweep duty while devswarm_sup.mode is `engine`: node (Node's reconcileSweepIfDue, unchanged; the default until the proof window) | engine (the engine reconciles each project natively, every state change witnessed against Node on scratch copies first, and Node runs the rest of the sweep: the mesh fold, the active-workspace probe, start-up sampling). Anything else reads as node, so a typo never starts a second actor."
+value = "node"
+
+[devswarm_sup.reconcile_mode_words]
+doc = "The words of devswarm_sup.reconcile_mode, in the order node, engine."
+value = ["node", "engine"]
+
 [devswarm_sup.mode_words]
 doc = "The words of devswarm_sup.mode, in the order witness, engine."
 value = ["witness", "engine"]

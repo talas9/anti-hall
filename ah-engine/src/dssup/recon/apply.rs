@@ -66,7 +66,7 @@ pub fn check(env: &Env, ops: &[Op]) -> Result<(), String> {
                     return Err(format!("{store}:{}", row.id));
                 }
             }
-            Op::Append { .. } | Op::Rename { .. } | Op::Derive { .. } | Op::Log { .. } => {}
+            Op::Append { .. } | Op::Rename { .. } | Op::Derive { .. } | Op::Log { .. } | Op::Pull { .. } => {}
         }
     }
     Ok(())
@@ -144,7 +144,7 @@ fn log_line(env: &Env, component: &str, op: &str, level: &str, msg: &str, ctx: &
     crate::meshw::clog::write_line(&env.log_dir(), &format!("{}\n", OVal::Obj(e).stringify()));
 }
 
-fn run_op(env: &Env, op: &Op) -> Result<(), String> {
+fn run_op(env: &Env, op: &Op, hook: &dyn Fn(&str)) -> Result<(), String> {
     let at = |rel: &str| env.home.join(rel);
     let mkparent = |p: &Path| p.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(|e| e.to_string());
     match op {
@@ -176,6 +176,7 @@ fn run_op(env: &Env, op: &Op) -> Result<(), String> {
                 Some(why) => Err(format!("derive:{why}")),
             }
         }
+        Op::Pull { id, cwd } => super::pull::apply_pull(env, id, cwd, hook),
         Op::Log { component, op, level, msg, ctx } => {
             log_line(env, component, op, level, msg, ctx);
             Ok(())
@@ -187,7 +188,7 @@ fn run_op(env: &Env, op: &Op) -> Result<(), String> {
 pub fn run(env: &Env, label: &str, ops: &[Op], hooks: &Hooks) -> Result<(), String> {
     for (i, op) in ops.iter().enumerate() {
         (hooks.at)(&format!("{label}:{i}:before"));
-        run_op(env, op)?;
+        run_op(env, op, hooks.at)?;
         (hooks.at)(&format!("{label}:{i}:after"));
     }
     Ok(())

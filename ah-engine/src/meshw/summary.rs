@@ -601,6 +601,11 @@ fn csv_parts(v: &str) -> Vec<String> {
     v.split(defaults::text("mesh_write.csv_separator")).map(|p| js_trim(p).to_string()).filter(|p| !p.is_empty()).collect()
 }
 
+/// `heldPartitionIdsFrom(env)`: the partition ids the owner holds (the `devswarm.heldPartitions` setting).
+pub(crate) fn held_ids(inv: &Inv) -> R<HashSet<String>> {
+    Ok(csv_parts(&csv_setting(inv, &held_partitions_keys())?).into_iter().collect())
+}
+
 /// `jev-triage.js` `hashMessage(text)`.
 fn jev_hash(text: &str) -> String {
     let d = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());

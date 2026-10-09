@@ -28,7 +28,9 @@ pub mod gate;
 pub mod heal;
 pub mod mirror;
 pub mod norm;
+pub mod pull;
 pub mod side;
+pub mod sweep;
 pub mod view;
 
 use crate::meshw::store::RegistryRow;
@@ -43,6 +45,9 @@ pub struct Scope {
     pub dirs: Vec<String>,
     /// Stores (repo keys).
     pub stores: Vec<String>,
+    /// Files (relative to the home) whose text names the home they were copied from; each mirror rewrites that home to its own, so
+    /// a function that follows a path stored in the file (a descriptor's inbox path) stays inside the mirror.
+    pub rebase: Vec<String>,
 }
 
 /// What a file must look like for an op to apply: the plan's own reading of it, re-checked under the lock.
@@ -114,6 +119,15 @@ pub enum Op {
     Derive {
         /// The store (repo key).
         store: String,
+    },
+    /// The ensure and the delivery-log replay of one workspace's drain (`inbox pull` as `reconcile` runs it, after the destructive
+    /// read was captured to the delivery log): the descriptor and registry row are made right, every open batch of the log is
+    /// ingested into the inbox and the store and closed, a log that has grown is rotated. Applied by `pull::apply_pull`.
+    Pull {
+        /// The workspace id.
+        id: String,
+        /// The git root the pull stands in.
+        cwd: String,
     },
     /// One line of the central log, as `anti-hall-log.js` `logEvent` writes it.
     Log {

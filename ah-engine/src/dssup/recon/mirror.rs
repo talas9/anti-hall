@@ -4,6 +4,7 @@
 //! never taken). The source is only ever read.
 use super::Scope;
 use super::view::{store_db, store_rel};
+use crate::meshw::idlock::devswarm_root;
 use crate::defaults;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -81,6 +82,33 @@ pub fn make(src: &Path, dst: &Path, scope: &Scope) -> Result<(), String> {
     }
     for hash in &scope.stores {
         copy_store(src, dst, hash)?;
+    }
+    rebase(src, dst, &scope.rebase)
+}
+
+/// Rewrite the DevSwarm state directory a copied file names (a descriptor's absolute inbox and cursor path) to the mirror's own,
+/// so nothing that follows such a path can leave the mirror. Both spellings of the directory (as given and canonical) are
+/// rewritten; a worktree path elsewhere under the home is left alone.
+fn rebase(src: &Path, dst: &Path, files: &[String]) -> Result<(), String> {
+    let spellings = |p: &Path| {
+        let mut v = vec![p.to_string_lossy().into_owned()];
+        if let Ok(c) = std::fs::canonicalize(p) {
+            let c = c.to_string_lossy().into_owned();
+            if !v.contains(&c) {
+                v.push(c);
+            }
+        }
+        v
+    };
+    let (from, to) = (spellings(&devswarm_root(src)), devswarm_root(dst).to_string_lossy().into_owned());
+    for rel in files {
+        let f = dst.join(rel);
+        let Ok(bytes) = std::fs::read(&f) else { continue };
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        for h in &from {
+            text = text.replace(h.as_str(), &to);
+        }
+        std::fs::write(&f, text).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

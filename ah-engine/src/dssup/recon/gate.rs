@@ -135,7 +135,7 @@ fn witness(ctx: &Ctx, runner: &dyn Runner, job: &Job, m_node: &std::path::Path, 
             UnitEnd::Deferred(w) | UnitEnd::Failed(w) => return Verdict::MirrorFailed(format!("{}: {w}", u.label)),
         }
     }
-    let mut diffs = super::norm::diff(&super::norm::dump(m_node), &super::norm::dump(m_eng));
+    let mut diffs = super::norm::diff(&super::norm::dump_masked(m_node), &super::norm::dump_masked(m_eng));
     for (i, want) in job.expect.iter().enumerate() {
         if let Some(w) = want
             && theirs.get(i) != Some(w)
