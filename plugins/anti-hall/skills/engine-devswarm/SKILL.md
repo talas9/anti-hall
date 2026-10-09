@@ -7,6 +7,12 @@ description: "Use when working in or with DevSwarm workspaces and a DevSwarm gat
 
 The DevSwarm role, gate and wake guards.
 
+## Verbs
+
+| Verb | What it does | Roles |
+|---|---|---|
+| `ah-engine devswarm` | `<status\|line\|advisory --session <id>\|archive --id <ws> --request <id>\|plan-prune --older-than <days>\|prune --confirm-ids <ids> --plan <nonce>>` The DevSwarm realtime state and owner actions (lane dswire) | main, codex, workspace, subagent (owner args: archive, plan-prune, prune) |
+
 ## Guards
 
 - `devswarm-version`: SessionStart advisory: the DevSwarm CLI drifted by major or minor from the verified version (port of devswarm-version.js); a stale cache...
@@ -18,6 +24,7 @@ The DevSwarm role, gate and wake guards.
 - `devswarm-child-gate`: DevSwarm child Stop gate: allows the stop when the hook cannot act (switch off, skip recorded, not a DevSwarm child); a child workspace...
 - `devswarm-parent-reply-tracker`: DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm send (switch off, child workspace, other tool, command...
 - `devswarm-child-drain`: DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child) and when it would stay...
+- `devswarm-rt-advisory`: Tells the main session which DevSwarm workspace changes (stuck, CI, PR, lifecycle) it has not seen yet; engine-only
 
 ## Switches
 
@@ -38,5 +45,12 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.parentReplyTracker` = true: Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable)
 - `devswarm.drainTtlMs` = 600000: The drain marker time to live: the settings entry (section and key; its environment variable and bounds are in migrate_settings.toml)...
 - `devswarm.monitorNoOkFailMin` = 10: Where devswarm.monitorNoOkFailMin is read from (minutes without a successful monitor poll before the daemon reads FAILING)
+- `devswarm.spawnCreateTimeoutMs` = 180000: Timeout of `workspace create` in ms
+- `devswarm.autoArchive.idleMin` = 30: Minutes of inactivity before a finished workspace is archived
+- `devswarm.autoArchive.ignorePings` = true: Whether the idle gate ignores the child's own wake/heartbeat/status turns
+- `devswarm.autoArchive.maxPerSweep` = 3: Most auto-archives in one sweep
+- `devswarm.autoArchive.mode` = "on": Auto-archive mode: on (archive), dry-run (plan only, nothing spawned), off
+- `devswarm.nudgeCooldownSec` = 120: Seconds between two pokes of one workspace
+- `devswarm.nudgeMaxAttempts` = 2: Pokes before a stale workspace is escalated
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

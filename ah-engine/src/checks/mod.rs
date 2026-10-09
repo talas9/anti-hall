@@ -129,6 +129,11 @@ pub trait Check: Send + Sync {
     fn scripted(&self) -> bool {
         false
     }
+    /// True when this check's script of the same name is a helper the check itself calls with facts the engine read (the
+    /// DevSwarm realtime advisory), so the dispatcher must not run it on the raw hook payload.
+    fn script_is_helper(&self) -> bool {
+        false
+    }
 }
 
 /// How many registry checks still decide in compiled Rust (`compiled_logic_checks_remaining`, the v1.0 gate of D88: it
@@ -151,7 +156,9 @@ pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value
         return Some(crate::script::failed(check.name(), subject.event, crate::defaults::text("script.msg_settings_unreadable")));
     }
     // D88: a check whose logic ships as a plugin script runs the script (unless `script.enabled` is 0).
-    if let Some(v) = crate::script::run(check.name(), payload, opts, subject.event, env) {
+    if !check.script_is_helper()
+        && let Some(v) = crate::script::run(check.name(), payload, opts, subject.event, env)
+    {
         return v;
     }
     check.run_env(subject, payload, opts, env)

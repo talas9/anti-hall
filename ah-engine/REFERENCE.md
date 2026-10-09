@@ -16,6 +16,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `config` | `[validate <file>\|heal]` | no | implemented | Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the settings they lack from the pristine copy, also in a version-controlled checkout); versions, rollback and export are planned (D18, they need the config database). |
 | `ctl` | `<ping\|reload\|stop\|status>` | no | implemented | Send a control verb to the daemon: ping, reload, stop or status. |
 | `defect` | `<report\|list\|show\|rule\|archive\|backfill\|recurring\|similar> [flags] [--json]` | no | implemented | File, list, show and rule anti-hall defect reports and query the bug history (L9a, the port of scripts/defect.js): `report`, `list [--mine\|--open\|--unfinished]`, `show <fp>`, `rule <fp> --status ...`, `archive`, and the history verbs `backfill`, `recurring` and `similar`; the store is ~/.anti-hall/defects/. |
+| `devswarm` | `<status\|line\|advisory --session <id>\|archive --id <ws> --request <id>\|plan-prune --older-than <days>\|prune --confirm-ids <ids> --plan <nonce>>` | no | implemented | The DevSwarm realtime state and owner actions (lane dswire). `status` and `line` print the live workspace state and its statusline segment; `advisory --session <id>` prints the changes that session has not seen; `archive --id <ws> --request <id>`, `plan-prune --older-than <days>` and `prune --confirm-ids <a,b> --plan <nonce>` run the hivecontrol actions at the owner's request, with Node's preconditions, ledger and confirmations. Roles (devswarm_wire.role_matrix): reads are open; the acting verbs are for the main session only. `create` and `merge` are left to scripts/devswarm.js (exit 75). Inert (exit 64) where DevSwarm is absent. |
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
 | `doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON. |
 | `gen-hooks` | `--host claude\|codex [--kind hooks\|registry\|list\|map]` | yes | implemented | Print a file generated from the dispatch table (D87): the thin hooks.json (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map, for one host. |
@@ -142,6 +143,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `sibling-sweep` | Stop and SubagentStop reminder: when the reply states the cause of a bug in a fix context and the turn shows no search for other occurrences of the same pattern, asks once per cause to search, fix or list every occurrence and state the search run; counts reminders and follow-through (engine-only, no Node twin). |
 | `handover-hygiene` | SessionStart advisory (engine-only, no Node twin): reports handovers that are unindexed, stale, missing a brief or malformed (no front matter, no Situation or Next action, a broken reference) once per distinct problem set; the same script builds the handover brief tree (`ah-engine handovers index\|check\|search`) and runs as the `handovers` scheduled job. |
 | `agent-reminders` | Delivers the agent tracker's queued reminders and advisories to the session or subagent that owns them, at its next UserPromptSubmit or PostToolUse (engine-only, advisory). |
+| `devswarm-rt-advisory` | Tells the main session which DevSwarm workspace changes (stuck, CI, PR, lifecycle) it has not seen yet; engine-only. |
 | `session-end-mcp-reaper` | SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node (port of session-end-mcp-reaper.js). |
 | `procwatch-advisory` | SessionStart, UserPromptSubmit and PreToolUse advisory: leftover processes of ended Claude sessions, agents silent past a threshold, processes of this session using too much CPU or memory, and low free disk; warns only (a kill is a per-class opt-in of the scheduled sweep, a block at critical disk an opt-in setting). |
 | `task-tracker` | UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the newRequest Jev label of each prompt and the previous turn's demand score; a session that could be a DevSwarm Primary, or has a task the per-turn DISPATCH NOW line would name or a dispatch-tier outcome still to record, defers to Node (port of task-tracker.js). |
@@ -921,6 +923,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `job.backup` | `11 entries` |  |  | A scrubbed backup of both databases (D27); off until schedule.backup_ms is set. Runs as a subprocess. |
+| `job.devswarm_reconcile` | `11 entries` |  |  | The safety net under the DevSwarm file-event layer: re-read every DevSwarm source, diff against the live state and run the action sweeps. Does nothing (and starts nothing) where DevSwarm is absent. |
 | `job.handovers` | `11 entries` |  |  | Keep the handover brief trees (BRIEF.md and BRIEF.json per day, plus the root brief) of every registered project current: rebuilds only the days whose handover files changed, writes only files whose bytes change, never edits a handover and never deletes. Runs `ah-engine handovers index --registered` as a subprocess; off when schedule.handovers_ms is 0. |
 | `job.maintain` | `11 entries` |  |  | Size control (D26): move inactive rows to archive.db, prune derived data, checkpoint and VACUUM; runs as a subprocess so a timeout can kill it. |
 | `job.metrics_snapshot` | `11 entries` |  |  | Keep a snapshot of the metrics counters and histograms in hot.db and its rollups in archive.db (D51). |
@@ -933,7 +936,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `schedule.action_args` | `1 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
-| `schedule.actions` | `11 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.actions` | `12 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
@@ -1782,14 +1785,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_SubagentStop` | `5 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCompleted` | `5 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCreated` | `5 entries` |  |  | The claude TaskCreated hook entries, in dispatch order. |
-| `dispatch.hooks_claude_UserPromptSubmit` | `11 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_claude_UserPromptSubmit` | `12 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreToolUse` | `11 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `18 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `5 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
-| `dispatch.hooks_codex_UserPromptSubmit` | `11 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_codex_UserPromptSubmit` | `12 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.in_process` | `0` | `AH_ENGINE_DISPATCH_IN_PROCESS` |  | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
 | `dispatch.list_banner` | `# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are:...` |  |  | The first line of the generated fallback list. |
 | `dispatch.list_comment_mark` | `#` |  |  | The mark that starts a comment line of the generated fallback list. |
@@ -3472,7 +3475,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
 | `roles.line_max` | `140` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
 | `roles.main_skill` | `3 entries` |  |  | The main skill: its name, its description (when to load it) and its intro line. |
-| `roles.matrix` | `41 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
+| `roles.matrix` | `42 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
 | `roles.msg_none` | `none` |  |  | The verb list in the note when the role may run none. |
 | `roles.msg_note` | `anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {v...` |  |  | The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}. |
 | `roles.msg_note_more` | ` (+{n} more, see the guide)` |  |  | Added to the note when the verb list was shortened. Placeholder: {n}. |
@@ -4933,6 +4936,57 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.token_re` | `(^\|[\s/])(mcp[-_]server\|server-sequential-thinking)` |  |  | JavaScript regex source (case-insensitive) of a boundary-anchored mcp-server or server-sequential-thinking token. |
 | `mcp_reaper.tz_env` | `TZ` |  |  | The environment variable that moves the time zone Node would read a start time in; when a request sets it the start time is handed to Node. |
 
+### devswarm_rt.toml / devswarm_rt
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_rt.ci_failing` | `Failed, Failure, Error` |  |  | `pull_requests.checkStatus` values meaning CI failed (compared case-insensitively). Only `Failed` and `None` were seen in the live app database; the rest are candidates. |
+| `devswarm_rt.ci_passing` | `Passed, Success, Succeeded` |  |  | `pull_requests.checkStatus` values meaning CI passed (compared case-insensitively). |
+| `devswarm_rt.ci_running` | `Pending, Running, InProgress, Queued` |  |  | `pull_requests.checkStatus` values meaning CI is still running (compared case-insensitively). |
+| `devswarm_rt.col_branch` | `branchName` |  |  | The `builders` branch column. |
+| `devswarm_rt.col_label` | `label` |  |  | The `builders` label column. |
+| `devswarm_rt.col_pr` | `pullRequestId` |  |  | The `builders` linked-PR column (holds a `pull_requests.id`). |
+| `devswarm_rt.col_pr_checks` | `checkStatus` |  |  | The `pull_requests` CI status column. |
+| `devswarm_rt.col_pr_id` | `id` |  |  | The `pull_requests` id column. |
+| `devswarm_rt.col_pr_number` | `number` |  |  | The `pull_requests` PR number column. |
+| `devswarm_rt.col_pr_state` | `state` |  |  | The `pull_requests` state column. |
+| `devswarm_rt.col_pr_synced` | `lastSyncedAt` |  |  | The `pull_requests` last-sync time column (ISO text); the app's own CI data is only as fresh as this. |
+| `devswarm_rt.col_repo` | `repositoryId` |  |  | The `builders` repository id column. |
+| `devswarm_rt.col_term_active` | `isActive` |  |  | The `builder_terminals` open flag column. |
+| `devswarm_rt.col_term_builder` | `builderId` |  |  | The `builder_terminals` column that names its builder. |
+| `devswarm_rt.col_term_panel` | `panelStatus` |  |  | The `builder_terminals` panel status column. |
+| `devswarm_rt.edge_cap` | `2000` |  |  | Most change records (rt_edges) kept in hot.db and in memory; the oldest are dropped first. |
+| `devswarm_rt.heartbeat_key_ts` | `ts` |  |  | The heartbeat file field holding its last-beat time (epoch ms). |
+| `devswarm_rt.liveness_ok` | `alive` |  |  | The status Node's liveness file carries for a healthy workspace; any other status counts as stuck in the shadow comparison. |
+| `devswarm_rt.mode` | `on` |  |  | off \| observe \| on. `on` (default, owner 2026-10-08: the engine is live, Node is a non-acting witness) keeps the workspace state and serves it to consumers; `observe` keeps and logs the state but consumers must not act on it; `off` is inert, like DevSwarm being absent. |
+| `devswarm_rt.namespace` | `devswarm` |  |  | The state-store namespace the DevSwarm workspace state is kept under in hot.db (rt_entity / rt_edges). |
+| `devswarm_rt.panel_resumable` | `resumable` |  |  | The `builder_terminals.panelStatus` value that is the paused candidate. |
+| `devswarm_rt.panel_resumable_signal` | `panel_resumable` |  |  | The `paused_signal` value that declares the resumable-panel evidence proven. |
+| `devswarm_rt.paused_evidence` | `{n} open terminal(s), every panel status is {panel}` |  |  | The evidence text shown with `paused?`. Placeholders: {n}, {panel}. |
+| `devswarm_rt.paused_signal` | `none` |  |  | How a paused workspace is recognised. `none` (default): no signal is proven, so a workspace whose active terminals are all resumable is reported as `paused?` with its evidence and never as paused. `panel_resumable`: set this only after an owner-confirmed crash fixture proves it; the same evidence then reports `paused`. |
+| `devswarm_rt.plan_key_n` | `n` |  |  | The plan step field holding its number. |
+| `devswarm_rt.plan_key_status` | `status` |  |  | The plan step field holding its status. |
+| `devswarm_rt.plan_key_steps` | `steps` |  |  | The plan file field holding its step list. |
+| `devswarm_rt.plan_key_worktree` | `worktreePath` |  |  | The plan file field holding the worktree it belongs to (plans are matched to workspaces by worktree). |
+| `devswarm_rt.plan_status_doing` | `doing` |  |  | The plan step status of the step being worked on. |
+| `devswarm_rt.pr_closed` | `closed` |  |  | The `pull_requests.state` value of a closed, unmerged PR (compared case-insensitively). |
+| `devswarm_rt.pr_merged` | `merged` |  |  | The `pull_requests.state` value of a merged PR (compared case-insensitively). |
+| `devswarm_rt.pr_open` | `open` |  |  | The `pull_requests.state` value of an open PR (compared case-insensitively). |
+| `devswarm_rt.reconcile_ms` | `60000` |  | ms | How often the whole state is re-read from its sources and diffed (the safety net under the event layer); every change it finds that events missed counts in `rt_reconcile_repairs`. |
+| `devswarm_rt.restart_grace_ms` | `120000` |  | ms | Changes found by the start-up diff (flagged while_down) are not notified before this long after start, and only if the condition still holds then. |
+| `devswarm_rt.shadow_file` | `rt-shadow.ndjson` |  |  | The NDJSON file (in the engine state directory) the engine-versus-witness comparison appends to. |
+| `devswarm_rt.shadow_key_active` | `active` |  |  | The witness app-state field listing the active workspaces. |
+| `devswarm_rt.shadow_key_archived` | `archived` |  |  | The count field (inside the counts object) holding the archived total. |
+| `devswarm_rt.shadow_key_counts` | `counts` |  |  | The witness app-state field holding the active and archived counts. |
+| `devswarm_rt.shadow_key_id` | `id` |  |  | The id field of an entry in the witness app-state active list. |
+| `devswarm_rt.shadow_key_pending` | `pending` |  |  | The unread-pending field of a witness liveness file. |
+| `devswarm_rt.shadow_key_status` | `status` |  |  | The status field of a witness liveness file. |
+| `devswarm_rt.shadow_max_bytes` | `8388608` |  | bytes | The shadow log is not appended to once it is this large. |
+| `devswarm_rt.stale_ms` | `180000` |  | ms | A state field last observed longer ago than this is reported as stale. |
+| `devswarm_rt.stall_ms` | `900000` |  | ms | An active workspace whose last heartbeat is older than this is `stuck`. |
+| `devswarm_rt.witness_app_state` | `app-state.json` |  |  | The witness's app-state cache file name, under its devswarm directory. |
+| `devswarm_rt.witness_home` | `.anti-hall/ah-node-shadow/scratch-home` |  |  | The Node witness's scratch HOME, relative to the real home. Its `.anti-hall/devswarm` tree is what the shadow comparison reads (never the live Node files). |
+
 ### task_tracker.toml / task_tracker
 
 | Key | Default | Env override | Unit | What it is |
@@ -6126,6 +6180,157 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `schedule.agent_tick_ms` | `60000` | `AH_ENGINE_AGENT_TICK_MS` | ms | Interval of the agent_tick job; 0 turns the tracker's ticks off. |
 
+### devswarm_act.toml / devswarm_act
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_act.archive_refused_flag` | `archived` |  |  | A zero-exit archive whose JSON body has this key set to false did not archive anything and counts as a failure (Node: archive.js hcArchiveCall). |
+| `devswarm_act.archive_retry_re` | `could not confirm` |  |  | A failed archive whose error matches this (case-insensitive) is retried once: the known-flaky terminal confirmation (Node: archive.js APP_ARCHIVE_RETRYABLE_RE). |
+| `devswarm_act.argv_archive` | `workspace, archive, {id}` |  |  | Argv of an archive; `{id}` is the workspace UUID (Node: ['workspace','archive',id]). |
+| `devswarm_act.argv_check_merge` | `workspace, check-merge` |  |  | Argv of the informational check run before a merge (Node: spawn.js 1265). |
+| `devswarm_act.argv_create` | `workspace, create` |  |  | Fixed head of a create; the owner's own arguments follow unchanged, except the anti-hall flag in devswarm_act.create_strip (Node: spawn.js). |
+| `devswarm_act.argv_delete` | `workspace, delete, {id}` |  |  | Argv of a delete (Node: ['workspace','delete',id]). |
+| `devswarm_act.argv_merge` | `workspace, merge-into-source` |  |  | Fixed head of a merge; the owner's own arguments follow unchanged (Node: spawn.js 1271). |
+| `devswarm_act.argv_title` | `workspace, update-title, -b, {branch}, {title}` |  |  | Argv of the best-effort title follow-up of a create; `{branch}` and `{title}` are the request's (Node: spawn.js 1086). |
+| `devswarm_act.argv_version` | `--version` |  |  | Argv of the capability probe (Node: devswarm-capabilities.js `--version`). |
+| `devswarm_act.auto_archive_kind` | `auto-archive` |  |  | The kind word of the automatic archive in the Node log's `action` field. |
+| `devswarm_act.auto_archive_state_file` | `.anti-hall/devswarm/auto-archive-state.json` |  |  | Node's `auto-archive-state.json` (relative to the home directory): the ids the last sweep owns, read by the parent-inbox nag so it stays quiet for them. The engine writes the same shape after a sweep in mode on. |
+| `devswarm_act.automatic_kinds` | `auto-archive, poke, escalate` |  |  | The only actions a trigger without an owner request may start (Node's automatic set: the supervisor's auto-archive and its poke/escalate). Everything else needs an owner request; delete is never automatic. |
+| `devswarm_act.caller_env` | `ANTIHALL_CALLER` |  |  | Environment variable naming the caller of a delete. |
+| `devswarm_act.create_strip` | `--from-local` |  |  | Arguments removed from a create request before it reaches hivecontrol (anti-hall's own flag; Node: spawn.js `--from-local`). |
+| `devswarm_act.deferred_kinds` | `recover, drain, read-messages` |  |  | Actions the engine does not execute and answers with `deferred` (nothing written): `recover` kills and resumes a process (its target resolution is not ported), `drain` and `read-messages` are destructive reads that must be folded into the store in the same step. |
+| `devswarm_act.err_chars` | `200` |  |  | Most characters kept of a hivecontrol answer quoted in an error (Node: archive.js slice(0, 200)). |
+| `devswarm_act.hc_bin` | `hivecontrol` |  |  | The DevSwarm CLI executable, resolved on the process PATH (Node: `hivecontrol`). A missing binary means every action answers `unavailable` and nothing is written. |
+| `devswarm_act.hc_timeout_ms` | `60000` |  |  | Wall-clock bound of one hivecontrol call; on expiry only the engine's own child is killed (Node: lifecycle.js HC_TIMEOUT_MS and archive.js APP_ARCHIVE_TIMEOUT_MS). |
+| `devswarm_act.id_verbs` | `archive, delete` |  |  | Verbs that default to the CURRENT workspace when no id is given, so an explicit non-empty id (never starting with `-`) is mandatory (Node: lifecycle.js verbArgv, archive.js hcArchiveCall). |
+| `devswarm_act.interactive_caller` | `interactive` |  |  | The only value of ANTIHALL_CALLER (besides unset) under which a delete may run (Node: assertInteractiveCaller). |
+| `devswarm_act.ledger_file` | `dsact.ledger` |  |  | The action ledger (NDJSON, append-only) in the engine state directory: one `started` line before a spawn, one `finished` line after. A key that is started or done is never run again. |
+| `devswarm_act.log_file` | `dsact.log` |  |  | NDJSON log of every action decision and result (state directory). |
+| `devswarm_act.max_attempts` | `3` |  |  | Most times one idempotency key is attempted after failures; a done or in-doubt key is never repeated (bounds a retry storm; Node had no bound and retried every sweep). |
+| `devswarm_act.msg_caller` | `deletion refused: caller {caller} is automated (only an owner-approved intera...` |  |  | Delete refused: an automated caller. Placeholder: {caller}. |
+| `devswarm_act.msg_inert` | `DevSwarm not installed` |  |  | Reason recorded when DevSwarm is not installed or its app database is absent: the layer does nothing. |
+| `devswarm_act.msg_ledger` | `the action ledger is not writable ({why}); nothing was run so no action can r...` |  |  | Why nothing ran: the ledger could not record the attempt. Placeholder: {why}. |
+| `devswarm_act.msg_no_script` | `the decision script is missing or failed` |  |  | Reason recorded when the decision script is missing or fails: nothing runs (fail closed). |
+| `devswarm_act.msg_origin` | `refused: {kind} may not be started by a {origin} trigger` |  |  | Why a kind was refused for its origin. Placeholders: {kind}, {origin}. |
+| `devswarm_act.msg_plan_expired` | `plan {nonce} expired; run the dry run again` |  |  | Delete refused: the plan is too old. Placeholder: {nonce}. |
+| `devswarm_act.msg_plan_ids` | `the confirmed ids must exactly match the plan's eligible ids: {ids}` |  |  | Delete refused: the confirmed ids differ from the plan's. Placeholder: {ids}. |
+| `devswarm_act.msg_plan_unknown` | `unknown plan nonce {nonce}` |  |  | Delete refused: no stored plan has this nonce. Placeholder: {nonce}. |
+| `devswarm_act.msg_plan_used` | `plan {nonce} was already used` |  |  | Delete refused: the plan was already used. Placeholder: {nonce}. |
+| `devswarm_act.msg_plan_write` | `could not mark the plan used: {why}` |  |  | Delete refused: the plan could not be marked used. Placeholder: {why}. |
+| `devswarm_act.msg_timeout` | `the call did not finish within {ms} ms; only its own process was stopped` |  |  | Error recorded when a call hit its bound. Placeholder: {ms}. |
+| `devswarm_act.msg_unverified` | `the app database does not show the workspace archived` |  |  | Why an archive that exited 0 still counts as failed: the app database does not list the workspace as archived. |
+| `devswarm_act.msg_verb` | `refused: {argv} is not an allowed hivecontrol invocation` |  |  | Why an argv was refused before any process started. Placeholder: {argv}. |
+| `devswarm_act.msg_version` | `workspace {verb} needs DevSwarm {want} or newer (found {have})` |  |  | Why a verb is unavailable on this DevSwarm. Placeholders: {verb}, {have}, {want}. |
+| `devswarm_act.msg_version_unknown` | `workspace {verb} needs a known DevSwarm version and `--version` gave none` |  |  | Why a verb with a minimum version is unavailable when the version cannot be read. Placeholder: {verb}. |
+| `devswarm_act.node_archive_log` | `.anti-hall/logs/devswarm-auto-archive.ndjson` |  |  | Node's auto-archive NDJSON log, relative to the home directory; the witness compares against what Node would have appended. |
+| `devswarm_act.node_archived_state` | `.anti-hall/devswarm/auto-archived.json` |  |  | Node's durable gate-(h) file, relative to the home directory; the engine reads it so a workspace Node archived at a HEAD is never archived again at that HEAD. |
+| `devswarm_act.origins` | `automatic, owner` |  |  | The origin words in this order: automatic, owner. |
+| `devswarm_act.output_cap_bytes` | `1048576` |  |  | Most bytes of stdout kept from one call (the rest is read and dropped so the child never blocks on a full pipe). |
+| `devswarm_act.owner_kinds` | `archive, create, merge, delete` |  |  | The actions an owner request (a command, a skill or a mesh request) may start. `delete` additionally needs the approved plan (devswarm_act.plan_*). |
+| `devswarm_act.plan_mode_words` | `on, dry-run, off` |  |  | The auto-archive mode words in this order: on, dry-run, off. |
+| `devswarm_act.plan_nonce_len` | `16` |  |  | Length of a plan nonce in hex digits (Node: 16). |
+| `devswarm_act.plan_ttl_ms` | `900000` |  |  | How long a delete plan stays valid (Node: lifecycle.js PLAN_TTL_MS, 15 min). |
+| `devswarm_act.plans_dir` | `dsact-plans` |  |  | Directory (under the state directory) of stored delete plans, one file per nonce. |
+| `devswarm_act.poll_ms` | `10` |  |  | How often the runner checks whether its child has exited while waiting for the timeout. |
+| `devswarm_act.probe_timeout_ms` | `8000` |  |  | Bound of the `--version` capability probe (Node: devswarm-capabilities.js HELP_TIMEOUT_MS). |
+| `devswarm_act.prune_kind` | `prune-delete` |  |  | The `action` word of a delete in the prune log. |
+| `devswarm_act.prune_log` | `.anti-hall/logs/devswarm-prune.ndjson` |  |  | Node's prune NDJSON log, relative to the home directory (one line per delete, same fields). |
+| `devswarm_act.pruned_dir` | `.anti-hall/devswarm/pruned` |  |  | Where a deleted workspace's tombstone `<id>.json` goes, relative to the home directory (anti-hall side only; no store row is deleted). |
+| `devswarm_act.read_chunk_bytes` | `65536` |  |  | Size of one read from a child's output pipe. |
+| `devswarm_act.retry_backoff_ms` | `60000` |  |  | Minimum gap between two attempts of the same failed key. |
+| `devswarm_act.script_event` | `Act` |  |  | The event name passed to the decision script. |
+| `devswarm_act.script_name` | `act/devswarm-act` |  |  | The plugin script (engine/logic/<name>.js; it lives in the `act` sub-directory because it is no hook check) that decides every action. |
+| `devswarm_act.set_create_timeout_ms` | `8 entries` |  |  | Timeout of `workspace create` in ms. Node: devswarm.spawnCreateTimeoutMs. |
+| `devswarm_act.set_idle_min` | `8 entries` |  |  | Minutes of inactivity before a finished workspace is archived. Node: devswarm.autoArchive.idleMin. |
+| `devswarm_act.set_ignore_pings` | `6 entries` |  |  | Whether the idle gate ignores the child's own wake/heartbeat/status turns. Node: devswarm.autoArchive.ignorePings. |
+| `devswarm_act.set_max_per_sweep` | `8 entries` |  |  | Most auto-archives in one sweep. Node: devswarm.autoArchive.maxPerSweep. |
+| `devswarm_act.set_mode` | `7 entries` |  |  | Auto-archive mode: on (archive), dry-run (plan only, nothing spawned), off. Node: devswarm.autoArchive.mode. |
+| `devswarm_act.set_nudge_cooldown_sec` | `8 entries` |  |  | Seconds between two pokes of one workspace. Node: devswarm.nudgeCooldownSec. |
+| `devswarm_act.set_nudge_max_attempts` | `8 entries` |  |  | Pokes before a stale workspace is escalated. Node: devswarm.nudgeMaxAttempts. |
+| `devswarm_act.shadow_file` | `dsact.shadow` |  |  | NDJSON of the witness comparison: what the engine did and what Node would have done, per trigger (state directory). |
+| `devswarm_act.type_bool` | `bool` |  |  | The `type` word of a boolean setting entry in this file. |
+| `devswarm_act.type_enum` | `enum` |  |  | The `type` word of an enum setting entry in this file. |
+| `devswarm_act.undo_hint` | `undo: unarchive it from the archived workspaces list in the DevSwarm app` |  |  | Text appended to the Primary's notice of an auto-archive (Node: lifecycle.js UNDO_HINT). |
+| `devswarm_act.verbs` | `archive:2.5.3, delete:2.5.3, create:, update-title:, check-merge:, merge-into...` |  |  | The hivecontrol verbs the engine may spawn, as `verb:minVersion` (empty version = any). Anything else is refused before a process starts (Node: capabilities.js default-deny registry). |
+| `devswarm_act.version_min_parts` | `3` |  |  | How many numeric parts a hivecontrol version needs to be compared (major.minor.patch). |
+| `devswarm_act.viewed_grace_ms` | `600000` |  |  | A workspace selected in the DevSwarm app within this many ms is not auto-archived (Node: lifecycle.js VIEWED_GRACE_MS, gate f). |
+| `devswarm_act.words` | `12 items` |  |  | The outcome words of the ledger and the logs, in this order: started, done, failed, timeout, skipped, unavailable, deferred, in-doubt, inert, refused, stale, planned. |
+
+### devswarm_wire.toml / devswarm_rt
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_rt.act.auto_archive.executor` | `engine` |  |  | Who runs the automatic archive of finished workspaces: engine \| node \| off. The engine honours the Node setting devswarm.autoArchive.{mode,idleMin,maxPerSweep,ignorePings} unchanged. With `engine` the Node supervisor's autoArchive must be switched off for the same machine (ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE=off in the supervisor job's environment); the durable auto-archived.json still stops either side from repeating an archive at one HEAD. |
+| `devswarm_rt.act.escalate.executor` | `node` |  |  | Who escalates a stale workspace once its pokes are used up (its descriptor's escalateCommand, once): engine \| node \| off. Same reasoning and default as poke. |
+| `devswarm_rt.act.poke.executor` | `node` |  |  | Who pokes a stale workspace (its descriptor's nudgeCommand): engine \| node \| off. Default node: Node has no per-action switch for this, and turning the whole supervisor off (ANTIHALL_DEVSWARM_SUPERVISOR=off) would also stop its retention and housekeeping, which the engine has not ported. It moves to engine once those duties are ported and the kit turns the supervisor off as a whole. |
+
+### devswarm_wire.toml / devswarm_wire
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_wire.act_edge_kinds` | `lifecycle, activity, pr, unread` |  |  | The kinds of state change that trigger an action sweep right away (the others wait for the periodic reconcile). |
+| `devswarm_wire.act_kinds` | `auto_archive, poke, escalate` |  |  | The automatic action kinds that have an executor switch, in the order auto_archive, poke, escalate (the key segment under devswarm_rt.act). |
+| `devswarm_wire.act_min_gap_ms` | `5000` |  | ms | The least time between two action sweeps (auto-archive, poke/escalate). An event burst triggers at most one sweep per gap; the periodic reconcile always triggers one. |
+| `devswarm_wire.advisory_dir` | `rt-advisory` |  |  | The directory (under the engine state directory) holding, per session, the newest change generation that session was told about. |
+| `devswarm_wire.advisory_enabled` | `true` |  |  | Inject a one-paragraph note of the DevSwarm workspace changes a session has not seen yet (the `devswarm-rt-advisory` hook check). Off turns the injection off; the state is still kept. |
+| `devswarm_wire.advisory_kinds` | `lifecycle, paused, activity, pr, checks` |  |  | The kinds of change an advisory mentions (lifecycle, paused, activity, unread, plan_step, pr, checks). |
+| `devswarm_wire.advisory_max_chars` | `600` |  |  | Most characters of one advisory; older changes are summarised as a count when it would be longer. |
+| `devswarm_wire.advisory_max_edges` | `8` |  |  | Most changes listed by name in one advisory. |
+| `devswarm_wire.advisory_prune_ms` | `604800000` |  | ms | A session's seen-generation file untouched for this long is removed when the next advisory is written. |
+| `devswarm_wire.advisory_session_max` | `128` |  |  | Longest session id (characters) used as a file name; a longer or unsafe id gets no advisory. |
+| `devswarm_wire.archive_log_name` | `.anti-hall/logs/devswarm-auto-archive.ndjson` |  |  | Node's auto-archive log under the home directory's logs directory; the newest ok line for a workspace dates its archive. |
+| `devswarm_wire.check_event` | `UserPromptSubmit` |  |  | The hook event the devswarm-rt-advisory check answers. |
+| `devswarm_wire.check_script` | `devswarm-rt-advisory` |  |  | The name of the plugin script (engine/logic/<name>.js) that decides the advisory. |
+| `devswarm_wire.check_summary` | `Tells the main session which DevSwarm workspace changes (stuck, CI, PR, lifec...` |  |  | The one-line description of the devswarm-rt-advisory hook check in the generated reference. |
+| `devswarm_wire.col_last_selected` | `lastSelectedAt` |  |  | The builders column holding when the owner last selected the workspace in the DevSwarm app (ISO text); the viewed gate of the auto-archive reads it. |
+| `devswarm_wire.ctl_advisory` | `devswarm advisory session={session}` |  |  | The control request the `advisory` verb sends the daemon. {session} is the session id. |
+| `devswarm_wire.ctl_advisory_word` | `advisory` |  |  | The first word of the control request that asks for an advisory (the other request is the state summary). |
+| `devswarm_wire.ctl_kv` | `{name}=` |  |  | How a control argument is introduced; {name} is the argument name. |
+| `devswarm_wire.ctl_none` | `-` |  |  | The control answer meaning 'nothing to say' (no advisory, or the layer is not running). |
+| `devswarm_wire.day_ms` | `86400000` |  |  | Milliseconds in a day (archive age in whole days). |
+| `devswarm_wire.days_flag` | `--older-than` |  |  | The flag of plan-prune that sets the minimum archive age in days. |
+| `devswarm_wire.deferred_exit` | `75` |  |  | Exit code for a verb handed to Node (nothing was done). |
+| `devswarm_wire.desc_keys` | `5 entries` |  |  | The descriptor fields the fact readers use: worktree path, session id, nudge command, escalate command, id. |
+| `devswarm_wire.executor_words` | `engine, node, off` |  |  | The words of the executor settings, in the order engine, node, off. Anything else reads as node (the engine stands down). |
+| `devswarm_wire.git_bin` | `git` |  |  | The git executable the fact readers run. |
+| `devswarm_wire.git_dir_file` | `2 entries` |  |  | The file a linked worktree has in place of a .git directory, and the prefix of its one line. |
+| `devswarm_wire.git_timeout_ms` | `4000` |  | ms | Time limit of each git call that reads a workspace's facts (HEAD, status, merge proof). A call over the limit is killed and the fact counts as not proven. |
+| `devswarm_wire.id_flag` | `--id` |  |  | The flag that names the workspace. |
+| `devswarm_wire.ids_flag` | `--confirm-ids` |  |  | The flag of prune that lists the approved ids (comma separated). |
+| `devswarm_wire.jev_dirty_cap` | `256` |  |  | Most workspaces held in the Jev dirty queue; past it the oldest entries are dropped (the slow scheduled sweep still covers them). |
+| `devswarm_wire.jev_dirty_file` | `rt-jev-dirty.json` |  |  | The file (under the engine state directory) listing the workspaces whose Jev sweep is queued, so a restart does not lose the queue. |
+| `devswarm_wire.jev_dirty_kinds` | `plan_step, activity, pr, checks` |  |  | The kinds of state change that mark a workspace's Jev data dirty and queue a sweep of just that workspace. |
+| `devswarm_wire.label_chars` | `8` |  |  | How many characters of a workspace id stand in for a missing label in an advisory. |
+| `devswarm_wire.msg_advisory` | `DevSwarm: {changes}{more} (state generation {generation})` |  |  | The advisory text. {changes} is the list of changes, {more} the note about changes left out, {generation} the state generation. |
+| `devswarm_wire.msg_deferred` | `devswarm {verb} is run by scripts/devswarm.js (the engine cannot yet reproduc...` |  |  | Printed for a verb the engine hands to Node. {verb}. |
+| `devswarm_wire.msg_edge` | `{ws} {kind} {from} -> {to}` |  |  | One change in an advisory. {ws} the workspace label or id, {kind} what changed, {from} and {to} the old and new value. |
+| `devswarm_wire.msg_edge_new` | `{ws} {kind} {to}` |  |  | One change whose old value is empty (a workspace appeared, a PR was linked). |
+| `devswarm_wire.msg_inert` | `DevSwarm is not installed or the realtime layer is off` |  |  | Printed by the verbs that need the live state when DevSwarm is absent. |
+| `devswarm_wire.msg_line` | `ws {active} active, {stuck} stuck, {unread} unread` |  |  | The statusline segment. {active} workspaces in progress, {stuck} stuck, {unread} unread mail, {gen} state generation. |
+| `devswarm_wire.msg_line_stale` | `ws state unknown` |  |  | The statusline segment when the app database could not be read (the state is unknown, not empty). |
+| `devswarm_wire.msg_missing_arg` | `missing required flag {flag}` |  |  | Printed when a verb lacks a required flag. {flag}. |
+| `devswarm_wire.msg_more` | `; and {n} more` |  |  | The note appended when changes were left out. {n} is how many. |
+| `devswarm_wire.msg_role_refused` | `devswarm {verb} is not allowed for the {role} role (main session only)` |  |  | Printed when the caller's role may not run the verb. {verb} {role}. |
+| `devswarm_wire.msg_separator` | `; ` |  |  | Between two changes in an advisory. |
+| `devswarm_wire.msg_unknown_verb` | `unknown devswarm verb {verb}` |  |  | Printed for an unknown verb. {verb}. |
+| `devswarm_wire.nudge_state_file` | `rt-nudges.json` |  |  | The engine's own record of pokes made (attempts, last time, escalated), under the engine state directory. |
+| `devswarm_wire.owner_verbs` | `8 items` |  |  | The `ah-engine devswarm <verb>` verbs and what each does: status, line and advisory read the state; archive, plan-prune and prune act at the owner's request. `create` and `merge` answer deferred (the Node verbs keep them, because the engine cannot reproduce their source-freshness and merge-gate checks yet). |
+| `devswarm_wire.plan_flag` | `--plan` |  |  | The flag of prune that names the plan. |
+| `devswarm_wire.request_flag` | `--request` |  |  | The flag that carries an owner request's own id (the idempotency key's last part). |
+| `devswarm_wire.role_child_env` | `ANTIHALL_DEVSWARM_SOURCE_BRANCH` |  |  | The environment variable whose non-blank value marks a DevSwarm workspace child. |
+| `devswarm_wire.role_codex_env` | `` |  |  | Environment variables whose presence marks a Codex session (empty: no Codex marker is known). |
+| `devswarm_wire.role_matrix` | `8 entries` |  |  | Which roles may run each verb (the permission matrix). Reads are open to every role; the verbs that act are for the main session only. |
+| `devswarm_wire.role_words` | `main, child, subagent, codex` |  |  | The roles a caller can have, in this order: main (the interactive main session), child (a DevSwarm workspace child), subagent (a spawned agent or any automated caller), codex (a Codex session). |
+| `devswarm_wire.session_flag` | `--session` |  |  | The flag that names the session an advisory is for. |
+| `devswarm_wire.sql_last_selected` | `SELECT {col} FROM {table} WHERE {id} = ?1` |  |  | The statement that reads when a workspace was last selected in the app. {col} {table} {id} are the column, table and id column names. |
+| `devswarm_wire.transcript_dir` | `.claude/projects` |  |  | Where Claude Code keeps session transcripts, relative to the home directory; a worktree's directory is its path with the characters in transcript_encode replaced by '-'. |
+| `devswarm_wire.transcript_encode` | `/\:.` |  |  | The characters of a worktree path replaced by '-' to name its transcript directory. |
+| `devswarm_wire.transcript_ext` | `.jsonl` |  |  | The extension of a session transcript file. |
+| `devswarm_wire.usage_exit` | `64` |  |  | Exit code for a refused or malformed owner verb. |
+| `devswarm_wire.wait_ms` | `500` |  | ms | How long the DevSwarm thread waits for a file event before it checks whether the daemon is draining and whether the periodic reconcile is due. |
+| `devswarm_wire.watch_git_names` | `HEAD, index, ORIG_HEAD, FETCH_HEAD` |  |  | Files of a worktree's git directory whose change means a commit or a checkout happened (a Jev hint for that workspace). |
+| `devswarm_wire.watch_state_dirs` | `mesh_write.dir_heartbeats, mesh_write.dir_plans, mesh_write.dir_workspaces, m...` |  |  | Directories under the DevSwarm state directory whose changes are hints for a reconcile (each key is a mesh_write.* setting that names the directory). |
+
 ### realtime.toml / realtime
 
 | Key | Default | Env override | Unit | What it is |
@@ -6486,6 +6691,13 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_latency_us` | histogram | us |  | Latency of fresh Jev network calls. |
 | `jev_timeouts` | counter | calls |  | Jev calls that ran out of their time budget. |
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
+| `rt_edges` | counter | edges |  | Workspace state changes emitted. |
+| `rt_reconcile_repairs` | counter | edges |  | Changes a full reconcile found that the event path had not already applied: the health measure of the realtime event layer (close to 0 is healthy). |
+| `rt_shadow_mismatches` | counter | mismatches |  | Differences between the engine's workspace state and the Node witness's. |
+| `dswire_actions` | counter | actions | kind, outcome | DevSwarm actions the engine ran or declined from a state change, by kind and outcome. |
+| `dswire_advisory` | counter | advisories |  | Advisories injected into a session. |
+| `dswire_jev_dirty` | counter | marks |  | Workspaces marked dirty for a per-child Jev sweep. |
+| `dswire_standdown` | counter | sweeps | kind | Action sweeps the engine skipped because the action's executor is not the engine. |
 
 ## Impact kinds
 
