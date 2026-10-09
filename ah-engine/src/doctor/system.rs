@@ -163,7 +163,7 @@ pub fn claude_section(doc: &mut Doc, ctx: &Ctx) {
     };
     if cache.parent().is_some_and(Path::is_dir) {
         let verdict = if supported { defaults::text("doctor.claude_yes") } else { defaults::text("doctor.claude_no") };
-        crate::discard::harmless(std::fs::write(&cache, format!("{ver} {verdict}\n"))); // keep: only a cache of a probe; the next run probes again
+        crate::discard::harmless(crate::atomic::write(&cache, format!("{ver} {verdict}\n"))); // keep: only a cache of a probe; the next run probes again
     }
     if !supported {
         doc.infol(defaults::render("doctor_msg.claude_unsupported", &[("v", &ver)]));
