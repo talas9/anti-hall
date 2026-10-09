@@ -139,6 +139,12 @@ fn base_env(c: &mut Command, home: &Path) {
         .env("USERPROFILE", home)
         .env("ANTIHALL_TEST_ISOLATION", "1")
         .env("ANTIHALL_INGEST_DRY_RUN", "1");
+    // the script limits the suite itself runs under (CI sets a larger CPU limit for a loaded shared runner)
+    for k in ["AH_ENGINE_SCRIPT_TIME_MS", "AH_ENGINE_SCRIPT_EXEC_SCALE"] {
+        if let Some(v) = std::env::var_os(k) {
+            c.env(k, v);
+        }
+    }
 }
 
 fn run_node(hook: &str, home: &Path, case: &Case, input: &str) -> (i32, String, String) {

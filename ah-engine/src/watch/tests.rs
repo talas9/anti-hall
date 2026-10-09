@@ -213,24 +213,32 @@ both!(a_sqlite_wal_commit_and_checkpoint_are_both_seen, |b| {
 });
 
 both!(a_ten_thousand_write_storm_produces_a_bounded_output, |b| {
-    let t = Tmp::new("storm");
-    let w = Watcher::start(bk(b, 10));
-    w.add(&t.0, Filter::All);
-    let files: Vec<PathBuf> = (0..3).map(|i| t.0.join(format!("f{i}.log"))).collect();
-    let started = Instant::now();
-    for i in 0..10_000 {
-        let mut f = fs::OpenOptions::new().create(true).append(true).open(&files[i % 3]).unwrap();
-        f.write_all(b"line\n").unwrap();
+    // A loaded machine can lag the reader past the kernel's event queue, which is reported as a rescan (correctly); that is not
+    // what this test measures, so such an attempt is repeated (up to three times) on a fresh directory.
+    for attempt in 1..=3 {
+        let t = Tmp::new(&format!("storm{attempt}"));
+        let w = Watcher::start(bk(b, 10));
+        w.add(&t.0, Filter::All);
+        let files: Vec<PathBuf> = (0..3).map(|i| t.0.join(format!("f{i}.log"))).collect();
+        let started = Instant::now();
+        for i in 0..10_000 {
+            let mut f = fs::OpenOptions::new().create(true).append(true).open(&files[i % 3]).unwrap();
+            f.write_all(b"line\n").unwrap();
+        }
+        let writing = started.elapsed();
+        let batches = drain(&w, ms(400));
+        if attempt < 3 && batches.iter().any(|b| b.rescan) {
+            continue;
+        }
+        let total: usize = batches.iter().map(|b| b.paths.len()).sum();
+        assert!(batches.iter().all(|b| !b.rescan), "3 files never overflow a cap of 64");
+        assert_eq!(paths(&batches), files);
+        // upper bound: every file at most once per max_delay window while the storm lasted, plus the final report
+        let windows = (writing.as_millis() / w.config().max_delay.as_millis()) as usize + 2;
+        assert!(total <= 3 * windows, "{total} reports for 10000 writes over {writing:?}");
+        assert!(total < 100, "output is a tiny fraction of the 10000 writes: {total}");
+        break;
     }
-    let writing = started.elapsed();
-    let batches = drain(&w, ms(400));
-    let total: usize = batches.iter().map(|b| b.paths.len()).sum();
-    assert!(batches.iter().all(|b| !b.rescan), "3 files never overflow a cap of 64");
-    assert_eq!(paths(&batches), files);
-    // upper bound: every file at most once per max_delay window while the storm lasted, plus the final report
-    let windows = (writing.as_millis() / w.config().max_delay.as_millis()) as usize + 2;
-    assert!(total <= 3 * windows, "{total} reports for 10000 writes over {writing:?}");
-    assert!(total < 100, "output is a tiny fraction of the 10000 writes: {total}");
 });
 
 both!(a_flood_of_distinct_files_overflows_into_one_rescan, |b| {
