@@ -94,6 +94,18 @@ fn cache_keys(bin: &Path) -> Vec<String> {
 
 /// `gatedRun`'s decision for `workspace list`, from the cache alone.
 pub fn gate(env: &Env, home: &Path) -> Gate {
+    gate_verb(
+        env,
+        home,
+        defaults::text("mesh_write.hivecontrol_list_verb"),
+        Some((defaults::text("mesh_write.hivecontrol_list_cap"), defaults::text("mesh_write.hivecontrol_dormant_line"))),
+    )
+}
+
+/// `gatedRun`'s decision for `hivecontrol workspace <verb>` from the cache alone. `dormant` is the capability name and the line
+/// Node records when the build lacks the verb; a caller that has none (every verb but `list`) gets [`Gate::Probe`] for a missing
+/// verb, which is a deferral: the engine reproduces neither the refusal text nor the cache line.
+pub fn gate_verb(env: &Env, home: &Path, verb: &str, dormant: Option<(&str, &str)>) -> Gate {
     let Ok(found) = resolve_bin(env, home) else { return Gate::Probe };
     let Some(bin) = found else { return Gate::Spawn };
     let cache = home
@@ -106,14 +118,15 @@ pub fn gate(env: &Env, home: &Path) -> Gate {
     if !key_ok || !probe.is_some_and(|p| matches!(p, OVal::Obj(_)) && p.get("present").is_some_and(OVal::truthy)) {
         return Gate::Probe;
     }
-    let has_verb = probe.and_then(|p| p.get("verbs")).and_then(|v| v.get(defaults::text("mesh_write.hivecontrol_list_verb"))).is_some_and(OVal::truthy);
+    let has_verb = probe.and_then(|p| p.get("verbs")).and_then(|v| v.get(verb)).is_some_and(OVal::truthy);
     if has_verb {
         return Gate::Spawn;
     }
+    let Some((cap, line)) = dormant else { return Gate::Probe };
     // the verb is missing: Node records the dormant line unless the cache already holds exactly it
-    let recorded = c.get("dormantLog").and_then(|d| d.get(defaults::text("mesh_write.hivecontrol_list_cap")));
+    let recorded = c.get("dormantLog").and_then(|d| d.get(cap));
     match recorded {
-        Some(OVal::Str(l)) if l == defaults::text("mesh_write.hivecontrol_dormant_line") => Gate::Refused,
+        Some(OVal::Str(l)) if l == line => Gate::Refused,
         _ => Gate::Probe,
     }
 }
@@ -128,6 +141,9 @@ pub struct Call {
     pub raw: String,
     /// The call was stopped at its timeout (`timedOut`).
     pub timed_out: bool,
+    /// `res.error` of a call that was not ok: `spawnSync hivecontrol ENOENT`, `hivecontrol <args> exited 3: <stderr>`, ...
+    /// (empty when the call was ok).
+    pub error: String,
 }
 
 /// The outcome of one call: the stdout of a clean exit 0, else `None` (`res.ok` false).
@@ -138,7 +154,35 @@ pub fn run(args: &[&str], env: &Env) -> Option<String> {
 
 /// One call bounded by `timeout`, reporting what `defaultRun` reports (see [`Call`]).
 pub fn call(args: &[&str], env: &Env, timeout: std::time::Duration) -> Call {
-    call_full(args, env, None, timeout).call
+    call_in(args, env, None, timeout)
+}
+
+/// What Node's `spawnSync` error message says of a spawn failure (`r.error.message` is `spawnSync <bin> <CODE>`).
+fn spawn_error(code: &str) -> String {
+    defaults::render("devswarm_cli.hc_spawn_error", &[("bin", &defaults::text("mesh_write.hivecontrol_bin")), ("code", &code)])
+}
+
+/// The code of a failed spawn.
+fn spawn_code(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => defaults::text("devswarm_cli.errno_enoent").to_string(),
+        std::io::ErrorKind::PermissionDenied => defaults::text("devswarm_cli.errno_eacces").to_string(),
+        _ => defaults::text("devswarm_cli.errno_unknown").to_string(),
+    }
+}
+
+/// The signal name Node prints (`SIGTERM`), else `SIG<n>`.
+fn signal_name(n: i32) -> String {
+    defaults::raw("devswarm_cli.signal_names")
+        .as_table()
+        .and_then(|t| t.iter().find(|(k, _)| k.parse::<i32>().ok() == Some(n)))
+        .and_then(|(_, v)| v.as_str())
+        .map_or_else(|| format!("{}{n}", defaults::text("devswarm_cli.signal_prefix")), str::to_string)
+}
+
+/// [`call`] in a working directory (`spawnSync(bin, args, { cwd })`); `None` is the process's own.
+pub fn call_in(args: &[&str], env: &Env, cwd: Option<&str>, timeout: std::time::Duration) -> Call {
+    call_full(args, env, cwd, timeout).call
 }
 
 /// Everything one `spawnSync` of `defaultRun` tells its caller, enough to build the `error` text it returns.
@@ -154,36 +198,37 @@ pub struct Full {
     pub signal: Option<i32>,
     /// The process could not be started (the error kind), as `r.error` of a missing binary or working directory.
     pub spawn_failed: Option<std::io::ErrorKind>,
-    /// The stdout passed the buffer limit (`ENOBUFS`).
+    /// The stdout or stderr passed the buffer limit (`ENOBUFS`).
     pub overflow: bool,
 }
 
-/// [`call`] in a working directory, with the stderr, the status and the failure kind kept.
+/// [`call_in`] with the stderr, the status and the failure kind kept.
 pub fn call_full(args: &[&str], env: &Env, cwd: Option<&str>, timeout: std::time::Duration) -> Full {
     use std::os::unix::process::ExitStatusExt;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     let mut cmd = Command::new(defaults::text("mesh_write.hivecontrol_bin"));
     cmd.args(args).env_clear().envs(env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    if let Some(d) = cwd {
+    if let Some(d) = cwd.filter(|d| !d.is_empty()) {
         cmd.current_dir(d);
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return Full { spawn_failed: Some(e.kind()), ..Full::default() },
+        Err(e) => return Full { call: Call { error: spawn_error(&spawn_code(&e)), ..Call::default() }, spawn_failed: Some(e.kind()), ..Full::default() },
     };
     let limit = defaults::num("mesh_write.hivecontrol_max_stdout_bytes") as usize;
-    // both pipes are drained while the child runs, so a chatty child cannot block on a full pipe; the reader fills a shared
-    // buffer chunk by chunk, so a grandchild that keeps the pipe open after the child is gone can never hold the verb up
+    // both pipes are drained while the child runs, so a chatty child cannot block on a full pipe; each reader fills a shared
+    // buffer chunk by chunk, so a grandchild that keeps a pipe open after the child is gone can never hold the verb up
     let out = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let err = Arc::new(Mutex::new(Vec::<u8>::new()));
     let out_done = Arc::new(AtomicBool::new(false));
+    let err_done = Arc::new(AtomicBool::new(false));
     let over = Arc::new(AtomicBool::new(false));
-    if let Some(mut o) = child.stdout.take() {
-        let (buf, done, too_much) = (Arc::clone(&out), Arc::clone(&out_done), Arc::clone(&over));
+    let drain = |mut pipe: Box<dyn Read + Send>, buf: Arc<Mutex<Vec<u8>>>, done: Arc<AtomicBool>, too_much: Arc<AtomicBool>| {
         std::thread::spawn(move || {
             let mut chunk = vec![0u8; defaults::num("mesh_write.hivecontrol_read_chunk") as usize];
             loop {
-                match o.read(&mut chunk) {
+                match pipe.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         if let Ok(mut b) = buf.lock() {
@@ -198,31 +243,14 @@ pub fn call_full(args: &[&str], env: &Env, cwd: Option<&str>, timeout: std::time
             }
             done.store(true, Ordering::SeqCst);
         });
-    } else {
-        out_done.store(true, Ordering::SeqCst);
+    };
+    match child.stdout.take() {
+        Some(o) => drain(Box::new(o), Arc::clone(&out), Arc::clone(&out_done), Arc::clone(&over)),
+        None => out_done.store(true, Ordering::SeqCst),
     }
-    let err = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let err_done = Arc::new(AtomicBool::new(false));
-    if let Some(mut e) = child.stderr.take() {
-        let (buf, done) = (Arc::clone(&err), Arc::clone(&err_done));
-        std::thread::spawn(move || {
-            let mut chunk = vec![0u8; defaults::num("mesh_write.hivecontrol_read_chunk") as usize];
-            loop {
-                match e.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if let Ok(mut b) = buf.lock()
-                            && b.len() <= limit
-                        {
-                            b.extend_from_slice(&chunk[..n]);
-                        }
-                    }
-                }
-            }
-            done.store(true, Ordering::SeqCst);
-        });
-    } else {
-        err_done.store(true, Ordering::SeqCst);
+    match child.stderr.take() {
+        Some(e) => drain(Box::new(e), Arc::clone(&err), Arc::clone(&err_done), Arc::clone(&over)),
+        None => err_done.store(true, Ordering::SeqCst),
     }
     let deadline = Instant::now() + timeout;
     let poll = defaults::millis("mesh_write.hivecontrol_poll_ms");
@@ -249,7 +277,9 @@ pub fn call_full(args: &[&str], env: &Env, cwd: Option<&str>, timeout: std::time
     };
     let overflow = over.load(Ordering::SeqCst);
     let Some(st) = status else {
-        return Full { call: Call { ok: false, raw: String::new(), timed_out }, overflow, ..Full::default() };
+        // stopped at the timeout (`ETIMEDOUT`) or past the buffer limit (`ENOBUFS`): Node reports a spawn error and no stdout
+        let code = if timed_out { defaults::text("devswarm_cli.errno_etimedout") } else { defaults::text("devswarm_cli.errno_enobufs") };
+        return Full { call: Call { ok: false, raw: String::new(), timed_out, error: spawn_error(code) }, overflow, ..Full::default() };
     };
     // the pipes close with the child; give the readers a moment to take the last bytes
     let until = Instant::now() + grace;
@@ -257,18 +287,25 @@ pub fn call_full(args: &[&str], env: &Env, cwd: Option<&str>, timeout: std::time
         std::thread::sleep(poll);
     }
     let bytes = out.lock().map(|b| b.clone()).unwrap_or_default();
-    let stderr = String::from_utf8_lossy(&err.lock().map(|b| b.clone()).unwrap_or_default()).into_owned();
-    if bytes.len() > limit {
-        return Full { overflow: true, ..Full::default() };
+    let ebytes = err.lock().map(|b| b.clone()).unwrap_or_default();
+    if bytes.len() > limit || ebytes.len() > limit {
+        return Full { call: Call { error: spawn_error(defaults::text("devswarm_cli.errno_enobufs")), ..Call::default() }, overflow: true, ..Full::default() };
     }
-    Full {
-        call: Call { ok: st.success(), raw: String::from_utf8_lossy(&bytes).into_owned(), timed_out: false },
-        stderr,
-        code: st.code(),
-        signal: st.signal(),
-        spawn_failed: None,
-        overflow: false,
+    let raw = String::from_utf8_lossy(&bytes).into_owned();
+    let stderr = String::from_utf8_lossy(&ebytes).into_owned();
+    let (code, signal) = (st.code(), st.signal());
+    if st.success() {
+        return Full { call: Call { ok: true, raw, timed_out: false, error: String::new() }, stderr, code, signal, spawn_failed: None, overflow: false };
     }
+    let trimmed = js_trim(&stderr);
+    let detail = if trimmed.is_empty() { String::new() } else { format!(": {trimmed}") };
+    let argv = args.join(" ");
+    let bin = defaults::text("mesh_write.hivecontrol_bin");
+    let error = match (st.signal(), st.code()) {
+        (Some(sig), _) => defaults::render("devswarm_cli.hc_killed", &[("bin", &bin), ("args", &argv), ("signal", &signal_name(sig)), ("detail", &detail)]),
+        (None, code) => defaults::render("devswarm_cli.hc_exited", &[("bin", &bin), ("args", &argv), ("status", &code.unwrap_or(0)), ("detail", &detail)]),
+    };
+    Full { call: Call { ok: false, raw, timed_out: false, error }, stderr, code, signal, spawn_failed: None, overflow: false }
 }
 
 /// What the capability gate says about one workspace verb, from the cache alone.

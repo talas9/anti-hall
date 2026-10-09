@@ -2462,3 +2462,47 @@ value = "diagnose: {status}{scope} [{parts}]{warning}"
 [devswarm_cli.health_line]
 doc = "The one-line answer of healthcheck; {parts} are the counts."
 value = "healthcheck: {status}{scope} [{parts}]{warning}"
+
+# ---- hivecontrol call errors (lane dsB) -----------------------------------------------------------------------------------
+
+[devswarm_cli.hc_spawn_error]
+doc = "The error text of a hivecontrol call that could not run, as Node's spawnSync words it. {bin} {code}."
+value = "spawnSync {bin} {code}"
+
+[devswarm_cli.hc_killed]
+doc = "The error text of a hivecontrol call ended by a signal. {bin} {args} {signal} {detail}."
+value = "{bin} {args} killed by signal {signal}{detail}"
+
+[devswarm_cli.hc_exited]
+doc = "The error text of a hivecontrol call that exited non-zero. {bin} {args} {status} {detail}."
+value = "{bin} {args} exited {status}{detail}"
+
+[devswarm_cli.errno_enoent]
+doc = "The code of a spawn whose binary does not exist."
+value = "ENOENT"
+
+[devswarm_cli.errno_eacces]
+doc = "The code of a spawn whose binary cannot be executed."
+value = "EACCES"
+
+[devswarm_cli.errno_etimedout]
+doc = "The code of a call stopped at its time limit."
+value = "ETIMEDOUT"
+
+[devswarm_cli.errno_enobufs]
+doc = "The code of a call whose output passed the buffer limit."
+value = "ENOBUFS"
+
+[devswarm_cli.errno_unknown]
+doc = "The code given to a spawn failure with no more specific name."
+value = "UNKNOWN"
+
+[devswarm_cli.signal_names]
+doc = "Signal number to name, for the text of a call ended by a signal."
+value = { "1" = "SIGHUP", "2" = "SIGINT", "3" = "SIGQUIT", "6" = "SIGABRT", "9" = "SIGKILL", "11" = "SIGSEGV", "13" = "SIGPIPE", "14" = "SIGALRM", "15" = "SIGTERM" }
+
+[devswarm_cli.signal_prefix]
+doc = "The prefix of the name given to a signal with no entry in signal_names."
+value = "SIG"
+
+# merge
