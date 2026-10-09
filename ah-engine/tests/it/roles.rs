@@ -127,12 +127,17 @@ fn every_implemented_verb_has_a_matrix_row_in_a_known_area_and_no_row_is_orphane
 
 #[test]
 fn the_default_matrix_keeps_owner_level_verbs_for_the_main_session() {
-    for v in ["restore", "stop", "ctl", "serve", "reset", "maintain", "backup", "migrate", "jev-setup", "jev_sweep"] {
+    for v in ["restore", "stop", "ctl", "reset", "maintain", "backup", "migrate", "jev-setup", "jev_sweep"] {
         let r = roles::row(v).unwrap();
         assert!(!r.roles.contains(&"subagent") && !r.roles.contains(&"workspace"), "{v} must not be open to subagents or workspace children");
     }
     for v in ["version", "status", "metrics", "impact", "docs", "check"] {
         assert!(roles::row(v).unwrap().roles.contains(&"subagent"), "{v} is a read verb every role may use");
+    }
+    // the hook client starts the daemon with `serve` and the caller's own environment, so a workspace child's or a subagent's hook
+    // must be able to start it: a refused `serve` left every hook of a DevSwarm child on the Node fallback (found by the gate)
+    for r in ["subagent", "workspace", "codex", "main"] {
+        assert!(roles::row("serve").unwrap().roles.contains(&r), "serve must be open to {r}: the hook client spawns it with the caller's environment");
     }
     let mesh = roles::row("mesh").unwrap();
     assert_eq!(mesh.self_only, vec!["workspace"]);

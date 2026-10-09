@@ -84,11 +84,11 @@ impl Out {
     }
 }
 
-/// The test build's script limits (`.cargo/config.toml`: a debug interpreter is about 4 times slower than the release one the shipped
-/// 50 ms limit is sized for) are the one thing a cleared environment must still carry, or the engine defers on a limit that only the
-/// debug build misses. Node ignores both names.
+/// The test build's script CPU limit (`.cargo/config.toml`: a debug interpreter is about 4 times slower than the release one the shipped
+/// 50 ms limit is sized for) is the one thing a cleared environment must still carry, or the engine defers on a limit that only the
+/// debug build misses. The `ah.exec` scale is NOT carried: the freshness cap case needs the shipped child-process limit. Node ignores the name.
 pub fn forward_test_scale(c: &mut Command) {
-    for k in ["AH_ENGINE_SCRIPT_TIME_MS", "AH_ENGINE_SCRIPT_EXEC_SCALE"] {
+    for k in ["AH_ENGINE_SCRIPT_TIME_MS"] {
         if let Ok(v) = std::env::var(k) {
             c.env(k, v);
         }

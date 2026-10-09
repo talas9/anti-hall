@@ -19,7 +19,7 @@ Daemon status, metrics, backups, schedules and limits.
 | `ah-engine reset` | `` Clear the client breaker, the crash-loop stop and the failure record | main, codex |
 | `ah-engine restore` | `<snapshot-dir>` Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then... | main, codex |
 | `ah-engine schedule` | `<list\|run <job>\|history> [--job <name>] [--limit <n>]` The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the... | main, codex, workspace, subagent (owner args: run) |
-| `ah-engine serve` | `` Run the resident daemon in the foreground (the client starts it detached when needed) | main, codex |
+| `ah-engine serve` | `` Run the resident daemon in the foreground (the client starts it detached when needed) | main, codex, workspace, subagent |
 | `ah-engine status` | `[--memory]` Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did | main, codex, workspace, subagent |
 | `ah-engine stop` | `` Ask the daemon to drain and exit | main, codex |
 | `ah-engine telemetry` | `[summary\|events\|rollup] [--window <7d>] [--kind <k>] [--limit <n>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and... | main, codex, workspace, subagent (owner args: rollup) |

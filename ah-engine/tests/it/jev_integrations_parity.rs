@@ -184,7 +184,7 @@ fn run_side(sc: &Scenario, engine: bool) -> Side {
         .env("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "parity-test-key-not-real")
         .env("ANTIHALL_JEV_TEST_ENDPOINT_VERCEL", format!("http://127.0.0.1:{}/v1/systemone", mock.port))
         .current_dir(&cwd);
-    for k in ["AH_ENGINE_SCRIPT_TIME_MS", "AH_ENGINE_SCRIPT_EXEC_SCALE"] {
+    for k in ["AH_ENGINE_SCRIPT_TIME_MS"] {
         // the test build's script limits (.cargo/config.toml); a debug interpreter misses the release-sized 50 ms
         if let Ok(v) = std::env::var(k) {
             c.env(k, v);
