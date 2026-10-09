@@ -41,12 +41,19 @@ function emailAllowed(email, allow) {
 }
 
 // log: output of `git log --format=%H%x09%ae%x09%ce`; returns one finding per commit with a bad email.
+// Rows may carry author/committer epoch seconds (%at, %ct) as fields 4 and 5; a commit whose two
+// dates are both before cfg.privacy.identity_check_since is grandfathered. Returns the hits array,
+// with a non-enumerable .grandfathered count.
 function identityHits(log, cfg) {
   const allow = cfg.privacy.commit_email_allow || [];
+  const since = cfg.privacy.identity_check_since ? Date.parse(cfg.privacy.identity_check_since) / 1000 : NaN;
   const hits = [];
+  let old = 0;
+  Object.defineProperty(hits, 'grandfathered', { get: () => old });
   for (const row of log.split('\n')) {
     if (!row.trim()) continue;
-    const [sha, ae = '', ce = ''] = row.split('\t');
+    const [sha, ae = '', ce = '', at = '', ct = ''] = row.split('\t');
+    if (!Number.isNaN(since) && at !== '' && ct !== '' && Number(at) < since && Number(ct) < since) { old++; continue; }
     for (const e of [...new Set([ae, ce])]) {
       if (!emailAllowed(e, allow)) hits.push({ rule: 'commit-identity', sha, msg: `commit ${sha.slice(0, 10)} authored as ${maskEmail(e)}; re-author as the maintainer identity` });
     }
@@ -59,7 +66,8 @@ function main() {
   const cfg = L.loadConfig();
   const diff = execFileSync('git', ['diff', '--no-color', '--no-ext-diff', '-U0', '--diff-filter=AMR', `${base}..${head}`], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
   const hits = scan(diff, cfg, process.env.PRIVATE_DENYLIST);
-  const ids = identityHits(execFileSync('git', ['log', '--format=%H%x09%ae%x09%ce', `${base}..${head}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }), cfg);
+  const ids = identityHits(execFileSync('git', ['log', '--format=%H%x09%ae%x09%ce%x09%at%x09%ct', `${base}..${head}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }), cfg);
+  console.log(`${ids.grandfathered} historical commits grandfathered (before ${cfg.privacy.identity_check_since || 'n/a'})`);
   for (const i of ids) {
     console.log(`::error::${i.msg}`);
     if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `| privacy | ${i.msg} |\n`);

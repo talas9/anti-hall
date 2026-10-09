@@ -186,14 +186,16 @@
   "privacy": {
     "_doc": "Privacy scrub for PR diffs (added lines) and new issue/comment/discussion text. Private names come from the PRIVATE_DENYLIST secret, never from this file.",
     "rules": {
-      "home-path": "(/Users/|/home/|[Cc]:\\\\Users\\\\)(?!(you|user|username|me|name|runner|example|someone|alice|bob|jane|john|dev|test|foo|bar|x|USER|USERNAME)[/\\\\])[A-Za-z0-9._-]{2,}[/\\\\]",
+      "home-path": "(/Users/|/home/|[Cc]:\\\\Users\\\\)(?!(you|user|username|me|name|runner|example|someone|alice|bob|jane|john|dev|test|foo|bar|x|USER|USERNAME)[/\\\\])[A-Za-z0-9_-][A-Za-z0-9._-]+[/\\\\]",
       "email": "(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
       "session-id": "session[\\s_-]?(id)?[\"'\\s:=]{0,4}[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     },
-    "email_allow": ["@example\\.(com|org|net|test|invalid)$", "\\.(test|invalid|example|local)$", "noreply", "@users\\.noreply\\.github\\.com$", "@anthropic\\.com$", "@github\\.com$", "^git@github\\.com$"],
+    "email_allow": ["@example\\.(com|org|net|test|invalid)$", "\\.(test|invalid|example|local)$", "noreply", "@users\\.noreply\\.github\\.com$", "@anthropic\\.com$", "@github\\.com$", "^git@github\\.com$", "^git@bitbucket\\.org$", "@(a\\.(com|io)|evil\\.com|openai\\.com)$", "@(p\\.iam\\.gserviceaccount|a\\.googleapis)\\.com$"],
     "skip_paths": ["^tests/fixtures/", "^\\.github/moderation/config\\.json$", "(^|/)package-lock\\.json$", "\\.lock$"],
     "commit_email_allow": ["talas9@gmail.com", "*@users.noreply.github.com", "noreply@github.com"],
     "commit_email_allow_doc": "Author and committer emails allowed on commits in a PR or push range (maintainer identity, GitHub noreply incl. bots, web-merge noreply). Case-insensitive; * matches any local part.",
+    "identity_check_since": "2026-10-10T00:00:00Z",
+    "identity_check_since_doc": "Commits whose author AND committer dates are both before this instant are grandfathered (not identity-checked); the rule was introduced then. Every later commit is checked against commit_email_allow.",
     "max_hits_reported": 30
   }
 }
