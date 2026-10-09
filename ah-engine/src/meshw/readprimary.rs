@@ -691,7 +691,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>) -> R<Planned> {
         total_out = merged_total as f64;
         let nd_cursor = floor_pos(nd_base);
         union_cursors = Some((nd_cursor, store_base));
-        nd_op_target = Some(nd_cursor + u.nd_unread_lines.len() as f64);
+        nd_op_target = Some(nd_cursor + u.nd_skipped as f64 + u.nd_unread_lines.len() as f64);
     } else {
         o.reader
             .for_each_message(id, floor_pos(store_base) as u64, |m| {
