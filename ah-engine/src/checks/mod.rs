@@ -29,7 +29,6 @@ pub mod replykit;
 pub mod scripted;
 pub mod session;
 pub mod spawnctx;
-pub mod stale_agent_stop_note;
 pub mod task_tracker;
 pub mod taskkit;
 pub mod taskstate;
@@ -213,7 +212,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::OUTPUT_VERIFY_GUARD,
         &scripted::ASK_GUARD,
         &scripted::SILENT_AGENT_NUDGE,
-        &stale_agent_stop_note::StaleAgentStopNote,
+        &scripted::STALE_AGENT_STOP_NOTE,
         &scripted::MERGE_GATE,
         &scripted::API_GUARD,
         &scripted::EDIT_GUARD,

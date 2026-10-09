@@ -9,4 +9,4 @@
 # precompact-snapshot, handover-resume, limit-conserve-inject and auto-handover to scripts.
 # Lane d88fd moved command (command-guard, which is also the shared command classifier) and coordinator-work-guard to scripts.
 # The dswire lane's devswarm-rt-advisory decides in a script (no net change).
-19
+18
