@@ -34,17 +34,7 @@ the update.
 - **PRIVACY and README wording**: "no telemetry" became "no analytics, nothing reported to anyone", because the engine keeps local-only counters; two requests are on by default (update check, one-time engine download).
 - **Documented model default**: `jev.judgeModel` is the alias `haiku` (the docs still said a pinned version).
 
-### Still on Node
-
-DevSwarm mesh writes and daemons (ingest, supervisor, reaper), every call that consults a Jev integration, the semantic judge's model call, the statusline, and the blocking branch of several guards (the engine answers the quiet cases and defers any case that could block).
-
-### Measurements before release
-
-From one replay of 2113 recorded payloads against the exact go-live bundle and the same-version Node hooks (not a field result): 0 of 68 blocks weaker than Node, 2059 identical outputs, 87.0 percent of hook rows answered natively, about 35.5 ms CPU per call for the engine against 158.2 ms for the Node hooks. Known gaps are listed in `docs/AH-ENGINE.md`.
-
-## 0.203.4 (2026-10-10)
-
-### Repo
+### Repo automation
 
 These changes affect the GitHub repository only, not the installed plugin.
 
@@ -58,6 +48,14 @@ These changes affect the GitHub repository only, not the installed plugin.
 - The weekly digest now posts privately to the project board.
 - Full board reconcile with Last update and Progress fields.
 - Dependabot auto-merge for patch and minor updates into `dev`.
+
+### Still on Node
+
+DevSwarm mesh writes and daemons (ingest, supervisor, reaper), every call that consults a Jev integration, the semantic judge's model call, the statusline, and the blocking branch of several guards (the engine answers the quiet cases and defers any case that could block).
+
+### Measurements before release
+
+From one replay of 2113 recorded payloads against the exact go-live bundle and the same-version Node hooks (not a field result): 0 of 68 blocks weaker than Node, 2059 identical outputs, 87.0 percent of hook rows answered natively, about 35.5 ms CPU per call for the engine against 158.2 ms for the Node hooks. Known gaps are listed in `docs/AH-ENGINE.md`.
 
 ## 0.203.3 (2026-10-10)
 
