@@ -109,7 +109,14 @@ fn wal_is_quiet(inv: &Inv, own: Option<&Path>) -> R<()> {
             }
         }
     }
-    if std::fs::read_dir(root.join(defaults::text("mesh_write.dir_wal_spill"))).is_ok_and(|mut d| d.next().is_some()) {
+    // a spill directory holds the preflight's probe file once any pull has run; only a spilled batch (`*.json`) is an alert
+    let json = defaults::text("mesh_write.json_suffix");
+    let spilled = std::fs::read_dir(root.join(defaults::text("mesh_write.dir_wal_spill")))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten().any(|f| f.file_name().to_string_lossy().ends_with(json)));
+    if spilled {
         return defer("wal-spill");
     }
     let tmp = defaults::list("mesh_write.env_tmpdir")
