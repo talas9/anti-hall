@@ -192,6 +192,8 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
     wait_for("a request naming the newer plugin root", || queue_cap() == Some(q4));
     hook(&plugin); // an older root, named by a request of another session, must not move it back
     std::thread::sleep(Duration::from_millis(600));
+    // a status call that gets no answer (a busy CI runner) says nothing about the root: wait for an answer, then judge it
+    wait_for("the daemon to answer a status call", || queue_cap().is_some());
     assert_eq!(queue_cap(), Some(q4), "an older plugin root is ignored");
     assert!(ah_engine::health::events().iter().all(|e| e.kind != "defaults_invalid" || e.code != "no_root"));
 

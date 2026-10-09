@@ -1,7 +1,6 @@
 //! Overhead of Node-hook telemetry. Its own test binary: a p95 timing is meaningless beside other tests' daemons and threads.
 
 use ah_engine::telemetry::event::Outcome;
-use std::time::Instant;
 
 /// The budget for what the Node-hook telemetry adds to one hook call, p95 (a call with three Node hooks: build and queue
 /// their events, then one append to the inbox).
@@ -43,9 +42,11 @@ fn recording_a_hook_calls_node_hooks_adds_under_two_tenths_of_a_millisecond_at_p
     for round in 0..3 {
         let mut us: Vec<u128> = Vec::with_capacity(3000);
         for i in 0..3000 {
-            let t = Instant::now();
+            // thread CPU time, not wall: a shared runner that preempts the thread mid-call (239 us wall against 200 us seen on
+            // macOS CI, best of three rounds) is not overhead the code adds; the call's own CPU, syscalls included, is
+            let t = ah_engine::limits::thread_cpu_us();
             one_call();
-            us.push(t.elapsed().as_micros());
+            us.push(u128::from(ah_engine::limits::thread_cpu_us().saturating_sub(t)));
             if i % 200 == 0 {
                 emit::ingest_from(&emit::inbox_path(), |_| {}); // the daemon's drain, outside the timing
             }
