@@ -95,7 +95,7 @@ pub fn discover(home: &Path, state_dir: &Path, explicit: &str, now: i64) -> Vec<
     let now_set: BTreeSet<String> = before.union(&paths.iter().cloned().collect()).cloned().collect();
     if now_set != before {
         crate::discard::harmless(std::fs::create_dir_all(state_dir)); // keep: remembering is an optimisation
-        crate::discard::harmless(std::fs::write(&remembered_file, json!(now_set.into_iter().collect::<Vec<_>>()).to_string())); // keep: same
+        crate::discard::harmless(crate::atomic::write(&remembered_file, json!(now_set.into_iter().collect::<Vec<_>>()).to_string())); // keep: same
     }
     out
 }
@@ -152,14 +152,30 @@ pub fn run_project(home: &Path, st: &Settings, project: Project, runner: &dyn Ru
     d.stop();
 }
 
+static MANAGER: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(None);
+
+/// Wait (at most `devswarm_ingest.shutdown_wait_ms`) for the drain threads to finish their iteration. The daemon calls this on its
+/// way out: a monitor call in flight has already taken its messages off the native queue, so the process must not exit before they
+/// are in the WAL and the store. True when nothing was left running.
+pub fn join_all() -> bool {
+    let handle = MANAGER.lock().ok().and_then(|mut m| m.take());
+    let Some(h) = handle else { return true };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        crate::discard::harmless(h.join()); // keep: a panicked drain already reported itself
+        let _sent = tx.send(()); // keep: the receiver is gone only after its own timeout
+    });
+    rx.recv_timeout(defaults::millis("devswarm_ingest.shutdown_wait_ms")).is_ok()
+}
+
 /// Start the drain in the daemon: nothing at all unless the mode is `engine`. One manager thread re-discovers the projects and
-/// keeps one drain thread per project; every thread ends when `stop` turns true.
+/// keeps one drain thread per project; every thread ends when `stop` turns true (see [`join_all`]).
 pub fn start(home: &Path, state_dir: &Path, stop: Arc<dyn Fn() -> bool + Send + Sync>) {
     if owner() != Owner::Engine {
         return;
     }
     let (home, state_dir) = (home.to_path_buf(), state_dir.to_path_buf());
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let mut running: std::collections::HashMap<String, std::thread::JoinHandle<()>> = std::collections::HashMap::new();
         while !stop() {
             running.retain(|_, h| !h.is_finished());
@@ -184,6 +200,9 @@ pub fn start(home: &Path, state_dir: &Path, stop: Arc<dyn Fn() -> bool + Send + 
             crate::discard::harmless(h.join()); // keep: a panicked worker already reported itself
         }
     });
+    if let Ok(mut m) = MANAGER.lock() {
+        *m = Some(handle);
+    }
 }
 
 /// The status of the drain, for `ah-engine devswarm ingest`: the owner, the discovered projects and the state of each lock and
@@ -214,7 +233,7 @@ fn discover_readonly(home: &Path, state_dir: &Path, explicit: &str, now: i64) ->
     let remembered = state_dir.join(defaults::text("devswarm_ingest.remembered"));
     crate::discard::harmless(std::fs::create_dir_all(&scratch)); // keep: our own scratch
     if let Ok(t) = std::fs::read(&remembered) {
-        crate::discard::harmless(std::fs::write(scratch.join(defaults::text("devswarm_ingest.remembered")), t)); // keep: a read-only copy
+        crate::discard::harmless(crate::atomic::write(scratch.join(defaults::text("devswarm_ingest.remembered")), t)); // keep: a read-only copy
     }
     let out = discover(home, &scratch, explicit, now);
     crate::discard::harmless(std::fs::remove_dir_all(&scratch)); // keep: our own scratch

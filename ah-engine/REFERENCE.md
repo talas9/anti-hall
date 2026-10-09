@@ -4818,7 +4818,33 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.hk_status_failed` | `failed` |  |  | The result status of a file or directory the sweep could not handle. |
 | `devswarm_sup.hk_status_fixed` | `fixed` |  |  | The result status of a removed file (doctor-repair's word). |
 | `devswarm_sup.hk_sweeps` | `4 entries, 4 entries` |  |  | The age sweeps of the housekeeping duty, in order: name (the key in the result), dir (under the DevSwarm state directory), suffix (only files ending so are touched) and days (the setting holding the retention window in days). |
-| `devswarm_sup.hk_tmp_infix` | `.tmp-` |  |  | The text between a state file's name and the process id in the temporary file it is written through. |
+| `devswarm_sup.kill_claude_bin` | `claude` |  |  | The Claude Code executable the resume starts. |
+| `devswarm_sup.kill_claude_dir` | `.claude` |  |  | The Claude state directory under the home directory. |
+| `devswarm_sup.kill_claude_dirs` | `~/.local/bin, ~/.claude/local, /opt/homebrew/bin, /usr/local/bin` |  |  | Directories searched for it after PATH (`~/` is the home directory); the daemon's PATH is often minimal. |
+| `devswarm_sup.kill_claude_re` | `(?i)(^\|[\s/])claude(\s\|$)` |  |  | Matches a `claude` invocation in a command line (case-insensitive, a whole word). |
+| `devswarm_sup.kill_headless_re` | `(^\|\s)(-p\|--print)(\s\|=\|$)` |  |  | Matches the headless flag (-p or --print) as a token of the command line. |
+| `devswarm_sup.kill_lsof_args` | `-p, {pid}, -a, -d, cwd, -Fn` |  |  | Its arguments; {pid} is the process. |
+| `devswarm_sup.kill_lsof_bin` | `lsof` |  |  | The executable that reports a process's working directory where /proc is not available (macOS). |
+| `devswarm_sup.kill_lsof_name_prefix` | `n` |  |  | The prefix of the output line that names the directory. |
+| `devswarm_sup.kill_no_conversation` | `No conversation found` |  |  | What the resumed session prints when the conversation no longer exists (a handled failure: escalate). |
+| `devswarm_sup.kill_no_target` | `no-target` |  |  | The abstain reason when there is no target. |
+| `devswarm_sup.kill_poll_ms` | `100` |  | ms | How often the readiness watch checks whether the resumed session has exited. |
+| `devswarm_sup.kill_probe_timeout_ms` | `4000` |  | ms | Bound of one process-table or working-directory probe; a probe that times out yields no data and the gate abstains. |
+| `devswarm_sup.kill_proc_cwd` | `/proc/{pid}/cwd` |  |  | The Linux link to a process's working directory; {pid}. |
+| `devswarm_sup.kill_projects_dir` | `projects` |  |  | The directory of session transcripts under it. |
+| `devswarm_sup.kill_ps_args` | `-axo, pid=,ppid=,command=` |  |  | Its arguments (the same on macOS and Linux). |
+| `devswarm_sup.kill_ps_bin` | `ps` |  |  | The process-table executable. |
+| `devswarm_sup.kill_ps_cap_bytes` | `33554432` |  |  | Most bytes of the process table read; a longer one is treated as unreadable (the gate abstains). |
+| `devswarm_sup.kill_ps_line_re` | `^\s*(\d+)\s+(\d+)\s+(.*)$` |  |  | Captures pid, parent pid and command from a line of the process table. |
+| `devswarm_sup.kill_readiness_ms` | `4000` |  | ms | How long a fresh resume is watched for an immediate failure. Never a kill deadline. |
+| `devswarm_sup.kill_resume_args` | `-p, --resume, {uuid}, --dangerously-skip-permissions` |  |  | The arguments of the resume; {uuid} is the session. |
+| `devswarm_sup.kill_resume_guardrail` | `You were interrupted mid-task and resumed. Before re-running ANY command with...` |  |  | Prepended to every resume prompt: the interrupted session must check with a read-only command whether a side-effecting step already completed before it repeats it. |
+| `devswarm_sup.kill_resume_log_prefix` | `antihall-resume-` |  |  | The start of the temporary file the resumed session's first output goes to. |
+| `devswarm_sup.kill_session_re` | `(?:--session-id\|--resume)\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-...` |  |  | Captures the session id after --session-id or --resume. |
+| `devswarm_sup.kill_status_ambiguous` | `ambiguous` |  |  | The liveness verdict status after an abstain. |
+| `devswarm_sup.kill_status_recovering` | `recovering` |  |  | The liveness verdict status while a recovery runs and after a resume. |
+| `devswarm_sup.kill_transcript_suffix` | `.jsonl` |  |  | The suffix of a session's transcript file. |
+| `devswarm_sup.kill_witness_disagrees` | `witness-disagrees` |  |  | The abstain reason when the Node witness did not confirm the target. |
 | `devswarm_sup.liveness_dir` | `liveness` |  |  | The liveness verdict files, relative to the DevSwarm state directory (Node: livenessPathFor). |
 | `devswarm_sup.lock_file` | `locks/sweep.lock` |  |  | The single-flight sweep lock, relative to the DevSwarm state directory: the Node supervisor's own file, taken the same way (a dead holder or one older than lock_stale_ms is taken over), so while a tick runs a Node sweep exits at once. |
 | `devswarm_sup.lock_stale_ms` | `300000` |  | ms | A sweep lock older than this is taken over (Node: SWEEP_LOCK_STALE_MS). |
@@ -4854,11 +4880,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.reason_rotated` | `rotated to {backup}` |  |  | The rotation answer after a rotation. {backup} is the rotated file. |
 | `devswarm_sup.reason_under` | `under threshold` |  |  | The rotation answer when the log is not over the threshold. |
 | `devswarm_sup.recover_descriptor_keys` | `2 entries` |  |  | The descriptor fields a recovery needs: worktree path and session id. |
+| `devswarm_sup.recover_duty` | `recover` |  |  | The name `recover` goes by in devswarm_sup.node_duties and in the witness log. |
 | `devswarm_sup.recover_ledger` | `rt-recover.ndjson` |  |  | The record of recover requests already run, under the engine state directory: a request id is never run twice. |
 | `devswarm_sup.recover_snippet` | `process.env.HOME=process.argv[2];const o=require(process.argv[1]+"/companion/...` |  |  | What runs Node's on-demand recovery (companion/devswarm-recover.js `run`, the same call its CLI makes) for ONE workspace. It resolves the ONE process of the workspace (exactly one match or it abstains), confirms its identity and working directory right before SIGTERM and again before SIGKILL, and resumes the session headless. The engine decides whether it may start; the kill stays Node's. Arguments: the plugin root, the home directory, the workspace id. |
 | `devswarm_sup.recover_timeout_ms` | `180000` |  | ms | Bound of one recovery run (it waits the grace period and the resume readiness). |
+| `devswarm_sup.recover_witness_snippet` | `process.env.HOME=process.argv[2];const T=require(process.argv[1]+"/companion/...` |  |  | What Node runs as the recover witness: findTarget (read-only: ps and the working-directory probe) for the descriptor's worktree and session, allowing an interactive session as the owner's explicit recover does. Arguments: the plugin root, the home directory, the worktree, the session id. |
+| `devswarm_sup.recover_witness_timeout_ms` | `20000` |  | ms | Bound of the witness's target lookup. |
+| `devswarm_sup.recover_witness_veto` | `1` |  |  | 1: when Node's read-only target lookup does not confirm the process the engine would signal, the engine stands down (reason `witness-disagrees`) instead of signalling. 0: the witness only logs. A Node that cannot be run never vetoes. |
 | `devswarm_sup.recovery_log` | `recovery.log` |  |  | Node's recovery log (one JSON line per poke / escalation / recovery step), relative to the DevSwarm state directory. |
 | `devswarm_sup.set_child_gate_days` | `5 entries` |  |  | Days a per-session child-gate state file is kept before the housekeeping sweep removes it. Node: devswarm.childGateRetentionDays. A value that is not a positive number reads as the default. |
+| `devswarm_sup.set_grace_sec` | `{ type = "number", section = "devswarm", key = "graceSec", env = "ANTIHALL_DE...` |  |  | How long after SIGTERM the engine waits before it checks whether the process is still there. Node: devswarm.graceSec. |
 | `devswarm_sup.set_housekeeping_mode` | `6 entries` |  |  | Housekeeping sweep switch: auto / on / off. Node: devswarm.housekeepingSweep. |
 | `devswarm_sup.set_housekeeping_sec` | `7 entries` |  |  | Least time between two housekeeping sweeps. Node: devswarm.housekeepingSweepSec (floor 300). |
 | `devswarm_sup.set_log_rotate_bytes` | `7 entries` |  |  | Size above which the supervisor log is rotated to its .1 copy. Node: devswarm.supervisorLogRotateBytes. |
@@ -4872,7 +4903,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.tick_budget_ms` | `900000` |  | ms | Most time one tick spends starting duties; a duty not yet started when it is spent waits for the next tick. Each duty is also bounded by its own timeout_ms. |
 | `devswarm_sup.tick_ms` | `60000` |  | ms | How often the scheduler job `devswarm_supervisor` runs while the mode is `engine` (Node's installer sweeps every 60-120 s). The job does nothing where DevSwarm is absent or the mode is witness. |
 | `devswarm_sup.verdict_fields` | `7 items` |  |  | The fields of a liveness verdict Node's recovery keeps across an update, in its order (PRESERVED_VERDICT_FIELDS); a nudge or an escalation rewrites the file as status + these + the new fields. |
-| `devswarm_sup.verdict_tmp_suffix` | `.tmp` |  |  | The suffix of the temporary file a verdict is written through (Node: writeVerdict). |
+| `devswarm_sup.verdict_zero_fields` | `recoveries, nudgeAttempts` |  |  | The preserved verdict fields whose value before the first write is 0, not null (Node: recoveries and nudgeAttempts). |
 | `devswarm_sup.witness_dir` | `.anti-hall/witness` |  |  | Where the witness builds its scratch mirrors, relative to the home directory. Each is removed when its comparison is done. |
 | `devswarm_sup.witness_every_ms` | `21600000` |  | ms | Least time between two witness comparisons of one duty. |
 | `devswarm_sup.witness_file` | `.anti-hall/logs/devswarm-sup-witness.ndjson` |  |  | The witness log, one JSON line per comparison (`match`: true / false, or null when Node could not run), relative to the home directory. |
@@ -4982,6 +5013,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_ingest.rollup_ms` | `900000` |  | ms | Once the configuration-failure ladder is capped, one 'still failing' line at most this often. |
 | `devswarm_ingest.scrub_env_prefixes` | `DEVSWARM_` |  |  | Environment variables whose name starts with one of these are removed from the monitor child, so a daemon started from inside a workspace never reads the queue as that workspace. |
 | `devswarm_ingest.set_timeout_sec` | `5 entries` |  |  | The -t of every monitor call: it long-polls at most this long, then exits (an empty exit is a quiet poll, not an error). Node: devswarm.monitorTimeoutSec. A value that is not a positive number reads as the default. |
+| `devswarm_ingest.shutdown_wait_ms` | `60000` |  | ms | How long the daemon waits at shutdown for the drain threads to finish the monitor call in flight (it has already taken its messages off the native queue, so they must reach the WAL and the store before the process exits). |
 | `devswarm_ingest.spawn_error_codes` | `2 entries, 2 entries, 2 entries` |  |  | How the operating system's words for a failed spawn map to the configuration-fault codes of the breaker: the first entry whose text the error contains. |
 | `devswarm_ingest.spill_probe` | `.probe` |  |  | The name of the file the spill directory is probed with (nothing is written to it). |
 | `devswarm_ingest.src_cache` | `cache` |  |  | The heartbeat's word for an executable taken from the path cache. |
@@ -4990,7 +5022,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_ingest.status_scratch` | `ah-ingest-status-` |  |  | The start of the temporary directory the read-only status verb uses so it remembers nothing. |
 | `devswarm_ingest.stderr_tail_chars` | `2048` |  |  | Most characters of a failed monitor call's stderr kept in the error. |
 | `devswarm_ingest.stop_poll_ms` | `200` |  | ms | How often a waiting drain checks whether it must stop. |
-| `devswarm_ingest.tmp_suffix` | `.tmp` |  |  | The suffix of the temporary file a heartbeat is written through. |
 | `devswarm_ingest.transient_cap_ms` | `300000` |  | ms | The longest backoff after a transient failure. |
 | `devswarm_ingest.wal_kind` | `monitor` |  |  | The WAL kind of the monitor reader (the file is `<kind>-<repo key>.ndjson`). |
 | `devswarm_ingest.wal_prefix_spill` | `spill ` |  |  | The text before the reason when the spill directory cannot be written. |
@@ -5003,7 +5034,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_ingest.witness_prefix` | `ingest-` |  |  | The start of a project's mirror file name, under the witness directory (devswarm_sup.witness_dir). |
 | `devswarm_ingest.witness_scratch` | `ingest-scratch-` |  |  | The start of the scratch HOME's name for one comparison. |
 | `devswarm_ingest.witness_snippet` | `const fs=require("fs");process.env.HOME=process.argv[2];const root=process.ar...` |  |  | What Node runs for the witness: ingestPayload over each mirrored batch against a scratch store, printing per batch {total, lossy, rows: [{hash, ts, body}]}. Arguments: the plugin root, the scratch HOME, the Primary's id, the repo key, the mirror file, the worktree. |
-| `devswarm_ingest.witness_timeout_ms` | `120000` |  | ms | Bound of one witness run. |
+| `devswarm_ingest.witness_timeout_ms` | `60000` |  | ms | Bound of one witness run. The drain of that project waits while it runs (messages queue up natively, nothing is lost), so it stays far under the three minutes after which a daemon's heartbeat reads stale. |
 
 ### realtime.toml / realtime
 

@@ -47,7 +47,8 @@ fn lacks_trailing_newline(file: &Path) -> bool {
     if len == 0 || f.seek(SeekFrom::Start(len - 1)).is_err() {
         return false;
     }
-    f.bytes().next().is_some_and(|b| b.is_ok_and(|b| b != b'\n'))
+    let mut last = Vec::new();
+    f.take(1).read_to_end(&mut last).is_ok() && last.first().is_some_and(|b| *b != b'\n')
 }
 
 /// Append and fsync. A torn last line gets a leading newline so the new record never glues onto it.

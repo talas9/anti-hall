@@ -720,6 +720,12 @@ fn projects_come_from_the_setting_fresh_node_heartbeats_and_memory() {
     keys.sort();
     assert_eq!(found.len(), 2, "{keys:?}");
     assert!(keys.contains(&x.project.repo_key));
+    // a LINKED worktree names the repository's main worktree as the project (what the Node unit bakes), never itself
+    git(&["worktree", "add", "-q", "-b", "side", x.home.join("linked").to_str().unwrap()], &x.main);
+    let linked = std::fs::canonicalize(x.home.join("linked")).unwrap();
+    let p = Project::resolve(linked.to_str().unwrap()).unwrap();
+    assert_eq!(p, x.project, "the same project, rooted at the main worktree");
+    assert_eq!(p.worktree, x.main.to_string_lossy());
     // one project per repo key, however many paths name it
     let twice = ah_engine::dssup::ingest::discover(&x.home, &x.state, &format!("{}:{}", x.main.display(), x.main.display()), now());
     assert_eq!(twice.iter().filter(|p| p.repo_key == x.project.repo_key).count(), 1);
@@ -751,4 +757,39 @@ fn the_loop_drains_stops_on_request_and_leaves_no_lock_behind() {
     let log = std::fs::read_to_string(x.home.join(".anti-hall/devswarm-ingest.log")).unwrap();
     assert!(log.contains("ingest drain started (engine)"), "{log}");
     let _ = Refused::Busy;
+}
+
+#[test]
+fn the_ingest_verb_is_read_only_open_to_every_role_and_names_the_owner_and_the_projects() {
+    let x = ix("verb");
+    ah_engine::defaults::init().unwrap();
+    for role in ["main", "child", "subagent", "codex"] {
+        assert!(ah_engine::dswire::cli::allowed(role, "ingest"), "{role}");
+    }
+    let hb_dir = dev(&x).join("heartbeats");
+    std::fs::create_dir_all(&hb_dir).unwrap();
+    std::fs::write(hb_dir.join(format!("ingest-{}.json", x.project.repo_key)), json!({"ts": now(), "workingDir": x.main}).to_string()).unwrap();
+    let before: Vec<_> = std::fs::read_dir(&x.state).unwrap().flatten().map(|e| e.file_name()).collect();
+    let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+        .args(["devswarm", "ingest", "--json"])
+        .env_clear()
+        .env("HOME", &x.home)
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("AH_ENGINE_DIR", &x.state)
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&o.stdout)));
+    assert_eq!(v["mode"], "witness", "the default: the Node daemons drain");
+    assert_eq!(v["projects"][0]["repoKey"], x.project.repo_key.as_str());
+    assert_eq!(v["projects"][0]["workspaceId"], x.project.workspace_id.as_str());
+    assert!(v["projects"][0]["heartbeat"]["workingDir"].is_string());
+    assert!(v["projects"][0]["lock"].is_null(), "nobody holds it");
+    let after: Vec<_> = std::fs::read_dir(&x.state).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(before, after, "read-only: the verb remembers and writes nothing");
+    assert!(!dev(&x).join(format!("locks/ingest-project-{}.lock", x.project.repo_key)).exists());
+    // nothing is running at shutdown: joining the drain threads is immediate
+    assert!(ah_engine::dssup::ingest::join_all());
 }

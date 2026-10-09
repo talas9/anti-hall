@@ -24,6 +24,7 @@ mod devswarm_rt;
 mod devswarm_wire;
 mod dssup;
 mod dssup_ingest;
+mod dssup_kill;
 mod devswarm_prompt_parity;
 mod devswarm_readside_parity;
 mod devswarm_role_parity;

@@ -56,6 +56,11 @@ fn walk(dir: &Path, depth: u64, suffix: &str, max_age: f64, now: f64, out: &mut 
         let full = dir.join(&name);
         let Ok(md) = std::fs::metadata(&full) else { continue }; // vanished mid-sweep: nothing to do
         if md.is_dir() {
+            // stricter than Node: a link to a directory is never followed, so a stray link can never make the sweep remove files
+            // that live somewhere else
+            if std::fs::symlink_metadata(&full).is_ok_and(|l| l.file_type().is_symlink()) {
+                continue;
+            }
             // one level of date partitioning is the only nesting these directories have; bounded so a link loop cannot make the walk unbounded
             if depth < defaults::num("devswarm_sup.hk_max_depth") {
                 walk(&full, depth + 1, suffix, max_age, now, out);
@@ -95,11 +100,7 @@ fn write_state(home: &Path, now: i64) {
     if let Some(d) = p.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: rate limiting is best effort
     }
-    let tmp = format!("{}{}{}", p.display(), defaults::text("devswarm_sup.hk_tmp_infix"), std::process::id());
-    let ok = std::fs::write(&tmp, json!({"lastRunAt": now}).to_string()).and_then(|()| std::fs::rename(&tmp, &p));
-    if ok.is_err() {
-        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: our own temp
-    }
+    crate::discard::harmless(crate::atomic::write(&p, json!({"lastRunAt": now}).to_string())); // keep: rate limiting is best effort
 }
 
 /// One housekeeping pass. The caller (the tick) has already applied the duty's gate (switch and cool-down), so this runs the

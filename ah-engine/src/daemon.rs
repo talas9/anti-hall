@@ -1186,6 +1186,7 @@ pub fn serve() {
         std::thread::spawn(move || telemetry_flusher(s));
     }
     accept_loop(&sh, &listener);
+    crate::dssup::ingest::join_all(); // a monitor call in flight has already taken its messages off the native queue
     if let Some(db) = &sh.db {
         sh.telemetry.flush(); // telemetry recorded since the last flush (D78)
         sh.telemetry.snapshot_metrics(); // the counters as they are at exit

@@ -240,10 +240,6 @@ max = 4
 doc = "The housekeeping cool-down state file, relative to the DevSwarm state directory (Node's file: {lastRunAt}). Written before the sweep runs."
 value = "housekeeping-sweep-state.json"
 
-[devswarm_sup.hk_tmp_infix]
-doc = "The text between a state file's name and the process id in the temporary file it is written through."
-value = ".tmp-"
-
 [devswarm_sup.hk_status_fixed]
 doc = "The result status of a removed file (doctor-repair's word)."
 value = "fixed"
@@ -309,9 +305,9 @@ value = "liveness"
 doc = "The fields of a liveness verdict Node's recovery keeps across an update, in its order (PRESERVED_VERDICT_FIELDS); a nudge or an escalation rewrites the file as status + these + the new fields."
 value = ["recoveries", "recoveredAt", "nudgeAttempts", "nudgedAt", "staleSince", "lastOutboundTs", "lastNudgeError"]
 
-[devswarm_sup.verdict_tmp_suffix]
-doc = "The suffix of the temporary file a verdict is written through (Node: writeVerdict)."
-value = ".tmp"
+[devswarm_sup.verdict_zero_fields]
+doc = "The preserved verdict fields whose value before the first write is 0, not null (Node: recoveries and nudgeAttempts)."
+value = ["recoveries", "nudgeAttempts"]
 
 [devswarm_sup.status_nudged]
 doc = "The verdict status after a poke."
@@ -377,6 +373,155 @@ value = "workspace {id} was already recovered {n} time(s) (limit {max}); needs a
 [devswarm_sup.msg_recover_failed]
 doc = "Printed when the recovery run could not be completed. {why}."
 value = "recover did not complete: {why}"
+
+# ---- recover, native ---------------------------------------------------------------------------------------------------------
+# The kill-and-resume of ONE workspace's session (src/dssup/kill.rs): target-session.js and recovery.js `recover` in Rust. Node's
+# findTarget runs as a read-only witness first; naming `recover` in node_duties hands the whole kill back to Node.
+
+
+[devswarm_sup.recover_duty]
+doc = "The name `recover` goes by in devswarm_sup.node_duties and in the witness log."
+value = "recover"
+
+[devswarm_sup.recover_witness_veto]
+doc = "1: when Node's read-only target lookup does not confirm the process the engine would signal, the engine stands down (reason `witness-disagrees`) instead of signalling. 0: the witness only logs. A Node that cannot be run never vetoes."
+value = 1
+min = 0
+max = 1
+
+[devswarm_sup.recover_witness_timeout_ms]
+doc = "Bound of the witness's target lookup."
+value = 20000
+min = 1000
+max = 300000
+unit = "ms"
+
+[devswarm_sup.recover_witness_snippet]
+doc = "What Node runs as the recover witness: findTarget (read-only: ps and the working-directory probe) for the descriptor's worktree and session, allowing an interactive session as the owner's explicit recover does. Arguments: the plugin root, the home directory, the worktree, the session id."
+value = 'process.env.HOME=process.argv[2];const T=require(process.argv[1]+"/companion/lib/target-session.js");console.log(JSON.stringify(T.findTarget({worktreePath:process.argv[3],sessionId:process.argv[4],home:process.argv[2],allowInteractive:true})))'
+
+[devswarm_sup.set_grace_sec]
+doc = "How long after SIGTERM the engine waits before it checks whether the process is still there. Node: devswarm.graceSec."
+value = "{ type = \"number\", section = \"devswarm\", key = \"graceSec\", env = \"ANTIHALL_DEVSWARM_GRACE_SEC\", min = 1, max = 60, default = 5 }"
+
+[devswarm_sup.kill_witness_disagrees]
+doc = "The abstain reason when the Node witness did not confirm the target."
+value = "witness-disagrees"
+
+[devswarm_sup.kill_no_target]
+doc = "The abstain reason when there is no target."
+value = "no-target"
+
+[devswarm_sup.kill_status_ambiguous]
+doc = "The liveness verdict status after an abstain."
+value = "ambiguous"
+
+[devswarm_sup.kill_status_recovering]
+doc = "The liveness verdict status while a recovery runs and after a resume."
+value = "recovering"
+
+[devswarm_sup.kill_no_conversation]
+doc = "What the resumed session prints when the conversation no longer exists (a handled failure: escalate)."
+value = "No conversation found"
+
+[devswarm_sup.kill_resume_guardrail]
+doc = "Prepended to every resume prompt: the interrupted session must check with a read-only command whether a side-effecting step already completed before it repeats it."
+value = "You were interrupted mid-task and resumed. Before re-running ANY command with side effects (git push, deploy, file writes), FIRST verify via a read-only check (git status/log, file mtime, log tail) whether it already completed. Do NOT blindly re-run a mutating command just because you don't see its result."
+
+[devswarm_sup.kill_claude_re]
+doc = "Matches a `claude` invocation in a command line (case-insensitive, a whole word)."
+value = "(?i)(^|[\\s/])claude(\\s|$)"
+
+[devswarm_sup.kill_session_re]
+doc = "Captures the session id after --session-id or --resume."
+value = "(?:--session-id|--resume)\\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+
+[devswarm_sup.kill_headless_re]
+doc = "Matches the headless flag (-p or --print) as a token of the command line."
+value = "(^|\\s)(-p|--print)(\\s|=|$)"
+
+[devswarm_sup.kill_ps_line_re]
+doc = "Captures pid, parent pid and command from a line of the process table."
+value = "^\\s*(\\d+)\\s+(\\d+)\\s+(.*)$"
+
+[devswarm_sup.kill_ps_bin]
+doc = "The process-table executable."
+value = "ps"
+
+[devswarm_sup.kill_ps_args]
+doc = "Its arguments (the same on macOS and Linux)."
+value = ["-axo", "pid=,ppid=,command="]
+
+[devswarm_sup.kill_lsof_bin]
+doc = "The executable that reports a process's working directory where /proc is not available (macOS)."
+value = "lsof"
+
+[devswarm_sup.kill_lsof_args]
+doc = "Its arguments; {pid} is the process."
+value = ["-p", "{pid}", "-a", "-d", "cwd", "-Fn"]
+
+[devswarm_sup.kill_lsof_name_prefix]
+doc = "The prefix of the output line that names the directory."
+value = "n"
+
+[devswarm_sup.kill_proc_cwd]
+doc = "The Linux link to a process's working directory; {pid}."
+value = "/proc/{pid}/cwd"
+
+[devswarm_sup.kill_probe_timeout_ms]
+doc = "Bound of one process-table or working-directory probe; a probe that times out yields no data and the gate abstains."
+value = 4000
+min = 500
+max = 60000
+unit = "ms"
+
+[devswarm_sup.kill_ps_cap_bytes]
+doc = "Most bytes of the process table read; a longer one is treated as unreadable (the gate abstains)."
+value = 33554432
+min = 1048576
+max = 1073741824
+
+[devswarm_sup.kill_claude_dir]
+doc = "The Claude state directory under the home directory."
+value = ".claude"
+
+[devswarm_sup.kill_projects_dir]
+doc = "The directory of session transcripts under it."
+value = "projects"
+
+[devswarm_sup.kill_transcript_suffix]
+doc = "The suffix of a session's transcript file."
+value = ".jsonl"
+
+[devswarm_sup.kill_claude_bin]
+doc = "The Claude Code executable the resume starts."
+value = "claude"
+
+[devswarm_sup.kill_claude_dirs]
+doc = "Directories searched for it after PATH (`~/` is the home directory); the daemon's PATH is often minimal."
+value = ["~/.local/bin", "~/.claude/local", "/opt/homebrew/bin", "/usr/local/bin"]
+
+[devswarm_sup.kill_resume_args]
+doc = "The arguments of the resume; {uuid} is the session."
+value = ["-p", "--resume", "{uuid}", "--dangerously-skip-permissions"]
+
+[devswarm_sup.kill_resume_log_prefix]
+doc = "The start of the temporary file the resumed session's first output goes to."
+value = "antihall-resume-"
+
+[devswarm_sup.kill_readiness_ms]
+doc = "How long a fresh resume is watched for an immediate failure. Never a kill deadline."
+value = 4000
+min = 500
+max = 60000
+unit = "ms"
+
+[devswarm_sup.kill_poll_ms]
+doc = "How often the readiness watch checks whether the resumed session has exited."
+value = 100
+min = 10
+max = 5000
+unit = "ms"
 
 # ---- the supervisor verb ---------------------------------------------------------------------------------------------------
 
