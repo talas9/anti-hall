@@ -86,6 +86,7 @@ Building, testing and releasing the plugin and the Rust engine: [Development gui
 ## Links
 
 - [Documentation](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
+- [Docs site](https://talas9.github.io/anti-hall/)
 - [Support](https://github.com/talas9/anti-hall/issues)
 - [Privacy](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md)
 

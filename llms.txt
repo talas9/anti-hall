@@ -46,6 +46,8 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [plugins/anti-hall/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/README.md): the plugin directory page (what it does, install, data sent).
 - [plugins/anti-hall/codex/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/codex/README.md): the Codex port, hook subset, skills, OMX mapping.
 - [docs/README.md](https://github.com/talas9/anti-hall/blob/main/docs/README.md): the documentation start page, a grouped index of every doc.
+- [Docs site](https://talas9.github.io/anti-hall/): the same docs as a searchable site (MkDocs, GitHub Pages).
+- [docs/REPO-PIPELINES.md](https://github.com/talas9/anti-hall/blob/main/docs/REPO-PIPELINES.md): every GitHub workflow, its trigger and whether it gates, and the repository policies.
 - [docs/CONTRACT-1.0.md](https://github.com/talas9/anti-hall/blob/main/docs/CONTRACT-1.0.md): the 1.0 compatibility contract (stable CLIs, hooks, settings, paths).
 - [docs/AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md): the optional ah-engine: install (pinned sha256), go-live and rollback, failover and self-heal, telemetry, what still runs on Node, pre-release measurements.
 - [docs/DEVELOPMENT.md](https://github.com/talas9/anti-hall/blob/main/docs/DEVELOPMENT.md): build, test and release the plugin and the engine.

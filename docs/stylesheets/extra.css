@@ -1,0 +1,54 @@
+/* anti-hall palette: teal primary, amber accent. Used by `primary: custom` / `accent: custom`. */
+:root,
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #0f766e;
+  --md-primary-fg-color--light: #14b8a6;
+  --md-primary-fg-color--dark: #115e59;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.7);
+  --md-accent-fg-color: #d97706;
+  --md-accent-fg-color--transparent: rgba(217, 119, 6, 0.1);
+  --md-typeset-a-color: #0f766e;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #115e59;
+  --md-primary-fg-color--light: #14b8a6;
+  --md-primary-fg-color--dark: #134e4a;
+  --md-accent-fg-color: #fbbf24;
+  --md-accent-fg-color--transparent: rgba(251, 191, 36, 0.1);
+  --md-typeset-a-color: #5eead4;
+  --md-default-bg-color: #0f1419;
+}
+
+/* Home page hero */
+.ah-hero {
+  text-align: center;
+  padding: 1.5rem 0 0.5rem;
+}
+.ah-hero img {
+  width: 88px;
+  height: 88px;
+}
+.ah-hero .ah-tagline {
+  font-size: 1.15rem;
+  margin: 0.5rem auto 1rem;
+  max-width: 36rem;
+}
+.ah-hero .md-button {
+  margin: 0.25rem;
+}
+
+/* Hook messages quoted from the plugin */
+.md-typeset .ah-msg pre > code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Wide reference tables scroll inside their box, never the page */
+.md-typeset__table {
+  max-width: 100%;
+}
+.md-typeset table:not([class]) td code {
+  word-break: break-word;
+}

@@ -1,0 +1,132 @@
+# Secret and privacy scan for PRs and pushes to dev/main. Job "privacy-scan" fails on a hit; make
+# it a required check for main. Push protection and secret scanning stay on; this adds:
+#   - gitleaks (MIT CLI, checksum-verified; default rules incl. private keys, generic high-entropy
+#     API keys, .env-style assignments) over the new commits only;
+#   - the privacy rules from .github/moderation/config.json over added lines: absolute home paths,
+#     emails (except allow-listed placeholders), session ids, and names from the PRIVATE_DENYLIST
+#     secret (not available to fork PRs; that rule is then skipped).
+# Findings show rule + file:line only; values are never printed (gitleaks --redact).
+# pull_request (not _target): read-only token, no secrets for forks. Nothing from the PR is executed:
+# the scanner script and gitleaks config come from the PR's base commit (a PR cannot weaken them);
+# the one exception is the PR that first adds them, which falls back to its own copy with a notice.
+# Labels and the PR comment come from pr-check.yml.
+name: Privacy scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: privacy-scan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  privacy-scan:
+    name: privacy-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - name: Checkout (scanned only, never executed)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout the rules from the base commit (pull requests)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: _rules
+          persist-credentials: false
+          sparse-checkout: .github
+
+      - name: Pick the rules directory
+        id: rules
+        run: |
+          if [ -f _rules/.github/scripts/moderation/privacy-scan.js ] && [ -f _rules/.github/gitleaks.toml ]; then echo "dir=_rules" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=." >> "$GITHUB_OUTPUT"
+            if [ -d _rules ]; then echo "::notice::Base commit has no privacy rules yet; using this commit's copy (bootstrap)."; fi
+          fi
+
+      - name: Range of new commits
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then base="$(git merge-base "$PR_BASE" "$PR_HEAD")"; head="$PR_HEAD"
+          elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && ! [[ "$BEFORE" =~ ^0+$ ]] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then base="$BEFORE"; head="$AFTER"
+          else base="$(git rev-parse "$AFTER~1" 2>/dev/null || git hash-object -t tree /dev/null)"; head="$AFTER"; fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"; echo "head=$head" >> "$GITHUB_OUTPUT"
+          echo "Scanning $base..$head"
+
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gl.tgz" | sha256sum -c -
+          tar -xzf gl.tgz gitleaks
+
+      - name: gitleaks
+        id: gitleaks
+        continue-on-error: true
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD: ${{ steps.range.outputs.head }}
+          RULES: ${{ steps.rules.outputs.dir }}
+        run: |
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 1 \
+            --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" \
+            --config "$RULES/.github/gitleaks.toml" \
+            --log-opts="$BASE..$HEAD" .
+
+      - name: Privacy rules on added lines
+        id: privacy
+        continue-on-error: true
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD: ${{ steps.range.outputs.head }}
+          PRIVATE_DENYLIST: ${{ secrets.PRIVATE_DENYLIST }}
+          RULES: ${{ steps.rules.outputs.dir }}
+        run: node "$RULES/.github/scripts/moderation/privacy-scan.js" "$BASE" "$HEAD"
+
+      - name: Summary and verdict
+        if: always()
+        env:
+          GL: ${{ steps.gitleaks.outcome }}
+          PV: ${{ steps.privacy.outcome }}
+        run: |
+          {
+            echo "### privacy-scan"
+            echo "| check | result |"; echo "|---|---|"
+            echo "| gitleaks v${GITLEAKS_VERSION} | ${GL} |"
+            echo "| privacy rules | ${PV} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$RUNNER_TEMP/gitleaks.json" ]; then
+            jq -r '.[] | "| gitleaks | \(.RuleID) at `\(.File):\(.StartLine)` (commit \(.Commit[0:8])) |"' "$RUNNER_TEMP/gitleaks.json" | head -50 >> "$GITHUB_STEP_SUMMARY" || true
+            jq -r '.[] | "::error file=\(.File),line=\(.StartLine)::gitleaks \(.RuleID) (value redacted)"' "$RUNNER_TEMP/gitleaks.json" | head -50 || true
+          fi
+          if [ "$GL" != "success" ] || [ "$PV" != "success" ]; then echo "privacy-scan failed: see the summary (values are never printed)."; exit 1; fi
+
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: privacy-scan-log
+          path: ${{ runner.temp }}/privacy-scan-log.jsonl
+          retention-days: 90
+          if-no-files-found: ignore

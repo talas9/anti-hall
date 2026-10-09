@@ -1,0 +1,146 @@
+# Community automation for issues, comments and discussions, in one pass per event:
+#   - privacy scrub (home paths, emails, session ids, names from the PRIVATE_DENYLIST secret):
+#     a comment is hidden (RESOLVED); a body gets risk:private-data plus a request to edit it out;
+#   - moderation: spam/abuse comments hidden, spam bodies labelled and locked, off-topic and
+#     low-quality bodies labelled moderation:review with a templated reply;
+#   - triage of new issues and Ideas/Q&A discussions: rules-first labels, milestone, board fields,
+#     and ONE sticky "Triage brief (automated)" (or a suggested Q&A answer). It is refreshed at most
+#     once a day when the reporter answers the open questions.
+# Rules make every decision. One optional model call per event (ai-model.yml: Claude, then
+# Copilot, then rules only) adds research and text; its reply is used only as validated enums and
+# sanitized, capped text. Repo variables: AI_PROVIDER (default "claude,copilot"; "none" = off),
+# AI_DAILY_CAP (default 50). Never closes, deletes, bans or blocks.
+name: Community
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+  discussion:
+    types: [created, edited]
+  discussion_comment:
+    types: [created, edited]
+  workflow_dispatch:
+    inputs:
+      item-number:
+        description: Issue or discussion number to process as if just opened
+        required: true
+        type: number
+      item-kind:
+        description: Item kind
+        type: choice
+        options: [issue, discussion]
+        default: issue
+      dry-run:
+        description: Log the decisions without writing anything
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: community-${{ github.event.issue.number || github.event.discussion.number || inputs.item-number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: github.event.sender.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    permissions:
+      contents: read
+      issues: read
+      discussions: read
+      actions: read
+    outputs:
+      state: ${{ steps.gate.outputs.state }}
+      want_model: ${{ steps.gate.outputs.want_model }}
+      purpose: ${{ steps.gate.outputs.purpose }}
+      prompt: ${{ steps.gate.outputs.prompt }}
+      schema: ${{ steps.gate.outputs.schema }}
+      claude_model: ${{ steps.gate.outputs.claude_model }}
+      copilot_model: ${{ steps.gate.outputs.copilot_model }}
+      tools: ${{ steps.gate.outputs.tools }}
+      max_turns: ${{ steps.gate.outputs.max_turns }}
+      chain: ${{ steps.gate.outputs.chain }}
+    steps:
+      - name: Checkout the rules (default branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Rules
+        id: gate
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PRIVATE_DENYLIST: ${{ secrets.PRIVATE_DENYLIST }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+          AI_DAILY_CAP: ${{ vars.AI_DAILY_CAP }}
+        with:
+          script: |
+            const m = require(process.env.GITHUB_WORKSPACE + '/.github/scripts/moderation/community.js');
+            await m.gate({ github, context, core });
+
+  model:
+    needs: gate
+    if: needs.gate.outputs.want_model == 'true'
+    permissions:
+      contents: read
+      copilot-requests: write
+    uses: ./.github/workflows/ai-model.yml
+    with:
+      purpose: ${{ needs.gate.outputs.purpose }}
+      prompt: ${{ needs.gate.outputs.prompt }}
+      schema: ${{ needs.gate.outputs.schema }}
+      claude_model: ${{ needs.gate.outputs.claude_model }}
+      copilot_model: ${{ needs.gate.outputs.copilot_model }}
+      chain: ${{ needs.gate.outputs.chain }}
+      tools: ${{ needs.gate.outputs.tools }}
+      max_turns: ${{ fromJSON(needs.gate.outputs.max_turns) }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
+
+  apply:
+    needs: [gate, model]
+    if: always() && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      discussions: write
+      pull-requests: write
+    steps:
+      - name: Checkout the default branch (rules, templates, path checks)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Act and record
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          STATE: ${{ needs.gate.outputs.state }}
+          MODEL_RESULT: ${{ needs.model.outputs.result }}
+          MODEL_PROVIDER: ${{ needs.model.outputs.provider }}
+          MODEL_REASON: ${{ needs.model.outputs.reason }}
+          MODEL_LATENCY_MS: ${{ needs.model.outputs.latency_ms }}
+          MODEL_TURNS: ${{ needs.model.outputs.turns }}
+          MODEL_TOKENS: ${{ needs.model.outputs.tokens }}
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN || secrets.ROADMAP_PROJECT_TOKEN }}
+        with:
+          script: |
+            const m = require(process.env.GITHUB_WORKSPACE + '/.github/scripts/moderation/community.js');
+            await m.apply({ github, context, core, getOctokit });
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: community-log
+          path: ${{ runner.temp }}/community-log.jsonl
+          retention-days: 90
+          if-no-files-found: ignore

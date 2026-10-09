@@ -42,6 +42,39 @@ DevSwarm mesh writes and daemons (ingest, supervisor, reaper), every call that c
 
 From one replay of 2113 recorded payloads against the exact go-live bundle and the same-version Node hooks (not a field result): 0 of 68 blocks weaker than Node, 2059 identical outputs, 87.0 percent of hook rows answered natively, about 35.5 ms CPU per call for the engine against 158.2 ms for the Node hooks. Known gaps are listed in `docs/AH-ENGINE.md`.
 
+## 0.203.3 (2026-10-10)
+
+### Repo
+
+These changes affect the GitHub repository only, not the installed plugin (#87).
+
+- Model steps use two Claude credentials with immediate failover from the first to the second, then Copilot, then rules-only. Each job's summary names the slot used.
+- Per-job model routing: each automation job picks its own model from the config.
+- `privacy-scan` checks commit identity (author and committer) on pull requests.
+- The moderation sanitizer fix: model output is cleaned correctly before it is posted.
+- Leaner pull-request CI: Node 24 only on pull requests; the full matrix runs on tags, `main` and weekly. A nightly job runs the parity and bench tests.
+- Realtime board sync: the roadmap board and stale check update on pushes to `dev`/`main`, pull-request close and issue events (rules only, no model); the digest stays weekly.
+- Dev skills: every agent and lane brief names its issue and keeps it updated.
+
+## 0.203.2 (2026-10-09)
+
+### Security
+
+- command-guard: the `timeout` prefix regex (`TIMEOUT_PREFIX_RE`) had two overlapping flag alternatives, so a `timeout` followed by many `-k -x` pairs made the PreToolUse classifier backtrack exponentially (CodeQL `js/redos`). The alternatives are now disjoint; every real `timeout` form strips to the same body. A regression test runs the CodeQL witness string (#56).
+
+### Repo
+
+These changes affect the GitHub repository only, not the installed plugin.
+
+- Issue forms with priority, area and estimate fields; discussion category forms for ideas, Q&A, show-and-tell and general; saved replies and a release notes template.
+- Rules-first automation for triage, moderation and research briefs on issues and discussions, PR checks, and a weekly roadmap digest, each with an optional Claude or Copilot model step that falls back to rules only.
+- Privacy scan on pull requests (gitleaks plus repository rules for private paths and identifiers).
+- Roadmap board automation, PR path labels, PR title check, stale handling, dependency review, job timeouts, PR concurrency and SHA-pinned actions.
+- CodeQL via default setup (the advanced workflow is manual-only), OpenSSF Scorecard, and release drafter.
+- Docs site built with MkDocs and published on GitHub Pages at https://talas9.github.io/anti-hall/, plus the wiki; `docs/REPO-PIPELINES.md` lists every workflow and policy, and `SUPPORT.md` says where to ask.
+- Dev-only skills under `.claude/skills/` (dogfood, gh-work, release, engine-lane, repo-hygiene); they are not part of the shipped plugin.
+- Dependabot bumps for GitHub Actions (checkout, setup-node, configure-pages, deploy-pages, claude-code-action), now targeting `dev`.
+
 ## 0.203.1 (2026-10-09)
 
 ### Fixed

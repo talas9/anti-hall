@@ -65,22 +65,50 @@ A change to a hook, skill or model-routing doc lands on the Claude side and the 
 - Keep shipped files project-agnostic and user-agnostic: no private names, paths or emails, other than the author credit.
 - A pull request template lists the checklist.
 
-## Branches
+## Branches, builds, releases, tags
 
-- **`dev`** is the working branch. Day-to-day work is committed and pushed there; pushes to `dev` run no CI.
-- **`main`** is what users and the plugin directory install from. It accepts changes only through a pull request from `dev`; a ruleset blocks direct pushes, force pushes and deletion. Every merge to `main` is a release-quality event.
-- **Contributors: open your pull request against `dev`.** A pull request to `main` from a fork or from any other branch fails the required `dev-only` check (`.github/workflows/pr-source.yml`) and cannot merge.
-- A pull request runs the full test workflow. The maintainer promotes `dev` to `main` with a `dev` → `main` pull request at release time ([RELEASING.md](RELEASING.md)).
+### Issues first
+
+Every piece of work has an issue. Feature requests and bugs go through the [issue forms](https://github.com/talas9/anti-hall/issues/new/choose), which ask for priority, area and an estimate (S up to 2 hours, M up to 1 day, L up to 3 days, XL more than 3 days). `.github/workflows/triage.yml` turns those answers into `priority:*`, `size:*` and `area:*` labels and adds `status:triage`; a maintainer moves the issue to `status:accepted`, `status:in-progress` or `status:blocked`. Pull requests get `area:*` labels from the paths they change (`.github/labeler.yml`). The maintainer tracks the work on a GitHub Projects board, with one view each for work in progress, accepted work, triage and milestones.
+
+### Branch model
+
+- **`dev`** is the working branch. Day-to-day work is committed and pushed there; pushes to `dev` run no CI. A ruleset blocks force pushes and deletion of `dev`; direct pushes stay allowed.
+- **`main`** is what users and the plugin directory install from. It changes only through a pull request from `dev`: the required `dev-only` check (`.github/workflows/pr-source.yml`) fails for any other source, and the `main protection` ruleset also requires `tests-passed`, blocks direct pushes, force pushes and deletion, and allows merge commits only (never squash or rebase, so `dev` and `main` stay in step). Every merge to `main` is a release-quality event.
+- **Contributors: open your pull request against `dev`.** A pull request to `main` from a fork or from any other branch cannot merge.
+- **Short-lived branches** (a contributor's change, a parallel lane) are named `<type>/<issue#>-<slug>`, for example `fix/42-statusline-deadline`. They branch from `dev`, merge back into `dev` and are deleted after the merge. Long-lived branches (`dev`, `main` and the engine integration branches) are never deleted, and a ruleset blocks force pushes to them.
+- Dependabot opens its pull requests against `dev` (`.github/dependabot.yml`, `target-branch: dev`).
+
+### Commits and pull requests reference the issue
+
+- Conventional messages as in `git log`: `type(area): summary`, for example `fix(hooks): ...`, `feat(engine): ...`, `docs: ...`, `test(area): ...`, `ci(repo): ...`, `chore(release): ...`. Mention the issue (`#42`) in the message.
+- A pull request body says `Closes #42` (one line per issue) so the issue closes when the change reaches the default branch.
+- No AI credit lines, and never a force push (see "Commits and pull requests" above).
+
+### Builds and CI
+
+- **Local gate first.** Run `node --test` (and, for engine changes, the engine's own test suite) before you push. Pushes to `dev` and to short-lived branches run no CI.
+- **CI gates pull requests to `main` and releases.** A pull request runs the test workflow (a reduced matrix); `rc-v*` tags run the full matrix; `ah-engine-v*` tags run the engine publish workflow. Check the Actions result before calling a release done: a green local run is not a green CI run.
+
+### Releases
+
+Maintainers follow [RELEASING.md](RELEASING.md); this section does not repeat its checklist. In short: bump the version and write the CHANGELOG section on `dev`, open the `dev` → `main` pull request, merge it with a merge commit once CI is green, then tag. Contributors normally do not bump versions.
+
+### Tags
+
+- `vX.Y.Z` marks a plugin release; `ah-engine-vX.Y.Z` marks an engine release (pushing it runs the engine publish workflow); `rc-vX.Y.Z[.N]` marks a release candidate for the full CI matrix.
+- Never move or delete a `v*` or `ah-engine-v*` tag. A tag ruleset blocks deletion, updates and force updates of both; creating a new tag stays allowed. A wrong release is fixed with a new version, never by re-tagging.
+- Release-candidate tags are not protected; the maintainer prunes old ones (RELEASING.md).
+
+### Version authority
+
+The version lives in `plugins/anti-hall/.claude-plugin/plugin.json`. The Codex manifest (`plugins/anti-hall/.codex-plugin/plugin.json`), root `package.json` and `package-lock.json` track it and must match (`tests/hygiene/manifest-drift.test.js`). The marketplace entry carries no version. `CHANGELOG.md` gets a section per release.
 
 ## Before you open a pull request
 
 1. Run the files you touched, then `node --test` once.
 2. Run `node plugins/anti-hall/hooks/doctor.js --check`.
 3. Fill in the pull request template honestly; "N/A, because ..." is a fine answer.
-
-## Releases
-
-Maintainers follow [RELEASING.md](RELEASING.md) (bump on `dev`, then a pull request from `dev` to `main`): the version lives in `plugins/anti-hall/.claude-plugin/plugin.json` (the Codex manifest, root `package.json` and `package-lock.json` track it) and `CHANGELOG.md` gets a section per release. Contributors normally do not bump versions.
 
 ## Questions and problems
 
@@ -89,4 +117,4 @@ Maintainers follow [RELEASING.md](RELEASING.md) (bump on `dev`, then a pull requ
 
 ## Issue triage bot
 
-A new issue gets one automated first-pass comment and labels from `.github/workflows/issue-triage.yml`. It only reads the issue, adds labels and posts that single comment; a maintainer always follows up. Maintainers enable it by setting the `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) repository secret; without one it does nothing.
+A new issue gets its form answers mapped to labels by `.github/workflows/triage.yml` (no model, no secret). It also gets one automated first-pass comment and labels from `.github/workflows/issue-triage.yml`. It only reads the issue, adds labels and posts that single comment; a maintainer always follows up. Maintainers enable it by setting the `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) repository secret; without one it does nothing.

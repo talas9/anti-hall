@@ -1,0 +1,181 @@
+# Roadmap upkeep for the "anti-hall roadmap" board (user project talas9 #3).
+#   Every 6 h: sync Status/Priority/Size/Estimate from labels and PR state (labels are the source;
+#     an empty Estimate is filled from size:*), add missing open items, flag in-progress items idle
+#     for 3 days (status:stale-check + one comment), count items without a milestone or estimate.
+#   Weekly (Monday): digest comment on the pinned "Roadmap digest" issue (created once): done,
+#     in progress, at risk, next 5 ranked by priority, age and blockers, milestone SUGGESTIONS
+#     (never applied), optional model overview; plus the weekly mistake report for all automation
+#     (labels/fields/milestones a person changed back, unhidden comments, lifted locks) and model
+#     usage per provider.
+#   Scheduled runs also list open code-scanning, Dependabot and secret-scanning alerts and keep one
+#     issue per alert (security-alerts.js; Dependabot and secret alerts need PROJECT_TOKEN-level access).
+# Board writes need the PROJECT_TOKEN secret (ROADMAP_PROJECT_TOKEN also accepted); without it they
+# are skipped with a notice. Never closes, deletes or archives anything.
+name: Roadmap
+
+#   Event runs (push to dev/main, PR closed, issue opened/closed/reopened/labeled/unlabeled/milestoned)
+#     do ONLY the board sync and stale check for the touched item: rules-only, no model, no digest.
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    types: [closed]
+  issues:
+    types: [opened, closed, reopened, labeled, unlabeled, milestoned]
+  schedule:
+    - cron: "17 */6 * * *"
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: sync (board, stale, flags) or weekly (adds digest and report)
+        type: choice
+        options: [sync, weekly]
+        default: sync
+      item-number:
+        description: Limit the board sync and stale check to one issue/PR (optional)
+        type: string
+        default: ""
+      dry-run:
+        description: Log the decisions without writing anything
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: roadmap-${{ github.event.issue.number || github.event.pull_request.number || (github.event_name == 'push' && github.ref) || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: read
+    outputs:
+      state: ${{ steps.plan.outputs.state }}
+      want_model: ${{ steps.plan.outputs.want_model }}
+      prompt: ${{ steps.plan.outputs.prompt }}
+      schema: ${{ steps.plan.outputs.schema }}
+      claude_model: ${{ steps.plan.outputs.claude_model }}
+      copilot_model: ${{ steps.plan.outputs.copilot_model }}
+      chain: ${{ steps.plan.outputs.chain }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Plan
+        id: plan
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+          AI_DAILY_CAP: ${{ vars.AI_DAILY_CAP }}
+        with:
+          script: |
+            const m = require(process.env.GITHUB_WORKSPACE + '/.github/scripts/moderation/roadmap.js');
+            await m.plan({ github, context, core });
+
+  model:
+    needs: plan
+    if: needs.plan.outputs.want_model == 'true'
+    permissions:
+      contents: read
+      copilot-requests: write
+    uses: ./.github/workflows/ai-model.yml
+    with:
+      purpose: digest
+      prompt: ${{ needs.plan.outputs.prompt }}
+      schema: ${{ needs.plan.outputs.schema }}
+      claude_model: ${{ needs.plan.outputs.claude_model }}
+      copilot_model: ${{ needs.plan.outputs.copilot_model }}
+      chain: ${{ needs.plan.outputs.chain }}
+      tools: none
+      max_turns: 2
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
+
+  apply:
+    needs: [plan, model]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Sync, flag and digest
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          STATE: ${{ needs.plan.outputs.state }}
+          MODEL_RESULT: ${{ needs.model.outputs.result }}
+          MODEL_PROVIDER: ${{ needs.model.outputs.provider }}
+          MODEL_REASON: ${{ needs.model.outputs.reason }}
+          MODEL_LATENCY_MS: ${{ needs.model.outputs.latency_ms }}
+          MODEL_TOKENS: ${{ needs.model.outputs.tokens }}
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN || secrets.ROADMAP_PROJECT_TOKEN }}
+        with:
+          script: |
+            const m = require(process.env.GITHUB_WORKSPACE + '/.github/scripts/moderation/roadmap.js');
+            await m.apply({ github, context, core, getOctokit });
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: roadmap-log
+          path: ${{ runner.temp }}/roadmap-log.jsonl
+          retention-days: 90
+          if-no-files-found: ignore
+
+  report:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.state).mode == 'weekly'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      discussions: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Download the last 7 days of logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          since="$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p "$RUNNER_TEMP/logs" && : > "$RUNNER_TEMP/all.jsonl"
+          gh api --paginate "repos/$REPO/actions/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.expired == false and .created_at >= \"$since\" and (.name | test(\"^(community|pr-check|roadmap|privacy-scan)-log$\"))) | .id" \
+            | head -400 | while read -r id; do
+              gh api "repos/$REPO/actions/artifacts/$id/zip" > "$RUNNER_TEMP/a.zip" 2>/dev/null || continue
+              unzip -o -q "$RUNNER_TEMP/a.zip" -d "$RUNNER_TEMP/logs/$id" 2>/dev/null || continue
+              cat "$RUNNER_TEMP/logs/$id"/*.jsonl >> "$RUNNER_TEMP/all.jsonl" 2>/dev/null || true
+            done
+          echo "$(wc -l < "$RUNNER_TEMP/all.jsonl") log lines"
+      - name: Mistake rate and provider usage
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          LOGS: ${{ runner.temp }}/all.jsonl
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN || secrets.ROADMAP_PROJECT_TOKEN }}
+        with:
+          script: |
+            const m = require(process.env.GITHUB_WORKSPACE + '/.github/scripts/moderation/roadmap.js');
+            await m.mistakes({ github, context, core, getOctokit });

@@ -159,4 +159,5 @@ On Codex, shell writes (`cat >`, `tee`, `sed -i` and similar) reach `edit-guard`
 ## Documentation
 
 Everything else starts at the
-[documentation start page](https://github.com/talas9/anti-hall/blob/main/docs/README.md).
+[documentation start page](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
+or the [docs site](https://talas9.github.io/anti-hall/).

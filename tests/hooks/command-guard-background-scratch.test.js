@@ -182,6 +182,17 @@ test('timeout-wrapped anti-hall devswarm.js read verbs pass; heavy stays blocked
   assert.deepStrictEqual(bad.filter((c) => run(c, { bg: false }).status !== 2), []);
 });
 
+// CodeQL js/redos: TIMEOUT_PREFIX_RE backtracked exponentially on a
+// `timeout` followed by many `-k\t-!\t` pairs (24 pairs took ~0.4 s, each
+// extra pair doubling it). The classifier must stay linear on that shape.
+test('timeout prefix regex does not backtrack exponentially (CodeQL js/redos)', () => {
+  const { isHeavyCommand } = require('../../plugins/anti-hall/hooks/command-guard.js');
+  const evil = 'timeout\t' + '-k\t-!\t'.repeat(40) + '!';
+  const t0 = Date.now();
+  isHeavyCommand(evil);
+  assert.ok(Date.now() - t0 < 1000, 'classification of a pathological timeout prefix must be fast');
+});
+
 // L33: a scratch script run DIRECTLY (shebang + exec bit), background only,
 // inside this session's OWN scratchpad. Env-prefix assignments stay refused.
 function runOwn(command, opts) {
