@@ -419,3 +419,151 @@ fn is_receipt_id(x: &str) -> bool {
     let mut it = x.chars();
     matches!(it.next(), Some('r' | 'R')) && x.len() > 1 && it.all(|c| c.is_ascii_alphanumeric())
 }
+
+// ---- archive-request ----------------------------------------------------------------------------------------------------
+
+/// `lstat` succeeds on the path (a descriptor "exists" for the id resolver whatever it is).
+fn lstat_exists(p: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok()
+}
+
+/// `hasFreshHeartbeat(id, home, { now })`: the heartbeat record's `ts` (else the file's mtime) is positive, not in the future,
+/// and at most the freshness window old.
+fn has_fresh_heartbeat(inv: &Inv, id: &str) -> bool {
+    let p = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
+    let ts = match std::fs::read(&p).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) {
+        Some(v) if matches!(v.get("ts"), Some(OVal::Num(x)) if x.is_finite()) => match v.get("ts") {
+            Some(OVal::Num(x)) => Some(*x),
+            _ => None,
+        },
+        _ => std::fs::metadata(&p).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64() * 1000.0),
+    };
+    let now = inv.now as f64;
+    match ts {
+        Some(t) if t.is_finite() && t > 0.0 && t <= now => now - t <= defaults::num("devswarm_sup.lv_heartbeat_fresh_ms") as f64,
+        _ => false,
+    }
+}
+
+/// What `resolveArchiveId` settles on: the id to post to, or the refusal Node prints for an ambiguous prefix.
+enum Resolved {
+    Id(String),
+    Ambiguous(Answer),
+}
+
+/// `resolveArchiveId(raw, ctx)` for a safe id: an exact descriptor (active or archived) wins; else a unique prefix of the
+/// project's workspaces; else a unique registry row of that mesh label; else the id as given.
+fn resolve_archive_id(inv: &Inv, raw: &str) -> R<Resolved> {
+    let root = devswarm_root(&inv.home);
+    let file = format!("{raw}{}", defaults::text("mesh_write.json_suffix"));
+    if lstat_exists(&root.join(defaults::text("mesh_write.dir_workspaces")).join(&file)) {
+        return Ok(Resolved::Id(raw.to_string()));
+    }
+    let adir = root.join(defaults::text("mesh_write.dir_archived"));
+    // checkedArchivedDir: a directory that is not a plain directory is an error Node reports as "not found"
+    if std::fs::symlink_metadata(&adir).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) && lstat_exists(&adir.join(&file)) {
+        return Ok(Resolved::Id(raw.to_string()));
+    }
+    let Some(worktree) = ident::resolve_caller_worktree(&inv.cwd)? else { return defer("no-worktree") };
+    let Some(repo_key) = ident::repo_key_for_worktree(&worktree)? else { return defer("no-project") };
+    let st = common::open_store(inv, &repo_key)?;
+    let sum = crate::meshw::summary::compute(&st, inv, None)?;
+    let Some(OVal::Obj(all)) = sum.get("workspaces") else { return defer("summary-shape") };
+    if all.iter().any(|(k, _)| crate::checks::guardkit::ojson::is_array_index_key(k)) {
+        return defer("integer-keys");
+    }
+    let cands: Vec<&String> = all.iter().map(|(k, _)| k).filter(|k| is_safe_id(k) && k.starts_with(raw)).collect();
+    match cands.len() {
+        1 => return Ok(Resolved::Id(cands[0].clone())),
+        0 => {}
+        _ => {
+            let list = cands.iter().map(|x| x.as_str()).collect::<Vec<_>>();
+            return Ok(Resolved::Ambiguous(ambiguous(raw, defaults::text("devswarm_cli.msg_ambig_prefix"), &list)));
+        }
+    }
+    let rows = rows_of(&st)?;
+    let mut mesh: Vec<String> = mesh_rows(&rows, raw)?.into_iter().filter(|r| r.id != raw && is_safe_id(&r.id)).map(|r| r.id).collect();
+    mesh.sort();
+    match mesh.len() {
+        0 => Ok(Resolved::Id(raw.to_string())),
+        1 => Ok(Resolved::Id(mesh.remove(0))),
+        _ => {
+            let list = mesh.iter().map(String::as_str).collect::<Vec<_>>();
+            Ok(Resolved::Ambiguous(ambiguous(raw, defaults::text("devswarm_cli.msg_ambig_mesh"), &list)))
+        }
+    }
+}
+
+fn mesh_rows(rows: &[Row], mesh_id: &str) -> R<Vec<Row>> {
+    crate::meshw::send::mesh_candidates(rows, Some(mesh_id))
+}
+
+/// The refusal for an ambiguous prefix or mesh label: `{ action, ok:false, error, candidates, id }`.
+fn ambiguous(raw: &str, template: &str, ids: &[&str]) -> Answer {
+    let msg = crate::checks::devswarm_role::text::fill_once(template, &[("id", &quote(raw)), ("n", &ids.len().to_string()), ("ids", &ids.join(defaults::text("devswarm_cli.msg_ids_join")))]);
+    let mut o = Obj::default();
+    o.put("action", s(defaults::text("devswarm_cli.action_archive_request")))
+        .put("ok", OVal::Bool(false))
+        .put("error", s(&msg))
+        .put("candidates", OVal::Arr(ids.iter().map(|x| s(x)).collect()))
+        .put("id", s(raw));
+    answer(2, o.done())
+}
+
+/// `archive-request <childId> [--reason TEXT]`: post the archive request into the child's own partition.
+pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
+    let id = a.positionals.get(1).map(String::as_str).unwrap_or("");
+    if !is_safe_id(id) {
+        return Ok(refusal(&[("error", s(defaults::text("devswarm_cli.msg_bad_id")))]));
+    }
+    let id = match resolve_archive_id(inv, id)? {
+        Resolved::Id(x) => x,
+        Resolved::Ambiguous(ans) => return Ok(ans),
+    };
+    let heal = common::self_heal(inv)?;
+    let cwd = inv.cwd.as_str();
+    let Some(repo_key) = ident::repo_key_for_worktree(cwd)? else { return defer("no-project") };
+    // a registered target with no live session is archived directly instead: Node's
+    if ident::read_descriptor(&inv.home, &id).is_some() && !has_fresh_heartbeat(inv, &id) {
+        return defer("target-liveness");
+    }
+    let reason = a.one(defaults::text("devswarm_cli.flag_reason")).filter(|r| !r.is_empty());
+    let message = match reason {
+        Some(r) => format!("{} {r} — {}", defaults::text("devswarm_cli.archive_marker"), defaults::text("devswarm_cli.archive_tail")),
+        None => format!("{} — {}", defaults::text("devswarm_cli.archive_marker"), defaults::text("devswarm_cli.archive_tail")),
+    };
+    let st = common::open_store(inv, &repo_key)?;
+    let rows = rows_of(&st)?;
+    let who = ident::sender_identity_detailed(&inv.env, cwd, &rows, &inv.home)?;
+    if !alias_on_file(inv, &who) {
+        return defer("sender-alias");
+    }
+    let from = who.identity;
+    crate::meshw::summary::check(&st, inv, Some(&id))?;
+    let Some(lock) = idlock::acquire(&inv.write_home, &id) else { return defer("lock-busy") };
+    let hash = store::mesh_message_hash(Some(&from), Some(&id), defaults::text("mesh_write.mtype_direct"), defaults::text("devswarm_cli.archive_urgency"), &message, &inv.now.to_string(), false);
+    let nonce = ident::reader_nonce(&inv.home);
+    let row = store::mesh_message_row(Some(&from), Some(&id), false, &message, inv.now, defaults::text("devswarm_cli.archive_urgency"), &hash, false, nonce.as_deref());
+    let appended = st.append_mesh_row(&row);
+    lock.release();
+    let appended = appended.map_err(|e| ident::Defer(format!("archive-request-append:{e}")))?;
+    crate::meshw::mark_committed();
+    if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, &repo_key) {
+        crate::meshw::log_summary_failure(defaults::text("devswarm_cli.verb_archive_request"), &why);
+    }
+    wsverbs::note_summary(inv, &repo_key);
+    let mut out = Obj::default();
+    out.put("ok", OVal::Bool(true))
+        .put("action", s(defaults::text("devswarm_cli.action_archive_request")))
+        .put("id", s(&id))
+        .put("childId", s(&id))
+        .put("posted", OVal::Bool(true))
+        .put("sent", OVal::Bool(appended.inserted))
+        .put("seq", appended.seq.map_or(OVal::Null, |x| n(x as f64)))
+        .put("reason", reason.map_or(OVal::Null, s))
+        .put("reminder", s(defaults::text("devswarm_cli.archive_reminder")));
+    for (k, v) in heal {
+        out.put(&k, v);
+    }
+    Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect: Effect::Row(hash) })
+}
