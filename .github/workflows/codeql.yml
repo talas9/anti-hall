@@ -1,0 +1,62 @@
+name: codeql
+
+# CodeQL code scanning (advanced setup). Runs on pull requests to main, pushes to
+# main and weekly; never on dev pushes. Findings appear under Security > Code
+# scanning. Rust is analysed once Rust sources (Cargo.toml) are on the scanned
+# branch; until then the rust cell is a no-op.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+          - language: javascript-typescript
+          - language: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check for sources
+        id: src
+        env:
+          LANG_ID: ${{ matrix.language }}
+          HAS_CARGO: ${{ hashFiles('**/Cargo.toml') != '' }}
+        run: |
+          if [ "$LANG_ID" = rust ] && [ "$HAS_CARGO" != true ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Cargo.toml on this ref; skipping the rust analysis."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        if: steps.src.outputs.run == 'true'
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        if: steps.src.outputs.run == 'true'
+        with:
+          category: /language:${{ matrix.language }}

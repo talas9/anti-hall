@@ -1,0 +1,44 @@
+name: stale
+
+# Labels issues and pull requests with no activity for 60 days as stale and
+# leaves one comment. It NEVER closes, locks or deletes anything (close days
+# are -1, branch deletion is off): closing stays a human decision. Any new
+# activity removes the label. priority:P0 / priority:P1 items are exempt.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          days-before-stale: 60
+          days-before-close: -1
+          days-before-issue-close: -1
+          days-before-pr-close: -1
+          delete-branch: false
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: 'priority:P0,priority:P1'
+          exempt-pr-labels: 'priority:P0,priority:P1'
+          stale-issue-message: >-
+            This issue has had no activity for 60 days, so it is marked stale.
+            It will not be closed automatically. Comment if it still matters,
+            or close it yourself if it is resolved.
+          stale-pr-message: >-
+            This pull request has had no activity for 60 days, so it is marked
+            stale. It will not be closed automatically. Push or comment to
+            keep it moving, or close it yourself if it is no longer needed.
