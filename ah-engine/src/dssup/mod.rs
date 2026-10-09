@@ -18,6 +18,7 @@
 // - an unparsable worker output is kept as text
 pub mod cli;
 pub mod housekeep;
+pub mod ingest;
 pub mod recover;
 pub mod tick;
 pub mod verdict;

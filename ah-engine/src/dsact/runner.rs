@@ -4,7 +4,7 @@
 use crate::defaults;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 /// What to run. `bin` is the executable; `None` means the configured hivecontrol.
@@ -18,6 +18,11 @@ pub struct RunSpec {
     pub cwd: Option<String>,
     /// The timeout ms.
     pub timeout_ms: u64,
+    /// Most bytes of stdout kept; 0 is the configured default. A destructive read sets it high, and checks [`RunResult::truncated`].
+    pub cap_bytes: u64,
+    /// Environment variables whose NAME starts with one of these are removed from the child's environment (so a daemon started from
+    /// a workspace never hands its workspace identity to a child that must act as the project).
+    pub scrub_env: Vec<String>,
 }
 
 /// What came back.
@@ -35,6 +40,8 @@ pub struct RunResult {
     pub timed_out: bool,
     /// The executable does not exist (or may not be run): DevSwarm is not installed.
     pub missing: bool,
+    /// More stdout was written than the cap kept (the rest was read and dropped).
+    pub truncated: bool,
     /// The error.
     pub error: Option<String>,
 }
@@ -58,24 +65,43 @@ impl System {
     }
 }
 
-fn drain(mut r: impl Read + Send + 'static, cap: usize) -> mpsc::Receiver<Vec<u8>> {
+/// A pipe being read on its own thread. What was read so far is always available: a grandchild that keeps the pipe open after the
+/// child was killed must not make the output the child already printed disappear (a destructive read cannot be repeated).
+struct Drained {
+    buf: Arc<Mutex<(Vec<u8>, bool)>>,
+    done: mpsc::Receiver<()>,
+}
+
+impl Drained {
+    /// Wait up to `grace` for the end of the stream, then take what was read (and whether more than the cap was dropped).
+    fn finish(self, grace: Duration) -> (Vec<u8>, bool) {
+        let _wait = self.done.recv_timeout(grace); // keep: a timeout just means a holder of the pipe is still alive; what is read so far is taken
+        self.buf.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+}
+
+fn drain(mut r: impl Read + Send + 'static, cap: usize) -> Drained {
+    let buf = Arc::new(Mutex::new((Vec::new(), false)));
     let (tx, rx) = mpsc::channel();
+    let shared = buf.clone();
     std::thread::spawn(move || {
-        let mut kept = Vec::new();
-        let mut buf: Vec<u8> = std::iter::repeat_n(0, defaults::num("devswarm_act.read_chunk_bytes") as usize).collect();
+        let mut chunk: Vec<u8> = std::iter::repeat_n(0, defaults::num("devswarm_act.read_chunk_bytes") as usize).collect();
         loop {
-            match r.read(&mut buf) {
+            match r.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     // keep reading past the cap so the child never blocks on a full pipe
-                    let room = cap.saturating_sub(kept.len());
-                    kept.extend_from_slice(&buf[..n.min(room)]);
+                    if let Ok(mut g) = shared.lock() {
+                        let room = cap.saturating_sub(g.0.len());
+                        g.1 |= n > room;
+                        g.0.extend_from_slice(&chunk[..n.min(room)]);
+                    }
                 }
             }
         }
-        let _sent = tx.send(kept); // keep: the receiver is gone only after its own timeout
+        let _sent = tx.send(()); // keep: the receiver is gone only after its own timeout
     });
-    rx
+    Drained { buf, done: rx }
 }
 
 impl Runner for System {
@@ -83,6 +109,13 @@ impl Runner for System {
         let bin = spec.bin.clone().unwrap_or_else(|| self.hc.clone());
         let mut cmd = Command::new(&bin);
         cmd.args(&spec.args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        if !spec.scrub_env.is_empty() {
+            for (k, _) in std::env::vars_os() {
+                if k.to_str().is_some_and(|k| spec.scrub_env.iter().any(|p| k.starts_with(p.as_str()))) {
+                    cmd.env_remove(&k);
+                }
+            }
+        }
         if let Some(c) = &spec.cwd {
             cmd.current_dir(c);
         }
@@ -93,7 +126,7 @@ impl Runner for System {
                 return RunResult { missing, error: Some(e.to_string()), ..RunResult::default() };
             }
         };
-        let cap = defaults::num("devswarm_act.output_cap_bytes") as usize;
+        let cap = if spec.cap_bytes > 0 { spec.cap_bytes as usize } else { defaults::num("devswarm_act.output_cap_bytes") as usize };
         let out_rx = child.stdout.take().map(|s| drain(s, cap));
         let err_rx = child.stderr.take().map(|s| drain(s, cap));
         let started = Instant::now();
@@ -115,10 +148,8 @@ impl Runner for System {
         };
         // a grandchild may hold the pipe open: wait a bounded while for what was written
         let grace = poll.saturating_mul(defaults::num("devswarm_act.poll_ms").max(1) as u32);
-        let text = |rx: Option<mpsc::Receiver<Vec<u8>>>| {
-            rx.and_then(|r| r.recv_timeout(grace).ok()).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
-        };
-        let (stdout, stderr) = (text(out_rx), text(err_rx));
+        let text = |rx: Option<Drained>| rx.map(|r| r.finish(grace)).map(|(b, d)| (String::from_utf8_lossy(&b).into_owned(), d)).unwrap_or_default();
+        let ((stdout, truncated), (stderr, _)) = (text(out_rx), text(err_rx));
         let code = status.and_then(|s| s.code());
         RunResult {
             ok: !timed_out && status.is_some_and(|s| s.success()),
@@ -127,6 +158,7 @@ impl Runner for System {
             stderr,
             timed_out,
             missing: false,
+            truncated,
             error: timed_out.then(|| defaults::render("devswarm_act.msg_timeout", &[("ms", &spec.timeout_ms)])),
         }
     }

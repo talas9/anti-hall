@@ -52,7 +52,7 @@ pub fn node(runner: &dyn Runner, ctx: &Ctx, snippet: &str, extra: &[&str], timeo
     args.push(ctx.root.to_string_lossy().into_owned());
     args.push(ctx.home.to_string_lossy().into_owned());
     args.extend(extra.iter().map(|a| (*a).to_string()));
-    runner.run(&RunSpec { bin: Some(defaults::text("devswarm_sup.node_bin").to_string()), args, cwd: None, timeout_ms })
+    runner.run(&RunSpec { bin: Some(defaults::text("devswarm_sup.node_bin").to_string()), args, cwd: None, timeout_ms, ..RunSpec::default() })
 }
 
 /// Node's `lastRunAt` of a state file (`{"lastRunAt": <ms>}`), 0 when absent or unreadable.

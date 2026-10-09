@@ -222,6 +222,41 @@ impl MeshStore {
         Ok(Appended { inserted: true, seq })
     }
 
+    /// `appendMessage(m)` (the native-ingest insert): `Ok(true)` when a row was inserted, `Ok(false)` for a duplicate hash.
+    pub fn append_message(&self, workspace_id: &str, ts: i64, hash: Option<&str>, body: &str) -> Res<bool> {
+        let q = if hash.is_some() { sql::MESHW_APPEND_MESSAGE_OR_IGNORE } else { sql::MESHW_APPEND_MESSAGE };
+        let changes = self.conn().prepare_cached(q)?.execute(params![workspace_id, ts, hash, body])?;
+        Ok(changes > 0)
+    }
+
+    /// Whether `id` has a registry row (the partition door's recheck: a rehome may have moved it away).
+    pub fn is_registered(&self, id: &str) -> Res<bool> {
+        Ok(self.conn().prepare_cached(sql::MESHW_REGISTRY_HAS)?.exists(params![id])?)
+    }
+
+    /// The registry row of `id` as stored (the nudge command as its stored text), or `None`.
+    pub fn registry_row(&self, id: &str) -> Res<Option<RegistryRow>> {
+        let mut st = self.conn().prepare_cached(sql::MESHW_REGISTRY_ROW)?;
+        let mut rows = st.query(params![id])?;
+        let Some(r) = rows.next()? else { return Ok(None) };
+        Ok(Some(RegistryRow {
+            id: r.get(0)?,
+            worktree_path: r.get(1)?,
+            session_id: r.get(2)?,
+            inbox_path: r.get(3)?,
+            cursor_path: r.get(4)?,
+            nudge_command: r.get(5)?,
+        }))
+    }
+
+    /// The `(workspace_id, ts, body)` of the row with this hash, if any.
+    pub fn message_by_hash(&self, hash: &str) -> Res<Option<(String, i64, String)>> {
+        let mut st = self.conn().prepare_cached(sql::MESHW_MESSAGE_BY_HASH)?;
+        let mut rows = st.query(params![hash])?;
+        let Some(r) = rows.next()? else { return Ok(None) };
+        Ok(Some((r.get(0)?, r.get(1)?, r.get(2)?)))
+    }
+
     /// `upsertRegistry(d)`: false when the id already maps to a different worktree (Node's collision guard; the row is
     /// left alone and the same warning goes to stderr).
     pub fn upsert_registry(&self, d: &RegistryRow, now: i64, same_worktree: impl Fn(&str, &str) -> bool) -> Res<bool> {
