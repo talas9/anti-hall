@@ -225,7 +225,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "the corpus of inputs JavaScript reads differently, run through every local classifier: test data in a shared helper file",
     ),
     ("src/checks/guardkit/jsval/mod.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
-    ("src/checks/guardkit/ojson.rs", "point <= 21", "ECMAScript's Number::toString switches to exponent form above 10^21: the language's own rule"),
+    ("src/checks/jsport/num.rs", "point <= 21", "ECMAScript's Number::toString switches to exponent form above 10^21: the language's own rule"),
     ("src/checks/guardkit/ojson.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     ("src/checks/session/jval.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     ("src/jev/question.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
