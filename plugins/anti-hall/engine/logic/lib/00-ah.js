@@ -3,6 +3,9 @@
 'use strict';
 // The engine returns `undefined` for an absent optional value; the API gives `null`.
 function ahNull(v) { return v === undefined ? null : v; }
+// Node turns a lone surrogate into U+FFFD when it encodes a string to UTF-8 (a hash, a file write); the host cannot take one.
+var ahWfRe = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+function ahWf(t) { return typeof t === 'string' ? t.replace(ahWfRe, '\ufffd') : t; }
 var ahCfgMemo = { gen: -1, map: new Map() };
 var ah = {
   // Defaults entries, memoized until the engine loads a new defaults snapshot (a file edit or a plugin update).
@@ -24,9 +27,9 @@ var ah = {
   // for a path outside it, a link below it or a text over the cap (the check then takes its failure policy); returns false
   // when the disk refuses.
   state: {
-    writeAtomic: function (rel, t) { return ahHost.writeAtomic(rel, t); },
+    writeAtomic: function (rel, t) { return ahHost.writeAtomic(rel, ahWf(t)); },
     // The SCOPED append, same path rules; one O_APPEND write. false when the disk refuses.
-    appendFile: function (rel, t) { return ahHost.appendFile(rel, t); },
+    appendFile: function (rel, t) { return ahHost.appendFile(rel, ahWf(t)); },
     // The cross-process lock file `rel` (Node lock protocol) with the timings of the defaults group `group`: a handle, or null
     // when it could not be taken. A few at once (script.lock_max_held), taken in the script's fixed order; a lock still held when the call ends is released by the engine.
     // `waitMs` (optional) replaces the group's wait.
@@ -42,7 +45,7 @@ var ah = {
     sweep: function (dirRel, prefix, ageMs, max) { return ahHost.stateSweep(dirRel, prefix, ageMs, max); },
     // The scoped operations under any absolute `root` (the home directory, or a project root): `rel` must start with the state
     // directory. op: 'write', 'after_reply' (atomic, landing only once the reply was delivered), 'append', 'mkdir', 'remove'.
-    op: function (root, op, rel, t) { return ahHost.fileOp(root, rel, t === undefined ? '' : t, op); },
+    op: function (root, op, rel, t) { return ahHost.fileOp(root, rel, t === undefined ? '' : ahWf(t), op); },
     prune: function (prefix, keep) { ahHost.pruneState(prefix, keep === undefined ? null : keep); },
   },
   // One allow-listed program (script.exec_programs), bounded in time, output and number of runs per call, with the request's
@@ -134,7 +137,7 @@ var ah = {
   },
   // The effective value of a defaults key through the owner's editable layers (settings.json, config.toml, shipped default).
   cfgLive: function (key) { return JSON.parse(ahHost.cfgLive(key)); },
-  sha1: function (t) { return ahHost.sha1(t); },
+  sha1: function (t) { return ahHost.sha1(ahWf(t)); },
   // The engine's outbound secret scrubber (the `jev.scrub_rules` of the plugin's jev.toml).
   scrub: function (t) { return ahHost.scrubSecrets(t); },
   log: function (kind, t) { ahHost.log(kind, t); },

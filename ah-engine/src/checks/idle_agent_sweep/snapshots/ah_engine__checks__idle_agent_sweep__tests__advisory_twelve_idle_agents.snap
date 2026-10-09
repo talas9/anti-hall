@@ -1,7 +1,0 @@
----
-source: src/checks/idle_agent_sweep/tests.rs
-expression: t
----
-💡 anti-hall · idle-agents: 12 finished agents are idle and not stopped: a0 (60m), a1 (59m), a2 (58m), a3 (57m), a4 (56m), a5 (55m), a6 (54m), a7 (53m), a8 (52m), a9 (51m), and 2 more.
-Why: each one keeps its process and context alive until it is stopped.
-Do instead: if you have no more work for them, stop each one, e.g. TaskStop {"task_id":"a0"} (one call per agent). Keep any you will re-task.
