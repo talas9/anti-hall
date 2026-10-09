@@ -1,0 +1,16 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        General is for anything about anti-hall that is not a question, an idea or a show-and-tell.
+        Where else to go:
+        - Help with a problem: the **Q&A** category.
+        - A proposal for a new feature: the **Ideas** category.
+        - A bug, or a guard that blocked something legitimate: [open an issue](https://github.com/talas9/anti-hall/issues/new/choose).
+        - A security problem: privately, as described in [SECURITY.md](https://github.com/talas9/anti-hall/blob/main/SECURITY.md).
+  - type: textarea
+    id: body
+    attributes:
+      label: Message
+    validations:
+      required: true
