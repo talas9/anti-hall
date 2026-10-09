@@ -264,8 +264,10 @@ mod nodelock_tests {
         d.to_string_lossy().to_string()
     }
 
+    // the staleness limits are far above what a loaded CI runner can add between two calls (300 ms was crossed on one), and far
+    // below the 10 s age the tests give a lock they want taken over
     fn quick() -> Params {
-        Params { stale_ms: 300, wait_ms: 40, step_ms: 5, reclaim_stale_ms: 300, release_tries: 3, release_step_ms: 5, boot_slop_s: 5 }
+        Params { stale_ms: 5000, wait_ms: 40, step_ms: 5, reclaim_stale_ms: 5000, release_tries: 3, release_step_ms: 5, boot_slop_s: 5 }
     }
 
     fn now() -> u64 {
