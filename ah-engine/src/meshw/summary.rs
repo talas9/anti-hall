@@ -759,6 +759,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
         }
         let bc_cursor = st.reader().broadcast_cursor(&d.id).or_else(|e| err("broadcast-cursor", e))? as f64;
         let family = recipient_family(&d.id, &rows);
+        // directTotalFromOthers: the partition total without the rows its own identity family sent (wake-watch wakes on others' mail)
+        let direct_from_others = if family.is_empty() { total } else { st.reader().message_count_from_others(&d.id, &family).or_else(|e| err("count", e))? as f64 };
         let unread_bc: Vec<&Msg> = broadcast_all.iter().filter(|r| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
         let bc_from_others = unread_bc.iter().filter(|r| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)))).count();
         let mut working_on = OVal::Null;
@@ -777,6 +779,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
             ("total".into(), num(total)),
             ("cursor".into(), num(cursor)),
             ("unread".into(), num(unread)),
+            ("directTotalFromOthers".into(), num(direct_from_others)),
             ("directUnread".into(), num(unread)),
             ("oldestDirectUnreadTs".into(), opt_num(oldest_ts)),
             ("oldestDirectUnreadSender".into(), s_or_null(oldest_sender.as_deref())),

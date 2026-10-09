@@ -823,6 +823,10 @@ function tickInner(state, snapshot) {
 
   if (moved1) st.lastTotal = total;
   if (moved2) st.lastTotal2 = total2;
+  // The inbound count (inboundTotalOf) is a different metric from the raw total an older seen-file recorded, and can
+  // legitimately read lower: resync DOWN silently (never a wake) so the next genuinely new inbound message still fires.
+  if (total !== null && total < st.lastTotal) st.lastTotal = total;
+  if (total2 !== null && total2 < st.lastTotal2) st.lastTotal2 = total2;
 
   // BROADCAST CHANNEL (closes the v1 "broadcasts not covered" gap, defect #10
   // field report) — a THIRD, fully independent observation, never merged into
@@ -1126,6 +1130,13 @@ function resolveChildHashes(cwd, childId, io) {
 // (total: null), NEVER as "zero messages" (readSummaryForHash already returns
 // null for an absent/unparseable file; this function must not coerce that into
 // 0, or the first real message would look like a fabricated delta from zero).
+// inboundTotalOf(row) -> the monotonic count wake-watch edge-triggers on: the summary's `directTotalFromOthers` (rows the
+// workspace's own identity family did NOT send) when the writer published it, else the raw `total` (an older writer's
+// summary). A Primary must not be woken by its own sends, which `total` deliberately includes.
+function inboundTotalOf(row) {
+  return Number.isFinite(row.directTotalFromOthers) ? row.directTotalFromOthers : row.total;
+}
+
 function readPrimarySnapshot(home, hashes, primaryId, io) {
   const ioo = io || {};
   const readSummaryForHash = ioo.readSummaryForHash || store.readSummaryForHash;
@@ -1135,11 +1146,11 @@ function readPrimarySnapshot(home, hashes, primaryId, io) {
     }
     const a = hashes.repoKey ? readSummaryForHash(home, hashes.repoKey, ioo.fs) : null;
     const wa = a && a.workspaces && a.workspaces[primaryId];
-    if (wa && Number.isFinite(wa.total)) return { ok: true, error: null, total: wa.total };
+    if (wa && Number.isFinite(wa.total)) return { ok: true, error: null, total: inboundTotalOf(wa) };
 
     const b = hashes.fallbackHash ? readSummaryForHash(home, hashes.fallbackHash, ioo.fs) : null;
     const wb = b && b.workspaces && b.workspaces[primaryId];
-    if (wb && Number.isFinite(wb.total)) return { ok: true, error: null, total: wb.total };
+    if (wb && Number.isFinite(wb.total)) return { ok: true, error: null, total: inboundTotalOf(wb) };
 
     return { ok: true, error: null, total: null }; // no data yet, never zero
   } catch (e) {

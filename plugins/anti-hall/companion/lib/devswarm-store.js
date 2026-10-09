@@ -1249,6 +1249,15 @@ function openSqlite(home, workspaceId, opts) {
       const r = db.prepare('SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?;').get(String(id));
       return r ? Number(r.c) : 0;
     },
+    // messageCountFromOthers(id, senderIds) -> the partition's rows NOT sent by one of `senderIds` (the workspace's own
+    // identity family). A row with no sender counts (fail-open toward counting). With no ids it equals messageCount.
+    messageCountFromOthers(id, senderIds) {
+      const ids = Array.from(senderIds || []).map(String);
+      if (!ids.length) return this.messageCount(id);
+      const marks = ids.map(() => '?').join(',');
+      const r = db.prepare('SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (' + marks + '));').get(String(id), ...ids);
+      return r ? Number(r.c) : 0;
+    },
     // listMessages(id, {sinceCursor}) -> ordered message rows INCLUDING body. The
     // READ-BACK side of the store (the `body` column was written but never read
     // until this). Ordered by insertion (id ASC) so `index` (1-based, PER-WORKSPACE
@@ -1941,6 +1950,22 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
       const out = reduceRegistry();
       out.sort((a, b) => String(a.id).localeCompare(String(b.id)));
       return out;
+    },
+    messageCountFromOthers(id, senderIds) {
+      const own = new Set(Array.from(senderIds || []).map(String));
+      const wid = String(id);
+      const seen = new Set();
+      let n = 0;
+      for (const row of readAll(files.messages)) {
+        if (String(row.workspaceId) !== wid) continue;
+        if (row.hash != null) {
+          if (seen.has(row.hash)) continue;
+          seen.add(row.hash);
+        }
+        if (row.sender != null && own.has(String(row.sender))) continue;
+        n++;
+      }
+      return n;
     },
     messageCount(id) {
       const wid = String(id);
@@ -2943,6 +2968,13 @@ function computeSummary(store, opts) {
     // exact `d.id` match.
     let ownFamily = null;
     try { ownFamily = identityFamily.recipientFamilyIds(d.id, registry); } catch (_) { ownFamily = null; }
+    // directTotalFromOthers (wake-watch): the partition total WITHOUT rows the workspace's own identity family sent.
+    // `total` is deliberately inclusive of them; wake-watch edge-triggers on someone ELSE's mail only, so a Primary is
+    // not woken by its own sends (the same split as broadcastUnreadFromOthers above).
+    let directTotalFromOthers = total;
+    try {
+      if (ownFamily && ownFamily.size && typeof store.messageCountFromOthers === 'function') directTotalFromOthers = store.messageCountFromOthers(d.id, ownFamily);
+    } catch (_) { directTotalFromOthers = total; }
     const broadcastUnreadFromOthers = unreadBroadcastRows.filter((r) => (
       !(ownFamily && ownFamily.size && r && r.sender != null && ownFamily.has(String(r.sender)))
     )).length;
@@ -2960,6 +2992,7 @@ function computeSummary(store, opts) {
       cursorPath: d.cursorPath,
       nudgeCommand: d.nudgeCommand,
       total, cursor, unread,
+      directTotalFromOthers,
       directUnread: unread,
       oldestDirectUnreadTs,
       oldestDirectUnreadSender,
