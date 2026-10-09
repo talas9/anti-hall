@@ -330,6 +330,18 @@ fn the_guard_reads_quoted_text_as_text_and_a_quoted_script_as_a_call() {
     ] {
         assert_eq!(guard(cmd, sub.clone(), &[]).0, 2, "{cmd}");
     }
+    // dogfood: a docs edit whose heredoc body names an owner-level call is text for `cat`/`tee`, not a call
+    for cmd in [
+        "cat > docs/x.md <<'EOF'\nrun ah-engine devswarm archive --id 1 to archive\nEOF",
+        "cat >> docs/x.md <<EOF\nuse ah-engine devswarm archive\nEOF",
+        "tee docs/x.md <<'EOF'\n`ah-engine devswarm archive`\nEOF",
+    ] {
+        assert_eq!(guard(cmd, sub.clone(), &[]).0, 0, "{cmd}");
+    }
+    // ... but an unquoted heredoc that expands a substitution, or one a shell reads, still runs it
+    for cmd in ["cat <<EOF\n$(ah-engine devswarm archive --id 1)\nEOF", "sh <<'EOF'\nah-engine devswarm archive --id 1\nEOF"] {
+        assert_eq!(guard(cmd, sub.clone(), &[]).0, 2, "{cmd}");
+    }
 }
 
 #[test]
