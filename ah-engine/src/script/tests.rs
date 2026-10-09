@@ -266,6 +266,30 @@ fn a_script_that_tries_to_escape_the_state_directory_fails_and_defers() {
 
 // ---- the script-failure policy (D88 condition b) ----
 
+/// Load: a call still running when its request's client stops waiting is cut there and defers to its own Node hook. It is not a
+/// script failure (no error is counted, and an engine-only advisory defers instead of taking its failure verdict, allow).
+#[test]
+fn a_call_past_its_request_deadline_is_cut_and_defers_without_counting_an_error() {
+    let h = home("cut");
+    put_override(&h, "sibling-sweep", "function decide(p){ for(;;){} }");
+    let e = env(&h);
+    let go = || super::run_forced("sibling-sweep", &json!({}), &Value::Null, "Stop", &e);
+    crate::deadline::begin(Instant::now());
+    crate::deadline::client_deadline(0); // the client no longer waits
+    crate::telemetry::emit::take_queued();
+    let t = Instant::now();
+    let v = go();
+    let took = t.elapsed();
+    let evs = crate::telemetry::emit::take_queued();
+    crate::deadline::end();
+    assert_eq!(v, Some(Some(Verdict::Defer)), "cut at the client's deadline: its Node hook answers");
+    assert!(evs.is_empty(), "a cut is not a script error: {evs:?}");
+    assert!(took < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.wall_limit_factor")), "{took:?}");
+    // outside a request the same call runs to its own limit and takes the failure policy (this advisory allows)
+    assert_eq!(go(), Some(Some(Verdict::Allow)));
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
 #[test]
 fn a_check_with_a_node_twin_defers_when_its_script_fails_on_any_event() {
     for event in ["PreToolUse", "Stop", "SessionStart", "UserPromptSubmit", "PostToolUse"] {

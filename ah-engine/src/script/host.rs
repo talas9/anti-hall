@@ -96,6 +96,7 @@ pub(super) fn lift_deadline() {
         if let Some(d) = c.borrow().as_ref() {
             d.wall.store(0, std::sync::atomic::Ordering::Relaxed);
             d.cpu.store(0, std::sync::atomic::Ordering::Relaxed);
+            d.req.store(0, std::sync::atomic::Ordering::Relaxed);
         }
     });
 }
