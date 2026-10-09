@@ -576,3 +576,53 @@ fn ensure_and_register_match_node() {
     ];
     check(&fx, &cases, &extra, 16, 15);
 }
+
+// ---- correct --------------------------------------------------------------------------------------------------------------
+
+fn plan_json(steps: &str, extra: &str) -> String {
+    format!("{{\"key\":\"child-1\",\"id\":\"child-1\",\"worktreePath\":null,\"steps\":{steps},\"scope_globs\":[],\"extras\":[],\"created_at\":1794990000000,\"step_ts\":1794991000000{extra}}}")
+}
+
+#[test]
+fn correct_matches_node() {
+    need_node!();
+    let fx = fixture("l8hcorrect");
+    let c = |name: &str, argv: &[&str], native: bool| lc(name, argv, "main", native, "Correct");
+    let plan_with = |steps: &'static str, extra: &'static str| move |h: &Path| put(h, ".anti-hall/devswarm/plans/child-1.json", &plan_json(steps, extra));
+    let two = r#"[{"n":1,"text":"read the code","status":"done","ts":1794990500000},{"n":2,"text":"write the fix","status":"doing","ts":1794991000000},{"n":3,"text":"run the tests","status":"todo","ts":0}]"#;
+    let all_done = r#"[{"n":1,"text":"a","status":"done","ts":1},{"n":2,"text":"b","status":"done","ts":2}]"#;
+    let blocked = r#"[{"n":1,"text":"a","status":"doing","ts":5},{"n":2,"text":"b","status":"blocked","ts":9},{"n":3,"text":"c","status":"doing","ts":9}]"#;
+    let braces = r#"[{"n":1,"text":"look at {id} and {n}","status":"doing","ts":3}]"#;
+    let stray = |h: &Path| {
+        put(
+            h,
+            ".anti-hall/devswarm/stray/child-1.json",
+            "{\"active\":[{\"signal\":\"off-scope\",\"reason\":\"edited src/x.js outside the plan scope\",\"jev\":[{\"integration\":\"scope\",\"supports\":true},{\"integration\":\"stall\",\"supports\":false}]},{\"signal\":\"stall\",\"reason\":\"no step progress for 25m\"},{\"signal\":\"stall\",\"reason\":\"\"}]}",
+        );
+    };
+    let stray_only_empty = |h: &Path| put(h, ".anti-hall/devswarm/stray/child-1.json", "{\"active\":[{\"signal\":\"stall\"}]}");
+    let both = |p: Box<dyn Fn(&Path)>, s: fn(&Path)| move |h: &Path| {
+        p(h);
+        s(h);
+    };
+    let cases = vec![
+        c("corr-no-plan", &["correct", "child-1"], true),
+        c("corr-dry-run-without-stray", &["correct", "child-1", "--dry-run"], true).setup(plan_with(two, "")),
+        c("corr-dry-run-with-stray-reasons", &["correct", "child-1", "--dry-run"], true).setup(both(Box::new(plan_with(two, "")), stray)),
+        c("corr-dry-run-stray-without-reasons", &["correct", "child-1", "--dry-run"], true).setup(both(Box::new(plan_with(two, "")), stray_only_empty)),
+        c("corr-dry-run-all-done-is-the-final-report", &["correct", "child-1", "--dry-run"], true).setup(plan_with(all_done, "")),
+        c("corr-dry-run-blocked-step-wins-by-time", &["correct", "child-1", "--dry-run"], true).setup(plan_with(blocked, "")),
+        c("corr-dry-run-braces-in-a-step-text", &["correct", "child-1", "--dry-run"], true).setup(plan_with(braces, "")),
+        c("corr-dry-run-plan-without-step-ts", &["correct", "child-1", "--dry-run"], true).setup(|h| {
+            put(h, ".anti-hall/devswarm/plans/child-1.json", "{\"key\":\"child-1\",\"id\":\"child-1\",\"steps\":[{\"n\":4,\"text\":\"only\",\"status\":\"todo\"}],\"created_at\":1794000000000}")
+        }),
+        c("corr-sends-the-message-and-records-the-warning", &["correct", "child-1"], true).setup(plan_with(two, "")),
+        c("corr-sends-with-stray-signals-and-jev", &["correct", "child-1"], true).setup(both(Box::new(plan_with(two, "")), stray)),
+        c("corr-to-an-unregistered-id-is-node", &["correct", "ghost"], false).setup(|h| {
+            put(h, ".anti-hall/devswarm/plans/ghost.json", "{\"key\":\"ghost\",\"id\":\"ghost\",\"steps\":[{\"n\":1,\"text\":\"x\",\"status\":\"doing\",\"ts\":1}],\"created_at\":1}")
+        }),
+        c("corr-unsafe-id", &["correct", "../x"], true),
+        c("corr-no-id", &["correct"], true),
+    ];
+    check(&fx, &cases, &[], 11, 1);
+}

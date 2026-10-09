@@ -48,6 +48,8 @@ pub enum Ext {
     Ensure,
     /// `register <id>` (lane l8h).
     Register,
+    /// `correct <id>` (lane l8h).
+    Correct,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -84,6 +86,8 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Ensure)
     } else if is("devswarm_cli.verb_register") {
         Some(Ext::Register)
+    } else if is("devswarm_cli.verb_correct") {
+        Some(Ext::Correct)
     } else {
         None
     }
@@ -91,7 +95,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register)
+    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register | Ext::Correct)
 }
 
 /// Run the verb.
@@ -112,6 +116,7 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::MigrateOwnerKeys => super::lifeverbs::migrate_owner_keys(inv, a),
         Ext::Ensure => super::lifeverbs::ensure(inv, a),
         Ext::Register => super::lifeverbs::register(inv, a),
+        Ext::Correct => super::lifeverbs::correct(inv, a),
     }
 }
 

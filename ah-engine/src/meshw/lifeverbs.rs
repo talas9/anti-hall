@@ -545,3 +545,231 @@ pub fn ensure(inv: &Inv, a: &Args) -> R<Answer> {
 pub fn register(inv: &Inv, a: &Args) -> R<Answer> {
     register_verb(inv, a, false)
 }
+
+// ---- correct ------------------------------------------------------------------------------------------------------------
+
+fn fail_with(fields: &[(&str, OVal)]) -> Answer {
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false));
+    for (k, v) in fields {
+        o.put(k, v.clone());
+    }
+    answer(2, o.done())
+}
+
+/// `planLib.currentStep(plan)`: the newest doing/blocked step, else the first open one.
+fn current_step(plan: &OVal) -> R<Option<&OVal>> {
+    let steps = crate::meshw::plan::steps_of(plan);
+    let done = defaults::text("mesh_write.plan_status_done");
+    let working = [defaults::text("mesh_write.plan_status_doing"), defaults::text("mesh_write.plan_status_blocked")];
+    let ts = |st: &OVal| -> R<f64> {
+        match st.get("ts") {
+            None | Some(OVal::Null) => Ok(0.0),
+            Some(OVal::Num(x)) if x.is_finite() => Ok(*x),
+            Some(_) => defer("plan-shape"),
+        }
+    };
+    let open: Vec<&OVal> = steps.iter().filter(|st| !crate::meshw::plan::status_is(st, done)).collect();
+    let mut best: Option<&OVal> = None;
+    for st in &open {
+        if !working.iter().any(|w| crate::meshw::plan::status_is(st, w)) {
+            continue;
+        }
+        if best.is_none_or(|b| ts(st).unwrap_or(0.0) >= ts(b).unwrap_or(0.0)) {
+            ts(st)?;
+            best = Some(st);
+        }
+    }
+    Ok(best.or_else(|| open.first().copied()))
+}
+
+/// `devswarm-plan.js` `readStray(home, key)`: the stray-state file, parsed; any failure is none.
+fn read_stray(inv: &Inv, key: &str) -> Option<OVal> {
+    let p = idlock::devswarm_root(&inv.home).join(defaults::text("devswarm_cli.dir_stray")).join(format!("{key}{}", defaults::text("mesh_write.json_suffix")));
+    OVal::parse(&String::from_utf8_lossy(&std::fs::read(p).ok()?))
+}
+
+/// The entries of `stray.active` (none when there is no such list).
+fn stray_active(stray: Option<&OVal>) -> R<Vec<&OVal>> {
+    match stray.and_then(|s| s.get("active")) {
+        Some(OVal::Arr(v)) => {
+            if v.iter().any(|a| !matches!(a, OVal::Obj(_))) {
+                return defer("stray-shape");
+            }
+            Ok(v.iter().collect())
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// `sup.correctionText(id, plan, stray, now)`.
+fn correction_text(id: &str, plan: &OVal, stray: Option<&OVal>, now: f64) -> R<String> {
+    let cur = current_step(plan)?;
+    let (n, text) = match cur {
+        Some(st) => {
+            let n = match st.get("n") {
+                Some(OVal::Num(x)) => crate::checks::guardkit::ojson::js_number_text(*x),
+                _ => return defer("plan-shape"),
+            };
+            let text = match st.get("text") {
+                Some(OVal::Str(t)) => t.clone(),
+                _ => return defer("plan-shape"),
+            };
+            (n, text)
+        }
+        None => (crate::meshw::plan::steps_of(plan).len().to_string(), defaults::text("devswarm_cli.corr_final_report").to_string()),
+    };
+    let mut reasons: Vec<String> = Vec::new();
+    for a in stray_active(stray)? {
+        match a.get("reason") {
+            None | Some(OVal::Null) => {}
+            Some(OVal::Str(r)) if r.is_empty() => {}
+            Some(OVal::Str(r)) => reasons.push(r.clone()),
+            Some(_) => return defer("stray-shape"),
+        }
+    }
+    if reasons.is_empty() {
+        let since = match plan.get("step_ts") {
+            Some(OVal::Num(x)) if x.is_finite() => *x,
+            _ => match plan.get("created_at") {
+                Some(OVal::Num(x)) => *x,
+                None | Some(OVal::Null) => f64::NAN,
+                Some(_) => return defer("plan-shape"),
+            },
+        };
+        reasons.push(crate::meshw::extverbs::tpl("devswarm_cli.corr_no_progress", &[("d", &crate::meshw::plan::dur(now - since))]));
+    }
+    Ok(crate::meshw::extverbs::tpl(
+        "devswarm_cli.corr_text",
+        &[("n", &n), ("text", &text), ("reasons", &reasons.join(defaults::text("devswarm_cli.corr_reason_join"))), ("id", id)],
+    ))
+}
+
+/// `correct <id> [--dry-run]`: the Primary's correction for a straying child (`cmdCorrect`).
+pub fn correct(inv: &Inv, a: &Args) -> R<Answer> {
+    common::seat_check(inv)?;
+    let action = s(defaults::text("devswarm_cli.action_correct"));
+    let id = a.positionals.get(1).map(String::as_str).unwrap_or("");
+    if !is_safe_id(id) {
+        return Ok(fail_with(&[("action", action), ("error", s(defaults::text("devswarm_cli.msg_corr_usage")))]));
+    }
+    let now = inv.now as f64;
+    let found = crate::meshw::plan::find(inv, id)?;
+    let Some(found) = found.filter(|f| !crate::meshw::plan::steps_of(&f.plan).is_empty()) else {
+        return Ok(fail_with(&[
+            ("action", action),
+            ("id", s(id)),
+            ("reason", s(defaults::text("devswarm_cli.corr_reason_no_plan"))),
+            ("error", s(&crate::meshw::extverbs::tpl("devswarm_cli.msg_corr_no_plan", &[("id", id)]))),
+        ]));
+    };
+    let stray = read_stray(inv, &found.key);
+    let message = correction_text(id, &found.plan, stray.as_ref(), now)?;
+    if a.has(defaults::text("devswarm_cli.flag_dry_run")) {
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(true)).put("action", action).put("id", s(id)).put("dryRun", OVal::Bool(true)).put("message", s(&message));
+        return Ok(answer(0, o.done()));
+    }
+    // everything the plan update will record is decided before the send writes the message
+    let active = stray_active(stray.as_ref())?;
+    let mut signals: Vec<String> = Vec::new();
+    let mut all_signals: Vec<OVal> = Vec::new();
+    let mut warned_jev: Vec<OVal> = Vec::new();
+    for e in &active {
+        let sig = match e.get("signal") {
+            Some(OVal::Str(t)) => t.clone(),
+            _ => return defer("stray-shape"),
+        };
+        all_signals.push(s(&sig));
+        if !signals.contains(&sig) {
+            signals.push(sig);
+        }
+        match e.get("jev") {
+            Some(OVal::Arr(notes)) => {
+                for note in notes {
+                    let integration = match note.get("integration") {
+                        Some(OVal::Str(t)) => s(t),
+                        _ => return defer("stray-shape"),
+                    };
+                    let mut o = Obj::default();
+                    o.put("integration", integration).put("supports", OVal::Bool(matches!(note.get("supports"), Some(OVal::Bool(true)))));
+                    warned_jev.push(o.done());
+                }
+            }
+            None | Some(OVal::Null) => {}
+            Some(_) => return defer("stray-shape"),
+        }
+    }
+    let step_n = match current_step(&found.plan)? {
+        Some(st) => match st.get("n") {
+            Some(OVal::Num(x)) => Some(*x),
+            _ => return defer("plan-shape"),
+        },
+        None => None,
+    };
+    if crate::meshw::plan::log_needs_rotation(inv) {
+        return defer("supervision-rotate");
+    }
+    // the message goes out through the native send, as Node's nested `run(['send', '--to', id, '--message-file', f])`
+    let mut send_args = Args { positionals: vec![defaults::text("mesh_write.verb_send").to_string()], ..Args::default() };
+    send_args.flags.insert(defaults::text("mesh_write.flag_to").to_string(), vec![crate::meshw::args::FlagVal::S(id.to_string())]);
+    send_args.flags.insert(defaults::text("mesh_write.flag_message").to_string(), vec![crate::meshw::args::FlagVal::S(message.clone())]);
+    let sent = crate::meshw::send::run(inv, &send_args)?;
+    let sent_result = OVal::parse(sent.stdout.trim_end()).ok_or_else(|| ident::Defer("committed:send-result".into()))?;
+    let effect = sent.effect.clone();
+    let reply = |o: Obj| Answer { code: if sent.code == 0 && matches!(o.0.iter().find(|(k, _)| k == "ok"), Some((_, OVal::Bool(true)))) { 0 } else { 2 }, stdout: format!("{}\n", o.done().stringify()), effect: effect.clone() };
+    if sent.code != 0 {
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(false))
+            .put("action", action)
+            .put("id", s(id))
+            .put("message", s(&message))
+            .put("sent", sent_result)
+            .put("error", s(defaults::text("devswarm_cli.msg_corr_send_failed")));
+        return Ok(reply(o));
+    }
+    let warned = crate::meshw::plan::update_with(inv, &found.key, |cur| {
+        let Some(mut plan) = cur else { return Ok(((), None)) };
+        plan.set("warned_at", crate::meshw::common::n(now));
+        plan.set("warned_step", step_n.map_or(OVal::Null, crate::meshw::common::n));
+        plan.set("warned_signals", OVal::Arr(signals.iter().map(|t| s(t)).collect()));
+        plan.set("warned_jev", OVal::Arr(warned_jev.clone()));
+        Ok(((), Some(plan)))
+    })?;
+    let recorded = match warned {
+        Some(((), Some(text))) => {
+            crate::meshw::note_written(&crate::meshw::plan::plan_rel(&found.key), text.as_bytes());
+            true
+        }
+        _ => false,
+    };
+    if !recorded {
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(false))
+            .put("action", action)
+            .put("id", s(id))
+            .put("message", s(&message))
+            .put("sent", sent_result)
+            .put("error", s(defaults::text("devswarm_cli.msg_corr_not_recorded")));
+        return Ok(reply(o));
+    }
+    let fields = vec![
+        ("id".to_string(), s(id)),
+        ("key".to_string(), s(&found.key)),
+        ("step".to_string(), step_n.map_or(OVal::Null, crate::meshw::common::n)),
+        ("signals".to_string(), OVal::Arr(all_signals)),
+        ("jev".to_string(), OVal::Arr(warned_jev)),
+    ];
+    if crate::meshw::plan::record(inv, defaults::text("devswarm_cli.corr_event"), &fields, now).is_some() {
+        crate::meshw::plan::note_log(inv);
+    }
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(true))
+        .put("action", action)
+        .put("id", s(id))
+        .put("message", s(&message))
+        .put("warned_at", crate::meshw::common::n(now))
+        .put("step", step_n.map_or(OVal::Null, crate::meshw::common::n))
+        .put("sent", sent_result);
+    Ok(reply(o))
+}

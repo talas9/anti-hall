@@ -581,7 +581,7 @@ value = "devswarm-cli-verify"
 
 [devswarm_cli.witness_copy_paths]
 doc = "Files and directories under the home copied into the witness's scratch home before the engine writes: what Node reads or rewrites for these verbs, and what the summary projection reads."
-value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/token-usage", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1", ".anti-hall/logs/devswarm-supervision.ndjson", ".anti-hall/logs/devswarm-supervision.ndjson.1", ".anti-hall/logs/devswarm-supervision.ndjson.2", ".anti-hall/logs/devswarm-supervision.ndjson.3", ".anti-hall/logs/devswarm-supervision.ndjson.4", ".anti-hall/logs/devswarm-supervision.ndjson.5", ".anti-hall/logs/devswarm-supervision-daily"]
+value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/stray", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/token-usage", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1", ".anti-hall/logs/devswarm-supervision.ndjson", ".anti-hall/logs/devswarm-supervision.ndjson.1", ".anti-hall/logs/devswarm-supervision.ndjson.2", ".anti-hall/logs/devswarm-supervision.ndjson.3", ".anti-hall/logs/devswarm-supervision.ndjson.4", ".anti-hall/logs/devswarm-supervision.ndjson.5", ".anti-hall/logs/devswarm-supervision-daily"]
 
 [devswarm_cli.witness_node_snippet]
 doc = "The Node program of the witness: pins the clock, then loads the real devswarm.js as the main module so its own main() prints and exits. Arguments: the CLI path, the clock, then the verb's argv."
@@ -1944,3 +1944,57 @@ value = "nudge"
 [devswarm_cli.flag_reg_repo_id]
 doc = "The flag naming the DevSwarm repository id of a registration."
 value = "repo-id"
+
+# ---- correct (lane l8h) -------------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_correct]
+doc = "The verb that sends a straying child its correction (the step to return to)."
+value = "correct"
+
+[devswarm_cli.action_correct]
+doc = "The `action` a correct result and its refusals carry."
+value = "correct"
+
+[devswarm_cli.dir_stray]
+doc = "The directory (under the DevSwarm root) holding the supervisor's stray-state file of each plan."
+value = "stray"
+
+[devswarm_cli.corr_final_report]
+doc = "The step text of a correction when every step is done."
+value = "final report"
+
+[devswarm_cli.corr_no_progress]
+doc = "The reason of a correction when the supervisor named none; {d} is the time since the last step progress."
+value = "no progress {d}"
+
+[devswarm_cli.corr_reason_join]
+doc = "What joins the reasons of a correction."
+value = " / "
+
+[devswarm_cli.corr_text]
+doc = "The correction message; {n} the step number, {text} its text, {reasons} the joined reasons, {id} the workspace id."
+value = "step {n} '{text}': {reasons}. Return to step {n} or reply BLOCKED <why>. If the user asked you for this extra work, record it with `devswarm.js scope add {id} --glob '<glob>' --note '<what they asked>'`."
+
+[devswarm_cli.corr_reason_no_plan]
+doc = "The `reason` of the refusal when the workspace has no step plan."
+value = "no-plan"
+
+[devswarm_cli.corr_event]
+doc = "The supervision event a sent correction records."
+value = "correction"
+
+[devswarm_cli.msg_corr_usage]
+doc = "The refusal for a missing or unsafe workspace id."
+value = "usage: devswarm.js correct <id> [--dry-run]"
+
+[devswarm_cli.msg_corr_no_plan]
+doc = "The refusal when there is no step plan; {id} is the workspace id."
+value = "no step plan for {id} — a correction needs a step to return to"
+
+[devswarm_cli.msg_corr_send_failed]
+doc = "The error when the correction message could not be sent."
+value = "send failed — warned_at not recorded"
+
+[devswarm_cli.msg_corr_not_recorded]
+doc = "The error when the correction was sent but the plan could not be updated."
+value = "the correction was sent, but warned_at could not be recorded (plan file locked or gone) — retry"
