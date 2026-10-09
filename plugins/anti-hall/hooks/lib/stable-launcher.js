@@ -69,7 +69,7 @@ function launcherPath(kind, home) {
 // launcher (via Function#toString, so it must stay self-contained). For exactly
 // the ported verbs (the ROUTES table below: `send`, `mesh read`, `mesh history`, `roster` (with or without `--ack`), `inbox ack-primary`,
 // `heartbeat`, `inbox tick`, `inbox read-primary`, `help` and any `-h`/`--help` request, `skip`, `archive-ignore`,
-// `archive-unignore`, `gate-intent`, `notice`, `plan`, `scope`, `gate`, `workspaces`, `logs`, `wake-directive`, `ready-check`, `app-state`, `app-sync`, `done`, `primary`, `relay`, `archive-request`), when settings.json `mesh.engine_writes`
+// `archive-unignore`, `gate-intent`, `notice`, `plan`, `scope`, `gate`, `workspaces`, `logs`, `wake-directive`, `ready-check`, `app-state`, `app-sync`, `done`, `primary`, `relay`, `archive-request`, `nudge`), when settings.json `mesh.engine_writes`
 // is "on" and the engine binary exists, it runs `ah-engine mesh <argv>` with a time
 // limit and returns {done: exitCode}; otherwise {input} (stdin already consumed
 // for --message-stdin, to be replayed) and the caller runs the Node script.
@@ -92,7 +92,7 @@ function meshRoute(argv, segments) {
       { words: ['help'] }, { words: [], anyOf: ['-h', '--h', '--help'] }, { words: ['skip'] }, { words: ['archive-ignore'] },
       { words: ['archive-unignore'] }, { words: ['gate-intent'] }, { words: ['notice'] }, { words: ['plan'] }, { words: ['scope'] },
       { words: ['gate'] }, { words: ['workspaces'] }, { words: ['logs'] }, { words: ['wake-directive'] },
-      { words: ['ready-check'] }, { words: ['app-state'] }, { words: ['app-sync'] }, { words: ['done'] }, { words: ['primary'] }, { words: ['relay'] }, { words: ['archive-request'] },
+      { words: ['ready-check'] }, { words: ['app-state'] }, { words: ['app-sync'] }, { words: ['done'] }, { words: ['primary'] }, { words: ['relay'] }, { words: ['archive-request'] }, { words: ['nudge'] },
     ];
     var routed = ROUTES.some(function (r) {
       return r.words.every(function (w, i) { return argv[i] === w; })

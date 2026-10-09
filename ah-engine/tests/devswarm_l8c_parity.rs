@@ -398,3 +398,29 @@ fn archive_request_matches_node() {
     ];
     check(&fx, &cases, &[], 10, 5);
 }
+
+// ---- nudge ---------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn nudge_matches_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8cnudge");
+    let wt = fx.child.to_string_lossy().to_string();
+    let with_descriptor = move |h: &Path| {
+        put(h, ".anti-hall/devswarm/workspaces/child-1.json", &format!("{{\"id\":\"child-1\",\"worktreePath\":\"{wt}\",\"sessionId\":\"child-1\"}}"));
+    };
+    let nu = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "Nudge");
+    let cases = vec![
+        nu("nudge-unknown-id", &["nudge", "nobody"], "main", true),
+        nu("nudge-unsafe-id", &["nudge", "../x"], "main", true),
+        nu("nudge-no-id", &["nudge"], "main", true),
+        nu("nudge-outside-a-project", &["nudge", "nobody"], "nongit", true),
+        nu("nudge-a-registered-id-without-a-descriptor-is-node", &["nudge", "child-1"], "main", false),
+        nu("nudge-a-mesh-label-is-node", &["nudge", &fx.child_mesh], "main", false),
+        nu("nudge-with-a-descriptor-is-node", &["nudge", "child-1"], "main", false).setup(with_descriptor),
+    ];
+    check(&fx, &cases, &[], 4, 3);
+}
