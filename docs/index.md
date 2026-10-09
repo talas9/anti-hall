@@ -32,7 +32,7 @@ of skills you can call by name. Together they stop the assistant from:
 - **flooding your main conversation**: heavy commands and file edits go to helper agents,
   and runaway agent spawning is capped.
 
-It is pure Node.js with no dependencies. It runs on macOS and Linux (including WSL on
+A small Rust engine answers the hooks; Node.js 22+ is the fallback. There are no npm dependencies. It runs on macOS and Linux (including WSL on
 Windows). Everything it keeps stays on your machine, apart from one update check, which
 you can turn off ([details](#network-and-privacy)).
 
@@ -54,7 +54,7 @@ you can turn off ([details](#network-and-privacy)).
 
 ## Install in one minute
 
-You need **Node.js 22 or newer** on your `PATH` (`node --version`).
+You need **Node.js 22 or newer** on your `PATH` (`node --version`), the fallback that always works. The engine binary is fetched for you (needs `curl` or `wget`, and `tar`).
 
 === "Claude Code"
 

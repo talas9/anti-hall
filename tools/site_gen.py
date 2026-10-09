@@ -18,6 +18,8 @@ the parser cannot read fails loudly instead of rendering a wrong table.
 """
 
 import argparse
+import subprocess
+import json
 import pathlib
 import re
 import sys
@@ -372,8 +374,17 @@ def main():
     text = SCHEMA.read_text(encoding="utf-8")
     try:
         sections = read_const(text, "SECTIONS")
-    except ParseError as e:
-        sys.exit(f"site_gen: {e}")
+    except ParseError:
+        # The schema uses a construct the literal reader does not know (for example a generated
+        # `.map(...)` block). Node is on every runner and the module has no side effects: ask it.
+        try:
+            out = subprocess.run(
+                ["node", "-e", "process.stdout.write(JSON.stringify(require(process.argv[1]).SECTIONS))", str(SCHEMA)],
+                capture_output=True, text=True, timeout=30, check=True,
+            ).stdout
+            sections = json.loads(out)
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
+            sys.exit(f"site_gen: cannot read SECTIONS from {SCHEMA.name}: {e}")
     if not isinstance(sections, list) or not sections:
         sys.exit("site_gen: SECTIONS is empty or not an array")
     for sec in sections:
