@@ -61,8 +61,17 @@ pub fn executor(kind: &str) -> Executor {
         "escalate" => "devswarm_rt.act.escalate.executor",
         _ => return Executor::Node,
     };
-    let v = effective_text(key).trim().to_ascii_lowercase();
+    resolve_executor(kind, &effective_text(key), crate::dssup::owner())
+}
+
+/// The executor a setting word means. `auto` (poke and escalate only) is the engine once the engine owns the supervisor duties,
+/// else Node; a word that is not one of the known ones reads as Node.
+pub fn resolve_executor(kind: &str, word: &str, owner: crate::dssup::Owner) -> Executor {
+    let v = word.trim().to_ascii_lowercase();
     let words = crate::defaults::list("devswarm_wire.executor_words");
+    if v == crate::defaults::text("devswarm_wire.executor_auto") && kind != "auto_archive" {
+        return if owner == crate::dssup::Owner::Engine { Executor::Engine } else { Executor::Node };
+    }
     match words.iter().position(|w| *w == v) {
         Some(0) => Executor::Engine,
         Some(2) => Executor::Off,
@@ -228,7 +237,10 @@ impl Wire {
         } else {
             self.count(&mut |m| m.inc("dswire_standdown", &[("kind", kinds[0])]));
         }
-        let (poke, esc) = (engine(kinds[1]), engine(kinds[2]));
+        // the double-run guard: Node's supervisor is still sweeping (its log is fresh), so it may poke and escalate; the engine
+        // stands down for both until it has been switched off
+        let node_alive = crate::dssup::node_running(&self.home, now).is_some();
+        let (poke, esc) = (engine(kinds[1]) && !node_alive, engine(kinds[2]) && !node_alive);
         if poke || esc {
             let allow = |k: &str| (k == "poke" && poke) || (k == "escalate" && esc);
             for r in act.poke_sweep_for(&allow) {
@@ -250,8 +262,22 @@ impl Wire {
             return;
         }
         match r.kind.as_str() {
-            "poke" => nudges::record(&self.state_dir, &r.id, r.key.rsplit(':').next().and_then(|n| n.parse().ok()), now),
-            "escalate" => nudges::record(&self.state_dir, &r.id, None, now),
+            "poke" => {
+                let attempt = r.key.rsplit(':').next().and_then(|n| n.parse().ok());
+                nudges::record(&self.state_dir, &r.id, attempt, now);
+                if let Some(n) = attempt {
+                    crate::dssup::verdict::mirror_poke(&self.home, &r.id, n, now);
+                }
+            }
+            "escalate" => {
+                nudges::record(&self.state_dir, &r.id, None, now);
+                crate::dssup::verdict::mirror_escalate(&self.home, &r.id, now);
+                // the one-time notice to the parent, by Node's own function (best effort; a parked notice is retried by the liveness sweep)
+                if let Some(root) = crate::defaults::root() {
+                    let st = crate::checks::git::util::Settings::from_env(&self.env);
+                    crate::dssup::tick::notify_escalation(&*self.runner, &self.home, &root, &st, &r.id);
+                }
+            }
             _ => {}
         }
     }

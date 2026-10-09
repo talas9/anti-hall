@@ -5,20 +5,25 @@
 
 # ---- cutover: who runs each action ------------------------------------------------------------------------------------------
 # `engine` (the default for auto-archive, owner 2026-10-08: the engine is always live) runs the action in the daemon; poke and escalate default to `node`.
-# `node` leaves it to the Node supervisor (the engine stands down and counts it). `off` runs it nowhere. When the engine owns an
-# action, the kit's go-live must stop the Node supervisor from also acting (see docs/AH-ENGINE.md, "DevSwarm cutover").
+# `node` leaves it to the Node supervisor (the engine stands down and counts it). `off` runs it nowhere. `auto` (poke and escalate)
+# is `engine` when devswarm_sup.mode is `engine`, else `node`. When the engine owns an action the Node supervisor job must be off
+# (see docs/AH-ENGINE.md, "DevSwarm supervisor cutover"); the double-run guard holds poke and escalate back while it is not.
 
 [devswarm_rt."act.auto_archive.executor"]
 doc = "Who runs the automatic archive of finished workspaces: engine | node | off. The engine honours the Node setting devswarm.autoArchive.{mode,idleMin,maxPerSweep,ignorePings} unchanged. With `engine` the Node supervisor's autoArchive must be switched off for the same machine (ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE=off in the supervisor job's environment); the durable auto-archived.json still stops either side from repeating an archive at one HEAD."
 value = "engine"
 
 [devswarm_rt."act.poke.executor"]
-doc = "Who pokes a stale workspace (its descriptor's nudgeCommand): engine | node | off. Default node: Node has no per-action switch for this, and turning the whole supervisor off (ANTIHALL_DEVSWARM_SUPERVISOR=off) would also stop its retention and housekeeping, which the engine has not ported. It moves to engine once those duties are ported and the kit turns the supervisor off as a whole."
-value = "node"
+doc = "Who pokes a stale workspace (its descriptor's nudgeCommand): auto | engine | node | off. Default auto: the engine once devswarm_sup.mode is `engine` (the engine owns every supervisor duty and the Node supervisor job is off), otherwise node. An explicit `engine` while the Node supervisor still runs is held back by the double-run guard (devswarm_sup.guard_ms)."
+value = "auto"
 
 [devswarm_rt."act.escalate.executor"]
-doc = "Who escalates a stale workspace once its pokes are used up (its descriptor's escalateCommand, once): engine | node | off. Same reasoning and default as poke."
-value = "node"
+doc = "Who escalates a stale workspace once its pokes are used up (its descriptor's escalateCommand, once, and the one-time notice to the parent): auto | engine | node | off. Same default and guard as poke."
+value = "auto"
+
+[devswarm_wire.executor_auto]
+doc = "The executor word that follows devswarm_sup.mode (poke and escalate only; auto-archive has no auto word)."
+value = "auto"
 
 [devswarm_wire.executor_words]
 doc = "The words of the executor settings, in the order engine, node, off. Anything else reads as node (the engine stands down)."
@@ -166,8 +171,8 @@ max = 100000
 # ---- owner verbs and roles --------------------------------------------------------------------------------------------------
 
 [devswarm_wire.owner_verbs]
-doc = "The `ah-engine devswarm <verb>` verbs and what each does: status, line and advisory read the state; archive, plan-prune and prune act at the owner's request. `create` and `merge` answer deferred (the Node verbs keep them, because the engine cannot reproduce their source-freshness and merge-gate checks yet)."
-value = ["status", "line", "advisory", "archive", "plan-prune", "prune", "create", "merge"]
+doc = "The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory and supervisor read the state; archive, plan-prune, prune and recover (kill and resume one session; Node's recovery code does the kill after the engine's refusals) act at the owner's request. `create` and `merge` answer deferred (the Node verbs keep them, because the engine cannot reproduce their source-freshness and merge-gate checks yet)."
+value = ["status", "line", "advisory", "supervisor", "archive", "plan-prune", "prune", "recover", "create", "merge"]
 
 [devswarm_wire.role_words]
 doc = "The roles a caller can have, in this order: main (the interactive main session), child (a DevSwarm workspace child), subagent (a spawned agent or any automated caller), codex (a Codex session)."
@@ -175,7 +180,7 @@ value = ["main", "child", "subagent", "codex"]
 
 [devswarm_wire.role_matrix]
 doc = "Which roles may run each verb (the permission matrix). Reads are open to every role; the verbs that act are for the main session only."
-value = { status = ["main", "child", "subagent", "codex"], line = ["main", "child", "subagent", "codex"], advisory = ["main", "child", "subagent", "codex"], archive = ["main"], plan-prune = ["main"], prune = ["main"], create = ["main"], merge = ["main"] }
+value = { status = ["main", "child", "subagent", "codex"], line = ["main", "child", "subagent", "codex"], advisory = ["main", "child", "subagent", "codex"], supervisor = ["main", "child", "subagent", "codex"], archive = ["main"], plan-prune = ["main"], prune = ["main"], recover = ["main"], create = ["main"], merge = ["main"] }
 
 [devswarm_wire.role_codex_env]
 doc = "Environment variables whose presence marks a Codex session (empty: no Codex marker is known)."

@@ -100,6 +100,8 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("git.msg_") // block messages are rendered by block(name); the name is a literal there
             || k.starts_with("ctxbudget.ca_advice_") // regex sources named by the ctxbudget.ca_advice list
             || k.starts_with("dispatch.hooks_") // the dispatch table, read by host and event (dispatch::table::key)
+            || k.starts_with("devswarm_sup.duty.") // the supervisor duties, read by name from the ordered list devswarm_sup.duties
+            || k.starts_with("devswarm_sup.set_") // Node settings entries, named by the duty that uses them (the duty's `sec` / `mode` fields)
     };
     let read = |k: &String| {
         let (section, name) = k.split_once('.').unwrap_or(("", k));

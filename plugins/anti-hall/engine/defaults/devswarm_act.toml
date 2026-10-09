@@ -14,7 +14,7 @@ doc = "The actions an owner request (a command, a skill or a mesh request) may s
 value = ["archive", "create", "merge", "delete"]
 
 [devswarm_act.deferred_kinds]
-doc = "Actions the engine does not execute and answers with `deferred` (nothing written): `recover` kills and resumes a process (its target resolution is not ported), `drain` and `read-messages` are destructive reads that must be folded into the store in the same step."
+doc = "Actions the engine does not execute and answers with `deferred` (nothing written): `recover` as an act-layer request (the owner verb `ah-engine devswarm recover` is separate: the engine gates it and Node's recovery code does the kill), `drain` and `read-messages` are destructive reads that must be folded into the store in the same step."
 value = ["recover", "drain", "read-messages"]
 
 # ---- hivecontrol -------------------------------------------------------------------------------------------------
