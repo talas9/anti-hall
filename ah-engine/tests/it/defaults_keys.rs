@@ -144,7 +144,9 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         }
     }
     let indirect = |k: &str| {
-        k.starts_with("cmd.") // handlers are checked against the registry by cli::tests; planned commands have no handler
+        k.starts_with("jevrep.t_") // the texts and thresholds of the report, handed whole to the plugin script rules/jev-report (`jev_report::cfg`)
+            || k.starts_with("jevrep.thr_")
+            || k.starts_with("cmd.") // handlers are checked against the registry by cli::tests; planned commands have no handler
             || k.starts_with("protocol.") // documents the wire format; the request words are parsed in daemon.rs
             || k.starts_with("job.") // scheduled jobs are read by prefix in schedule.rs
             || k.starts_with("msg.hint_") // named by the health.error_codes table, not by source

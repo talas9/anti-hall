@@ -55,6 +55,7 @@ mod inject_gate_parity;
 mod jev_cache_parity;
 mod jev_integrations_parity;
 mod jev_keep_parity;
+mod jev_report_parity;
 mod jev_scrub_reload;
 mod judge_parity;
 mod mcp_reaper_parity;

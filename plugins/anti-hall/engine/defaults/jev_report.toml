@@ -1,0 +1,550 @@
+# ah-engine shipped defaults for `ah-engine jev-report` (the port of scripts/jev-report.js): the report's thresholds, texts and file
+# names. The rules that use them are the plugin script engine/logic/rules/jev-report.js. Format: see the header of engine.toml.
+# The texts are the Node report's own, word for word, because the parity test compares the commands' output with the script's.
+
+[jevrep.rules_script]
+doc = "The plugin script (engine/logic/<name>.js) that holds the report rules."
+value = "rules/jev-report"
+
+[jevrep.thr_min_calls]
+doc = "Below this many calls an integration is always REVIEW (not enough data)."
+value = 50
+
+[jevrep.thr_min_labeled]
+doc = "Labelled outcomes (true and false positives, human and automatic) needed before KEEP or REMOVE can be given."
+value = 20
+
+[jevrep.thr_remove_min_calls]
+doc = "Calls needed before REMOVE can be given."
+value = 200
+
+[jevrep.thr_remove_good_outcome_rate]
+doc = "REMOVE when the good-outcome rate of changed decisions is below this fraction (a decimal number in a string)."
+value = "0.60"
+
+[jevrep.thr_remove_good_outcome_pct]
+doc = "The same threshold as a whole percent, for the texts."
+value = 60
+
+[jevrep.thr_remove_failure_rate]
+doc = "REMOVE when the failure rate is above this fraction (a decimal number in a string)."
+value = "0.20"
+
+[jevrep.thr_remove_failure_pct]
+doc = "The same threshold as a whole percent, for the texts."
+value = 20
+
+[jevrep.thr_keep_changed_rate]
+doc = "KEEP needs a changed-decision rate of at least this fraction (a decimal number in a string)."
+value = "0.05"
+
+[jevrep.thr_keep_good_outcome_rate]
+doc = "KEEP needs a good-outcome rate of at least this fraction (a decimal number in a string)."
+value = "0.80"
+
+[jevrep.thr_low_yield_changed_rate]
+doc = "A changed-decision rate below this fraction is noted as low yield, never a REMOVE reason (a decimal number in a string)."
+value = "0.01"
+
+[jevrep.thr_low_yield_pct]
+doc = "The same threshold as a whole percent, for the texts."
+value = 1
+
+[jevrep.thr_bad_outcome_re]
+doc = "Case-insensitive pattern of the outcome names that count as evidence a changed decision was wrong; every other outcome is good."
+value = "^(user-override|false-positive|wrong|bad|reverted|repeat-speculation)"
+
+[jevrep.thr_http_failure_prefix]
+doc = "A baseline-only row whose reason starts with this counts as a failure."
+value = "http-"
+
+[jevrep.thr_failure_reasons]
+doc = "The reasons of a baseline-only row that count as a real failure (as against off, disabled or not-applicable)."
+value = ["timeout", "network-error", "no-key", "parse-error", "bad-response", "error"]
+
+[jevrep.thr_over_ms]
+doc = "A fresh call slower than this counts as slow in the overhead figures."
+value = 1000
+unit = "ms"
+
+[jevrep.thr_day_ms]
+doc = "Length of a day, for the windows and the rollups."
+value = 86400000
+unit = "ms"
+
+[jevrep.thr_weekly_days]
+doc = "The weekly scorecard always covers this many days."
+value = 7
+
+[jevrep.thr_p50]
+doc = "The fraction of the median percentile (a decimal number in a string)."
+value = "0.5"
+
+[jevrep.thr_p95]
+doc = "The fraction of the 95th percentile (a decimal number in a string)."
+value = "0.95"
+
+[jevrep.thr_windows]
+doc = "The cost windows of the report: label to days."
+value = { "24h" = 1, "7d" = 7 }
+
+[jevrep.table_header]
+doc = "The column headers of the per-integration table."
+value = ["integration", "calls (fresh/cached)", "jev%", "agree% (n=distinct)", "label%", "added", "relaxed", "changed%", "good-outcome%", "outcome(jev/regex)", "p50ms", "p95ms", "cost", "suggestion"]
+
+[jevrep.t_agree_no_signal]
+doc = "The agree% cell of an integration with boolean answers but no comparison signal."
+value = "n/a (no comparison signal)"
+
+[jevrep.t_budget_exceeded]
+doc = "The flag of a window whose spend passed its budget."
+value = "EXCEEDED"
+
+[jevrep.t_budget_ok]
+doc = "The flag of a window whose spend is within its budget."
+value = "ok"
+
+[jevrep.t_budget_line]
+doc = "One window of the budget section. Placeholders: {label}, {spent}, {budget}, {flag}."
+value = "  {label}: ${spent} / ${budget} budget ({flag})"
+
+[jevrep.t_budget_title]
+doc = "Heading of the budget section."
+value = "\nbudget (watch mode -- observability only, Jev is never auto-disabled):"
+
+[jevrep.t_changed_label_only]
+doc = "The changed% cell of a label-only integration. Placeholder: {n}."
+value = "n/a ({n} distinct)"
+
+[jevrep.t_cost_label]
+doc = "The window heading of the real-cost section. Placeholder: {label}."
+value = "  {label}:"
+
+[jevrep.t_cost_line]
+doc = "One integration of the real-cost section. Placeholders: {id}, {calls}, {total}, {perCall}, {perChanged}."
+value = "    {id}: calls={calls} $total={total} {perCall} {perChanged}"
+
+[jevrep.t_cost_none]
+doc = "A window of the real-cost section with no priced row. Placeholder: {label}."
+value = "  {label}: n/a — no row in this window carried a real cost (see jev-client.js's extractCostAndUsage, or set jev.json \"prices\")."
+
+[jevrep.t_cost_per_call]
+doc = "Real cost per call. Placeholder: {v}."
+value = "${v}/call"
+
+[jevrep.t_cost_per_changed]
+doc = "Real cost per changed decision. Placeholder: {v}."
+value = "${v}/changed"
+
+[jevrep.t_cost_title]
+doc = "Heading of the real-cost section."
+value = "\nreal cost (gateway/price-table-reported, not the manual costPerCall estimate):"
+
+[jevrep.t_cost_unset]
+doc = "Said under the table when no costPerCall estimate is set."
+value = "\ncost: n/a — set jev.json \"costPerCall\" (owner-supplied $/call estimate) to enable."
+
+[jevrep.t_credit_balance]
+doc = "The credit balance line. Placeholders: {balance}, {cached}."
+value = "\ncredit balance (vercel): ${balance}{cached}"
+
+[jevrep.t_credit_cached]
+doc = "Marks a balance served from the cache."
+value = " (cached)"
+
+[jevrep.t_credit_failed]
+doc = "The balance could not be read. Placeholder: {reason}."
+value = "\ncredit balance (vercel): n/a ({reason})"
+
+[jevrep.t_credit_low]
+doc = "Said under a balance below the configured minimum. Placeholder: {min}."
+value = "  LOW CREDIT: below configured minCreditUsd (${min}) -- Jev is never auto-disabled by this."
+
+[jevrep.t_credit_no_key]
+doc = "The balance needs a key this process cannot see. Placeholder: {notice}."
+value = "\ncredit balance (vercel): n/a — {notice}"
+
+[jevrep.t_credit_this_transport]
+doc = "Names the transport when a transport has no balance endpoint and none is named."
+value = "this transport"
+
+[jevrep.t_credit_unsupported]
+doc = "The transport has no balance endpoint. Placeholder: {transport}."
+value = "\ncredit balance: not available on {transport} (no balance endpoint)"
+
+[jevrep.t_group_cost_line]
+doc = "One integration of a --by group's real cost. Placeholders: {id}, {calls}, {total}, {perCall}."
+value = "    {id}: calls={calls} ${total} {perCall}"
+
+[jevrep.t_group_cost_total]
+doc = "A --by group's real cost total. Placeholder: {total}."
+value = "  real cost: ${total} total"
+
+[jevrep.t_group_title]
+doc = "Heading of a --by group. Placeholders: {by}, {key}, {n}."
+value = "\n=== {by}: {key} ({n} row(s)) ==="
+
+[jevrep.t_headline]
+doc = "The one-line headline of an integration. Placeholders: {id}, {changed}, {tp}, {cost}, {p50}, {suggestion}."
+value = "{id}: {changed} · {tp} · {cost} · {p50} · {suggestion}"
+
+[jevrep.t_headline_changed]
+doc = "The changed part of a headline. Placeholders: {n}, {window}."
+value = "{n} changed/{window}"
+
+[jevrep.t_headline_cost]
+doc = "The cost part of a headline. Placeholder: {cost}."
+value = "${cost}/TP"
+
+[jevrep.t_headline_cost_na]
+doc = "The cost part of a headline with no cost."
+value = "cost n/a"
+
+[jevrep.t_headline_label_only]
+doc = "The changed part of a label-only integration's headline. Placeholders: {n}, {window}."
+value = "{n} distinct decisions/{window} (label-only)"
+
+[jevrep.t_headline_p50]
+doc = "The latency part of a headline. Placeholder: {ms}."
+value = "p50={ms}ms"
+
+[jevrep.t_headline_p50_na]
+doc = "The latency part of a headline with no latency."
+value = "p50 n/a"
+
+[jevrep.t_headline_tp]
+doc = "The true-positive part of a headline. Placeholders: {total}, {human}, {auto}."
+value = "{total} TP ({human} human, {auto} auto)"
+
+[jevrep.t_headlines_title]
+doc = "Heading of the headlines section."
+value = "\nheadlines:"
+
+[jevrep.t_label_done]
+doc = "Said after a label was recorded. Placeholders: {hash}, {label}."
+value = "labeled {hash} as {label}"
+
+[jevrep.t_label_has]
+doc = "A hash that has a human label. Placeholder: {label}."
+value = "labeled {label} (human)"
+
+[jevrep.t_label_none]
+doc = "A hash with no human label."
+value = "unlabeled"
+
+[jevrep.t_label_only_line]
+doc = "One label-only integration under the table. Placeholders: {id}, {note}."
+value = "  {id}: {note}"
+
+[jevrep.t_label_only_note]
+doc = "The note of a label-only integration. Placeholders: {all}, {fresh}."
+value = "label-only: no boolean outcome to compare; {all} distinct decisions ({fresh} fresh)"
+
+[jevrep.t_label_only_title]
+doc = "Heading of the label-only notes."
+value = "\nlabel-only integrations (changed% above reads \"n/a\" — a choice/label classifier has no boolean outcome to compare):"
+
+[jevrep.t_label_snippet]
+doc = "The stored audit snippet of a hash. Placeholder: {snippet}."
+value = "snippet: {snippet}"
+
+[jevrep.t_label_snippet_none]
+doc = "A hash with no stored audit snippet."
+value = "snippet: none (audit.snippets is off, or this decision predates it)"
+
+[jevrep.t_label_usage_any]
+doc = "Usage error of `label` with no hash."
+value = "❌ anti-hall · jev-report: label: usage is `jev-report label <hash> [tp|fp]`"
+
+[jevrep.t_label_usage_verdict]
+doc = "Usage error of `label` with a verdict that is neither tp nor fp."
+value = "❌ anti-hall · jev-report: label: usage is `jev-report label <hash> tp|fp`"
+
+[jevrep.t_low_yield_note]
+doc = "Why a REVIEW verdict is a low yield. Placeholders: {rate}, {pct}."
+value = "low yield: changed {rate} < {pct}%"
+
+[jevrep.t_na]
+doc = "A value that is not known."
+value = "n/a"
+
+[jevrep.t_prune_done]
+doc = "Said after the audit log was pruned. Placeholders: {kept}, {removed}, {days}."
+value = "prune-audit: kept {kept}, removed {removed} (older than {days}d)"
+
+[jevrep.t_prune_usage]
+doc = "Usage error of `prune-audit`."
+value = "❌ anti-hall · jev-report: prune-audit: usage is `jev-report prune-audit --days N` (N > 0)"
+
+[jevrep.t_report_none]
+doc = "Said when the window holds no decision row."
+value = "No jev-assist.ndjson activity found for this window."
+
+[jevrep.t_report_title]
+doc = "First line of the report. Placeholder: {at}."
+value = "jev report — generated {at}"
+
+[jevrep.t_rollup_footnote]
+doc = "Footnote of the daily-rollup history."
+value = "  * p50 = median of daily p50s, p95 = max of daily p95s (daily percentiles do not merge exactly)."
+
+[jevrep.t_rollup_header]
+doc = "Column header of the daily-rollup history."
+value = "  id                      days   calls   fresh  changed  timeouts      cost  p50*   p95*"
+
+[jevrep.t_rollup_title]
+doc = "Heading of the daily-rollup history. Placeholders: {first}, {last}, {n}."
+value = "\nOlder history from daily rollups ({first} .. {last}, {n} day(s) no longer in the raw logs):"
+
+[jevrep.t_transports_line]
+doc = "One transport row. Placeholders: {label}, {calls}, {errors}, {avg}, {fellBack}."
+value = "  {label}: {calls} call(s), {errors} error(s), avg {avg}, {fellBack} fell back"
+
+[jevrep.t_transports_title]
+doc = "Heading of the transport section."
+value = "\nby transport (calls that reached a vendor):"
+
+[jevrep.t_transports_unrecorded]
+doc = "Label of rows logged before transports were recorded."
+value = "unrecorded (logged before transport tracking; vercel was the default, assumed)"
+
+[jevrep.t_triage_normal]
+doc = "The non-urgent triage answer time. Placeholders: {n}, {p50}, {p95}."
+value = "  non-urgent: n={n}  p50={p50}  p95={p95}"
+
+[jevrep.t_triage_title]
+doc = "Heading of the triage answer-time section."
+value = "\ntriage answer-time (ms, time from a labeled inbound to the next outbound reply):"
+
+[jevrep.t_triage_urgent]
+doc = "The urgent triage answer time. Placeholders: {n}, {p50}, {p95}."
+value = "  urgent:     n={n}  p50={p50}  p95={p95}"
+
+[jevrep.t_triggers_line]
+doc = "One integration of the triggers section. Placeholders: {id}, {seen}, {why}, {calls}, {zero}."
+value = "  {id}: triggers seen: {seen}{why}  [{calls} call(s){zero}]"
+
+[jevrep.t_triggers_reason]
+doc = "One skip reason with its count. Placeholders: {reason}, {n}."
+value = "{reason} x{n}"
+
+[jevrep.t_triggers_skipped]
+doc = "The skipped part of a trigger line. Placeholders: {n}, {reasons}."
+value = ", skipped {n} ({reasons})"
+
+[jevrep.t_triggers_title]
+doc = "Heading of the triggers section."
+value = "\ntriggers (occurrences of a rare trigger, not calls):"
+
+[jevrep.t_triggers_zero]
+doc = "Marks a trigger that never led to a call."
+value = " -- zero-call"
+
+[jevrep.t_verdict_keep]
+doc = "The verdict of an integration that earned its place."
+value = "KEEP"
+
+[jevrep.t_verdict_label_only]
+doc = "The verdict of a label-only integration with no labelled outcome."
+value = "REVIEW (label-only, no outcome signal yet)"
+
+[jevrep.t_verdict_latency]
+doc = "The verdict when the p95 latency is over the integration's budget."
+value = "REVIEW (p95 latency exceeds budget)"
+
+[jevrep.t_verdict_needs_labels]
+doc = "The verdict with too few labelled outcomes. Placeholders: {n}, {min}."
+value = "REVIEW (needs labels: {n}/{min})"
+
+[jevrep.t_verdict_not_enough]
+doc = "The verdict with too few calls. Placeholders: {calls}, {min}."
+value = "REVIEW (not enough data: {calls} < {min} calls)"
+
+[jevrep.t_verdict_remove]
+doc = "The verdict of an integration with a proven bad record."
+value = "REMOVE"
+
+[jevrep.t_verdict_review]
+doc = "The verdict that needs a look; every REVIEW verdict starts with this word."
+value = "REVIEW"
+
+[jevrep.t_verdict_review_note]
+doc = "The REVIEW verdict with a note. Placeholder: {note}."
+value = "REVIEW ({note})"
+
+[jevrep.t_weekly_line]
+doc = "One integration of the weekly scorecard. Placeholders: {id}, {mode}, {suggestion}, {reason}, {calls}."
+value = "  {id} [{mode}]: {suggestion} — {reason} ({calls} calls)"
+
+[jevrep.t_weekly_none]
+doc = "Said when the weekly scorecard has no row."
+value = "No jev-assist.ndjson activity in the last 7 days."
+
+[jevrep.t_weekly_reason_calls]
+doc = "The reason of a REMOVE with no named rate. Placeholder: {calls}."
+value = "{calls} calls"
+
+[jevrep.t_weekly_reason_failure]
+doc = "A REMOVE reason. Placeholders: {rate}, {pct}."
+value = "failure-rate {rate} > {pct}%"
+
+[jevrep.t_weekly_reason_good]
+doc = "A REMOVE reason. Placeholders: {rate}, {pct}."
+value = "good-outcome {rate} < {pct}%"
+
+[jevrep.t_weekly_reason_keep]
+doc = "The reason of a KEEP. Placeholders: {changed}, {good}, {calls}."
+value = "changed {changed}, good-outcome {good} over {calls} calls"
+
+[jevrep.t_weekly_reason_no_data]
+doc = "The reason of a REVIEW without a parenthesised cause."
+value = "not enough data yet"
+
+[jevrep.t_weekly_title]
+doc = "First line of the weekly scorecard. Placeholder: {at}."
+value = "jev weekly scorecard — generated {at} (last 7 days)"
+
+[jevrep.t_window_exclude_project]
+doc = "The excluded projects of the window line. Placeholder: {names}."
+value = "exclude-project: {names}  "
+
+[jevrep.t_window_line]
+doc = "The window line. Placeholders: {since}, {until}, {excl}, {exclProject}, {inWindow}, {total}, {excluded}."
+value = "window: {since} .. {until}  exclude: {excl}  {exclProject}rows: {inWindow} in window / {total} total ({excluded} excluded)"
+
+[jevrep.t_window_log_end]
+doc = "An open window end."
+value = "(log end)"
+
+[jevrep.t_window_log_start]
+doc = "An open window start."
+value = "(log start)"
+
+[jevrep.t_window_none]
+doc = "No excluded window."
+value = "(none)"
+
+[jevrep.triage_log]
+doc = "The Jev triage log, relative to the anti-hall home directory."
+value = "logs/jev-triage.ndjson"
+
+[jevrep.labels_log]
+doc = "The human tp/fp labels, relative to the anti-hall home directory."
+value = "logs/jev-labels.ndjson"
+
+[jevrep.judge_log]
+doc = "The judge log that carries trigger events, relative to the anti-hall home directory."
+value = "logs/jev-judge.ndjson"
+
+[jevrep.supervision_log]
+doc = "The DevSwarm supervision log that carries trigger events, relative to the anti-hall home directory."
+value = "logs/devswarm-supervision.ndjson"
+
+[jevrep.rollup_dir]
+doc = "The directory of the daily rollups, relative to the anti-hall home directory."
+value = "logs/jev-daily"
+
+[jevrep.rollup_name_re]
+doc = "The file name of a daily rollup."
+value = "^\\d{4}-\\d{2}-\\d{2}\\.json$"
+
+[jevrep.credits_cache_file]
+doc = "The cached credit balance, relative to the anti-hall home directory."
+value = "cache/jev-credits.json"
+
+[jevrep.credits_endpoint]
+doc = "The credit balance endpoint of the Vercel AI Gateway."
+value = "https://ai-gateway.vercel.sh/v1/credits"
+
+[jevrep.credits_ttl_ms]
+doc = "How long a cached credit balance is served before the endpoint is asked again."
+value = 900000
+unit = "ms"
+
+[jevrep.msg_defer]
+doc = "Said on stderr when the command leaves the report to the Node script (nothing was written). Placeholder: {why}."
+value = "ah-engine jev-report: {why}; run scripts/jev-report.js instead"
+
+[jevrep.why_script]
+doc = "The report rules script is off or failed."
+value = "the report rules script could not run"
+
+[jevrep.why_home]
+doc = "The weekly scorecard resolves modes from the real home, so another --home is left to Node."
+value = "the weekly scorecard with a --home other than the home directory"
+
+[jevrep.why_credit]
+doc = "The credit balance could not be read in a way this port reproduces."
+value = "the credit balance answer has a shape this port does not read"
+
+[jevrep.why_id]
+doc = "An integration id in the log is not text."
+value = "a decision row names an integration that is not text"
+
+[jevrep.why_write]
+doc = "A file the command had to write could not be written."
+value = "a file could not be written"
+
+[jevrep.budget_watch]
+doc = "The budget mode that turns the budget section on."
+value = "watch"
+
+[jevrep.budget_unlimited]
+doc = "The budget mode that shows no budget."
+value = "unlimited"
+
+[jevrep.credit_skipped]
+doc = "The credit text handed to the report when it does not show the balance (the weekly and --by forms)."
+value = "null"
+
+[jevrep.reason_disabled]
+doc = "The balance result reason when Jev is off."
+value = "disabled"
+
+[jevrep.reason_unsupported]
+doc = "The balance result reason when no configured transport has a balance endpoint."
+value = "unsupported-transport"
+
+[jevrep.reason_no_key]
+doc = "The balance result reason when no key resolves."
+value = "no-key"
+
+[jevrep.reason_timeout]
+doc = "The balance result reason when the request ran out of time."
+value = "timeout"
+
+[jevrep.reason_network]
+doc = "The balance result reason when the connection failed or was redirected."
+value = "network-error"
+
+[jevrep.reason_http]
+doc = "The balance result reason for an HTTP status. Placeholder: {status}."
+value = "http-{status}"
+
+[jevrep.reason_parse]
+doc = "The balance result reason when the answer could not be read."
+value = "parse-error"
+
+[jevrep.reason_bad_response]
+doc = "The balance result reason when the answer holds no balance."
+value = "bad-response"
+
+[jevrep.credits_balance_field]
+doc = "The field of the balance answer that holds the balance."
+value = "balance"
+
+[jevrep.credits_used_field]
+doc = "The field of the balance answer that holds the total used."
+value = "total_used"
+
+[jevrep.uncached_reasons]
+doc = "The balance results that are local configuration answers and are never cached."
+value = ["unsupported-transport", "disabled", "no-key"]
+
+[jevrep.audit_mode]
+doc = "File mode of the rewritten audit log, in decimal (0o600)."
+value = 384
+
+[jevrep.audit_backup_gen]
+doc = "The suffix of the audit log backup."
+value = "1"
