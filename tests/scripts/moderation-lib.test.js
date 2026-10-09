@@ -44,6 +44,8 @@ test('sanitize: neutralises mentions, drops foreign links and HTML, caps length'
   assert.ok(!out.includes('y.png'));
   assert.ok(!L.sanitize('x https://github.com/talas9/anti-hall-evil/x', cfg).includes('anti-hall-evil'));
   assert.strictEqual(L.sanitize('a'.repeat(50), cfg, 10).length, 10);
+  // CodeQL js/incomplete-multi-character-sanitization: a split comment marker must not survive.
+  assert.ok(!L.sanitize('a <!<!-- x -->-- y --> b <!-- open', cfg, 500).includes('<!--'));
 });
 
 test('validate: only schema enums survive; unknown keys dropped', () => {

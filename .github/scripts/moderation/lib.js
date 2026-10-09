@@ -80,10 +80,18 @@ function classify(text, { kind, association }, cfg) {
   if (kind === 'comment') {
     if (anyMatch(m.low_quality_comment_patterns, t)) return { verdict: 'low-quality', reason: 'comment adds no information' };
   } else {
-    const stripped = t.replace(/^###.*$/gm, '').replace(/_No response_/g, '').replace(/<!--[\s\S]*?-->/g, '').trim();
+    const stripped = stripHtmlComments(t.replace(/^###.*$/gm, '').replace(/_No response_/g, '')).trim();
     if (stripped.length < m.low_quality_min_body_chars) return { verdict: 'low-quality', reason: 'description is nearly empty' };
   }
   return { verdict: 'ok', reason: '' };
+}
+
+// Removes HTML comments until none is left, so a nested or split marker such as
+// `<!<!-- x -->-- y -->` cannot leave a fresh `<!--` behind (CodeQL js/incomplete-multi-character-sanitization).
+function stripHtmlComments(text) {
+  let s = String(text || '');
+  for (let prev = null; prev !== s;) { prev = s; s = s.replace(/<!--[\s\S]*?-->/g, ''); }
+  return s.replace(/<!--/g, '');
 }
 
 function tokens(s) {
@@ -213,7 +221,7 @@ function bumpRisk(title) {
 function sanitize(text, cfg, max) {
   const cap = max || cfg.model.max_summary_chars;
   let s = String(text || '').replace(/[​-‏‪-‮⁦-⁩﻿]/g, '');
-  s = s.replace(/<!--[\s\S]*?-->/g, '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  s = stripHtmlComments(s).replace(/</g, '&lt;').replace(/>/g, '&gt;');
   s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
   s = sanitizeLinks(s, cfg);
   s = s.replace(/\]\(([^)]*)\)/g, (m, u) => (allowedUrl(u.trim(), cfg.model.allowed_link_prefixes) ? m : ']'));
@@ -361,7 +369,7 @@ function record(logName, entry) {
   fs.appendFileSync(path.join(dir, logName + '.jsonl'), JSON.stringify(row) + '\n');
   const sum = process.env.GITHUB_STEP_SUMMARY;
   if (sum) {
-    const cell = (v) => String(v === undefined || v === null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v)).replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 160);
+    const cell = (v) => String(v === undefined || v === null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v)).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 160);
     if (!fs.existsSync(sum) || !fs.readFileSync(sum, 'utf8').includes('| event | item |')) {
       fs.appendFileSync(sum, '| event | item | verdict | action | provider | fallback | latency ms |\n|---|---|---|---|---|---|---|\n');
     }
