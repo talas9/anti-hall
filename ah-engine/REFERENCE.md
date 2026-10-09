@@ -680,6 +680,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `transcript.assistant_text_max_bytes` | `1048576` |  | bytes | Longest last-assistant text kept; the rest is cut at a character boundary and flagged. |
+| `transcript.ev_role_assistant` | `assistant` |  |  | The role of an assistant transcript entry. |
+| `transcript.ev_role_attachment` | `attachment` |  |  | The role of a hook attachment transcript entry. |
+| `transcript.ev_role_user` | `user` |  |  | The role of a user transcript entry. |
+| `transcript.ev_type_text` | `text` |  |  | The content block type of a text block. |
+| `transcript.ev_type_tool_result` | `tool_result` |  |  | The content block type of a tool result. |
+| `transcript.ev_type_tool_use` | `tool_use` |  |  | The content block type of a tool call. |
+| `transcript.evidence_max_bytes` | `8388608` |  | bytes | Largest window `ah.transcript.evidence` reads from the end of a transcript, whatever the script asks for. |
+| `transcript.evidence_max_chars` | `16777216` |  |  | Most characters of text `ah.transcript.evidence` returns in all; a transcript whose evidence is larger is reported as unsure. |
 | `transcript.final_statuses` | `completed failed stopped` |  |  | Task-notification statuses the DevSwarm idle gate treats as final (companion/lib/devswarm-idle.js FINAL_STATUS), case-insensitive. |
 | `transcript.fingerprint_bytes` | `256` |  | bytes | Leading bytes of the file hashed to notice a rewritten or rotated transcript. |
 | `transcript.idle_ttl_ms` | `21600000` |  | ms | How long the registry keeps an index nobody asked for; a dropped index is rebuilt from the file on the next request. |
@@ -761,14 +769,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `schedule.actions` | `maintain, backup, metrics_snapshot, spool_drain, telemetry_rollup, noop` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.actions` | `7 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
 | `schedule.history_default` | `50` |  |  | Runs `schedule history` lists unless asked for more. |
 | `schedule.maintain_ms` | `86400000` | `AH_ENGINE_MAINTAIN_MS` | ms | Interval of the maintain job (D26); 0 turns it off. |
 | `schedule.run_wait_ms` | `5000` |  | ms | How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms. |
-| `schedule.subprocess_actions` | `maintain, backup` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
+| `schedule.subprocess_actions` | `maintain, backup, gh_poll` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
 | `schedule.telemetry_rollup_ms` | `86400000` | `AH_ENGINE_TELEMETRY_ROLLUP_MS` | ms | Interval of the telemetry rollup job (D78); 0 turns it off. |
 | `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
 | `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
@@ -3941,7 +3949,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_unknown_op` | `unknown file operation {op}` |  |  | Error a script sees when it asks a file operation the host does not have. Placeholder: {op}. |
 | `script.msg_write_refused` | `write refused: {why}` |  |  | Error a script sees when its write was refused. Placeholder: {why}. |
 | `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
-| `script.p95_budget_by_check` | `11 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. |
+| `script.p95_budget_by_check` | `10 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fb, 2026-10-09, release no LTO, machine load average 12 to 17, so roughly twice the quiet figures): speculation-guard p50 236 us, p95 1,064 us (its corpus holds Jev asks and state writes), tasklist-guard p50 881 us, p95 2,775 us (it creates the progress directory, stats the progress and history files and appends to the session indexes); the other batch-6 checks stay under the 1,000 us default (dispatch-tier p95 510, model-routing 607, speculation-judge 338, silent-agent-nudge 967, task-guard 935). The compiled ports were not timed before removal, so these are the scripts' own p95s, not an added figure. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. |
 | `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
 | `script.read_max_bytes` | `4194304` |  | bytes | Upper bound of one `ah.fs.readText` read, whatever the script asks for. |
 | `script.readdir_max` | `10000` |  |  | Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole). |
@@ -4025,6 +4033,39 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.token_argv0_re` | `^(mcp[-_]server\|server-sequential-thinking)` |  |  | JavaScript regex source (case-insensitive) of a program name that is itself such a token. |
 | `mcp_reaper.token_re` | `(^\|[\s/])(mcp[-_]server\|server-sequential-thinking)` |  |  | JavaScript regex source (case-insensitive) of a boundary-anchored mcp-server or server-sequential-thinking token. |
 | `mcp_reaper.tz_env` | `TZ` |  |  | The environment variable that moves the time zone Node would read a start time in; when a request sets it the start time is handed to Node. |
+
+### host_proc.toml / hostproc
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `hostproc.cgroup_marker` | `.service` |  |  | The text in a control-group file that marks a systemd service. |
+| `hostproc.cgroup_path` | `/proc/{pid}/cgroup` |  |  | The control-group file of a process; `{pid}` is the process id. |
+| `hostproc.etimes_command` | `ps, -o, pid=,etimes=, -p` |  |  | The age probe that reports elapsed seconds (Linux); the pid list is appended as the last argument. |
+| `hostproc.etimes_line_re` | `^\s*(\d+)\s+(\d+)\s*$` |  |  | JavaScript regex source (case-sensitive) of one elapsed-seconds line: pid, seconds. |
+| `hostproc.list_command` | `ps, -axo, pid=,ppid=,command=` |  |  | The process listing command and its arguments: pid, parent pid and command line of every process. |
+| `hostproc.list_line_re` | `^\s*(\d+)\s+(\d+)\s+(.*)$` |  |  | JavaScript regex source (case-sensitive) of one process listing line: pid, parent pid, command line. |
+| `hostproc.list_max_bytes` | `33554432` |  | bytes | The largest process listing accepted; a bigger one counts as a failed listing. |
+| `hostproc.list_timeout_ms` | `3000` |  | ms | How long the process listing may take before it counts as failed. |
+| `hostproc.lstart_command` | `ps, -o, pid=,lstart=, -p` |  |  | The age probe that reports the start time (macOS and BSD, which have no elapsed-seconds column); the pid list is appended as the last argument. |
+| `hostproc.lstart_form_re` | `^(Mon\|Tue\|Wed\|Thu\|Fri\|Sat\|Sun) (Jan\|Feb\|Mar\|Apr\|May\|Jun\|Jul\|Aug\|Sep\|Oct\|Nov\|D...` |  |  | JavaScript regex source (case-sensitive) of the one start-time text the engine reads itself, the form `ps -o lstart=` prints: weekday, month, day of month, time, year. Any other text makes the ages unsure, whose date parser the engine does not reproduce. |
+| `hostproc.lstart_line_re` | `^\s*(\d+)\s+(.+?)\s*$` |  |  | JavaScript regex source (case-sensitive) of one start-time line: pid, start time. |
+| `hostproc.max_exact_id` | `9007199254740992` |  |  | Process ids at or above this are reported as unsure: the engine holds an id exactly as JavaScript prints it only below 2^53. |
+| `hostproc.max_hour` | `23` |  |  | The largest hour of a start time the engine reads itself (the form allows 24 to 29, which JavaScript carries into the next day). |
+| `hostproc.min_signal_pid` | `2` |  |  | The lowest process id a signal may name; pid 0 and 1 (every process of a group, init) are never signalled. |
+| `hostproc.min_year` | `1970` |  |  | The earliest year of a start time the engine reads itself. |
+| `hostproc.months` | `12 items` |  |  | The month abbreviations of the start-time form, January first. |
+| `hostproc.platform_launchd` | `macos` |  |  | The Rust operating-system name on which the service-manager listing is consulted (Node's darwin). |
+| `hostproc.platform_systemd` | `linux` |  |  | The Rust operating-system name on which the control-group file is consulted (Node's linux). |
+| `hostproc.poll_ms` | `2` |  | ms | How often a running command is checked for completion. |
+| `hostproc.probe_max_bytes` | `1048576` |  | bytes | The largest age-probe or service-manager output read; a bigger one is reported as unsure. |
+| `hostproc.probe_timeout_ms` | `2000` |  | ms | How long an age probe or the service-manager listing may take (an age probe that times out leaves the age unknown; a service-manager listing that times out leaves every pid unverifiable). |
+| `hostproc.read_ms` | `1000` |  | ms | The least time to wait for a finished command's output after it exits; it may also use what is left of the command's timeout. Output that never arrives fails the command (never an empty listing). |
+| `hostproc.service_header_re` | `^PID\s` |  |  | JavaScript regex source (case-insensitive) of the header line of the service-manager listing. |
+| `hostproc.service_list_command` | `launchctl, list` |  |  | The command that lists the processes the macOS service manager owns. |
+| `hostproc.signal_max_per_call` | `512` |  |  | The most signals one script call may send, polite and forced together; the rest are refused. |
+| `hostproc.sleep_max_ms` | `5000` |  | ms | The longest one `ah.sleep` call waits; a longer request waits this long. |
+| `hostproc.sleep_total_max_ms` | `10000` |  | ms | The most time all `ah.sleep` calls of one script call may wait in total; a call past it returns at once. |
+| `hostproc.tz_env` | `TZ` |  |  | The environment variable that moves the time zone Node would read a start time in; when a request sets it differently from the engine's own, start times are unsure. |
 
 ### task_tracker.toml / task_tracker
 

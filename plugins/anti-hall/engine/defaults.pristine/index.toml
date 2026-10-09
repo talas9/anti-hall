@@ -45,6 +45,7 @@ files = [
     "limits.toml",
     "script.toml",
     "mcp_reaper.toml",
+    "host_proc.toml",
     "task_tracker.toml",
     "github_rt.toml",
 ]

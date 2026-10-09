@@ -92,7 +92,7 @@ fn agent_scan_lists_launched_agents_with_their_times_and_terminal_ids() {
     ));
     text.push_str(&line(json!({"type": "user", "timestamp": "2026-10-06T12:00:01.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a1", "content": launch}]}, "toolUseResult": {"isAsync": true, "status": "async_launched", "agentId": "a1b2c3d4e5f60718"}})));
     std::fs::write(&t, text).unwrap();
-    let scan: Value = serde_json::from_str(&host_d::agent_scan(&t, 1_000_000.0)).unwrap();
+    let scan: Value = serde_json::from_str(&host_d::agent_scan(&t, 1_000_000.0, false)).unwrap();
     assert_eq!(scan["terminal"], json!([]));
     let rows = scan["launched"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{scan}");
@@ -109,8 +109,8 @@ fn agent_scan_lists_launched_agents_with_their_times_and_terminal_ids() {
         ),
     );
     assert_eq!(run("zz-agents", &json!({}), &env(&h)), Some(Some(Verdict::Allow)));
-    assert_eq!(host_d::agent_scan(&format!("{h}/none"), 1000.0), "null");
-    assert_eq!(serde_json::from_str::<Value>(&host_d::agent_scan("relative.jsonl", 1000.0)).unwrap(), json!({"unsure": true}));
+    assert_eq!(host_d::agent_scan(&format!("{h}/none"), 1000.0, false), "null");
+    assert_eq!(serde_json::from_str::<Value>(&host_d::agent_scan("relative.jsonl", 1000.0, false)).unwrap(), json!({"unsure": true}));
 }
 
 #[test]

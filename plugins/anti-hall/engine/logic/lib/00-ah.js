@@ -114,6 +114,9 @@ var ah = {
       for (var i = 0; i + 1 < flat.length; i += 2) out.push([flat[i], flat[i + 1]]);
       return out;
     },
+    // The distinct finite numbers the matches of a regex spell in `text` (characters of `strip` removed from each match first), sorted
+    // ascending: one native pass over megabytes of text, then a list to bisect.
+    numbers: function (src, flags, text, strip) { return JSON.parse(ahHost.reNumbers(src, flags || '', text, strip || '')); },
   },
   // The effective value of a defaults key through the owner's editable layers (settings.json, config.toml, shipped default).
   cfgLive: function (key) { return JSON.parse(ahHost.cfgLive(key)); },
@@ -130,7 +133,29 @@ var ah = {
     // depends on something the engine does not reproduce.
     context: function (dir) { return JSON.parse(ahHost.repoContext(dir)); },
   },
+  // Sleep `ms` (bounded per call and in total by hostproc.sleep_max_ms / sleep_total_max_ms; the wait is not script time).
+  sleep: function (ms) { ahHost.sleep(ms); },
+  // Processes (ahHost proc primitives; bounded, no rule about which process).
+  proc: {
+    // {rows: [{pid, ppid, cmd}]} of the process table, or null when the listing failed; the pids shown can be signalled in this call.
+    list: function () { var r = ahHost.procList(); return r === null || r === undefined ? null : JSON.parse(r); },
+    // {ages: {"<pid>": seconds}} (an unknown age is left out) or {unsure: true}.
+    ages: function (pids) { return JSON.parse(ahHost.procAges(JSON.stringify(pids))); },
+    // {platform, managed: [pids], unverifiable} (the pids the platform's service manager owns) or {unsure: true}.
+    managed: function (pids) { return JSON.parse(ahHost.procManaged(JSON.stringify(pids))); },
+    // Send the polite (forced false) or the forced signal to ONE pid; true when sent. Refused for a pid below hostproc.min_signal_pid,
+    // the engine itself or its parent, a pid this call's own list() did not show, a forced signal not preceded by a polite one in
+    // this call, and anything past hostproc.signal_max_per_call.
+    signal: function (pid, forced) { return ahHost.procSignal(pid, !!forced); },
+  },
   transcript: {
+    // The text evidence of the last windowBytes of a transcript: null (unreadable), {unsure: true}, or {truncated, items: [[kind, text, id?]]}
+    // with kind p (a user prompt), r (a tool result), a (an attachment), i (a tool call's input), t (assistant text, with the message id).
+    evidence: function (p, windowBytes) { var r = ahHost.transcriptEvidence(p, windowBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
+    // Finished-but-not-stopped named teammates of a Claude transcript tail: null, {unsure: true} or {teammates: [{name, idleSinceMs}]}.
+    teammates: function (p, tailBytes) { var r = ahHost.transcriptTeammates(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
+    // Finished-but-not-closed agents of a Codex rollout tail: null, {unsure: true} or {agents: [{id, label, idleSinceMs}]}.
+    codexAgents: function (p, tailBytes) { var r = ahHost.transcriptCodexAgents(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // The running agents of a transcript: null (unreadable), {unsure: true}, or {rows: [{id, description, spawnInput}]}.
     agents: function (p) { return JSON.parse(ahHost.agents(p)); },
     // The last lines of a file with their byte offsets: {lines: [[offset, text|null]]} (text null: over lineMax, or not UTF-8), or null.
