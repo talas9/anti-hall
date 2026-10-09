@@ -68,6 +68,8 @@ exclude_docs: |
 
 not_in_nav: |
   KB.md
+  AH-ENGINE.md
+  DEVELOPMENT.md
 
 validation:
   nav:
