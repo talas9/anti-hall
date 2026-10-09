@@ -45,6 +45,8 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [plugins/anti-hall/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/README.md): the plugin directory page (what it does, install, data sent).
 - [plugins/anti-hall/codex/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/codex/README.md): the Codex port, hook subset, skills, OMX mapping.
 - [docs/README.md](https://github.com/talas9/anti-hall/blob/main/docs/README.md): the documentation start page, a grouped index of every doc.
+- [Docs site](https://talas9.github.io/anti-hall/): the same docs as a searchable site (MkDocs, GitHub Pages).
+- [docs/REPO-PIPELINES.md](https://github.com/talas9/anti-hall/blob/main/docs/REPO-PIPELINES.md): every GitHub workflow, its trigger and whether it gates, and the repository policies.
 - [docs/CONTRACT-1.0.md](https://github.com/talas9/anti-hall/blob/main/docs/CONTRACT-1.0.md): the 1.0 compatibility contract (stable CLIs, hooks, settings, paths).
 - [docs/HOOK-LATENCY.md](https://github.com/talas9/anti-hall/blob/main/docs/HOOK-LATENCY.md): measured hook latency (wall p50/p95, CPU).
 - [docs/E2E-TESTING.md](https://github.com/talas9/anti-hall/blob/main/docs/E2E-TESTING.md): end-to-end testing guide.

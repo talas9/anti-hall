@@ -14,6 +14,7 @@ const { scan, identityHits, maskEmail } = require(path.join(DIR, 'privacy-scan.j
 const { addedLines } = require(path.join(DIR, 'pr.js'));
 const { verifiedPaths } = require(path.join(DIR, 'community.js'));
 const { rank } = require(path.join(DIR, 'roadmap.js'));
+const FX = require(path.join(__dirname, '..', 'fixtures', 'moderation', 'privacy-samples.json'));
 const cfg = L.loadConfig();
 
 test('classify: rules verdicts and precedence', () => {
@@ -44,6 +45,8 @@ test('sanitize: neutralises mentions, drops foreign links and HTML, caps length'
   assert.ok(!out.includes('y.png'));
   assert.ok(!L.sanitize('x https://github.com/talas9/anti-hall-evil/x', cfg).includes('anti-hall-evil'));
   assert.strictEqual(L.sanitize('a'.repeat(50), cfg, 10).length, 10);
+  // CodeQL js/incomplete-multi-character-sanitization: a split comment marker must not survive.
+  assert.ok(!L.sanitize('a <!<!-- x -->-- y --> b <!-- open', cfg, 500).includes('<!--'));
 });
 
 test('validate: only schema enums survive; unknown keys dropped', () => {
@@ -84,7 +87,7 @@ test('chain: default, explicit order, none', () => {
 });
 
 test('privacyScan: rules hit without returning values; deny-list optional', () => {
-  const text = 'path /Users/jdoe/proj\nok /home/runner/work and /Users/you/x\nmail me jdoe@corp.io or sam@example.com\nsession_id: 0f8fad5b-d9cb-469f-a165-70867728950e\nProject Falcon notes';
+  const text = FX.privacyText;
   const hits = L.privacyScan(text, cfg, 'project falcon');
   assert.deepStrictEqual(hits.map((h) => h.rule + ':' + h.line), ['home-path:1', 'email:3', 'session-id:4', 'private-name:5']);
   assert.ok(!JSON.stringify(hits).includes('jdoe'));
@@ -92,7 +95,7 @@ test('privacyScan: rules hit without returning values; deny-list optional', () =
 });
 
 test('privacy-scan diff parser reports file:line of added lines only', () => {
-  const diff = ['diff --git a/x.md b/x.md', '--- a/x.md', '+++ b/x.md', '@@ -1,0 +5,2 @@', '+fine line', '+see /Users/jdoe/a', '--- a/tests/fixtures/f', '+++ b/tests/fixtures/f', '@@ -0,0 +1 @@', '+/Users/jdoe/b'].join('\n');
+  const diff = FX.diffLines.join('\n');
   assert.deepStrictEqual(scan(diff, cfg, ''), [{ rule: 'home-path', file: 'x.md', line: 6 }]);
   assert.deepStrictEqual(addedLines('@@ -1,2 +10,3 @@\n ctx\n-old\n+new\n ctx2'), [{ line: 11, text: 'new' }]);
 });

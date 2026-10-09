@@ -64,6 +64,7 @@ This README uses absolute GitHub URLs because it ships inside the plugin cache, 
 ## Links
 
 - [Documentation](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
+- [Docs site](https://talas9.github.io/anti-hall/)
 - [Support](https://github.com/talas9/anti-hall/issues)
 - [Privacy](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md)
 
