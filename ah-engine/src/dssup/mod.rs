@@ -12,10 +12,22 @@
 //!   owns schedule, gate, lock, bound and record; the function keeps writing the files it writes today, so every shared file
 //!   is Node's byte for byte. [`verdict`] mirrors an engine poke / escalation into the liveness verdict and recovery log in
 //!   Node's exact shape. [`recover`] is the on-demand kill-and-resume, gated by the engine and executed by Node's CLI.
-//! * Nothing here deletes user data: the only removals are the supervisor's own log's previous generation when it rotates.
+//! * Reusable by the CLI verbs (each is a plain function over a home directory, no scheduler needed): the liveness model
+//!   ([`liveness`]), the app database snapshot and its queries ([`appsync::snap::read`], `workspace_for`, `focused`,
+//!   `brief_status`, [`appsync::snap::finish_signal`], [`appsync::snap::transcript_cwd_matches`]), the archived-marker planner
+//!   and writer ([`appsync::plan::plan_marks`], [`appsync::plan::plan_retire`], [`appsync::plan::write_marker`]), the names
+//!   cache and message-gap report ([`appsync::state::refresh_names`], [`appsync::state::message_gaps`]), the whole state document
+//!   ([`appsync::state::build`]), retention's planner and writers ([`retention::plan`], [`retention::apply`],
+//!   [`retention::fold`], [`retention::cap`]) and the agreement protocol they share: plan natively, ask Node's own function for
+//!   the same plan in a dry run, act only on an exact match.
+//! * What is removed, and when: the supervisor's own log's previous generation when it rotates; aged reaped-workspace logs and
+//!   child-gate files (housekeeping); a raw legacy journal file only after its verified compressed copy exists and Node's own dry
+//!   run named it; an archive month file only when the user set a size cap and Node's dry run named the same list. No message row,
+//!   descriptor or marker is ever deleted (retention empties a body after archiving it; a marker is retired by moving it).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - an unreadable state file or log is the absent one (Node's try/catch parity): the duty is due, the log counts as not fresh
 // - an unparsable worker output is kept as text
+pub mod appsync;
 pub mod cli;
 pub mod deferred;
 pub mod housekeep;

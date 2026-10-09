@@ -24,6 +24,7 @@ mod devswarm_rt;
 mod devswarm_wire;
 mod dssup;
 mod dssup_ingest;
+mod dssup_appsync;
 mod dssup_deferred;
 mod dssup_kill;
 mod dssup_liveness;

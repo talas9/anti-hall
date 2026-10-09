@@ -133,8 +133,8 @@ doc = "One stage of the deferred post-update sweep per tick (fold-all-stores, he
 value = { kind = "node", native = true, gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.deferredSweepIfDue({home:process.argv[2]})))', stage_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const stage=process.argv[3];try{const budgetMs=S.resolveSupervisorSweepBudgetMs(process.env);const result=S.runDeferredStage(stage,{home:process.argv[2],env:process.env,budgetMs});console.log(JSON.stringify({stage,ran:true,budgetMs,result}))}catch(e){console.log(JSON.stringify({stage:null,ran:false,error:String(e&&e.message||e)}))}' }
 
 [devswarm_sup."duty.app_sync"]
-doc = "Sync the DevSwarm app state (archived flags, names, message gaps) into app-state.json and the descriptors."
-value = { kind = "node", gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.appDbSyncIfDue({home:process.argv[2]})))' }
+doc = "Sync the DevSwarm app state (archived markers, titles, message gaps) into app-state.json and the names cache. Native: one read of the app database per tick, no Node process on a quiet tick; a marker is written, and a stale marker retired, only when Node's own function (run read only) names the same workspaces, and the retirement itself is executed by Node's function after that agreement."
+value = { kind = "node", native = true, gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.appDbSyncIfDue({home:process.argv[2]})))', witness_timeout_ms = 120000, mark_dry_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";if(process.argv[3])process.env.ANTIHALL_DEVSWARM_APP_DB=process.argv[3];const C=require(process.argv[1]+"/scripts/devswarm.js");const r=C.markAppArchivedDescriptors(process.argv[2],{env:process.env,now:Number(process.argv[4]),dryRun:true});console.log(JSON.stringify({ids:r.results.filter((x)=>x.action).map((x)=>x.id),pending:r.pending,errors:r.errors,appDb:r.appDb}))', retire_dry_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";if(process.argv[3])process.env.ANTIHALL_DEVSWARM_APP_DB=process.argv[3];const C=require(process.argv[1]+"/scripts/devswarm.js");const r=C.retireStaleArchivedMarkers(process.argv[2],{env:process.env,now:Number(process.argv[4]),dryRun:true});console.log(JSON.stringify({ids:r.results.filter((x)=>x.action==="would-retire").map((x)=>x.id),pending:r.pending,errors:r.errors,appDb:r.appDb}))', retire_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";if(process.argv[3])process.env.ANTIHALL_DEVSWARM_APP_DB=process.argv[3];const C=require(process.argv[1]+"/scripts/devswarm.js");const r=C.retireStaleArchivedMarkers(process.argv[2],{env:process.env,now:Number(process.argv[4])});console.log(JSON.stringify({retired:r.retired,pending:r.pending,errors:r.errors,left:r.left}))', witness_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";if(process.argv[3])process.env.ANTIHALL_DEVSWARM_APP_DB=process.argv[3];const C=require(process.argv[1]+"/scripts/devswarm.js");const r=C.syncAppState(process.argv[2],{env:process.env,now:Number(process.argv[4]),dryRun:true});console.log(String(JSON.stringify(r.state)))' }
 
 [devswarm_sup."duty.retention"]
 doc = "Bounded growth of the message stores: archive-first tombstoning of old, fully read message bodies (never a row delete; positions and dedupe depend on every row staying), native in the armed state. The engine plans natively and writes only when Node's own planner, run read only on the same store, agrees on the exact rows; a disagreement or a witness that cannot run does nothing and is logged. The one-time dry-run report phase, the journal fold and the archive cap stay Node's own functions."
@@ -999,6 +999,10 @@ value = ".tmp"
 doc = "The name of an archive month file; its first group is the month that orders eviction (older months go first)."
 value = '^(\d{4}-\d{2})\.ndjson\.gz$'
 
+[devswarm_sup.rt_protected_names]
+doc = "The protection rules a first-run dry-run summary counts, in the order of its `protected` object (Node: tooNew, keepLast, unread, question, ndjson, broadcast, held)."
+value = ["tooNew", "keepLast", "unread", "question", "ndjson", "broadcast", "held"]
+
 [devswarm_sup.rt_msg_fold_differ]
 doc = "Why a legacy journal was not folded: the engine's file list is not the one Node's own dry run gives."
 value = "the journal file list differs from Node's"
@@ -1018,6 +1022,388 @@ value = "dry-run report shape"
 [devswarm_sup.rt_msg_dry_differ]
 doc = "Why the first-run dry-run report was not written: the engine's store summary differs from Node's."
 value = "the dry-run summary differs from Node's"
+
+# ---- the app sync, native (src/dssup/appsync/) ------------------------------------------------------------------------------------
+
+[devswarm_sup.set_app_sync]
+doc = "Sync the DevSwarm desktop app's state (archived flags, titles, message gaps) into anti-hall every tick. Node: devswarm.appSync."
+value = { type = "bool", section = "devswarm", key = "appSync", env = "ANTIHALL_DEVSWARM_APP_SYNC", default = true }
+
+[devswarm_sup.as_missing_table]
+doc = "The text added to a table name when the app database has no such table (the snapshot's `missing` list)."
+value = " (table)"
+
+[devswarm_sup.as_prompt_len]
+doc = "The select-list alias of the initial prompt's length (its text is never read)."
+value = "initialPromptLen"
+
+[devswarm_sup.as_scrollback_id_re]
+doc = "The shape of a terminal id the scrollback log of which may be looked up."
+value = "^[A-Za-z0-9._-]+$"
+
+[devswarm_sup.as_scrollback_dir]
+doc = "The app's terminal scrollback directory beside its database."
+value = "terminal-scrollback"
+
+[devswarm_sup.as_scrollback_ext]
+doc = "The extension of a scrollback log."
+value = ".log"
+
+[devswarm_sup.as_sentry_dir]
+doc = "The app's crash-report directory beside its database."
+value = "sentry"
+
+[devswarm_sup.as_sentry_file]
+doc = "The crash-report session file that names the app version."
+value = "session.json"
+
+[devswarm_sup.as_sentry_key]
+doc = "The key of the session file that holds the app version."
+value = "release"
+
+[devswarm_sup.as_msg_table]
+doc = "The app's message table (read for timestamps and branches only)."
+value = "workspace_messages"
+
+[devswarm_sup.as_c_id]
+doc = "The id column / descriptor key."
+value = "id"
+
+[devswarm_sup.as_c_repository_id]
+doc = "The repository id column."
+value = "repositoryId"
+
+[devswarm_sup.as_c_path]
+doc = "The repository path column."
+value = "path"
+
+[devswarm_sup.as_c_name]
+doc = "The repository name column."
+value = "name"
+
+[devswarm_sup.as_c_number]
+doc = "The pull request number column."
+value = "number"
+
+[devswarm_sup.as_c_state]
+doc = "The pull request state column."
+value = "state"
+
+[devswarm_sup.as_c_is_draft]
+doc = "The pull request draft flag column."
+value = "isDraft"
+
+[devswarm_sup.as_c_check_status]
+doc = "The pull request check status column."
+value = "checkStatus"
+
+[devswarm_sup.as_c_last_synced]
+doc = "The pull request last sync time column."
+value = "lastSyncedAt"
+
+[devswarm_sup.as_c_branch_name]
+doc = "The branch name column."
+value = "branchName"
+
+[devswarm_sup.as_c_builder_id]
+doc = "The terminal's builder id column."
+value = "builderId"
+
+[devswarm_sup.as_c_delivered]
+doc = "The initial prompt delivery time column."
+value = "initialPromptDeliveredAt"
+
+[devswarm_sup.as_c_terminal_id]
+doc = "The terminal id column."
+value = "terminalId"
+
+[devswarm_sup.as_c_terminal_type]
+doc = "The terminal type column."
+value = "terminalType"
+
+[devswarm_sup.as_c_session_config]
+doc = "The AI session configuration column."
+value = "ai_session_config"
+
+[devswarm_sup.as_c_panel_status]
+doc = "The terminal panel status column."
+value = "panelStatus"
+
+[devswarm_sup.as_c_created_at]
+doc = "The creation time column."
+value = "createdAt"
+
+[devswarm_sup.as_c_withheld]
+doc = "The initial prompt withheld time column."
+value = "initialPromptWithheldAt"
+
+[devswarm_sup.as_c_is_hidden]
+doc = "The builder hidden flag column."
+value = "isHidden"
+
+[devswarm_sup.as_c_is_active]
+doc = "The active flag column."
+value = "isActive"
+
+[devswarm_sup.as_c_pull_request_id]
+doc = "The builder's pull request id column."
+value = "pullRequestId"
+
+[devswarm_sup.as_c_worktree_path]
+doc = "The worktree path column / descriptor key."
+value = "worktreePath"
+
+[devswarm_sup.as_c_rank]
+doc = "The builder rank column."
+value = "rank"
+
+[devswarm_sup.as_c_label]
+doc = "The builder label column."
+value = "label"
+
+[devswarm_sup.as_c_builder_type]
+doc = "The builder type column."
+value = "builderType"
+
+[devswarm_sup.as_c_is_pinned]
+doc = "The pinned flag column."
+value = "isPinned"
+
+[devswarm_sup.as_c_last_selected]
+doc = "The last selected time column."
+value = "lastSelectedAt"
+
+[devswarm_sup.as_c_last_accessed]
+doc = "The last accessed time column."
+value = "lastAccessed"
+
+[devswarm_sup.as_key_sep]
+doc = "The separator inside the pull request by repository and branch key."
+value = "\u0000"
+
+[devswarm_sup.as_ai_type]
+doc = "The terminal type of an AI terminal."
+value = "ai"
+
+[devswarm_sup.as_primary_type]
+doc = "The builder type of the Primary checkout."
+value = "primary"
+
+[devswarm_sup.as_brief_pending]
+doc = "The brief delivery status of a prompt not yet delivered and not yet late."
+value = "pending"
+
+[devswarm_sup.as_brief_not_delivered]
+doc = "The brief delivery status of a prompt not delivered within the grace."
+value = "not-delivered"
+
+[devswarm_sup.as_brief_withheld]
+doc = "The brief delivery status of a prompt the app withheld."
+value = "withheld"
+
+[devswarm_sup.as_git_entry]
+doc = "A worktree's git entry (a file in a linked worktree)."
+value = ".git"
+
+[devswarm_sup.as_gitdir_re]
+doc = "The line of a linked worktree's `.git` file that names its git directory."
+value = '(?m)^gitdir:\s*(.+)\s*$'
+
+[devswarm_sup.as_commondir_file]
+doc = "The file in a linked worktree's git directory that names the common directory."
+value = "commondir"
+
+[devswarm_sup.as_refs_dir]
+doc = "The directory of branch refs under the common git directory."
+value = "refs/heads"
+
+[devswarm_sup.as_pr_word]
+doc = "The word that starts a finish signal."
+value = "PR"
+
+[devswarm_sup.as_draft_suffix]
+doc = "The finish signal's suffix for a draft pull request."
+value = " (draft)"
+
+[devswarm_sup.as_fail_word]
+doc = "A check status containing this word reads as failed."
+value = "fail"
+
+[devswarm_sup.as_checks_failed]
+doc = "The finish signal's suffix for failed checks."
+value = ", checks failed"
+
+[devswarm_sup.as_sid_re]
+doc = "The shape of a session id whose transcript may be read."
+value = "^[A-Za-z0-9-]+$"
+
+[devswarm_sup.as_projects_dir]
+doc = "Claude Code's transcript projects directory, relative to the home directory."
+value = ".claude/projects"
+
+[devswarm_sup.as_transcript_ext]
+doc = "The extension of a transcript file."
+value = ".jsonl"
+
+[devswarm_sup.as_cwd_re]
+doc = "The first recorded working directory in a transcript prefix (a JSON string)."
+value = '"cwd"\s*:\s*("(?:[^"\\]|\\.)*")'
+
+[devswarm_sup.as_json_ext]
+doc = "The extension of a descriptor, marker and cache file."
+value = ".json"
+
+[devswarm_sup.as_dir_workspaces]
+doc = "The registered workspaces' descriptor directory."
+value = "workspaces"
+
+[devswarm_sup.as_dir_archived]
+doc = "The archived markers directory."
+value = "archived"
+
+[devswarm_sup.as_dir_names]
+doc = "The workspace title cache directory."
+value = "names"
+
+[devswarm_sup.as_builder_re]
+doc = "The shape of a DevSwarm builder id."
+value = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+[devswarm_sup.as_marker_app]
+doc = "The `archivedBy` of a marker written because the app shows the workspace archived."
+value = "devswarm-app"
+
+[devswarm_sup.as_marker_deleted]
+doc = "The `archivedBy` of a marker written because the app deleted the workspace."
+value = "devswarm-app-deleted"
+
+[devswarm_sup.as_msg_archived_dir]
+doc = "Why a marker was not written: the archived directory is a link or a file."
+value = "archived path is not a real directory"
+
+[devswarm_sup.as_tmp_suffix]
+doc = "The suffix of a marker's temporary file."
+value = ".tmp"
+
+[devswarm_sup.as_native_like]
+doc = "The hash pattern of the app messages the ingest stored."
+value = "native:%"
+
+[devswarm_sup.as_proto_key]
+doc = "A branch or session name JavaScript would not store as an ordinary object key."
+value = "__proto__"
+
+[devswarm_sup.as_reason_no_store]
+doc = "The gap report's reason for a repository without a message store."
+value = "no-store"
+
+[devswarm_sup.as_reason_unreadable]
+doc = "The gap report's reason for a message store that cannot be read."
+value = "store-unreadable"
+
+[devswarm_sup.as_reason_no_db]
+doc = "The state file's reason when the app database cannot be read."
+value = "app-db-unavailable"
+
+[devswarm_sup.as_reason_disabled]
+doc = "The answer when the app sync is switched off."
+value = "app-sync-disabled"
+
+[devswarm_sup.as_state_file]
+doc = "The app sync's state file under the DevSwarm state directory."
+value = "app-state.json"
+
+[devswarm_sup.as_scheduled_dir]
+doc = "The app's scheduled-for-deletion directory, relative to the home directory."
+value = ".devswarm/scheduled-for-deletion"
+
+[devswarm_sup.as_archive_cmd]
+doc = "The command shown for a workspace archived here but still open in the app."
+value = "hivecontrol workspace archive "
+
+[devswarm_sup.as_env_dry]
+doc = "The environment variable that makes the app sync compute and write nothing."
+value = "ANTIHALL_INGEST_DRY_RUN"
+
+[devswarm_sup.as_env_dry_on]
+doc = "Its value for dry."
+value = "1"
+
+[devswarm_sup.as_undefined]
+doc = "What Node prints for a missing state (the witness comparison)."
+value = "undefined"
+
+[devswarm_sup.as_focus_ms]
+doc = "How recent the app's last selection must be for a workspace to count as focused."
+value = 120000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_brief_grace_ms]
+doc = "How long an undelivered initial prompt may wait before it reads as not delivered."
+value = 180000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_retire_grace_ms]
+doc = "How old an app-written marker must be before the app showing the workspace open retires it."
+value = 600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_age_1h]
+doc = "The first age bucket of the message gap report."
+value = 3600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_age_1d]
+doc = "The second age bucket."
+value = 86400000
+min = 1000
+max = 864000000
+unit = "ms"
+
+[devswarm_sup.as_age_7d]
+doc = "The third age bucket."
+value = 604800000
+min = 1000
+max = 8640000000
+unit = "ms"
+
+[devswarm_sup.as_settle_ms]
+doc = "App messages younger than this are not yet expected in the store."
+value = 120000
+min = 0
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_gap_cooldown_ms]
+doc = "Least time between two message gap scans."
+value = 900000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_transcript_bytes]
+doc = "How much of a transcript's start is read to find its working directory."
+value = 65536
+min = 1024
+max = 16777216
+unit = "ms"
+
+[devswarm_sup.as_msg_cols]
+doc = "The app message columns the gap report reads."
+value = ["repositoryId", "toBranch", "createdAt"]
+
+[devswarm_sup.as_markers_app]
+doc = "The `archivedBy` values that mark a marker as written from the app's own state (those the app showing open again may retire)."
+value = ["devswarm-app", "devswarm-app-deleted", "devswarm-ui-sync"]
+
 
 # ---- the deferred stage, native (src/dssup/deferred.rs) --------------------------------------------------------------------------
 

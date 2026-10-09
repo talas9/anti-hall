@@ -76,8 +76,7 @@ fn summary(ctx: &Ctx, runner: &dyn Runner, st: &OVal, s: &Settings, hash: &str) 
             prot[i] += x;
         }
     }
-    let names = ["tooNew", "keepLast", "unread", "question", "ndjson", "broadcast", "held"];
-    let protected = OVal::Obj(names.iter().zip(prot).map(|(k, v)| ((*k).to_string(), n(v as f64))).collect());
+    let protected = OVal::Obj(defaults::list("devswarm_sup.rt_protected_names").into_iter().zip(prot).map(|(k, v)| (k.to_string(), n(v as f64))).collect());
     let legacy_files = legacy["files"].as_array().map_or(0, Vec::len);
     let legacy_o = OVal::Obj(vec![
         ("eligible".into(), OVal::Bool(legacy["eligible"].as_bool().unwrap_or(false))),

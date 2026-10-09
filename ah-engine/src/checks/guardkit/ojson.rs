@@ -126,15 +126,55 @@ pub fn js_number_text(n: f64) -> String {
             "0".into()
         };
     }
-    let a = n.abs();
-    if !(1e-6..1e21).contains(&a) {
-        let e = format!("{n:e}");
-        return match e.split_once('e') {
-            Some((m, x)) if !x.starts_with('-') => format!("{m}e+{x}"),
-            _ => e,
-        };
+    let (digits, exp) = shortest_digits(n);
+    let (k, point) = (digits.len() as i32, exp + 1);
+    let sign = if n < 0.0 { "-" } else { "" };
+    let body = if k <= point && point <= 21 {
+        format!("{digits}{}", "0".repeat((point - k) as usize))
+    } else if 0 < point && point <= 21 {
+        format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
+    } else if -6 < point && point <= 0 {
+        format!("0.{}{digits}", "0".repeat((-point) as usize))
+    } else {
+        let e = point - 1;
+        let es = format!("{}{}", if e < 0 { "-" } else { "+" }, e.abs());
+        if k == 1 { format!("{digits}e{es}") } else { format!("{}.{}e{es}", &digits[..1], &digits[1..]) }
+    };
+    format!("{sign}{body}")
+}
+
+/// The shortest digits that read back as `n` and the decimal exponent of the first one, chosen as ECMAScript's `Number::toString`
+/// chooses: among the shortest candidates the one closest to the value and, when two are equally close (the value lies exactly
+/// halfway), the even one. Rust's shortest formatting rounds such a tie up, which prints `...4063` where JavaScript prints `...4062`.
+fn shortest_digits(n: f64) -> (String, i32) {
+    let e = format!("{:e}", n.abs());
+    let (m, x) = e.split_once('e').unwrap_or((&e, "0"));
+    let exp: i32 = x.parse().unwrap_or(0);
+    let digits: String = m.chars().filter(char::is_ascii_digit).collect();
+    let k = digits.len();
+    // cheap test first: a halfway tie has a last digit 5 when rounded to one more digit than the shortest form
+    if !format!("{:.*e}", k, n.abs()).split_once('e').is_some_and(|(m, _)| m.ends_with('5')) {
+        return (digits, exp);
     }
-    format!("{n}")
+    // the exact decimal expansion of the double (at most ~770 significant digits)
+    let exact = format!("{:.800e}", n.abs());
+    let (em, _) = exact.split_once('e').unwrap_or((&exact, "0"));
+    let all: String = em.chars().filter(char::is_ascii_digit).collect();
+    let all = all.trim_end_matches('0');
+    if all.len() == k + 1 && all.ends_with('5') {
+        let lo = &all[..k];
+        let last = lo.as_bytes()[k - 1] - b'0';
+        if last.is_multiple_of(2) && lo != digits {
+            return (lo.to_string(), exp);
+        }
+        if !last.is_multiple_of(2) && lo == digits && !lo.bytes().all(|b| b == b'9') {
+            let hi = lo.parse::<u128>().ok().map(|v| (v + 1).to_string());
+            if let Some(hi) = hi.filter(|h| h.len() == k) {
+                return (hi, exp);
+            }
+        }
+    }
+    (digits, exp)
 }
 
 struct V;
