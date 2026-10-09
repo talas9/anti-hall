@@ -23,7 +23,8 @@ fn dir() -> PathBuf {
 
 pub fn load(check: &str) -> Vec<Value> {
     let text = std::fs::read_to_string(dir().join(format!("{check}.jsonl"))).unwrap_or_else(|e| panic!("golden {check}: {e}"));
-    let all: Vec<Value> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("golden {check}: {e}"))).collect();
+    let all: Vec<Value> =
+        text.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("golden {check}: {e}"))).collect();
     // `"os": "macos"`: a case whose answer depends on a macOS-only service (launchd), replayed on macOS only
     all.into_iter().filter(|c| c.get("os").and_then(Value::as_str).is_none_or(|os| os != "macos" || cfg!(target_os = "macos"))).collect()
 }

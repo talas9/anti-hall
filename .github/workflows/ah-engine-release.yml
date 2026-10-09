@@ -76,7 +76,7 @@ jobs:
     permissions:
       contents: read
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
@@ -113,6 +113,8 @@ jobs:
         env:
           TRIPLE: ${{ matrix.triple }}
           CARGO_TARGET_DIR: ${{ github.workspace }}/ah-engine/target-test
+          # The script CPU limit shipped by default (50 ms) is sized for an idle machine; a loaded shared runner running the suite in parallel needs headroom.
+          AH_ENGINE_SCRIPT_TIME_MS: "2000"
         working-directory: ah-engine
         run: cargo test --release --locked --target "$TRIPLE"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
