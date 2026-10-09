@@ -42,6 +42,10 @@ value = 20
 min = 1
 max = 1000
 
+[devswarm_recon.settings_files]
+doc = "Settings files (relative to the home) a mirror also holds, because the Node functions and the summary projection read them."
+value = [".claude/settings.json"]
+
 # ---- the normaliser ------------------------------------------------------------------------------------------------------------
 
 [devswarm_recon.norm_db_suffix]
@@ -121,3 +125,110 @@ value = "mirror-failed"
 [devswarm_recon.why_mirror_cap]
 doc = "Why a mirror could not be built: a directory held more files than devswarm_recon.mirror_max_files."
 value = "mirror-too-large"
+
+[devswarm_recon.why_surrogate]
+doc = "Why a decision was handed back: cutting the text at Node's length would split a surrogate pair."
+value = "surrogate-cut"
+
+# ---- the side files (slice S1) -------------------------------------------------------------------------------------------------
+
+[devswarm_recon.file_sweep_state]
+doc = "The reconcile sweep's cool-down file, under the DevSwarm state directory."
+value = "reconcile-sweep-state.json"
+
+[devswarm_recon.file_resume]
+doc = "The reconcile resume marker (the ids a run left for the next one), under the DevSwarm state directory."
+value = "reconcile-resume.json"
+
+[devswarm_recon.dir_names]
+doc = "The workspace display-name cache directory, under the DevSwarm state directory."
+value = "names"
+
+[devswarm_recon.file_repo_unknown]
+doc = "The repository-not-known marker, under the DevSwarm state directory."
+value = "repo-unknown.json"
+
+[devswarm_recon.file_active_cache]
+doc = "The app-side active-workspace snapshot, under the DevSwarm state directory."
+value = "hivecontrol-active.json"
+
+[devswarm_recon.file_sampling_state]
+doc = "The start-up sampling state, under the DevSwarm state directory."
+value = "startup-sampling-state.json"
+
+[devswarm_recon.file_samples]
+doc = "The start-up samples log, in the logs directory."
+value = "devswarm-startup-samples.ndjson"
+
+[devswarm_recon.dir_liveness]
+doc = "The persisted liveness verdicts directory, under the DevSwarm state directory."
+value = "liveness"
+
+[devswarm_recon.status_stale]
+doc = "The verdict status word that makes a workspace a start-up sampling candidate."
+value = "stale"
+
+[devswarm_recon.probe_args]
+doc = "The hivecontrol arguments of a start-up probe, before the workspace id."
+value = ["workspace", "info"]
+
+[devswarm_recon.probe_timeout_ms]
+doc = "How long one start-up probe may run (Node: PROBE_TIMEOUT_MS)."
+value = 3000
+min = 100
+max = 600000
+unit = "ms"
+
+[devswarm_recon.samples_max_bytes]
+doc = "Largest the samples log grows before it is rotated to its one kept generation (Node: 5 MB)."
+value = 5242880
+min = 1024
+max = 1073741824
+unit = "bytes"
+
+[devswarm_recon.samples_rotated_suffix]
+doc = "The ending of the rotated samples log."
+value = ".1"
+
+[devswarm_recon.recheck_ms]
+doc = "How long a repository-not-known marker suppresses the failing calls before one attempt re-tests it (Node: RECHECK_MS)."
+value = 21600000
+min = 1000
+max = 31536000000
+unit = "ms"
+
+[devswarm_recon.suppress_after]
+doc = "How many sweeps in a row must meet the same repository-not-known error before the calls are suppressed (Node: SUPPRESS_AFTER)."
+value = 3
+min = 1
+max = 1000
+
+[devswarm_recon.reason_max]
+doc = "Most characters (UTF-16 units) of an error text kept in the repository-not-known marker."
+value = 300
+min = 1
+max = 100000
+
+[devswarm_recon.ansi_re]
+doc = "The colour escape sequences stripped from an error text before it is recorded."
+value = '\x1b\[[0-9;]*m'
+
+[devswarm_recon.set_active_floor_pct]
+doc = "Least percent of a project's previous active-workspace snapshot a new one must hold, or the previous one is kept (0 turns the floor off). Node: devswarm.activeFloorPct."
+value = { type = "number", section = "devswarm", key = "activeFloorPct", env = "ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT", min = 0, max = 100, default = 50 }
+
+[devswarm_recon.log_component_cache]
+doc = "The component of the active-snapshot log lines."
+value = "devswarm-archived-cache"
+
+[devswarm_recon.log_op_partial]
+doc = "The operation of the partial-list guard's log line."
+value = "partial-list-guard"
+
+[devswarm_recon.log_level_warn]
+doc = "The level of the partial-list guard's log line."
+value = "warn"
+
+[devswarm_recon.msg_partial_list]
+doc = "The partial-list guard's log line. Placeholders: {new}, {key}, {pct}, {prev}."
+value = "hivecontrol workspace list returned {new} record(s) for {key}, below the {pct}% floor of the previous snapshot's {prev} \u2014 refusing this write, keeping the previous snapshot for this project"

@@ -27,6 +27,7 @@ pub mod apply;
 pub mod gate;
 pub mod mirror;
 pub mod norm;
+pub mod side;
 pub mod view;
 
 use crate::meshw::store::RegistryRow;
