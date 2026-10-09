@@ -46,7 +46,11 @@ fn now_ms() -> i64 {
 fn fix(tag: &str) -> Fix {
     init_defaults();
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let home = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/scratch/recon-tests").join(format!("s8-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    let home = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/scratch/recon-tests").join(format!(
+        "s8-{tag}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let mut env: HashMap<String, String> = HashMap::new();
@@ -91,14 +95,23 @@ impl Fix {
     }
     fn row(&self, key: &str, id: &str, wt: &str, sid: Option<&str>) {
         let st = self.store(key);
-        let r = RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: sid.map(str::to_string), inbox_path: None, cursor_path: None, nudge_command: None };
+        let r = RegistryRow {
+            id: id.into(),
+            worktree_path: Some(wt.into()),
+            session_id: sid.map(str::to_string),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
         assert!(st.upsert_registry(&r, 1_000, |_, _| true).unwrap());
     }
     fn msg(&self, key: &str, id: &str) {
         self.store(key).append_message(id, 5, Some(&format!("h-{id}")), "body").unwrap();
     }
     fn desc(&self, id: &str, wt: &str, sid: &str) -> String {
-        format!("{{\"id\":\"{id}\",\"worktreePath\":\"{wt}\",\"sessionId\":\"{sid}\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"repoId\":null}}")
+        format!(
+            "{{\"id\":\"{id}\",\"worktreePath\":\"{wt}\",\"sessionId\":\"{sid}\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"repoId\":null}}"
+        )
     }
     fn live(&self, id: &str, wt: &str, sid: &str) {
         self.put(&self.ds(&format!("workspaces/{id}.json")), &self.desc(id, wt, sid));
@@ -148,7 +161,10 @@ fn seed(f: &Fix, stage: usize, stores: &[(&str, &str)]) {
         let buckets: Vec<String> = stores.iter().map(|(k, _)| format!("\"{k}\":[\"a1\"]")).collect();
         f.put(&f.ds("fold-archived-resume.json"), &format!("{{\"buckets\":{{{}}},\"ts\":1}}", buckets.join(",")));
     } else {
-        f.put(".anti-hall/update-sweep-state.json", &format!("{{\"{}\":{{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[{}]}}}}", KEYS[stage], pending.join(",")));
+        f.put(
+            ".anti-hall/update-sweep-state.json",
+            &format!("{{\"{}\":{{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[{}]}}}}", KEYS[stage], pending.join(",")),
+        );
     }
 }
 
@@ -189,23 +205,30 @@ fn every_stage_ends_in_the_same_state_in_engine_mode_as_in_node_mode() {
         // same final state
         let norm_home = |f: &Fix, repos: &[(String, String)]| {
             let own = f.home.to_string_lossy().into_owned();
-            f.snapshot().into_iter().map(|(k, v)| (k.replace(&own, "H"), v.replace(&own, "H"))).map(|(k, v)| {
-                let mut v = v;
-                for (i, (key, wt)) in repos.iter().enumerate() {
-                    v = v.replace(wt.as_str(), &format!("WT{i}")).replace(key.as_str(), &format!("K{i}"));
-                }
-                (k, v)
-            }).collect::<BTreeMap<_, _>>()
+            f.snapshot()
+                .into_iter()
+                .map(|(k, v)| (k.replace(&own, "H"), v.replace(&own, "H")))
+                .map(|(k, v)| {
+                    let mut v = v;
+                    for (i, (key, wt)) in repos.iter().enumerate() {
+                        v = v.replace(wt.as_str(), &format!("WT{i}")).replace(key.as_str(), &format!("K{i}"));
+                    }
+                    (k, v)
+                })
+                .collect::<BTreeMap<_, _>>()
         };
         let (mut ns, mut es) = (norm_home(&node_home, &a), norm_home(&eng_home, &b));
         // the stores are named by their key, which differs between the two homes
         let rename = |m: &mut BTreeMap<String, String>, repos: &[(String, String)]| {
-            *m = std::mem::take(m).into_iter().map(|(mut k, v)| {
-                for (i, (key, _)) in repos.iter().enumerate() {
-                    k = k.replace(key.as_str(), &format!("K{i}"));
-                }
-                (k, v)
-            }).collect();
+            *m = std::mem::take(m)
+                .into_iter()
+                .map(|(mut k, v)| {
+                    for (i, (key, _)) in repos.iter().enumerate() {
+                        k = k.replace(key.as_str(), &format!("K{i}"));
+                    }
+                    (k, v)
+                })
+                .collect();
         };
         rename(&mut ns, &a);
         rename(&mut es, &b);
@@ -243,7 +266,10 @@ fn the_marker_is_written_like_nodes_with_a_resume_list_and_then_a_completed_stam
     assert_eq!((res["budgetExhausted"].as_bool(), res["pending"].as_u64()), (Some(true), Some(1)), "{rec}");
     let m = marker(&f);
     let e = m.get("healRegistry").unwrap();
-    assert_eq!(e.stringify(), format!("{{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[\"{}\"],\"lastCompletedHash\":\"{}\",\"completedVersion\":null}}", repos[1].0, repos[0].0));
+    assert_eq!(
+        e.stringify(),
+        format!("{{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[\"{}\"],\"lastCompletedHash\":\"{}\",\"completedVersion\":null}}", repos[1].0, repos[0].0)
+    );
     // the next tick (rotation back on the stage) resumes the list and stamps the version
     f.put(&f.ds("deferred-sweep-state.json"), "{\"nextStageIndex\":3}");
     f.st.env.remove("ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS");
@@ -351,7 +377,8 @@ fn a_sigkill_between_two_items_keeps_the_old_marker_and_the_rerun_ends_where_an_
         let r = System::configured();
         let _ = ah_engine::dssup::deferred::duty(&reference.ctx(), &r);
         let want = marker(&reference);
-        for point in [format!("stage:{}:0:after", STAGES[stage]), format!("stage:{}:record:before", STAGES[stage]), format!("stage:{}:1:before", STAGES[stage])] {
+        for point in [format!("stage:{}:0:after", STAGES[stage]), format!("stage:{}:record:before", STAGES[stage]), format!("stage:{}:1:before", STAGES[stage])]
+        {
             let f = crashed(stage, &point);
             // the marker is the pre-run marker whole (the write is one rename), and parses
             let m = marker(&f);

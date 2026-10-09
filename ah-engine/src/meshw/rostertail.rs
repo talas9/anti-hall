@@ -14,8 +14,8 @@
 //! to Node.
 //!
 //! Every limit, marker and text is a plugin setting (`devswarm_cli.rr_tr_*`).
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::{collapse_ws, js_trim, js_trim_start, lossy_owned, slice_utf16};
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::meshw::extverbs::tpl;
 use crate::meshw::ident::{R, defer};

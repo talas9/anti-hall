@@ -20,8 +20,8 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable or torn optional file is the absent one (Node: `try { JSON.parse(readFileSync(...)) } catch (_) {}`)
 use crate::checks::guardkit::ojson::{OVal, is_array_index_key};
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::{js_number_of_str, slice_utf16};
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::dssup::appsync::plan::{app_sourced, dir_of, read_json_dir, wt_key};
 use crate::dssup::appsync::snap::{self, Snap};
@@ -635,7 +635,16 @@ fn enrich(e: &Eng, rows: &mut Vec<Obj>, snap: &Option<Snap>) -> R<()> {
         let id = str_field(r, "id").map(str::to_string);
         let wt = str_field(r, "worktreePath").map(str::to_string);
         let Some(ws) = snap.workspace_for(id.as_deref(), wt.as_deref())? else { continue };
-        r.put("appArchived", if ws.archived { OVal::Bool(true) } else if ws.active { OVal::Bool(false) } else { OVal::Null });
+        r.put(
+            "appArchived",
+            if ws.archived {
+                OVal::Bool(true)
+            } else if ws.active {
+                OVal::Bool(false)
+            } else {
+                OVal::Null
+            },
+        );
         if let Some(l) = ws.label.as_ref().filter(|l| !l.is_empty()) {
             r.put("wsName", s(l));
         }
@@ -751,15 +760,15 @@ pub fn build(inv: &Inv, repo_key: &str, st: &MeshStore, sum: &OVal, main_worktre
         }
         o.put("worktreePath", wt.as_deref().map_or(OVal::Null, s))
             .put("source", s(key(if only_archived { "devswarm_cli.rr_source_archived" } else { "devswarm_cli.rr_source_store" })))
-            .put("meshId", match wt.as_deref() {
-                Some(p) => s(&ident::primary_workspace_id(p)?),
-                None => OVal::Null,
-            })
-            .put("hints", strings(&h))
             .put(
-                "wsName",
-                if is_safe_id(id) { crate::dssup::appsync::state::read_name(&inv.home, id).map_or(OVal::Null, |n| s(&n)) } else { OVal::Null },
-            );
+                "meshId",
+                match wt.as_deref() {
+                    Some(p) => s(&ident::primary_workspace_id(p)?),
+                    None => OVal::Null,
+                },
+            )
+            .put("hints", strings(&h))
+            .put("wsName", if is_safe_id(id) { crate::dssup::appsync::state::read_name(&inv.home, id).map_or(OVal::Null, |n| s(&n)) } else { OVal::Null });
         if let Some(n) = instances {
             o.put("instances", OVal::Num(n));
         }
@@ -817,7 +826,10 @@ pub fn build(inv: &Inv, repo_key: &str, st: &MeshStore, sum: &OVal, main_worktre
             );
             rep.put(
                 "message",
-                s(&tpl("devswarm_cli.rr_app_live_message", &[("count", &found.len().to_string()), ("cmds", &cmds.join(key("devswarm_cli.rr_app_live_cmd_sep")))])),
+                s(&tpl(
+                    "devswarm_cli.rr_app_live_message",
+                    &[("count", &found.len().to_string()), ("cmds", &cmds.join(key("devswarm_cli.rr_app_live_cmd_sep")))],
+                )),
             );
             live_report = Some(rep.done());
             for (id, ..) in &found {
@@ -916,7 +928,10 @@ pub fn human_text(inv: &Inv, rows: &[Obj], all: bool, now: f64) -> R<String> {
             };
             let pipe = defaults::list("devswarm_cli.rr_text_pipe");
             let name = name.replace(pipe[0], pipe[1]);
-            lines.push(tpl("devswarm_cli.rr_text_row", &[("name", &name), ("status", &status), ("finish", &finish), ("unread", &unread), ("last", &relative(last, now))]));
+            lines.push(tpl(
+                "devswarm_cli.rr_text_row",
+                &[("name", &name), ("status", &status), ("finish", &finish), ("unread", &unread), ("last", &relative(last, now))],
+            ));
         }
     }
     if hidden > 0 {

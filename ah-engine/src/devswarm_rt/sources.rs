@@ -308,7 +308,9 @@ impl Probe for FsProbe {
         let j = Self::read_json(self.plan_files().get(worktree)?)?;
         let OVal::Arr(steps) = j.get(defaults::text("devswarm_rt.plan_key_steps"))? else { return None };
         steps.iter().find_map(|s| match (s.get(defaults::text("devswarm_rt.plan_key_status")), s.get(defaults::text("devswarm_rt.plan_key_n"))) {
-            (Some(OVal::Str(st)), Some(OVal::Num(n))) if st == defaults::text("devswarm_rt.plan_status_doing") => Some(crate::checks::jsport::num::to_js_string(*n)),
+            (Some(OVal::Str(st)), Some(OVal::Num(n))) if st == defaults::text("devswarm_rt.plan_status_doing") => {
+                Some(crate::checks::jsport::num::to_js_string(*n))
+            }
             _ => None,
         })
     }

@@ -99,7 +99,14 @@ pub fn check(env: &Env, ops: &[Op]) -> Result<(), String> {
                     return Err(format!("{store}:{}", guard.row.id));
                 }
             }
-            Op::Append { .. } | Op::Rename { .. } | Op::Derive { .. } | Op::Log { .. } | Op::UnlinkLinked { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } | Op::Pull { .. } => {}
+            Op::Append { .. }
+            | Op::Rename { .. }
+            | Op::Derive { .. }
+            | Op::Log { .. }
+            | Op::UnlinkLinked { .. }
+            | Op::Forward { .. }
+            | Op::RaiseCursors { .. }
+            | Op::Pull { .. } => {}
         }
     }
     Ok(())
@@ -115,8 +122,10 @@ fn remove_guarded(env: &Env, store: &str, guard: &RegRow) -> Result<(), String> 
     let st = MeshStore::open(&super::view::store_db(env.home, store)).map_err(|e| e.to_string())?;
     let c = st.reader().conn();
     let g = &guard.row;
-    let n = crate::meshw::store::retry_busy(|| c.prepare_cached(crate::sql::RECON_REGISTRY_DELETE_IF)?.execute(rusqlite::params![g.id, g.session_id, guard.updated_at, guard.write_seq]))
-        .map_err(|e| e.to_string())?;
+    let n = crate::meshw::store::retry_busy(|| {
+        c.prepare_cached(crate::sql::RECON_REGISTRY_DELETE_IF)?.execute(rusqlite::params![g.id, g.session_id, guard.updated_at, guard.write_seq])
+    })
+    .map_err(|e| e.to_string())?;
     if n == 1 { Ok(()) } else { Err(format!("drift:{store}:{}", g.id)) }
 }
 
@@ -250,8 +259,10 @@ fn raise(env: &Env, store: &str, partition: &str, value: i64) -> Result<(), Stri
 fn remove_if(env: &Env, store: &str, id: &str, session_id: &Option<String>, updated_at: Option<i64>, write_seq: Option<i64>) -> Result<(), String> {
     let st = open_store(env, store)?;
     let c = st.reader().conn();
-    let n = crate::meshw::store::retry_busy(|| c.prepare_cached(crate::sql::RECON_REGISTRY_DELETE_IF)?.execute(rusqlite::params![id, session_id, updated_at, write_seq]))
-        .map_err(|e| e.to_string())?;
+    let n = crate::meshw::store::retry_busy(|| {
+        c.prepare_cached(crate::sql::RECON_REGISTRY_DELETE_IF)?.execute(rusqlite::params![id, session_id, updated_at, write_seq])
+    })
+    .map_err(|e| e.to_string())?;
     if n == 0 { Err(format!("drift:{store}:{id}")) } else { Ok(()) }
 }
 

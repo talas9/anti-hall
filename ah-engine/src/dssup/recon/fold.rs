@@ -24,8 +24,8 @@ use super::gate::{self, Job, Verdict};
 use super::view::{self, Msg, archived_rel, descriptor_rel, exists, heartbeat_rel, retired_rel};
 use super::{Hooks, Op, Pre, RegRow, Scope, Unit, UnitEnd};
 use crate::checks::guardkit::ojson::OVal;
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::js_trim;
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::dsact::runner::Runner;
 use crate::dssup::tick::Ctx;
@@ -353,7 +353,10 @@ pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow
             out.raised.push((id.clone(), advance_to));
             ops.push(Op::RaiseCursors { store: cx.store.to_string(), partition: id.clone(), value: advance_to });
             if moved > 0 {
-                ops.push(Op::Append { rel: rel.clone(), bytes: cursor_log_line(cx.now, &id, defaults::text("mesh_write.log_ns_store"), since, advance_to).into_bytes() });
+                ops.push(Op::Append {
+                    rel: rel.clone(),
+                    bytes: cursor_log_line(cx.now, &id, defaults::text("mesh_write.log_ns_store"), since, advance_to).into_bytes(),
+                });
             }
             ops.push(Op::Append { rel, bytes: cursor_log_line(cx.now, &id, ns, since, advance_to).into_bytes() });
         }
@@ -365,7 +368,14 @@ pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow
             let snap_upd = Some(cand.updated_at.unwrap_or(0));
             let snap_ws = cand.write_seq;
             if cand.row.session_id == snap_sess && cand.updated_at == snap_upd && cand.write_seq == snap_ws {
-                ops.push(Op::RemoveRegistryIf { store: cx.store.to_string(), id: id.clone(), session_id: snap_sess, updated_at: snap_upd, write_seq: snap_ws, pre: Box::new(cand.clone()) });
+                ops.push(Op::RemoveRegistryIf {
+                    store: cx.store.to_string(),
+                    id: id.clone(),
+                    session_id: snap_sess,
+                    updated_at: snap_upd,
+                    write_seq: snap_ws,
+                    pre: Box::new(cand.clone()),
+                });
                 let redirect = OVal::Obj(vec![("retiredTo".into(), OVal::Str(survivor.to_string())), ("at".into(), OVal::Num(cx.now as f64))]).stringify();
                 ops.push(Op::Write { rel: retired_rel(&id), bytes: redirect.into_bytes(), pre: Pre::Any });
                 out.retired.push(id.clone());
@@ -602,7 +612,10 @@ pub fn plan_fold(ctx: &Ctx, repo_key: &str) -> R<FoldPlan> {
                 Err(Defer(why)) => deferred.push((ids, why)),
                 Ok((gu, go)) => {
                     sim = trial;
-                    g.calls.push(call("foldGroup", json!({"repoKey": repo_key, "survivor": survivor, "ids": cands.iter().map(|c| c.row.id.clone()).collect::<Vec<_>>()})));
+                    g.calls.push(call(
+                        "foldGroup",
+                        json!({"repoKey": repo_key, "survivor": survivor, "ids": cands.iter().map(|c| c.row.id.clone()).collect::<Vec<_>>()}),
+                    ));
                     g.expect.push(Some(go.as_json()));
                     for u in gu {
                         let id = u.label.trim_start_matches("fold:").to_string();
@@ -630,7 +643,11 @@ pub fn plan_fold(ctx: &Ctx, repo_key: &str) -> R<FoldPlan> {
             deferred.push((g.ids.clone(), defaults::text("devswarm_recon.why_summary_orphan").to_string()));
             g = Groups::default();
         } else {
-            g.units.push(Unit { label: defaults::text("devswarm_recon.label_derive").into(), lock: None, ops: vec![Op::Derive { store: repo_key.to_string() }] });
+            g.units.push(Unit {
+                label: defaults::text("devswarm_recon.label_derive").into(),
+                lock: None,
+                ops: vec![Op::Derive { store: repo_key.to_string() }],
+            });
             g.tags.push(Tag::Derive);
             g.calls.push(call("foldDerive", json!({"repoKey": repo_key})));
             g.expect.push(None);

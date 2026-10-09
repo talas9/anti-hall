@@ -595,7 +595,10 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     let unknown_re = re("devswarm_recon.re_repo_unknown_line");
     let ansi = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).map_err(|e| Defer(e.to_string()))?;
     let is_unknown_text = |texts: &[Option<String>]| {
-        texts.iter().flatten().any(|t| ansi.replace_all(t, "").split(['\n']).any(|l| unknown_re.as_ref().is_some_and(|r| r.is_match(js_trim(l.trim_end_matches('\r'))))))
+        texts
+            .iter()
+            .flatten()
+            .any(|t| ansi.replace_all(t, "").split(['\n']).any(|l| unknown_re.as_ref().is_some_and(|r| r.is_match(js_trim(l.trim_end_matches('\r'))))))
     };
     for slot in slots {
         let (t, root, staged_ix) = match slot {
@@ -631,7 +634,9 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
         // repository-unknown bookkeeping
         let scope = scope_of(&t);
         // a success, or a different error, ends the streak of the repository-unknown error
-        if parsed.as_ref().is_some_and(|p| truthy(p.get("ok"))) || !is_unknown_text(&[pv("error").map(js_str), pv("reason").map(js_str), run.as_ref().map(|r| r.stderr.clone())]) {
+        if parsed.as_ref().is_some_and(|p| truthy(p.get("ok")))
+            || !is_unknown_text(&[pv("error").map(js_str), pv("reason").map(js_str), run.as_ref().map(|r| r.stderr.clone())])
+        {
             apply_side(ctx, runner, defaults::text("devswarm_recon.job_repo_unknown"), side::plan_repo_unknown_clear(home, &repo_key, &scope), &[]);
         } else if row_terminal(&inv, &t, &held)? {
             let reason = match pv("error").filter(|v| truthy(Some(v))).or_else(|| pv("reason").filter(|v| truthy(Some(v)))) {
@@ -707,8 +712,7 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     }
     let sum = |k: &str| results.iter().map(|r| r.get(k).and_then(Value::as_f64).unwrap_or(0.0)).sum::<f64>();
     let flag = |r: &Value, k: &str| r.get(k) == Some(&json!(true));
-    let rejected =
-        results.iter().filter(|r| !flag(r, "ok") && re_match("devswarm_recon.re_rejected", &r.get("error").map(js_str).unwrap_or_default())).count();
+    let rejected = results.iter().filter(|r| !flag(r, "ok") && re_match("devswarm_recon.re_rejected", &r.get("error").map(js_str).unwrap_or_default())).count();
     let all_ok = results.iter().all(|r| defaults::list("devswarm_recon.benign_flags").iter().any(|k| flag(r, k)));
     let native_timeouts = results.iter().filter(|r| flag(r, "nativeTimeout")).count();
     // names: the app's titles (a native read), then the ones still missing from hivecontrol's list (Node's own call)

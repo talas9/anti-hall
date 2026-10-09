@@ -3,7 +3,7 @@
 //! key. Best effort: a failed write never changes a decision.
 use crate::checks::jsport::num::to_js_string;
 use crate::checks::replykit::io::now_ms;
-use crate::checks::replykit::json::{quote};
+use crate::checks::replykit::json::quote;
 use crate::defaults;
 use std::io::Write;
 use std::path::Path;
