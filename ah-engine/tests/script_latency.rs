@@ -27,7 +27,7 @@ fn fill(s: &str, home: &str, real: &str) -> String {
     let enc: String = real.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '.') { '-' } else { c }).collect();
     let mut out = s.replace("{PLUGIN}", &plugin()).replace("{HOMEENC}", &enc).replace("{HOMEREAL}", real).replace("{HOME}", home);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    let re = regex::Regex::new(r"\{(MS|ISO|HM|DATE|LDATE):(-?[0-9]+)\}").unwrap();
+    let re = regex::Regex::new(r"\{(MS|ISO|HM|DATE|LDATE|LSTART):(-?[0-9]+)\}").unwrap();
     let tokens: Vec<(String, String, i64)> = re.captures_iter(&out).map(|c| (c[0].to_string(), c[1].to_string(), c[2].parse().unwrap())).collect();
     for (tok, kind, off) in tokens {
         let t = now + off;
@@ -48,8 +48,21 @@ fn fill(s: &str, home: &str, real: &str) -> String {
         };
         let text = match kind.as_str() {
             "MS" => t.to_string(),
-            "ISO" => { let (d, h, ms) = iso(); format!("{d}T{h}.{ms:03}Z") }
-            "HM" => { let (_, h, _) = iso(); format!("{} UTC", &h[..5]) }
+            "ISO" => {
+                let (d, h, ms) = iso();
+                format!("{d}T{h}.{ms:03}Z")
+            }
+            "HM" => {
+                let (_, h, _) = iso();
+                format!("{} UTC", &h[..5])
+            }
+            "LSTART" => {
+                // the shape `ps -o lstart=` prints (UTC here: only the work is measured)
+                let (d, h, _) = iso();
+                let (y, mo, da) = (&d[..4], d[5..7].parse::<usize>().unwrap(), &d[8..]);
+                let mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][mo - 1];
+                format!("Mon {mon} {:>2} {h} {y}", da.trim_start_matches('0'))
+            }
             _ => iso().0,
         };
         out = out.replace(&tok, &text);
@@ -78,7 +91,12 @@ fn lay(case: &Value, seq: usize) -> Laid {
             match spec {
                 Value::String(t) => std::fs::write(&path, fill(t, &home, &real)).unwrap(),
                 Value::Object(o) if o.contains_key("link") => std::os::unix::fs::symlink(fill(o["link"].as_str().unwrap(), &home, &real), &path).unwrap(),
-                Value::Object(o) if o.contains_key("text") => std::fs::write(&path, fill(o["text"].as_str().unwrap(), &home, &real)).unwrap(),
+                Value::Object(o) if o.contains_key("text") => {
+                    std::fs::write(&path, fill(o["text"].as_str().unwrap(), &home, &real)).unwrap();
+                    if let Some(mode) = o.get("mode").and_then(Value::as_u64) {
+                        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(mode as u32)).unwrap();
+                    }
+                }
                 _ => std::fs::create_dir_all(&path).unwrap(),
             }
         }
@@ -118,11 +136,17 @@ fn scripted_checks_stay_inside_the_latency_budget() {
         let _ = ah_engine::script::run_forced(c.name(), &first.payload, &first.opts, &first.event, &first.env);
         let cold = t0.elapsed().as_micros();
         let mut us: Vec<u128> = Vec::new();
+        // twenty passes over the corpus, or as many as fit in the time cap (a corpus whose calls wait on a child process or sleep,
+        // such as the MCP reaper's grace period, is measured on fewer passes: one pass is always taken)
+        let started = std::time::Instant::now();
         for _ in 0..20 {
             for l in &laid {
                 let t = std::time::Instant::now();
                 let _ = ah_engine::script::run_forced(c.name(), &l.payload, &l.opts, &l.event, &l.env);
                 us.push(t.elapsed().as_micros());
+            }
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                break;
             }
         }
         us.sort_unstable();

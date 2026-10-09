@@ -4892,46 +4892,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.action_kill` | `kill` |  |  | The audit log action of the forced signal. |
 | `mcp_reaper.action_skip` | `skip` |  |  | The audit log action of a candidate that was skipped. |
 | `mcp_reaper.action_term` | `term` |  |  | The audit log action of the polite signal. |
-| `mcp_reaper.cgroup_marker` | `.service` |  |  | The text in a control-group file that marks a systemd service. |
-| `mcp_reaper.cgroup_path` | `/proc/{pid}/cgroup` |  |  | The control-group file of a process; `{pid}` is the process id. |
-| `mcp_reaper.etimes_command` | `ps, -o, pid=,etimes=, -p` |  |  | The age probe that reports elapsed seconds (Linux); the pid list is appended as the last argument. |
-| `mcp_reaper.etimes_line_re` | `^\s*(\d+)\s+(\d+)\s*$` |  |  | JavaScript regex source (case-sensitive) of one elapsed-seconds line: pid, seconds. |
 | `mcp_reaper.event_scan` | `scan` |  |  | The audit log event name of a completed scan. |
 | `mcp_reaper.event_skip` | `skip` |  |  | The audit log event name of a sweep that did not run. |
 | `mcp_reaper.exclude_setting` | `4 entries` |  |  | Where the user's exclusion pattern is read from (guards.reaperExclude, a JavaScript regular expression, empty = none): a process it matches is never reaped. |
 | `mcp_reaper.grace_ms` | `500` |  | ms | How long the sweep waits between the polite signal and the re-check that decides who gets the forced one. |
 | `mcp_reaper.init_names` | `launchd, systemd, init` |  |  | The program names PID 1 must carry for the sweep to run at all: in a container PID 1 is the entrypoint and every child of it is normal, not a leaked orphan. |
-| `mcp_reaper.launchctl_command` | `launchctl, list` |  |  | The command that lists the processes the macOS service manager owns. |
-| `mcp_reaper.launchctl_header_re` | `^PID\s` |  |  | JavaScript regex source (case-insensitive) of the header line of the service-manager listing. |
 | `mcp_reaper.log_dir` | `logs` |  |  | The audit log directory under the base directory. |
 | `mcp_reaper.log_file` | `session-end-reaper.log` |  |  | The audit log file name. |
 | `mcp_reaper.log_max_bytes` | `5242880` |  | bytes | The audit log stops growing past this size. |
-| `mcp_reaper.lstart_command` | `ps, -o, pid=,lstart=, -p` |  |  | The age probe that reports the start time (macOS and BSD, which have no elapsed-seconds column); the pid list is appended as the last argument. |
-| `mcp_reaper.lstart_form_re` | `^(Mon\|Tue\|Wed\|Thu\|Fri\|Sat\|Sun) (Jan\|Feb\|Mar\|Apr\|May\|Jun\|Jul\|Aug\|Sep\|Oct\|Nov\|D...` |  |  | JavaScript regex source (case-sensitive) of the one start-time text the engine reads itself, the form `ps -o lstart=` prints: weekday, month, day of month, time, year. Any other text is handed to Node, whose date parser the engine does not reproduce. |
-| `mcp_reaper.lstart_line_re` | `^\s*(\d+)\s+(.+?)\s*$` |  |  | JavaScript regex source (case-sensitive) of one start-time line: pid, start time. |
 | `mcp_reaper.match_setting` | `4 entries` |  |  | Where the user's extra MCP process pattern is read from (guards.reaperMatch, a JavaScript regular expression, empty = none). |
 | `mcp_reaper.max_default` | `16` |  |  | The cap on processes reaped per sweep. |
 | `mcp_reaper.max_env` | `ANTI_HALL_SESSION_END_REAPER_MAX` |  |  | The environment variable that sets the cap on processes reaped per sweep (read like the age floor). |
-| `mcp_reaper.max_exact_id` | `9007199254740992` |  |  | Process ids at or above this are handed to Node: the engine holds an id exactly as JavaScript prints it only below 2^53. |
-| `mcp_reaper.max_hour` | `23` |  |  | The largest hour of a start time the engine reads itself (the form allows 24 to 29, which JavaScript carries into the next day). |
 | `mcp_reaper.mcp_self_re` | `mcp-reaper` |  |  | JavaScript regex source (case-insensitive) of a command line that is never an MCP server: the reaper tooling itself. |
 | `mcp_reaper.min_age_default_s` | `60` |  | s | The age floor in seconds: a process younger than this is never reaped. |
 | `mcp_reaper.min_age_env` | `ANTI_HALL_SESSION_END_REAPER_MIN_AGE_S` |  |  | The environment variable that sets the age floor in seconds (a number, read the way JavaScript's Number reads it; anything not a finite number of at least zero falls back to the default). |
-| `mcp_reaper.min_year` | `1970` |  |  | The earliest year of a start time the engine reads itself. |
 | `mcp_reaper.modelctx_re` | `@?modelcontextprotocol\b` |  |  | JavaScript regex source (case-insensitive) of the @modelcontextprotocol package scope, always a match. |
-| `mcp_reaper.months` | `12 items` |  |  | The month abbreviations of the start-time form, January first. |
 | `mcp_reaper.node_module` | `companion/mcp-reaper.js` |  |  | The Node companion module the hook reuses for its signature test, relative to the plugin root. The Node hook does nothing when it cannot load it, so the engine acts only where it is present. |
 | `mcp_reaper.orphan_ppid` | `1` |  |  | The parent pid that marks an orphan: the kernel reparents a process whose parent died to PID 1. |
-| `mcp_reaper.platform_launchd` | `macos` |  |  | The Rust operating-system name on which the service-manager listing is consulted (Node's darwin). |
-| `mcp_reaper.platform_systemd` | `linux` |  |  | The Rust operating-system name on which the control-group file is consulted (Node's linux). |
-| `mcp_reaper.poll_ms` | `2` |  | ms | How often a running command is checked for completion. |
-| `mcp_reaper.probe_max_bytes` | `1048576` |  | bytes | The largest age-probe or service-manager output the sweep reads; a bigger one is handed to Node. |
-| `mcp_reaper.probe_timeout_ms` | `2000` |  | ms | How long an age probe or the service-manager listing may take (an age probe that times out leaves the age unknown, so the process is not reaped; a service-manager listing that times out skips every candidate). |
-| `mcp_reaper.ps_command` | `ps, -axo, pid=,ppid=,command=` |  |  | The process listing command and its arguments: pid, parent pid and command line of every process. |
-| `mcp_reaper.ps_line_re` | `^\s*(\d+)\s+(\d+)\s+(.*)$` |  |  | JavaScript regex source (case-sensitive) of one process listing line: pid, parent pid, command line. |
-| `mcp_reaper.ps_max_bytes` | `33554432` |  | bytes | The largest process listing accepted; a bigger one is treated as a failed listing and the sweep does nothing. |
-| `mcp_reaper.ps_timeout_ms` | `3000` |  | ms | How long the process listing may take before the sweep gives up and does nothing. |
-| `mcp_reaper.read_ms` | `1000` |  | ms | The least time to wait for a finished command's output after it exits; it may also use what is left of the command's timeout. Output that never arrives fails the command (never an empty listing). |
 | `mcp_reaper.reason_fields` | `reason, end_reason` |  |  | The payload fields that carry the reason, in order: the measured wire field first, the documented one as a fallback. |
 | `mcp_reaper.reason_launchd` | `launchd-managed` |  |  | The audit log reason for a candidate the macOS service manager owns. |
 | `mcp_reaper.reason_launchd_unverifiable` | `launchd-unverifiable` |  |  | The audit log reason for every candidate when the service-manager listing failed. |
@@ -4939,16 +4916,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.reason_systemd` | `systemd-service` |  |  | The audit log reason for a candidate that is a systemd service. |
 | `mcp_reaper.runner_exclude_res` | `7 items` |  |  | JavaScript regex sources (case-insensitive) of test runners and dev servers that are never reaped, even when a file name merely looks like an MCP server. |
 | `mcp_reaper.runtime_re` | `^(node\|nodejs\|npx\|npm\|pnpm\|yarn\|deno\|bun\|python\|python3\|uvx\|uv)$` |  |  | JavaScript regex source (case-sensitive) of the program names (argv0 basename) that legitimately launch MCP servers. |
-| `mcp_reaper.scoped_re` | `(^\|\s)@[a-z0-9][a-z0-9._-]*/mcp([\s/]\|$)` |  |  | JavaScript regex source (case-insensitive) of an `@scope/mcp` package token (right bound consumed, as for the suffix pattern). |
+| `mcp_reaper.scoped_re` | `(^\|\s)@[a-z0-9][a-z0-9._-]*/mcp(?=[\s/]\|$)` |  |  | JavaScript regex source (case-insensitive) of an `@scope/mcp` package token. |
 | `mcp_reaper.setting` | `6 entries` |  |  | Where the reaper's on/off switch is read from (maintenance.sessionEndReaper, default on; the deprecated environment alias is read too). |
 | `mcp_reaper.start_program` | `mcp` |  |  | The program name that may itself be the `mcp start` command. |
 | `mcp_reaper.start_re` | `(^\|\s)mcp\s+start(\s\|$)` |  |  | JavaScript regex source (case-insensitive) of `mcp start` as a discrete command token. |
 | `mcp_reaper.suffix_argv0_re` | `-mcp$` |  |  | JavaScript regex source (case-insensitive) of a program name that is itself a `<name>-mcp` binary. |
-| `mcp_reaper.suffix_re` | `(^\|[\s/])([a-z0-9][a-z0-9._-]*-mcp)([\s/]\|$)` |  |  | JavaScript regex source (case-insensitive) of a `<name>-mcp` package token, bounded on the left by the start, white space or a slash and on the right by white space, a slash or the end (the right bound is consumed here; see the header). |
+| `mcp_reaper.suffix_re` | `(^\|[\s/])([a-z0-9][a-z0-9._-]*-mcp)(?=[\s/]\|$)` |  |  | JavaScript regex source (case-insensitive) of a `<name>-mcp` package token, bounded on the left by the start, white space or a slash and on the right by white space, a slash or the end. |
 | `mcp_reaper.summary` | `SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command ...` |  |  | One-line description of the session-end-mcp-reaper check in the generated reference. |
 | `mcp_reaper.token_argv0_re` | `^(mcp[-_]server\|server-sequential-thinking)` |  |  | JavaScript regex source (case-insensitive) of a program name that is itself such a token. |
 | `mcp_reaper.token_re` | `(^\|[\s/])(mcp[-_]server\|server-sequential-thinking)` |  |  | JavaScript regex source (case-insensitive) of a boundary-anchored mcp-server or server-sequential-thinking token. |
-| `mcp_reaper.tz_env` | `TZ` |  |  | The environment variable that moves the time zone Node would read a start time in; when a request sets it the start time is handed to Node. |
 
 ### devswarm_rt.toml / devswarm_rt
 
@@ -6584,6 +6560,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `github_rt.backoff_max_ms` | `3600000` |  | ms | The longest backoff wait, and the longest Retry-After honoured. |
 | `github_rt.backoff_ms` | `60000` |  | ms | The first wait after a 403/429 that is a secondary limit or that carries Retry-After without one longer; it doubles with every repeat. |
 | `github_rt.budget_pct` | `10` |  |  | The share, in percent, of the hourly rate limit the polling may use in total. A 304 answered from an ETag costs nothing (measured: the `used` counter does not move) and is not counted unless count_304 is 1. |
+| `github_rt.cadence_fallback` | `poll_idle_ms` |  |  | The setting (one of the poll_*_ms) a repo is polled by when the rules script gives no answer for its status. |
 | `github_rt.call_timeout_ms` | `20000` |  | ms | The time one gh call may take. |
 | `github_rt.count_304` | `0` |  |  | 1 counts a 304 answer against the budget (the cautious reading), 0 does not (what was measured: see `ah-engine gh status`, section measure). |
 | `github_rt.cwd_ttl_ms` | `7200000` |  | ms | A working directory seen by a hook this recently makes its repo followed; an older one is dropped. |
@@ -6618,6 +6595,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `github_rt.push_watch_ms` | `180000` |  | ms | After a push (the remote ref of the branch changed) or a checkout, a repo with no checks yet is polled at the running cadence for this long, since the checks of a new commit appear a few seconds late. |
 | `github_rt.remote` | `2 entries` |  |  | How an origin URL is read: host_patterns are the hosts that are GitHub (a remote on any other host is not followed); slug_re captures the owner and the repository from the part after the host (group 1 and 2), the .git suffix being dropped. |
 | `github_rt.rules_ms` | `900000` |  | ms | How often the branch rules that name the required checks of the pull request's base branch are read (an ETag-conditional call). |
+| `github_rt.rules_script` | `rules/gh-rt` |  |  | The plugin script (under engine/logic/) that holds the GitHub realtime rules: summaries, status, edges, edge text, statusline pieces and polling cadence. |
 | `github_rt.stale_ms` | `1800000` |  | ms | A repo state older than this is shown as stale (the segment is left empty). |
 | `github_rt.status_edges` | `10` |  |  | The newest edges `gh status` lists. |
 | `github_rt.statuses` | `9 entries` |  |  | How check and run fields are read. running_statuses: a check or run in one of these is not finished; failing: conclusions that count as failed; passing: conclusions that count as passed (the rest, such as skipped, neither); review_changes, review_approved: review states; merged_conflict_states: mergeable_state values that mean the branch conflicts. |

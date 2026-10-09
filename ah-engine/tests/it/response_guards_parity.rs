@@ -199,14 +199,14 @@ fn output_verify_cases() -> Vec<Case> {
     )));
     v.push(c("ov-once-no-transcript").same(post("npm test", json!(mixed))).same(post("npm test", json!(mixed))));
     v.push(c("ov-once-missing-transcript-file").same(with(post("npm test", json!(mixed)), "transcript_path", json!("/nonexistent/t.jsonl"))));
-    v.push(c("ov-once-relative-transcript-defers").defer(with(post("npm test", json!(mixed)), "transcript_path", json!("rel/t.jsonl"))));
+    v.push(c("ov-once-relative-transcript").same(with(post("npm test", json!(mixed)), "transcript_path", json!("rel/t.jsonl"))));
     v.push(
         c("ov-once-other-writers-slot-kept")
             .file(".anti-hall/turn-gate/tg-s1.json", r#"{"failure-root-cause-nudge|main":{"turn":"u1","sigs":["x"]},"zz":1}"#)
             .transcript(&turn)
             .same(post("npm test", json!(mixed))),
     );
-    v.push(c("ov-once-state-array-defers").file(".anti-hall/turn-gate/tg-s1.json", "[1]").transcript(&turn).defer(post("npm test", json!(mixed))));
+    v.push(c("ov-once-state-array").file(".anti-hall/turn-gate/tg-s1.json", "[1]").transcript(&turn).same(post("npm test", json!(mixed))));
     v.push(c("ov-once-state-garbage").file(".anti-hall/turn-gate/tg-s1.json", "not json").transcript(&turn).same(post("npm test", json!(mixed))));
     v.push(c("ov-once-state-null").file(".anti-hall/turn-gate/tg-s1.json", "null").transcript(&turn).same(post("npm test", json!(mixed))));
     v.push(

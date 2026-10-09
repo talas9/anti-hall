@@ -74,6 +74,7 @@ var ah = {
   settings: {
     bool: function (key) { return ahHost.settingBool(key); },
     enum: function (key) { return ahHost.settingEnum(key); },
+    str: function (key) { return ahHost.settingStr(key); },
     num: function (key) { return ahHost.settingNum(key); },
     // Like `num`, but a value below the entry's minimum is dropped (the next source is asked), the way the Node `settings.get` does.
     numStrict: function (key) { return ahHost.settingNumStrict(key); },

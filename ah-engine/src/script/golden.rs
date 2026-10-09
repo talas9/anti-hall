@@ -6,12 +6,13 @@
 //! Placeholders in every string of a case: `{HOME}` is the case's fresh home directory, `{HOMEREAL}` its canonical path,
 //! `{PLUGIN}` the canonical plugin root (for a check whose answer names it).
 //! `files` maps a path under the home to its text, or to `{"link": target}` (a symbolic link), `{"dir": true}` or
-//! `{"text": t, "age_ms": n}` (a file last modified `n` ms before the case's clock).
+//! `{"text": t, "age_ms": n, "mode": m}` (a file last modified `n` ms before the case's clock, with permission bits `m`: 493 is 0755).
 //!
-//! Time, two forms. `{NOW}`, `{ISO}`, `{DATE}` (and their `-`/`+` offsets, see `expand_now`) are read off the real clock when the
-//! case is laid out. A case that carries `{MS:-300000}` (that many ms from the clock, as a number), `{ISO:-300000}` (its ISO
-//! text) or `{HM:-300000}` (its `hh:mm UTC` text), or an `age_ms` file, runs at the pinned clock [`NOW0`] (the script's
-//! `ah.clock.now()`) and its answers are stored with the same tokens, so the corpus does not depend on the day it is replayed.
+//! Time: a case runs at a pinned clock ([`NOW0`], the script's `ah.clock.now()`); a string may carry `{MS:-300000}` (that many
+//! ms from the clock, as a number), `{ISO:-300000}` (its ISO text), `{HM:-300000}` (its `hh:mm UTC` text), `{DATE:..}` / `{LDATE:..}`
+//! (its UTC / local calendar day) or `{LSTART:..}` (the local time as `ps -o lstart=` prints it). An answer is stored with the same
+//! tokens, so the corpus does not depend on the day it is replayed. A case that places events at the real moment (`{NOW-5000}`,
+//! `{ISO}`, `{DATE}`, no colon) or sets `normTs` runs at the real clock instead.
 use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -37,7 +38,7 @@ pub const NOW0: f64 = 1_790_000_000_000.0;
 
 fn time_tokens(s: &str) -> Vec<(String, String, i64)> {
     static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = R.get_or_init(|| regex::Regex::new(r"\{(MS|ISO|HM|DATE|LDATE):(-?[0-9]+)\}").unwrap());
+    let re = R.get_or_init(|| regex::Regex::new(r"\{(MS|ISO|HM|DATE|LDATE|LSTART):(-?[0-9]+)\}").unwrap());
     re.captures_iter(s).map(|c| (c[0].to_string(), c[1].to_string(), c[2].parse().unwrap())).collect()
 }
 
@@ -51,6 +52,23 @@ fn time_text(kind: &str, now: f64, off: i64) -> String {
             // the machine's local calendar date (what a hook that names a directory after "today" sees)
             let v: Value = serde_json::from_str(&super::host_b3::local_time(t)).unwrap();
             format!("{:04}-{:02}-{:02}", v["year"].as_i64().unwrap(), v["month"].as_i64().unwrap(), v["day"].as_i64().unwrap())
+        }
+        "LSTART" => {
+            // `ps -o lstart=` as macOS and Linux print it: `Mon Jan  5 03:04:05 2026`, in the local zone
+            let v: Value = serde_json::from_str(&super::host_b3::local_time(t)).unwrap();
+            let (wd, mon) =
+                (["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]);
+            let n = |k: &str| v[k].as_i64().unwrap();
+            format!(
+                "{} {} {:>2} {:02}:{:02}:{:02} {}",
+                wd[n("weekday") as usize],
+                mon[n("month") as usize - 1],
+                n("day"),
+                n("hour"),
+                n("minute"),
+                n("second"),
+                n("year")
+            )
         }
         _ => crate::checks::agent_scan::hhmm(t),
     }
@@ -147,6 +165,10 @@ pub fn lay_at(case: &Value, now: f64, pinned: bool) -> Laid {
                 }
                 Value::Object(o) if o.contains_key("text") => {
                     std::fs::write(&path, fill(o["text"].as_str().unwrap(), &home, &real, now)).unwrap();
+                    if let Some(mode) = o.get("mode").and_then(Value::as_u64) {
+                        // an executable fixture (a fake `ps`): the file's permission bits
+                        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(mode as u32)).unwrap();
+                    }
                     if let Some(age) = o.get("age_ms").and_then(Value::as_f64) {
                         let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis((now - age).max(0.0) as u64);
                         std::fs::File::options().write(true).open(&path).unwrap().set_modified(at).unwrap();
@@ -278,7 +300,10 @@ fn watched(l: &Laid, masks: &[String], rel: &str) -> Value {
         // a case flagged `mask_iso`: the written clock readings (ISO texts) are not compared, only that one was written; they are
         // masked before the case's own time tokens are turned back, or a date inside an ISO text would be tokenized first
         static R0: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        text = R0.get_or_init(|| regex::Regex::new(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z").unwrap()).replace_all(&text, "{ISO*}").into_owned();
+        text = R0
+            .get_or_init(|| regex::Regex::new(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z").unwrap())
+            .replace_all(&text, "{ISO*}")
+            .into_owned();
         // the Jev log row names the project of the PROCESS's working directory, which differs between runs and runners
         static P: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
         text = P.get_or_init(|| regex::Regex::new(r#""project":"[^"]*""#).unwrap()).replace_all(&text, r#""project":"{P*}""#).into_owned();
@@ -301,7 +326,8 @@ pub fn watched_all_pub(case: &Value, l: &Laid) -> Value {
 }
 
 fn watched_all(case: &Value, l: &Laid) -> Value {
-    let masks: Vec<String> = case.get("mask").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+    let masks: Vec<String> =
+        case.get("mask").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
     let rels: Vec<&str> = case.get("watch").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     Value::Object(rels.iter().map(|r| (r.to_string(), watched(l, &masks, &super::expand_now(&fill_time(r, l.now), l.now)))).collect())
 }

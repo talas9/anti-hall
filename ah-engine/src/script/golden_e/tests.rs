@@ -114,3 +114,27 @@ fn auto_handover_pause_nag_script_matches_the_compiled_port() {
 fn compact_advice_guard_script_matches_the_compiled_port() {
     golden_report("compact-advice-guard", 12);
 }
+
+#[test]
+fn session_end_mcp_reaper_script_matches_the_compiled_port() {
+    golden_report("session-end-mcp-reaper", 12);
+}
+
+/// The GitHub realtime rules (`engine/logic/rules/gh-rt.js`) give the answers the compiled rules gave, over a frozen corpus of
+/// summaries, statuses, status pairs (edges), edge texts, statusline pieces and polling cadences.
+#[test]
+fn gh_rt_rules_script_matches_the_compiled_rules() {
+    let cases = super::golden::load("gh-rt-rules");
+    assert!(cases.len() > 1500, "a corpus of real size: {}", cases.len());
+    let (mut bad, mut kinds) = (Vec::new(), std::collections::BTreeSet::new());
+    for c in &cases {
+        let f = c["fn"].as_str().unwrap();
+        kinds.insert(f.to_string());
+        let got = crate::script::call_fn("rules/gh-rt", f, &c["args"]);
+        if got.as_ref() != Some(&c["expect"]) {
+            bad.push(format!("{} {f}: args {} expect {} got {got:?}", c["n"], c["args"], c["expect"]));
+        }
+    }
+    assert!(bad.is_empty(), "{} of {} cases differ, first:\n{}", bad.len(), cases.len(), bad.iter().take(8).cloned().collect::<Vec<_>>().join("\n"));
+    assert_eq!(kinds.len(), 10, "every rule is in the corpus: {kinds:?}");
+}
