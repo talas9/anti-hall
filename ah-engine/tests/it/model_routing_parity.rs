@@ -119,6 +119,7 @@ fn run_engine(home: &Path, case: &Case, input: &str) -> (i32, Vec<u8>, Vec<u8>) 
         .env("USERPROFILE", home)
         .env("AH_ENGINE_DIR", home.join("engine"))
         .env("ANTIHALL_TEST_ISOLATION", "1");
+    crate::node_parity::support::forward_test_scale(&mut c);
     for (k, v) in &case.env {
         c.env(k, v);
     }

@@ -191,6 +191,7 @@ fn compare(repo: &Path, hook: &str, check: &str, variants: &[Variant], payloads:
             let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
             c.arg("check").arg(check).env_clear().env("PATH", std::env::var("PATH").unwrap_or_default());
             c.env("HOME", &home).env("USERPROFILE", &home).env("AH_ENGINE_DIR", home.join("engine")).env("ANTIHALL_TEST_ISOLATION", "1");
+            crate::node_parity::support::forward_test_scale(&mut c);
             for (k, val) in &x.env {
                 c.env(k, val);
             }
@@ -351,6 +352,7 @@ fn engine_says(home: &Path, check: &str, env: &[(&str, &str)], input: &str) -> (
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     c.arg("check").arg(check).env_clear().env("PATH", std::env::var("PATH").unwrap_or_default());
     c.env("HOME", home).env("USERPROFILE", home).env("AH_ENGINE_DIR", home.join("engine")).env("ANTIHALL_TEST_ISOLATION", "1");
+    crate::node_parity::support::forward_test_scale(&mut c);
     for (k, val) in env {
         c.env(k, val);
     }

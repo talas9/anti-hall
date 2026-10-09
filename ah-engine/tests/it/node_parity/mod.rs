@@ -34,7 +34,7 @@ mod lab;
 mod merge_gate;
 mod session;
 mod silent_nudge;
-mod support;
+pub(crate) mod support;
 mod verify_first;
 
 use support::*;
