@@ -650,7 +650,7 @@ fn ppid_table() -> Option<HashMap<i64, i64>> {
 }
 
 /// `processStartMs(pid)`: `Date.parse` of `ps -o lstart= -p <pid>` (local time), or None.
-fn process_start_ms(pid: i64) -> Option<f64> {
+pub(crate) fn process_start_ms(pid: i64) -> Option<f64> {
     let out = std::process::Command::new(defaults::text("mesh_write.ps_bin"))
         .args(defaults::list("mesh_write.ps_lstart_args"))
         .arg(pid.to_string())

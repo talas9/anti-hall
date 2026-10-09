@@ -26,6 +26,9 @@ pub struct Job {
     pub scratch: PathBuf,
     /// What was mirrored, for the duty's comparison (names of files the mirror holds, or the sizes).
     pub facts: Value,
+    /// Node reads the LIVE home (read-only, with every write blocked by its own wrapper) instead of the scratch one: for a
+    /// duty whose inputs are too many to mirror and whose Node function writes nothing but what the wrapper drops.
+    pub live: bool,
 }
 
 fn witness_dir(home: &Path) -> PathBuf {
@@ -116,12 +119,12 @@ fn append(ctx: &Ctx, rec: &Value) {
 /// Run Node's function for the duty on the mirror and compare it with what the engine did. Appends the record and returns it.
 /// The scratch tree is removed afterwards (it only ever holds the empty mirror).
 pub fn finish(job: Job, ctx: &Ctx, runner: &dyn Runner, engine: &Value) -> Value {
-    let sctx = Ctx { home: &job.scratch, ..ctx.clone() };
+    let sctx = Ctx { home: if job.live { ctx.home } else { &job.scratch }, ..ctx.clone() };
     let d = defaults::raw(&format!("devswarm_sup.duty.{}", job.duty));
     let snippet = d.str_field("witness_snippet");
     let args = witness_args(&job, ctx);
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
+    let timeout = d.get("witness_timeout_ms").or_else(|| d.get("timeout_ms")).and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
     let r = node(runner, &sctx, snippet, &argv, timeout);
     let mut rec = if r.ok {
         let theirs = super::tick::parse(&r.stdout);
@@ -140,6 +143,7 @@ fn witness_args(job: &Job, ctx: &Ctx) -> Vec<String> {
     match job.duty.as_str() {
         "housekeeping" => vec![job.facts["days"][0].to_string(), job.facts["days"][1].to_string(), ctx.now.to_string()],
         "log_rotate" => vec![job.facts["threshold"].to_string()],
+        "verdicts" => vec![job.facts["spec"].as_str().unwrap_or_default().to_string()],
         _ => vec![ctx.now.to_string()],
     }
 }
@@ -180,6 +184,7 @@ fn removed_by_node(job: &Job, theirs: &Value) -> BTreeSet<String> {
 
 fn engine_view(job: &Job, engine: &Value) -> Value {
     match job.duty.as_str() {
+        "verdicts" => job.facts["written"].clone(),
         "housekeeping" => json!(removed_by_engine(job, engine)),
         "log_rotate" => engine["detail"]["supervisor"].clone(),
         _ => engine.clone(),
@@ -199,8 +204,42 @@ fn compare(job: &Job, engine: &Value, theirs: &Value) -> (bool, Value) {
             let only_node: Vec<&String> = node_set.difference(&mine).collect();
             (only_engine.is_empty() && only_node.is_empty(), json!({"onlyEngine": only_engine, "onlyNode": only_node}))
         }
+        "verdicts" => {
+            // byte for byte: the text the engine wrote against the text Node's own computation gives, per workspace
+            let mut wrong = Vec::new();
+            for (id, mine) in job.facts["written"].as_object().into_iter().flatten() {
+                if theirs.get(id) != Some(mine) {
+                    wrong.push(json!({"id": id, "engine": mine, "node": theirs.get(id)}));
+                }
+            }
+            (wrong.is_empty(), json!({"differs": wrong}))
+        }
         _ => (false, Value::Null),
     }
+}
+
+/// The witness for the native liveness sweep, prepared AFTER the engine wrote its verdicts: the previous verdict text of each
+/// workspace (what Node's own computation would have read) goes to a spec file; Node then recomputes every verdict read-only
+/// against the live data (its file wrapper serves the old text and drops every write) and the two texts are compared.
+pub fn prepare_verdicts(ctx: &Ctx, out: &super::liveness::Outcome, t: super::liveness::Thresholds) -> Option<Job> {
+    if !due(ctx, "verdicts") {
+        return None;
+    }
+    let scratch = scratch(ctx, "verdicts")?;
+    let cap = defaults::num("devswarm_sup.lv_witness_max_ids") as usize;
+    let mut items = Vec::new();
+    let mut written = serde_json::Map::new();
+    for ((id, prev), (wid, text)) in out.prev.iter().zip(out.written.iter()).take(cap) {
+        items.push(json!({"id": id, "prev": prev}));
+        written.insert(wid.clone(), Value::String(text.clone()));
+    }
+    let spec = scratch.join(defaults::text("devswarm_sup.lv_spec_file"));
+    let body = json!({"now": ctx.now, "idleMs": t.idle_ms, "nudgeWindowMs": t.nudge_window_ms, "items": items});
+    if std::fs::write(&spec, body.to_string()).is_err() {
+        crate::discard::harmless(std::fs::remove_dir_all(&scratch)); // keep: our own empty scratch
+        return None;
+    }
+    Some(Job { duty: "verdicts".to_string(), scratch, facts: json!({"spec": spec.to_string_lossy(), "written": Value::Object(written)}), live: true })
 }
 
 /// The witness mirror of the supervisor log, taken before the rotation: a sparse file of the same size at Node's path in a
@@ -214,5 +253,5 @@ pub fn prepare_log_rotate(ctx: &Ctx) -> Option<Job> {
         crate::discard::harmless(std::fs::create_dir_all(to.parent()?)); // keep: a failed mirror shows up as a mismatch
         crate::discard::harmless(std::fs::File::create(&to).and_then(|f| f.set_len(md.len()))); // keep: same
     }
-    Some(Job { duty: "log_rotate".to_string(), scratch, facts: json!({"threshold": threshold}) })
+    Some(Job { duty: "log_rotate".to_string(), scratch, facts: json!({"threshold": threshold}), live: false })
 }

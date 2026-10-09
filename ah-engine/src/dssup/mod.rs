@@ -20,6 +20,7 @@ pub mod cli;
 pub mod housekeep;
 pub mod ingest;
 pub mod kill;
+pub mod liveness;
 pub mod recover;
 pub mod tick;
 pub mod verdict;

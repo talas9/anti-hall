@@ -121,8 +121,8 @@ doc = "Rotate the supervisor log (and the engine's own tick log) to one .1 gener
 value = { kind = "native", gate = "tick", timeout_ms = 5000, witness_snippet = 'process.env.HOME=process.argv[2];const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const env=Object.assign({},process.env,{ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES:process.argv[3]});console.log(JSON.stringify(S.rotateSupervisorLogIfNeeded({home:process.argv[2],env})))' }
 
 [devswarm_sup."duty.verdicts"]
-doc = "The liveness sweep: compute and write every workspace's liveness verdict file, apply the suppressors (post-spawn grace, archive-ready, session alive, Primary row), force the parent notice for an urgent mesh unread, record straying and the Jev blocker label, and re-send parked escalation notices. When the engine owns poke and escalate it runs with Node's poke step switched off (the engine's action layer pokes)."
-value = { kind = "node", gate = "tick", timeout_ms = 300000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const o=Object.assign({home:process.argv[2]},S.resolveThresholdsFromEnv(process.env));if(process.argv[3]==="engine")o.deps={pokeOrEscalate:()=>({action:"engine-owned"})};const r=S.sweepOnce(o);console.log(JSON.stringify({sweep:r.length,drained:r.escalationsDrained}))' }
+doc = "The liveness sweep: compute and write every workspace's liveness verdict file natively; a workspace that is stale, has a Jev blocker or a step plan, or that the engine cannot prove it decides like Node, goes to Node's own sweep (suppressors, the forced parent notice for an urgent mesh unread, straying and the Jev blocker label), and parked escalation notices are re-sent by Node. When the engine owns poke and escalate Node's poke step is switched off (the engine's action layer pokes)."
+value = { kind = "node", native = true, gate = "tick", timeout_ms = 300000, witness_timeout_ms = 120000, witness_snippet = 'const fs=require("fs");const path=require("path");const root=process.argv[1];const home=process.argv[2];process.env.HOME=home;const spec=JSON.parse(fs.readFileSync(process.argv[3],"utf8"));const L=require(root+"/companion/lib/liveness.js");const S=require(root+"/companion/devswarm-supervisor.js");const prev=new Map(spec.items.map((i)=>[L.livenessPathFor(i.id,home),i.prev]));const block=()=>undefined;const guard=Object.assign({},fs,{readFileSync:(p,...a)=>{if(prev.has(String(p))){const t=prev.get(String(p));if(t===null){const e=new Error("ENOENT");e.code="ENOENT";throw e}return t}return fs.readFileSync(p,...a)},appendFileSync:block,mkdirSync:block,writeFileSync:block,renameSync:block});const ds=new Map(S.readDescriptors(home).map((d)=>[d.id,d]));const out={};for(const i of spec.items){const d=ds.get(i.id);if(!d){out[i.id]=null;continue}try{out[i.id]=JSON.stringify(L.computeLiveness({descriptor:d,now:spec.now,home,idleThresholdMs:spec.idleMs,nudgeWindowMs:spec.nudgeWindowMs,runners:{fs:guard}}))}catch(e){out[i.id]="error: "+String(e&&e.message)}}console.log(JSON.stringify(out))', snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const o=Object.assign({home:process.argv[2]},S.resolveThresholdsFromEnv(process.env));if(process.argv[3]==="engine")o.deps={pokeOrEscalate:()=>({action:"engine-owned"})};const r=S.sweepOnce(o);console.log(JSON.stringify({sweep:r.length,drained:r.escalationsDrained}))', tail_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const fs=require("fs");const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const L=require(process.argv[1]+"/companion/lib/liveness.js");const spec=JSON.parse(process.argv[4]);const tail=new Set(spec.tail);const all=new Set(spec.tail.concat(spec.full));const o=Object.assign({home:process.argv[2]},S.resolveThresholdsFromEnv(process.env));o.deps={readDescriptors:(h,F)=>S.readDescriptors(h,F).filter((d)=>all.has(d.id)),computeLiveness:(x)=>tail.has(x.descriptor.id)?JSON.parse(fs.readFileSync(L.livenessPathFor(x.descriptor.id,x.home),"utf8")):L.computeLiveness(x),writeVerdict:(id,v,h,F)=>tail.has(id)?null:L.writeVerdict(id,v,h,F)};if(process.argv[3]==="engine")o.deps.pokeOrEscalate=()=>({action:"engine-owned"});const r=S.sweepOnce(o);console.log(JSON.stringify({sweep:r.length,drained:r.escalationsDrained}))' }
 
 [devswarm_sup."duty.reconcile"]
 doc = "The reconcile sweep: drain stranded per-worktree queues into the shared store (reconcile), fold duplicate mesh rows, probe the active workspace list for the app-side archive cache, and sample start-up. Node's state file reconcile-sweep-state.json keeps the cool-down, so either side finding it fresh does nothing."
@@ -557,3 +557,125 @@ value = "disabled"
 doc = "The error of a duty whose Node worker could not be started."
 value = "node could not be started"
 
+
+# ---- the liveness sweep, native (src/dssup/liveness.rs) ----------------------------------------------------------------------
+# computeLiveness + writeVerdict of companion/lib/liveness.js for every workspace descriptor. A workspace the engine cannot
+# prove it decides exactly like Node (a stale verdict, a Jev blocker or a step plan to look at, an unexpected field or store
+# shape) is handed to Node's own sweepOnce, restricted to it. Naming `verdicts` in node_duties hands the whole sweep back.
+
+[devswarm_sup.set_idle_sec]
+doc = "How long a workspace's transcript and worktree must both be quiet before an unread mailbox makes it stale. Node: devswarm.idleSec (floor 60)."
+value = { type = "number", section = "devswarm", key = "idleSec", env = "ANTIHALL_DEVSWARM_IDLE_SEC", min = 60, max = 100000000, default = 900 }
+
+[devswarm_sup.set_nudge_window_sec]
+doc = "How long a poke stays in effect before the sweep decides again. Node: devswarm.nudgeWindowSec (floor 1)."
+value = { type = "number", section = "devswarm", key = "nudgeWindowSec", env = "ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC", min = 1, max = 100000000, default = 180 }
+
+[devswarm_sup.set_dry_run_verdicts]
+doc = "Dry run of the native liveness sweep: it computes every verdict and reports what it would write, but writes nothing and starts no Node work. Use it to look at the engine's decisions before it acts."
+value = { type = "bool", section = "devswarm_sup", key = "dryRun.verdicts", env = "ANTIHALL_DEVSWARM_SUP_DRYRUN_VERDICTS", default = false }
+
+[devswarm_sup.lv_ms_per_sec]
+doc = "Milliseconds in a second (the thresholds are set in seconds, the verdicts hold milliseconds)."
+value = 1000
+min = 1
+max = 1000
+
+[devswarm_sup.lv_heartbeat_fresh_ms]
+doc = "How recent a heartbeat must be to count as proof the workspace is alive (liveness.js DEFAULT_HEARTBEAT_FRESH_MS, 15 minutes)."
+value = 900000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.lv_never_launched_ms]
+doc = "How long a registered workspace may have no transcript at all before it counts as never launched (liveness.js DEFAULT_NEVER_LAUNCHED_MS, 6 hours)."
+value = 21600000
+min = 1000
+max = 604800000
+unit = "ms"
+
+[devswarm_sup.lv_git_timeout_ms]
+doc = "Bound of the git call that reads a worktree's last commit time (liveness.js GIT_TIMEOUT_MS)."
+value = 4000
+min = 100
+max = 600000
+unit = "ms"
+
+[devswarm_sup.lv_git_bin]
+doc = "The git executable (resolved on PATH)."
+value = "git"
+
+[devswarm_sup.lv_git_args]
+doc = "The arguments of the last-commit-time call; {worktree} is the workspace's worktree."
+value = ["-C", "{worktree}", "log", "-1", "--format=%ct"]
+
+[devswarm_sup.lv_projects_dir]
+doc = "The directory of the Claude session transcripts under ~/.claude (companion/lib/target-session.js projectDirFor)."
+value = "projects"
+
+[devswarm_sup.lv_transcript_ext]
+doc = "The extension of a session transcript file."
+value = ".jsonl"
+
+[devswarm_sup.lv_encode_chars]
+doc = "The characters of a worktree path that become the replacement in the transcript directory's name (target-session.js encodeWorktreePath: slash, backslash, colon, dot)."
+value = "/\\:."
+
+[devswarm_sup.lv_encode_to]
+doc = "What each of those characters becomes."
+value = "-"
+
+[devswarm_sup.lv_keys]
+doc = "The fields of a liveness verdict, in the order Node writes them: status, lastOutboundTs, staleSince, nudgeAttempts, nudgedAt, pending, notDraining, oldestUnreadAgeMs."
+value = ["status", "lastOutboundTs", "staleSince", "nudgeAttempts", "nudgedAt", "pending", "notDraining", "oldestUnreadAgeMs"]
+
+[devswarm_sup.lv_status_alive]
+doc = "The verdict status of a workspace that is not stale."
+value = "alive"
+
+[devswarm_sup.lv_field_ts]
+doc = "The field of a heartbeat record that holds its time."
+value = "ts"
+
+[devswarm_sup.lv_field_pid]
+doc = "The field of a session record that holds the process id."
+value = "pid"
+
+[devswarm_sup.lv_log_cleared_action]
+doc = "The recovery-log action when a sticky escalation is cleared because the session is alive."
+value = "cleared"
+
+[devswarm_sup.lv_log_cleared_reason]
+doc = "The recovery-log reason of that action."
+value = "session-alive"
+
+[devswarm_sup.lv_jev_key_sep]
+doc = "The separator in the keys of Jev's pending-labels file between the recipient and the sender (the key ends with this and the child id)."
+value = "\u0001"
+
+[devswarm_sup.lv_escalation_dir]
+doc = "Parked escalation notices, under the DevSwarm state directory (recovery.js escalation-pending)."
+value = "escalation-pending"
+
+[devswarm_sup.lv_field_parent]
+doc = "The field of a parked notice that names the parent."
+value = "parentId"
+
+[devswarm_sup.lv_field_row]
+doc = "The field of a parked notice that holds the message row."
+value = "row"
+
+[devswarm_sup.lv_field_delivered]
+doc = "The field of a parked notice that marks it delivered."
+value = "delivered"
+
+[devswarm_sup.lv_witness_max_ids]
+doc = "Most workspaces one witness comparison covers (the oldest verdicts first); a sweep with more is sampled, never skipped whole."
+value = 500
+min = 1
+max = 100000
+
+[devswarm_sup.lv_spec_file]
+doc = "The file in a witness scratch directory that holds the witness's inputs (the clock, the thresholds and each workspace's previous verdict text)."
+value = "spec.json"

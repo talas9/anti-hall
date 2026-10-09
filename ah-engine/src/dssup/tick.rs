@@ -138,6 +138,9 @@ pub fn run_duty_w(name: &str, ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<
         if !super::supervisor_enabled(ctx.st) {
             return (json!({"duty": name, "outcome": "skipped", "reason": defaults::text("devswarm_sup.msg_disabled")}), None);
         }
+        if name == "verdicts" {
+            return super::liveness::duty(ctx, runner);
+        }
         let job = prepare_witness(name, ctx);
         let detail = match name {
             "log_rotate" => log_rotate(ctx),
