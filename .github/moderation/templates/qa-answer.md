@@ -1,4 +1,3 @@
-{{marker}}
 **Suggested answer (automated, not verified by a maintainer):**
 
 {{answer}}

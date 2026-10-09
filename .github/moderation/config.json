@@ -138,8 +138,7 @@
     "docs_drift_label": "docs:needed",
     "docs_drift_base": "main",
     "scanning_max_listed": 10,
-    "diff_max_chars": 20000,
-    "sticky_marker": "<!-- ai-pr-triage -->"
+    "diff_max_chars": 20000
   },
   "project": {
     "owner": "talas9",

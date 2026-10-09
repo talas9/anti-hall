@@ -89,8 +89,10 @@ jobs:
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -99,7 +101,7 @@ jobs:
           title="ah-engine nightly suite failed"
           n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
           body="The nightly full ah-engine suite failed on $(date -u +%F): $RUN_URL"
-          if [ -n "$n" ]; then gh issue comment "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+          if [ -n "$n" ]; then printf '%s' "$body" | ./.github/scripts/bot-comment.sh "$n" ci-failure; else gh issue create --title "$title" --body "$body"; fi
 
   # Runs the shell commands in docs/DEVELOPMENT.md in a fresh clone (D83), so the guide cannot drift from the repo. A push
   # or pull request runs it with --fast on ubuntu (the blocks marked `long`, the full test suites, are skipped: the rust job

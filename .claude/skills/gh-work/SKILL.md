@@ -113,7 +113,7 @@ gh project item-edit 3 --owner talas9 --url "$U" --field Target   --text "v1.0"
 ```
 
 Defer: do not accept it (it stays out of Now/Next); comment why and what would change the decision
-(`gh issue comment <n> --body "Deferred: <reason>"`). Never close or delete an issue
+(one comment: `gh issue comment <n> --body "Deferred: <reason>"`; the status itself goes on the labels and board). Never close or delete an issue
 automatically.
 
 ### Board field and option ids
@@ -145,7 +145,7 @@ Status mirrors the `status:*` label: keep both in step whenever either changes.
 ```sh
 gh issue edit <n> --remove-label status:accepted --add-label status:in-progress
 gh project item-edit 3 --owner talas9 --url "$U" --field Status --value "In progress"
-gh issue comment <n> --body "Approach: <plan, lanes, risks>"
+gh issue comment <n> --body "Approach: <plan, lanes, risks>"      # milestone 1 of 3, see "Issue comments"
 git fetch origin && git switch -c <type>/<n>-<slug> origin/dev
 ```
 
@@ -167,10 +167,29 @@ gh pr merge <pr> --merge          # merge commit; never --squash for dev -> main
 - Title: Conventional Commits `type(scope): summary` (`pr-title.yml` enforces it on PRs to
   `dev` and `main`; `release` is also an allowed type).
 - Body: `Closes #n` so the merge closes the issue and the board moves it to Done.
-- Comment on the issue at each milestone (approach chosen, commit shas, test or replay evidence,
-  blockers): one comment per milestone, not per step.
-- Blocked: `gh issue edit <n> --add-label status:blocked`, board Status Blocked, comment what
-  blocks it.
+- Issue comments follow the milestone rule below. Status changes (accepted, in progress, blocked,
+  done) go on the labels and the board Status field, never in a comment.
+- Blocked: `gh issue edit <n> --add-label status:blocked`, board Status Blocked; one comment saying
+  what blocks it (and what unblocks it) is allowed, because the blocker is information, not status.
+
+### Issue comments (agents)
+
+Comment on your issue only at milestones, one concise comment each, no step-by-step chatter:
+
+| When | Comment starts with | Content |
+|---|---|---|
+| Start | `Approach:` | The plan, lanes and risks, in a few lines. |
+| Meaningful progress | `Done:` then `Left:` | One line each: what is finished, what remains. |
+| End | `Evidence:` | Commit/PR shas, test or replay output, the acceptance criteria checked. |
+
+- The board "Progress" field is read from the newest trusted comment's `Done:` / `Left:` line, so
+  keep those two lines short and current; do not post progress prose elsewhere.
+- Do not post for each commit, test run, retry or tool call. If nothing changed in Done or Left,
+  do not comment.
+- Prefer editing your last comment of the same kind over adding another when only a detail changed.
+- The repo's own bots keep ONE sticky comment per purpose (marker `<!-- ah-bot:<purpose> -->`,
+  edited in place with an "Updated <date>" footer) and stay silent on the owner's own issues and
+  PRs, except the PR check, delivered-on-dev, and replies to `/triage`, `/explain`, `/convert`.
 
 ## E. Release PRs (dev -> main)
 

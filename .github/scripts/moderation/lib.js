@@ -414,7 +414,82 @@ function modelResult(env, schemaName) {
   return { provider, reason, latency, data };
 }
 
+// ---------- sticky bot comments ----------
+// One comment per bot purpose per item, found by a hidden marker and edited in place, never re-posted.
+// A short "Updated <date>" footer is added when an existing comment is edited.
+const PURPOSES = ['triage-brief', 'qa-answer', 'pr-check', 'stale-nudge', 'security-alert', 'delivered-on-dev', 'docs-review', 'moderation-request', 'explain-reply', 'convert-reply', 'ci-failure'];
+// Markers the earlier automation wrote: found and migrated in place, so no item ever gets a second comment.
+const LEGACY_MARKERS = {
+  'triage-brief': ['<!-- triage-brief -->'],
+  'qa-answer': ['<!-- qa-answer -->'],
+  'pr-check': ['<!-- ai-pr-triage -->'],
+  'stale-nudge': ['<!-- stale-check -->'],
+  'security-alert': [],
+  'delivered-on-dev': [],
+  'docs-review': [],
+  'moderation-request': ['<!-- moderation -->', '<!-- privacy-scrub -->'],
+  'ci-failure': [],
+  'explain-reply': ['<!-- explain -->'],
+  'convert-reply': ['<!-- idea-accepted -->', '<!-- idea-converted -->'],
+};
+const FOOTER_RE = /\n*<sub>Updated \d{4}-\d{2}-\d{2}<\/sub>\s*$/;
+
+function botMarker(purpose) {
+  if (!PURPOSES.includes(purpose)) throw new Error(`unknown bot comment purpose: ${purpose}`);
+  return `<!-- ah-bot:${purpose} -->`;
+}
+
+const stripFooter = (s) => String(s || '').replace(FOOTER_RE, '').trim();
+
+// Marker line + body (any marker already in the body is dropped), without a footer.
+function stickyCore(purpose, body) {
+  let b = String(body || '');
+  for (const m of [botMarker(purpose), ...LEGACY_MARKERS[purpose]]) b = b.split(m).join('');
+  return botMarker(purpose) + '\n' + b.trim();
+}
+
+const hasMarker = (purpose, text) => [botMarker(purpose), ...LEGACY_MARKERS[purpose]].some((m) => String(text || '').includes(m));
+
+// The existing sticky for a purpose (the oldest, if an earlier bug left several), or null.
+// io.list() -> [{id, body, updated_at}] of the bot's own comments on the item.
+async function findSticky(io, purpose) {
+  const all = await io.list();
+  return all.find((c) => hasMarker(purpose, c.body)) || null;
+}
+
+// Create once, then edit: never a second comment. io = {list, create(body), update(id, body)}.
+// act(desc, fn) is the caller's dry-run/fail-open wrapper (defaults to running fn).
+async function upsertSticky({ io, purpose, body, now, act }) {
+  const run = act || ((_, fn) => fn());
+  const core = stickyCore(purpose, body);
+  const prev = await findSticky(io, purpose);
+  if (!prev) {
+    await run({ type: 'comment', purpose }, () => io.create(core + '\n'));
+    return { action: 'created' };
+  }
+  if (stripFooter(prev.body) === core.trim()) return { action: 'unchanged', id: prev.id };
+  const day = new Date(now || Date.now()).toISOString().slice(0, 10);
+  await run({ type: 'comment-update', purpose }, () => io.update(prev.id, `${core}\n\n<sub>Updated ${day}</sub>\n`));
+  return { action: 'updated', id: prev.id };
+}
+
+// REST adapter for an issue or pull request thread; only the Actions bot's own comments are listed.
+function restSticky(github, repo, number) {
+  return {
+    list: async () => (await github.paginate(github.rest.issues.listComments, { ...repo, issue_number: number, per_page: 100 }))
+      .filter((c) => c.user && c.user.login === 'github-actions[bot]')
+      .map((c) => ({ id: c.id, body: c.body || '', updated_at: c.updated_at })),
+    create: (body) => github.rest.issues.createComment({ ...repo, issue_number: number, body }),
+    update: (id, body) => github.rest.issues.updateComment({ ...repo, comment_id: id, body }),
+  };
+}
+
+// Same footer rule for a bot-owned issue body (security alerts, docs review).
+const withUpdatedFooter = (body, now) => `${String(body).replace(FOOTER_RE, '').trimEnd()}\n\n<sub>Updated ${new Date(now || Date.now()).toISOString().slice(0, 10)}</sub>\n`;
+
+
 module.exports = {
+  PURPOSES, botMarker, stripFooter, stickyCore, hasMarker, findSticky, upsertSticky, restSticky, withUpdatedFooter,
   loadConfig, template, allowedUrl, render, safeLogin, skipReason, links, foreignLinks, classify, similarity, formField,
   triageRules, sizeFromLines, privacyScan, prRules, bumpRisk, sanitize, parseModelJson, validate, prompt, buildPrompt,
   chain, budget, isRateLimit, humanRemovedLabel, record, modelResult, modelFor, escapeHtml, stripHtmlComments,

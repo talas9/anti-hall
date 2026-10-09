@@ -4,6 +4,8 @@
 // marker holding source and alert number). Rules only, no model. Never closes anything and never
 // prints a secret value.
 
+const L = require('./lib.js');
+
 const SOURCES = ['code-scanning', 'dependabot', 'secret-scanning'];
 const LEVELS = ['critical', 'high', 'medium', 'low'];
 const SEVERITY_LABELS = { critical: 'severity:critical', high: 'severity:high', medium: 'severity:medium', low: 'severity:low' };
@@ -40,7 +42,7 @@ const clip = (s, n) => String(s).replace(/\s+/g, ' ').slice(0, n);
 function render(al) {
   return {
     title: `Security alert (${al.source} #${al.number}): ${clip(al.title, 90)}`,
-    body: [marker(al.source, al.number), '',
+    body: [marker(al.source, al.number), L.botMarker('security-alert'), '',
       `| Source | Alert | Severity | Where |`, `|---|---|---|---|`,
       `| ${al.source} | [#${al.number}](${al.url}) | ${al.level} | ${clip(al.detail, 120) || '-'} |`, '',
       'Opened and kept in sync by the scheduled roadmap job (rules only). The alert stays the source of truth; this issue closes by hand once the alert is fixed or dismissed.'].join('\n'),
@@ -49,7 +51,7 @@ function render(al) {
 }
 
 // Pure dedup: alerts + existing issues -> actions. An issue counts for an alert when its body carries the marker.
-function plan(alerts, issues, max = MAX_CREATES) {
+function plan(alerts, issues, max = MAX_CREATES, now) {
   const byKey = new Map();
   for (const i of issues) {
     const m = markerRe.exec(i.body || '');
@@ -73,7 +75,7 @@ function plan(alerts, issues, max = MAX_CREATES) {
     const missing = want.labels.filter((l) => !labels.includes(l));
     // a severity change swaps the severity label; title/body are refreshed only when they differ
     const stale = labels.filter((l) => l.startsWith('severity:') && !want.labels.includes(l));
-    if (missing.length || stale.length || have.title !== want.title || (have.body || '') !== want.body) out.push({ type: 'update', key: k, number: have.number, ...want, remove: stale });
+    if (missing.length || stale.length || have.title !== want.title || L.stripFooter(have.body) !== want.body.trim()) out.push({ type: 'update', key: k, number: have.number, ...want, body: L.withUpdatedFooter(want.body, now), remove: stale });
   }
   return out;
 }

@@ -170,17 +170,11 @@ async function apply({ github, context, core }) {
   else summary = `<sub>No model summary (${model.reason}).</sub>`;
   const areas = [...new Set(rules.areas.concat((model.data && model.data.areas) || []))];
   const body = L.render(L.template('pr-summary'), {
-    marker: cfg.pr.sticky_marker, type: rules.type || 'unknown (title not conventional)', areas: areas.join(', ') || 'none',
+    marker: '', type: rules.type || 'unknown (title not conventional)', areas: areas.join(', ') || 'none',
     size: rules.size, lines: rules.lines, files: rules.files, title_ok: yes(rules.title_ok),
     linked: rules.linked_issue ? 'yes' : (rules.needs_issue_exempt ? 'not needed (release PR)' : 'no'), risks: riskText, checklist, scanning, summary,
   });
-  const comments = await github.paginate(github.rest.issues.listComments, { ...repo, issue_number: pr.number, per_page: 100 });
-  const prev = comments.find((c) => c.user && c.user.login === 'github-actions[bot]' && (c.body || '').includes(cfg.pr.sticky_marker));
-  if (!prev || prev.body.trim() !== body.trim()) {
-    await act({ type: prev ? 'comment-update' : 'comment' }, () => (prev
-      ? github.rest.issues.updateComment({ ...repo, comment_id: prev.id, body })
-      : github.rest.issues.createComment({ ...repo, issue_number: pr.number, body })));
-  }
+  await L.upsertSticky({ io: L.restSticky(github, repo, pr.number), purpose: 'pr-check', body, act }).catch((e) => errors.push(`comment: ${L.isRateLimit(e) ? 'rate-limited' : (e.status || e.message)}`));
 
   L.record(LOG, {
     workflow: 'pr-check', event: state.event, item: `pr#${pr.number}`, verdict: verdict.verdict, size: rules.size,
