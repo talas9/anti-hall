@@ -175,7 +175,8 @@ const BLOCK = [
   'gh release upload v1.0.0 f.tar.gz',
   'gh repo delete owner/repo',
   'gh repo edit owner/repo --description x',
-  'gh secret set FOO --body bar',
+  // a one-line `gh secret set` is light (issue #55); with a substitution it is no plain one-liner
+  'gh secret set FOO --body "$(cat token.txt)"',
   'gh secret delete FOO',
   'gh workflow run build.yml',
   'gh api repos/o/r/issues --method DELETE',

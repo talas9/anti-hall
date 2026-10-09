@@ -1879,13 +1879,18 @@ const GH_API_MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
 // One-line remote state changes (dogfood 2026-10-09): `gh pr merge 12`, `gh issue close 5`, `gh api -X PATCH repos/o/r/pulls/3 -f
 // state=closed` print a line or two and flood nothing, so forcing a subagent for them is noise. They are light when the whole
-// command is one short plain line (no newline, substitution or heredoc). Creation with a body, releases, repos, secrets, workflow
+// command is one short plain line (no newline, substitution or heredoc). `gh secret set` and `gh label create/edit` print a line too
+// (issue #55). Creation with a body, releases, repos, secret deletion, workflow
 // runs, graphql and DELETE stay heavy.
 const GH_ONELINER_SUBCOMMANDS = {
   pr: new Set(['merge', 'close', 'edit', 'review', 'comment', 'ready', 'reopen']),
   issue: new Set(['close', 'edit', 'comment', 'reopen']),
+  secret: new Set(['set']), // `gh secret set X < file` prints one line (issue #55); delete stays heavy
+  label: new Set(['create', 'edit']),
 };
 const GH_ONELINER_API_METHODS = new Set(['POST', 'PATCH', 'PUT']);
+// git subcommands that are light in a clone outside the session's tree (isAllowedScratchCloneSync; engine command.scratch_clone_sync_subs).
+const SCRATCH_CLONE_SYNC_SUBS = new Set(['pull', 'fetch']);
 const GH_ONELINER_MAX_CHARS = 600;
 function isOneLineCommand(command) {
   return typeof command === 'string' && command.length <= GH_ONELINER_MAX_CHARS && !/[\n\r`]|\$\(|<<|<\(|>\(/.test(command);
@@ -3212,6 +3217,86 @@ function sinkPathHasSymlink(target, payload) {
     }
     return false;
   } catch (_) { return true; }
+}
+
+// isAllowedScratchCloneSync(command, payload) -> bool (issue #55). `git pull` / `git fetch` (SCRATCH_CLONE_SYNC_SUBS) run in a git
+// checkout OUTSIDE the session's own tree, named by `git -C <abs|~ dir>` or by one leading `cd <abs|~ dir>`, chained with && or ;
+// only to light segments (a `sed -n` range, a `gh … list`), with at most one final `| tail/head -N`: such a sync prints a few lines,
+// and the "raw output floods" rationale is for unbounded runners and builds. One plain line only (no newline, substitution or
+// heredoc), no global git option but -C, no shell expansion. Fails closed. git-guard's push/force checks are separate and untouched.
+function scratchSyncHome() { try { return io.homeOf(guardEnv) || ''; } catch (_) { return ''; } }
+function scratchSyncDir(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  let p = raw;
+  if (p === '~' || p.startsWith('~/')) { const h = scratchSyncHome(); if (!h) return null; p = h + p.slice(1); }
+  return path.isAbsolute(p) ? path.resolve(p) : null;
+}
+// The git checkout `dir` belongs to, when it is a checkout outside the session's tree (cwd and its toplevel, real paths); else null.
+function scratchSyncOtherClone(dir, cwd) {
+  let real;
+  try { real = fs.realpathSync(dir); } catch (_) { return null; }
+  const id = require('../companion/lib/identity.js');
+  let top = null;
+  try { top = id.resolveContext(real, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { top = null; }
+  if (!top) return null;
+  const inside = (a, d) => { const rel = path.relative(d, a); return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)); };
+  const session = [];
+  try { session.push(fs.realpathSync(cwd)); } catch (_) { return null; }
+  try { const t = id.resolveContext(cwd, { missingPath: 'ancestor' }).toplevel; if (t) session.push(fs.realpathSync(t)); } catch (_) { return null; }
+  if (session.some((s) => inside(real, s) || inside(s, real))) return null;
+  return top;
+}
+function scratchSyncGit(seg) {
+  if (effectiveVerb(seg) !== 'git') return null;
+  if (hasShellExpansionAnywhere(seg) || hasUnquotedRedirectChar(seg.replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return null;
+  const tokens = tokenizeQuoted(seg);
+  if (!tokens.length || tokens[0] !== 'git') return null;
+  let i = 1, cdir = null;
+  while (i < tokens.length && tokens[i].startsWith('-')) {
+    if (tokens[i] !== '-C' || tokens[i + 1] === undefined) return null; // only -C: no -c/--git-dir/--work-tree
+    cdir = tokens[i + 1];
+    i += 2;
+  }
+  const sub = (tokens[i] || '').toLowerCase();
+  return SCRATCH_CLONE_SYNC_SUBS.has(sub) ? { sub, cdir } : null;
+}
+function isAllowedScratchCloneSync(command, payload) {
+  if (typeof command !== 'string' || !command.trim() || !SCRATCH_CLONE_SYNC_SUBS.size || !isOneLineCommand(command)) return false;
+  const split = splitSegmentsDetailed(command);
+  const segments = split.segments.slice();
+  const delims = split.delims.slice();
+  if (!segments.length) return false;
+  if (segments.length >= 2 && delims[delims.length - 1] === 'end' && delims[delims.length - 2] === '|' &&
+      PLAIN_OUTPUT_FILTER_RE.test(segments[segments.length - 1].trim())) {
+    segments.pop();
+    delims.pop();
+    delims[delims.length - 1] = 'end';
+  }
+  for (let i = 0; i < delims.length; i++) {
+    if (i === delims.length - 1 ? delims[i] !== 'end' : (delims[i] !== '&&' && delims[i] !== ';')) return false;
+  }
+  const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  let dir = null, saw = false;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i].trim();
+    if (!seg) return false;
+    const t = tokenizeQuoted(seg);
+    if (i === 0 && t[0] === 'cd') {
+      if (t.length !== 2 || hasShellExpansionAnywhere(seg) || hasUnquotedRedirectChar(seg)) return false;
+      dir = scratchSyncDir(t[1]);
+      if (!dir) return false;
+      continue;
+    }
+    const g = scratchSyncGit(seg);
+    if (g) {
+      const target = g.cdir !== null ? scratchSyncDir(g.cdir) : dir;
+      if (!target || !scratchSyncOtherClone(target, cwd)) return false;
+      saw = true;
+      continue;
+    }
+    if (isHeavySegment(seg, command)) return false;
+  }
+  return saw;
 }
 
 // isAllowedPlainPushChain(command, cwd) -> bool. See the header block above.
@@ -4623,6 +4708,13 @@ function main(payload, env) {
         return io.decision(0);
       }
     }
+  } catch (_) {
+    // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
+  }
+
+  // A pull/fetch in a clone outside the session's tree, chained only with light segments (issue #55). Fail-closed on any error.
+  try {
+    if (isAllowedScratchCloneSync(command, payload)) return io.decision(0);
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
   }

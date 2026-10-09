@@ -366,6 +366,7 @@ function cmdBuildTables() {
   Object.keys(ah.cfg('command.gh_oneliner_subcommands')).forEach(function (g) { t.ghOneliner[g] = new Set(ah.cfg('command.gh_oneliner_subcommands')[g]); });
   t.ghOnelinerApi = cmdSet('command.gh_oneliner_api_methods'); t.ghOnelinerMax = ah.cfgNum('command.gh_oneliner_max_chars');
   t.ghOnelinerRe = new RegExp(ah.cfg('command.gh_oneliner_deny_re'));
+  t.scratchSyncSubs = cmdSet('command.scratch_clone_sync_subs');
   t.ghApiMethods = cmdSet('command.gh_api_mutating_methods'); t.ghGqlValue = cmdSet('command.gh_gql_value_flags'); t.ghGqlBool = cmdSet('command.gh_gql_bool_flags');
   t.ghField = cmdSet('command.gh_api_field_flags');
   t.timeoutPrefix = cmdRe(ah.cfg('command.timeout_prefix')); t.controlPrefix = cmdRe(ah.cfg('command.control_keyword_prefix'));
@@ -3521,6 +3522,86 @@ function sinkPathHasSymlink(target, payload) {
   } catch (_) { return true; }
 }
 
+// isAllowedScratchCloneSync(command, payload) -> bool (issue #55). `git pull` / `git fetch` (T.scratchSyncSubs) run in a git
+// checkout OUTSIDE the session's own tree, named by `git -C <abs|~ dir>` or by one leading `cd <abs|~ dir>`, chained with && or ;
+// only to light segments (a `sed -n` range, a `gh … list`), with at most one final `| tail/head -N`: such a sync prints a few lines,
+// and the "raw output floods" rationale is for unbounded runners and builds. One plain line only (no newline, substitution or
+// heredoc), no global git option but -C, no shell expansion. Fails closed. git-guard's push/force checks are separate and untouched.
+function scratchSyncHome() { try { return io.homeOf(guardEnv) || ''; } catch (e) { if (cmdFatal(e)) throw e; return ''; } }
+function scratchSyncDir(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  let p = raw;
+  if (p === '~' || p.startsWith('~/')) { const h = scratchSyncHome(); if (!h) return null; p = h + p.slice(1); }
+  return path.isAbsolute(p) ? path.resolve(p) : null;
+}
+// The git checkout `dir` belongs to, when it is a checkout outside the session's tree (cwd and its toplevel, real paths); else null.
+function scratchSyncOtherClone(dir, cwd) {
+  let real;
+  try { real = fs.realpathSync(dir); } catch (e) { if (cmdFatal(e)) throw e; return null; }
+  const id = require('../companion/lib/identity.js');
+  let top = null;
+  try { top = id.resolveContext(real, { missingPath: 'ancestor' }).toplevel || null; } catch (e) { if (cmdFatal(e)) throw e; top = null; }
+  if (!top) return null;
+  const inside = (a, d) => { const rel = path.relative(d, a); return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)); };
+  const session = [];
+  try { session.push(fs.realpathSync(cwd)); } catch (e) { if (cmdFatal(e)) throw e; return null; }
+  try { const t = id.resolveContext(cwd, { missingPath: 'ancestor' }).toplevel; if (t) session.push(fs.realpathSync(t)); } catch (e) { if (cmdFatal(e)) throw e; return null; }
+  if (session.some((s) => inside(real, s) || inside(s, real))) return null;
+  return top;
+}
+function scratchSyncGit(seg) {
+  if (effectiveVerb(seg) !== 'git') return null;
+  if (hasShellExpansionAnywhere(seg) || hasUnquotedRedirectChar(seg.replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return null;
+  const tokens = tokenizeQuoted(seg);
+  if (!tokens.length || tokens[0] !== 'git') return null;
+  let i = 1, cdir = null;
+  while (i < tokens.length && tokens[i].startsWith('-')) {
+    if (tokens[i] !== '-C' || tokens[i + 1] === undefined) return null; // only -C: no -c/--git-dir/--work-tree
+    cdir = tokens[i + 1];
+    i += 2;
+  }
+  const sub = (tokens[i] || '').toLowerCase();
+  return T.scratchSyncSubs.has(sub) ? { sub, cdir } : null;
+}
+function isAllowedScratchCloneSync(command, payload) {
+  if (typeof command !== 'string' || !command.trim() || !T.scratchSyncSubs.size || command.length > T.ghOnelinerMax || T.ghOnelinerRe.test(command)) return false;
+  const split = splitSegmentsDetailed(command);
+  const segments = split.segments.slice();
+  const delims = split.delims.slice();
+  if (!segments.length) return false;
+  if (segments.length >= 2 && delims[delims.length - 1] === 'end' && delims[delims.length - 2] === '|' &&
+      PLAIN_OUTPUT_FILTER_RE.test(segments[segments.length - 1].trim())) {
+    segments.pop();
+    delims.pop();
+    delims[delims.length - 1] = 'end';
+  }
+  for (let i = 0; i < delims.length; i++) {
+    if (i === delims.length - 1 ? delims[i] !== 'end' : (delims[i] !== '&&' && delims[i] !== ';')) return false;
+  }
+  const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  let dir = null, saw = false;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i].trim();
+    if (!seg) return false;
+    const t = tokenizeQuoted(seg);
+    if (i === 0 && t[0] === 'cd') {
+      if (t.length !== 2 || hasShellExpansionAnywhere(seg) || hasUnquotedRedirectChar(seg)) return false;
+      dir = scratchSyncDir(t[1]);
+      if (!dir) return false;
+      continue;
+    }
+    const g = scratchSyncGit(seg);
+    if (g) {
+      const target = g.cdir !== null ? scratchSyncDir(g.cdir) : dir;
+      if (!target || !scratchSyncOtherClone(target, cwd)) return false;
+      saw = true;
+      continue;
+    }
+    if (isHeavySegment(seg, command)) return false;
+  }
+  return saw;
+}
+
 // isAllowedPlainPushChain(command, cwd) -> bool. See the header block above.
 function isAllowedPlainPushChain(command, cwd, payload) {
   if (typeof command !== 'string' || !command.trim()) return false;
@@ -4797,6 +4878,7 @@ function mainFlow(payload) {
     }
     return false;
   })) return 'allow';
+  if (guarded(() => isAllowedScratchCloneSync(command, payload))) return 'allow'; // issue #55: a pull/fetch in a clone outside the session's tree
   if (guarded(() => settingsGet('guards', 'allowBackgroundScratchScripts') !== false && isBackgroundScratchScript(command, payload))) return 'allow';
   if (guarded(() => settingsGet('guards', 'allowGcloudReads') !== false && isAllowedGcloudReadCommand(command))) return 'allow';
 
