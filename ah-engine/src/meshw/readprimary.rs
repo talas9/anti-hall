@@ -25,12 +25,14 @@
 // - an unreadable optional file is the same as an absent one (Node's try/catch around readFileSync / statSync)
 // - a value that is not the expected JSON type reads as absent where Node's `!= null` / typeof test does the same
 use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, n, s};
 use crate::meshw::ident::{self, R, defer};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::send::{Answer, Effect, resolve_mesh_target};
+use crate::meshw::store::RegistryRow;
 use crate::meshw::{cursors, tick, union};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -281,6 +283,201 @@ fn receipt_record(rid: &str, id: &str, reader: Option<&str>, now: i64, ops: Vec<
     r.done()
 }
 
+/// A descriptor field that `nOrNull` would stringify as is: a string, or nothing. Anything else is JavaScript's own text.
+fn text_or_null(desc: &OVal, key: &str) -> R<Option<String>> {
+    match desc.get(key) {
+        None | Some(OVal::Null) => Ok(None),
+        Some(OVal::Str(t)) => Ok(Some(t.clone())),
+        Some(_) => defer("descriptor-field-shape"),
+    }
+}
+
+/// `writeDescriptorAtomic(home, id, desc)`: `JSON.stringify(desc)` to `<path>.tmp`, then a rename over the descriptor.
+fn write_descriptor(inv: &Inv, id: &str, desc: &OVal) -> R<()> {
+    let dir = devswarm_root(&inv.write_home).join(defaults::text("mesh_write.dir_workspaces"));
+    let file = dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
+    let mut tmp = file.as_os_str().to_os_string();
+    tmp.push(defaults::text("mesh_write.tmp_suffix"));
+    let tmp = PathBuf::from(tmp);
+    let text = desc.stringify();
+    if std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&tmp, &text)).and_then(|()| std::fs::rename(&tmp, &file)).is_err() {
+        // Node swallows the failure and reads on without promoting; the engine leaves the whole call to it
+        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: our own temp
+        return defer("descriptor-write");
+    }
+    let rel = format!(
+        "{}/{}/{}/{id}{}",
+        defaults::text("mesh_write.dir_anti_hall"),
+        defaults::text("mesh_write.dir_devswarm"),
+        defaults::text("mesh_write.dir_workspaces"),
+        defaults::text("mesh_write.json_suffix")
+    );
+    crate::meshw::set_written(&rel, text.as_bytes());
+    Ok(())
+}
+
+/// A descriptor's `id` / `sessionId` / `worktreePath` as `String(x)` / truthiness would read them; anything but a string or
+/// nothing is JavaScript's own text.
+fn str_or_none(d: &OVal, key: &str) -> R<Option<String>> {
+    match d.get(key) {
+        None | Some(OVal::Null) => Ok(None),
+        Some(OVal::Str(t)) => Ok(Some(t.clone())),
+        Some(_) => defer("descriptor-field-shape"),
+    }
+}
+
+/// `callerOwnsRow(home, id, ctx)`: the caller may speak for the row `id` when (1) `id` is its canonical identity, (2) its own
+/// row and this one are cross-linked (one's session is the other's id), or (3) the row is the sole one registered for the
+/// caller's worktree and is itself unclaimed. Fail-closed in Node (any error is "not the caller's row"); the engine defers.
+fn caller_owns_row(inv: &Inv, id: &str, target: &OVal) -> R<bool> {
+    let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?.identity;
+    if caller == id {
+        return Ok(true);
+    }
+    // every descriptor of the home, as readDescriptors reads them (a file that is not a JSON object is skipped)
+    let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+    let suffix = defaults::text("mesh_write.json_suffix");
+    let mut descs: Vec<OVal> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if !e.file_name().to_string_lossy().ends_with(suffix) {
+                continue;
+            }
+            if let Some(d @ OVal::Obj(_)) = std::fs::read(e.path()).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) {
+                descs.push(d);
+            }
+        }
+    }
+    let id_key = defaults::text("mesh_write.field_id");
+    let sess_key = defaults::text("mesh_write.field_session_id");
+    let wt_key = defaults::text("mesh_write.field_worktree_path");
+    let mut by_id: Vec<(Option<String>, Option<String>)> = Vec::new();
+    for d in &descs {
+        by_id.push((str_or_none(d, id_key)?, str_or_none(d, sess_key)?));
+    }
+    let target_sess = str_or_none(target, sess_key)?;
+    let caller_row = by_id.iter().find(|(i, _)| i.as_deref() == Some(caller.as_str()));
+    if let Some((_, csess)) = caller_row
+        && crate::meshw::summary::cross_linked(&caller, csess.as_deref(), id, target_sess.as_deref())
+    {
+        return Ok(true);
+    }
+    // (3) the sole row for the caller's own worktree
+    let wt = ident::resolve_caller_worktree(&inv.cwd)?.unwrap_or_else(|| inv.cwd.clone());
+    let Some(target_wt) = str_or_none(target, wt_key)?.filter(|w| !w.is_empty()) else { return Ok(false) };
+    let Some(wt_mesh) = ident::canonical_mesh_id(&wt)? else { return Ok(false) };
+    if ident::canonical_mesh_id(&target_wt)?.as_deref() != Some(wt_mesh.as_str()) {
+        return Ok(false);
+    }
+    let mut same = 0;
+    for d in &descs {
+        if let Some(w) = str_or_none(d, wt_key)?.filter(|w| !w.is_empty())
+            && ident::canonical_mesh_id(&w)?.as_deref() == Some(wt_mesh.as_str())
+        {
+            same += 1;
+        }
+    }
+    if same != 1 {
+        return Ok(false);
+    }
+    Ok(target_sess.as_deref().is_none_or(|t| t.is_empty() || t.starts_with(defaults::text("mesh_write.synthetic_session_prefix"))))
+}
+
+/// `maybePromoteUnclaimed` + `promoteUnclaimedSession` for the row being read. `Ok(None)`: nothing to do (the row is
+/// claimed on both sides, or carries no session at all). `Ok(Some(promoted))`: the writes were made; `promoted` is the
+/// classic promotion (descriptor and registry both carried the marker), which Node reports as `promotion` and logs.
+///
+/// The engine reproduces the promotion the caller can prove from its own words: a real session id from `--session` or
+/// `CLAUDE_CODE_SESSION_ID` (the process-tree derivation spawns `ps` per hop: Node's) and the caller's own id (the other
+/// ownership proofs read every descriptor). Everything else defers before the first write.
+fn promote(inv: &Inv, a: &Args, desc: &OVal, desc_sid: Option<&str>, registry_sid: Option<&str>, marker: &str, repo_key: &str) -> R<Option<bool>> {
+    let id = desc.get(defaults::text("mesh_write.field_id")).and_then(|v| if let OVal::Str(i) = v { Some(i.as_str()) } else { None }).unwrap_or_default();
+    let reg_real = registry_sid.filter(|r| !r.is_empty() && *r != marker);
+    let desc_marked = desc_sid == Some(marker);
+    let desc_real = desc_sid.filter(|d| !d.is_empty() && *d != marker);
+    let case_c = desc_marked && reg_real.is_none();
+    let case_b = desc_marked && reg_real.is_some();
+    let case_a = desc_real.is_some() && registry_sid == Some(marker);
+    if !(case_a || case_b || case_c) {
+        return Ok(None);
+    }
+    if inv.env.get(defaults::text("devswarm_cli.env_reconcile_sweep")).map(String::as_str) == Some(defaults::text("mesh_write.env_on_value")) {
+        return defer("reconcile-sweep");
+    }
+    // realSessionIdFrom: `--session` wins over the environment; a blank value falls through to it
+    let flag = a.one(defaults::text("mesh_write.flag_session")).filter(|v| !v.is_empty());
+    let env = inv.env.get(defaults::text("mesh_write.env_session_id")).map(String::as_str).filter(|v| !v.is_empty());
+    let Some(raw) = flag.or(env) else { return defer("session-derivation") };
+    let sid = js_trim(raw);
+    if sid.is_empty() || sid == id || sid.starts_with(defaults::text("mesh_write.synthetic_session_prefix")) {
+        return defer("session-not-real");
+    }
+    if !caller_owns_row(inv, id, desc)? {
+        return defer("promote-not-own-row");
+    }
+    // upsertStoreRegistry opens the descriptor's own store key when it names one
+    match desc.get(defaults::text("mesh_write.field_owner_key")) {
+        None | Some(OVal::Null) => {}
+        Some(OVal::Str(k)) if k == repo_key => {}
+        Some(_) => return defer("owner-key"),
+    }
+    if matches!(desc, OVal::Obj(f) if f.iter().any(|(k, _)| k == "__proto__")) {
+        return defer("descriptor-keys");
+    }
+    let nudge = match desc.get("nudgeCommand") {
+        None | Some(OVal::Null) => None,
+        Some(v) => Some(v.stringify()),
+    };
+    let row_for = |next: &OVal| -> R<RegistryRow> {
+        Ok(RegistryRow {
+            id: id.to_string(),
+            worktree_path: text_or_null(next, defaults::text("mesh_write.field_worktree_path"))?,
+            session_id: text_or_null(next, defaults::text("mesh_write.field_session_id"))?,
+            inbox_path: text_or_null(next, defaults::text("mesh_write.field_inbox_path"))?,
+            cursor_path: text_or_null(next, defaults::text("mesh_write.field_cursor_path"))?,
+            nudge_command: nudge.clone(),
+        })
+    };
+    let session_key = defaults::text("mesh_write.field_session_id");
+    // everything that can fail without a write is settled first
+    let st = common::open_store(inv, repo_key)?;
+    let mut next = desc.clone();
+    if case_c {
+        next.set(session_key, OVal::Str(sid.to_string()));
+    } else if let Some(r) = reg_real.filter(|_| case_b) {
+        next.set(session_key, OVal::Str(r.to_string()));
+    }
+    let row = row_for(&next)?;
+    if case_b {
+        write_descriptor(inv, id, &next)?;
+        crate::meshw::mark_committed();
+        return Ok(Some(false));
+    }
+    if case_c {
+        write_descriptor(inv, id, &next)?;
+        crate::meshw::mark_committed();
+    }
+    // upsertStoreRegistry(home, next, ctx, { allowPathChange: true }) + deriveSummary
+    st.upsert_registry(&row, inv.now, |_, _| true).map_err(|e| ident::Defer(format!("registry-write:{e}")))?;
+    crate::meshw::mark_committed();
+    if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, repo_key) {
+        crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_inbox"), &why);
+    }
+    let rel = format!(
+        "{}/{}/{}/{repo_key}{}",
+        defaults::text("mesh_write.dir_anti_hall"),
+        defaults::text("mesh_write.dir_devswarm"),
+        defaults::text("mesh_write.dir_summaries"),
+        defaults::text("mesh_write.json_suffix")
+    );
+    crate::meshw::set_written(&rel, &std::fs::read(inv.write_home.join(&rel)).unwrap_or_default());
+    if case_c {
+        let msg = fill_once(defaults::text("devswarm_cli.msg_promoted"), &[("id", id.to_string()), ("marker", marker.to_string())]);
+        crate::meshw::clog::event(inv, defaults::text("devswarm_cli.op_promoted"), &msg, vec![("id", s(id)), ("to", s(sid))]);
+    }
+    Ok(Some(case_c))
+}
+
 /// Whether `main()` renders the result as text: `--format=text` or `--format text` (the first `--format` word), and no `--json`.
 fn text_requested(raw: &[String]) -> bool {
     let flag = defaults::text("mesh_write.flag_format");
@@ -302,10 +499,7 @@ fn window_refusal(inv: &Inv, a: &Args, id: &str) -> R<Option<Answer>> {
     let repo_key = ident::resolve_context(&inv.cwd, true)?.repo_key;
     let verb = defaults::text("devswarm_cli.window_verb_read_primary");
     let use_flags = used.iter().map(|f| fill_once(defaults::text("devswarm_cli.window_use_flag"), &[("flag", (*f).to_string())])).collect::<Vec<_>>().join(" ");
-    let msg = fill_once(
-        defaults::text("devswarm_cli.msg_window_refused"),
-        &[("flags", used.join("/--")), ("verb", verb.to_string()), ("use", use_flags)],
-    );
+    let msg = fill_once(defaults::text("devswarm_cli.msg_window_refused"), &[("flags", used.join("/--")), ("verb", verb.to_string()), ("use", use_flags)]);
     let reason = defaults::text("devswarm_cli.window_reason");
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(false))
@@ -319,8 +513,62 @@ fn window_refusal(inv: &Inv, a: &Args, id: &str) -> R<Option<Answer>> {
     Ok(Some(Answer { code: 2, stdout: format!("{stdout}\n"), effect: Effect::None }))
 }
 
-/// Run `inbox read-primary <id>`.
+/// What the first pass found out about a promotion the row needs (made after that pass has settled every deferral).
+struct PromoCtx {
+    desc: OVal,
+    desc_sid: Option<String>,
+    registry_sid: Option<String>,
+    marker: String,
+    repo_key: String,
+}
+
+/// Everything the read decided, before its one write.
+struct Planned {
+    stdout: String,
+    record: String,
+    dir: PathBuf,
+    file: PathBuf,
+    rel: String,
+    promo: Option<PromoCtx>,
+}
+
+/// Run `inbox read-primary <id>`: plan the read (every deferral is decided here, nothing is written); when the row carries
+/// the `unclaimed:` marker, take it off (the promotion's writes) and plan again over the row as it is now; then file the
+/// receipt.
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
+    // `--since` / `--tail` are refused before anything is read (the shapes `plan` defers are checked there)
+    if !a.is_help()
+        && a.positionals.len() == 3
+        && let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i))
+        && let Some(refused) = window_refusal(inv, a, id)?
+    {
+        return Ok(refused);
+    }
+    let mut first = plan(inv, a, None)?;
+    let planned = match first.promo.take() {
+        None => first,
+        Some(pc) => {
+            let classic = promote(inv, a, &pc.desc, pc.desc_sid.as_deref(), pc.registry_sid.as_deref(), &pc.marker, &pc.repo_key)?;
+            // the writes are made: from here a deferral is a committed failure, never a second run in Node
+            plan(inv, a, classic)?
+        }
+    };
+    // ---- the receipt: the only write of an unpromoted read ----
+    let mut tmp = planned.file.as_os_str().to_os_string();
+    tmp.push(defaults::text("mesh_write.tmp_suffix"));
+    let tmp = PathBuf::from(tmp);
+    let wrote = std::fs::create_dir_all(&planned.dir).and_then(|()| std::fs::write(&tmp, &planned.record)).and_then(|()| std::fs::rename(&tmp, &planned.file));
+    if wrote.is_err() {
+        // Node reports the error text itself (`receiptError`): it runs the verb, and it fails the same way
+        return defer("receipt-write");
+    }
+    crate::meshw::mark_committed();
+    crate::meshw::note_written(&planned.rel, planned.record.as_bytes());
+    Ok(Answer { code: 0, stdout: format!("{}\n", planned.stdout), effect: Effect::None })
+}
+
+/// The read itself (see [`run`]). `promoted` is `Some(classic)` on the pass that follows a promotion.
+fn plan(inv: &Inv, a: &Args, promoted: Option<bool>) -> R<Planned> {
     if a.is_help() {
         return defer("help");
     }
@@ -328,9 +576,6 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         return defer("argv-shape");
     }
     let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else { return defer("bad-id") };
-    if let Some(refused) = window_refusal(inv, a, id)? {
-        return Ok(refused);
-    }
     let allowed = defaults::list("mesh_write.read_primary_flags");
     if a.flags.keys().any(|k| !allowed.contains(&k.as_str())) {
         return defer("flags");
@@ -351,22 +596,25 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if !matches!(desc.get(defaults::text("mesh_write.field_id")), Some(OVal::Str(d)) if d == id) {
         return defer("descriptor-id");
     }
-    // maybePromoteUnclaimed: a no-op unless the descriptor (or, once it holds a real session, the registry row) carries the marker
+    // maybePromoteUnclaimed: the marker on either side is taken off below (or the call is Node's)
     let marker = format!("{}{id}", defaults::text("mesh_write.synthetic_session_prefix"));
     let desc_sid = match desc.get(defaults::text("mesh_write.field_session_id")) {
         None | Some(OVal::Null) => None,
         Some(OVal::Str(t)) => Some(t.clone()),
         Some(_) => return defer("descriptor-session"),
     };
-    if desc_sid.as_deref() == Some(marker.as_str()) {
-        return defer("unclaimed");
-    }
     let inbox = union::path_field(&desc, defaults::text("mesh_write.field_inbox_path"))?;
     let cursor_file = union::path_field(&desc, defaults::text("mesh_write.field_cursor_path"))?;
     let o = tick::open_partition(inv, id, &desc)?;
-    if desc_sid.as_deref().is_some_and(|t| !t.is_empty()) && o.rows.iter().find(|r| r.id == id).and_then(|r| r.session_id.as_deref()) == Some(marker.as_str()) {
-        return defer("registry-unclaimed");
-    }
+    let registry_sid = o.rows.iter().find(|r| r.id == id).and_then(|r| r.session_id.clone());
+    // the marker on either side: this pass reads the row as it is, and the promotion is made once every deferral is settled
+    let promo = desc_sid.as_deref().is_some_and(|d| d == marker || (!d.is_empty() && registry_sid.as_deref() == Some(marker.as_str()))).then(|| PromoCtx {
+        desc: desc.clone(),
+        desc_sid: desc_sid.clone(),
+        registry_sid: registry_sid.clone(),
+        marker: marker.clone(),
+        repo_key: o.repo_key.clone(),
+    });
     tick::single_partition(&o.rows, &desc, id)?;
     // the ownership gate of an acking read: the caller is the id, owns it by its registry row, or declared it
     let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
@@ -482,6 +730,11 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         .put("meshGroupUnresolved", OVal::Bool(false))
         .put("meshGroupError", OVal::Null)
         .put("totalsPartial", OVal::Bool(false));
+    if promoted == Some(true) {
+        let mut p = Obj::default();
+        p.put("promoted", OVal::Bool(true));
+        out.put("promotion", p.done());
+    }
     if let Some((nd, st)) = union_cursors {
         out.put("cursorNdjson", n(nd)).put("cursorStore", n(st));
     }
@@ -496,18 +749,8 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         )
         .put("ackHint", s(defaults::text("mesh_write.ack_hint")));
     let stdout = if format_text && !json_flag { text_lines(&rows) } else { out.done().stringify() };
-    // ---- the receipt: the only write ----
     let record = receipt_record(&rid, id, reader.as_deref(), inv.now, ops, hashes).stringify();
     let file: PathBuf = dir.join(format!("{rid}{}", defaults::text("mesh_write.json_suffix")));
-    let mut tmp = file.as_os_str().to_os_string();
-    tmp.push(defaults::text("mesh_write.tmp_suffix"));
-    let tmp = PathBuf::from(tmp);
-    let wrote = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&tmp, &record)).and_then(|()| std::fs::rename(&tmp, &file));
-    if wrote.is_err() {
-        // Node reports the error text itself (`receiptError`): it runs the verb, and it fails the same way
-        return defer("receipt-write");
-    }
-    crate::meshw::mark_committed();
     let rel = format!(
         "{}/{}/{}/{id}/{rid}{}",
         defaults::text("mesh_write.dir_anti_hall"),
@@ -515,8 +758,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         defaults::text("mesh_write.dir_read_receipts"),
         defaults::text("mesh_write.json_suffix")
     );
-    crate::meshw::note_written(&rel, record.as_bytes());
-    Ok(Answer { code: 0, stdout: format!("{stdout}\n"), effect: Effect::None })
+    Ok(Planned { stdout, record, dir, file, rel, promo })
 }
 
 #[cfg(test)]

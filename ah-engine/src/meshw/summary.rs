@@ -327,7 +327,7 @@ fn archive_complete_ids(home: &Path) -> HashSet<String> {
 }
 
 /// `crossLinkedIdentity(a, b)` on (id, sessionId) pairs.
-fn cross_linked(a_id: &str, a_sess: Option<&str>, b_id: &str, b_sess: Option<&str>) -> bool {
+pub(crate) fn cross_linked(a_id: &str, a_sess: Option<&str>, b_id: &str, b_sess: Option<&str>) -> bool {
     if a_id.is_empty() || b_id.is_empty() || a_id == b_id {
         return false;
     }

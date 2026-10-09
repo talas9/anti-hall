@@ -339,6 +339,11 @@ pub fn row_text(db: &Path, hash: &str) -> Option<String> {
     .ok()
 }
 
+/// Whether a manifest path is a read receipt (named by a random id) rather than a file both sides write at one path.
+fn is_receipt(rel: &str) -> bool {
+    rel.split('/').any(|part| part == defaults::text("mesh_write.dir_read_receipts"))
+}
+
 /// What Node printed and wrote for a read-primary, as the engine's output is spelled: Node's receipt id replaced by the
 /// engine's, Node's scratch home by the real one. Returns the stdout and `(engine's relative path, Node's receipt)` pairs.
 fn read_primary_view(node_home: &Path, real_home: &Path, manifest: &[(String, String)], stdout: &[u8]) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
@@ -346,7 +351,7 @@ fn read_primary_view(node_home: &Path, real_home: &Path, manifest: &[(String, St
     let (node_home_text, real_home_text) = (node_home.to_string_lossy().into_owned(), real_home.to_string_lossy().into_owned());
     let mut files = Vec::new();
     let mut out = String::from_utf8_lossy(stdout).replace(&node_home_text, &real_home_text);
-    for (rel, _) in manifest.iter().filter(|(r, _)| !crate::meshw::clog::is_log_rel(r)) {
+    for (rel, _) in manifest.iter().filter(|(r, _)| is_receipt(r)) {
         let rel_path = Path::new(rel);
         let (Some(dir), Some(engine_rid)) = (rel_path.parent(), rel_path.file_stem().and_then(|x| x.to_str())) else { continue };
         let real_names: std::collections::HashSet<String> =
@@ -495,7 +500,7 @@ pub fn run_verifier(args: &[String]) -> i32 {
                     }
                     continue;
                 }
-                let node_has = if kind == Kind::ReadPrimary {
+                let node_has = if kind == Kind::ReadPrimary && is_receipt(rel) {
                     node_files.iter().find(|(r, _)| r == rel).map(|(_, b)| b.clone()).unwrap_or_default()
                 } else {
                     read(&home.join(rel))

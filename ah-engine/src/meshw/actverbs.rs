@@ -89,6 +89,22 @@ fn alias_on_file(inv: &Inv, who: &ident::Caller) -> bool {
 
 // ---- done ---------------------------------------------------------------------------------------------------------------
 
+/// A refusal of `done` that Node logs (`logVerbOutcome('done', r.id, r, ctx)`): printed (exit 2) and written to the central log.
+/// Decided before anything else is written; when Node would not write the log at all the call is Node's.
+fn done_refusal(inv: &Inv, id: Option<&str>, reason: &str, error: Option<&str>, extra: &[(&str, OVal)]) -> R<Answer> {
+    crate::meshw::clog::ready(inv)?;
+    let mut f: Vec<(&str, OVal)> = vec![("action", s(defaults::text("devswarm_cli.action_done"))), ("reason", s(reason))];
+    f.extend(extra.iter().cloned());
+    if let Some(e) = error {
+        f.push(("error", s(e)));
+    }
+    let msg = error.unwrap_or(reason);
+    let repo_key = ident::resolve_context(&inv.cwd, true)?.repo_key;
+    crate::meshw::clog::refusal(inv, defaults::text("devswarm_cli.action_done"), repo_key.as_deref(), id, msg, Some(reason));
+    crate::meshw::mark_committed();
+    Ok(refusal(&f))
+}
+
 /// `done [<id>] [--summary TEXT]`.
 pub fn done(inv: &Inv, a: &Args) -> R<Answer> {
     done_with(inv, a, &System::configured())
@@ -98,12 +114,20 @@ pub fn done(inv: &Inv, a: &Args) -> R<Answer> {
 pub fn done_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
     let cwd = inv.cwd.as_str();
     let id_arg = a.positionals.get(1).map(String::as_str);
-    // every refusal below is logged by Node (`logVerbOutcome('done', ...)`): the engine leaves them to it
-    let Some(repo_key) = ident::repo_key_for_worktree(cwd)? else { return defer("no-project") };
+    // the refusals below are logged by Node (`logVerbOutcome('done', ...)`): the engine writes the same log line
+    let Some(repo_key) = ident::repo_key_for_worktree(cwd)? else {
+        return done_refusal(inv, None, defaults::text("devswarm_cli.reason_no_project"), None, &[]);
+    };
     let caller_ic = ident::resolve_context(cwd, true)?;
     let Some(wt_root) = caller_ic.worktree_root.clone() else { return defer("no-worktree") };
     if ident::is_primary_checkout(&wt_root, caller_ic.main_worktree.as_deref(), &inv.home, &inv.env)? {
-        return defer("primary-checkout");
+        return done_refusal(
+            inv,
+            None,
+            defaults::text("devswarm_cli.reason_done_primary_checkout"),
+            Some(defaults::text("devswarm_cli.msg_done_primary_checkout")),
+            &[],
+        );
     }
     let st = common::open_store(inv, &repo_key)?;
     let rows = rows_of(&st)?;
@@ -113,10 +137,11 @@ pub fn done_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
         && x != id
         && Some(x) != who.mesh_id.as_deref()
     {
-        return defer("not-own-workspace");
+        let msg = defaults::render("devswarm_cli.msg_done_not_own", &[("id_arg", &quote(x)), ("identity", &quote(&id))]);
+        return done_refusal(inv, Some(x), defaults::text("devswarm_cli.reason_done_not_own"), Some(&msg), &[("id", s(x)), ("identity", s(&id))]);
     }
     if !is_safe_id(&id) {
-        return defer("no-identity");
+        return done_refusal(inv, None, defaults::text("devswarm_cli.reason_done_no_identity"), Some(defaults::text("devswarm_cli.msg_done_no_identity")), &[]);
     }
     if is_primary_label(&id) {
         return defer("primary-label");
