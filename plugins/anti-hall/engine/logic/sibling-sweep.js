@@ -77,33 +77,34 @@ function swRemove(spec, t) {
 function swPrepare(t) {
   var cut = swCutBytes(t, swNum('sibling_sweep.text_max_bytes'));
   var s = swRemove(swSpec('sibling_sweep.quote_line_re', 'm'), swRemove(swSpec('sibling_sweep.fence_re', ''), cut));
-  var strip = swChars(swCfg('sibling_sweep.strip_chars')), out = '';
-  swChars(s).forEach(function (c) { if (strip.indexOf(c) < 0) out += c; });
-  return out;
+  // every strip character removed (native split/join: a character loop in the interpreter costs about 0.3 us per character)
+  swChars(swCfg('sibling_sweep.strip_chars')).forEach(function (c) { s = s.split(c).join(''); });
+  return s;
 }
 
 // [sentence, terminator|null]: a hard break always ends one, a terminator ends one when white space or the end follows.
+// (The scan is one native regular expression built from the settings, so its cost does not grow with an interpreter loop.)
+var SW_SPACE_CLASS = '\\t-\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'; // swIsSpace's set
+function swClass(chars) { return chars.map(function (c) { return /[\\\]\[^-]/.test(c) ? '\\' + c : c; }).join(''); }
 function swSentences(t) {
-  var terms = swChars(swCfg('sibling_sweep.terminators')), hard = swChars(swCfg('sibling_sweep.hard_breaks'));
-  var out = [], start = 0, i = 0;
-  while (i < t.length) {
-    var cp = t.codePointAt(i), c = String.fromCodePoint(cp), w = c.length, next = i + w;
-    var ends = hard.indexOf(c) >= 0 || (terms.indexOf(c) >= 0 && (next >= t.length || swIsSpace(t.codePointAt(next))));
-    if (ends) { out.push([t.slice(start, i), c]); start = next; }
-    i = next;
+  var id = 'sentence-re';
+  if (!Object.prototype.hasOwnProperty.call(sws.memo, id)) {
+    var terms = swChars(swCfg('sibling_sweep.terminators')), hard = swChars(swCfg('sibling_sweep.hard_breaks'));
+    sws.memo[id] = new RegExp('[' + swClass(hard) + ']|[' + swClass(terms) + '](?=[' + SW_SPACE_CLASS + ']|$)', 'gu');
   }
+  var re = sws.memo[id], out = [], start = 0, m;
+  re.lastIndex = 0;
+  while ((m = re.exec(t)) !== null) { out.push([t.slice(start, m.index), m[0]]); start = m.index + m[0].length; }
   if (start < t.length) out.push([t.slice(start), null]);
   return out;
 }
 
 // The sentence with every inline code span blanked out to spaces (one per UTF-16 unit, so offsets index the original).
 function swMask(sentence) {
-  var tick = swChars(swCfg('sibling_sweep.code_span'))[0], inside = false, out = '';
-  swChars(sentence).forEach(function (c) {
-    if (c === tick) inside = !inside;
-    out += (inside || c === tick) ? ' '.repeat(c.length) : c;
-  });
-  return out;
+  var tick = swChars(swCfg('sibling_sweep.code_span'))[0];
+  if (tick === undefined) return sentence;
+  // the parts between ticks alternate outside / inside a span; inside parts and the ticks themselves become spaces
+  return sentence.split(tick).map(function (part, i) { return i % 2 === 1 ? ' '.repeat(part.length) : part; }).join(' '.repeat(tick.length));
 }
 
 function swNamePattern(sentence, cueStart) {
@@ -120,8 +121,9 @@ function swNamePattern(sentence, cueStart) {
 }
 
 // The first assertive cause statement in `text`: {hash, pattern}, or null.
-function swFindCause(t) {
-  var prepared = swPrepare(t), windowChars = swNum('sibling_sweep.window_chars'), question = swCfg('sibling_sweep.question_terminator');
+function swFindCause(t) { return swFindCauseIn(swPrepare(t)); }
+function swFindCauseIn(prepared) {
+  var windowChars = swNum('sibling_sweep.window_chars'), question = swCfg('sibling_sweep.question_terminator');
   var meta = swSpec('sibling_sweep.meta_re', 'i'), hedgeAny = swSpec('sibling_sweep.hedge_any_re', 'i');
   var hedgeBefore = swSpec('sibling_sweep.hedge_before_re', 'i'), cues = swSpecs('sibling_sweep.cause_cues');
   var ss = swSentences(prepared);
@@ -138,11 +140,10 @@ function swFindCause(t) {
   }
   return null;
 }
-function swHasFix(t) { return swTest(swSpec('sibling_sweep.fix_context_re', 'i'), swPrepare(t)); }
-function swStatesSweep(t) {
-  var p = swPrepare(t);
-  return swSpecs('sibling_sweep.sweep_statement_re').some(function (s) { return swTest(s, p); });
-}
+function swHasFix(t) { return swHasFixIn(swPrepare(t)); }
+function swHasFixIn(p) { return swTest(swSpec('sibling_sweep.fix_context_re', 'i'), p); }
+function swStatesSweep(t) { return swStatesSweepIn(swPrepare(t)); }
+function swStatesSweepIn(p) { return swSpecs('sibling_sweep.sweep_statement_re').some(function (s) { return swTest(s, p); }); }
 function swShort(h) { return swHead(h, swNum('sibling_sweep.hash_short')); }
 
 // ---- the turn of a transcript ----
@@ -172,41 +173,56 @@ function swIsPrompt(entry) {
   return false;
 }
 
-// {events, id, lastText, skipped}: events since the last human prompt, oldest first (the newest max_events kept).
+// The parts of a transcript line the turn reader looks at: the engine parses each line of the window and hands over only
+// these (a tool result or a tool's file content never reaches the script).
+function swKeep() {
+  var c = ['message', 'content'], b = c.concat(['*']), input = b.concat([swCfg('sibling_sweep.f_tool_input')]);
+  return [['type'], ['isMeta'], c, b.concat(['type']), b.concat(['text']), b.concat([swCfg('sibling_sweep.f_tool_name')]),
+    input.concat([swCfg('sibling_sweep.f_command')]), input.concat([swCfg('sibling_sweep.f_subagent_type')])];
+}
+
+// {events, id, lastText, skipped}: events since the last human prompt, oldest first (the newest max_events kept). The turn is
+// read from the end: the walk stops at the last human prompt, and only the newest max_events events are analysed, so the work
+// is bounded by the turn, max_lines, max_events and max_turn_text_chars, not by the length of the transcript or of the window.
 function swReadTurn(path) {
-  var r = ah.transcript.tailLines(path, swNum('sibling_sweep.window_bytes'), swNum('sibling_sweep.line_max_bytes'));
+  var r = ah.transcript.tailEntries(path, swNum('sibling_sweep.window_bytes'), swNum('sibling_sweep.line_max_bytes'), swKeep(),
+    swNum('sibling_sweep.max_lines'));
   if (r === null) return null;
   var tUser = swCfg('sibling_sweep.t_user'), tAsst = swCfg('sibling_sweep.t_assistant'), bText = swCfg('sibling_sweep.b_text'), bTool = swCfg('sibling_sweep.b_tool_use');
-  var entries = [], skipped = 0, id = '0', lastPrompt = -1;
+  var entries = [], skipped = r.droppedUnread, id = '0', start = 0;
   r.lines.forEach(function (ln) {
-    var at = ln[0], text = ln[1];
-    if (text === null) { skipped++; return; }
-    if (/^[ \t\n\f\r]*$/.test(text)) return;
-    var e;
-    try { e = JSON.parse(text); } catch (x) { skipped++; return; }
+    var at = ln[0], e = ln[1];
+    if (e === null) { skipped++; return; }
+    // a line the engine's parser refused comes back as its text: JavaScript reads it as it always did
+    if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { skipped++; return; } }
     if (!swIsObj(e)) return;
     entries.push({ at: at, e: e });
-    if (e.type === tUser && swIsPrompt(e)) { lastPrompt = entries.length - 1; id = String(at); }
   });
-  var events = [], lastText = null, maxEvents = swNum('sibling_sweep.max_events'), textMax = swNum('sibling_sweep.text_max_bytes');
-  for (var i = lastPrompt + 1; i < entries.length; i++) {
+  for (var p = entries.length - 1; p >= 0; p--) {
+    if (entries[p].e.type === tUser && swIsPrompt(entries[p].e)) { id = String(entries[p].at); start = p + 1; break; }
+  }
+  var rev = [], lastText = null, maxEvents = swNum('sibling_sweep.max_events'), textMax = swNum('sibling_sweep.text_max_bytes');
+  var textBudget = swNum('sibling_sweep.max_turn_text_chars'), textChars = 0;
+  var full = function () { return rev.length >= maxEvents || textChars >= textBudget; };
+  for (var i = entries.length - 1; i >= start && (!full() || lastText === null); i--) {
     var e = entries[i].e;
     if (e.type !== tAsst) continue;
     var blocks = swIsObj(e.message) && Array.isArray(e.message.content) ? e.message.content : [];
-    for (var j = 0; j < blocks.length; j++) {
+    for (var j = blocks.length - 1; j >= 0; j--) {
       var b = blocks[j], bt = swIsObj(b) && typeof b.type === 'string' ? b.type : '';
       if (bt === bText) {
         if (typeof b.text !== 'string' || swBlank(b.text)) continue;
-        var c = swFindCause(b.text);
-        events.push({ k: 'text', cause: c === null ? null : c.hash, sweep: swStatesSweep(b.text), fix: swHasFix(b.text) });
-        lastText = swCutBytes(b.text, textMax);
-      } else if (bt === bTool) {
-        events.push({ k: 'tool', kind: swToolKind(b) });
+        if (lastText === null) lastText = swCutBytes(b.text, textMax);
+        if (full()) break;
+        textChars += b.text.length;
+        var prepared = swPrepare(b.text), c = swFindCauseIn(prepared);
+        rev.push({ k: 'text', cause: c === null ? null : c.hash, sweep: swStatesSweepIn(prepared), fix: swHasFixIn(prepared) });
+      } else if (bt === bTool && !full()) {
+        rev.push({ k: 'tool', kind: swToolKind(b) });
       }
-      if (events.length > maxEvents) events.shift();
     }
   }
-  return { events: events, id: id, lastText: lastText, skipped: skipped };
+  return { events: rev.reverse(), id: id, lastText: lastText, skipped: skipped };
 }
 
 // ---- state, telemetry, the reminder ----

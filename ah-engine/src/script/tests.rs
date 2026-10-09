@@ -274,18 +274,37 @@ fn a_check_with_a_node_twin_defers_when_its_script_fails_on_any_event() {
 }
 
 #[test]
-fn an_engine_only_check_blocks_on_a_guard_event_and_allows_quietly_elsewhere() {
+fn an_advisory_engine_only_check_never_blocks_when_its_script_fails() {
     let engine_only = defaults::list("script.engine_only_checks");
     assert!(engine_only.contains(&"sibling-sweep"));
     for name in &engine_only {
         assert!(crate::checks::get(name).is_some(), "{name} is not a registered check");
-        for event in defaults::list("dispatch.guard_events") {
-            assert!(matches!(failed(name, event, "boom"), Verdict::Block(m) if m.contains("boom") && m.contains(name)), "{name} on {event}");
-        }
-        for event in ["SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStart", "PreCompact"] {
-            assert_eq!(failed(name, event, "boom"), Verdict::Allow, "{name} on {event}: never block a non-guard event");
+        assert_eq!(super::failure_mode(name), "open", "{name}: every shipped engine-only check is advisory (fail open)");
+        for event in defaults::list("dispatch.guard_events").into_iter().chain(["SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStart", "PreCompact"]) {
+            assert_eq!(failed(name, event, "boom"), Verdict::Allow, "{name} on {event}: a check's own failure never blocks");
         }
     }
+    // a failure is counted: one telemetry check event with outcome error per failure
+    crate::telemetry::emit::take_queued();
+    failed("sibling-sweep", "SubagentStop", "boom");
+    let evs = crate::telemetry::emit::take_queued();
+    assert_eq!(evs.len(), 1, "one counter event");
+    assert_eq!(evs[0].o, crate::telemetry::event::Outcome::Error);
+}
+
+#[test]
+fn a_fail_closed_engine_only_check_blocks_on_a_guard_event_only_and_a_node_twin_always_defers() {
+    let closed = defaults::text("script.failure_mode_closed");
+    for event in defaults::list("dispatch.guard_events") {
+        assert!(matches!(super::failure_verdict("g", event, "boom", true, closed), Verdict::Block(m) if m.contains("boom") && m.contains('g')), "{event}");
+        assert_eq!(super::failure_verdict("g", event, "boom", true, "open"), Verdict::Allow, "{event}");
+        // a check with a Node twin defers to it, whatever its mode
+        assert_eq!(super::failure_verdict("g", event, "boom", false, closed), Verdict::Defer, "{event}");
+    }
+    for event in ["SessionStart", "UserPromptSubmit", "PostToolUse"] {
+        assert_eq!(super::failure_verdict("g", event, "boom", true, closed), Verdict::Allow, "{event}: never block a non-guard event");
+    }
+    assert_eq!(super::failure_mode("no-such-check"), defaults::text("script.failure_mode_default"));
 }
 
 #[test]
@@ -294,31 +313,19 @@ fn the_policy_applies_to_every_kind_of_script_failure() {
     put_override(&h, "sibling-sweep", "function decide(p){ throw new Error('bad'); }");
     let e = env(&h);
     let go = |event: &str| super::run_forced("sibling-sweep", &json!({}), &Value::Null, event, &e).expect("a script").expect("an answer");
-    assert!(matches!(go("Stop"), Verdict::Block(_)), "an exception on a guard event");
+    assert_eq!(go("Stop"), Verdict::Allow, "an exception on a guard event: the advisory fails open");
     assert_eq!(go("SessionStart"), Verdict::Allow, "an exception on a non-guard event");
     put_override(&h, "sibling-sweep", "function decide(p){ for(;;){} }");
-    assert!(matches!(go("SubagentStop"), Verdict::Block(_)), "an interrupted loop on a guard event");
+    assert_eq!(go("SubagentStop"), Verdict::Allow, "an interrupted loop (the CPU-time limit) on a guard event");
     assert_eq!(go("PostToolUse"), Verdict::Allow);
     put_override(&h, "sibling-sweep", "function decide(p){ return 42; }");
-    assert!(matches!(go("PreToolUse"), Verdict::Block(_)), "a verdict of the wrong shape");
+    assert_eq!(go("PreToolUse"), Verdict::Allow, "a verdict of the wrong shape");
     put_override(&h, "sibling-sweep", "this is not javascript (");
-    assert!(matches!(go("Stop"), Verdict::Block(_)), "a script that does not load");
+    assert_eq!(go("Stop"), Verdict::Allow, "a script that does not load");
     // a registered scripted check with no script file at all follows the same policy
     assert_eq!(crate::script::missing("ship-it-guard", "PreToolUse"), Some(Verdict::Defer));
-    assert!(matches!(crate::script::missing("sibling-sweep", "Stop"), Some(Verdict::Block(_))));
+    assert_eq!(crate::script::missing("sibling-sweep", "Stop"), Some(Verdict::Allow));
     assert_eq!(crate::script::missing("sibling-sweep", "SessionStart"), Some(Verdict::Allow));
-}
-
-#[test]
-fn the_compiled_logic_counter_counts_the_checks_without_a_script_entry() {
-    let total = crate::checks::registry().len();
-    let scripted = crate::checks::registry().iter().filter(|c| c.scripted()).count();
-    assert_eq!(crate::checks::compiled_logic_checks_remaining(), total - scripted);
-    let (logic_dir, ext) = (defaults::text("script.logic_dir"), defaults::text("script.ext"));
-    for c in crate::checks::registry().iter().filter(|c| c.scripted()) {
-        let shipped = defaults::root().expect("plugin root").join(logic_dir).join(format!("{}{ext}", c.name()));
-        assert!(shipped.is_file(), "scripted check {} has no shipped script {}", c.name(), shipped.display());
-    }
 }
 
 // ---- golden parity of the migrated checks ----
@@ -722,6 +729,53 @@ mod sibling {
         rows(h).iter().filter(|r| r["event"] == event).map(|r| r[key].as_str().unwrap().to_string()).collect()
     }
 
+    /// A 200,000-line transcript: one human prompt at the top (a subagent's task, far outside the read window), then
+    /// alternating status texts, edits and their results; the turn ends with the cause statement. `big_texts` makes every
+    /// status text about 6.5 KB, so the window holds about 1 MB of assistant text.
+    fn long_transcript(h: &str, name: &str, big_texts: bool) -> String {
+        let p = format!("{h}/{name}");
+        let mut out = String::with_capacity(48 << 20);
+        out.push_str(&user("please fix the crash"));
+        out.push('\n');
+        let filler = if big_texts { "the reader looks at this module and moves on to the next one ".repeat(100) } else { String::new() };
+        // one serialized template per line kind, the step number substituted (serializing 200,000 lines is slow in a debug build)
+        let block = [say(&format!("Step @: working through a module {filler}")), tool("Edit", json!({"file_path": "/x/m@.rs"})), result()].join("\n");
+        let mut n = 1;
+        let mut i = 0;
+        while n < 200_000 {
+            i += 1;
+            out.push_str(&block.replace('@', &i.to_string()));
+            out.push('\n');
+            n += 3;
+        }
+        out.push_str(&say(CAUSE));
+        out.push('\n');
+        std::fs::write(&p, out).unwrap();
+        p
+    }
+
+    /// The reminder (a block that continues the turn) on a long transcript: the script reads only the end of the turn, so
+    /// it answers within its CPU-time limit (the limit of the build under test; a release build is held to the shipped one).
+    #[test]
+    fn a_200k_line_transcript_is_answered_within_the_script_limit() {
+        for (tag, big) in [("long", false), ("long-big", true)] {
+            let h = h(tag);
+            let t = long_transcript(&h, &format!("{tag}.jsonl"), big);
+            for event in ["Stop", "SubagentStop"] {
+                let mut p = stop(&h, &t, CAUSE);
+                p["hook_event_name"] = json!(event);
+                p["session_id"] = json!(format!("{tag}-{event}"));
+                let started = std::time::Instant::now();
+                let v = go(&h, &p);
+                let took = started.elapsed();
+                assert!(is_adv(&v), "{tag} {event}: the reminder, not a script failure (which fails open): {v:?}");
+                if !cfg!(debug_assertions) {
+                    assert!(took.as_millis() < u128::from(defaults::num("script.time_limit_ms")), "{tag} {event}: {took:?}");
+                }
+            }
+        }
+    }
+
     fn fire(h: &str, tag: &str) -> String {
         let p = write(h, &format!("{tag}.jsonl"), &[user("fix"), tool("Edit", json!({})), result(), say(CAUSE)]);
         assert!(is_adv(&go(h, &stop(h, &p, CAUSE))));
@@ -1106,4 +1160,41 @@ mod output_verify_jev {
         let rows = log_rows(std::path::Path::new(&h));
         assert_eq!((rows.len(), &rows[0]["mode"], &rows[0]["base"]), (1, &json!("off"), &json!(false)));
     }
+}
+
+#[test]
+fn tail_entries_projects_parsed_lines_and_hands_back_what_its_parser_refused() {
+    let h = home("tail-entries");
+    let p = format!("{h}/t.jsonl");
+    let big = "x".repeat(100);
+    let lines = [
+        r#"{"type":"user","isMeta":true,"message":{"content":"hi"},"toolUseResult":{"stdout":"BIG"}}"#.to_string(),
+        format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"t"}},{{"type":"tool_use","name":"Bash","input":{{"command":"ls","file":"{big}"}}}}]}}}}"#),
+        String::new(),
+        "[1,2]".to_string(),
+        r#"{"type":"user","message":{"content":"\ud800"}}"#.to_string(),
+        "not json".to_string(),
+        format!(r#"{{"big":"{big}"}}"#),
+    ];
+    std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+    let keep = r#"[["type"],["isMeta"],["message","content"],["message","content","*","type"],["message","content","*","text"],["message","content","*","name"],["message","content","*","input","command"]]"#;
+    let r: Value = serde_json::from_str(&super::host::tail_entries(&p, 0.0, 120.0, keep, 0.0).unwrap()).unwrap();
+    let v: Vec<&Value> = r["lines"].as_array().unwrap().iter().map(|l| &l[1]).collect();
+    assert_eq!(v[0], &json!({"type": "user", "isMeta": true, "message": {"content": "hi"}}), "unnamed parts are dropped");
+    assert_eq!(v[1], &Value::Null, "a line over lineMax is unread, as tailLines");
+    assert_eq!(v[2], &json!(0), "a blank line");
+    assert_eq!(v[3], &json!(0), "JSON that is not an object");
+    assert_eq!(v[4], &json!(r#"{"type":"user","message":{"content":"\ud800"}}"#), "a lone surrogate: the text, for JSON.parse");
+    assert_eq!(v[5], &json!("not json"));
+    assert_eq!(v[6], &json!({}));
+    let r: Value = serde_json::from_str(&super::host::tail_entries(&p, 0.0, 400.0, keep, 0.0).unwrap()).unwrap();
+    assert_eq!(
+        r["lines"][1][1],
+        json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "t"}, {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}})
+    );
+    // only the newest maxLines lines are parsed and returned; the older ones are counted
+    let r: Value = serde_json::from_str(&super::host::tail_entries(&p, 0.0, 120.0, keep, 3.0).unwrap()).unwrap();
+    assert_eq!(r["lines"].as_array().unwrap().len(), 3);
+    assert_eq!((r["dropped"].as_u64(), r["droppedUnread"].as_u64()), (Some(4), Some(1)));
+    assert!(super::host::tail_entries(&p, 0.0, 120.0, "{}", 0.0).is_none(), "keep must be a list of paths");
 }

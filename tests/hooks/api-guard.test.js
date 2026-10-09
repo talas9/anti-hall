@@ -79,6 +79,21 @@ test('BLOCK: python from-import OrderedDict.move_to_front (fake method)', { skip
   assert.ok(/move_to_front/.test(r.json.reason));
 });
 
+// Live6 replay: the probe runs with cwd = the temp dir and imports json/os before it scrubs sys.path. Under -s that cwd led
+// sys.path, so Python listed the whole temp dir (tens of seconds at ~500k entries) and a json.py planted there ran. -I keeps
+// cwd off sys.path: the planted module never runs and the probe still answers.
+test('python probe never imports from the temp dir (isolated mode)', { skip: !HAS_PY }, () => {
+  const h = makeHome();
+  const tmp = fs.mkdtempSync(path.join(h.home, 'tmpdir-'));
+  const marker = path.join(h.home, 'planted-ran');
+  fs.writeFileSync(path.join(tmp, 'json.py'), 'open(' + JSON.stringify(marker) + ', "w").write("x")\nraise SystemExit(3)\n');
+  try {
+    const r = testHook(HOOK, write('/tmp/x.py', 'import os\nos.quantum_fork()\n'), { home: h.home, env: { TMPDIR: tmp } });
+    assert.strictEqual(fs.existsSync(marker), false, 'a json.py in the temp dir ran inside the probe');
+    assert.strictEqual(r.status, 2, 'the probe still answers: ' + r.stdout);
+  } finally { h.cleanup(); }
+});
+
 // ---- Python ALLOW (real APIs) --------------------------------------------
 test('ALLOW: python os.getpid + OrderedDict.move_to_end (real)', { skip: !HAS_PY }, () => {
   const r = run(write('/tmp/x.py', 'import os\nfrom collections import OrderedDict\nos.getpid()\nOrderedDict.move_to_end\n'));

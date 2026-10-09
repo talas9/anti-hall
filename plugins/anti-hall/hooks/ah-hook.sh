@@ -389,7 +389,8 @@ run_memory_mode() {
 }
 
 json_tool_name() {
-  awk '
+  # byte semantics: gawk in a UTF-8 locale makes sprintf("%c",239) a two-byte character, so the BOM compare never matched
+  LC_ALL=C awk '
     function hx(c) { return index("0123456789abcdef", tolower(c)) - 1 }
     function hexnum(h,    i,v,n) { n=0; for(i=1;i<=length(h);i++){ v=hx(substr(h,i,1)); if(v<0) return -1; n=n*16+v } return n }
     function ws(c) { return c==" " || c=="\t" || c=="\r" || c=="\n" }
@@ -461,7 +462,8 @@ json_tool_name() {
 
 is_stop_active_payload() {
   case "$event" in Stop|SubagentStop) ;; *) return 1 ;; esac
-  awk '
+  # byte semantics: gawk in a UTF-8 locale makes sprintf("%c",239) a two-byte character, so the BOM compare never matched
+  LC_ALL=C awk '
     function ws(c) { return c==" " || c=="\t" || c=="\r" || c=="\n" }
     function skip_string(    j,k,bs) {
       j=i+1

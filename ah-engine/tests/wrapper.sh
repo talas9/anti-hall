@@ -20,6 +20,9 @@ make_gnu_stat_shim() {
   mkdir -p "$d"
   if command -v gstat >/dev/null 2>&1; then
     printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v gstat)" >"$d/stat"
+  elif /usr/bin/stat -c %u / >/dev/null 2>&1; then
+    # a GNU host (Linux): the real stat already has GNU semantics, the BSD-based mimic below cannot run there
+    printf '#!/bin/sh\nexec /usr/bin/stat "$@"\n' >"$d/stat"
   else
     cat >"$d/stat" <<'SHIM'
 #!/bin/sh
