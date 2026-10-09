@@ -92,6 +92,12 @@ struct Opt {
     bad_override: bool,
     /// No cache root at all.
     no_cache_root: bool,
+    /// A DevSwarm session (`DEVSWARM_REPO_ID` set): the DevSwarm-only stages are not gated off.
+    ds: bool,
+    /// Every one-time stage already stamped complete for the version the update lands on.
+    markers: bool,
+    /// `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS`.
+    budget: Option<&'static str>,
 }
 
 struct World {
@@ -159,6 +165,12 @@ fn world(o: &Opt) -> World {
             format!(r#"{{"version":2,"plugins":{{"anti-hall@anti-hall":[{{"scope":"user","installPath":"x","version":"{reg}"}}]}}}}"#),
         );
     }
+    if o.markers {
+        let v = if o.no_upstream_move { V1 } else { V2 };
+        let keys = defaults_keys();
+        let body: Vec<String> = keys.iter().map(|k| format!(r#""{k}":{{"completedVersion":"{v}"}}"#)).collect();
+        put(&home, ".anti-hall/update-sweep-state.json", format!("{{{}}}", body.join(",")));
+    }
     let claude = if o.claude_fails {
         "#!/bin/sh\necho 'boom: registry locked' >&2\nexit 3\n"
     } else if o.claude_confirms {
@@ -191,6 +203,25 @@ fn envs(cmd: &mut Command, w: &World, o: &Opt) {
     cmd.env_clear().env("PATH", path).env("HOME", &w.home).env("ANTIHALL_INGEST_DRY_RUN", "1").env("GIT_CONFIG_GLOBAL", "/dev/null");
     let ov = if o.bad_override { w.root.join("nope").to_string_lossy().into_owned() } else { w.mp.to_string_lossy().into_owned() };
     cmd.env("ANTIHALL_MARKETPLACE_DIR", ov);
+    if o.ds {
+        cmd.env("DEVSWARM_REPO_ID", "repo-parity").env("DEVSWARM_WORKSPACE_ID", "ws-parity");
+    }
+    if let Some(b) = o.budget {
+        cmd.env("ANTIHALL_UPDATE_POSTPULL_BUDGET_MS", b);
+    }
+}
+
+/// The update-sweep-state keys of the one-time stages, from the shipped stage table.
+fn defaults_keys() -> Vec<String> {
+    let text = fs::read_to_string(plugin().join("engine/defaults/update_post.toml")).unwrap();
+    let re = regex::Regex::new(r#"state = \[([^\]]*)\]"#).unwrap();
+    let mut keys: Vec<String> = re
+        .captures_iter(&text)
+        .flat_map(|c| c[1].split(',').map(|k| k.trim().trim_matches('"').to_string()).filter(|k| !k.is_empty()).collect::<Vec<_>>())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 fn finish(o: std::process::Output) -> Out {
@@ -223,7 +254,8 @@ fn norm(text: &str, w: &World) -> String {
 fn clock(text: &str) -> String {
     let re = regex::Regex::new(r#"("completedTs"|"at"|"ts"|"startedAt"|"lastRun"|"time"):\s*\d{10,}"#).unwrap();
     let re2 = regex::Regex::new(r"\.corrupt-\d+|\.bak-[0-9TZ-]+").unwrap();
-    re2.replace_all(&re.replace_all(text, r#"$1:0"#), ".X").into_owned()
+    let re3 = regex::Regex::new(r#""ts":"[0-9T:.Z-]+"|"pid":\d+"#).unwrap();
+    re3.replace_all(&re2.replace_all(&re.replace_all(text, r#"$1:0"#), ".X"), "\"X\":0").into_owned()
 }
 
 fn tree(root: &Path) -> BTreeMap<String, String> {
@@ -328,7 +360,7 @@ fn parity(name: &str, o: &Opt, args: &[&str]) -> String {
     let (ta, tb) = (tree(&a.home), tree(&b.home));
     let keys: Vec<&String> = ta.keys().chain(tb.keys()).collect();
     for k in keys {
-        if moved && k.contains("update-sweep-state") {
+        if moved && (k.contains("update-sweep-state") || k.contains("logs/devswarm.jsonl")) {
             continue; // the Node script's two passes stamp differently (see assert_same_update)
         }
         assert_eq!(ta.get(k).map(|v| norm(v, &a)), tb.get(k).map(|v| norm(v, &b)), "{name}: file {k} differs between the Node run and the engine run");
@@ -454,6 +486,49 @@ fn update_without_a_cache_root_mirrors_nothing() {
 #[test]
 fn post_pull_only_prints_just_the_status() {
     parity("post_pull_only", &Opt { no_upstream_move: true, ..Opt::default() }, &["--post-pull-only"]);
+}
+
+#[test]
+fn update_in_a_devswarm_session_with_every_one_time_stage_done() {
+    let out = parity("ds_done", &Opt { ds: true, markers: true, no_upstream_move: true, ..Opt::default() }, &[]);
+    assert!(out.contains("already completed for 0.1.0"), "{out}");
+}
+
+#[test]
+fn update_in_a_devswarm_session_with_nothing_stamped() {
+    parity("ds_fresh", &Opt { ds: true, no_upstream_move: true, ..Opt::default() }, &[]);
+}
+
+#[test]
+fn update_that_moves_the_version_in_a_devswarm_session() {
+    parity("ds_moved", &Opt { ds: true, ..Opt::default() }, &[]);
+    parity("ds_moved_done", &Opt { ds: true, markers: true, ..Opt::default() }, &[]);
+}
+
+#[test]
+fn post_pull_only_in_a_devswarm_session() {
+    parity("ds_post_pull_only", &Opt { ds: true, markers: true, no_upstream_move: true, ..Opt::default() }, &["--post-pull-only"]);
+}
+
+#[test]
+fn an_exhausted_post_pull_budget_defers_the_later_stages_whole() {
+    let o = Opt { ds: true, no_upstream_move: true, budget: Some("1"), ..Opt::default() };
+    let (a, b) = (world(&o), world(&o));
+    let (n, e) = (run_node(&a, &o, &[]), run_engine(&b, &o, &[]));
+    assert_eq!((n.code, e.code), (0, 0), "{}", e.stderr);
+    let first = |t: &str| -> serde_json::Map<String, serde_json::Value> { serde_json::from_str(t.lines().next().unwrap()).unwrap() };
+    let (ns, es) = (first(&norm(&n.stdout, &a)), first(&norm(&e.stdout, &b)));
+    assert_eq!(ns.keys().collect::<Vec<_>>(), es.keys().collect::<Vec<_>>(), "status key order");
+    let mut deferred = 0;
+    for (k, v) in &ns {
+        // the first stage may start in the same millisecond the deadline is set; every later budgeted stage is past it
+        if k == "reconcile" || v.get("deferred").is_none() {
+            continue;
+        }
+        deferred += 1;
+        assert_eq!(Some(v), es.get(k), "deferred stage {k}");
+    }
+    assert!(deferred >= 5, "the budget of 1ms defers the later stages: {ns:?}");
 }
 
 #[test]

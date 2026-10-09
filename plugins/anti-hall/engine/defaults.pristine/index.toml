@@ -56,6 +56,7 @@ files = [
     "operator.toml",
     "slcfg.toml",
     "update_cli.toml",
+    "update_post.toml",
     "handovers.toml",
     "procwatch.toml",
     "resource_watch.toml",

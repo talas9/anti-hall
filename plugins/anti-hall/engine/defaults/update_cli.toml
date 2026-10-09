@@ -18,10 +18,6 @@ value = "ANTIHALL_UPDATE_POSTPULL_BUDGET_MS"
 doc = "When 1 (or true), `update` prints no `[update] <stage> start/done` progress lines on stderr. Settings key updates.quiet is the other source."
 value = "ANTIHALL_UPDATE_QUIET"
 
-[env.update_reexec]
-doc = "Set by `update` on the Node stage run it starts, so that run never starts another."
-value = "ANTIHALL_UPDATE_REEXEC"
-
 [env.claude_execpath]
 doc = "The running Claude Code binary; the fallback `update` runs `plugin update` with when `claude` is not on the PATH."
 value = "CLAUDE_CODE_EXECPATH"
@@ -331,21 +327,9 @@ value = "copied {version}"
 doc = "Cache sync reason."
 value = "copy failed: {error}"
 
-[update_msg.reexec_unusable]
-doc = "Appended to the action when the Node stage run printed nothing usable."
-value = " (post-pull re-exec of {latest}'s update.js produced no usable status — kept local stage results for {installed})"
-
-[update_msg.reexec_failed]
-doc = "Appended to the action when the Node stage run failed."
-value = " (post-pull re-exec of {latest}'s update.js failed — kept local stage results for {installed})"
-
-[update_msg.reexec_raised]
-doc = "Appended to the action when starting the Node stage run raised."
-value = " (post-pull re-exec raised: {error} — kept local stage results)"
-
-[update_msg.stages_unavailable]
-doc = "Appended to the action when the DevSwarm and settings stages could not be run (no Node, or no stage script) and no version change was involved."
-value = " (post-pull stages not run: {reason})"
+[update_msg.stage_script_missing]
+doc = "Why a post-pull stage could not run in Node. Placeholder: script."
+value = "{script} is not there"
 
 [update_msg.stage_start]
 doc = "Progress line on stderr before a stage."
@@ -482,11 +466,6 @@ value = [
   { key = "harnessRegistered", prefix = "  harness-register: ", more = "" },
 ]
 
-[update.kept_local]
-doc = "The status keys the engine computes itself and never takes from the Node stage run."
-value = ["installed", "latest", "updated", "action", "cacheSynced"]
-
-
 [update.v_strip_re]
 doc = "A leading v on a version."
 value = "^[vV]"
@@ -511,10 +490,6 @@ value = "undefined"
 doc = "How a missing count reads."
 value = "0"
 
-[update.reexec_value]
-doc = "The value of the stage-run marker variable."
-value = "1"
-
 [update.post_pull_flag]
 doc = "The flag that runs only the post-pull part (also the flag passed to the Node stage script)."
 value = "--post-pull-only"
@@ -526,14 +501,6 @@ value = "--check"
 [update_msg.remote_json_bad]
 doc = "The reason when the remote manifest is not JSON."
 value = "invalid JSON in the remote manifest"
-
-[update_msg.reason_failed]
-doc = "Why the Node stages are missing: the run failed."
-value = "the Node stage run failed"
-
-[update_msg.reason_unusable]
-doc = "Why the Node stages are missing: it printed nothing usable."
-value = "the Node stage run printed no usable status"
 
 [update_human.bit_sep]
 doc = "Separator of the parts of one reconcile result."
