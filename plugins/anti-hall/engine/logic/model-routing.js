@@ -273,7 +273,7 @@ function decide(p) {
   }
 
   // Row 6: a research-shaped generic spawn that writes nothing is nudged toward Explore, which cannot recurse.
-  var writeShaped = mrT('model_routing.write_phrase_re', corpus) ||
+  var writeShaped = mrT('model_routing.write_phrase_re', corpus) || mrT('model_routing.commit_phrase_re', corpus.replace(jx.re('model_routing.negated_commit_re', 'gi'), ' ')) ||
     (!mrT('model_routing.readonly_override_re', corpus) && (mrT('model_routing.write_re', corpus) || mrT('model_routing.write_imperative_re', corpus)));
   if (generic && mrT('model_routing.research_re', corpus) && !writeShaped) {
     return mrRouted(mrTip(ah.cfg('model_routing.msg_row6_what'), ah.cfg('model_routing.msg_row6_instead'), ah.cfg('model_routing.msg_row6_why')), p, input, 'research', ah.cfg('model_routing.explore_type'), 'exempt');

@@ -93,6 +93,13 @@ const WRITE_IMPERATIVE_RE =
 const WRITE_PHRASE_RE =
   /\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch)\b|(?:^|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b/im;
 
+// A brief that tells the agent to commit (or to open a git worktree) is a writing brief however many read-only words it quotes
+// (dogfood 2026-10-09: a fix brief naming the check "read-only-shaped" was judged read-only). A negated commit ("never commit",
+// "do not push") is removed first, so a genuinely read-only brief stays read-only. Unlike READONLY_OVERRIDE_RE this is not overridable.
+const COMMIT_PHRASE_RE =
+  /\bgit\s+(?:commit|push|worktree\s+add|checkout\s+-b)\b|\bcommit(?:s|ting)?\s+(?:per|each|every|it\b|them\b|your\b|after|before|the\s+(?:fix|fixes|change|changes|work)|with\s+a)\b|\bcommit\s+(?:and|&)\s+push\b/i;
+const NEGATED_COMMIT_RE = /\b(?:do\s+not|don'?t|never|without|no)\s+(?:\w+\s+){0,3}?(?:git\s+)?(?:commit|push|worktree)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+)?(?:commit|push|worktree)\w*)*/gi;
+
 // Explicit read-only statements. They override the ambiguous/bare WRITE_RE and
 // imperative stems, but NOT WRITE_PHRASE_RE (saving a report file is still a write).
 const READONLY_OVERRIDE_RE =
@@ -604,7 +611,7 @@ function main() {
   // nudging them toward Explore would recommend the wrong agent type (false-positive
   // guard added v0.37.x after a release agent was wrongly nudged due to "audit/find"
   // in its description).
-  const writeShaped = WRITE_PHRASE_RE.test(corpus) ||
+  const writeShaped = WRITE_PHRASE_RE.test(corpus) || COMMIT_PHRASE_RE.test(corpus.replace(NEGATED_COMMIT_RE, ' ')) ||
     (!READONLY_OVERRIDE_RE.test(corpus) && (WRITE_RE.test(corpus) || WRITE_IMPERATIVE_RE.test(corpus)));
   if (isGenericAgent && RESEARCH_RE.test(corpus) && !writeShaped) {
     advise(tip(

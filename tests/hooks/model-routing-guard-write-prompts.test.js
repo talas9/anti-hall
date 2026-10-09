@@ -85,3 +85,15 @@ test('FIX: "research how the build works and report" + model haiku -> Explore ad
 test('GUARD: same prompt with model omitted -> Row 2 strict block (exit 2), by design', () => {
   assert.strictEqual(advisory('research task', 'research how the build works and report', null), 'status:2');
 });
+
+// FIX (dogfood 2026-10-09): a brief that tells the agent to commit is a writing brief even when it quotes "read-only-shaped".
+test('FIX: a fix brief that commits and quotes the read-only advisory gets no Explore advisory', () => {
+  const brief = 'Fix the misfires. Investigate each, find the root cause (the model-routing check says "read-only-shaped"), then fix it and commit per check.';
+  assert.strictEqual(advisory('fix hook misfires', brief), '');
+  assert.strictEqual(advisory('fix hook misfires', 'Investigate the checks, set up with git worktree add ../wt lane, then report.'), '');
+});
+// GUARD: a negated commit stays read-only.
+test('GUARD: "do not commit or push anything" research brief keeps the Explore advisory', () => {
+  assert.match(advisory('research task', 'Investigate how the hooks read settings and report only. Do not commit or push anything.'), /read-only-shaped/);
+  assert.match(advisory('research task', 'Find where the release tag is created. Report only; do not run git commit or git push.'), /read-only-shaped/);
+});
