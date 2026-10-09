@@ -228,6 +228,7 @@ fn whole_file_state_is_written_atomically_outside_the_listed_exceptions() {
         ("src/checks/phase_tracker/mod.rs", "the phase log is written in place so a symlinked log is written through, as Node does"),
         ("src/dispatch/mod.rs", "the empty done marker the wrapper tests for existence"),
         ("src/doctor/selftest.rs", "fixtures in the self-test's scratch home"),
+        ("src/doctor/devswarm.rs", "fixtures in the DevSwarm hook self-test's scratch home (`selftest::Scratch`), never state"),
         ("src/defaults/load.rs", "the one-time backup copy of an edited defaults file (a new file)"),
         (
             "src/meshw/",
