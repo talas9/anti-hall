@@ -82,19 +82,16 @@ const TARGETS = [
 const ROOT_LOCK = path.join(ROOT, 'ah-engine.lock');
 const PLUGIN_LOCK = path.join(PLUGIN, 'ah-engine.lock');
 
-test('shipped plugin ah-engine.lock byte-equals the root lock and lists all 6 targets', { skip: !fs.existsSync(PLUGIN_LOCK) && 'no plugin lock shipped yet' }, () => {
+test('shipped plugin ah-engine.lock byte-equals the root lock and lists all 6 targets (plus the source tarball)', { skip: !fs.existsSync(PLUGIN_LOCK) && 'no plugin lock shipped yet' }, () => {
   assert.ok(fs.existsSync(ROOT_LOCK), 'plugin lock present but root ah-engine.lock missing');
   assert.ok(fs.readFileSync(PLUGIN_LOCK).equals(fs.readFileSync(ROOT_LOCK)), 'plugin lock differs from root lock');
   const lock = JSON.parse(fs.readFileSync(PLUGIN_LOCK, 'utf8'));
   assert.strictEqual(lock.schema, 1);
   assert.strictEqual(lock.tag, `ah-engine-v${lock.version}`);
-  const names = Object.keys(lock.assets);
-  for (const t of TARGETS) {
-    const hit = names.filter((n) => n.includes(`-${t}.`));
-    assert.strictEqual(hit.length, 1, `lock must list exactly one asset for ${t}`);
-    assert.match(lock.assets[hit[0]], /^[0-9a-f]{64}$/);
-  }
-  assert.strictEqual(names.length, TARGETS.length, 'lock lists assets beyond the 6 targets');
+  // The release workflow's expected set: one archive per target plus the vendored source tarball.
+  const expected = [...TARGETS.map((t) => `ah-engine-v${lock.version}-${t}.tar.gz`), `ah-engine-v${lock.version}-src.tar.gz`].sort();
+  assert.deepStrictEqual(Object.keys(lock.assets).sort(), expected, 'lock assets differ from the 6 targets plus the source tarball');
+  for (const [name, sha] of Object.entries(lock.assets)) assert.match(sha, /^[0-9a-f]{64}$/, name);
   const targetsJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'ah-engine', 'targets.json'), 'utf8')).map((x) => x.triple).sort();
   assert.deepStrictEqual(targetsJson, [...TARGETS].sort(), 'targets.json drifted from this test');
 });
