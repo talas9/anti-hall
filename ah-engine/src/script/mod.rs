@@ -420,3 +420,6 @@ mod tests_host_d;
 #[cfg(test)]
 #[path = "golden_d6/tests.rs"]
 mod tests_golden_d6;
+#[cfg(test)]
+#[path = "golden_e/tests.rs"]
+mod tests_golden_e;
