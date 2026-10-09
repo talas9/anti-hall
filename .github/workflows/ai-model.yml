@@ -376,3 +376,24 @@ jobs:
             const line = `slot: ${pick.provider}${reasons.length ? ' (' + reasons.join('; ') + ')' : ''}`;
             core.info(line);
             await core.summary.addRaw(`**AI slot used:** \`${pick.provider}\`${reasons.length ? ' - ' + reasons.join('; ') : ''}\n`, true).write();
+
+      # One tiny marker artifact per run that made a model call (slot != none). lib.budget counts
+      # these per day, so AI_DAILY_CAP limits model calls, not workflow runs.
+      - name: Record the model call for the daily cap
+        id: mark
+        if: always() && steps.pick.outputs.provider != 'none' && steps.pick.outputs.provider != ''
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          SLOT: ${{ steps.pick.outputs.provider }}
+        run: |
+          wf=$(basename "${WORKFLOW_REF%%@*}")
+          echo "name=ai-call-${wf}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/ai-call" && echo "$SLOT" > "$RUNNER_TEMP/ai-call/slot.txt"
+
+      - name: Upload the model-call marker
+        if: always() && steps.mark.outputs.name != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.mark.outputs.name }}
+          path: ${{ runner.temp }}/ai-call/slot.txt
+          retention-days: 2

@@ -16,7 +16,7 @@ function mock({ stickyAge = null, runs = 1 } = {}) {
     rest: {
       issues: { listComments: () => {}, get: async () => ({ data: { body: 'body of the issue that is long enough to count' } }) },
       search: { issuesAndPullRequests: async () => ({ data: { items: [] } }) },
-      actions: { listWorkflowRuns: async () => ({ data: { total_count: runs } }) },
+      actions: { listArtifactsForRepo: () => {} },
       pulls: { listFiles: async () => ({ data: [] }) },
     },
   };

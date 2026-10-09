@@ -344,14 +344,16 @@ function chain(varValue, cfg) {
   return v.split(',').map((x) => x.trim()).filter((x) => cfg.model.providers.includes(x));
 }
 
-// Daily model budget per workflow: counts today's runs of this workflow (conservative: runs that
-// skipped the model count too). Fails closed for the model (= rules only) on an API error.
+// Daily model budget per workflow: counts today's actual MODEL CALLS (runs whose ai-model pick job
+// recorded a slot other than none, as an "ai-call-<workflow file>-<run>" marker artifact), not
+// workflow runs. Fails closed for the model (= rules only) on an API error.
 async function budget(github, context, workflowFile, cap) {
   const day = new Date().toISOString().slice(0, 10);
+  const prefix = `ai-call-${workflowFile}-`;
   try {
-    const r = await github.rest.actions.listWorkflowRuns({ ...context.repo, workflow_id: workflowFile, created: '>=' + day, per_page: 1 });
-    const used = r.data.total_count;
-    return { ok: used <= cap, used, cap };
+    const arts = await github.paginate(github.rest.actions.listArtifactsForRepo, { ...context.repo, per_page: 100 });
+    const used = arts.filter((a) => !a.expired && String(a.name).startsWith(prefix) && String(a.created_at || '').slice(0, 10) >= day).length;
+    return { ok: used < cap, used, cap };
   } catch (e) {
     return { ok: false, used: -1, cap, error: String(e.status || e.message) };
   }
