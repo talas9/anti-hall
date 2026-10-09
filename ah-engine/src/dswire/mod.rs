@@ -18,6 +18,7 @@ pub mod consume;
 pub mod facts;
 pub mod live;
 pub mod nudges;
+pub mod stall;
 pub mod watching;
 
 use crate::db::Db;
@@ -102,6 +103,7 @@ pub struct Wire {
     act_pending: AtomicBool,
     dirty: crate::dsact::events::Dirty,
     tele: crate::dsact::tele::Tele,
+    last_stall: AtomicI64,
 }
 
 static GLOBAL: OnceLock<Arc<Wire>> = OnceLock::new();
@@ -134,6 +136,7 @@ impl Wire {
             act_pending: AtomicBool::new(false),
             dirty: crate::dsact::events::Dirty::new(),
             tele: crate::dsact::tele::Tele::new(state_dir),
+            last_stall: AtomicI64::new(0),
         }
     }
 
@@ -254,6 +257,7 @@ impl Wire {
         if poke || esc {
             let allow = |k: &str| (k == "poke" && poke) || (k == "escalate" && esc);
             for r in act.poke_sweep_for(&allow) {
+                self.record_stall(&r, now);
                 self.after_nudge(&r, now);
                 self.count(&mut |m| m.inc("dswire_actions", &[("kind", &r.kind), ("outcome", r.word.text())]));
                 out.push(r.json());

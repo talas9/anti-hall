@@ -1,4 +1,4 @@
-//! `ah-engine telemetry [summary|events|rollup]` (D78).
+//! `ah-engine telemetry [summary|events|rollup|actions]` (D78). `actions [feature]` reports what the acting features did and got wrong (`actlog`).
 //!
 //! `summary` and `events` ask the running daemon (so they include what it has recorded but not flushed yet) and fall back to
 //! reading the databases. `rollup` works on the database files directly, like `maintain`: it is idempotent, and SQLite's locks keep them apart from the daemon's own writes.
@@ -68,6 +68,7 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             v["running"] = json!(false);
             (v, 0)
         }
+        "actions" => crate::actlog::run_cli(rest),
         "rollup" => match open_for_write().and_then(|t| t.rollup(now_ms(), defaults::num("telemetry.retention_days")).map_err(|e| e.to_string())) {
             Ok(v) => (v, 0),
             Err(e) => (json!({"error": e}), 1),

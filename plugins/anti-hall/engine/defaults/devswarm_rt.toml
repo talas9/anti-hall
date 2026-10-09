@@ -23,6 +23,32 @@ value = 900000
 unit = "ms"
 min = 1000
 
+[devswarm_rt.stall_require_quiet_sources]
+doc = "How many silence sources must be older than stall_ms before an active workspace is stuck (and so poked, then escalated): the heartbeat plus the other sources of devswarm_rt.stall_sources that exist for it. The default 3 is all of them (heartbeat, transcript, git), so activity on any one resets the silence clock; 1 = any one silent source is enough (the heartbeat alone, the old rule). Never more than the sources that exist for the workspace."
+value = 3
+min = 1
+max = 10
+
+[devswarm_rt.stall_sources]
+doc = "The silence sources besides the heartbeat: transcript (the mtime of the workspace's session transcript) and git (the mtime of the files of devswarm_rt.stall_git_paths in its git directory). Any of them being newer than stall_ms resets the silence clock; an event on one of them re-checks the workspace at once."
+value = ["transcript", "git"]
+
+[devswarm_rt.stall_git_paths]
+doc = "The files of a worktree's git directory whose modification time counts as activity (a commit or a checkout). Not the index: git status refreshes it, so the engine's own checks would reset the clock."
+value = ["HEAD", "logs/HEAD"]
+
+[devswarm_rt.stall_check_min_gap_ms]
+doc = "The least time between two deadline checks for stalls: the engine re-reads the state when an active workspace's silence clock reaches stall_ms (it does not wait for the periodic reconcile), at most once per this gap."
+value = 15000
+unit = "ms"
+min = 1000
+
+[devswarm_rt.stall_followup_wait_ms]
+doc = "How long after a poke or an escalation the engine checks whether it changed anything (the workspace showed new activity). No new activity after a poke is logged as a nudge_no_change mistake signal; new activity after an escalation as escalation_then_active."
+value = 600000
+unit = "ms"
+min = 1000
+
 [devswarm_rt.restart_grace_ms]
 doc = "Changes found by the start-up diff (flagged while_down) are not notified before this long after start, and only if the condition still holds then."
 value = 120000

@@ -325,3 +325,7 @@ max = 64
 [devswarm_wire.check_script]
 doc = "The name of the plugin script (engine/logic/<name>.js) that decides the advisory."
 value = "devswarm-rt-advisory"
+
+[metric.dswire_stall_actions]
+doc = "Pokes and escalations of silent workspaces the engine ran or refused (feature 5), by kind (poke, escalate) and outcome (ok, failed, refused); the same actions, their inputs and the mistake signals found later are in the action log (`ah-engine telemetry actions stall`)."
+value = { kind = "counter", unit = "actions", labels = ["kind", "outcome"] }

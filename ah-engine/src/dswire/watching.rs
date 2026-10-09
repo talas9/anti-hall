@@ -9,7 +9,7 @@ use crate::meshw::idlock::devswarm_root;
 use crate::meshw::union;
 use crate::watch::{Config, Watcher, poll::Filter};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// What a watched directory is.
@@ -47,24 +47,11 @@ pub fn wanted(w: &Wire, cfg: &Config) -> Vec<(PathBuf, Filter, Role)> {
                 out.push((dir.to_path_buf(), Filter::All, Role::Transcript(ws.id.clone())));
             }
         }
-        if let Some(g) = git_dir(wt) {
+        if let Some(g) = facts::git_dir(wt) {
             out.push((g, Filter::names(defaults::list("devswarm_wire.watch_git_names")), Role::Git(ws.id.clone())));
         }
     }
     out
-}
-
-/// A worktree's git directory: `<wt>/.git` itself, or the target of the `gitdir:` line a linked worktree has in its place.
-fn git_dir(wt: &str) -> Option<PathBuf> {
-    let spec = defaults::raw("devswarm_wire.git_dir_file");
-    let p = Path::new(wt).join(spec.str_field("file"));
-    if p.is_dir() {
-        return Some(p);
-    }
-    let line = std::fs::read_to_string(&p).ok()?;
-    let target = line.lines().next()?.strip_prefix(spec.str_field("prefix"))?.trim();
-    let t = Path::new(target);
-    Some(if t.is_absolute() { t.to_path_buf() } else { Path::new(wt).join(t) })
 }
 
 /// Bring the watcher in line with [`wanted`]: add directories that appeared, drop ones no longer wanted.
@@ -121,6 +108,7 @@ pub fn run(w: &Wire, stop: &dyn Fn() -> bool) {
     while !stop() {
         w.act_if_pending();
         w.events_if_due();
+        w.stall_tick();
         let Some(batch) = watcher.next(wait) else { continue };
         let p = plan(&have, batch.rescan, &batch.paths);
         if !p.dirty.is_empty() {
@@ -130,7 +118,9 @@ pub fn run(w: &Wire, stop: &dyn Fn() -> bool) {
             }
             w.run_jev();
         }
-        if let Some(cause) = p.reconcile {
+        // a transcript or git event on a workspace the state calls stuck: the silence clock reset, so read the state again now
+        let cause = p.reconcile.or_else(|| w.stuck_among(&p.dirty).then_some(Cause::Event));
+        if let Some(cause) = cause {
             w.reconcile(cause);
             sync(w, &watcher, &mut have);
         }

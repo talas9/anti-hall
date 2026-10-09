@@ -56,11 +56,15 @@ pub struct Report {
     pub word: Word,
     /// The detail.
     pub detail: Value,
+    /// The facts the decision was made from (the value of each condition), when the action came from a sweep.
+    pub inputs: Value,
+    /// How long the action took, milliseconds.
+    pub latency_ms: u64,
 }
 
 impl Report {
     fn new(kind: &str, id: &str, key: &str, word: Word, detail: Value) -> Report {
-        Report { kind: kind.into(), id: id.into(), key: key.into(), word, detail }
+        Report { kind: kind.into(), id: id.into(), key: key.into(), word, detail, inputs: Value::Null, latency_ms: 0 }
     }
 
     /// The report as a JSON object.
@@ -202,9 +206,10 @@ impl<'a> Act<'a> {
 
     /// Claim, run, check, record one action. `check` decides whether a successful process really did the job.
     pub(super) fn execute(&self, kind: &str, id: &str, d: &Value, timeout_ms: u64, check: &dyn Fn(&RunResult) -> Result<(), String>) -> Report {
-        let t0 = std::time::Instant::now();
-        let r = self.execute_inner(kind, id, d, timeout_ms, check);
-        crate::telemetry::emit::act(&super::audit::act_rec(&r, t0.elapsed().as_millis() as u64));
+        let started = std::time::Instant::now();
+        let mut r = self.execute_inner(kind, id, d, timeout_ms, check);
+        r.latency_ms = started.elapsed().as_millis() as u64;
+        crate::telemetry::emit::act(&super::audit::act_rec(&r, r.latency_ms));
         r
     }
 
@@ -416,16 +421,16 @@ impl<'a> Act<'a> {
         let s = self.settings();
         let kinds = defaults::list("devswarm_act.automatic_kinds");
         for id in self.live.stale() {
-            let decided = |this: &Self| -> Option<Value> {
+            let decided = |this: &Self| -> Option<(Value, Value)> {
                 let facts = this.live.facts(&format!("{}-or-{}", kinds[1], kinds[2]), &id)?;
-                let d = decide(&this.home_str(), &this.payload(&format!("{}-or-{}", kinds[1], kinds[2]), facts, json!({}), vec![], &s)).ok()?;
-                (d.get("eligible").and_then(Value::as_bool) == Some(true)).then_some(d)
+                let d = decide(&this.home_str(), &this.payload(&format!("{}-or-{}", kinds[1], kinds[2]), facts.clone(), json!({}), vec![], &s)).ok()?;
+                (d.get("eligible").and_then(Value::as_bool) == Some(true)).then_some((d, facts))
             };
             if decided(self).is_none() {
                 continue;
             }
             // right before acting: read and decide again
-            let Some(d) = decided(self) else {
+            let Some((d, facts)) = decided(self) else {
                 out.push(Report::new("", &id, "", Word::Stale, json!({})));
                 continue;
             };
@@ -433,11 +438,14 @@ impl<'a> Act<'a> {
             if !allow(&kind) {
                 continue;
             }
-            if let Err(r) = self.permit(Origin::Automatic, &kind) {
+            if let Err(mut r) = self.permit(Origin::Automatic, &kind) {
+                r.inputs = facts;
                 out.push(r);
                 continue;
             }
-            out.push(self.execute(&kind, &id, &d, defaults::num("devswarm_act.hc_timeout_ms"), &|_| Ok(())));
+            let mut r = self.execute(&kind, &id, &d, defaults::num("devswarm_act.hc_timeout_ms"), &|_| Ok(()));
+            r.inputs = facts;
+            out.push(r);
         }
         out
     }
