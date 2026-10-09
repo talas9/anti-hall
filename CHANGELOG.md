@@ -6,13 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.300.0 (2026-10-09)
 
 ### Highlights
 
 - **Optional `ah-engine` (Rust) answers hook calls without starting Node per call.** One thin trigger per event; the engine decides natively what it can prove identical to the Node hook and defers the rest to Node, never weaker than Node. Claude and Codex ports alike. macOS and Linux; Windows is not supported yet.
 - **Everything tunable lives in plugin files** (`plugins/anti-hall/engine/`), read at run time with hot reload, layered failover and self-heal. Nothing is compiled into the binary.
 - **Local-only telemetry**: `ah-engine telemetry summary`.
+- **Released separately.** The engine has its own version and GitHub Release (`ah-engine-v0.1.0`, six targets, build-provenance attested); the plugin pins it by sha256 in `ah-engine.lock`. A plugin without the binary, offline or on an unsupported platform runs the Node hooks exactly as before.
+- **Released separately.** The engine has its own version and GitHub Release (`ah-engine-v0.1.0`, six targets, build-provenance attested); the plugin pins it by sha256 in `ah-engine.lock`. A plugin without the binary, offline or on an unsupported platform runs the Node hooks exactly as before.
 
 ### Added
 
@@ -32,7 +34,7 @@ the update.
 
 DevSwarm mesh writes and daemons (ingest, supervisor, reaper), every call that consults a Jev integration, the semantic judge's model call, the statusline, and the blocking branch of several guards (the engine answers the quiet cases and defers any case that could block).
 
-### Pre-release measurements
+### Measurements before release
 
 From one replay of 2113 recorded payloads against the exact go-live bundle and the same-version Node hooks (not a field result): 0 of 68 blocks weaker than Node, 2059 identical outputs, 87.0 percent of hook rows answered natively, about 35.5 ms CPU per call for the engine against 158.2 ms for the Node hooks. Known gaps are listed in `docs/AH-ENGINE.md`.
 
