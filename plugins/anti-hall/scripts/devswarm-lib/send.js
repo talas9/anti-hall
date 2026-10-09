@@ -99,7 +99,19 @@ function meshCandidateRows(storeHandle, meshId) {
   return candidates;
 }
 
-function resolveMeshTarget(storeHandle, meshId, home) {
+// provenChildBuilder(home, env) -> (id) => boolean. True only on the DevSwarm app's own
+// record: the id is a builder whose type is not 'primary'. No app database (or an id it
+// does not know) proves nothing, so the row stays a candidate.
+function provenChildBuilder(home, env) {
+  let states = null;
+  try { states = require('../../companion/lib/devswarm-app-db.js').builderStates({ home, env }); } catch (_) { states = null; }
+  return (id) => {
+    const b = states && states.get(String(id));
+    return !!(b && b.builderType && b.builderType !== 'primary');
+  };
+}
+
+function resolveMeshTarget(storeHandle, meshId, home, opts) {
   if (!meshId) return null;
   // A single worktreePath can carry MORE THAN ONE registry row that ALL resolve to
   // the same meshId. Concretely observed: the `spawn` phantom (keyed BY the meshId,
@@ -132,7 +144,12 @@ function resolveMeshTarget(storeHandle, meshId, home) {
   // opts.isLive, so it keeps pickFreshestLive's own default (bare
   // isLiveSessionId) unchanged — this migration is scoped to send/fold routing
   // only, per the header comment above SYNTHETIC_SESSION_PREFIX.
-  const candidates = meshCandidateRows(storeHandle, meshId);
+  // opts.exclude(row): rows that must never receive this route. `--to-primary` excludes a
+  // proven CHILD builder registered against the Primary's path (the pre-fix submodule
+  // identity bug): its live session would win the freshest-live pick and the mail would
+  // land in a child instead of the Primary (SkyCrew report, 2026-10-09).
+  let candidates = meshCandidateRows(storeHandle, meshId);
+  if (opts && typeof opts.exclude === 'function') candidates = candidates.filter((r) => !opts.exclude(r));
   return livenessSelect.pickFreshestLive(candidates, {
     storeHandle, home,
     isLive: (row) => isRoutingLiveRowStrict(row, home),
@@ -702,7 +719,7 @@ function cmdSend(flags, ctx) {
       // (above) the Primary's row is now in THIS repoKey store, so this resolve
       // finds it.
       if (toPrimaryFlag) {
-        const target = resolveMeshTarget(s, primaryMeshId, home);
+        const target = resolveMeshTarget(s, primaryMeshId, home, { exclude: (r) => provenChildBuilder(home, ctx.env)(r.id) });
         if (!target) {
           return {
             ok: false, reason: 'primary-unregistered',
