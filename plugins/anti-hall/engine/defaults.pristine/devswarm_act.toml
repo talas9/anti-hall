@@ -378,3 +378,151 @@ value = "the Node witness disagreed with the engine on {mismatch} of {n} compari
 [devswarm_act.msg_audit_off]
 doc = "Answer of the ledger verb when the audit is switched off."
 value = "the action audit is switched off (devswarm_act.audit_enabled)"
+
+# ---- event-driven auto-archive, "done but open" nag, telemetry (DevSwarm expansion features 3 and 2) -----------------------------
+
+[devswarm_act.set_event_trigger]
+doc = "Whether a state change (a PR, lifecycle or activity edge) archives the finished workspace within seconds instead of waiting for the next sweep. The policy is unchanged (same gates a-h, same idleMin / maxPerSweep). The timer sweep stays as the safety net."
+value = { type = "bool", section = "devswarm", key = "autoArchive.eventTrigger", env = "ANTIHALL_DEVSWARM_AUTO_ARCHIVE_EVENT_TRIGGER", option = "", default = true }
+
+[devswarm_act.set_event_debounce_ms]
+doc = "How long a workspace stays in the dirty set after its last edge before the event path looks at it (a burst of edges is one look)."
+value = { type = "number", section = "devswarm", key = "autoArchive.eventDebounceMs", env = "ANTIHALL_DEVSWARM_AUTO_ARCHIVE_EVENT_DEBOUNCE_MS", option = "", min = 0, max = 3600000, default = 2000 }
+
+[devswarm_act.event_kinds]
+doc = "The state-change kinds that mark a workspace dirty for the event path."
+value = ["lifecycle", "activity", "pr"]
+
+[devswarm_act.set_nag]
+doc = "Whether the Primary is nagged about a workspace that is done but still open (merged, clean, no unread mail, past idleMin)."
+value = { type = "bool", section = "devswarm", key = "nag.enabled", env = "ANTIHALL_DEVSWARM_NAG", option = "", default = true }
+
+[devswarm_act.set_nag_every_ms]
+doc = "Gap between two digests about the same still-open done workspace."
+value = { type = "number", section = "devswarm", key = "nag.everyMs", env = "ANTIHALL_DEVSWARM_NAG_EVERY_MS", option = "", min = 1000, max = 604800000, default = 1800000 }
+
+[devswarm_act.set_nag_hourly_cap]
+doc = "Most nag messages sent to the Primary in any rolling hour."
+value = { type = "number", section = "devswarm", key = "nag.hourlyCap", env = "ANTIHALL_DEVSWARM_NAG_HOURLY_CAP", option = "", min = 1, max = 1000, default = 4 }
+
+[devswarm_act.nag_done_requires]
+doc = "What must hold for a workspace to count as done for the nag, all of them: merged (merge proof), pushed (its branch is pushed), validated (a done report bound to HEAD)."
+value = ["merged"]
+
+[devswarm_act.nag_ignored_cycles]
+doc = "A workspace nagged this many times at one HEAD and still open is recorded as a mistake signal (the nag was ignored)."
+value = 6
+min = 1
+max = 1000
+
+[devswarm_act.nag_kind]
+doc = "The kind word of a nag in the ledger and the logs."
+value = "nag"
+
+[devswarm_act.nag_state_file]
+doc = "Per-workspace nag state (last nag, last HEAD, cycles) and the rolling send times, in the engine state directory."
+value = "dsact.nag"
+
+[devswarm_act.nag_pending_file]
+doc = "Nag messages waiting for the Primary's next prompt (the realtime advisory channel delivers and clears them), in the engine state directory."
+value = "dsact.nag.pending"
+
+[devswarm_act.nag_hint]
+doc = "The one-command archive hint appended to a nag. Placeholder: {id}."
+value = "archive it: ah-engine devswarm archive --id {id} --request nag-{id}"
+
+[devswarm_act.nag_edge_text]
+doc = "Nag text for a workspace that just became done. Placeholders: {label}, {id}, {via}, {idle}, {hint}."
+value = "workspace \"{label}\" ({id}) is done (merged: {via}), clean, no unread mail, idle {idle}m, and still open. {hint}"
+
+[devswarm_act.nag_digest_text]
+doc = "Nag text for a workspace that stays done and open. Placeholders as nag_edge_text."
+value = "still open: workspace \"{label}\" ({id}) is done (merged: {via}), idle {idle}m. {hint}"
+
+[devswarm_act.events_file]
+doc = "NDJSON of every automatic archive / nag attempt and every mistake signal: feature, action, target (id, doneHead), the value of each gate, outcome (ok / refused / failed) with reason, latency (state directory)."
+value = "dsact.events"
+
+[devswarm_act.mistakes_file]
+doc = "Mistake signals already recorded (one line per signal and key, so a signal is counted once), in the engine state directory."
+value = "dsact.mistakes"
+
+[devswarm_act.mistake_window_ms]
+doc = "How long after an auto-archive the engine keeps watching the workspace for mistake signals (unarchived, new commits or activity)."
+value = 604800000
+min = 60000
+max = 31536000000
+
+[devswarm_act.mistake_activity_grace_ms]
+doc = "Activity newer than the archive by less than this is the archive's own doing (the app touching the worktree), not a mistake signal."
+value = 60000
+min = 0
+max = 86400000
+
+[devswarm_act.gate_names]
+doc = "The auto-archive gates in report order; a gate not blocking is recorded as `pass`."
+value = ["a-done", "b-merged", "c-clean", "d-unread", "e-primary", "f-viewed", "g-idle", "h-rearchive"]
+
+[devswarm_act.feature_names]
+doc = "The feature words of the telemetry, in the order auto-archive, nag."
+value = ["auto-archive", "nag"]
+
+[devswarm_act.outcome_words]
+doc = "The telemetry outcome words in this order: ok, refused, failed."
+value = ["ok", "refused", "failed"]
+
+[devswarm_act.trigger_words]
+doc = "What started an attempt, in this order: event, sweep."
+value = ["event", "sweep"]
+
+[devswarm_act.mistake_unarchived]
+doc = "Mistake signal: the workspace was unarchived after an auto-archive."
+value = "unarchived"
+
+[devswarm_act.mistake_activity]
+doc = "Mistake signal: new commits or activity appeared in an auto-archived workspace."
+value = "activity-after-archive"
+
+[devswarm_act.mistake_nag_ignored]
+doc = "Mistake signal: the nag went unanswered for devswarm_act.nag_ignored_cycles cycles."
+value = "nag-ignored"
+
+[devswarm_act.nag_resolved]
+doc = "The telemetry action word for a nagged workspace that was archived or closed afterwards (the nag worked)."
+value = "resolved"
+
+[devswarm_act.msg_inflight]
+doc = "Why an action was refused: another trigger is already acting on this workspace. Placeholder: {id}."
+value = "another trigger is already acting on {id}"
+
+[devswarm_act.msg_stale]
+doc = "Why an action was refused: the preconditions changed between the decision and the action."
+value = "preconditions changed between the decision and the action"
+
+[metric.dsx_actions]
+doc = "Automatic archive and nag attempts of the DevSwarm expansion features, by feature and outcome (ok, refused, failed)."
+value = { kind = "counter", unit = "actions", labels = ["feature", "outcome"] }
+
+[metric.dsx_mistakes]
+doc = "Mistake signals recorded after an automatic action, by feature and signal (unarchived, activity-after-archive, nag-ignored)."
+value = { kind = "counter", unit = "signals", labels = ["feature", "signal"] }
+
+[metric.dsx_latency_us]
+doc = "Wall time of one automatic archive or nag attempt, by feature."
+value = { kind = "histogram", unit = "us", labels = ["feature"] }
+
+[metric.dsx_auto_archive_success_rate]
+doc = "ok / (ok + failed) of auto-archive attempts since the engine started (gauge, 0..1); a refusal is a safety check working and is not counted."
+value = { kind = "gauge", unit = "ratio", labels = [] }
+
+[metric.dsx_auto_archive_mistake_rate]
+doc = "Mistake signals per successful auto-archive since the engine started (gauge)."
+value = { kind = "gauge", unit = "ratio", labels = [] }
+
+[metric.dsx_nag_success_rate]
+doc = "ok / (ok + failed) of nag attempts since the engine started (gauge, 0..1)."
+value = { kind = "gauge", unit = "ratio", labels = [] }
+
+[metric.dsx_nag_mistake_rate]
+doc = "Mistake signals per delivered nag since the engine started (gauge)."
+value = { kind = "gauge", unit = "ratio", labels = [] }

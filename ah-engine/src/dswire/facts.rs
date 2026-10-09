@@ -97,6 +97,14 @@ impl Git<'_> {
         let h = r.stdout.trim().to_string();
         (r.ok && !h.is_empty()).then_some(h)
     }
+    /// Is `head` on some remote branch (`git branch -r --contains`)? `None` when git cannot say.
+    pub fn pushed(&self, wt: &str, head: &str) -> Option<bool> {
+        if !Path::new(wt).exists() {
+            return None;
+        }
+        let r = self.run(wt, &["branch", "-r", "--contains", head]);
+        r.ok.then(|| !r.stdout.trim().is_empty())
+    }
     /// `git status --porcelain`: `(clean, reason)` as Node's `cleanFact`.
     pub fn clean(&self, wt: &str) -> (Option<bool>, Option<&'static str>) {
         if !Path::new(wt).exists() {

@@ -265,6 +265,18 @@ impl LiveState for RtLive<'_> {
             let b = app.builders.iter().find(|b| b.id == id)?;
             return Some(self.auto_archive_facts(&app, b));
         }
+        if kind == defaults::text("devswarm_act.nag_kind") {
+            let app = app?;
+            let b = app.builders.iter().find(|b| b.id == id)?;
+            let mut f = self.auto_archive_facts(&app, b);
+            let open = b.active == Some(true) && b.hidden == Some(false);
+            f["lifecycle"] = json!(if open { "active" } else { "inactive" });
+            if defaults::list("devswarm_act.nag_done_requires").contains(&"pushed") {
+                let wt = f["worktreePath"].as_str().unwrap_or_default().to_string();
+                f["pushed"] = json!(f["head"].as_str().and_then(|h| self.git().pushed(&wt, h)) == Some(true));
+            }
+            return Some(f);
+        }
         if kind == format!("{}-or-{}", kinds[1], kinds[2]) {
             return self.nudge_facts(id);
         }
@@ -279,6 +291,16 @@ impl LiveState for RtLive<'_> {
 
     fn archived(&self, id: &str) -> Option<bool> {
         self.app()?.builders.iter().find(|b| b.id == id).map(archived_flags)
+    }
+
+    fn post_archive(&self, id: &str) -> Option<Value> {
+        let app = self.app()?;
+        let b = app.builders.iter().find(|b| b.id == id)?;
+        let wt = b.worktree.clone()?;
+        let descs = facts::descriptors(&self.home);
+        let mine = facts::descs_of(&descs, b);
+        let probe = FsProbe::new(&self.home, self.now);
+        Some(json!({"head": self.git().head(&wt), "activityMs": facts::activity_ms(&self.home, &probe, b, &mine)}))
     }
 
     fn prune_rows(&self, days: u64) -> Vec<Value> {

@@ -120,6 +120,7 @@ pub fn run(w: &Wire, stop: &dyn Fn() -> bool) {
     let wait = Duration::from_millis(defaults::num("devswarm_wire.wait_ms"));
     while !stop() {
         w.act_if_pending();
+        w.events_if_due();
         let Some(batch) = watcher.next(wait) else { continue };
         let p = plan(&have, batch.rescan, &batch.paths);
         if !p.dirty.is_empty() {

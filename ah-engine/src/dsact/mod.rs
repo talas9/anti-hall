@@ -20,12 +20,15 @@
 // - a record that cannot be appended to a log is lost, never the action's result
 pub mod audit;
 pub mod decide;
+pub mod events;
 pub mod exec;
 pub mod ledger;
 pub mod live;
+pub mod nag;
 pub mod runner;
 pub mod settings;
 pub mod shadow;
+pub mod tele;
 
 #[cfg(test)]
 mod tests;

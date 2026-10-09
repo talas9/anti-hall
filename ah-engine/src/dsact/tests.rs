@@ -45,6 +45,7 @@ struct Fixture {
     archived: RefCell<HashMap<String, bool>>,
     prune: Vec<Value>,
     reads: Cell<usize>,
+    post: RefCell<HashMap<String, Value>>,
 }
 
 impl Fixture {
@@ -58,6 +59,7 @@ impl Fixture {
             archived: RefCell::new(HashMap::new()),
             prune: vec![],
             reads: Cell::new(0),
+            post: RefCell::new(HashMap::new()),
         }
     }
     fn with(self, key: &str, seq: Vec<Value>) -> Fixture {
@@ -87,6 +89,9 @@ impl LiveState for Fixture {
     }
     fn archived(&self, id: &str) -> Option<bool> {
         self.archived.borrow().get(id).copied()
+    }
+    fn post_archive(&self, id: &str) -> Option<Value> {
+        self.post.borrow().get(id).cloned()
     }
     fn prune_rows(&self, _days: u64) -> Vec<Value> {
         self.prune.clone()
@@ -647,4 +652,349 @@ fn the_comparison_counts_calls_only_one_side_made() {
     let c = super::shadow::compare("t", std::slice::from_ref(&a), std::slice::from_ref(&b));
     assert_eq!((c["match"].clone(), c["onlyEngine"][0][2].clone(), c["onlyNode"][0][2].clone()), (json!(false), json!("x"), json!("y")));
     assert_eq!(super::shadow::compare("t", &[a.clone(), a.clone()], std::slice::from_ref(&a))["onlyEngine"].as_array().unwrap().len(), 1);
+}
+
+
+// ---- DevSwarm expansion: event-driven auto-archive (feature 3), the nag (feature 2), telemetry --------------------------------
+
+mod dsx {
+    use super::*;
+    use crate::devswarm_rt::state::{Edge, EdgeKind};
+    use crate::dsact::events::{Dirty, lock_id};
+    use crate::dsact::nag::{Notifier, PendingFile, take_pending};
+    use crate::dsact::tele;
+
+    fn edge(ws: &str, kind: EdgeKind) -> Edge {
+        Edge { ws: ws.into(), kind, from: "a".into(), to: "b".into(), generation: 1, at_ms: NOW, while_down: false, hold_until_ms: 0 }
+    }
+
+    fn events(d: &Path) -> Vec<Value> {
+        std::fs::read_to_string(d.join("state/dsact.events")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    }
+
+    fn quick(d: &Path) {
+        settings(&d.join("home"), json!({"devswarm": {"autoArchive.eventDebounceMs": 0}}));
+    }
+
+    #[test]
+    fn an_edge_archives_once_and_the_timer_that_follows_does_not_repeat_it() {
+        let d = scratch("dsx-edge");
+        quick(&d);
+        let live = one_candidate("dsx-e1");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let dirty = Dirty::new();
+        assert_eq!(dirty.mark(&[edge("dsx-e1", EdgeKind::Pr), edge("dsx-e1", EdgeKind::Unread)], NOW), 1, "unread is no event kind");
+        let s = a.auto_archive_events(&dirty);
+        assert_eq!(s["archived"], json!(["dsx-e1"]), "{s}");
+        // the timer sweep and a second edge both come after: nothing more runs
+        a.auto_archive_sweep();
+        dirty.mark(&[edge("dsx-e1", EdgeKind::Lifecycle)], NOW);
+        a.auto_archive_events(&dirty);
+        assert_eq!(r.actions(), vec![archive_argv("dsx-e1")]);
+        let ev = events(&d);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!((ev[0]["feature"].as_str(), ev[0]["trigger"].as_str(), ev[0]["outcome"].as_str()), (Some("auto-archive"), Some("event"), Some("ok")));
+        assert_eq!(ev[0]["target"], json!({"id": "dsx-e1", "doneHead": "abc123abc123"}));
+        assert!(ev[0]["gates"].as_object().unwrap().values().all(|v| v == "pass") && ev[0]["gates"].as_object().unwrap().len() == 8, "{}", ev[0]["gates"]);
+        assert!(ev[0]["latency_ms"].is_u64());
+    }
+
+    #[test]
+    fn the_timer_first_then_the_edge_is_also_once() {
+        let d = scratch("dsx-race");
+        quick(&d);
+        let live = one_candidate("dsx-r1");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        a.auto_archive_sweep();
+        let dirty = Dirty::new();
+        dirty.mark(&[edge("dsx-r1", EdgeKind::Pr)], NOW);
+        a.auto_archive_events(&dirty);
+        assert_eq!(r.actions().len(), 1);
+    }
+
+    #[test]
+    fn a_burst_waits_for_the_debounce_and_is_one_look() {
+        let d = scratch("dsx-debounce");
+        let live = one_candidate("dsx-d1");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let dirty = Dirty::new();
+        dirty.mark(&[edge("dsx-d1", EdgeKind::Pr)], NOW);
+        a.auto_archive_events(&dirty);
+        assert!(r.actions().is_empty() && dirty.pending() == 1, "default debounce is 2000 ms");
+        live.now.set(NOW + 2_500);
+        a.auto_archive_events(&dirty);
+        assert_eq!(r.actions().len(), 1);
+        assert_eq!(dirty.pending(), 0);
+    }
+
+    #[test]
+    fn the_event_trigger_can_be_switched_off_and_the_sweep_still_works() {
+        let d = scratch("dsx-off");
+        settings(&d.join("home"), json!({"devswarm": {"autoArchive.eventTrigger": false, "autoArchive.eventDebounceMs": 0}}));
+        let live = one_candidate("dsx-o1");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let dirty = Dirty::new();
+        dirty.mark(&[edge("dsx-o1", EdgeKind::Pr)], NOW);
+        a.auto_archive_events(&dirty);
+        assert!(r.actions().is_empty());
+        assert!(!a.event_trigger_on());
+        assert_eq!(a.auto_archive_sweep()["archived"], json!(["dsx-o1"]));
+    }
+
+    #[test]
+    fn a_precondition_that_flips_between_the_decision_and_the_act_refuses_and_runs_nothing() {
+        let d = scratch("dsx-flip");
+        quick(&d);
+        let mut dirt = good("dsx-f1");
+        dirt["clean"] = json!(false);
+        dirt["cleanReason"] = json!("uncommitted-changes");
+        let mut live = Fixture::new().with("auto-archive:dsx-f1", vec![good("dsx-f1"), dirt]);
+        live.candidates = vec!["dsx-f1".into()];
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let dirty = Dirty::new();
+        dirty.mark(&[edge("dsx-f1", EdgeKind::Activity)], NOW);
+        let s = a.auto_archive_events(&dirty);
+        assert!(r.actions().is_empty(), "{s}");
+        assert_eq!(s["failed"][0]["reason"], "stale");
+        let ev = events(&d);
+        assert_eq!((ev[0]["outcome"].as_str(), ev[0]["reason"].as_str()), (Some("refused"), Some(crate::defaults::text("devswarm_act.msg_stale"))));
+        assert_eq!(ev[0]["gates"]["c-clean"], "uncommitted-changes");
+        assert_eq!(Ledger::open(&d.join("state")).state("auto-archive:dsx-f1:abc123abc123"), KeyState::Fresh);
+    }
+
+    #[test]
+    fn another_trigger_holding_the_workspace_refuses_without_a_call() {
+        let d = scratch("dsx-lock");
+        quick(&d);
+        let live = one_candidate("dsx-l1");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let dirty = Dirty::new();
+        dirty.mark(&[edge("dsx-l1", EdgeKind::Pr)], NOW);
+        let held = lock_id("dsx-l1").expect("free");
+        assert!(lock_id("dsx-l1").is_none(), "the lock is exclusive");
+        let s = a.auto_archive_events(&dirty);
+        assert!(r.actions().is_empty(), "{s}");
+        assert_eq!(events(&d)[0]["outcome"], "refused");
+        drop(held);
+        dirty.mark(&[edge("dsx-l1", EdgeKind::Pr)], NOW);
+        a.auto_archive_events(&dirty);
+        assert_eq!(r.actions().len(), 1, "released: the next edge archives");
+    }
+
+    #[test]
+    fn max_per_sweep_bounds_the_event_path_and_the_rest_stays_dirty() {
+        let d = scratch("dsx-cap");
+        settings(&d.join("home"), json!({"devswarm": {"autoArchive.eventDebounceMs": 0, "autoArchive.maxPerSweep": 1}}));
+        let mut live = Fixture::new().with("auto-archive:dsx-c1", vec![good("dsx-c1")]).with("auto-archive:dsx-c2", vec![good("dsx-c2")]);
+        live.candidates = vec!["dsx-c1".into(), "dsx-c2".into()];
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let dirty = Dirty::new();
+        dirty.mark(&[edge("dsx-c1", EdgeKind::Pr), edge("dsx-c2", EdgeKind::Pr)], NOW);
+        a.auto_archive_events(&dirty);
+        assert_eq!(r.actions().len(), 1);
+        assert_eq!(dirty.pending(), 1);
+        a.auto_archive_events(&dirty);
+        assert_eq!(r.actions().len(), 2);
+    }
+
+    #[test]
+    fn an_archive_the_app_does_not_show_is_a_failed_attempt() {
+        let d = scratch("dsx-verify");
+        quick(&d);
+        let live = one_candidate("dsx-v1");
+        live.archived.borrow_mut().insert("dsx-v1".into(), false);
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let dirty = Dirty::new();
+        dirty.mark(&[edge("dsx-v1", EdgeKind::Pr)], NOW);
+        let s = a.auto_archive_events(&dirty);
+        assert_eq!(s["archived"], json!([]), "{s}");
+        assert_eq!(events(&d)[0]["outcome"], "failed");
+    }
+
+    #[test]
+    fn mistake_signals_are_recorded_once_and_counted() {
+        let d = scratch("dsx-mistake");
+        quick(&d);
+        let live = one_candidate("dsx-m1");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let dirty = Dirty::new();
+        dirty.mark(&[edge("dsx-m1", EdgeKind::Pr)], NOW);
+        a.auto_archive_events(&dirty);
+        assert_eq!(a.mistake_scan(), 0, "nothing wrong yet");
+        live.archived.borrow_mut().insert("dsx-m1".into(), false); // the owner unarchived it
+        live.post.borrow_mut().insert("dsx-m1".into(), json!({"head": "def456", "activityMs": NOW}));
+        live.now.set(NOW + 3_600_000);
+        assert_eq!(a.mistake_scan(), 2, "unarchived + new commits");
+        assert_eq!(a.mistake_scan(), 0, "each signal once");
+        let mut m = crate::metrics::Metrics::default();
+        a.tele().publish(&mut m);
+        assert_eq!(m.counter("dsx_actions", &[("feature", "auto-archive"), ("outcome", "ok")]), 1);
+        assert_eq!(m.counter("dsx_mistakes", &[("feature", "auto-archive"), ("signal", "unarchived")]), 1);
+        assert_eq!(m.counter_total("dsx_mistakes"), 2);
+        let rep = tele::report(&d.join("state"));
+        assert_eq!((rep["auto-archive"]["ok"].as_u64(), rep["auto-archive"]["mistakes"].as_u64()), (Some(1), Some(2)));
+        assert_eq!(rep["auto-archive"]["mistake_rate"], json!(2.0));
+        assert_eq!(rep["auto-archive"]["success_rate"], json!(1.0));
+    }
+
+    // ---- nag ----
+
+    struct Rec(RefCell<Vec<String>>, bool);
+    impl Notifier for Rec {
+        fn notify(&self, text: &str) -> Result<(), String> {
+            if self.1 {
+                return Err("no channel".into());
+            }
+            self.0.borrow_mut().push(text.to_string());
+            Ok(())
+        }
+    }
+    fn rec() -> Rec {
+        Rec(RefCell::new(vec![]), false)
+    }
+
+    fn nag_live(id: &str) -> Fixture {
+        let mut f = good(id);
+        f["lifecycle"] = json!("active");
+        let mut live = Fixture::new().with(&format!("nag:{id}"), vec![f]);
+        live.candidates = vec![id.into()];
+        live
+    }
+
+    #[test]
+    fn a_done_workspace_gets_an_edge_nag_then_digests_on_the_cadence() {
+        let d = scratch("dsx-nag1");
+        settings(&d.join("home"), json!({"devswarm": {"nag.everyMs": 60000}}));
+        let live = nag_live("nag-1");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let n = rec();
+        a.nag_tick(&n);
+        assert_eq!(n.0.borrow().len(), 1);
+        assert!(n.0.borrow()[0].contains("nag-1") && n.0.borrow()[0].contains("--id nag-1"), "{:?}", n.0);
+        a.nag_tick(&n);
+        assert_eq!(n.0.borrow().len(), 1, "not due yet");
+        live.now.set(NOW + 61_000);
+        a.nag_tick(&n);
+        assert_eq!(n.0.borrow().len(), 2);
+        assert!(n.0.borrow()[1].starts_with("still open"), "{:?}", n.0);
+        a.nag_tick(&n);
+        assert_eq!(n.0.borrow().len(), 2, "one digest per bucket");
+        assert!(r.actions().is_empty(), "a nag acts on nothing");
+        let ev = events(&d);
+        assert_eq!(ev.iter().filter(|e| e["feature"] == "nag" && e["outcome"] == "ok").count(), 2);
+    }
+
+    #[test]
+    fn the_hourly_cap_holds_back_a_due_digest_and_says_so() {
+        let d = scratch("dsx-nag2");
+        settings(&d.join("home"), json!({"devswarm": {"nag.everyMs": 1000, "nag.hourlyCap": 1}}));
+        let live = nag_live("nag-2");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let n = rec();
+        a.nag_tick(&n);
+        live.now.set(NOW + 5_000);
+        a.nag_tick(&n);
+        assert_eq!(n.0.borrow().len(), 1);
+        assert!(events(&d).iter().any(|e| e["outcome"] == "refused" && e["reason"] == "hourly-cap"));
+        live.now.set(NOW + 3_700_000);
+        a.nag_tick(&n);
+        assert_eq!(n.0.borrow().len(), 2, "the hour has passed");
+    }
+
+    #[test]
+    fn archived_closed_or_auto_archive_owned_workspaces_are_never_nagged() {
+        let d = scratch("dsx-nag3");
+        // closed: the facts say the lifecycle is not active
+        let mut f = good("nag-3");
+        f["lifecycle"] = json!("inactive");
+        let mut live = Fixture::new().with("nag:nag-3", vec![f]);
+        live.candidates = vec!["nag-3".into()];
+        let r = Scripted::new();
+        let n = rec();
+        act(&d, &live, &r).nag_tick(&n);
+        assert!(n.0.borrow().is_empty());
+        // owned by auto-archive: Node's owned-ids file
+        let d2 = scratch("dsx-nag3b");
+        std::fs::create_dir_all(d2.join("home/.anti-hall/devswarm")).unwrap();
+        std::fs::write(d2.join("home/.anti-hall/devswarm/auto-archive-state.json"), json!({"at": 1, "owned": ["nag-4"]}).to_string()).unwrap();
+        let live2 = nag_live("nag-4");
+        act(&d2, &live2, &r).nag_tick(&n);
+        assert!(n.0.borrow().is_empty(), "auto-archive owns it");
+        // not done (unread mail): silent
+        let d3 = scratch("dsx-nag3c");
+        let mut g = good("nag-5");
+        g["lifecycle"] = json!("active");
+        g["unread"]["toChild"] = json!(2);
+        let mut live3 = Fixture::new().with("nag:nag-5", vec![g]);
+        live3.candidates = vec!["nag-5".into()];
+        act(&d3, &live3, &r).nag_tick(&n);
+        assert!(n.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_nagged_workspace_that_gets_archived_counts_as_resolved_and_is_not_nagged_again() {
+        let d = scratch("dsx-nag4");
+        let mut live = nag_live("nag-6");
+        let r = Scripted::new();
+        let n = rec();
+        act(&d, &live, &r).nag_tick(&n);
+        live.candidates.clear(); // archived or closed since
+        live.now.set(NOW + 10_000_000);
+        act(&d, &live, &r).nag_tick(&n);
+        assert_eq!(n.0.borrow().len(), 1);
+        let ev = events(&d);
+        assert!(ev.iter().any(|e| e["feature"] == "nag" && e["action"] == "resolved" && e["outcome"] == "ok"), "{ev:?}");
+    }
+
+    #[test]
+    fn a_nag_ignored_for_the_configured_cycles_is_a_mistake_signal_once() {
+        let d = scratch("dsx-nag5");
+        settings(&d.join("home"), json!({"devswarm": {"nag.everyMs": 1000, "nag.hourlyCap": 1000}}));
+        let live = nag_live("nag-7");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        let n = rec();
+        let cycles = crate::defaults::num("devswarm_act.nag_ignored_cycles");
+        for i in 0..cycles + 3 {
+            live.now.set(NOW + 2_000 * i as i64);
+            a.nag_tick(&n);
+        }
+        let m = events(&d).iter().filter(|e| e["type"] == "mistake" && e["signal"] == "nag-ignored").count();
+        assert_eq!(m, 1);
+    }
+
+    #[test]
+    fn a_failed_delivery_is_a_failed_attempt_and_is_tried_again_after_the_backoff() {
+        let d = scratch("dsx-nag6");
+        let live = nag_live("nag-8");
+        let r = Scripted::new();
+        let a = act(&d, &live, &r);
+        a.nag_tick(&Rec(RefCell::new(vec![]), true));
+        assert!(events(&d).iter().any(|e| e["feature"] == "nag" && e["outcome"] == "failed"));
+        let n = rec();
+        live.now.set(NOW + 120_000);
+        a.nag_tick(&n);
+        assert_eq!(n.0.borrow().len(), 1);
+    }
+
+    #[test]
+    fn queued_nags_reach_the_primary_once() {
+        let d = scratch("dsx-nag7");
+        let p = PendingFile(d.join("state"));
+        p.notify("one").unwrap();
+        p.notify("two").unwrap();
+        assert_eq!(take_pending(&d.join("state")).as_deref(), Some("one\ntwo"));
+        assert_eq!(take_pending(&d.join("state")), None);
+    }
 }
