@@ -46,6 +46,10 @@ value = { kind = "engine", action = "procwatch", every_key = "schedule.procwatch
 doc = "The safety net under the DevSwarm file-event layer: re-read every DevSwarm source, diff against the live state and run the action sweeps. Does nothing (and starts nothing) where DevSwarm is absent."
 value = { kind = "engine", action = "devswarm_reconcile", every_key = "devswarm_rt.reconcile_ms", jitter_ms = 0, timeout_ms = 120000, retries = 1, backoff_ms = 5000, backoff_max_ms = 60000, cooldown_ms = 60000, catch_up = "skip", persist = false }
 
+[job.devswarm_supervisor]
+doc = "The DevSwarm supervisor duties the Node supervisor job used to run (liveness sweep, reconcile, deferred stage, app sync, retention, housekeeping, log rotation). Does nothing unless devswarm_sup.mode is `engine`, and stands down while the Node supervisor is still running."
+value = { kind = "engine", action = "devswarm_supervisor", every_key = "devswarm_sup.tick_ms", jitter_ms = 0, timeout_ms = 1800000, retries = 0, backoff_ms = 5000, backoff_max_ms = 60000, cooldown_ms = 60000, catch_up = "skip", persist = false }
+
 # ---- scheduler ------------------------------------------------------------------------------------------
 
 [schedule.tick_ms]
@@ -93,7 +97,7 @@ unit = "ms"
 
 [schedule.actions]
 doc = "Actions a job may name; anything else in a user override is refused and logged."
-value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "handovers", "procwatch", "agent_tick", "gh_poll", "devswarm_reconcile", "noop"]
+value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "handovers", "procwatch", "agent_tick", "gh_poll", "devswarm_reconcile", "devswarm_supervisor", "noop"]
 [schedule.subprocess_actions]
 doc = "Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started."
 value = ["maintain", "backup", "jev_sweep", "handovers", "agent_tick", "gh_poll"]

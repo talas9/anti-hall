@@ -292,7 +292,8 @@ fn a_stale_workspace_is_poked_then_escalated_and_a_foreign_executor_leaves_it() 
     assert!(stub.calls.lock().unwrap().is_empty(), "executor node: no poke");
     let wire = wire(&w, &stub, Executor::Engine);
     wire.reconcile(Cause::Startup);
-    let last = || stub.calls.lock().unwrap().last().cloned().unwrap();
+    // the engine's own Node call (the parent notice after an escalation) is not one of the descriptor's commands
+    let last = || stub.calls.lock().unwrap().iter().rfind(|c| c.first().map(String::as_str) != Some("node")).cloned().unwrap();
     assert_eq!(last(), vec!["poker".to_string(), "--wake".into(), "ws-1".into()], "first the poke, as the descriptor says");
     assert_eq!(ah_engine::dswire::nudges::get(&w.state, "ws-1").attempts, 1);
     let n = stub.calls.lock().unwrap().len();
@@ -309,6 +310,37 @@ fn a_stale_workspace_is_poked_then_escalated_and_a_foreign_executor_leaves_it() 
     wire.act_sweeps(true);
     assert_eq!(stub.calls.lock().unwrap().len(), n, "escalated is terminal");
     assert!(ah_engine::dswire::nudges::get(&w.state, "ws-1").escalated);
+    let notices = stub.calls.lock().unwrap().iter().filter(|c| c.first().map(String::as_str) == Some("node")).count();
+    assert_eq!(notices, 1, "the parent notice of the escalation was asked for once");
+    let verdict: Value = serde_json::from_str(&std::fs::read_to_string(root.join("liveness/ws-1.json")).unwrap()).unwrap();
+    assert_eq!(verdict["status"], "escalated", "Node's verdict file says so too");
+    assert_eq!(verdict["nudgeAttempts"], 2);
+}
+
+#[test]
+fn the_engine_does_not_poke_or_escalate_while_the_node_supervisor_still_logs() {
+    let w = world("poke-guard");
+    let root = w.home.join(".anti-hall/devswarm");
+    write(
+        &root.join("workspaces/ws-1.json"),
+        &json!({"id": "ws-1", "worktreePath": w.wt, "sessionId": "s1", "nudgeCommand": ["poker", "--wake", "ws-1"], "escalateCommand": ["escalator", "ws-1"]}),
+    );
+    app_db(&w, "open");
+    let log = w.home.join(".anti-hall/devswarm-supervisor.log");
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    std::fs::write(&log, "{}\n").unwrap();
+    let stub = Arc::new(Stub::default());
+    stub.git_fail.lock().unwrap().push("status".into());
+    let wire = wire(&w, &stub, Executor::Engine);
+    wire.reconcile(Cause::Startup);
+    wire.act_sweeps(true);
+    assert!(stub.calls.lock().unwrap().is_empty(), "the Node supervisor's log is fresh: it may poke, so the engine stands down");
+    assert_eq!(ah_engine::dswire::nudges::get(&w.state, "ws-1").attempts, 0);
+    // switched off: the log goes quiet for longer than the guard
+    let f = std::fs::OpenOptions::new().write(true).open(&log).unwrap();
+    f.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600)).unwrap();
+    wire.act_sweeps(true);
+    assert_eq!(stub.calls.lock().unwrap().first().cloned(), Some(vec!["poker".to_string(), "--wake".into(), "ws-1".into()]), "now the engine pokes");
 }
 
 // ---- consumers -------------------------------------------------------------------------------------------------------------

@@ -71,7 +71,7 @@ fn coerce(entry: &V, raw: &str) -> Option<Value> {
     Some(serde_json::json!(max.map_or(n, |m| n.min(m)).floor() as i64))
 }
 
-fn resolve(st: &Settings, entry: &V) -> Value {
+pub(crate) fn resolve(st: &Settings, entry: &V) -> Value {
     let env = entry.str_field("env");
     if !env.is_empty()
         && let Some(v) = st.env.get(env).and_then(|r| coerce(entry, r))

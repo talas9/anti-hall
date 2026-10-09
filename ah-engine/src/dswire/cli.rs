@@ -90,6 +90,16 @@ pub fn run_with(p: &Parsed, env: &dyn Fn(&str) -> Option<String>) -> i32 {
     }
     let Some((home, state_dir)) = paths() else { return fail(p, defaults::text("devswarm_wire.msg_inert").to_string(), usage) };
     let rest = &p.rest[1..];
+    if verb == "supervisor" {
+        let st = crate::checks::git::util::Settings::from_env(&RequestEnv::capture());
+        out(p, crate::dssup::cli::status(&home, &st, crate::dssup::owner(), crate::health::now_ms() as i64));
+        return 0;
+    }
+    if verb == "recover" {
+        let (report, code) = crate::dssup::cli::recover(rest, &RequestEnv::capture(), &System::configured());
+        out(p, report);
+        return code;
+    }
     if verb == "advisory" {
         let session = flag(rest, defaults::text("devswarm_wire.session_flag"));
         let text = crate::client::ctl(&defaults::render("devswarm_wire.ctl_advisory", &[("session", &session)]))
