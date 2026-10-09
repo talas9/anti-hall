@@ -42,6 +42,23 @@ DevSwarm mesh writes and daemons (ingest, supervisor, reaper), every call that c
 
 From one replay of 2113 recorded payloads against the exact go-live bundle and the same-version Node hooks (not a field result): 0 of 68 blocks weaker than Node, 2059 identical outputs, 87.0 percent of hook rows answered natively, about 35.5 ms CPU per call for the engine against 158.2 ms for the Node hooks. Known gaps are listed in `docs/AH-ENGINE.md`.
 
+## 0.203.4 (2026-10-10)
+
+### Repo
+
+These changes affect the GitHub repository only, not the installed plugin.
+
+- Copilot CLI install fix: the Copilot slot now always checks out its lockfile folder, so `npm ci` works when tools are `none`.
+- Claude and Copilot error diagnostics: each failing slot writes its own error line to the job summary.
+- Force-model dispatch: `community.yml` takes a `force-model` input that bypasses the daily cap for a test run.
+- `AI_DAILY_CAP` now counts actual model calls per day (a marker artifact is recorded when a slot answers), not workflow runs.
+- PR alerts in `pr-check`, and `triage.yml` folded into `community` and `pr-check`.
+- Docs-drift check plus a release docs review.
+- Discussions participation: announcements, Q&A follow-up, idea to issue conversion, and the `/triage` and `/explain` commands.
+- The weekly digest now posts privately to the project board.
+- Full board reconcile with Last update and Progress fields.
+- Dependabot auto-merge for patch and minor updates into `dev`.
+
 ## 0.203.3 (2026-10-10)
 
 ### Repo

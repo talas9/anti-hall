@@ -69,7 +69,7 @@ A change to a hook, skill or model-routing doc lands on the Claude side and the 
 
 ### Issues first
 
-Every piece of work has an issue. Feature requests and bugs go through the [issue forms](https://github.com/talas9/anti-hall/issues/new/choose), which ask for priority, area and an estimate (S up to 2 hours, M up to 1 day, L up to 3 days, XL more than 3 days). `.github/workflows/triage.yml` turns those answers into `priority:*`, `size:*` and `area:*` labels and adds `status:triage`; a maintainer moves the issue to `status:accepted`, `status:in-progress` or `status:blocked`. Pull requests get `area:*` labels from the paths they change (`.github/labeler.yml`). The maintainer tracks the work on a GitHub Projects board, with one view each for work in progress, accepted work, triage and milestones.
+Every piece of work has an issue. Feature requests and bugs go through the [issue forms](https://github.com/talas9/anti-hall/issues/new/choose), which ask for priority, area and an estimate (S up to 2 hours, M up to 1 day, L up to 3 days, XL more than 3 days). `.github/workflows/community.yml` turns those answers into `priority:*`, `size:*` and `area:*` labels and adds `status:triage`; a maintainer moves the issue to `status:accepted`, `status:in-progress` or `status:blocked`. Pull requests get `area:*` labels from the paths they change (`.github/labeler.yml`). The maintainer tracks the work on a GitHub Projects board, with one view each for work in progress, accepted work, triage and milestones.
 
 ### Branch model
 

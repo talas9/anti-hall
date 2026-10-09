@@ -213,6 +213,8 @@ function prRules({ title, body, files, headRef, sameRepo, baseRef }, cfg) {
     areas: areas.slice(0, 5),
     missing_tests: codeChanged && !has(p.test_paths),
     missing_docs: codeChanged && !has(p.doc_paths),
+    // PR to the release branch: user-facing code changed with no CHANGELOG, docs/, README, skill or Codex-docs change.
+    docs_drift: baseRef === p.docs_drift_base && has(p.user_facing_paths) && !has(p.docs_drift_paths),
   };
 }
 
@@ -342,14 +344,16 @@ function chain(varValue, cfg) {
   return v.split(',').map((x) => x.trim()).filter((x) => cfg.model.providers.includes(x));
 }
 
-// Daily model budget per workflow: counts today's runs of this workflow (conservative: runs that
-// skipped the model count too). Fails closed for the model (= rules only) on an API error.
+// Daily model budget per workflow: counts today's actual MODEL CALLS (runs whose ai-model pick job
+// recorded a slot other than none, as an "ai-call-<workflow file>-<run>" marker artifact), not
+// workflow runs. Fails closed for the model (= rules only) on an API error.
 async function budget(github, context, workflowFile, cap) {
   const day = new Date().toISOString().slice(0, 10);
+  const prefix = `ai-call-${workflowFile}-`;
   try {
-    const r = await github.rest.actions.listWorkflowRuns({ ...context.repo, workflow_id: workflowFile, created: '>=' + day, per_page: 1 });
-    const used = r.data.total_count;
-    return { ok: used <= cap, used, cap };
+    const arts = await github.paginate(github.rest.actions.listArtifactsForRepo, { ...context.repo, per_page: 100 });
+    const used = arts.filter((a) => !a.expired && String(a.name).startsWith(prefix) && String(a.created_at || '').slice(0, 10) >= day).length;
+    return { ok: used < cap, used, cap };
   } catch (e) {
     return { ok: false, used: -1, cap, error: String(e.status || e.message) };
   }
@@ -399,8 +403,14 @@ function modelResult(env, schemaName) {
   const reason = env.MODEL_REASON || '';
   const latency = Number(env.MODEL_LATENCY_MS || 0) || null;
   if (provider === 'none') return { provider: 'none', reason: reason || 'not called', latency, data: null };
-  const data = validate(parseModelJson(env.MODEL_RESULT), prompt(schemaName).schema);
-  if (!data || !Object.keys(data).length) return { provider: 'none', reason: `${provider} output failed validation`, latency, data: null };
+  const parsed = parseModelJson(env.MODEL_RESULT);
+  const data = validate(parsed, prompt(schemaName).schema);
+  if (!data || !Object.keys(data).length) {
+    // Structure only (never the text): tells "not JSON" from "wrong keys" without echoing model output.
+    const raw = String(env.MODEL_RESULT || '');
+    const shape = !raw ? 'empty reply' : !parsed ? `not parseable as JSON (${raw.length} chars, starts with ${JSON.stringify(raw.trim().slice(0, 1))})` : `JSON keys: ${Object.keys(parsed).slice(0, 8).join(',') || 'none'}`;
+    return { provider: 'none', reason: `${provider} output failed validation: ${shape}`, latency, data: null };
+  }
   return { provider, reason, latency, data };
 }
 

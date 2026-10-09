@@ -6,7 +6,25 @@
     "needs_issue": "needs-issue",
     "stale_check": "status:stale-check",
     "triage": "status:triage",
-    "private": "risk:private-data"
+    "private": "risk:private-data",
+    "accepted": "status:accepted",
+    "major_bump": "review:major-bump"
+  },
+  "participation": {
+    "_doc": "Discussions and slash commands (community.yml). Maintainers = these author associations. A bot reply to one discussion is refreshed at most once per cooldown_hours.",
+    "maintainer_associations": ["OWNER", "MEMBER", "COLLABORATOR"],
+    "commands": ["triage", "explain", "convert"],
+    "followup_categories": ["q-a"],
+    "reply_categories": ["general", "show-and-tell"],
+    "idea_category": "ideas",
+    "announce_category": "announcements",
+    "mention_regex": "(^|[^\\w])@(anti-hall|anti-hall-bot|github-actions)\\b",
+    "question_regex": "\\?\\s*$|^(how|why|what|where|when|can|could|does|is|are|should|which)\\b",
+    "cooldown_hours": 24,
+    "explain_max_comments": 6,
+    "explain_max_chars": 6000,
+    "release_notes_max_chars": 3000,
+    "docs_inspector": { "max_notes_chars": 6000, "max_files": 150, "max_items": 8, "issue_label": "area:docs" }
   },
   "moderation": {
     "spam_patterns": ["\\b(casino|betting|slot ?machines?|escort|viagra|cialis|porn)\\b", "\\b(crypto|bitcoin|forex) (signals?|investment|trading bot|recovery)\\b", "\\b(buy|cheap) (followers|likes|backlinks|reviews)\\b", "\\bseo (services|agency|backlinks)\\b", "\\b(loan|payday) (offer|approval|lender)\\b", "\\b(whats ?app|telegram)\\s*[:+]?\\s*\\+?\\d[\\d -]{7, }", "\\b(customer (care|support|service)) (number|helpline)\\b", "\\bairdrop\\b.*\\bclaim\\b"],
@@ -115,6 +133,11 @@
     "code_paths": ["^plugins/anti-hall/(hooks|scripts|statusline|companion|monitors)/", "^ah-engine/src/"],
     "test_paths": ["^tests/", "^ah-engine/tests/", "_test\\.rs$", "\\.test\\.js$"],
     "doc_paths": ["^docs/", "\\.md$", "^llms\\.txt$"],
+    "user_facing_paths": ["^plugins/anti-hall/(hooks|skills|commands|statusline|companion|monitors)/", "^plugins/anti-hall/engine/defaults/", "^plugins/anti-hall/\\.claude-plugin/", "^ah-engine/src/"],
+    "docs_drift_paths": ["^CHANGELOG\\.md$", "^docs/", "^README\\.md$", "^llms\\.txt$", "^plugins/anti-hall/skills/.*\\.md$", "^plugins/anti-hall/codex/.*\\.md$", "^AGENTS\\.md$"],
+    "docs_drift_label": "docs:needed",
+    "docs_drift_base": "main",
+    "scanning_max_listed": 10,
     "diff_max_chars": 20000,
     "sticky_marker": "<!-- ai-pr-triage -->"
   },
@@ -128,7 +151,14 @@
       "status:blocked": "Blocked"
     },
     "done_status": "Done",
-    "stale_days": 3,
+    "status_precedence": ["status:blocked", "status:in-progress", "status:accepted", "status:triage"],
+    "stale_hours": 48,
+    "stale_label": "status:stale-check",
+    "fields": { "last_update": "Last update", "progress": "Progress" },
+    "progress_max_chars": 80,
+    "progress_regex": "^[>*\\s-]*(Done|Left|Milestone|Progress)\\**\\s*:\\s*(.+)$",
+    "trusted_associations": ["OWNER", "MEMBER", "COLLABORATOR"],
+    "status_update_status": { "risk": "AT_RISK", "ok": "ON_TRACK" },
     "max_adds_per_run": 30,
     "max_field_writes_per_run": 120,
     "digest_title": "Roadmap digest",
@@ -145,6 +175,7 @@
       "brief": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
       "qa-answer": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
       "pr-summary": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
+      "explain": { "claude": "haiku", "copilot": "claude-haiku-4.5" },
       "docs-inspector": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
       "digest": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
       "default": { "claude": "opus", "copilot": "claude-opus-5.5" }

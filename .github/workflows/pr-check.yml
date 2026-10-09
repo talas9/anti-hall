@@ -4,7 +4,8 @@
 # risk:private-data, needs-issue (no "Closes #n"; release PRs from dev are exempt), and
 # moderation:review for a spam/abusive description. ONE sticky comment with the checklist and a
 # review summary (model via ai-model.yml when AI_PROVIDER allows; dependabot and owner PRs get the
-# rules-only path). Never approves, requests changes, merges or closes.
+# rules-only path). Also: new code-scanning alerts on the PR, a docs-drift flag (docs:needed) for
+# PRs to main, and path-based area:* labels. Never approves, requests changes, merges or closes.
 # The blocking secret/privacy check for PRs is privacy-scan.yml.
 name: PR check
 
@@ -64,6 +65,23 @@ jobs:
             const m = require(process.env.GITHUB_WORKSPACE + '/.github/scripts/moderation/pr.js');
             await m.gate({ github, context, core });
 
+  # Path-based area:* labels (from .github/labeler.yml; formerly triage.yml). The PR's code is never
+  # checked out; actions/labeler reads only the changed-file list.
+  area-labels:
+    if: github.event_name == 'pull_request_target' && github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Label by changed paths
+        uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+        with:
+          repo-token: ${{ github.token }}
+          configuration-path: .github/labeler.yml
+          sync-labels: false
+
   model:
     needs: gate
     if: needs.gate.outputs.want_model == 'true'
@@ -93,6 +111,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
+      security-events: read
     steps:
       - name: Checkout the rules (default branch, never the PR)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
