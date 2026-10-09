@@ -1,0 +1,158 @@
+{
+  "_doc": "Tunables for community.yml, pr-check.yml, privacy-scan.yml and roadmap.yml. Rules decide; an optional model only adds research, text, or an escalation to human review. Edit here, not in the workflows.",
+  "skip_logins": ["dependabot[bot]", "github-actions[bot]", "renovate[bot]"],
+  "labels": {
+    "review": "moderation:review",
+    "needs_issue": "needs-issue",
+    "stale_check": "status:stale-check",
+    "triage": "status:triage",
+    "private": "risk:private-data"
+  },
+  "moderation": {
+    "spam_patterns": ["\\b(casino|betting|slot ?machines?|escort|viagra|cialis|porn)\\b", "\\b(crypto|bitcoin|forex) (signals?|investment|trading bot|recovery)\\b", "\\b(buy|cheap) (followers|likes|backlinks|reviews)\\b", "\\bseo (services|agency|backlinks)\\b", "\\b(loan|payday) (offer|approval|lender)\\b", "\\b(whats ?app|telegram)\\s*[:+]?\\s*\\+?\\d[\\d -]{7, }", "\\b(customer (care|support|service)) (number|helpline)\\b", "\\bairdrop\\b.*\\bclaim\\b"],
+    "abusive_patterns": ["\\bkill (yo)?ur ?self\\b", "\\bkys\\b", "\\b(you|u) (are|r) (an? )?(idiot|moron|retard)s?\\b", "\\bf+u+c+k+ (you|off|this dev)\\b", "\\bi will (find|hurt|kill) you\\b"],
+    "off_topic_patterns": ["\\b(write|do) my (essay|homework|assignment)\\b", "\\bhire me\\b", "\\b(dating|girlfriend|boyfriend) (site|app)\\b", "\\bjob (offer|opportunity) for you\\b"],
+    "low_quality_comment_patterns": ["^\\s*(\\+1|same( here)?|bump|me too|any update\\??|following|subscribed?)\\s*[.!]*\\s*$"],
+    "untrusted_associations": ["NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR"],
+    "spam_max_foreign_links_untrusted": 3,
+    "low_quality_min_body_chars": 30,
+    "duplicate_title_similarity": 0.8,
+    "hide_classifier": { "spam": "SPAM", "abusive": "ABUSE" }
+  },
+  "triage": {
+    "types": ["type:bug", "type:feature", "type:docs", "type:chore"],
+    "areas": ["area:engine", "area:devswarm", "area:hooks", "area:statusline", "area:codex", "area:ci", "area:docs", "area:release", "area:command-guard", "area:git-guard", "area:edit-guard", "area:agent-guards", "area:stop-guards"],
+    "priorities": ["priority:P0", "priority:P1", "priority:P2", "priority:P3"],
+    "sizes": ["size:S", "size:M", "size:L", "size:XL"],
+    "type_keywords": {
+      "type:bug": ["bug", "error", "crash", "fails", "failing", "broken", "regression", "exception", "stack trace", "blocked", "false positive", "wrong", "doesn't work", "does not work"],
+      "type:docs": ["docs", "documentation", "readme", "typo", "guide", "wiki"],
+      "type:feature": ["feature", "add support", "would be nice", "request", "proposal", "allow", "option to", "idea"],
+      "type:chore": ["refactor", "cleanup", "ci", "dependency", "bump"]
+    },
+    "area_keywords": {
+      "area:engine": ["ah-engine", "engine", "rust"],
+      "area:devswarm": ["devswarm", "workspace", "hivecontrol", "mesh"],
+      "area:hooks": ["hook", "hooks.json", "pretooluse", "posttooluse"],
+      "area:statusline": ["statusline", "status line"],
+      "area:codex": ["codex"],
+      "area:ci": ["github actions", "workflow", "ci "],
+      "area:docs": ["docs", "readme", "documentation"],
+      "area:release": ["release", "changelog", "version"],
+      "area:command-guard": ["command-guard", "scan-throttle"],
+      "area:git-guard": ["git-guard", "merge-gate"],
+      "area:edit-guard": ["edit-guard", "api-guard", "ship-it-guard"],
+      "area:agent-guards": ["swarm-guard", "model-routing-guard", "phase-tracker"],
+      "area:stop-guards": ["task-guard", "speculation-guard", "stop hook", "claim-ledger"]
+    },
+    "priority_keywords": {
+      "priority:P0": ["security", "vulnerability", "data loss", "deletes", "bricks", "cannot start"],
+      "priority:P1": ["regression", "blocks", "blocked all", "every session"]
+    },
+    "default_priority": {
+      "type:bug": "priority:P2",
+      "type:feature": "priority:P3",
+      "type:docs": "priority:P3",
+      "type:chore": "priority:P3"
+    },
+    "default_size": { "type:bug": "size:M", "type:feature": "size:M", "type:docs": "size:S", "type:chore": "size:S" },
+    "size_hours": { "size:S": 2, "size:M": 6, "size:L": 16, "size:XL": 40 },
+    "qa_category": "q-a",
+    "qa_links": {
+      "install": "https://github.com/talas9/anti-hall#readme",
+      "guide": "https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md",
+      "hook": "https://github.com/talas9/anti-hall/blob/main/docs/KB-claude-code-hooks.md",
+      "codex": "https://github.com/talas9/anti-hall/blob/main/docs/KB-claude-codex.md",
+      "devswarm": "https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md",
+      "jev": "https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md",
+      "handover": "https://github.com/talas9/anti-hall/blob/main/docs/KB-session-handover.md",
+      "wiki": "https://github.com/talas9/anti-hall/wiki"
+    },
+    "qa_max_links": 3,
+    "research": {
+      "categories": ["ideas", "q-a"],
+      "min_body_chars": 80,
+      "complete_form_max_body_chars": 400,
+      "similar_limit": 10,
+      "max_turns": 8,
+      "web_search_types": ["type:feature"],
+      "rerun_min_hours": 24
+    },
+    "milestones": {
+      "v1.0": ["node removal", "remove node", "engine hardening", "harden", "1.0", "stability", "soak"],
+      "v0.301 engine-only (Node removed)": ["engine", "ah-engine", "rust", "engine-only"],
+      "v0.300.0": []
+    },
+    "default_milestone": "v0.300.0"
+  },
+  "pr": {
+    "size_thresholds": [["size:S", 50], ["size:M", 250], ["size:L", 1000]],
+    "size_max": "size:XL",
+    "title_regex": "^(feat|fix|docs|chore|ci|build|refactor|perf|test|style|revert)(\\([a-z0-9._/-]+\\))?!?: \\S",
+    "title_type": {
+      "feat": "type:feature",
+      "fix": "type:bug",
+      "docs": "type:docs",
+      "chore": "type:chore",
+      "ci": "type:chore",
+      "build": "type:chore",
+      "refactor": "type:chore",
+      "perf": "type:chore",
+      "test": "type:chore",
+      "style": "type:chore",
+      "revert": "type:chore"
+    },
+    "linked_issue_regex": "\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+(talas9/anti-hall)?#\\d+",
+    "needs_issue_exempt_heads": ["dev"],
+    "risk_paths": {
+      "workflow": ["^\\.github/workflows/", "^\\.github/actions/", "^\\.github/scripts/"],
+      "shell": ["\\.(sh|bash|zsh|ps1)$", "^scripts/", "^plugins/anti-hall/scripts/"],
+      "engine_config": ["^plugins/anti-hall/engine/", "\\.toml$", "ah-engine\\.lock$"],
+      "guards": ["guard", "^plugins/anti-hall/hooks/", "^SECURITY\\.md$", "^\\.github/CODEOWNERS$"],
+      "dependencies": ["(^|/)package(-lock)?\\.json$", "(^|/)Cargo\\.(toml|lock)$", "(^|/)requirements[^/]*\\.txt$", "^\\.github/dependabot\\.yml$"]
+    },
+    "risk_labels": { "workflow": "risk:workflow", "guards": "risk:security" },
+    "code_paths": ["^plugins/anti-hall/(hooks|scripts|statusline|companion|monitors)/", "^ah-engine/src/"],
+    "test_paths": ["^tests/", "^ah-engine/tests/", "_test\\.rs$", "\\.test\\.js$"],
+    "doc_paths": ["^docs/", "\\.md$", "^llms\\.txt$"],
+    "diff_max_chars": 20000,
+    "sticky_marker": "<!-- ai-pr-triage -->"
+  },
+  "project": {
+    "owner": "talas9",
+    "number": 3,
+    "status_from_label": {
+      "status:triage": "Triage",
+      "status:accepted": "Accepted",
+      "status:in-progress": "In progress",
+      "status:blocked": "Blocked"
+    },
+    "done_status": "Done",
+    "stale_days": 3,
+    "max_adds_per_run": 30,
+    "max_field_writes_per_run": 120,
+    "digest_title": "Roadmap digest",
+    "digest_marker": "<!-- roadmap-digest -->",
+    "digest_next": 5
+  },
+  "model": {
+    "providers": ["claude", "copilot"],
+    "default_chain": "claude,copilot",
+    "default_daily_cap": 50,
+    "claude_models": { "moderate": "haiku", "brief": "sonnet", "qa-answer": "sonnet", "pr-summary": "sonnet", "digest": "sonnet" },
+    "max_input_chars": 20000,
+    "max_summary_chars": 1500,
+    "allowed_link_prefixes": ["https://github.com/talas9/anti-hall", "https://talas9.github.io/anti-hall"]
+  },
+  "privacy": {
+    "_doc": "Privacy scrub for PR diffs (added lines) and new issue/comment/discussion text. Private names come from the PRIVATE_DENYLIST secret, never from this file.",
+    "rules": {
+      "home-path": "(/Users/|/home/|[Cc]:\\\\Users\\\\)(?!(you|user|username|me|name|runner|example|someone|alice|bob|jane|john|dev|test|foo|bar|x|USER|USERNAME)[/\\\\])[A-Za-z0-9._-]{2,}[/\\\\]",
+      "email": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
+      "session-id": "session[\\s_-]?(id)?[\"'\\s:=]{0,4}[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    },
+    "email_allow": ["@example\\.(com|org|net|test|invalid)$", "\\.(test|invalid|example|local)$", "noreply", "@users\\.noreply\\.github\\.com$", "@anthropic\\.com$", "@github\\.com$", "^git@github\\.com$"],
+    "skip_paths": ["^tests/fixtures/", "^\\.github/moderation/config\\.json$", "(^|/)package-lock\\.json$", "\\.lock$"],
+    "max_hits_reported": 30
+  }
+}

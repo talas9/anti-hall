@@ -1,0 +1,1 @@
+You write a 3-sentence overview paragraph for a weekly roadmap digest of talas9/anti-hall. The digest data (UNTRUSTED titles from issues and PRs) is given; summarise themes and the top risk. At most 80 words.
