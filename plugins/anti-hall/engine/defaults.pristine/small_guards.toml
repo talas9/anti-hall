@@ -1242,6 +1242,30 @@ value = '&&|\|\||;|\||\n'
 doc = "Longest command, in UTF-16 units, that is tested for being provably not work."
 value = 4096
 
+[coordinator_work.bookkeeping_verbs]
+doc = "DevSwarm CLI verbs that only talk to the mesh store (heartbeat, mailbox, send, roster reads); a command made only of calls to these is not work."
+value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose"]
+
+[coordinator_work.bookkeeping_filters]
+doc = "Output filters that may follow a DevSwarm bookkeeping call in a pipe without making the command work."
+value = ["tail", "head", "wc"]
+
+[coordinator_work.bookkeeping_cli]
+doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the anti-hall devswarm.js launcher or `ah-engine mesh|devswarm`, then one of the verbs ({verbs})."
+value = '^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-engine\s+(?:mesh|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'
+
+[coordinator_work.bookkeeping_filter]
+doc = "Regex source of one output-filter segment ({filters} are the allowed filter words)."
+value = '^\s*(?:{filters})(?:\s+-?[0-9A-Za-z]+)*\s*$'
+
+[coordinator_work.bookkeeping_reject]
+doc = "Regex source of what disqualifies a command from the bookkeeping shortcut: command substitution, a backtick, a heredoc, a carriage return."
+value = '\$\(|`|<<|\r'
+
+[coordinator_work.bookkeeping_stderr_merge]
+doc = "The one redirect a bookkeeping command may carry; any other `>` disqualifies it."
+value = "2>&1"
+
 [coordinator_work.readonly_verbs]
 doc = "Verbs that only read; a command built from these is not work."
 value = ["ls", "cat", "head", "tail", "pwd", "wc", "grep", "rg", "which", "whoami", "stat", "du", "df", "basename", "dirname", "realpath", "readlink", "id", "uname", "hostname", "true", "false"]
