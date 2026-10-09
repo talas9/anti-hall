@@ -54,7 +54,10 @@ jobs:
         id: rules
         run: |
           if [ -f _rules/.github/scripts/moderation/privacy-scan.js ] && [ -f _rules/.github/gitleaks.toml ]; then echo "dir=_rules" >> "$GITHUB_OUTPUT"
-          else echo "dir=." >> "$GITHUB_OUTPUT"; [ -d _rules ] && echo "::notice::Base commit has no privacy rules yet; using this commit's copy (bootstrap)."; fi
+          else
+            echo "dir=." >> "$GITHUB_OUTPUT"
+            if [ -d _rules ]; then echo "::notice::Base commit has no privacy rules yet; using this commit's copy (bootstrap)."; fi
+          fi
 
       - name: Range of new commits
         id: range
