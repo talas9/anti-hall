@@ -11,7 +11,7 @@
 //      cmdSpawn reports it clearly (never flips `ok` into a silent hang).
 //   4. cmdSpawn reports per-phase `timings` (sourceCheckMs/createMs/totalMs).
 //
-// Also: submodule worktree failures (SkyCrew field evidence,
+// Also: submodule worktree failures (DemoApp field evidence,
 // fix/devswarm-spawn-local-submodules) — `create` can be ok:true overall
 // while one `git worktree add` for a submodule fails; cmdSpawn now surfaces
 // that as `submoduleFailures`/`warnings` without flipping `ok`.
@@ -275,13 +275,13 @@ test('cmdSpawn: reports timings (sourceCheckMs/createMs/totalMs) on a successful
 test('cmdSpawn: a submodule worktree failure is surfaced without flipping ok', () => {
   const f = fixture();
   try {
-    const stderr = "Cloning into '/tmp/wt-child-b/skyflutter'...\n"
-      + "git worktree add -b child-b-skyflutter /tmp/wt-child-b/skyflutter 8ea79345\n"
-      + "fatal: '/tmp/wt-child-b/skyflutter' already exists\n";
+    const stderr = "Cloning into '/tmp/wt-child-b/appflutter'...\n"
+      + "git worktree add -b child-b-appflutter /tmp/wt-child-b/appflutter 8ea79345\n"
+      + "fatal: '/tmp/wt-child-b/appflutter' already exists\n";
     const r = spawn(f, ['child-b'], fakeHiveCreate(f, { stderr }));
     assert.strictEqual(r.ok, true, JSON.stringify(r));
     assert.ok(Array.isArray(r.submoduleFailures) && r.submoduleFailures.length === 1, JSON.stringify(r.submoduleFailures));
-    assert.strictEqual(r.submoduleFailures[0].path, '/tmp/wt-child-b/skyflutter');
+    assert.strictEqual(r.submoduleFailures[0].path, '/tmp/wt-child-b/appflutter');
     assert.strictEqual(r.submoduleFailures[0].error, 'already exists');
     assert.ok(Array.isArray(r.warnings) && r.warnings.length === 1);
     assert.ok(/submodule/i.test(r.warnings[0]));
@@ -348,10 +348,10 @@ test('parseSubmoduleWorktreeFailures: an "already exists" fatal: line whose path
 test('parseSubmoduleWorktreeFailures: an "already exists" fatal: line whose path IS a known submodule (per .gitmodules) counts even with no "worktree" mention nearby', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-gitmodules-'));
   try {
-    fs.writeFileSync(path.join(root, '.gitmodules'), '[submodule "skyflutter"]\n\tpath = skyflutter\n\turl = https://example.invalid/skyflutter.git\n');
-    const out = cli.parseSubmoduleWorktreeFailures({ raw: '', stderr: "fatal: 'skyflutter' already exists\n" }, root);
+    fs.writeFileSync(path.join(root, '.gitmodules'), '[submodule "appflutter"]\n\tpath = appflutter\n\turl = https://example.invalid/appflutter.git\n');
+    const out = cli.parseSubmoduleWorktreeFailures({ raw: '', stderr: "fatal: 'appflutter' already exists\n" }, root);
     assert.strictEqual(out.length, 1, JSON.stringify(out));
-    assert.strictEqual(out[0].path, 'skyflutter');
+    assert.strictEqual(out[0].path, 'appflutter');
     assert.strictEqual(out[0].error, 'already exists');
   } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
 });

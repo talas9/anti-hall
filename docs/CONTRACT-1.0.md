@@ -10,12 +10,12 @@ right and this document gets a fix.
 
 | Surface | Count | Source of truth |
 |---|---|---|
-| Settings keys | 328 in 20 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
+| Settings keys | 329 in 20 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
 | `devswarm.js` verbs | 47 | `plugins/anti-hall/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
 | Hook scripts | 62 (83 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
 | Codex hook scripts | 44 (59 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
-| Skills | 28 Claude, 31 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
+| Skills | 29 Claude, 32 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys
 
@@ -38,7 +38,7 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `jev` | Jev (semantic decision engine) | 35 | `enabled` |
 | `jevCascade` | Jev cascade | 21 | |
 | `jevIntegrations` | Jev integration | 21 | |
-| `devswarm` | DevSwarm | 92 | `supervisorMode` |
+| `devswarm` | DevSwarm | 93 | `supervisorMode` |
 | `statusline` | Statusline | 2 | |
 | `codexNudge` | Codex Nudge | 2 | |
 | `procwatch` | Process watch | 8 | |
@@ -47,7 +47,7 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `engine` | Engine | 1 | |
 | `defects` | Defects | 1 | |
 
-Of the 328 keys: 174 are `advanced` (hidden from `settings.js show` without `--all`), 249
+Of the 329 keys: 175 are `advanced` (hidden from `settings.js show` without `--all`), 250
 have an env override, 13 are `locked` (safety keys), 3 are `homeOnly`. The full list with
 defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 `tests/hygiene/docs-coverage.test.js` fails if any schema key is missing from it.
@@ -147,8 +147,8 @@ and so does the `unknown command:` error, so neither can drift from the dispatch
 each with `--apply`); their names are stable, their report text is not.
 `update.js --post-pull-only` is an internal re-exec handshake, not a public flag.
 
-**Skill names** are stable too: `/anti-hall:<name>` for the 28 Claude skills and
-`anti-hall-<name>` for the 31 Codex skills. Renaming or removing one is MAJOR.
+**Skill names** are stable too: `/anti-hall:<name>` for the 29 Claude skills and
+`anti-hall-<name>` for the 32 Codex skills. Renaming or removing one is MAJOR.
 
 ## 3. Hook contracts
 

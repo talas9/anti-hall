@@ -243,6 +243,7 @@ value = [
   "{\"section\":\"devswarm\",\"key\":\"archiveRequestRenagHours\",\"type\":\"number\",\"default\":24,\"min\":1,\"env\":\"ANTIHALL_DEVSWARM_ARCHIVE_REQUEST_RENAG_HOURS\"}",
   "{\"section\":\"devswarm\",\"key\":\"reconcileSweep\",\"type\":\"enum\",\"default\":\"auto\",\"values\":[\"auto\",\"off\"],\"env\":\"ANTIHALL_DEVSWARM_RECONCILE_SWEEP\"}",
   "{\"section\":\"devswarm\",\"key\":\"reconcileSweepSec\",\"type\":\"number\",\"default\":900,\"min\":300,\"env\":\"ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC\"}",
+  "{\"section\":\"devswarm\",\"key\":\"sweepTailMode\",\"type\":\"enum\",\"default\":\"node\",\"values\":[\"node\",\"engine\"],\"env\":\"ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE\"}",
   "{\"section\":\"devswarm\",\"key\":\"rowStaleMs\",\"type\":\"number\",\"default\":86400000,\"min\":0,\"env\":\"ANTIHALL_DEVSWARM_ROW_STALE_MS\"}",
   "{\"section\":\"devswarm\",\"key\":\"sendReceiptRetentionDays\",\"type\":\"number\",\"default\":7,\"exclusiveMin\":0,\"env\":\"ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS\"}",
   "{\"section\":\"devswarm\",\"key\":\"summaryRetentionDays\",\"type\":\"number\",\"default\":30,\"min\":0,\"env\":\"ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS\"}",

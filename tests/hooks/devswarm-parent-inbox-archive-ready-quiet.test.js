@@ -122,7 +122,7 @@ test('ARCHIVE-READY-QUIET REGRESSION GUARD: a REAL (non-self-sent) unread alongs
   } finally { h.cleanup(); }
 });
 
-// SUPERSEDED by ARCHIVE-REQUEST-PENDING (SkyCrew field report 399105fe/
+// SUPERSEDED by ARCHIVE-REQUEST-PENDING (DemoApp field report 399105fe/
 // e75cade3): a LIVE session whose ENTIRE unread backlog is the Primary's own
 // pending archive-request is no longer treated as "someone may yet drain it"
 // — the CHILD NOT DRAINING / URGENT INBOX nag was re-instructing the Primary

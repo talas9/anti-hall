@@ -87,6 +87,7 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `settings` | "anti-hall settings", "set auto-handover to 80%" | show or change any setting; one unified `~/.anti-hall/settings.json`, browsable via `show`/`get`/`set`/`reset` |
 | `engine-agents` | spawning, messaging or stopping agents, keeping the task list, or delegating work and a delegation, task or mo | Subagent, task-list, delegation and routing guards (generated from the engine registry) |
 | `engine-devswarm` | working in or with DevSwarm workspaces and a DevSwarm gate, role directive or wake guard applies | The DevSwarm role, gate and wake guards (generated from the engine registry) |
+| `engine-devswarm-supervisor` | tuning or checking the DevSwarm supervisor sweep (auto-archive, pokes, app sync, retention, reconcile, housekeeping) | The supervisor sweep switches (generated from the engine registry) |
 | `engine-doctor` | checking whether anti-hall works, repairing it, migrating its state, or scanning what it can do on this machin | Health check, repair, migrations and capability scans (generated from the engine registry) |
 | `engine-github` | committing, pushing, merging or releasing and a git or merge guard applies | Git, merge and release guards (generated from the engine registry) |
 | `engine-guards` | an anti-hall guard blocked, warned or injected something, or you need to know which guard covers a rule | What the automatic guards check and how to read a block (generated from the engine registry) |

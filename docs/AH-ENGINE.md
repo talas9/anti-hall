@@ -268,7 +268,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 
 **Install.** The plugin ships `ah-engine.lock` (schema, engine version, tag and the sha256 of every release asset). On every
 SessionStart, `hooks/ah-hook.sh` starts `hooks/ah-engine-bootstrap.sh` detached (only when the lock file is present and the
-test-only `AH_ENGINE_BIN` override is unset). The script (POSIX sh, never fails a session):
+the wrapper's test-only binary override is unset). The script (POSIX sh, never fails a session):
 
 1. detects the target (macOS arm64 or x86_64, Linux x86_64 or arm64 on glibc or musl, WSL as Linux; anything else, such as
    native Windows, is reported as unsupported and skipped);
@@ -295,7 +295,7 @@ entries). A check that cannot reproduce Node exactly defers (exit 75 from the en
 | To undo | Do |
 |---|---|
 | one check | set `mode = "off"` on its `[entries."<id>"]` in the engine's `config.toml`: only the engine's check is skipped, its Node hook decides (hot reload, no restart) |
-| the engine, for now | `ah-engine stop`, then remove `~/.anti-hall/ah-engine/bin/ah-engine`; the wrapper finds no binary (it looks at `AH_ENGINE_BIN`, `~/.anti-hall/ah-engine/bin/ah-engine`, then `ah-engine` on `PATH`; remove a `PATH` copy too) and runs the Node hooks |
+| the engine, for now | `ah-engine stop`, then remove `~/.anti-hall/ah-engine/bin/ah-engine`; the wrapper finds no binary (it looks at its test-only binary override, `~/.anti-hall/ah-engine/bin/ah-engine`, then `ah-engine` on `PATH`; remove a `PATH` copy too) and runs the Node hooks |
 | the engine, for good | also set `engine.bootstrap` = false or the opt-out variable (see Install above), or the next SessionStart reinstalls the pinned binary |
 | a bad engine build | copy `bin/ah-engine.prev` back over `bin/ah-engine`; the bootstrap then leaves it alone (its sha256 no longer matches the install marker), so the rollback sticks until you remove the binary or the lock changes |
 | a bad plugin edit of the engine files | nothing to do: the layered failover below falls back by itself |

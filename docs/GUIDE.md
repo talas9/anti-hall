@@ -1538,6 +1538,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.archiveRequestRenagHours` adv | `24` [1..] | `ANTIHALL_DEVSWARM_ARCHIVE_REQUEST_RENAG_HOURS` | Hours a pending archive-request suppresses the CHILD NOT DRAINING nag and the ARCHIVE-READY re-nudge for that child before re-nagging anyway. |
 | `devswarm.reconcileSweep` adv | `auto` (auto/off) | `ANTIHALL_DEVSWARM_RECONCILE_SWEEP` | Enable/disable the periodic reconcile sweep in the supervisor. |
 | `devswarm.reconcileSweepSec` adv | `900` [300..] | `ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC` | Interval (sec) for the reconcile sweep, floor 300s. |
+| `devswarm.sweepTailMode` adv | `node` (node/engine) | `ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE` | Who decides the DevSwarm sweep tail (archived registry rows, twin descriptors): node = the scheduled Node functions (default); engine = the engine decides each step only after Node's own function, run on a scratch mirror, agrees with it. |
 | `devswarm.rowStaleMs` adv | `86400000` [0..] | `ANTIHALL_DEVSWARM_ROW_STALE_MS` | Staleness threshold (ms) for workspace row selection. |
 | `devswarm.sendReceiptRetentionDays` adv | `7` (>0) | `ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS` | Retention window (days) for send-receipt records. |
 | `devswarm.summaryRetentionDays` adv | `30` [0..] | `ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS` | Retention window (days) for summary records. |

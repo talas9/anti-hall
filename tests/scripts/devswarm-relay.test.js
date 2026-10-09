@@ -1,5 +1,5 @@
 'use strict';
-// peer request B (SkyCrew + tf3 Primaries, 2026-09-26): `relay <seq|receipt>
+// peer request B (DemoApp + tf3 Primaries, 2026-09-26): `relay <seq|receipt>
 // --to <id> [--note-file f]` — forward a message THIS caller already
 // received (its OWN inbox partition) to another workspace, VERBATIM, with a
 // provenance header. Same in-process cli.run(argv, ctx) harness as

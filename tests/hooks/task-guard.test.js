@@ -1048,7 +1048,7 @@ function devswarmLabelledFixture(h) {
   const db = new sqlite.DatabaseSync(dbFile);
   db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, worktreePath TEXT, branchName TEXT, label TEXT, isHidden INTEGER NOT NULL DEFAULT 0, isActive INTEGER NOT NULL DEFAULT 1)');
   const ins = db.prepare('INSERT INTO builders (id, repositoryId, worktreePath, branchName, label, isHidden, isActive) VALUES (?, ?, ?, ?, ?, ?, ?)');
-  ins.run('b-live', 'r1', path.join(h.home, 'wt-live'), 'feat/contact-email-redesign', 'Contact email redesign', 0, 1);
+  ins.run('b-live', 'r1', path.join(h.home, 'wt-active'), 'feat/contact-email-redesign', 'Contact email redesign', 0, 1);
   ins.run('b-dead', 'r1', path.join(h.home, 'wt-dead'), 'feat/old-branch', 'Old title', 1, 0);
   db.close();
   return { env: { ANTIHALL_DEVSWARM_APP_DB: dbFile, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' } };

@@ -42,7 +42,7 @@ fn init_defaults() {
 fn fix(tag: &str) -> Fix {
     init_defaults();
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let home = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/work/recon-tests").join(format!("recon-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    let home = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/scratch/recon-tests").join(format!("recon-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let mut env: HashMap<String, String> = HashMap::new();
@@ -1501,7 +1501,7 @@ fn canon(f: &Fix, needles: &[String]) -> std::collections::BTreeMap<String, Stri
     };
     norm::dump(&f.home)
         .into_iter()
-        .filter(|(k, _)| !k.starts_with(".anti-hall/logs") && !k.starts_with(".anti-hall/work") && !k.contains("/locks/") && !k.starts_with("repos/") && !k.starts_with(".git"))
+        .filter(|(k, _)| !k.starts_with(".anti-hall/logs") && !k.starts_with(".anti-hall/scratch") && !k.contains("/locks/") && !k.starts_with("repos/") && !k.starts_with(".git"))
         .map(|(k, v)| (fix_up(&k), fix_up(&v)))
         .collect()
 }

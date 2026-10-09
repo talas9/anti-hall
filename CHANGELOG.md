@@ -23,6 +23,11 @@ the update.
 - **Shadow and rollback.** Per-entry `mode = "shadow"` runs an engine check beside its Node hook (Node decides) and logs `dispatch_shadow`; `mode = "off"` skips the engine's check. Whole rollback: `ah-engine stop`, delete the binary, `AH_ENGINE_BOOTSTRAP=0`.
 - **Telemetry** (`ah-engine telemetry summary|events|rollup`): per hook and check, the event, outcome, latency histogram and bytes injected into context, identifiers only, stored in `~/.anti-hall/ah-engine/`, never uploaded. `telemetry.enabled`, `telemetry.retention_days`.
 - **Docs**: new "Install, go-live and rollback", "What still runs on Node" and "Measured results (pre-release)" sections in `docs/AH-ENGINE.md`; engine notes in the READMEs (both ports), GUIDE, CONTRACT-1.0, DEVELOPMENT, llms.txt and the system-briefing and settings skills (both ports); PRIVACY.md now lists the binary download, the local telemetry and the background process.
+- **DevSwarm engine paths.** The engine runs the DevSwarm gates and guards natively (parent and child gates, comms guard, reply tracker, child drain, codex nudge, task tracker, verify-first), with a new `engine-devswarm-supervisor` skill and its own settings area.
+- **Reconcile and sweep behind a switch.** The supervisor reconcile and sweep tail run natively only when `devswarm_sup.reconcile_mode` (engine file) and `devswarm.sweepTailMode` (setting) are set; both default to `node`, so nothing changes until you opt in.
+- **Faster startup.** The engine no longer links the macOS IOKit, CoreFoundation and CoreServices frameworks , and transcript-scanning Stop/prompt checks have their own script time limit so they no longer defer on real transcripts.
+- **Skills call the engine with a Node fallback.** Skills run through `scripts/ah-run.sh`, which uses the engine when it is installed and healthy and falls back to the Node script otherwise.
+- **Command guard parity.** The engine command check ports the read-only chain units and background-script safe flags from the Node guard (a `gcloud` read inside a read-only chain and `python3 -I` scratch scripts are not treated as heavy).
 
 ### Changed
 
@@ -1207,7 +1212,7 @@ Jev logging:
   emitted commands fell through to the generic `node <file>.js`
   HEAVY_PATTERN and was blocked in coordinator context — breaking every
   Primary's cron tick and inline mesh command that used the launcher form
-  (peer-reported by the SkyCrew Primary). Added
+  (peer-reported by the downstream Primary). Added
   `anchoredAntiHallStableLauncher()`, a home-anchored carve-out (accepts
   `~`, `$HOME`, `"${HOME}"`, and the resolved absolute home directory
   immediately followed by `/.anti-hall/bin/devswarm.js` or
@@ -1398,7 +1403,7 @@ Jev logging:
   changed or ignored entries. New setting `guards.projectEditAllow` (default `true`).
   Codex registers no Edit-family hooks, so this is Claude-only. The Codex settings skill
   documents the trust command.
-- **`inbox tick --quiet`** (peer ask, SkyCrew/tf3 Primaries 2026-09-26). `inbox tick`'s
+- **`inbox tick --quiet`** (peer ask, downstream Primaries 2026-09-26). `inbox tick`'s
   JSON carries duplicate legacy+new field names (`unread`/`unreadTotal`,
   `cursor`/`cursorNdjson`, `storeCursor`/`cursorStore`), which made a cron-prompt
   directive eyeballing raw JSON error-prone. `--quiet` prints one line: `tick <id>:
@@ -1417,7 +1422,7 @@ Jev logging:
 
 ### Fixes
 
-- **DevSwarm wake-cron default moved off :00/:30** (peer ask, SkyCrew/tf3 Primaries
+- **DevSwarm wake-cron default moved off :00/:30** (peer ask, downstream Primaries
   2026-09-26). `WAKE_CRON_DEFAULT` was `*/30 * * * *`, which fires exactly on `:00`/`:30`
   — every other machine's `*/N` cron piles onto the same wall-clock instant. Now
   `7,37 * * * *`: same 30-minute cadence, off-minute offset. The MAILBOX WAKE
@@ -1831,7 +1836,7 @@ case blocks again (or more strictly than 0.110.0).
   update the printed command pointed at an old (sometimes deleted) version
   directory and showed a stale version number in the text itself — forcing a
   manual recreate of every cron/Monitor and a handover edit on every release
-  (peer report: SkyCrew Primary). Fixed by installing two tiny, self-
+  (peer report: downstream Primary). Fixed by installing two tiny, self-
   contained launchers under `~/.anti-hall/bin/` (`devswarm.js`,
   `wake-watch.js`) that resolve the CURRENTLY REGISTERED anti-hall install
   (`installed_plugins.json` -> the marketplace clone -> the path baked in at
@@ -2571,7 +2576,7 @@ restore.
   A child the Primary had already sent `archive-request` to kept triggering the CHILD NOT
   DRAINING nag and the cooldown'd ARCHIVE-READY reminder every turn, even hours later, even
   while the child's session was still live — the child was simply waiting on its own user,
-  not neglected (field report: SkyCrew, 399105fe/e75cade3). Both are now suppressed while
+  not neglected (field report: a downstream project, 399105fe/e75cade3). Both are now suppressed while
   `computeSummary`'s `archive_request_only_unread` is true, resuming automatically once the
   request is answered/drained or the child resumes other work, or after a new
   `devswarm.archiveRequestRenagHours` settings key (default 24h) elapses. The dead-session
@@ -4126,7 +4131,7 @@ re-investigated:
   sqlite backend hard-deletes the row, the JSONL backend appends an
   unconditional `remove` op that a later upsert simply outraces), so migration
   reviving the row was a genuine resurrection, not a no-op. A field report
-  (SkyCrew) had 4 workspaces archived on 0.97.1 come back `archivedInApp:
+  (a downstream project) had 4 workspaces archived on 0.97.1 come back `archivedInApp:
   false` after the 0.99.0 update, re-entering the parent-inbox table and
   parent gate. Root cause: a still-running child terminal can recreate
   `workspaces/<id>.json` for an already-archived id via the explicit
@@ -4183,7 +4188,7 @@ re-investigated:
   re-adopt a group sibling the migration correctly refuses.
   **Field aftermath, forward hygiene:** an install that already ran the
   pre-fix migration once is left holding the resurrected rows regardless (one
-  SkyCrew install measured ~43 legacy-slug rows across a whole retired
+  a downstream project install measured ~43 legacy-slug rows across a whole retired
   worktree-group family). `scripts/devswarm.js`'s new
   `reRetireResurrectedRows`/`reRetireResurrectedRowsAllStores` forward any
   unread mail into a same-worktree archived id, then remove ONLY the
@@ -4601,7 +4606,7 @@ re-investigated:
   different id.
 
 - **Added: a subagent inside a DevSwarm child workspace can no longer touch
-  the shared mailbox** (defect f0958b13fe2b, field-measured by SkyCrew
+  the shared mailbox** (defect f0958b13fe2b, field-measured by a downstream project
   2026-09-08 — 155 executions across 120 subagent transcripts in one
   workspace ran `devswarm.js inbox pull/ack` directly, each advancing the
   shared cursor and causing the workspace's own main thread to silently miss
@@ -4877,7 +4882,7 @@ re-investigated:
   `false` (an absent field still counts as known, so older `count` shapes are
   unaffected), `inbox tick` records `known` in the wake-tick marker, and the
   child gate refuses to treat a `known: false` zero as a genuine no-op.
-  Reported by the SkyCrew fleet (c37ff1269685).
+  Reported by the downstream fleet (c37ff1269685).
 
 ## 0.97.0 (2026-09-06)
 
@@ -6230,7 +6235,7 @@ Known limitations:
 
 ## 0.73.0 (2026-08-07)
 
-- **DevSwarm child inbox-neglect, fixed (SkyCrew field incident).** Root cause
+- **DevSwarm child inbox-neglect, fixed (a downstream project field incident).** Root cause
   had three parts: (1) `send --to` writes ONLY to the store — never the
   durable NDJSON inbox — so any reader checking NDJSON alone (liveness's
   unread backlog, the child/parent Stop gates) was blind to a mesh-direct

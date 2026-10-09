@@ -173,7 +173,7 @@ for (const B of backends) {
     const home = tmpHome();
     const s = open(home);
     try {
-      const wt = path.join(home, 'wt-live'); fs.mkdirSync(wt, { recursive: true });
+      const wt = path.join(home, 'wt-active'); fs.mkdirSync(wt, { recursive: true });
       s.upsertRegistry({ id: 'live', worktreePath: wt, sessionId: 'x' });
       s.appendMessage({ workspaceId: 'live', body: 'm', hash: 'l1' }); // unread, but registered
       const sum = store.computeSummary(s, { home, now: 1 });
