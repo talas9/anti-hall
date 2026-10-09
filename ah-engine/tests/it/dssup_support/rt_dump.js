@@ -24,9 +24,14 @@ walk(path.join(ds, 'store'), (p) => {
   db.close();
 });
 walk(path.join(ds, 'archive'), (p) => {
+  if (!p.endsWith('.gz')) { out.push('OTHER ' + path.relative(ds, p) + ' ' + fs.statSync(p).size); return; }
   out.push('ARCHIVE ' + path.relative(ds, p));
   out.push(zlib.gunzipSync(fs.readFileSync(p)).toString('utf8'));
 });
+try {
+  const rep = JSON.parse(fs.readFileSync(path.join(ds, 'retention-dry-run.json'), 'utf8'));
+  out.push('REPORT ' + JSON.stringify(rep, (k, v) => ((k === 'mbBefore' || k === 'mbAfter') ? 0 : v)));
+} catch (_) { out.push('REPORT none'); }
 try {
   const st = JSON.parse(fs.readFileSync(path.join(ds, 'retention-state.json'), 'utf8'));
   for (const h of Object.keys(st.stores || {})) if (st.stores[h] && st.stores[h].vacuum) delete st.stores[h].vacuum.ms;

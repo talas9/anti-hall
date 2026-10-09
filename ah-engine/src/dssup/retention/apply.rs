@@ -171,7 +171,7 @@ pub fn log_event(home: &Path, rec: &[(&str, OVal)]) {
     }
 }
 
-fn fsync_dir(d: &Path) {
+pub(super) fn fsync_dir(d: &Path) {
     if let Ok(f) = std::fs::File::open(d) {
         crate::discard::harmless(f.sync_all()); // keep: not supported everywhere (Node: same)
     }

@@ -138,7 +138,7 @@ value = { kind = "node", gate = "tick", timeout_ms = 120000, snippet = 'process.
 
 [devswarm_sup."duty.retention"]
 doc = "Bounded growth of the message stores: archive-first tombstoning of old, fully read message bodies (never a row delete; positions and dedupe depend on every row staying), native in the armed state. The engine plans natively and writes only when Node's own planner, run read only on the same store, agrees on the exact rows; a disagreement or a witness that cannot run does nothing and is logged. The one-time dry-run report phase, the journal fold and the archive cap stay Node's own functions."
-value = { kind = "node", native = true, gate = "tick", timeout_ms = 300000, witness_timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";console.log(JSON.stringify(require(process.argv[1]+"/companion/lib/devswarm-retention.js").sweep({home:process.argv[2]})))', witness_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");const spec=JSON.parse(process.argv[3]);const home=process.argv[2];const st={stores:{},holds:spec.holds||{},phase:"armed"};const plan=R.planStore({home,hash:spec.hash,settings:spec.settings,now:spec.now,state:st,ignoreAge:true});const dry=R.pruneStore({home,hash:spec.hash,settings:spec.settings,now:spec.now,state:st,dryRun:true});const p={};for(const k of Object.keys(plan.partitions)){const x=plan.partitions[k];p[k]={rows:x.rows,candidates:x.candidates,candidateBytes:x.candidateBytes,tombstoned:x.tombstoned,bound:x.bound,protected:{tooNew:x.protected.tooNew,keepLast:x.protected.keepLast,unread:x.protected.unread,question:x.protected.question,ndjson:x.protected.ndjson,broadcast:x.protected.broadcast,held:x.protected.held}}}console.log(JSON.stringify({cands:plan.candidates.map((c)=>[c.id,c.pos,c.partition,c.blen,c.oldEnough?1:0]),dry:{ok:dry.ok,error:dry.error,skipped:dry.skipped||null,ageCandidates:dry.ageCandidates,sizeCandidates:dry.sizeCandidates,candidateBytes:dry.candidateBytes,overLimit:dry.overLimit},parts:p}))', fold_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.foldLegacyJournal({home:process.argv[2],hash:process.argv[3],env:process.env})))', cap_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.enforceArchiveCap({home:process.argv[2],settings:JSON.parse(process.argv[3])})))' }
+value = { kind = "node", native = true, gate = "tick", timeout_ms = 300000, witness_timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";console.log(JSON.stringify(require(process.argv[1]+"/companion/lib/devswarm-retention.js").sweep({home:process.argv[2]})))', witness_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");const spec=JSON.parse(process.argv[3]);const home=process.argv[2];const st={stores:{},holds:spec.holds||{},phase:"armed"};const plan=R.planStore({home,hash:spec.hash,settings:spec.settings,now:spec.now,state:st,ignoreAge:true});const dry=R.pruneStore({home,hash:spec.hash,settings:spec.settings,now:spec.now,state:st,dryRun:true});const p={};for(const k of Object.keys(plan.partitions)){const x=plan.partitions[k];p[k]={rows:x.rows,candidates:x.candidates,candidateBytes:x.candidateBytes,tombstoned:x.tombstoned,bound:x.bound,protected:{tooNew:x.protected.tooNew,keepLast:x.protected.keepLast,unread:x.protected.unread,question:x.protected.question,ndjson:x.protected.ndjson,broadcast:x.protected.broadcast,held:x.protected.held}}}console.log(JSON.stringify({cands:plan.candidates.map((c)=>[c.id,c.pos,c.partition,c.blen,c.oldEnough?1:0]),dry:{ok:dry.ok,error:dry.error,skipped:dry.skipped||null,ageCandidates:dry.ageCandidates,sizeCandidates:dry.sizeCandidates,candidateBytes:dry.candidateBytes,overLimit:dry.overLimit,overLimitProtected:dry.overLimitProtected},parts:p}))', fold_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.foldLegacyJournal({home:process.argv[2],hash:process.argv[3],env:process.env})))', cap_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.enforceArchiveCap({home:process.argv[2],settings:JSON.parse(process.argv[3])})))', fold_dry_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.foldLegacyJournal({home:process.argv[2],hash:process.argv[3],env:process.env,dryRun:true})))', cap_dry_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.enforceArchiveCap({home:process.argv[2],settings:JSON.parse(process.argv[3]),dryRun:true})))' }
 
 [devswarm_sup."duty.housekeeping"]
 doc = "Disk hygiene: sweep the reaped-workspace logs and the child-gate files by the doctor's repair rules. Node's housekeeping-sweep-state.json keeps the cool-down. Native: removes only files older than the retention window, one directory level, only the sweep's own suffix."
@@ -960,6 +960,64 @@ value = "the store changed during the comparison"
 [devswarm_sup.rt_text_types]
 doc = "The SQLite storage types a message body may have for the engine to plan it (text, or NULL for a tombstone); any other type (a blob, a number) is a value Node would turn into text its own way, so the sweep is Node's."
 value = ["text", "null"]
+
+# ---- the dry-run report phase, the journal fold and the archive cap, native (src/dssup/retention/{dry,fold,cap}.rs) -----------------
+
+[devswarm_sup.rt_dry_report_file]
+doc = "The first-run dry-run report under the DevSwarm state directory (Node's retention-dry-run.json)."
+value = "retention-dry-run.json"
+
+[devswarm_sup.rt_dry_completed_key]
+doc = "The retention state key that records when the first-run dry-run report was completed."
+value = "dryRunCompletedAt"
+
+[devswarm_sup.rt_ev_dry_complete]
+doc = "The retention log event written when the first-run dry-run report covers every store."
+value = "dry-run-complete"
+
+[devswarm_sup.rt_ev_legacy_archived]
+doc = "The retention log event written for each legacy journal file folded into the archive."
+value = "legacy-journal-archived"
+
+[devswarm_sup.rt_ev_archive_evict]
+doc = "The retention log event written for each archive month file evicted by the archive size cap."
+value = "archive-evict"
+
+[devswarm_sup.rt_legacy_dir]
+doc = "The archive subdirectory (per store) that holds folded legacy journals."
+value = "legacy-journal"
+
+[devswarm_sup.rt_gz_ext]
+doc = "The extension of a folded journal's archive file."
+value = ".ndjson.gz"
+
+[devswarm_sup.rt_tmp_suffix]
+doc = "The suffix of the temporary file an archive file is written to before it is renamed into place."
+value = ".tmp"
+
+[devswarm_sup.rt_cap_month_re]
+doc = "The name of an archive month file; its first group is the month that orders eviction (older months go first)."
+value = '^(\d{4}-\d{2})\.ndjson\.gz$'
+
+[devswarm_sup.rt_msg_fold_differ]
+doc = "Why a legacy journal was not folded: the engine's file list is not the one Node's own dry run gives."
+value = "the journal file list differs from Node's"
+
+[devswarm_sup.rt_msg_fold_changed]
+doc = "Why a folded journal file was kept: it changed after it was read."
+value = "changed while it was archived"
+
+[devswarm_sup.rt_msg_cap_differ]
+doc = "Why no archive file was evicted: the engine's eviction list is not the one Node's own dry run gives."
+value = "the eviction list differs from Node's"
+
+[devswarm_sup.rt_msg_report_shape]
+doc = "Why the first-run dry-run phase is left to Node: the existing report is not a shape the engine writes over."
+value = "dry-run report shape"
+
+[devswarm_sup.rt_msg_dry_differ]
+doc = "Why the first-run dry-run report was not written: the engine's store summary differs from Node's."
+value = "the dry-run summary differs from Node's"
 
 # ---- the deferred stage, native (src/dssup/deferred.rs) --------------------------------------------------------------------------
 
