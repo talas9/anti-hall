@@ -12,5 +12,5 @@
 # Lane d88e (batch 7) moved stale-agent-stop-note, claim-ledger, idle-agent-sweep, auto-handover-pause-nag, compact-advice-guard and
 # session-end-mcp-reaper to scripts: 13 (the number the gate measures).
 # Lane d88f (live7) moved verify-first, verify-first-orch, verify-first-orch-codex, task-tracker, the DevSwarm gates (child-role, parent-gate,
-# child-gate, parent-reply-tracker, child-drain, comms-guard) and the codex checks to scripts: see the number below.
-4
+# child-gate, parent-reply-tracker, child-drain, comms-guard) and the codex checks to scripts: the final number below.
+2

@@ -205,6 +205,15 @@ pub static JEV_REVIEW_REMINDER: Scripted = Scripted::new("jev-review-reminder", 
 /// `repair-on-reload` (SessionStart and UserPromptSubmit).
 pub static REPAIR_ON_RELOAD: Scripted = Scripted::new("repair-on-reload", "repair_reload.summary");
 
+/// `codex-availability` (SessionStart).
+pub static CODEX_AVAILABILITY: Scripted = Scripted::new("codex-availability", "codex_handover.avail_summary");
+
+/// `codex-quota-detect` (PostToolUse on Agent; advisory only).
+pub static CODEX_QUOTA_DETECT: Scripted = Scripted::new("codex-quota-detect", "codex_handover.detect_summary");
+
+/// `codex-nudge` (Stop).
+pub static CODEX_NUDGE: Scripted = Scripted::new("codex-nudge", "codex_handover.nudge_summary");
+
 /// `ask-guard` (PreToolUse on AskUserQuestion).
 pub static ASK_GUARD: Scripted = Scripted::new("ask-guard", "ask_guard.summary");
 

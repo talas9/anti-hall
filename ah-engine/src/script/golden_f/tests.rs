@@ -47,3 +47,167 @@ fn session_gate_scripts_match_the_compiled_ports() {
 fn task_lifecycle_log_script_matches_the_compiled_port() {
     golden_report("task-lifecycle-log", 12);
 }
+#[test]
+fn codex_scripts_match_the_compiled_ports() {
+    golden_report("codex-availability", 12);
+    golden_report("codex-quota-detect", 12);
+    golden_report("codex-nudge", 12);
+}
+
+/// The behaviors of the Codex nudge a corpus cannot pin: the Jev consult in each mode, the pruning of old state, a scratchpad inside the
+/// work tree, a transcript line only JavaScript can read.
+mod codex_nudge {
+    use crate::checks::Verdict;
+    use crate::checks::jsport::testkit::{Sandbox, git};
+    use crate::jev::testkit::{install_scripted, log_rows, ok};
+    use serde_json::{Value, json};
+    use std::path::PathBuf;
+
+    const SID: &str = "sess-1";
+    const JEV_ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")];
+
+    struct Nudge {
+        sb: Sandbox,
+        repo: PathBuf,
+        transcript: PathBuf,
+    }
+
+    fn nudge_box(tag: &str) -> Nudge {
+        let sb = Sandbox::new(tag);
+        let repo = sb.root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.js"), "x").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        let repo = std::fs::canonicalize(repo).unwrap();
+        let enc: String = repo.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let transcript = sb.root.join(format!("home/.claude/projects/{enc}/{SID}.jsonl"));
+        Nudge { sb, repo, transcript }
+    }
+
+    impl Nudge {
+        fn transcript(&self, tools: &[Value]) {
+            let lines: Vec<String> = tools.iter().map(|t| json!({"type": "assistant", "message": {"content": [t]}}).to_string()).collect();
+            std::fs::create_dir_all(self.transcript.parent().unwrap()).unwrap();
+            std::fs::write(&self.transcript, lines.join("\n") + "\n").unwrap();
+        }
+        fn edit(&self, rel: &str) -> Value {
+            json!({"type": "tool_use", "name": "Edit", "input": {"file_path": self.repo.join(rel).to_string_lossy()}})
+        }
+        fn edits(&self, n: usize) -> Vec<Value> {
+            (0..n).map(|i| self.edit(&format!("f{i}.js"))).collect()
+        }
+        fn payload(&self) -> Value {
+            json!({"hook_event_name": "Stop", "session_id": SID, "cwd": self.repo.to_string_lossy(), "transcript_path": self.transcript.to_string_lossy()})
+        }
+        fn run(&self, extra: &[(&str, &str)]) -> Option<Option<Verdict>> {
+            crate::script::run_forced("codex-nudge", &self.payload(), &Value::Null, "Stop", &self.sb.env(extra))
+        }
+        fn nudged(&self, extra: &[(&str, &str)]) -> bool {
+            matches!(self.run(extra), Some(Some(Verdict::Advisory(_))))
+        }
+        fn silent(&self, extra: &[(&str, &str)]) -> bool {
+            matches!(self.run(extra), Some(Some(Verdict::Allow)))
+        }
+    }
+
+    fn trivial(p: f64) -> String {
+        format!(r#"{{"answers":{{"decision":{{"noul":{p}}}}}}}"#)
+    }
+
+    #[test]
+    fn the_nudge_consults_jev_in_every_mode() {
+        // off (Jev disabled): the nudge stands and the off row is written
+        let n = nudge_box("nudge-jev-off");
+        n.transcript(&n.edits(4));
+        let home = n.sb.root.join("home");
+        let (jev, fake) = install_scripted(&home, &[], vec![]);
+        assert!(n.nudged(&[]));
+        assert!(jev.drain(std::time::Duration::from_secs(5)));
+        let rows = log_rows(&home);
+        assert_eq!((rows.len(), rows[0]["id"].clone(), rows[0]["mode"].clone()), (1, json!("codexNudgeSubstantial"), json!("off")));
+        assert!(fake.seen.lock().unwrap().is_empty());
+        // shadow: asked, logged, the nudge stands even for a confident "trivial"
+        let n = nudge_box("nudge-jev-shadow");
+        n.transcript(&n.edits(4));
+        let home = n.sb.root.join("home");
+        let (jev, fake) = install_scripted(&home, &JEV_ON, vec![ok(200, &trivial(0.03))]);
+        assert!(n.nudged(&JEV_ON));
+        assert!(jev.drain(std::time::Duration::from_secs(5)));
+        let rows = log_rows(&home);
+        assert_eq!((rows.len(), rows[0]["mode"].clone(), rows[0]["jev"].clone(), rows[0]["final"].clone()), (1, json!("shadow"), json!(false), json!(true)));
+        let seen = fake.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let body = seen[0].2.as_deref().unwrap();
+        assert!(body.contains("files: f0.js, f1.js, f2.js, f3.js") && body.contains("edits: 4"), "{body}");
+        drop(seen);
+        // on: a confident "trivial" skips the nudge (and spends no state)
+        let n = nudge_box("nudge-jev-on");
+        n.transcript(&n.edits(4));
+        let home = n.sb.root.join("home");
+        n.sb.write("home/.anti-hall/settings.json", r#"{"jevIntegrations":{"codexNudgeSubstantial":"on"}}"#);
+        let (_jev, _fake) = install_scripted(&home, &JEV_ON, vec![ok(200, &trivial(0.03))]);
+        assert!(n.silent(&JEV_ON), "a confident trivial verdict skips the nudge");
+        let rows = log_rows(&home);
+        assert_eq!((rows.len(), rows[0]["mode"].clone(), rows[0]["final"].clone(), rows[0]["changed"].clone()), (1, json!("on"), json!(false), json!("relaxed")));
+        assert!(!home.join(format!(".anti-hall/codex-nudge-state-{SID}.json")).exists());
+        // on, and the call fails: today's verdict (nudge)
+        let n = nudge_box("nudge-jev-on-fail");
+        n.transcript(&n.edits(4));
+        let home = n.sb.root.join("home");
+        n.sb.write("home/.anti-hall/settings.json", r#"{"jevIntegrations":{"codexNudgeSubstantial":"on"}}"#);
+        let (_jev, _fake) = install_scripted(&home, &JEV_ON, vec![]);
+        assert!(n.nudged(&JEV_ON), "fail-open to nudging");
+    }
+
+    #[test]
+    fn old_state_of_other_sessions_is_pruned_once_per_window_and_never_the_live_one() {
+        let n = nudge_box("nudge-prune");
+        n.transcript(&n.edits(4));
+        for (name, age_days) in [("old", 10u64), ("fresh", 1), (SID, 30)] {
+            let rel = format!("home/.anti-hall/codex-nudge-state-{name}.json");
+            n.sb.write(&rel, "{}");
+            n.sb.age(&rel, age_days * 86400);
+        }
+        n.sb.write("home/.anti-hall/other-file.json", "{}");
+        n.sb.age("home/.anti-hall/other-file.json", 30 * 86400);
+        assert!(n.nudged(&[]));
+        let has = |rel: &str| n.sb.root.join(rel).exists();
+        assert!(!has("home/.anti-hall/codex-nudge-state-old.json"));
+        assert!(has("home/.anti-hall/codex-nudge-state-fresh.json"));
+        assert!(has("home/.anti-hall/other-file.json"));
+        assert!(has("home/.anti-hall/.prune-stamp-codex-nudge-state.json"));
+        // a recent stamp throttles the next sweep
+        n.sb.write("home/.anti-hall/codex-nudge-state-old2.json", "{}");
+        n.sb.age("home/.anti-hall/codex-nudge-state-old2.json", 10 * 86400);
+        n.transcript(&n.edits(5));
+        assert!(n.nudged(&[]));
+        assert!(has("home/.anti-hall/codex-nudge-state-old2.json"));
+    }
+
+    #[test]
+    fn a_transcript_line_javascript_reads_and_serde_does_not_is_decided_by_the_script() {
+        let n = nudge_box("nudge-lone");
+        let line = r#"{"type":"tool_use","name":"Edit","input":{"file_path":"/x/\ud83d.js"}}"#;
+        std::fs::create_dir_all(n.transcript.parent().unwrap()).unwrap();
+        std::fs::write(&n.transcript, format!("{line}\n")).unwrap();
+        assert!(!n.nudged(&[]), "one edit, outside the work tree: nothing to say");
+    }
+
+    #[test]
+    fn a_scratchpad_inside_the_worktree_is_still_excluded() {
+        let n = nudge_box("nudge-scratch-inside");
+        let tmp = n.repo.join("tmpx");
+        let enc: String = n.repo.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let scratch = tmp.join(format!("claude-{}/{enc}/{SID}/scratchpad", crate::checks::jsport::home::uid()));
+        let mut t = n.edits(2);
+        for i in 0..3 {
+            t.push(json!({"type": "tool_use", "name": "Edit", "input": {"file_path": scratch.join(format!("s{i}.py")).to_string_lossy()}}));
+        }
+        n.transcript(&t);
+        let env = [("TMPDIR", tmp.to_str().unwrap())];
+        assert!(n.silent(&env), "the scratchpad edits do not count even inside the worktree");
+        assert!(n.nudged(&[]), "without that TMPDIR they are ordinary edits");
+    }
+}
