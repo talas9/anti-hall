@@ -46,7 +46,13 @@ pub fn simple(input: &str, cwd: &str, env: &BTreeMap<String, String>) -> Option<
     let ctx_seg = match data.get("context_window").and_then(|c| c.get("remaining_percentage")) {
         Some(J::Num(r)) if r.is_finite() => {
             let used = num::js_round(100.0 - r).clamp(0.0, 100.0);
-            let color = if used < 50.0 { col("green") } else if used < 75.0 { col("yellow") } else { col("red") };
+            let color = if used < 50.0 {
+                col("green")
+            } else if used < 75.0 {
+                col("yellow")
+            } else {
+                col("red")
+            };
             format!("{color}{}%{}", n(used), col("reset"))
         }
         _ => String::new(),
@@ -56,10 +62,11 @@ pub fn simple(input: &str, cwd: &str, env: &BTreeMap<String, String>) -> Option<
     for (k, v) in env {
         c.env(k, v);
     }
-    let branch = run_with_input(c, b"", Duration::from_millis(defaults::num("statusline.simple_git_timeout_ms")), defaults::num("statusline.git_max_buffer") as usize)
-        .filter(|r| r.ok)
-        .map(|r| String::from_utf8_lossy(&r.stdout).trim().to_string())
-        .unwrap_or_default();
+    let branch =
+        run_with_input(c, b"", Duration::from_millis(defaults::num("statusline.simple_git_timeout_ms")), defaults::num("statusline.git_max_buffer") as usize)
+            .filter(|r| r.ok)
+            .map(|r| String::from_utf8_lossy(&r.stdout).trim().to_string())
+            .unwrap_or_default();
     let dirname = posix_basename(&dir);
     let mut segs = vec![format!("{}{model}{}", col("dim"), col("reset"))];
     if !branch.is_empty() {
@@ -85,7 +92,8 @@ pub fn monorepo(input: &str, cwd: &str, cx: &Ctx, env: &BTreeMap<String, String>
     };
     let cw = data.get("context_window");
     let total = cw.and_then(|c| c.get("total_tokens")).filter(|v| truthy(Some(v))).map_or(1_000_000.0, j_number);
-    let acw = env.get(defaults::text("statusline.compact_env")).filter(|v| !v.is_empty()).map_or(0.0, |v| crate::setup::jsfmt::parse_int(v).unwrap_or(f64::NAN));
+    let acw =
+        env.get(defaults::text("statusline.compact_env")).filter(|v| !v.is_empty()).map_or(0.0, |v| crate::setup::jsfmt::parse_int(v).unwrap_or(f64::NAN));
     let buffer = if acw > 0.0 { ((acw / total) * 100.0).min(100.0) } else { defaults::text("statusline.compact_default").parse::<f64>().unwrap_or(16.5) };
     let mut ctx = String::new();
     if let Some(J::Num(rem)) = cw.and_then(|c| c.get("remaining_percentage")).filter(|v| matches!(v, J::Num(x) if x.is_finite())) {
@@ -93,11 +101,23 @@ pub fn monorepo(input: &str, cwd: &str, cx: &Ctx, env: &BTreeMap<String, String>
         let used = num::js_round(100.0 - usable).clamp(0.0, 100.0);
         let filled = (used / 10.0).floor() as usize;
         let bar = format!("{}{}", "#".repeat(filled), "-".repeat(10 - filled));
-        let color = if used < 50.0 { col("green") } else if used < 65.0 { col("yellow") } else if used < 80.0 { col("orange") } else { col("boldred") };
+        let color = if used < 50.0 {
+            col("green")
+        } else if used < 65.0 {
+            col("yellow")
+        } else if used < 80.0 {
+            col("orange")
+        } else {
+            col("boldred")
+        };
         ctx = format!(" {color}[{bar}] {}%{}", n(used), col("reset"));
     }
     let mut task = String::new();
-    let claude_dir = env.get(defaults::text("statusline.config_dir_env")).filter(|v| !v.is_empty()).cloned().unwrap_or_else(|| Path::new(&cx.home).join(defaults::text("statusline.claude_dir")).to_string_lossy().into_owned());
+    let claude_dir = env
+        .get(defaults::text("statusline.config_dir_env"))
+        .filter(|v| !v.is_empty())
+        .cloned()
+        .unwrap_or_else(|| Path::new(&cx.home).join(defaults::text("statusline.claude_dir")).to_string_lossy().into_owned());
     let todos = Path::new(&claude_dir).join(defaults::text("statusline.todos_dir"));
     if !session.is_empty() && todos.exists() {
         let mut files: Vec<(String, f64)> = std::fs::read_dir(&todos)
@@ -113,7 +133,9 @@ pub fn monorepo(input: &str, cwd: &str, cx: &Ctx, env: &BTreeMap<String, String>
             .unwrap_or_default();
         files.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         if let Some((name, _)) = files.first()
-            && let Some(J::Arr(list)) = std::fs::read(todos.join(name)).ok().and_then(|b| json::parse(&String::from_utf8_lossy(&b), defaults::num("setup.json_max_depth") as usize).ok())
+            && let Some(J::Arr(list)) = std::fs::read(todos.join(name))
+                .ok()
+                .and_then(|b| json::parse(&String::from_utf8_lossy(&b), defaults::num("setup.json_max_depth") as usize).ok())
         {
             for t in &list {
                 if matches!(t, J::Null) {
@@ -133,5 +155,9 @@ pub fn monorepo(input: &str, cwd: &str, cx: &Ctx, env: &BTreeMap<String, String>
     let model_seg = format!("{}{model}{}", col("dim"), col("reset"));
     let dir_seg = format!("{}{dirname}{}", col("dim"), col("reset"));
     let join = defaults::text("statusline.simple_join");
-    Some(if task.is_empty() { format!("{model_seg}{join}{dir_seg}{ctx}") } else { format!("{model_seg}{join}{}{task}{}{join}{dir_seg}{ctx}", col("bold"), col("reset")) })
+    Some(if task.is_empty() {
+        format!("{model_seg}{join}{dir_seg}{ctx}")
+    } else {
+        format!("{model_seg}{join}{}{task}{}{join}{dir_seg}{ctx}", col("bold"), col("reset"))
+    })
 }

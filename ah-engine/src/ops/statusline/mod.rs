@@ -131,9 +131,14 @@ fn render_all(stdin: &[u8]) -> Result<(), Defer> {
             None => {
                 let mut c = Command::new(defaults::text("statusline.shell"));
                 c.arg(defaults::text("statusline.shell_flag")).arg(&base);
-                run_with_input(c, stdin, Duration::from_millis(defaults::num("statusline.inner_timeout_ms")), defaults::num("statusline.base_max_buffer") as usize)
-                    .filter(|r| r.ok && !r.stdout.is_empty())
-                    .map(|r| trim_nl(&String::from_utf8_lossy(&r.stdout)))
+                run_with_input(
+                    c,
+                    stdin,
+                    Duration::from_millis(defaults::num("statusline.inner_timeout_ms")),
+                    defaults::num("statusline.base_max_buffer") as usize,
+                )
+                .filter(|r| r.ok && !r.stdout.is_empty())
+                .map(|r| trim_nl(&String::from_utf8_lossy(&r.stdout)))
             }
         };
         match out {

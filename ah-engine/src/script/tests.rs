@@ -412,7 +412,13 @@ pub(super) fn golden_report(check: &str, limit: usize) {
                 shown += 1;
                 let mut p = c["payload"].to_string();
                 p.truncate(300);
-                eprintln!("MISMATCH {check} n={}\n  payload={p}\n  expect={}\n  got   ={}\n  errors={:?}", c["n"], c["expect"].to_string().chars().take(4000).collect::<String>(), got.to_string().chars().take(4000).collect::<String>(), crate::discard::captured());
+                eprintln!(
+                    "MISMATCH {check} n={}\n  payload={p}\n  expect={}\n  got   ={}\n  errors={:?}",
+                    c["n"],
+                    c["expect"].to_string().chars().take(4000).collect::<String>(),
+                    got.to_string().chars().take(4000).collect::<String>(),
+                    crate::discard::captured()
+                );
             }
         }
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
@@ -1004,7 +1010,10 @@ fn repair_on_reload_script_matches_the_compiled_port() {
 #[test]
 fn merge_side_pick_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-side-pick");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 20, "every answer: {kinds:?}");
+    assert!(
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 20,
+        "every answer: {kinds:?}"
+    );
 }
 
 /// The platform's throttle prefix (macOS `taskpolicy ...`, Linux `nice ...`) stands as `{PREFIX}` in the corpus, so one corpus
@@ -1027,7 +1036,14 @@ fn scan_throttle_script_matches_the_compiled_port() {
         let got = super::run_forced("scan-throttle", &l.payload, &l.opts, &l.event, &l.env).expect("a shipped script");
         let mut got = golden::verdict_json(&got, &l);
         prefix_neutral(&mut got);
-        assert_eq!(got, c["expect"], "scan-throttle: script differs from the compiled port on case {}: {} ({:?})", c["n"], c["payload"], crate::discard::captured());
+        assert_eq!(
+            got,
+            c["expect"],
+            "scan-throttle: script differs from the compiled port on case {}: {} ({:?})",
+            c["n"],
+            c["payload"],
+            crate::discard::captured()
+        );
         *kinds.entry(got["v"].as_str().unwrap_or("").to_string()).or_insert(0usize) += 1;
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
     }
@@ -1037,7 +1053,10 @@ fn scan_throttle_script_matches_the_compiled_port() {
 #[test]
 fn merge_gate_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-gate");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 10, "every answer: {kinds:?}");
+    assert!(
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 10,
+        "every answer: {kinds:?}"
+    );
 }
 // ---- output-verify-guard: the Jev shadow question (ported from the compiled check's unit tests) ----
 

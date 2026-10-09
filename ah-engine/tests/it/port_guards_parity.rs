@@ -489,40 +489,57 @@ fn shared_tree_cases() -> Vec<Case> {
         Case::json("adv-agents-md-forbids-git-worktree", at("Agent", general()), ex).file(t, &busy()).file("AGENTS.md", "never: NO GIT WORKTREE use\n"),
         Case::json("adv-claude-md-unrelated", at("Agent", general()), ex).file(t, &busy()).file("CLAUDE.md", "Use worktrees for features.\n"),
         Case::json("adv-claude-md-is-a-directory", at("Agent", general()), ex).file(t, &busy()).file("CLAUDE.md/keep", "x"),
-        Case::json("adv-rule-in-a-parent-directory", {
-            let mut p = at("Agent", general());
-            p["cwd"] = json!("{HOME}/sub/deeper");
-            p
-        }, ex)
+        Case::json(
+            "adv-rule-in-a-parent-directory",
+            {
+                let mut p = at("Agent", general());
+                p["cwd"] = json!("{HOME}/sub/deeper");
+                p
+            },
+            ex,
+        )
         .file(t, &busy())
         .file("sub/deeper/keep", "x")
         .file("CLAUDE.md", "no worktrees\n"),
-        Case::json("adv-rule-stops-at-the-repo-root", {
-            let mut p = at("Agent", general());
-            p["cwd"] = json!("{HOME}/repo/sub");
-            p
-        }, ex)
+        Case::json(
+            "adv-rule-stops-at-the-repo-root",
+            {
+                let mut p = at("Agent", general());
+                p["cwd"] = json!("{HOME}/repo/sub");
+                p
+            },
+            ex,
+        )
         .file(t, &busy())
         .file("repo/.git/HEAD", "ref: refs/heads/main\n")
         .file("repo/sub/keep", "x")
         .file("CLAUDE.md", "no worktrees\n"),
-        Case::json("adv-rule-inside-the-repo", {
-            let mut p = at("Agent", general());
-            p["cwd"] = json!("{HOME}/repo/sub");
-            p
-        }, ex)
+        Case::json(
+            "adv-rule-inside-the-repo",
+            {
+                let mut p = at("Agent", general());
+                p["cwd"] = json!("{HOME}/repo/sub");
+                p
+            },
+            ex,
+        )
         .file(t, &busy())
         .file("repo/.git/HEAD", "ref: refs/heads/main\n")
         .file("repo/sub/keep", "x")
         .file("repo/AGENTS.md", "no worktrees\n"),
-        Case::json("adv-cwd-is-missing-on-disk", {
-            let mut p = at("Agent", general());
-            p["cwd"] = json!("{HOME}/not/there");
-            p
-        }, ex)
+        Case::json(
+            "adv-cwd-is-missing-on-disk",
+            {
+                let mut p = at("Agent", general());
+                p["cwd"] = json!("{HOME}/not/there");
+                p
+            },
+            ex,
+        )
         .file(t, &busy())
         .file("CLAUDE.md", "no worktrees\n"),
-        Case::json("adv-scratch-statement-with-in-repo-is-not-scratch", at("Agent", json!({"prompt":"work in a scratch clone under /tmp/x, in the repo"})), ex).file(t, &busy()),
+        Case::json("adv-scratch-statement-with-in-repo-is-not-scratch", at("Agent", json!({"prompt":"work in a scratch clone under /tmp/x, in the repo"})), ex)
+            .file(t, &busy()),
         Case::json("adv-negated-scratch-is-not-scratch", at("Agent", json!({"prompt":"not in scratch /tmp/x"})), ex).file(t, &busy()),
         Case::json("adv-bare-scratch-mention-is-not-scratch", at("Agent", json!({"prompt":"use a scratch directory for notes"})), ex).file(t, &busy()),
         Case::json("adv-scratch-in-description-only", at("Agent", json!({"description":"work in a scratch clone","prompt":"x"})), ex).file(t, &busy()),
@@ -538,13 +555,16 @@ fn shared_tree_cases() -> Vec<Case> {
         Case::json("quiet-spawn-scratchpad-path", at("Agent", json!({"prompt":"cwd: /Users/x/scratchpad/y"})), ex).file(t, &busy()),
         Case::json("quiet-other-agent-read-only", at("Agent", general()), ex).file(t, &launch_transcript(json!({"subagent_type":"Explore"}), false)),
         Case::json("quiet-other-agent-isolated", at("Agent", general()), ex).file(t, &launch_transcript(json!({"isolation":"remote"}), false)),
-        Case::json("quiet-other-agent-in-scratch", at("Agent", general()), ex).file(t, &launch_transcript(json!({"prompt":"work in a scratch clone under /tmp/x"}), false)),
+        Case::json("quiet-other-agent-in-scratch", at("Agent", general()), ex)
+            .file(t, &launch_transcript(json!({"prompt":"work in a scratch clone under /tmp/x"}), false)),
         Case::json("quiet-other-agent-finished", at("Agent", general()), ex).file(t, &launch_transcript(general(), true)),
         Case::json("quiet-no-agent-in-transcript", at("Agent", general()), ex).file(t, "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n"),
         Case::json("quiet-empty-transcript", at("Agent", general()), ex).file(t, ""),
         Case::json("quiet-transcript-garbage", at("Agent", general()), ex).file(t, "{nope\n\u{1}\n"),
         Case::json("quiet-transcript-missing", at("Agent", general()), ex),
-        Case::json("quiet-switch-off-with-a-writer", at("Agent", general()), ex).file(t, &busy()).file(".anti-hall/settings.json", r#"{"guards":{"sharedTreeAgentNote":false}}"#),
+        Case::json("quiet-switch-off-with-a-writer", at("Agent", general()), ex)
+            .file(t, &busy())
+            .file(".anti-hall/settings.json", r#"{"guards":{"sharedTreeAgentNote":false}}"#),
         Case::json("quiet-env-off-with-a-writer", at("Agent", general()), ex).file(t, &busy()).env("ANTIHALL_SHARED_TREE_AGENT_NOTE", "0"),
         Case::json("quiet-guard-skipped", at("Agent", general()), ex).file(t, &busy()).file(".anti-hall/skip.json", r#"{"swarm-guard":99999999999999}"#),
         Case::json("quiet-tool-input-array", at("Agent", json!(["x"])), ex).file(t, &busy()),
@@ -552,23 +572,35 @@ fn shared_tree_cases() -> Vec<Case> {
             .file(t, &busy())
             .file(".anti-hall/swarm-spawns.log", &log_of(&(0..20).map(|i| 1000 + i * 100).collect::<Vec<u64>>())),
         // the engine hands these to Node, which then records the spawn once
-        Case::json("defer-no-cwd-for-node-to-use-its-own", {
-            let mut p = at("Agent", general());
-            p.as_object_mut().unwrap().remove("cwd");
-            p
-        }, Expect::Defer)
+        Case::json(
+            "defer-no-cwd-for-node-to-use-its-own",
+            {
+                let mut p = at("Agent", general());
+                p.as_object_mut().unwrap().remove("cwd");
+                p
+            },
+            Expect::Defer,
+        )
         .file(t, &busy()),
-        Case::json("defer-relative-transcript-path", {
-            let mut p = at("Agent", general());
-            p["transcript_path"] = json!(".anti-hall/t.jsonl");
-            p
-        }, Expect::Defer)
+        Case::json(
+            "defer-relative-transcript-path",
+            {
+                let mut p = at("Agent", general());
+                p["transcript_path"] = json!(".anti-hall/t.jsonl");
+                p
+            },
+            Expect::Defer,
+        )
         .file(t, &busy()),
-        Case::json("defer-cwd-not-in-normal-form", {
-            let mut p = at("Agent", general());
-            p["cwd"] = json!("{HOME}/sub/../sub2");
-            p
-        }, Expect::Defer)
+        Case::json(
+            "defer-cwd-not-in-normal-form",
+            {
+                let mut p = at("Agent", general());
+                p["cwd"] = json!("{HOME}/sub/../sub2");
+                p
+            },
+            Expect::Defer,
+        )
         .file(t, &busy()),
         Case::json("adv-transcript-line-with-a-lone-surrogate-escape", at("Agent", general()), ex)
             .file(t, &format!("{}{{\"type\":\"user\",\"message\":{{\"content\":\"\\ud800\"}}}}\n", busy())),

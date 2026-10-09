@@ -148,7 +148,10 @@ impl Sc {
 
     fn write_lock(&self, version: &str, triples: &[String]) {
         let assets: Vec<String> = triples.iter().map(|t| format!("    \"ah-engine-v{version}-{t}.tar.gz\": \"{}\"", "a".repeat(64))).collect();
-        let text = format!("{{\n  \"schema\": 1,\n  \"version\": \"{version}\",\n  \"tag\": \"ah-engine-v{version}\",\n  \"fingerprint\": \"x\",\n  \"assets\": {{\n{}\n  }}\n}}\n", assets.join(",\n"));
+        let text = format!(
+            "{{\n  \"schema\": 1,\n  \"version\": \"{version}\",\n  \"tag\": \"ah-engine-v{version}\",\n  \"fingerprint\": \"x\",\n  \"assets\": {{\n{}\n  }}\n}}\n",
+            assets.join(",\n")
+        );
         fs::write(self.plugin.join("ah-engine.lock"), text).unwrap();
     }
 
@@ -214,7 +217,12 @@ impl Sc {
     fn env(&self, c: &mut Command) {
         // AH_ENGINE_PLUGIN_ROOT is what the hook wrapper exports: the engine reads its settings from this plugin; TMPDIR is
         // forwarded so a long scratch path falls back to the same private socket directory the test computes
-        c.env_clear().env("PATH", &self.path).env("HOME", &self.home).env("AH_ENGINE_PLUGIN_ROOT", &self.plugin).env("TMPDIR", std::env::temp_dir()).current_dir(&self.cwd);
+        c.env_clear()
+            .env("PATH", &self.path)
+            .env("HOME", &self.home)
+            .env("AH_ENGINE_PLUGIN_ROOT", &self.plugin)
+            .env("TMPDIR", std::env::temp_dir())
+            .current_dir(&self.cwd);
     }
 
     fn doctor(&self, args: &[&str]) -> Out {
@@ -344,7 +352,12 @@ fn bin_03_not_executable_and_the_repair() {
 fn bin_04_corrupt_empty_truncated_unrecognised() {
     let mut sc = Sc::new();
     sc.own_plugin();
-    for (content, why) in [(Vec::new(), "empty file"), (vec![0x7f, b'E', b'L', b'F'], "truncated header"), (vec![0x41; 200], "unrecognised header"), (b"tiny".to_vec(), "truncated header")] {
+    for (content, why) in [
+        (Vec::new(), "empty file"),
+        (vec![0x7f, b'E', b'L', b'F'], "truncated header"),
+        (vec![0x41; 200], "unrecognised header"),
+        (b"tiny".to_vec(), "truncated header"),
+    ] {
         sc.install_bin(&content, 0o755);
         let d = sc.doctor(&[]);
         d.has("bad", &["is not a runnable program", why, "reinstall"]);
@@ -390,7 +403,11 @@ fn bin_06_x86_64_on_apple_silicon_depends_on_rosetta() {
     } else {
         d.has("bad", &["Rosetta is not installed", "softwareupdate --install-rosetta"]);
     }
-    assert_eq!(d.section("Engine install").first(), sc.shell().section("Engine install").first(), "the fixture is not a runnable program, so only the verdict on the file is compared");
+    assert_eq!(
+        d.section("Engine install").first(),
+        sc.shell().section("Engine install").first(),
+        "the fixture is not a runnable program, so only the verdict on the file is compared"
+    );
 }
 
 #[test]
@@ -419,7 +436,10 @@ fn bin_07_08_09_marker_digest_and_versions() {
     sc2.marker("0.0.9");
     let d = sc2.doctor(&[]);
     d.has("warn", &["engine 0.0.9 is installed but the plugin pins 0.1.0", "next session start"]);
-    assert_eq!(d.section("Engine install").into_iter().filter(|l| !l.contains("this doctor is engine")).collect::<Vec<_>>(), sc2.shell().section("Engine install"));
+    assert_eq!(
+        d.section("Engine install").into_iter().filter(|l| !l.contains("this doctor is engine")).collect::<Vec<_>>(),
+        sc2.shell().section("Engine install")
+    );
 }
 
 #[test]
@@ -642,7 +662,14 @@ fn dmn_08_09_crash_loop_and_breaker_with_the_recorded_failure() {
     let state = sc.state();
     fs::create_dir_all(&state).unwrap();
     fs::write(state.join("crashloop.until"), (now_ms() + 60_000).to_string()).unwrap();
-    fs::write(state.join("failure.json"), format!("{{\"ts\":{},\"class\":\"env\",\"kind\":\"crashloop\",\"code\":\"os28\",\"hint\":\"free disk space\",\"reason\":\"3 crashes in 60s\"}}", now_ms())).unwrap();
+    fs::write(
+        state.join("failure.json"),
+        format!(
+            "{{\"ts\":{},\"class\":\"env\",\"kind\":\"crashloop\",\"code\":\"os28\",\"hint\":\"free disk space\",\"reason\":\"3 crashes in 60s\"}}",
+            now_ms()
+        ),
+    )
+    .unwrap();
     let d = sc.doctor(&[]);
     d.has("bad", &["daemon crash-looping: restarts halted for", "3 crashes in 60s", "ah-engine reset"]);
     d.has("warn", &["last recorded failure (env): 3 crashes in 60s", "free disk space"]);
@@ -682,7 +709,11 @@ fn dmn_10_two_daemons_in_one_state_directory() {
     b.kill().ok();
     b.wait().ok();
     let mut stranger = Command::new("sleep").arg("30").spawn().unwrap();
-    fs::write(state.join("ah-engine.log"), format!("{}\tstart\t-\tv0.1.0 pid {} mem_limit 0\n{}\tstart\t-\tv0.1.0 pid {} mem_limit 0\n", now_ms(), a.id(), now_ms(), stranger.id())).unwrap();
+    fs::write(
+        state.join("ah-engine.log"),
+        format!("{}\tstart\t-\tv0.1.0 pid {} mem_limit 0\n{}\tstart\t-\tv0.1.0 pid {} mem_limit 0\n", now_ms(), a.id(), now_ms(), stranger.id()),
+    )
+    .unwrap();
     sc.doctor(&[]).lacks("engine daemons are running");
     stranger.kill().ok();
     stranger.wait().ok();
@@ -931,7 +962,8 @@ fn cf_08_defaults_cannot_load_at_all_hands_over_to_the_shell_doctor() {
 // ---- PL: the plugin registry ---------------------------------------------------------------------------------------------------
 
 fn registry(sc: &Sc, entries: &[(&str, &Path, &str)]) {
-    let plugins: Vec<String> = entries.iter().map(|(k, p, v)| format!("\"{k}\":[{{\"scope\":\"user\",\"installPath\":\"{}\",\"version\":\"{v}\"}}]", p.display())).collect();
+    let plugins: Vec<String> =
+        entries.iter().map(|(k, p, v)| format!("\"{k}\":[{{\"scope\":\"user\",\"installPath\":\"{}\",\"version\":\"{v}\"}}]", p.display())).collect();
     sc.put(".claude/plugins/installed_plugins.json", format!("{{\"version\":2,\"plugins\":{{{}}}}}", plugins.join(",")).as_bytes());
 }
 
@@ -982,7 +1014,11 @@ fn pl_04_05_two_enabled_and_an_old_node_build() {
     sc.own_plugin();
     let old = sc.root.join("old-plugin");
     fs::create_dir_all(old.join("hooks")).unwrap();
-    fs::write(old.join("hooks/hooks.json"), r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"node ${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js"}]}]}}"#).unwrap();
+    fs::write(
+        old.join("hooks/hooks.json"),
+        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"node ${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js"}]}]}}"#,
+    )
+    .unwrap();
     let (p, v) = (sc.plugin.clone(), plugin_version(&sc));
     registry(&sc, &[("anti-hall@anti-hall", &p, &v), ("anti-hall@legacy", &old, "0.120.0")]);
     enabled(&sc, &[("anti-hall@anti-hall", true), ("anti-hall@legacy", true)]);
@@ -1236,7 +1272,10 @@ fn sh_witness_absent_present_and_every_way_it_goes_wrong() {
     fs::write(kit.join("root"), sc.plugin.display().to_string()).unwrap();
     // a registered hook whose script is gone
     let script = kit.join("node-shadow.sh");
-    sc.put(".claude/settings.json", format!("{{\"hooks\":{{\"PreToolUse\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"sh {} PreToolUse\"}}]}}]}}}}", script.display()).as_bytes());
+    sc.put(
+        ".claude/settings.json",
+        format!("{{\"hooks\":{{\"PreToolUse\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"sh {} PreToolUse\"}}]}}]}}}}", script.display()).as_bytes(),
+    );
     sc.doctor(&[]).has("ok", &["Node witness installed (1 hook entries"]);
     fs::remove_file(&script).unwrap();
     sc.doctor(&[]).has("warn", &["settings.json runs sh", "which does not exist", "node-shadow.sh --install"]);
@@ -1278,7 +1317,16 @@ fn json_output_carries_the_new_sections() {
     let d = sc.doctor(&["--json"]);
     let v: serde_json::Value = serde_json::from_str(d.text.trim()).unwrap();
     let titles: Vec<&str> = v["sections"].as_array().unwrap().iter().filter_map(|s| s["title"].as_str()).collect();
-    for want in ["Engine install", "State directory", "Configuration", "Plugin registration", "Hooks wiring (thin form)", "Toolchain and environment", "Logs and telemetry", "Node witness"] {
+    for want in [
+        "Engine install",
+        "State directory",
+        "Configuration",
+        "Plugin registration",
+        "Hooks wiring (thin form)",
+        "Toolchain and environment",
+        "Logs and telemetry",
+        "Node witness",
+    ] {
         assert!(titles.contains(&want), "{want} in {titles:?}");
     }
 }
@@ -1293,7 +1341,12 @@ fn shadow_the_node_doctor_agrees_on_a_missing_hook_script_and_on_node_itself() {
     let mut n = Command::new("node");
     // the Node doctor runs read-only (--dry-run previews the repairs) from the scratch copy, in the scratch home
     n.arg(sc.plugin.join("hooks/doctor.js")).arg("--dry-run");
-    n.env_clear().env("PATH", std::env::var("PATH").unwrap_or_default()).env("HOME", &sc.home).env("USERPROFILE", &sc.home).env("ANTIHALL_INGEST_DRY_RUN", "1").current_dir(&sc.cwd);
+    n.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", &sc.home)
+        .env("USERPROFILE", &sc.home)
+        .env("ANTIHALL_INGEST_DRY_RUN", "1")
+        .current_dir(&sc.cwd);
     let node = sc.finish(n);
     let engine = sc.doctor(&[]);
     // both call the missing script a failure, in the same words, and both exit non-zero

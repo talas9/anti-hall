@@ -75,19 +75,12 @@ pub(crate) fn env_snapshot() -> BTreeMap<String, String> {
 
 /// The home directory: `HOME`, else the account's (Node's `os.homedir()`).
 pub(crate) fn home(env: &BTreeMap<String, String>) -> String {
-    env.get(defaults::env_name("home"))
-        .filter(|h| !h.is_empty())
-        .cloned()
-        .or_else(crate::checks::jsport::home::real_home)
-        .unwrap_or_default()
+    env.get(defaults::env_name("home")).filter(|h| !h.is_empty()).cloned().or_else(crate::checks::jsport::home::real_home).unwrap_or_default()
 }
 
 /// The plugin root: the host's variable, else the root the engine's defaults were read from.
 pub(crate) fn plugin_root(env: &BTreeMap<String, String>) -> Option<String> {
-    env.get(defaults::env_name("plugin_root"))
-        .filter(|r| !r.is_empty())
-        .cloned()
-        .or_else(|| defaults::root().map(|p| p.to_string_lossy().into_owned()))
+    env.get(defaults::env_name("plugin_root")).filter(|r| !r.is_empty()).cloned().or_else(|| defaults::root().map(|p| p.to_string_lossy().into_owned()))
 }
 
 /// The exit code a command returns when it leaves the work to the Node tool (nothing written).

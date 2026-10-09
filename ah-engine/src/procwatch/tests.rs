@@ -547,7 +547,10 @@ fn disk_telemetry_is_recorded_on_a_level_change_and_after_the_cooldown_not_on_ev
     let recs = std::cell::RefCell::new(Vec::new());
     let mut sw = Sweep::default();
     let state = h.join(".anti-hall/ah-engine");
-    let mut go = |free: f64| run_with(&mut disk_host(free), &mut sw, &state, &h.to_string_lossy(), &|k, c, r| recs.borrow_mut().push((k.to_string(), c.to_string(), r.to_string()))).expect("sweep");
+    let mut go = |free: f64| {
+        run_with(&mut disk_host(free), &mut sw, &state, &h.to_string_lossy(), &|k, c, r| recs.borrow_mut().push((k.to_string(), c.to_string(), r.to_string())))
+            .expect("sweep")
+    };
     go(300.0);
     go(15.0);
     go(15.0);
@@ -635,7 +638,9 @@ fn heartbeat(home: &Path, id: &str, session: &str, status: &str, age_min: f64) {
 
 fn stuck(home: &Path, session: &str) -> Verdict {
     let payload = json!({"session_id": session, "hook_event_name": "UserPromptSubmit"});
-    crate::script::run_forced("silent-agent-nudge", &payload, &Value::Null, "UserPromptSubmit", &script_env(home, None)).expect("a shipped script").unwrap_or(Verdict::Allow)
+    crate::script::run_forced("silent-agent-nudge", &payload, &Value::Null, "UserPromptSubmit", &script_env(home, None))
+        .expect("a shipped script")
+        .unwrap_or(Verdict::Allow)
 }
 
 #[test]
@@ -902,7 +907,8 @@ fn shadow_stuck_agents_match_the_node_watchdog_on_heartbeats() {
         Verdict::Advisory(j) => j,
         other => panic!("an advisory naming the stuck agents: {other:?}"),
     };
-    let engine: std::collections::BTreeSet<String> = fixtures.iter().map(|(id, ..)| id.to_string()).filter(|id| advisory.contains(&format!("[{id}]"))).collect();
+    let engine: std::collections::BTreeSet<String> =
+        fixtures.iter().map(|(id, ..)| id.to_string()).filter(|id| advisory.contains(&format!("[{id}]"))).collect();
     assert_eq!(engine, node, "the engine's stuck set equals the Node watchdog's for running agents of the session");
     assert_eq!(engine, ["b-stuck", "c-very-stuck"].into_iter().map(str::to_string).collect());
 }

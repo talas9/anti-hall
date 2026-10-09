@@ -402,7 +402,12 @@ fn cmd_get(run: &mut Run, a: &Args) {
     } else {
         out(&(defaults::render(
             "ops.get_line",
-            &[("name", &format!("{section}.{key}")), ("value", &fmt_value(value.as_ref())), ("source", &source_label(src)), ("default", &fmt_value(opt_default(item)))],
+            &[
+                ("name", &format!("{section}.{key}")),
+                ("value", &fmt_value(value.as_ref())),
+                ("source", &source_label(src)),
+                ("default", &fmt_value(opt_default(item))),
+            ],
         ) + "\n"));
     }
 }
@@ -524,10 +529,7 @@ fn cmd_judge(run: &mut Run, a: &Args) {
         }
     }
     let get_dflt = |section: &str, key: &str, dflt: J| -> J {
-        find_item(section, key)
-            .and_then(|i| run.entry(i))
-            .and_then(|e| store::get(&run.ctx, e, Some(&dflt)))
-            .unwrap_or(dflt)
+        find_item(section, key).and_then(|i| run.entry(i)).and_then(|e| store::get(&run.ctx, e, Some(&dflt))).unwrap_or(dflt)
     };
     let jev_sec = defaults::text("ops.jev_section");
     let on = matches!(get_dflt(jev_sec, defaults::text("ops.judge_switch_key"), J::Bool(false)), J::Bool(true));
@@ -546,26 +548,23 @@ fn cmd_judge(run: &mut Run, a: &Args) {
     let model = j_string(&get_dflt(jev_sec, defaults::text("ops.judge_model_key"), J::Str(defaults::text("ops.judge_model_default").into())));
     let mut lines: Vec<String> = Vec::new();
     let still_env = if verb == "off" && on { defaults::text("ops.judge_still_on") } else { "" };
-    lines.push(defaults::render("ops.judge_line", &[("state", &if on { defaults::text("ops.mode_on") } else { defaults::text("ops.mode_off") }), ("extra", &still_env)]));
+    lines.push(defaults::render(
+        "ops.judge_line",
+        &[("state", &if on { defaults::text("ops.mode_on") } else { defaults::text("ops.mode_off") }), ("extra", &still_env)],
+    ));
     let jb = j_string(&get_dflt(jev_sec, defaults::text("ops.judge_backend_key"), J::Str(defaults::text("ops.judge_backend_default").into())));
     let via_cli = jb == defaults::text("ops.judge_cli") || (jb == defaults::text("ops.judge_auto") && !has_key);
     let detail = if be == defaults::text("ops.backend_jev") {
         let tail = if on { defaults::text("ops.jev_detail_skipped") } else { defaults::text("ops.jev_detail_plain") };
         defaults::render("ops.backend_jev_detail", &[("tail", &tail)])
     } else if be == defaults::text("ops.backend_api") {
-        if via_cli {
-            defaults::render("ops.backend_api_cli", &[("backend", &jb)])
-        } else {
-            defaults::text("ops.backend_api_api").to_string()
-        }
+        if via_cli { defaults::render("ops.backend_api_cli", &[("backend", &jb)]) } else { defaults::text("ops.backend_api_api").to_string() }
     } else {
         defaults::text("ops.backend_lexical_detail").to_string()
     };
     lines.push(defaults::render("ops.backend_line", &[("backend", &be), ("detail", &detail)]));
     if verb == "on" || verb == "status" {
-        lines.push(
-            if has_key { defaults::text("ops.key_found") } else { defaults::text("ops.key_missing") }.to_string(),
-        );
+        lines.push(if has_key { defaults::text("ops.key_found") } else { defaults::text("ops.key_missing") }.to_string());
         if verb == "status" {
             lines.push(defaults::render("ops.model_line", &[("model", &model)]));
         }

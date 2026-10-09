@@ -607,7 +607,12 @@ fn phase_cases() -> Vec<Case> {
     v.push(case("log-invalid-utf8-after-good", s("n16")).seed(Seed::File(".anti-hall/agent-spawns.log".into(), b"{NOW-1000} a\xc3\n".to_vec(), 0)));
     v.push(case("log-empty", s("n17")).file(".anti-hall/agent-spawns.log", ""));
     v.push(case("log-is-directory", s("n18")).seed(Seed::Dir(".anti-hall/agent-spawns.log".into())));
-    v.push(case("log-is-symlink", s("n19")).file("real.log", "{NOW-1000} a\n").seed(Seed::Link(".anti-hall/agent-spawns.log".into(), "$HOME/real.log".into())).defer()); // the script's scoped write refuses a link: Node writes through it
+    v.push(
+        case("log-is-symlink", s("n19"))
+            .file("real.log", "{NOW-1000} a\n")
+            .seed(Seed::Link(".anti-hall/agent-spawns.log".into(), "$HOME/real.log".into()))
+            .defer(),
+    ); // the script's scoped write refuses a link: Node writes through it
     v.push(case("state-root-is-file", s("n20")).file(".anti-hall", "x"));
     v.push(case("agents-dir-is-file", s("n21")).file(".anti-hall/agents", "x"));
     v.push(case("heartbeat-is-dir", s("n22")).seed(Seed::Dir(".anti-hall/agents/recent-spawn.json".into())));

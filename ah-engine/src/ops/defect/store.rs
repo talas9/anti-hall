@@ -6,8 +6,8 @@
 //! rename). The caps, the enums and the field limits are the plugin's `engine/defaults/defect.toml`.
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{collapse_ws, js_trim};
-use crate::checks::jsport::json::{self, J};
 use crate::checks::jsport::date;
+use crate::checks::jsport::json::{self, J};
 use crate::defaults;
 use crate::ops::js::{Defer, cmp_semver, head16, len16, slice16};
 use ring::digest;
@@ -151,7 +151,12 @@ pub struct Optional {
 }
 
 /// `optionalFields(input, tr)`
-pub fn optional_fields(component: Option<&str>, cause: Option<&str>, regression_of: Option<&str>, tr: &mut Collector) -> Result<Result<Optional, &'static str>, Defer> {
+pub fn optional_fields(
+    component: Option<&str>,
+    cause: Option<&str>,
+    regression_of: Option<&str>,
+    tr: &mut Collector,
+) -> Result<Result<Optional, &'static str>, Defer> {
     let mut out = Optional { component: None, cause: None, regression_of: None };
     if let Some(c) = component.filter(|c| !c.is_empty())
         && let Some(n) = normalize_component(c)?
@@ -218,10 +223,7 @@ pub fn read_raw_lines(file: &Path) -> Vec<String> {
 
 /// `parseLines(rawLines)`: the lines that parse to an object or array; a torn line is skipped, never repaired.
 pub fn parse_lines(raw: &[String]) -> Vec<J> {
-    raw.iter()
-        .filter_map(|l| json::parse(l, defaults::num("setup.json_max_depth") as usize).ok())
-        .filter(|j| matches!(j, J::Obj(_) | J::Arr(_)))
-        .collect()
+    raw.iter().filter_map(|l| json::parse(l, defaults::num("setup.json_max_depth") as usize).ok()).filter(|j| matches!(j, J::Obj(_) | J::Arr(_))).collect()
 }
 
 fn str_of<'a>(o: &'a J, k: &str) -> Option<&'a str> {
@@ -279,7 +281,15 @@ fn set_extra(extra: &mut Vec<(String, String)>, k: &str, v: &str) {
 
 /// `deriveState(parsedLines)`
 pub fn derive_state(lines: &[J]) -> State {
-    let mut st = State { status: defaults::text("defect.status_open").to_string(), occurrences: 0, first_seen: None, last_seen: None, ruling_count: 0, stale_build: false, extra: Vec::new() };
+    let mut st = State {
+        status: defaults::text("defect.status_open").to_string(),
+        occurrences: 0,
+        first_seen: None,
+        last_seen: None,
+        ruling_count: 0,
+        stale_build: false,
+        extra: Vec::new(),
+    };
     let mut last_ruling: Option<(String, Option<String>)> = None;
     for obj in lines {
         for k in defaults::list("defect.extra_keys") {
@@ -339,7 +349,11 @@ fn count_files(dir: &Path) -> usize {
 
 /// `countArchiveFiles(home)`: every `*.jsonl` under the archive, across the month buckets.
 fn count_archive_files(home: &str) -> usize {
-    let Some(months) = std::fs::read_dir(archive_dir(home)).ok().map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>()) else { return 0 };
+    let Some(months) =
+        std::fs::read_dir(archive_dir(home)).ok().map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>())
+    else {
+        return 0;
+    };
     months.iter().map(|m| count_files(&archive_dir(home).join(m))).sum()
 }
 
@@ -531,7 +545,8 @@ pub fn report(input: &ReportInput, home: &str) -> Result<J, Defer> {
         if res == defaults::text("defect.out_recorded") || res == defaults::text("defect.out_occurrence_appended") {
             let overflows = &tr.spill;
             if !overflows.is_empty() {
-                members.push((defaults::text("defect.key_overflow").to_string(), spill_overflow(&file, defaults::text("defect.t_report"), seq, overflows, &at)));
+                members
+                    .push((defaults::text("defect.key_overflow").to_string(), spill_overflow(&file, defaults::text("defect.t_report"), seq, overflows, &at)));
             }
         }
         members
@@ -719,7 +734,10 @@ pub fn show_defect(fp: &str, home: &str) -> Option<J> {
     let ext = defaults::text("defect.file_ext");
     let mut file = fp_file(fp, home);
     if !file.exists() {
-        let mut months: Vec<String> = std::fs::read_dir(archive_dir(home)).ok().map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        let mut months: Vec<String> = std::fs::read_dir(archive_dir(home))
+            .ok()
+            .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
         months.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         let mut found = months.iter().map(|m| archive_dir(home).join(m).join(format!("{fp}{ext}"))).find(|c| c.exists());
         if found.is_none() {

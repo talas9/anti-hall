@@ -458,13 +458,7 @@ fn no_context(p: &Parsed, why: &str) -> i32 {
 /// `doctor` when the engine's defaults cannot be loaded at all: nothing the engine can say comes from settings, so the shell
 /// doctor next to the hook wrapper (its own texts, POSIX sh only) gives the diagnosis. `err` is why the load failed.
 pub fn degraded(p: &Parsed, err: &str) -> i32 {
-    let root = p
-        .rest
-        .iter()
-        .position(|a| a == "--plugin-root")
-        .and_then(|i| p.rest.get(i + 1))
-        .map(PathBuf::from)
-        .or_else(crate::bootstrap::env_root);
+    let root = p.rest.iter().position(|a| a == "--plugin-root").and_then(|i| p.rest.get(i + 1)).map(PathBuf::from).or_else(crate::bootstrap::env_root);
     let wrapper = root.as_deref().map(|r| r.join(crate::bootstrap::WRAPPER_REL)).filter(|w| w.is_file());
     eprintln!("ah-engine: defaults unavailable: {err}");
     let Some(w) = wrapper else { return 70 };

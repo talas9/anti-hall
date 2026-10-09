@@ -500,12 +500,14 @@ fn a_guard_node_module_resolution_exit_one_is_unrunnable_but_own_exit_one_is_not
     let cmd = format!("node \"{}\"", script.display());
     let map = pretool_map(&e, &[("command-guard", &cmd)], "true");
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run_with(&args, true, &bash("echo x > a.py", Path::new(".")), true, &[("PATH", bin.to_str().unwrap()), ("CLAUDE_CODE_ENTRYPOINT", "cli")]);
+    let (code, out, err) =
+        e.run_with(&args, true, &bash("echo x > a.py", Path::new(".")), true, &[("PATH", bin.to_str().unwrap()), ("CLAUDE_CODE_ENTRYPOINT", "cli")]);
     assert_eq!((code, out.as_str()), (2, ""), "{err}");
     assert!(err.contains("could not run the guards for PreToolUse"), "{err}");
 
     let bin = e.fake_node("echo OWN_REASON >&2; exit 1");
-    let (code, out, err) = e.run_with(&args, true, &bash("echo x > a.py", Path::new(".")), true, &[("PATH", bin.to_str().unwrap()), ("CLAUDE_CODE_ENTRYPOINT", "cli")]);
+    let (code, out, err) =
+        e.run_with(&args, true, &bash("echo x > a.py", Path::new(".")), true, &[("PATH", bin.to_str().unwrap()), ("CLAUDE_CODE_ENTRYPOINT", "cli")]);
     assert_eq!((code, out.as_str()), (1, ""), "{err}");
     assert_eq!(err, "OWN_REASON\n");
 }
@@ -846,8 +848,13 @@ fn small_payloads_do_not_need_a_usable_spool_dir() {
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     // a payload without an absolute cwd is one the engine's command-guard script leaves to the Node hook, so the fallback runs
     let payload = bash("echo x > a.py", Path::new("."));
-    let (code, out, err) =
-        e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap()), ("CLAUDE_CODE_ENTRYPOINT", "cli")]);
+    let (code, out, err) = e.run_with(
+        &args,
+        true,
+        &payload,
+        true,
+        &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap()), ("CLAUDE_CODE_ENTRYPOINT", "cli")],
+    );
     assert_eq!((code, out.as_str()), (0, ""));
     assert!(only_event_lines(&err), "{err:?}");
     assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());

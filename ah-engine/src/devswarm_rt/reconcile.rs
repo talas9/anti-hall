@@ -214,7 +214,15 @@ impl Rt {
             .collect();
         let edges = edges
             .iter()
-            .map(|e| RtEdgeRow { key: e.ws.clone(), kind: e.kind.as_str().to_string(), from: e.from.clone(), to: e.to.clone(), generation: e.generation as i64, at_ms: e.at_ms, while_down: e.while_down })
+            .map(|e| RtEdgeRow {
+                key: e.ws.clone(),
+                kind: e.kind.as_str().to_string(),
+                from: e.from.clone(),
+                to: e.to.clone(),
+                generation: e.generation as i64,
+                at_ms: e.at_ms,
+                while_down: e.while_down,
+            })
             .collect();
         let op = RtOp { ns: self.cfg.namespace.clone(), rows, edges, edge_cap: self.cfg.edge_cap as i64 };
         if let Err(e) = db.submit(Op::Rt(op)) {

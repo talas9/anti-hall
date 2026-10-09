@@ -214,7 +214,8 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
         }
     }
 
-    let ours = effective_cmd.filter(|cmd| cmd.contains(t("slcfg.installed_marker")) && (cmd.contains(t("slcfg.installed_dir_install")) || cmd.contains(&pa.script_dir)));
+    let ours = effective_cmd
+        .filter(|cmd| cmd.contains(t("slcfg.installed_marker")) && (cmd.contains(t("slcfg.installed_dir_install")) || cmd.contains(&pa.script_dir)));
     if let Some(cmd) = ours {
         log.out(t("slcfg.already_1"));
         log.out(fill("slcfg.indent_line", &[("text", &cmd)]));
@@ -242,7 +243,10 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
             return Ok(1);
         }
         let dir = Path::new(&settings_path).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-        match std::fs::create_dir_all(&dir).map_err(|e| mkdir_message(&e, &dir)).and_then(|()| jsio::write_file(&settings_path, t("slcfg.empty_settings").as_bytes())) {
+        match std::fs::create_dir_all(&dir)
+            .map_err(|e| mkdir_message(&e, &dir))
+            .and_then(|()| jsio::write_file(&settings_path, t("slcfg.empty_settings").as_bytes()))
+        {
             Ok(()) => log.out(fill("slcfg.created", &[("path", &settings_path)])),
             Err(msg) => {
                 log.err(fill("slcfg.create_failed", &[("path", &settings_path), ("msg", &msg)]));

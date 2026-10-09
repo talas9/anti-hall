@@ -496,7 +496,10 @@ pub(crate) fn validate_msg(entry: &Entry, value: &J) -> Result<J, String> {
         "object" => Err(defaults::text("ops.set_err_object").to_string()),
         "boolean" => match value {
             J::Bool(b) => Ok(J::Bool(*b)),
-            other => bool_token(&j_string(other)).filter(|_| !matches!(other, J::Null)).map(J::Bool).ok_or_else(|| defaults::render("ops.set_err_bool", &[("got", &got())])),
+            other => bool_token(&j_string(other))
+                .filter(|_| !matches!(other, J::Null))
+                .map(J::Bool)
+                .ok_or_else(|| defaults::render("ops.set_err_bool", &[("got", &got())])),
         },
         "number" => {
             let n = j_number(value);

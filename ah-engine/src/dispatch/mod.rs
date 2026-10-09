@@ -581,7 +581,16 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             if guard {
                 // a spent budget is a slow machine, not a verdict: the Node hooks decide (review finding 17)
                 let why = defaults::render("hooks.msg_budget", &[("id", &e.id)]);
-                return finish_then_defer(&args.event, parsed.as_ref(), started, vec![None; entries.len()], &shadow, false, rerun_fits(budget.elapsed(), host_s), &why);
+                return finish_then_defer(
+                    &args.event,
+                    parsed.as_ref(),
+                    started,
+                    vec![None; entries.len()],
+                    &shadow,
+                    false,
+                    rerun_fits(budget.elapsed(), host_s),
+                    &why,
+                );
             }
             tele.mark(&e.id, plan::Outcome::SkippedBudget);
             continue;
@@ -623,7 +632,16 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 // the event's budget has passed: start nothing further (a guard event fails closed, as for a hook that cannot run)
                 if guard {
                     let why = defaults::render("hooks.msg_budget", &[("id", &e.id)]);
-                    return finish_then_defer(&args.event, parsed.as_ref(), started, results.clone(), &shadow, !answers.is_empty(), rerun_fits(budget.elapsed(), host_s), &why);
+                    return finish_then_defer(
+                        &args.event,
+                        parsed.as_ref(),
+                        started,
+                        results.clone(),
+                        &shadow,
+                        !answers.is_empty(),
+                        rerun_fits(budget.elapsed(), host_s),
+                        &why,
+                    );
                 }
                 tele.mark(&e.id, plan::Outcome::SkippedBudget);
             }

@@ -78,7 +78,10 @@ pub fn state_section(doc: &mut Doc, fixes: &mut Vec<Fix>, uid: u32) {
                     doc.infol(defaults::render("doctor_msg.state_missing", &[("dir", &shown)]));
                     fixes.push(Fix::Mkdir(dir));
                 }
-                Some(p) => doc.bad(defaults::render("doctor_msg.state_uncreatable", &[("dir", &shown), ("err", &defaults::render("doctor_msg.no_write_in", &[("parent", &p.display())]))])),
+                Some(p) => doc.bad(defaults::render(
+                    "doctor_msg.state_uncreatable",
+                    &[("dir", &shown), ("err", &defaults::render("doctor_msg.no_write_in", &[("parent", &p.display())]))],
+                )),
                 None => doc.bad(defaults::render("doctor_msg.state_uncreatable", &[("dir", &shown), ("err", &defaults::text("doctor_msg.no_parent"))])),
             }
             return;
@@ -231,7 +234,10 @@ pub fn daemon_section(doc: &mut Doc) {
             }
         }
         (None, Some(m)) if !m.file_type().is_socket() => {
-            doc.bad(defaults::render("doctor_msg.sock_not_socket", &[("sock", &sock.display()), ("kind", &defaults::text(if m.is_dir() { "doctor_msg.kind_dir" } else { "doctor_msg.kind_file" }))]));
+            doc.bad(defaults::render(
+                "doctor_msg.sock_not_socket",
+                &[("sock", &sock.display()), ("kind", &defaults::text(if m.is_dir() { "doctor_msg.kind_dir" } else { "doctor_msg.kind_file" }))],
+            ));
         }
         (None, _) if held => {
             let pid = holder.map_or_else(|| defaults::text("doctor_msg.unknown_pid").to_string(), |p| p.to_string());
@@ -251,7 +257,10 @@ pub fn daemon_section(doc: &mut Doc) {
     let legit = reply.as_deref().and_then(|r| r.split_whitespace().nth(2)).and_then(|p| p.parse::<u32>().ok()).or(if held { holder } else { None });
     let extra: Vec<String> = extra_daemons(&logged_daemon_pids(), health::pid_is_engine, legit).iter().map(u32::to_string).collect();
     if !extra.is_empty() {
-        doc.warnl(defaults::render("doctor_msg.daemons_many", &[("n", &(extra.len() + usize::from(legit.is_some()))), ("pids", &extra.join(", ")), ("sock", &sock.display())]));
+        doc.warnl(defaults::render(
+            "doctor_msg.daemons_many",
+            &[("n", &(extra.len() + usize::from(legit.is_some()))), ("pids", &extra.join(", ")), ("sock", &sock.display())],
+        ));
     }
     if let Some(left) = health::crashloop_remaining() {
         let reason = health::read_json("failure").and_then(|f| f["reason"].as_str().map(str::to_string)).unwrap_or_default();

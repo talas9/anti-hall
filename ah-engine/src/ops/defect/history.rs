@@ -111,7 +111,9 @@ fn git(repo: &str, args: &[String]) -> Result<String, GitFail> {
     let out = Command::new(defaults::text("defect.git_bin")).args(&full).stdin(Stdio::null()).output();
     match out {
         Err(_) => Err(GitFail(defaults::render("defect.git_spawn_failed", &[("bin", &defaults::text("defect.git_bin"))]))),
-        Ok(o) if !o.status.success() => Err(GitFail(defaults::render("defect.git_command_failed", &[("cmd", &format!("{} {}", defaults::text("defect.git_bin"), full.join(" ")))]))),
+        Ok(o) if !o.status.success() => {
+            Err(GitFail(defaults::render("defect.git_command_failed", &[("cmd", &format!("{} {}", defaults::text("defect.git_bin"), full.join(" ")))])))
+        }
         Ok(o) => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
     }
 }
@@ -309,7 +311,10 @@ pub fn backfill(repo_arg: &str, dry_run: bool, home: &str) -> Result<Backfill, R
     let repo = resolve(repo_arg, "", &cwd);
     let commits = collect_fix_commits(&repo).map_err(Ok)?;
     let releases = release_map(&repo).map_err(Ok)?;
-    let changelog = std::fs::read(Path::new(&repo).join(defaults::text("defect.changelog_file"))).ok().map(|b| parse_changelog(&String::from_utf8_lossy(&b))).unwrap_or_default();
+    let changelog = std::fs::read(Path::new(&repo).join(defaults::text("defect.changelog_file")))
+        .ok()
+        .map(|b| parse_changelog(&String::from_utf8_lossy(&b)))
+        .unwrap_or_default();
     let dir = store::history_dir(home);
     let mut res = Backfill { repo: repo.clone(), dry_run, scanned: commits.len(), imported: 0, existing: 0, failed: 0 };
     for c in &commits {
@@ -428,7 +433,10 @@ pub fn load_all_records(home: &str) -> Result<Vec<Record>, Defer> {
         }
     };
     add(&store::defects_dir(home), &mut files);
-    let mut months: Vec<String> = std::fs::read_dir(store::archive_dir(home)).ok().map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+    let mut months: Vec<String> = std::fs::read_dir(store::archive_dir(home))
+        .ok()
+        .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
     months.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
     for m in &months {
         add(&store::archive_dir(home).join(m), &mut files);
@@ -613,7 +621,13 @@ pub fn recurring(all: &[Record], since: Option<&str>) -> Result<Recurring, Defer
         }
         if c.count >= comp_min {
             let list: Vec<&Record> = records.iter().copied().filter(|r| comp(r) == c.component).collect();
-            hotspots.push(Hotspot { kind: defaults::text("defect.kind_component").into(), component: c.component.clone(), cause: None, count: c.count, sp: span(&list) });
+            hotspots.push(Hotspot {
+                kind: defaults::text("defect.kind_component").into(),
+                component: c.component.clone(),
+                cause: None,
+                count: c.count,
+                sp: span(&list),
+            });
         }
     }
     let sep = defaults::text("defect.pair_sep");
@@ -624,7 +638,13 @@ pub fn recurring(all: &[Record], since: Option<&str>) -> Result<Recurring, Defer
             continue;
         }
         let (component, c) = k.split_once(sep).unwrap_or((k, ""));
-        hotspots.push(Hotspot { kind: defaults::text("defect.kind_pair").into(), component: component.to_string(), cause: Some(c.to_string()), count: list.len(), sp: span(list) });
+        hotspots.push(Hotspot {
+            kind: defaults::text("defect.kind_pair").into(),
+            component: component.to_string(),
+            cause: Some(c.to_string()),
+            count: list.len(),
+            sp: span(list),
+        });
     }
     let kind_component = defaults::text("defect.kind_component");
     sort_by_try(&mut hotspots, |a, b| {
@@ -663,7 +683,8 @@ pub fn recurring(all: &[Record], since: Option<&str>) -> Result<Recurring, Defer
         }
     }
     for (_, list) in &pairs {
-        let mut fixed: Vec<&Record> = list.iter().copied().filter(|r| r.status == defaults::text("defect.status_fixed") || r.source == defaults::text("defect.t_backfill")).collect();
+        let mut fixed: Vec<&Record> =
+            list.iter().copied().filter(|r| r.status == defaults::text("defect.status_fixed") || r.source == defaults::text("defect.t_backfill")).collect();
         sort_by_try(&mut fixed, |a, b| {
             let da = a.date.clone().unwrap_or_else(|| defaults::text("defect.null_word").to_string());
             let db = b.date.clone().unwrap_or_else(|| defaults::text("defect.null_word").to_string());
@@ -721,7 +742,11 @@ pub fn recurring(all: &[Record], since: Option<&str>) -> Result<Recurring, Defer
                 by_cause
                     .iter()
                     .map(|c| {
-                        let mut o = vec![("cause".to_string(), J::Str(c.cause.clone())), ("count".to_string(), n(c.count)), ("components".to_string(), n(c.components))];
+                        let mut o = vec![
+                            ("cause".to_string(), J::Str(c.cause.clone())),
+                            ("count".to_string(), n(c.count)),
+                            ("components".to_string(), n(c.components)),
+                        ];
                         o.extend(span_members(&c.sp));
                         J::Obj(o)
                     })
@@ -853,11 +878,7 @@ pub fn similar_json(list: &[Scored]) -> J {
 /// `pad(s, n)`: `s` in an `n`-wide column, always leaving one separating space.
 fn pad(s: &str, n: usize) -> Result<String, Defer> {
     let l = len16(s);
-    if l >= n {
-        Ok(head16(s, n - 2)? + defaults::text("defect.pad_cut"))
-    } else {
-        Ok(format!("{s}{}", " ".repeat(n - l)))
-    }
+    if l >= n { Ok(head16(s, n - 2)? + defaults::text("defect.pad_cut")) } else { Ok(format!("{s}{}", " ".repeat(n - l))) }
 }
 
 fn vspan(v: &[String]) -> String {
@@ -871,7 +892,9 @@ fn vspan(v: &[String]) -> String {
 fn dspan(a: &Option<String>, b: &Option<String>) -> Result<String, Defer> {
     match a {
         None => Ok(defaults::text("defect.dash").to_string()),
-        Some(a) => Ok(format!("{}{}{}", head16(a, 10)?, defaults::text("defect.span_sep"), head16(b.as_deref().unwrap_or(defaults::text("defect.null_word")), 10)?)),
+        Some(a) => {
+            Ok(format!("{}{}{}", head16(a, 10)?, defaults::text("defect.span_sep"), head16(b.as_deref().unwrap_or(defaults::text("defect.null_word")), 10)?))
+        }
     }
 }
 
@@ -897,7 +920,14 @@ pub fn format_recurring(rep: &Recurring, top: usize) -> Result<String, Defer> {
     if rep.hotspots.is_empty() {
         l.push(format!("{ind}{}", h("defect.none")));
     } else {
-        l.push(format!("{ind}{}{}{}{}{}", pad(h("defect.col_count"), 6)?, pad(h("defect.col_component"), 38)?, pad(h("defect.col_cause"), 24)?, pad(h("defect.col_versions"), 18)?, h("defect.col_dates")));
+        l.push(format!(
+            "{ind}{}{}{}{}{}",
+            pad(h("defect.col_count"), 6)?,
+            pad(h("defect.col_component"), 38)?,
+            pad(h("defect.col_cause"), 24)?,
+            pad(h("defect.col_versions"), 18)?,
+            h("defect.col_dates")
+        ));
         for x in rep.hotspots.iter().take(top) {
             l.push(format!(
                 "{ind}{}{}{}{}{}",
@@ -937,20 +967,48 @@ pub fn format_recurring(rep: &Recurring, top: usize) -> Result<String, Defer> {
     }
     l.push(String::new());
     l.push(h("defect.rec_by_component").to_string());
-    l.push(format!("{ind}{}{}{}{}{}", pad(h("defect.col_count"), 6)?, pad(h("defect.col_component"), 38)?, pad(h("defect.col_top_cause"), 24)?, pad(h("defect.col_versions"), 18)?, h("defect.col_dates")));
+    l.push(format!(
+        "{ind}{}{}{}{}{}",
+        pad(h("defect.col_count"), 6)?,
+        pad(h("defect.col_component"), 38)?,
+        pad(h("defect.col_top_cause"), 24)?,
+        pad(h("defect.col_versions"), 18)?,
+        h("defect.col_dates")
+    ));
     for c in rep.by_component.iter().take(top) {
         let tc = c.causes.iter().fold(None::<&(String, usize)>, |best, x| match best {
             Some(b) if b.1 >= x.1 => Some(b),
             _ => Some(x),
         });
         let tc_s = tc.map_or(h("defect.dash").to_string(), |(k, v)| format!("{k} ({v})"));
-        l.push(format!("{ind}{}{}{}{}{}", pad(&c.count.to_string(), 6)?, pad(&c.component, 38)?, pad(&tc_s, 24)?, pad(&vspan(&c.sp.versions), 18)?, dspan(&c.sp.first, &c.sp.last)?));
+        l.push(format!(
+            "{ind}{}{}{}{}{}",
+            pad(&c.count.to_string(), 6)?,
+            pad(&c.component, 38)?,
+            pad(&tc_s, 24)?,
+            pad(&vspan(&c.sp.versions), 18)?,
+            dspan(&c.sp.first, &c.sp.last)?
+        ));
     }
     l.push(String::new());
     l.push(h("defect.rec_by_cause").to_string());
-    l.push(format!("{ind}{}{}{}{}{}", pad(h("defect.col_count"), 6)?, pad(h("defect.col_cause"), 24)?, pad(h("defect.col_components"), 12)?, pad(h("defect.col_versions"), 18)?, h("defect.col_dates")));
+    l.push(format!(
+        "{ind}{}{}{}{}{}",
+        pad(h("defect.col_count"), 6)?,
+        pad(h("defect.col_cause"), 24)?,
+        pad(h("defect.col_components"), 12)?,
+        pad(h("defect.col_versions"), 18)?,
+        h("defect.col_dates")
+    ));
     for c in &rep.by_cause {
-        l.push(format!("{ind}{}{}{}{}{}", pad(&c.count.to_string(), 6)?, pad(&c.cause, 24)?, pad(&c.components.to_string(), 12)?, pad(&vspan(&c.sp.versions), 18)?, dspan(&c.sp.first, &c.sp.last)?));
+        l.push(format!(
+            "{ind}{}{}{}{}{}",
+            pad(&c.count.to_string(), 6)?,
+            pad(&c.cause, 24)?,
+            pad(&c.components.to_string(), 12)?,
+            pad(&vspan(&c.sp.versions), 18)?,
+            dspan(&c.sp.first, &c.sp.last)?
+        ));
     }
     Ok(l.join("\n") + "\n")
 }

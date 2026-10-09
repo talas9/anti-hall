@@ -192,7 +192,17 @@ pub fn read_app(file: &Path) -> Option<AppRead> {
     }
     let conn = appdb::open(f)?;
     let c = |k: &str| defaults::text(k);
-    let bcols = [c("mesh_write.app_col_id"), c("mesh_write.app_col_active"), c("mesh_write.app_col_hidden"), c("mesh_write.app_col_worktree"), c("mesh_write.app_col_builder_type"), c("devswarm_rt.col_branch"), c("devswarm_rt.col_repo"), c("devswarm_rt.col_label"), c("devswarm_rt.col_pr")];
+    let bcols = [
+        c("mesh_write.app_col_id"),
+        c("mesh_write.app_col_active"),
+        c("mesh_write.app_col_hidden"),
+        c("mesh_write.app_col_worktree"),
+        c("mesh_write.app_col_builder_type"),
+        c("devswarm_rt.col_branch"),
+        c("devswarm_rt.col_repo"),
+        c("devswarm_rt.col_label"),
+        c("devswarm_rt.col_pr"),
+    ];
     let (cols, brows) = rows(&conn, c("mesh_write.app_table_builders"), &bcols)?;
     if !cols.iter().any(|x| x == c("mesh_write.app_col_id")) || !cols.iter().any(|x| x == c("mesh_write.app_col_active")) {
         return None;
@@ -226,7 +236,13 @@ pub fn read_app(file: &Path) -> Option<AppRead> {
             })
             .collect()
     });
-    let pcols = [c("devswarm_rt.col_pr_id"), c("devswarm_rt.col_pr_number"), c("devswarm_rt.col_pr_state"), c("devswarm_rt.col_pr_checks"), c("devswarm_rt.col_pr_synced")];
+    let pcols = [
+        c("devswarm_rt.col_pr_id"),
+        c("devswarm_rt.col_pr_number"),
+        c("devswarm_rt.col_pr_state"),
+        c("devswarm_rt.col_pr_checks"),
+        c("devswarm_rt.col_pr_synced"),
+    ];
     let prs = rows(&conn, c("mesh_write.app_table_pull_requests"), &pcols).map(|(cols, rs)| {
         rs.iter()
             .filter_map(|r| {
@@ -314,7 +330,16 @@ impl Probe for FsProbe {
             Some(r) => union::floor_bases(r, &self.home, id, cursor.as_deref()).ok()?,
             None => (0.0, 0.0),
         };
-        let u = union::union_unread(&union::UnionIn { inbox: inbox.as_deref(), cursor_file: cursor.as_deref(), id, store: reader.as_ref(), store_base, nd_base, now: self.now }).ok()?;
+        let u = union::union_unread(&union::UnionIn {
+            inbox: inbox.as_deref(),
+            cursor_file: cursor.as_deref(),
+            id,
+            store: reader.as_ref(),
+            store_base,
+            nd_base,
+            now: self.now,
+        })
+        .ok()?;
         Some(u.unread)
     }
 }

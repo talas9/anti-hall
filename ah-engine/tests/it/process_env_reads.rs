@@ -42,8 +42,14 @@ const ALLOW: &[(&str, &str)] = &[
         "src/judge/cli.rs",
         "`process_env`, the environment a `claude -p` judge child is spawned with (Node: spawn with process.env). Only a one-shot process (`ah-engine check`, `ah-engine jev triage`) makes a judge call, never the daemon (`judge::blocking_calls_allowed`), so this process's environment is the hook's own",
     ),
-    ("src/ops/mod.rs", "the operator command-line tools (`settings`, `defect`, `statusline`): one-shot processes whose own environment IS the caller's, snapshotted once at the command line (the daemon is not involved, D76)"),
-    ("src/ops/shadow.rs", "the Node shadow of those tools: the detached child inherits the command's environment on purpose, so the Node script sees what the real run saw; its only switch is its own recursion guard"),
+    (
+        "src/ops/mod.rs",
+        "the operator command-line tools (`settings`, `defect`, `statusline`): one-shot processes whose own environment IS the caller's, snapshotted once at the command line (the daemon is not involved, D76)",
+    ),
+    (
+        "src/ops/shadow.rs",
+        "the Node shadow of those tools: the detached child inherits the command's environment on purpose, so the Node script sees what the real run saw; its only switch is its own recursion guard",
+    ),
 ];
 
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
