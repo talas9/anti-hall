@@ -9,7 +9,7 @@ value = "SessionStart: injects the DevSwarm mesh-only messaging directive for a 
 
 [devswarm_role.gate_summary]
 doc = "One-line description of the devswarm-parent-gate check in the generated reference."
-value = "Stop: allows without running Node when the Node gate would exit silently before reading any mailbox (switch off, user skip, supervisor inactive, child workspace, judge child, or the model already continuing after a Stop block); every other session defers to the Node gate (port of devswarm-parent-gate.js, early exits only)."
+value = "Stop: the DevSwarm Primary gate (port of devswarm-parent-gate.js, decided in engine/logic/devswarm-parent-gate.js): the early exits, the inert and clean passes (loop state removed), the busy and grace advisories, and the neglect block with its loop state, cap, escalation, waiting-on-human lines and wake line; own unread, pending questions, stale verdicts, a parked escalation and every case it cannot reproduce byte for byte defer to the Node gate before anything is written."
 
 [devswarm_role.gate_guard]
 doc = "The skip-file name of the parent gate."
@@ -305,3 +305,361 @@ function meshRoute(argv, segments) {
 
 main();
 '''
+
+# ---- devswarm-parent-gate past its early exits (checks/devswarm_role/pgate.rs; hooks/devswarm-parent-gate.js main) ----
+
+[devswarm_role.pg_devswarm_dir]
+doc = "The DevSwarm state directory under the home directory."
+value = ".anti-hall/devswarm"
+
+[devswarm_role.pg_dir_gate]
+doc = "The per-session loop-state directory of the parent gate (stateFileFor), under the DevSwarm directory."
+value = "parent-gate"
+
+[devswarm_role.pg_dir_summaries]
+doc = "The per-project summary projections, under the DevSwarm directory."
+value = "summaries"
+
+[devswarm_role.pg_dir_workspaces]
+doc = "The workspace descriptors, under the DevSwarm directory."
+value = "workspaces"
+
+[devswarm_role.pg_dir_escalation]
+doc = "The parked escalation notices (recovery.js listEscalationIntents), under the DevSwarm directory."
+value = "escalation-pending"
+
+[devswarm_role.pg_dir_liveness]
+doc = "The supervisor verdict files, under the DevSwarm directory."
+value = "liveness"
+
+[devswarm_role.pg_dir_archived]
+doc = "The anti-hall archived markers, under the DevSwarm directory."
+value = "archived"
+
+[devswarm_role.pg_dir_archive_ignore]
+doc = "The owner archive-ignore opt-outs, under the DevSwarm directory."
+value = "archive-ignore"
+
+[devswarm_role.pg_dir_cursors]
+doc = "The legacy cursor files, under the DevSwarm directory."
+value = "cursors"
+
+[devswarm_role.pg_dir_stray]
+doc = "The straying-plan states (devswarm-plan.js listStray), under the DevSwarm directory."
+value = "stray"
+
+[devswarm_role.pg_dir_drain]
+doc = "The in-flight drain markers (devswarm-drain-marker.js), under the DevSwarm directory."
+value = "drain"
+
+[devswarm_role.pg_ignore_file]
+doc = "The nag-ignore list (devswarm-ignore.js), under the DevSwarm directory."
+value = "ignore.json"
+
+[devswarm_role.pg_journal_dir]
+doc = "The journal backend directory of a store (inferBackendFromDisk)."
+value = "journal"
+
+[devswarm_role.pg_base_suffix]
+doc = "The suffix of a legacy baseline cursor file (reader-cursors.js legacyBaseline)."
+value = "#base.json"
+
+[devswarm_role.pg_inst_infix]
+doc = "The infix of a legacy per-instance cursor file (reader-cursors.js listLegacy)."
+value = "#inst-"
+
+[devswarm_role.pg_no_session]
+doc = "The state-file name used when the payload has no session id (stateFileFor)."
+value = "nosession"
+
+[devswarm_role.pg_poke_prefix]
+doc = "The text prefix of a system poke row, never real unread (devswarm-noise.js POKE_PREFIX)."
+value = "[Primary poke]"
+
+[devswarm_role.pg_broadcast]
+doc = "The message type a broadcast row carries (isBroadcastRow)."
+value = "broadcast"
+
+[devswarm_role.pg_status_stale]
+doc = "The stale verdict status."
+value = "stale"
+
+[devswarm_role.pg_status_escalated]
+doc = "The escalated verdict status."
+value = "escalated"
+
+[devswarm_role.pg_repos_root_marker]
+doc = "A worktree under this path segment is a DevSwarm-app workspace the supervisor active-list cache can archive (DEVSWARM_REPOS_ROOT_RE)."
+value = "/.devswarm/repos/"
+
+[devswarm_role.pg_id_key_prefix]
+doc = "The family key of a row whose worktree resolves to no mesh id (familyKeyOf)."
+value = "id:"
+
+[devswarm_role.pg_err_own_no_key]
+doc = "Stderr line when this Primary's own descriptor has no inbox and no store count: {id}."
+value = "⚠️ anti-hall · devswarm-parent-gate: workspace {id} (this Primary) unread count could not be determined (no resolvable project key); not blocking\n"
+
+[devswarm_role.pg_err_archived_unread]
+doc = "Stderr line counting archived families that still hold unread mail: {n}."
+value = "💡 anti-hall · devswarm-parent-gate: {n} archived workspace(s) still have unread mail (ignored)\n"
+
+[devswarm_role.pg_kind_mailbox]
+doc = "The block kind of the Primary's own family."
+value = "mailbox"
+
+[devswarm_role.pg_kind_children]
+doc = "The block kind of a child family."
+value = "children"
+
+[devswarm_role.pg_sig_prefix]
+doc = "Prefix of the hashed block-kind signature."
+value = "devswarm-parent:"
+
+[devswarm_role.pg_decision_block]
+doc = "The Stop decision word of a block."
+value = "block"
+
+[devswarm_role.pg_skip_cmd]
+doc = "The override command: {cli} (shell-quoted plugin CLI path) and {guard}."
+value = "node {cli} skip {guard}"
+
+[devswarm_role.pg_skip_ttl]
+doc = "Appended to the override command."
+value = " (15-min TTL)"
+
+[devswarm_role.pg_wake_tick]
+doc = "The tick command of the wake re-verify line: {id}."
+value = "`node \"$CLI\" inbox tick {id} --quiet`"
+
+[devswarm_role.pg_wake_watch]
+doc = "The watcher part of the wake re-verify line: {watcher} (double-quoted)."
+value = "; WATCH={watcher}, `Monitor` on `node \"$WATCH\"` armed (never two)"
+
+[devswarm_role.pg_wake_line]
+doc = "The mailbox-wake re-verify line (devswarm-wake.js wakeReassert): {cli}, {cron}, {tick}, {watch}, {id}."
+value = " MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {tick}{watch}. If missing, re-run `node \"$CLI\" wake-directive {id}`."
+
+[devswarm_role.pg_frame_head]
+doc = "First line of the framed block (block-message.js frame): {guard}, {headline}."
+value = "⛔ anti-hall · {guard}: {headline}"
+
+[devswarm_role.pg_frame_why]
+doc = "Label of the why line."
+value = "Why: "
+
+[devswarm_role.pg_frame_instead]
+doc = "Label of the first body paragraph."
+value = "Do instead: "
+
+[devswarm_role.pg_frame_indent]
+doc = "Indent of the further body paragraphs."
+value = "  "
+
+[devswarm_role.pg_frame_override]
+doc = "Label of the override line."
+value = "Override (only if the user explicitly asked): "
+
+[devswarm_role.pg_headline]
+doc = "Headline of the block."
+value = "Primary turn held: DevSwarm workspaces or messages need attention first."
+
+[devswarm_role.pg_why]
+doc = "Why line of the block."
+value = "Unanswered questions or unread mail would be dropped if this turn ended now."
+
+[devswarm_role.pg_reason_default]
+doc = "Label of an unknown-inbox reason not in reason_labels."
+value = "inbox status could not be confirmed"
+
+[devswarm_role.pg_you]
+doc = "Marks the Primary's own row."
+value = " (you)"
+
+[devswarm_role.pg_bit_unread]
+doc = "Unread count of a row: {n}."
+value = "{n} unread"
+
+[devswarm_role.pg_inbox_unreadable]
+doc = "Label of an unknown row without members."
+value = "inbox unreadable"
+
+[devswarm_role.pg_more_unknown]
+doc = "More unknown members than shown: {n}."
+value = " (+{n} more)"
+
+[devswarm_role.pg_cached]
+doc = "Marks an own count read from the summary cache."
+value = "cached"
+
+[devswarm_role.pg_and_more]
+doc = "More rows than shown: {n}."
+value = " (and {n} more)"
+
+[devswarm_role.pg_escalation]
+doc = "The escalation text: {shown}, {times}, {intent}, {archive}."
+value = "Escalation: this neglect signature ({shown}) has been forced-acknowledged {times} times with no observed resolution{intent} — a human should look. This will not repeat automatically after this message. {archive}Escape hatch: the user may direct a skip via ~/.anti-hall/skip.json (\"devswarm-parent-gate\")."
+
+[devswarm_role.pg_escalation_intent]
+doc = "Escalation note when a stated intent was on file."
+value = " (a stated intent was on file for this exact condition, but the absolute backstop was still reached)"
+
+[devswarm_role.pg_escalation_archive]
+doc = "Escalation note when every flagged child is done or idle."
+value = "Every flagged child is done or idle: archive them (`devswarm.js archive <id>`) instead of acknowledging again. "
+
+[devswarm_role.pg_neglect]
+doc = "The neglect line: {n}, {shown}, {more}."
+value = "Neglect: {n} workspace(s) still need attention before this Primary turn ends: {shown}{more}. "
+
+[devswarm_role.pg_flag_archived]
+doc = "Contributor flag."
+value = "archived"
+
+[devswarm_role.pg_flag_app_archived]
+doc = "Contributor flag."
+value = "app-archived"
+
+[devswarm_role.pg_flag_gone]
+doc = "Contributor flag."
+value = "worktree-gone"
+
+[devswarm_role.pg_attr_drain]
+doc = "How a contributor is drained: {id}."
+value = " — clear via `devswarm.js inbox ack {id} --ack-as-owner`"
+
+[devswarm_role.pg_attribution]
+doc = "Attribution of a family's count: {id}, {n}, {parts}."
+value = "ATTRIBUTION for {id} ({n} total): {parts}. "
+
+[devswarm_role.pg_own_unknown]
+doc = "The own-summary-unreadable segment: {id}."
+value = "YOUR OWN inbound status could not be confirmed (own-summary unreadable or corrupt — possibly a daemon problem) — treat this as UNKNOWN, not \"no messages\". Check explicitly via `devswarm.js inbox read-primary {id}` (then its `ackCommand`; and `devswarm.js healthcheck` / `devswarm.js logs` to check the daemon) before assuming there is nothing pending. "
+
+[devswarm_role.pg_twins]
+doc = "The merged-twin note: {n}, {s}, {list}."
+value = "NOTE — the unread count above includes {n} same-worktree twin descriptor{s} registered under a different id ({list}) — this is the SAME identity as this Primary under a duplicate registration, not a separate child. Inspect/drain each via `devswarm.js inbox read <id>` (read-only, safe from any worktree). "
+
+[devswarm_role.pg_twin_more]
+doc = "More twins than shown: {n}."
+value = " and {n} more"
+
+[devswarm_role.pg_plural_s]
+doc = "Plural suffix."
+value = "s"
+
+[devswarm_role.pg_foreign]
+doc = "The foreign-project note: {ids}, {verb}."
+value = "NOTE — {ids} {verb} registered under a DIFFERENT project (their worktree no longer resolves), so `inbox peek-primary` will refuse them with project-context-mismatch. Read that backlog with `devswarm.js inbox read <id>` instead — it is read-only, works from any project, and shows the durable-inbox messages counted above. "
+
+[devswarm_role.pg_verb_is]
+doc = "Singular verb."
+value = "is"
+
+[devswarm_role.pg_verb_are]
+doc = "Plural verb."
+value = "are"
+
+[devswarm_role.pg_verb_has]
+doc = "Singular verb."
+value = "has"
+
+[devswarm_role.pg_verb_have]
+doc = "Plural verb."
+value = "have"
+
+[devswarm_role.pg_gone]
+doc = "The gone-worktree note: {ids}, {verb}."
+value = "NOTE — {ids} {verb} a GONE worktree at its recorded path — this cannot be cleared by cd-ing in. WARNING: a MOVED (not retired) worktree reads exactly the same way — this is a path-existence check only, not proof the workspace is dead — and `--ack-as-owner` bypasses ownership with no liveness check of its own, so do not apply it on this signal alone. FIRST inspect with `devswarm.js inbox read <id>` (read-only, works from any project/cwd, and will NOT clear this block either way) to see what is actually pending. Only once you have CONFIRMED the workspace is genuinely retired (not just relocated), clear it with `devswarm.js inbox ack <id> --ack-as-owner` — the sanctioned cross-workspace-ack override for a confirmed-dead workspace's backlog. "
+
+[devswarm_role.pg_inspect]
+doc = "The inspect hint when a child has unread."
+value = "INSPECT the unread backlog via `devswarm.js inbox peek-primary <id>` (read-only — does not advance any cursor) to see what is pending for each workspace, then follow up with that workspace as needed; a workspace's own cursor is only advanced by that workspace reading its own inbox, never by this Primary. "
+
+[devswarm_role.pg_tail]
+doc = "The closing sentence of the reason."
+value = "If this is intentional, say so explicitly. Escape hatch: the user may direct a skip via ~/.anti-hall/skip.json (\"devswarm-parent-gate\")."
+
+[devswarm_role.pg_reason_labels]
+doc = "The label of each unknown-inbox reason (reasonLabel)."
+value = { "no-inbox-path" = "descriptor has no inboxPath", "no-cursor-path" = "descriptor has no cursorPath", "inbox-missing" = "inbox file missing", "inbox-unreadable" = "inbox file unreadable", "cursor-missing" = "cursor file missing", "cursor-unreadable" = "cursor unreadable/corrupt", "cursor-invalid" = "cursor value invalid", "own-summary-unreadable" = "own-summary unreadable/corrupt", "own-cache-stale" = "own-summary cache predates this reader's live position (live recheck unresolved)", "read-threw" = "inbox read raised an error", "store-read-error" = "mesh store unreadable (unread count UNKNOWN)", "reader-cursors-unreadable" = "read positions (reader_cursors) unreadable (unread count UNKNOWN)", "store-read-threw" = "mesh store read raised an error (unread count UNKNOWN)" }
+
+[devswarm_role.pg_set_held]
+doc = "Setting devswarm.heldPartitions: owner-held partition ids. The engine answers only while it is unset everywhere (an empty set)."
+value = { section = "devswarm", key = "heldPartitions", env = "ANTIHALL_DEVSWARM_HELD_PARTITIONS", option = "", default = "" }
+
+[devswarm_role.pg_set_cap]
+doc = "Setting devswarm.parentGateCap: forced acknowledgements per blocking signature before the one escalation (Node clamps it to 2..5). The engine answers only while it is unset, with this default."
+value = { section = "devswarm", key = "parentGateCap", env = "ANTIHALL_DEVSWARM_PARENT_GATE_CAP", option = "", default = 3 }
+
+[devswarm_role.pg_set_busy_fresh]
+doc = "Setting devswarm.parentGateBusyFreshMin: minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default."
+value = { section = "devswarm", key = "parentGateBusyFreshMin", env = "ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_FRESH_MIN", option = "", default = 5 }
+
+[devswarm_role.pg_set_busy_max_age]
+doc = "Setting devswarm.parentGateBusyMaxAgeMin: minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default."
+value = { section = "devswarm", key = "parentGateBusyMaxAgeMin", env = "ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_MAX_AGE_MIN", option = "", default = 60 }
+
+[devswarm_role.pg_set_grace]
+doc = "Setting devswarm.parentGateNeglectGraceMin: minutes a fresh unread message is still in flight and not neglect. The engine answers only while it is unset, with this default."
+value = { section = "devswarm", key = "parentGateNeglectGraceMin", env = "ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_GRACE_MIN", option = "", default = 1 }
+
+[devswarm_role.pg_set_neglect_min]
+doc = "Setting devswarm.parentGateNeglectMinUnread: unread messages a not-busy child may hold without a block. The engine answers only while it is unset, with this default."
+value = { section = "devswarm", key = "parentGateNeglectMinUnread", env = "ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_MIN_UNREAD", option = "", default = 0 }
+
+[devswarm_role.pg_ms_per_min]
+doc = "Milliseconds in a minute (the gate's minute settings and its age lines)."
+value = 60000
+
+[devswarm_role.pg_err_busy]
+doc = "Stderr line for a busy child with queued mail: {id}, {n} messages, {age} (the age phrase, or empty)."
+value = "⚠️ anti-hall · devswarm-parent-gate: {id}: busy, {n} queued{age}\n"
+
+[devswarm_role.pg_err_busy_age]
+doc = "The age phrase of that line: {m} minutes."
+value = " (oldest {m}m)"
+
+[devswarm_role.pg_err_grace]
+doc = "Stderr line for mail too young to count as neglect: {id}, {n} messages, {s} seconds."
+value = "⚠️ anti-hall · devswarm-parent-gate: {id}: {n} unread — awaiting child pickup ({s}s)\n"
+
+[devswarm_role.pg_waiting_line]
+doc = "The line for a child waiting on a human: {title}, {q} (the question phrase, or empty)."
+value = "{title}: waiting on a human answer in its own session{q}\n"
+
+[devswarm_role.pg_waiting_q]
+doc = "The question phrase of that line: {q}."
+value = " — \"{q}\""
+
+[devswarm_role.pg_busy_stale_line]
+doc = "The line for a busy child that has not read its mail: {title}, {m} minutes."
+value = "{title}: busy but hasn't read mail in {m}m\n"
+
+[devswarm_role.pg_title_fmt]
+doc = "A workspace's display name: {name}, {short} (the id's first characters)."
+value = "{name} ({short})"
+
+[devswarm_role.pg_short_id_len]
+doc = "Characters of an id in its display name (companion/lib/devswarm-names.js shortId)."
+value = 8
+
+[devswarm_role.pg_dir_names]
+doc = "The directory of cached workspace display names under the DevSwarm state directory."
+value = "names"
+
+[devswarm_role.pg_intent_multiplier]
+doc = "The larger budget of a stated intent: the cap times this (INTENT_ABSOLUTE_MULTIPLIER)."
+value = 5
+
+[devswarm_role.pg_max_shown]
+doc = "Rows, twins and ids named in the reason before the rest is counted."
+value = 5
+
+[devswarm_role.pg_max_unknown_shown]
+doc = "Unknown members named per row (MAX_UNKNOWN_MEMBERS_SHOWN)."
+value = 3
+
+[devswarm_role.pg_broadcast_fields]
+doc = "The row fields any of which naming the broadcast type marks a broadcast row (isBroadcastRow)."
+value = ["mtype", "type", "kind"]

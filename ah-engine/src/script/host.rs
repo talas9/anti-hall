@@ -116,6 +116,7 @@ pub fn with_call<R>(st: Settings, f: impl FnOnce() -> R) -> R {
     CALL.with(|c| *c.borrow_mut() = Some(st));
     EXECS.with(|c| *c.borrow_mut() = 0);
     super::host_proc::reset_call();
+    super::host_mesh::reset_call();
     let r = f();
     // a lock a script still holds when its call ends (an exception, an interrupt) is released here, never left to go stale
     for (_, held, _guard) in HELD.with(|h| std::mem::take(&mut *h.borrow_mut())).into_iter().rev() {
@@ -994,6 +995,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     super::host_io::install(c, &h)?;
     super::host_b3::install(c, &h)?;
     super::host_d::install(c, &h)?;
+    super::host_mesh::install(c, &h)?;
     super::host_proc::install(c, &h)?;
     super::host_ts::install(c, &h)?;
     c.globals().set("ahHost", h)?;

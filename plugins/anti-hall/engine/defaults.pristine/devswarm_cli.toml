@@ -2786,3 +2786,155 @@ value = "respawn runs only from the session that holds the Primary seat (seat: {
 [devswarm_cli.respawn_reason_not_primary]
 doc = "The `reason` of that refusal."
 value = "not-primary"
+
+[devswarm_cli.rr_mb_node]
+doc = "The interpreter word a mailbox-class command starts with (companion/lib/devswarm-idle.js: a ping turn is made only of such calls)."
+value = "node"
+
+[devswarm_cli.rr_mb_verbs]
+doc = "The CLI verbs a mailbox-class `devswarm.js` command may run."
+value = ["inbox", "heartbeat", "roster", "mesh"]
+
+[devswarm_cli.rr_mb_filters]
+doc = "The read-only output filters a mailbox-class command may pipe into, in this order: the pattern filter (whose file flags are refused), then the others."
+value = ["grep", "head", "tail", "wc"]
+
+[devswarm_cli.rr_mb_tools]
+doc = "The tool names that can be mailbox-class, in this order: the shell, the monitor, the cron listing, the cron creation, the tool search."
+value = ["Bash", "Monitor", "CronList", "CronCreate", "ToolSearch"]
+
+[devswarm_cli.rr_mb_fields]
+doc = "The tool input fields the mailbox test reads, in this order: the command, the background flag, the cron prompt, the tool search query."
+value = ["command", "run_in_background", "prompt", "query"]
+
+[devswarm_cli.rr_mb_true_text]
+doc = "The text form of the background flag that counts as true (the boolean true counts too)."
+value = "true"
+
+[devswarm_cli.rr_mb_cli_script]
+doc = "The file name of the DevSwarm CLI a mailbox command runs (a bare name or any path ending in it)."
+value = "devswarm.js"
+
+[devswarm_cli.rr_mb_watch_script]
+doc = "The file name of the wake watcher a mailbox monitor runs."
+value = "devswarm-wake-watch.js"
+
+[devswarm_cli.rr_mb_inbox_word]
+doc = "The word a mailbox cron prompt must contain (as a whole word) next to the CLI script name."
+value = "inbox"
+
+[devswarm_cli.rr_mb_select_prefix]
+doc = "What a tool search query that only loads cron and monitor tools begins with."
+value = "select:"
+
+[devswarm_cli.rr_mb_select_tools]
+doc = "The tool names such a query may select (each is trimmed before the comparison)."
+value = ["CronList", "CronCreate", "CronDelete", "Monitor"]
+
+[devswarm_cli.rr_mb_dup]
+doc = "The stderr-duplication token a mailbox command may carry once, right after the command."
+value = "2>&1"
+
+[devswarm_cli.rr_mb_pipe]
+doc = "The pipe character that separates a mailbox command from its read-only filters."
+value = "|"
+
+[devswarm_cli.rr_mb_sep]
+doc = "The characters that separate words of a mailbox command."
+value = " \t"
+
+[devswarm_cli.rr_mb_word_extra]
+doc = "The characters, besides ASCII letters and digits, a plain word of a mailbox command may hold."
+value = "_@%+=:,./~-"
+
+[devswarm_cli.rr_mb_quotes]
+doc = "The two quote characters of a mailbox command, in this order: the literal quote, the string quote."
+value = "'\""
+
+[devswarm_cli.rr_mb_dq_forbidden]
+doc = "The characters a string-quoted piece of a mailbox command may not hold (expansion and escape)."
+value = "$`\\"
+
+[devswarm_cli.rr_mb_grep_file_long]
+doc = "The long flag by which the pattern filter reads its patterns from a file (refused, with or without `=value`)."
+value = "--file"
+
+[devswarm_cli.rr_mb_grep_file_short]
+doc = "The short flag letter for the same (refused anywhere in a flag cluster)."
+value = "f"
+
+[devswarm_cli.rr_mb_line_terms]
+doc = "The line terminator characters a script path may not contain (a regex dot does not cross them)."
+value = "\n\r  "
+
+[devswarm_cli.msg_send_unregistered]
+doc = "The refusal of a send whose recipient is no registered mesh workspace: `{to}` is the recipient, quoted."
+value = "send --to {to} is not a registered mesh workspace"
+
+[devswarm_cli.reason_unregistered_recipient]
+doc = "The reason word of that refusal."
+value = "unregistered-recipient"
+
+[devswarm_cli.msg_send_primary_unregistered]
+doc = "The refusal of `send --to-primary` when the project has no registered Primary."
+value = "send --to-primary: no registered Primary workspace for this project (run `register-primary` first)"
+
+[devswarm_cli.reason_primary_unregistered]
+doc = "The reason word of that refusal."
+value = "primary-unregistered"
+
+[devswarm_cli.msg_send_moved]
+doc = "The refusal of a send whose target left the project store while the send waited for its lock: `{id}` is the target, quoted."
+value = "send target {id} is no longer registered in this project store (likely re-homed to another project store mid-send) — retry"
+
+[devswarm_cli.msg_lock_busy]
+doc = "The result text when a workspace's lock stayed busy for every attempt: `{id}` is the workspace, quoted."
+value = "workspace {id} is locked by another operation in progress; retry shortly"
+
+[devswarm_cli.msg_send_file_unreadable]
+doc = "The refusal of a send whose `--message-file` cannot be read: `{file}` is the path, quoted, `{why}` the operating system's message."
+value = "send --message-file {file} could not be read: {why}"
+
+[devswarm_cli.send_fs_errors]
+doc = "The message JavaScript gives for a failed read of the message file, by operating system error number; `{path}` is the path in single quotes. An error not listed here is left to Node."
+value = { "2" = "ENOENT: no such file or directory, open {path}", "13" = "EACCES: permission denied, open {path}", "20" = "ENOTDIR: not a directory, open {path}", "21" = "EISDIR: illegal operation on a directory, read" }
+
+[devswarm_cli.msg_send_multi_combine]
+doc = "The refusal of a send with several recipients combined with a broadcast or the Primary."
+value = "send with several --to recipients cannot be combined with --broadcast or --to-primary"
+
+[devswarm_cli.msg_send_multi_cc]
+doc = "The refusal of a send with several recipients that also asks for a copy to the Primary."
+value = "send with several --to recipients does not support --cc-primary (it would copy the Primary once per recipient); add the Primary to the --to list instead"
+
+[devswarm_cli.msg_send_multi_failed]
+doc = "The summary error of a multi-recipient send where some failed: `{failed}` of `{total}`."
+value = "{failed} of {total} recipient(s) failed"
+
+[devswarm_cli.msg_send_multi_row_failed]
+doc = "The error of a multi-recipient row whose result names neither an error nor a reason."
+value = "send failed"
+
+[devswarm_cli.send_multi_type]
+doc = "The `type` of the result of a send to several recipients."
+value = "multi"
+
+[devswarm_cli.op_send_cc]
+doc = "The central-log operation of the copy to the Primary."
+value = "send-cc-primary"
+
+[devswarm_cli.send_cc_target]
+doc = "The log target id of the copy to the Primary."
+value = "primary"
+
+[devswarm_cli.key_cc_primary]
+doc = "The result field that carries the outcome of the copy to the Primary."
+value = "ccPrimary"
+
+[devswarm_cli.key_possibly_stale]
+doc = "The result field a refused address carries when the ingest daemon is stale (the registry it resolved against may lag a real registration)."
+value = "possiblyStaleRegistry"
+
+[devswarm_cli.key_lock_busy]
+doc = "The result field of a lock that stayed busy, and the field naming how many attempts were made."
+value = ["lockBusy", "id", "retriedAttempts"]
