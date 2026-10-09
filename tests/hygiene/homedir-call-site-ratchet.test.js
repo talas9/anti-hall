@@ -61,7 +61,9 @@ const EXCLUDED_FILES = new Set([
 // resolveHome(), same as any other unmigrated call site. All 15 were routed
 // through companion/lib/test-home-guard.js#resolveHome() in this fix, so the
 // baseline drops back to 315 (its pre-0.117-integration value).
-const BASELINE = 315;
+// +3 (318): engine/logic/command.js runs the Node functions of hooks/command-guard.js as they are over a compatibility layer
+// (fs, path, os, process); its three os.homedir() calls are that hook's own, answered by the engine's host (lane d88fd).
+const BASELINE = 318;
 
 const HOMEDIR_CALL_RE = /\bos\s*\.\s*homedir\s*\(\s*\)/g;
 

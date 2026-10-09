@@ -94,6 +94,7 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `engine-handovers` | writing or resuming a handover, or compacting context, and a handover or compaction guard applies | Handover, resume and compaction guards (generated from the engine registry) |
 | `engine-mesh` | you need to read workspace messages, unread counts or the per-project mailbox through the engine | Read the DevSwarm message store and per-project mailboxes (generated from the engine registry) |
 | `engine-resources` | you need the engine daemon status, metrics, impact, telemetry, a backup or restore, a scheduled job, or contex | Daemon status, metrics, backups, schedules and limits (generated from the engine registry) |
+| `engine-processes` | a warning names an orphaned process, a stuck agent, heavy CPU or memory use or low disk space, or you need to tune or switch off the process, resource or disk watch | Leftover processes, runaway CPU or memory and low disk space (generated from the engine registry) |
 | `engine-settings` | changing or reading an anti-hall setting or switch, looking up an engine reference, or configuring the Jev cla | Settings switches, the generated reference and the Jev classifier (generated from the engine registry) |
 | `engine` | you need to know what the anti-hall engine can do, which engine verbs your session may run, or which engine sk | start here: the role-gated engine verbs and the area skills (generated from the engine registry) |
 
