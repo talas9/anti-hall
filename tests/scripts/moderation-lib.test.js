@@ -5,11 +5,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const DIR = path.resolve(__dirname, '..', '..', '.github', 'scripts', 'moderation');
 const L = require(path.join(DIR, 'lib.js'));
-const { scan } = require(path.join(DIR, 'privacy-scan.js'));
+const { scan, identityHits, maskEmail } = require(path.join(DIR, 'privacy-scan.js'));
 const { addedLines } = require(path.join(DIR, 'pr.js'));
 const { verifiedPaths } = require(path.join(DIR, 'community.js'));
 const { rank } = require(path.join(DIR, 'roadmap.js'));
@@ -44,6 +45,8 @@ test('sanitize: neutralises mentions, drops foreign links and HTML, caps length'
   assert.ok(!out.includes('y.png'));
   assert.ok(!L.sanitize('x https://github.com/talas9/anti-hall-evil/x', cfg).includes('anti-hall-evil'));
   assert.strictEqual(L.sanitize('a'.repeat(50), cfg, 10).length, 10);
+  // CodeQL js/incomplete-multi-character-sanitization: a split comment marker must not survive.
+  assert.ok(!L.sanitize('a <!<!-- x -->-- y --> b <!-- open', cfg, 500).includes('<!--'));
 });
 
 test('validate: only schema enums survive; unknown keys dropped', () => {
@@ -62,8 +65,9 @@ test('every prompt has a parseable schema and the shared rules', () => {
     const p = L.prompt(name);
     assert.strictEqual(p.schema.type, 'object', name);
     assert.ok(p.system.includes('BEGIN-UNTRUSTED'), name);
-    assert.ok(cfg.model.claude_models[name], `claude model alias for ${name}`);
-    assert.ok(!/claude-|\d{8}/.test(cfg.model.claude_models[name]), 'aliases only, no pinned versions');
+    const mm = L.modelFor(cfg, name);
+    assert.ok(mm.claude && mm.copilot, `models for ${name}`);
+    assert.ok(!/claude-|\d{8}/.test(mm.claude), 'claude slot uses aliases only, no pinned versions');
   }
 });
 
@@ -142,4 +146,46 @@ test('templates referenced by the scripts exist', () => {
   for (const t of ['needs-info', 'off-topic', 'triage-brief', 'qa-answer', 'pr-summary', 'privacy', 'stale-check', 'roadmap-digest', 'roadmap-digest-issue']) {
     assert.ok(fs.existsSync(path.join(DIR, '..', '..', 'moderation', 'templates', t + '.md')), t);
   }
+});
+
+test('model routing: classify is haiku, text jobs sonnet, unlisted jobs opus', () => {
+  assert.strictEqual(L.modelFor(cfg, 'moderate').claude, 'haiku');
+  for (const j of ['brief', 'qa-answer', 'pr-summary', 'docs-inspector', 'digest']) assert.strictEqual(L.modelFor(cfg, j).claude, 'sonnet', j);
+  assert.strictEqual(L.modelFor(cfg, 'something-else').claude, 'opus');
+});
+
+test('commit identity: allow-list passes, others fail with a masked email', () => {
+  const me = cfg.privacy.commit_email_allow[0];
+  const ok = `a1\t${me}\tnoreply@github.com\nb2\t123+bot@users.noreply.github.com\t123+bot@users.noreply.github.com\n`;
+  assert.deepStrictEqual(identityHits(ok, cfg), []);
+  const bad = identityHits(`c3c3c3c3c3c3\tmohammed@example.org\t${me}\n`, cfg);
+  assert.strictEqual(bad.length, 1);
+  assert.strictEqual(bad[0].msg, 'commit c3c3c3c3c3 authored as m***@e***; re-author as the maintainer identity');
+  assert.strictEqual(maskEmail('mo@example.org'), 'm***@e***');
+});
+
+test('sanitize escapes all markup characters; comment and backslash payloads stay inert', () => {
+  for (const payload of ['<!-- x -->', '<!<!---->--', '<!-- open', 'a "q" & \'s\' <img src=x onerror=1>']) {
+    const out = L.sanitize(payload, cfg);
+    assert.ok(!/[<>"]/.test(out), `no raw markup chars in: ${out}`);
+    assert.ok(!out.includes('<!--'), out);
+  }
+  assert.strictEqual(L.escapeHtml(`&<>"'`), '&amp;&lt;&gt;&quot;&#39;');
+});
+
+test('stripHtmlComments leaves no comment opener for nested payloads', () => {
+  for (const p of ['<!<!---->-->', '<!-<!---->-', 'a<!-- b', '<!--<!-- x -->-->']) assert.ok(!L.stripHtmlComments(p).includes('<!--'), p);
+  assert.strictEqual(L.stripHtmlComments('a<!-- b -->c'), 'ac');
+});
+
+test('summary table cell escapes backslashes before pipes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mod-'));
+  const sum = path.join(dir, 'sum.md');
+  const old = { RUNNER_TEMP: process.env.RUNNER_TEMP, S: process.env.GITHUB_STEP_SUMMARY };
+  process.env.RUNNER_TEMP = dir; process.env.GITHUB_STEP_SUMMARY = sum;
+  try { L.record('t', { event: 'a\\|b', item: 'x' }); } finally {
+    if (old.RUNNER_TEMP === undefined) delete process.env.RUNNER_TEMP; else process.env.RUNNER_TEMP = old.RUNNER_TEMP;
+    if (old.S === undefined) delete process.env.GITHUB_STEP_SUMMARY; else process.env.GITHUB_STEP_SUMMARY = old.S;
+  }
+  assert.ok(fs.readFileSync(sum, 'utf8').includes('a\\\\\\|b'));
 });

@@ -2,10 +2,12 @@
 // roadmap.yml: keeps the "anti-hall roadmap" board and labels consistent, flags stale work,
 // posts the weekly digest, and reports the weekly mistake rate of all the automation.
 // Board writes need PROJECT_TOKEN (or ROADMAP_PROJECT_TOKEN); without it they are skipped with a
-// notice and the label-based parts still run. Never closes, deletes or archives anything.
+// notice and the label-based parts still run. Only closes issues delivered on dev by a merged PR (delivered.js); never deletes or archives.
 
 const fs = require('node:fs');
 const L = require('./lib.js');
+const SEC = require('./security-alerts.js');
+const DELIVERED = require('./delivered.js');
 const LOG = 'roadmap-log';
 const DAY = 864e5;
 
@@ -80,7 +82,8 @@ async function plan({ github, context, core }) {
       const data = { done: closed.map((c) => c.title), in_progress: items.filter((i) => i.labels.includes('status:in-progress')).map((i) => i.title), next: next.map((n) => n.title) };
       core.setOutput('prompt', L.buildPrompt('digest', JSON.stringify(data), '', cfg));
       core.setOutput('schema', JSON.stringify(L.prompt('digest').schema));
-      core.setOutput('claude_model', cfg.model.claude_models.digest);
+      core.setOutput('claude_model', L.modelFor(cfg, 'digest').claude);
+      core.setOutput('copilot_model', L.modelFor(cfg, 'digest').copilot);
       core.setOutput('chain', chain.join(','));
     } else state.model_skip = chain.length ? 'daily cap reached' : 'AI_PROVIDER=none';
   }
@@ -160,11 +163,16 @@ async function apply({ github, context, core, getOctokit }) {
     try { return await fn(); } catch (e) { errors.push(`${desc.type}: ${L.isRateLimit(e) ? 'rate-limited' : (e.status || e.message)}`); return null; }
   };
   const items = await openItems(github, repo);
-  const one = context.eventName === 'workflow_dispatch' && Number(context.payload.inputs['item-number']) || null;
+  const p = context.payload;
+  const one = (context.eventName === 'workflow_dispatch' && Number(p.inputs['item-number'])) || (p.issue && p.issue.number) || (p.pull_request && p.pull_request.number) || null;
 
-  // 1. Board consistency.
+  // 0. Issues closed by PRs merged into dev (GitHub only auto-closes for the default branch).
+  let delivered = [];
+  try { delivered = await DELIVERED.run({ github, repo, act }); } catch (e) { errors.push(`delivered: ${e.message}`); }
+
+  // 1. Board consistency (closed issues go to Done; sweep everything when some were just closed).
   let board = {};
-  try { board = await boardSync({ getOctokit, core, cfg, items, repo, act, item: one }); } catch (e) { errors.push(`board: ${e.message}`); }
+  try { board = await boardSync({ getOctokit, core, cfg, items, repo, act, item: delivered.length ? null : one }); } catch (e) { errors.push(`board: ${e.message}`); }
 
   // 2. Stale in-progress work (labels only, so it runs without the board token).
   const staleMs = cfg.project.stale_days * DAY;
@@ -172,6 +180,12 @@ async function apply({ github, context, core, getOctokit }) {
   for (const i of stale) {
     await act({ type: 'label', name: cfg.labels.stale_check, target: { kind: i.pr ? 'pr' : 'issue', number: i.number } }, () => github.rest.issues.addLabels({ ...repo, issue_number: i.number, labels: [cfg.labels.stale_check] }));
     await act({ type: 'comment', target: { number: i.number } }, () => github.rest.issues.createComment({ ...repo, issue_number: i.number, body: L.render(L.template('stale-check'), { marker: '<!-- stale-check -->', days: cfg.project.stale_days }) }));
+  }
+
+  // 2b. Security alerts -> one issue each (scheduled and manual runs only; event runs stay light).
+  let security = null;
+  if (context.eventName === 'schedule' || context.eventName === 'workflow_dispatch') {
+    try { security = await SEC.sync({ github, wide: process.env.PROJECT_TOKEN ? getOctokit(process.env.PROJECT_TOKEN) : null, repo, act, errors }); } catch (e) { errors.push(`security: ${e.message}`); }
   }
 
   // 3. Missing data flags (reported in the summary and the digest, not posted on items).
@@ -208,7 +222,7 @@ async function apply({ github, context, core, getOctokit }) {
 
   L.record(LOG, {
     workflow: 'roadmap', event: `${context.eventName}.${state.mode}`, item: one ? `#${one}` : 'all', verdict: state.mode,
-    board, stale: stale.map((i) => i.number), no_milestone: noMilestone.length, no_size: noSize.length,
+    board, security, delivered, stale: stale.map((i) => i.number), no_milestone: noMilestone.length, no_size: noSize.length,
     provider: model.provider, fallback_reason: model.reason, latency_ms: process.env.MODEL_LATENCY_MS || null, tokens: process.env.MODEL_TOKENS || null,
     actions, errors, dry_run: dry,
   });

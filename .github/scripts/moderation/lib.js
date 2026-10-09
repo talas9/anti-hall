@@ -80,10 +80,27 @@ function classify(text, { kind, association }, cfg) {
   if (kind === 'comment') {
     if (anyMatch(m.low_quality_comment_patterns, t)) return { verdict: 'low-quality', reason: 'comment adds no information' };
   } else {
-    const stripped = t.replace(/^###.*$/gm, '').replace(/_No response_/g, '').replace(/<!--[\s\S]*?-->/g, '').trim();
+    const stripped = stripHtmlComments(t.replace(/^###.*$/gm, '').replace(/_No response_/g, '')).trim();
     if (stripped.length < m.low_quality_min_body_chars) return { verdict: 'low-quality', reason: 'description is nearly empty' };
   }
   return { verdict: 'ok', reason: '' };
+}
+
+// Remove HTML comments with a scan (no regex), repeating until nothing changes so nested forms
+// such as "<!<!---->--" cannot leave a comment opener behind. An unterminated opener drops the rest.
+function stripHtmlComments(text) {
+  let s = String(text);
+  for (;;) {
+    const a = s.indexOf('<!--');
+    if (a < 0) return s;
+    const b = s.indexOf('-->', a + 4);
+    s = b < 0 ? s.slice(0, a) : s.slice(0, a) + s.slice(b + 3);
+  }
+}
+
+// One escaper for every character that can open markup or an attribute.
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function tokens(s) {
@@ -213,7 +230,7 @@ function bumpRisk(title) {
 function sanitize(text, cfg, max) {
   const cap = max || cfg.model.max_summary_chars;
   let s = String(text || '').replace(/[​-‏‪-‮⁦-⁩﻿]/g, '');
-  s = s.replace(/<!--[\s\S]*?-->/g, '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  s = escapeHtml(s);
   s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
   s = sanitizeLinks(s, cfg);
   s = s.replace(/\]\(([^)]*)\)/g, (m, u) => (allowedUrl(u.trim(), cfg.model.allowed_link_prefixes) ? m : ']'));
@@ -361,7 +378,7 @@ function record(logName, entry) {
   fs.appendFileSync(path.join(dir, logName + '.jsonl'), JSON.stringify(row) + '\n');
   const sum = process.env.GITHUB_STEP_SUMMARY;
   if (sum) {
-    const cell = (v) => String(v === undefined || v === null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v)).replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 160);
+    const cell = (v) => String(v === undefined || v === null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v)).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 160);
     if (!fs.existsSync(sum) || !fs.readFileSync(sum, 'utf8').includes('| event | item |')) {
       fs.appendFileSync(sum, '| event | item | verdict | action | provider | fallback | latency ms |\n|---|---|---|---|---|---|---|\n');
     }
@@ -370,9 +387,15 @@ function record(logName, entry) {
   return row;
 }
 
+// Model per job and provider slot from config.models (falls back to the 'default' row).
+function modelFor(cfg, purpose) {
+  const m = cfg.model.models;
+  return m[purpose] || m.default;
+}
+
 // Model result handed over by ai-model.yml (job outputs): validated, or null.
 function modelResult(env, schemaName) {
-  const provider = env.MODEL_PROVIDER || 'none';
+  const provider = env.MODEL_PROVIDER || 'none'; // slot: primary | secondary | copilot | none
   const reason = env.MODEL_REASON || '';
   const latency = Number(env.MODEL_LATENCY_MS || 0) || null;
   if (provider === 'none') return { provider: 'none', reason: reason || 'not called', latency, data: null };
@@ -384,5 +407,5 @@ function modelResult(env, schemaName) {
 module.exports = {
   loadConfig, template, allowedUrl, render, safeLogin, skipReason, links, foreignLinks, classify, similarity, formField,
   triageRules, sizeFromLines, privacyScan, prRules, bumpRisk, sanitize, parseModelJson, validate, prompt, buildPrompt,
-  chain, budget, isRateLimit, humanRemovedLabel, record, modelResult,
+  chain, budget, isRateLimit, humanRemovedLabel, record, modelResult, modelFor, escapeHtml, stripHtmlComments,
 };

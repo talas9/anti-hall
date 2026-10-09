@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.203.3 (2026-10-10)
+
+### Repo
+
+These changes affect the GitHub repository only, not the installed plugin (#87).
+
+- Model steps use two Claude credentials with immediate failover from the first to the second, then Copilot, then rules-only. Each job's summary names the slot used.
+- Per-job model routing: each automation job picks its own model from the config.
+- `privacy-scan` checks commit identity (author and committer) on pull requests.
+- The moderation sanitizer fix: model output is cleaned correctly before it is posted.
+- Leaner pull-request CI: Node 24 only on pull requests; the full matrix runs on tags, `main` and weekly. A nightly job runs the parity and bench tests.
+- Realtime board sync: the roadmap board and stale check update on pushes to `dev`/`main`, pull-request close and issue events (rules only, no model); the digest stays weekly.
+- Dev skills: every agent and lane brief names its issue and keeps it updated.
+
 ## 0.203.2 (2026-10-09)
 
 ### Security

@@ -31,6 +31,10 @@ on:
         description: Claude model alias (haiku, sonnet)
         type: string
         default: haiku
+      copilot_model:
+        description: Copilot CLI model for the fallback slot (repo variable COPILOT_MODEL overrides it)
+        type: string
+        default: ""
       chain:
         description: Ordered providers, e.g. "claude,copilot"
         type: string
@@ -45,10 +49,13 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
+      CLAUDE_CODE_OAUTH_TOKEN_2:
+        required: false
     outputs:
       result:
         value: ${{ jobs.pick.outputs.result }}
       provider:
+        description: Slot that answered (primary, secondary, copilot or none)
         value: ${{ jobs.pick.outputs.provider }}
       reason:
         value: ${{ jobs.pick.outputs.reason }}
@@ -66,24 +73,28 @@ jobs:
   claude:
     if: contains(format(',{0},', inputs.chain), ',claude,')
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     permissions:
       contents: read
     outputs:
       ok: ${{ steps.out.outputs.ok }}
+      slot: ${{ steps.out.outputs.slot }}
       result: ${{ steps.out.outputs.result }}
       reason: ${{ steps.out.outputs.reason }}
       latency_ms: ${{ steps.out.outputs.latency_ms }}
       turns: ${{ steps.out.outputs.turns }}
       tokens: ${{ steps.out.outputs.tokens }}
     steps:
-      - name: Check for the Claude credential
+      - name: Check for the Claude credentials
         id: cred
         env:
-          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OAUTH1: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OAUTH2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
           TOOLS: ${{ inputs.tools }}
         run: |
-          if [ -n "$OAUTH" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; echo "::notice::Claude skipped: CLAUDE_CODE_OAUTH_TOKEN is not set."; fi
+          if [ -n "$OAUTH1" ]; then echo "ok1=true" >> "$GITHUB_OUTPUT"; else echo "ok1=false" >> "$GITHUB_OUTPUT"; echo "::notice::Claude primary skipped: CLAUDE_CODE_OAUTH_TOKEN is not set."; fi
+          if [ -n "$OAUTH2" ]; then echo "ok2=true" >> "$GITHUB_OUTPUT"; else echo "ok2=false" >> "$GITHUB_OUTPUT"; echo "::notice::Claude secondary skipped: CLAUDE_CODE_OAUTH_TOKEN_2 is not set."; fi
+          echo "any=$([ -n "$OAUTH1$OAUTH2" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "t0=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
           case "$TOOLS" in
             read) echo 'tools=Read,Grep,Glob' >> "$GITHUB_OUTPUT" ;;
@@ -92,16 +103,16 @@ jobs:
           esac
 
       - name: Checkout the default branch (trusted)
-        if: steps.cred.outputs.ok == 'true'
+        if: steps.cred.outputs.any == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Claude
-        id: run
-        if: steps.cred.outputs.ok == 'true'
+      - name: Claude (primary token)
+        id: claude1
+        if: steps.cred.outputs.ok1 == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@58985842b834ed26087302ba27d07bc24ca8697a # v1
         with:
@@ -116,41 +127,94 @@ jobs:
             --disallowedTools "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,Task,mcp__*"
             --json-schema '${{ inputs.schema }}'
 
+      # Decide the failover at once: no sleep, no backoff, no retry of the primary. The log text
+      # only labels the reason; when it cannot be read, or the primary did not answer for any other
+      # reason, the secondary still runs (fail over on ANY primary failure).
+      - name: Classify the primary result
+        id: why1
+        if: always() && steps.cred.outputs.any == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OK1: ${{ steps.cred.outputs.ok1 }}
+          OUTCOME: ${{ steps.claude1.outcome }}
+          STRUCTURED: ${{ steps.claude1.outputs.structured_output }}
+          EXEC_FILE: ${{ steps.claude1.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            let text = '';
+            try { text = fs.readFileSync(process.env.EXEC_FILE, 'utf8').slice(-6000); } catch { /* no log */ }
+            let why = '';
+            if (process.env.OK1 !== 'true') why = 'secret empty';
+            else if (process.env.OUTCOME !== 'success') {
+              if (/usage.?limit|rate.?limit|too many requests|429|quota|credit/i.test(text)) why = 'usage/rate limit';
+              else if (/overloaded|529|503/i.test(text)) why = 'overloaded';
+              else if (/401|403|unauthori[sz]ed|authentication|invalid.*(token|credential)|expired/i.test(text)) why = 'auth error';
+              else why = text ? 'failed (cause not recognised)' : 'failed (no log, cause unknown)';
+            } else if (!(process.env.STRUCTURED || '').trim()) why = 'no structured output';
+            core.setOutput('failover', why ? 'true' : 'false');
+            core.setOutput('why', why);
+            if (why) core.info(`primary did not answer: ${why}; failing over to the secondary now`);
+
+      - name: Claude (secondary token)
+        id: claude2
+        if: always() && steps.cred.outputs.ok2 == 'true' && steps.claude1.outcome != 'success' && steps.why1.outputs.failover == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@58985842b834ed26087302ba27d07bc24ca8697a # v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: "*"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
+          prompt: ${{ inputs.prompt }}
+          claude_args: |
+            --model ${{ inputs.claude_model }}
+            --max-turns ${{ inputs.max_turns }}
+            --tools "${{ steps.cred.outputs.tools }}"
+            --disallowedTools "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,Task,mcp__*"
+            --json-schema '${{ inputs.schema }}'
+
       - name: Collect the Claude result
         id: out
         if: always()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          CRED: ${{ steps.cred.outputs.ok }}
-          OUTCOME: ${{ steps.run.outcome }}
-          STRUCTURED: ${{ steps.run.outputs.structured_output }}
-          EXEC_FILE: ${{ steps.run.outputs.execution_file }}
+          ANY: ${{ steps.cred.outputs.any }}
+          WHY1: ${{ steps.why1.outputs.why }}
+          OUTCOME1: ${{ steps.claude1.outcome }}
+          OUTCOME2: ${{ steps.claude2.outcome }}
+          STRUCTURED1: ${{ steps.claude1.outputs.structured_output }}
+          STRUCTURED2: ${{ steps.claude2.outputs.structured_output }}
+          EXEC1: ${{ steps.claude1.outputs.execution_file }}
+          EXEC2: ${{ steps.claude2.outputs.execution_file }}
           T0: ${{ steps.cred.outputs.t0 }}
         with:
           script: |
             const fs = require('node:fs');
             const latency = Date.now() - Number(process.env.T0 || Date.now());
-            let turns = '', tokens = '', text = '';
+            const e = process.env;
+            const pickSlot = e.OUTCOME1 === 'success' && (e.STRUCTURED1 || '').trim() ? 'primary'
+              : e.OUTCOME2 === 'success' && (e.STRUCTURED2 || '').trim() ? 'secondary' : '';
+            const file = pickSlot === 'secondary' ? e.EXEC2 : e.EXEC1;
+            let turns = '', tokens = '';
             try {
-              const log = JSON.parse(fs.readFileSync(process.env.EXEC_FILE, 'utf8'));
+              const log = JSON.parse(fs.readFileSync(file, 'utf8'));
               const res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
               turns = res.num_turns ?? '';
               const u = res.usage || {};
               tokens = (u.input_tokens || 0) + (u.output_tokens || 0) || '';
-              text = JSON.stringify(res).slice(0, 4000);
             } catch { /* no execution file */ }
-            const out = (process.env.STRUCTURED || '').trim();
             let reason = '';
-            if (process.env.CRED !== 'true') reason = 'claude: secret missing';
-            else if (process.env.OUTCOME !== 'success') reason = /rate.?limit|usage limit|overloaded|429|quota/i.test(text) ? 'claude: rate/usage limit' : 'claude: failed';
-            else if (!out) reason = 'claude: no structured output';
-            core.setOutput('ok', reason ? 'false' : 'true');
-            core.setOutput('result', reason ? '' : out);
+            if (!pickSlot) reason = e.ANY !== 'true' ? 'claude: both secrets empty' : `claude: primary ${e.WHY1 || 'failed'}; secondary ${e.OUTCOME2 ? 'failed' : 'not available'}`;
+            else if (pickSlot === 'secondary') reason = `primary ${e.WHY1}`;
+            const out = pickSlot === 'secondary' ? e.STRUCTURED2 : e.STRUCTURED1;
+            core.setOutput('ok', pickSlot ? 'true' : 'false');
+            core.setOutput('slot', pickSlot);
+            core.setOutput('result', pickSlot ? out.trim() : '');
             core.setOutput('reason', reason);
             core.setOutput('latency_ms', String(latency));
             core.setOutput('turns', String(turns));
             core.setOutput('tokens', String(tokens));
-            core.info(reason || `claude ok in ${latency} ms, turns ${turns}`);
+            core.info(pickSlot ? `claude ${pickSlot} answered in ${latency} ms, turns ${turns}${reason ? ' (' + reason + ')' : ''}` : reason);
 
   copilot:
     needs: claude
@@ -178,14 +242,16 @@ jobs:
           fetch-depth: 1
 
       - name: Install Copilot CLI
-        run: npm install -g @github/copilot@1.0.90
+        run: |
+          npm ci --ignore-scripts --prefix .github/copilot-cli
+          echo "$GITHUB_WORKSPACE/.github/copilot-cli/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Copilot
         id: run
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          COPILOT_MODEL: ${{ vars.COPILOT_MODEL }}
+          COPILOT_MODEL: ${{ vars.COPILOT_MODEL || inputs.copilot_model }}
           PROMPT: ${{ inputs.prompt }}
           TOOLS: ${{ inputs.tools }}
         run: |
@@ -250,8 +316,11 @@ jobs:
             if (n.claude.result === 'skipped') reasons.unshift('claude: not in chain');
             if (n.copilot.result === 'skipped' && c.ok !== 'true') reasons.push('copilot: not in chain');
             let pick = { provider: 'none', result: '', latency_ms: '', turns: '', tokens: '' };
-            if (c.ok === 'true') pick = { provider: 'claude', result: c.result, latency_ms: c.latency_ms, turns: c.turns, tokens: c.tokens };
+            if (c.ok === 'true') pick = { provider: c.slot || 'primary', result: c.result, latency_ms: c.latency_ms, turns: c.turns, tokens: c.tokens };
             else if (p.ok === 'true') pick = { provider: 'copilot', result: p.result, latency_ms: p.latency_ms, turns: '', tokens: '' };
             for (const [k, v] of Object.entries(pick)) core.setOutput(k, String(v || ''));
+            if (c.ok === 'true' && c.reason) reasons.push(c.reason);
             core.setOutput('reason', reasons.join('; '));
-            core.info(`provider: ${pick.provider}${reasons.length ? ' (' + reasons.join('; ') + ')' : ''}`);
+            const line = `slot: ${pick.provider}${reasons.length ? ' (' + reasons.join('; ') + ')' : ''}`;
+            core.info(line);
+            await core.summary.addRaw(`**AI slot used:** \`${pick.provider}\`${reasons.length ? ' - ' + reasons.join('; ') : ''}\n`, true).write();
