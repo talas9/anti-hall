@@ -43,6 +43,9 @@ impl Env {
             .env("AH_ENGINE_PROJECT_RPS", "0")
             .env("AH_ENGINE_SPOOL_DRAIN_MS", "50")
             .env("AH_ENGINE_NOSPAWN", "1") // the client never starts a daemon here: the test decides when one runs
+            // the two seconds a client waits for an answer are the machine's on a loaded CI runner; one late answer must not
+            // count toward the breaker that makes the client skip the engine
+            .env("AH_ENGINE_DEADLINE_MS", "30000")
             .env("AH_ENGINE_SPOOL_RETRIES", "1")
             .env("AH_ENGINE_SPOOL_BACKOFF_MS", "1");
         c
@@ -113,7 +116,13 @@ fn writes_made_while_the_engine_is_down_are_applied_once_and_in_order() {
     assert!(wait_for(|| std::fs::metadata(&spool).map(|m| m.len() == 0).unwrap_or(false)), "the running daemon drains on its tick");
     for s in 0..SESSIONS {
         assert_eq!(e.proj("x", &[&cwd(s), "len"]).0, (WRITES / SESSIONS).to_string(), "session {s}: exactly once after a replay");
-        let got: Vec<String> = (0..WRITES / SESSIONS).map(|_| e.proj("x", &[&cwd(s), "take"]).0).collect();
+        let got: Vec<String> = (0..WRITES / SESSIONS)
+            .map(|n| {
+                let (out, code) = e.proj("x", &[&cwd(s), "take"]);
+                assert_eq!(code, 0, "take {n} of session {s} failed (client breaker open: {}): {out:?}", e.eng().join("breaker.until").exists());
+                out
+            })
+            .collect();
         let want: Vec<String> = (0..WRITES).filter(|i| i % SESSIONS == s).map(|i| format!("m{i:03}")).collect();
         assert_eq!(got, want, "session {s}: applied in the order written");
     }

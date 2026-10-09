@@ -41,6 +41,8 @@ sleep 0.3
 survivors="$(comm -13 <(printf '%s\n' "$before") <(daemons))"
 if [ -n "$survivors" ]; then
   echo "FAIL: daemons survived the test run: $(echo "$survivors" | tr '\n' ' ')" >&2
+  # which daemons, from which test (their state directory is in the command line or the environment of the test that made it)
+  ps -Ao pid,ppid,etime,command | grep -F "ah-engine serve" | grep -v grep >&2 || true
   exit 1
 fi
 exit $rc
