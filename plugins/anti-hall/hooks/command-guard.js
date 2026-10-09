@@ -1614,8 +1614,9 @@ const GCLOUD_BOOLEAN_FLAGS = new Set(['--quiet', '--uri']);
 // `--limit 5`). Closed list: any other `--k v` stays refused (a separated
 // value could otherwise pose as the verb or a second positional). The value
 // must be one non-dash token. Only honoured when the caller passes
-// sepValues=true, i.e. from isWholeCommandReadOnlyForm (the whole command is
-// validated there; the per-segment exemptions keep the strict `--k=v` grammar). `--format`/`--filter` are NOT on the list: the
+// sepValues=true, i.e. from isWholeCommandReadOnlyForm (the whole command, or one
+// `;`/`&&`-joined unit of a chain, is validated there; the per-segment exemptions
+// keep the strict `--k=v` grammar). `--format`/`--filter` are NOT on the list: the
 // narrow shape-B carve-out requires the `--format=<json|yaml|value(..)>` form.
 const GCLOUD_VALUE_FLAGS = new Set([
   '--project', '--region', '--zone', '--location', '--limit', '--freshness',
@@ -1752,6 +1753,46 @@ function isWholeCommandReadOnlyForm(command) {
     if (!isClosedSinkStage(segs[i].trim())) return false;
   }
   return true;
+}
+
+// readOnlyFormUnits(split) -> Set of segment indexes that belong to a chain UNIT which is, on its
+// own, exactly one isWholeCommandReadOnlyForm. A chain is cut into units at `;` / `&&` only (a unit is
+// its pipe-joined segments). The exemption applies ONLY when EVERY unit of the chain is read-only on
+// its face: a whole read-only form, or one plain read-only git segment (a safe `git fetch`, or
+// `git rev-parse|status|log|show` in the plain-chain shapes). Any other unit (`rm -rf x`, `which x`,
+// an unclosed sink, an expansion, `||`, `&`, newline, group, heredoc) leaves the set empty, so the
+// line is judged segment by segment exactly as before. Why: `git fetch -q origin main && git rev-parse
+// origin/main && gcloud run services describe svc --project p | head -2` is three light reads, but the
+// gcloud segment's space-separated read flags are only accepted when its unit is validated whole, and
+// the whole-line test never reaches a unit inside a chain.
+function readOnlyFormUnits(split) {
+  const none = new Set();
+  const out = new Set();
+  const { segments, delims } = split;
+  if (segments.length < 2 || !delims.some((x) => x === '&&' || x === ';')) return none;
+  let start = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const last = i === segments.length - 1;
+    const cut = last || delims[i] === '&&' || delims[i] === ';';
+    if (!cut) { if (delims[i] !== '|') return none; continue; }
+    let text = '';
+    for (let j = start; j <= i; j++) text += (j > start ? ' | ' : '') + segments[j].trim();
+    if (isWholeCommandReadOnlyForm(text)) {
+      for (let j = start; j <= i; j++) out.add(j);
+    } else if (!(start === i && isPlainReadGitSegment(segments[i].trim()))) {
+      return none;
+    }
+    start = i + 1;
+  }
+  return out;
+}
+
+// One plain read-only git segment: a fetch that isSafeGitFetch accepts, or a log/status/show/rev-parse in
+// the exact shapes classifyPlainGitChainSegment recognises (no redirect, no expansion, no extra flags).
+function isPlainReadGitSegment(segment) {
+  if (isSafeGitFetch(segment)) return !hasUnquotedRedirectChar(segment) && !hasShellExpansionAnywhere(segment);
+  const cls = classifyPlainGitChainSegment(segment);
+  return !!cls && (cls.kind === 'log' || cls.kind === 'status' || cls.kind === 'show' || cls.kind === 'revparse');
 }
 
 // isClosedSinkStage(segment) -> true iff the stage is EXACTLY one of the closed
@@ -2076,7 +2117,11 @@ function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const d = typeof depth === 'number' ? depth : 0;
   if (d === 0 && isWholeCommandReadOnlyForm(command)) return false;
-  for (const seg of splitSegments(command)) {
+  const split = splitSegmentsDetailed(command);
+  const exempt = d === 0 ? readOnlyFormUnits(split) : null;
+  for (let si = 0; si < split.segments.length; si++) {
+    if (exempt && exempt.has(si)) continue;
+    const seg = split.segments[si];
     if (isHeavySegment(seg, command)) return true;
     if (d < 3) {
       // (b) shell -c payload: unwrap and evaluate as command(s).
@@ -3391,6 +3436,15 @@ function isAllowedGcloudReadCommand(command) {
 // ---------------------------------------------------------------------------
 const BACKGROUND_SCRIPT_INTERPRETERS = new Set(['python3', 'node', 'sh', 'bash']);
 const BACKGROUND_CHAIN_DELIMS = new Set([';', '&&', '|', 'end']);
+// Valueless interpreter flags that may sit between the interpreter and the
+// script (`python3 -I probe.py`). Closed per interpreter: none of these takes a
+// value, loads code (-c/-m/-W/--require/--import and friends are NOT here) or
+// changes which file runs, so `<interp> <flags> <scratch script>` is the same
+// script run the bare form is. Any other leading flag keeps the segment refused.
+const BACKGROUND_SCRIPT_SAFE_FLAGS = {
+  python3: new Set(['-I', '-B', '-u', '-E', '-s', '-S', '-O', '-OO', '-q']),
+  node: new Set(['--no-warnings', '--trace-warnings', '--enable-source-maps']),
+};
 
 // One `<python3|node|sh|bash> <script file> [args…]` segment, script inside
 // the scratchpad/tmp (realpath'd), no --confirmed, not an anti-hall plugin script.
@@ -3402,7 +3456,12 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
   // `VAR=…` token is not a path, so env-prefix assignments stay refused.
   const direct = tokens.length >= 1 && tokens[0].includes('/') && !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0]);
   if (!direct && (tokens.length < 2 || !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0]))) return false;
-  const script = direct ? tokens[0] : tokens[1];
+  let scriptIdx = direct ? 0 : 1;
+  if (!direct) {
+    const safe = BACKGROUND_SCRIPT_SAFE_FLAGS[tokens[0]];
+    while (safe && scriptIdx < tokens.length && safe.has(tokens[scriptIdx])) scriptIdx++;
+  }
+  const script = tokens[scriptIdx];
   if (!script || script.startsWith('-')) return false;
   if (!isScratchpadOrTmpPath(script, direct ? Object.assign({ ownOnly: true }, ctx) : ctx)) return false;
   const payload = ctx.payload;

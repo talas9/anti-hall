@@ -62,6 +62,10 @@ const ALLOW = [
   'git push origin main 2>&1 | tail -3; git rev-parse HEAD; git ls-remote origin refs/heads/main',
   'git push -q origin main && git ls-remote --heads origin main',
   'git push origin main | tail -2 && git status',
+  // (d) a gcloud read INSIDE a chain keeps its space-separated read flags (field: friendship verify, 2026-10-07)
+  "git fetch -q origin main && git rev-parse origin/main && gcloud run services describe friendship --project sky-crew-uc --region us-central1 --format='value(status.latestReadyRevisionName,status.traffic)' 2>&1 | head -2",
+  'git rev-parse HEAD && gcloud functions describe fn --project foo --region us-central1',
+  'gcloud functions list --project foo | head -3; git rev-parse HEAD',
 ];
 
 const BLOCK = [
@@ -120,6 +124,13 @@ const BLOCK = [
   'git push origin main; git ls-remote origin main; npm run deploy',
   'git push origin main; git ls-remote origin main > /tmp/x',
   'git pull --ff-only; git ls-remote origin main',
+  // (d) the chained form never widens the read grammar
+  'git rev-parse HEAD && gcloud functions deploy x --project foo --region r',
+  'git rev-parse HEAD && gcloud functions describe x --impersonate-service-account sa@p.iam.gserviceaccount.com',
+  'git rev-parse HEAD && gcloud functions describe x --project',
+  'git rev-parse HEAD && gcloud functions describe x --project foo > out.txt',
+  'git rev-parse HEAD && gcloud functions describe x --project foo $(id)',
+  'git rev-parse HEAD && gcloud compute instances reset vm --zone list',
 ];
 
 for (const c of ALLOW) {
