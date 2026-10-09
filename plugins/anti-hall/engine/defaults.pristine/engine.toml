@@ -204,8 +204,8 @@ env = "AH_ENGINE_MEM_MB"
 unit = "MB"
 
 [daemon.rss_cap_kb]
-doc = "Resident-set cap; above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. Set from measurement, not guessed: steady state of the 61-check engine on a mixed real-payload replay (5000 calls, a 142 MB transcript read by the Stop checks) is 33-36 MB RSS with jemalloc (aarch64-apple-darwin, linux-gnu) and 45-52 MB with the system allocator (x86_64-apple-darwin, musl, which the allocator crate does not support); live heap is 16-18 MB in both. The cap sits above the larger figure, so only growth trips it. The previous 48 MB cap sat inside the system-allocator steady state, so the daemon restarted every ~10 s and the crash-loop breaker switched it off."
-value = 65536
+doc = "Resident-set cap; above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. Set from measurement, not guessed (DECISIONS.md 1.111, 2026-10-09): on the real-payload replay (2,113 recorded hook calls, unpaced, isolated home) the engine with 16 scripted checks sits at 69 MB after one pass and 78 MB after three (jemalloc, aarch64-apple-darwin), and at 102 MB after one pass with the system allocator (the x86_64-apple-darwin and musl builds, measured as a system-allocator build on this Mac); the live heap is 45-52 MB. The engine before the scripted checks (live4) measured 62 and 68 MB on the same replay, so the previous 64 MB cap (set from a synthetic soak with a 16-18 MB live heap) sat inside the steady state of both: the daemon restarted 4 times in 600 s and the crash-loop breaker sent every hook to Node. The cap sits above the larger figure with room for the slow growth both builds show on repeated passes (about 1.5 MB per 1,000 calls), so only real growth trips it."
+value = 131072
 env = "AH_ENGINE_RSS_CAP_KB"
 unit = "KB"
 

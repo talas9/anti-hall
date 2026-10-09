@@ -12,16 +12,23 @@
 //!
 //! # Runtime, limits and teardown
 //!
-//! One runtime per worker thread (the daemon's request threads are fixed, so the pool is bounded by `daemon.workers`), one
-//! context per check inside it. A call runs under a wall-clock deadline (`script.time_limit_ms`, enforced by the
-//! interpreter's interrupt handler), a heap ceiling (`script.call_memory_bytes` above the size measured after loading) and a
+//! One runtime per worker thread (the daemon's request threads are fixed, so the pool is bounded by `daemon.workers`), and ONE
+//! context in it shared by every check: the shared helpers (lib files) are evaluated once, and each check's own files (its
+//! includes and its script) are evaluated as the body of a function (`script.check_scope`), so the check's top-level
+//! declarations stay private to it and its entry function is kept in a registry object (`script.registry_global`). A
+//! context per check cost about 150 KB each (intrinsics, host bindings and the lib files again), times every scripted check
+//! times every worker thread, all of it in the C allocator's zone outside the heap counters; see DECISIONS.md, revision
+//! 1.111. The runtime allocates through the Rust allocator, so its heap is in `status --memory`'s live heap.
+//!
+//! A call runs under a wall-clock deadline (`script.time_limit_ms`, enforced by the interpreter's interrupt handler), a heap ceiling (`script.call_memory_bytes` above the size measured after loading) and a
 //! stack ceiling. Any failure (exception, interrupt, out of memory, a verdict of the wrong shape) is a deferral, never a
 //! silent allow (D11).
 //!
 //! Teardown rule (the "runtime teardown assertion" root cause): `JS_FreeRuntime` asserts that no object is still alive. A
 //! `Persistent` handle, or a JS value kept outside `Context::with`, that outlives the runtime aborts the process. So no JS
-//! value is ever stored outside a `with` block (the entry function is looked up by name per call), a pending exception is
-//! always taken with `catch`, and [`Pool`] drops its contexts before its runtime (field order) and runs a GC in between.
+//! value is ever stored outside a `with` block (the entry function is looked up by name per call in the registry object), a
+//! pending exception is always taken with `catch`, and [`Pool`] drops its context before its runtime (field order) and runs
+//! a GC in between.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file or directory is the same as an absent one
 // A failure that must be seen goes through `crate::discard` instead.
@@ -48,15 +55,12 @@ use std::time::{Instant, UNIX_EPOCH};
 /// The files one check's context was built from, with what identifies their version.
 type Fingerprint = Vec<(PathBuf, u64, u128)>;
 
-/// One check's loaded context.
-struct Loaded {
-    fp: Fingerprint,
-    ctx: Context,
-}
-
-/// The per-thread interpreter: the contexts are declared before the runtime so they are dropped first.
+/// The per-thread interpreter: the context is declared before the runtime so it is dropped first.
 struct Pool {
-    loaded: HashMap<String, Loaded>,
+    /// The shared context and the lib files it was built from; `None` until the first call (or after a lib file changed).
+    ctx: Option<(Fingerprint, Context)>,
+    /// Each loaded check's own files (includes, then its script), as they were when its entry was registered.
+    checks: HashMap<String, Fingerprint>,
     /// Interrupt deadline: nanoseconds since `epoch`, 0 = none.
     deadline: Arc<AtomicU64>,
     epoch: Instant,
@@ -65,14 +69,18 @@ struct Pool {
 
 impl Drop for Pool {
     fn drop(&mut self) {
-        self.loaded.clear();
+        self.checks.clear();
+        self.ctx = None;
         self.rt.run_gc();
     }
 }
 
 impl Pool {
     fn new() -> Option<Pool> {
-        let rt = Runtime::new().ok()?;
+        // the interpreter allocates through the Rust allocator (jemalloc where the build has it, which returns freed pages, and
+        // counted by `memstat`), not the C library's malloc, whose zone kept freed pages resident (DECISIONS.md 1.111); the heap ceiling is
+        // still enforced: QuickJS checks `set_memory_limit` against its own count before it calls any allocator
+        let rt = Runtime::new_with_alloc(rquickjs::allocator::RustAllocator).ok()?;
         rt.set_max_stack_size(defaults::num("script.stack_bytes") as usize);
         let deadline = Arc::new(AtomicU64::new(0));
         let epoch = Instant::now();
@@ -81,12 +89,25 @@ impl Pool {
             let until = d.load(Ordering::Relaxed);
             until != 0 && epoch.elapsed().as_nanos() as u64 > until
         })));
-        Some(Pool { loaded: HashMap::new(), deadline, epoch, rt })
+        Some(Pool { ctx: None, checks: HashMap::new(), deadline, epoch, rt })
     }
 }
 
 thread_local! {
     static POOL: RefCell<Option<Pool>> = const { RefCell::new(None) };
+}
+
+/// The calling thread's interpreter after a collection: (checks loaded, bytes QuickJS holds, allocations outstanding,
+/// bytecode functions and their bytes). `None` before its first scripted call. For the memory budget test and measurements
+/// (`examples/script_mem.rs`); it walks the whole heap, so never on a request path.
+pub fn pool_usage() -> Option<(usize, i64, i64, i64, i64)> {
+    POOL.with(|cell| {
+        cell.borrow().as_ref().map(|p| {
+            p.rt.run_gc();
+            let u = p.rt.memory_usage();
+            (p.checks.len(), u.malloc_size, u.malloc_count, u.js_func_count, u.js_func_code_size)
+        })
+    })
 }
 
 fn mtime_ns(m: &std::fs::Metadata) -> u128 {
@@ -110,9 +131,9 @@ fn dirs(home: &str) -> Vec<PathBuf> {
     out
 }
 
-/// The files a check's context is built from, lib files first (by name), then the check script; `None` when no script
-/// exists for `name`.
-fn resolve(name: &str, home: &str) -> Option<Fingerprint> {
+/// The files a check runs from: the lib files (by name), then its own files (its includes, then its script); `None` when no
+/// script exists for `name`.
+fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
     let ext = defaults::text("script.ext");
     let ds = dirs(home);
     let script = ds.iter().find_map(|d| file_id(&d.join(format!("{name}{ext}"))))?;
@@ -129,7 +150,8 @@ fn resolve(name: &str, home: &str) -> Option<Fingerprint> {
             }
         }
     }
-    let mut fp: Fingerprint = libs.into_values().collect();
+    let libs: Fingerprint = libs.into_values().collect();
+    let mut fp: Fingerprint = Vec::new();
     // scripts the owner's configuration says this check builds on (`script.includes`: check name to script names), loaded as
     // libraries after the shared helpers and before the check's own script, which may then redefine the entry
     let includes: Vec<String> = defaults::raw("script.includes").get(name).map(|v| v.strings().into_iter().map(str::to_string).collect()).unwrap_or_default();
@@ -137,21 +159,42 @@ fn resolve(name: &str, home: &str) -> Option<Fingerprint> {
         fp.push(ds.iter().find_map(|d| file_id(&d.join(format!("{inc}{ext}"))))?);
     }
     fp.push(script);
-    Some(fp)
+    Some((libs, fp))
 }
 
-/// Build a context from the files of `fp`. `Err` carries the reason.
-fn load(pool: &Pool, fp: &Fingerprint) -> Result<Context, String> {
+/// Build the shared context: the host bindings, then the lib files of `libs`. `Err` carries the reason.
+fn load_libs(pool: &Pool, libs: &Fingerprint) -> Result<Context, String> {
     let ctx = Context::full(&pool.rt).map_err(|e| e.to_string())?;
     ctx.with(|c| -> Result<(), String> {
         host::install(&c).map_err(|e| e.to_string())?;
-        for (path, _, _) in fp {
+        for (path, _, _) in libs {
             let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
             c.eval::<(), _>(src).catch(&c).map_err(|e| format!("{}: {e}", path.display()))?;
         }
-        Ok(())
+        let reg = rquickjs::Object::new(c.clone()).map_err(|e| e.to_string())?;
+        c.globals().set(defaults::text("script.registry_global"), reg).map_err(|e| e.to_string())
     })?;
     Ok(ctx)
+}
+
+/// Evaluate check `name`'s own files `own` in the shared context, inside `script.check_scope`, and register the entry it
+/// defines. `Err` carries the reason (an unreadable file, an exception, no entry function).
+fn load_check(ctx: &Context, name: &str, own: &Fingerprint) -> Result<(), String> {
+    let mut src = String::new();
+    for (path, _, _) in own {
+        src.push_str(&std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?);
+        src.push('\n');
+    }
+    let entry = defaults::text("script.entry");
+    let body = defaults::render("script.check_scope", &[("entry", &entry), ("source", &src)]);
+    ctx.with(|c| -> Result<(), String> {
+        let f: JsValue = c.eval(body).catch(&c).map_err(|e| format!("{name}: {e}"))?;
+        if !f.is_function() {
+            return Err(defaults::render("script.msg_no_entry", &[("check", &name), ("entry", &entry)]));
+        }
+        let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).map_err(|e| e.to_string())?;
+        reg.set(name, f).map_err(|e| e.to_string())
+    })
 }
 
 /// Convert what a script returned into a verdict. `Err` for a value of the wrong shape.
@@ -226,15 +269,15 @@ pub fn run(name: &str, payload: &Value, opts: &Value, event: &str, env: &Request
         return None;
     }
     let st = Settings::from_env(env);
-    let fp = resolve(name, &st.home)?;
-    Some(call(name, &fp, payload, opts, event, st))
+    let (libs, own) = resolve(name, &st.home)?;
+    Some(call(name, &libs, &own, payload, opts, event, st))
 }
 
 /// Run the script of `name` regardless of `script.enabled` (parity tests and measurements). `None` when no script exists.
 pub fn run_forced(name: &str, payload: &Value, opts: &Value, event: &str, env: &RequestEnv) -> Option<Option<Verdict>> {
     let st = Settings::from_env(env);
-    let fp = resolve(name, &st.home)?;
-    Some(call(name, &fp, payload, opts, event, st))
+    let (libs, own) = resolve(name, &st.home)?;
+    Some(call(name, &libs, &own, payload, opts, event, st))
 }
 
 /// The answer for a check whose logic is a script (no compiled port) when no script file is found.
@@ -252,25 +295,34 @@ fn limit_ms(name: &str, event: &str) -> u64 {
         .map_or_else(|| defaults::num("script.time_limit_ms"), |ms| ms.max(1) as u64)
 }
 
-fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
+fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
             *slot = Some(Pool::new().ok_or("runtime")?);
         }
         let pool = slot.as_mut().ok_or("runtime")?;
-        if pool.loaded.get(name).is_none_or(|l| l.fp != *fp) {
-            // a replaced context goes before the new one is built, and its cycles are collected
-            pool.loaded.remove(name);
+        let libs_stale = pool.ctx.as_ref().is_none_or(|(fp, _)| fp != libs);
+        if libs_stale || pool.checks.get(name).is_none_or(|fp| fp != own) {
+            // a replaced context or entry goes before the new one is built, and its cycles are collected
+            pool.checks.remove(name);
+            if libs_stale {
+                pool.checks.clear();
+                pool.ctx = None;
+            }
             pool.rt.set_memory_limit(0);
             pool.rt.run_gc();
-            let ctx = load(pool, fp)?;
-            pool.loaded.insert(name.to_string(), Loaded { fp: fp.clone(), ctx });
+            if pool.ctx.is_none() {
+                pool.ctx = Some((libs.clone(), load_libs(pool, libs)?));
+            }
+            let ctx = pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or("context")?;
+            load_check(&ctx, name, own)?;
+            pool.checks.insert(name.to_string(), own.clone());
             pool.rt.run_gc();
             let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
             pool.rt.set_memory_limit(base + defaults::num("script.call_memory_bytes") as usize);
         }
-        let ctx = pool.loaded.get(name).map(|l| l.ctx.clone()).ok_or("context")?;
+        let ctx = pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or("context")?;
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
         let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
         let limit = limit_ms(name, event).saturating_mul(1_000_000);
@@ -278,7 +330,8 @@ fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str
             host::set_deadline(Some(pool.deadline.clone()));
             pool.deadline.store((pool.epoch.elapsed().as_nanos() as u64).saturating_add(limit).max(1), Ordering::Relaxed);
             let out = ctx.with(|c| -> Result<String, String> {
-                let f: Function = c.globals().get(defaults::text("script.entry")).catch(&c).map_err(|e| e.to_string())?;
+                let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
+                let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
                 let p: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
                 let o: JsValue = c.json_parse(opts_raw).catch(&c).map_err(|e| e.to_string())?;
                 let v: JsValue = f.call((p, o, event)).catch(&c).map_err(|e| e.to_string())?;
