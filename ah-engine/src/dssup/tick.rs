@@ -147,6 +147,9 @@ pub fn run_duty_w(name: &str, ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<
         if name == "retention" {
             return (super::retention::duty(ctx, runner), None);
         }
+        if name == "app_sync" {
+            return (super::appsync::duty(ctx, runner), None);
+        }
         let job = prepare_witness(name, ctx);
         let detail = match name {
             "log_rotate" => log_rotate(ctx),

@@ -136,7 +136,7 @@ impl CapPlan {
 /// The part of Node's dry-run answer that is compared: the totals and the exact list.
 pub fn same(p: &CapPlan, node: &Value) -> bool {
     let mine = p.json(true);
-    ["totalBytes", "capBytes", "removed"].iter().all(|k| mine[*k] == node[*k])
+    mine["totalBytes"] == node["totalBytes"] && mine["capBytes"] == node["capBytes"] && mine["removed"] == node["removed"]
 }
 
 /// Evict `plan`'s files: each is re-checked (still a regular file of the planned size) and removed, with Node's log event.

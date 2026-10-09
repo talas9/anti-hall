@@ -505,3 +505,7 @@ pub const RT_COMMIT: &str = "COMMIT";
 pub const RT_ROLLBACK: &str = "ROLLBACK";
 /// A broadcast row's sequence number and heartbeat flag.
 pub const RT_ROW_BROADCAST: &str = "SELECT seq, is_heartbeat FROM messages WHERE id = ?1";
+/// The app's messages in a time window: the repository, the branch they went to and when (never the text).
+pub const AS_MESSAGES: &str = "SELECT repositoryId, toBranch, createdAt FROM workspace_messages WHERE createdAt >= ?1 AND createdAt < ?2";
+/// The timestamps of the app messages a store has ingested.
+pub const AS_NATIVE_TS: &str = "SELECT ts FROM messages WHERE hash LIKE ?1";
