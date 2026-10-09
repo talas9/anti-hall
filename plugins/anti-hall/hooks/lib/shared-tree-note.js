@@ -46,6 +46,9 @@ const SCRATCH_RE = new RegExp([
   String.raw`\b(?:cwd\s+is|cwd|work(?:ing)?\s+(?:in|inside)|working\s+dir(?:ectory)?|cd(?:\s+into)?)\s*[:=]?\s*` + SCRATCH_PATH,
   String.raw`\bscratch\s+(?:clone|dir(?:ectory)?|copy)\s+(?:under|at|in)\s+` + SCRATCH_PATH,
   String.raw`\bclone\s+(?:\S+\s+)?into\s+` + SCRATCH_PATH + String.raw`[^\s]*\s+and\s+(?:work|edit|make|fix)\b`,
+  // a separate git worktree elsewhere (an absolute or ~ path) is its own working tree, as is "its own worktree"
+  String.raw`\bgit\s+(?:-C\s+\S+\s+)?worktree\s+add\s+(?:-\S+\s+)*[\x60'"]?(?:~\/|\/|\$HOME\/)`,
+  String.raw`\b(?:its|your|their)\s+own\s+(?:git\s+)?worktrees?\b`,
 ].join('|'), 'i');
 const SCRATCH_NEGATED_RE = /\b(?:not|no|without|instead\s+of)\s+(?:in\s+|a\s+|the\s+|any\s+)?scratch\b/i;
 const IN_PLACE_RE = /\bin\s+place\b|\bin\s+(?:the\s+)?(?:session\s+)?repo\b|\brepo\s+files\b|\b(?:session|main)\s+(?:checkout|working\s+tree)\b|\bin\s+the\s+(?:working\s+tree|checkout)\b|\bworking\s+copy\b|\bchecked[- ]out\s+(?:files?|tree|copy|branch)\b|\bon\s+main\b|\bmain\s+branch\b/i;

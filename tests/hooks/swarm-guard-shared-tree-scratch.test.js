@@ -78,3 +78,18 @@ for (const prompt of WARN) {
     assert.match(run(launch('t1', A1, REPO), { ...REPO, prompt }), /shared-tree:/);
   });
 }
+
+// FIX (dogfood 2026-10-09): a brief that makes its own git worktree elsewhere shares no tree with the session.
+const WORKTREE_FIX = [
+  'Worktree: git -C ~/.anti-hall/work/repo fetch origin && git -C ~/.anti-hall/work/repo worktree add ~/.anti-hall/work/wt-x origin/main -b lane-x. Fix the bug there and commit.',
+  'Fix hooks/foo.js: git worktree add /Users/x/.anti-hall/work/wt-y origin/dev -b lane-y, then edit and commit in it.',
+  'Each lane uses its own worktree under ~/.anti-hall/work; fix hooks/foo.js and commit.',
+];
+WORKTREE_FIX.forEach((prompt, n) => {
+  test('FIX: new spawn with its own git worktree -> silent #' + n, () => {
+    assert.strictEqual(run(launch('t1', A1, REPO), { ...REPO, prompt }), '');
+  });
+});
+test('GUARD: a relative worktree add inside the session repo still warns', () => {
+  assert.match(run(launch('t1', A1, REPO), { ...REPO, prompt: 'Run git worktree add wt-here then fix hooks/foo.js in the repo in place.' }), /shared-tree:/);
+});

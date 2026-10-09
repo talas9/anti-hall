@@ -325,6 +325,8 @@ value = [
   '''\b(?:cwd\s+is|cwd|work(?:ing)?\s+(?:in|inside)|working\s+dir(?:ectory)?|cd(?:\s+into)?)\s*[:=]?\s*{path}''',
   '''\bscratch\s+(?:clone|dir(?:ectory)?|copy)\s+(?:under|at|in)\s+{path}''',
   '''\bclone\s+(?:\S+\s+)?into\s+{path}[^\s]*\s+and\s+(?:work|edit|make|fix)\b''',
+  '''\bgit\s+(?:-C\s+\S+\s+)?worktree\s+add\s+(?:-\S+\s+)*[\x60'"]?(?:~\/|\/|\$HOME\/)''',
+  '''\b(?:its|your|their)\s+own\s+(?:git\s+)?worktrees?\b''',
 ]
 
 [swarm_guard.re_scratch_negated]
