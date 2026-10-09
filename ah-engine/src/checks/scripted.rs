@@ -165,6 +165,15 @@ pub static REPAIR_ON_RELOAD: Scripted = Scripted::new("repair-on-reload", "repai
 /// `task-lifecycle-log` (TaskCreated and TaskCompleted).
 pub static TASK_LIFECYCLE_LOG: Scripted = Scripted::new("task-lifecycle-log", "task_lifecycle_log.summary");
 
+/// `merge-side-pick` (PreToolUse and PostToolUse on Bash).
+pub static MERGE_SIDE_PICK: Scripted = Scripted::new("merge-side-pick", "merge_side_pick.summary");
+
+/// `scan-throttle` (PreToolUse on Bash; advisory only).
+pub static SCAN_THROTTLE: Scripted = Scripted::new("scan-throttle", "scan_throttle.summary");
+
+/// `merge-gate` (PreToolUse on Bash; opt-in).
+pub static MERGE_GATE: Scripted = Scripted::new("merge-gate", "merge_gate.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

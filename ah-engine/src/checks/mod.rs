@@ -21,10 +21,7 @@ pub mod guardkit;
 pub mod handover;
 pub mod idle_agent_sweep;
 pub mod jsport;
-pub mod merge_gate;
-pub mod merge_side_pick;
 pub mod replykit;
-pub mod scan_throttle;
 pub mod scripted;
 pub mod session;
 pub mod spawnctx;
@@ -165,9 +162,9 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 pub fn registry() -> &'static [&'static dyn Check] {
     static ALL: [&dyn Check; 66] = [
         &scripted::GIT_GUARD,
-        &merge_side_pick::MergeSidePick,
+        &scripted::MERGE_SIDE_PICK,
         &scripted::SHIP_IT_GUARD,
-        &scan_throttle::ScanThrottle,
+        &scripted::SCAN_THROTTLE,
         &coordinator_work::CoordinatorWorkGuard,
         &scripted::COMPACT_DECLARATION_GUARD,
         &command::CommandGuard,
@@ -202,7 +199,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::ASK_GUARD,
         &scripted::SILENT_AGENT_NUDGE,
         &scripted::STALE_AGENT_STOP_NOTE,
-        &merge_gate::MergeGate,
+        &scripted::MERGE_GATE,
         &scripted::API_GUARD,
         &scripted::EDIT_GUARD,
         &scripted::GH_RT_ADVISORY,
