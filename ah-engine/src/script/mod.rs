@@ -20,7 +20,7 @@
 //! times every worker thread, all of it in the C allocator's zone outside the heap counters; see DECISIONS.md, revision
 //! 1.111. The runtime allocates through the Rust allocator, so its heap is in `status --memory`'s live heap.
 //!
-//! A call runs under a wall-clock deadline (`script.time_limit_ms`, enforced by the interpreter's interrupt handler), a heap ceiling (`script.call_memory_bytes` above the size measured after loading) and a
+//! A call runs under a CPU-time limit (`script.time_limit_ms`, with a wall-clock backstop of `script.wall_limit_factor` times it, both enforced by the interpreter's interrupt handler), a heap ceiling (`script.call_memory_bytes` above the size measured after loading) and a
 //! stack ceiling. Any failure (exception, interrupt, out of memory, a verdict of the wrong shape) is a deferral, never a
 //! silent allow (D11).
 //!
@@ -63,8 +63,8 @@ struct Pool {
     ctx: Option<(Fingerprint, Context)>,
     /// Each loaded check's own files (includes, then its script), as they were when its entry was registered.
     checks: HashMap<String, Fingerprint>,
-    /// Interrupt deadline: nanoseconds since `epoch`, 0 = none.
-    deadline: Arc<AtomicU64>,
+    /// Interrupt deadlines of the call in progress.
+    deadline: Arc<Deadline>,
     epoch: Instant,
     rt: Runtime,
 }
@@ -77,19 +77,45 @@ impl Drop for Pool {
     }
 }
 
+/// The interrupt limits of one call. `cpu`: the calling thread's CPU time (microseconds on its own clock) the script may reach,
+/// so a descheduled thread on a loaded machine is not charged for the time it waited for a core. `wall`: a backstop in
+/// nanoseconds since the pool epoch (`script.time_limit_ms` times `script.wall_limit_factor`; moved out by the time a host function
+/// spent blocked) for a script that waits without using CPU. 0 = none.
+#[derive(Default)]
+pub struct Deadline {
+    /// The thread CPU time (us) at which the call is interrupted.
+    pub cpu: AtomicU64,
+    /// The wall-clock backstop (ns since the pool epoch).
+    pub wall: AtomicU64,
+}
+
 impl Pool {
+    /// Start the limits of a call of `limit_ms` script time.
+    fn arm(&self, limit_ms: u64) {
+        let cpu_now = crate::limits::thread_cpu_us();
+        self.deadline.cpu.store(cpu_now.saturating_add(limit_ms.saturating_mul(1000)).max(1), Ordering::Relaxed);
+        let wall = limit_ms.saturating_mul(defaults::num("script.wall_limit_factor").max(1)).saturating_mul(1_000_000);
+        self.deadline.wall.store((self.epoch.elapsed().as_nanos() as u64).saturating_add(wall).max(1), Ordering::Relaxed);
+    }
+
+    fn disarm(&self) {
+        self.deadline.cpu.store(0, Ordering::Relaxed);
+        self.deadline.wall.store(0, Ordering::Relaxed);
+    }
+
     fn new() -> Option<Pool> {
         // the interpreter allocates through the Rust allocator (jemalloc where the build has it, which returns freed pages, and
         // counted by `memstat`), not the C library's malloc, whose zone kept freed pages resident (DECISIONS.md 1.111); the heap ceiling is
         // still enforced: QuickJS checks `set_memory_limit` against its own count before it calls any allocator
         let rt = Runtime::new_with_alloc(rquickjs::allocator::RustAllocator).ok()?;
         rt.set_max_stack_size(defaults::num("script.stack_bytes") as usize);
-        let deadline = Arc::new(AtomicU64::new(0));
+        let deadline = Arc::new(Deadline::default());
         let epoch = Instant::now();
         let d = deadline.clone();
         rt.set_interrupt_handler(Some(Box::new(move || {
-            let until = d.load(Ordering::Relaxed);
-            until != 0 && epoch.elapsed().as_nanos() as u64 > until
+            let cpu = d.cpu.load(Ordering::Relaxed);
+            let wall = d.wall.load(Ordering::Relaxed);
+            (cpu != 0 && crate::limits::thread_cpu_us() > cpu) || (wall != 0 && epoch.elapsed().as_nanos() as u64 > wall)
         })));
         Some(Pool { ctx: None, checks: HashMap::new(), deadline, epoch, rt })
     }
@@ -343,10 +369,10 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
         let pool = slot.as_mut().ok_or("runtime")?;
         let ctx = ensure_entry(pool, &key, &libs, &own, func)?;
         let raw = serde_json::to_string(args).map_err(|e| e.to_string())?;
-        let limit = limit_ms(name, func).saturating_mul(1_000_000);
+        let limit = limit_ms(name, func);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.deadline.store((pool.epoch.elapsed().as_nanos() as u64).saturating_add(limit).max(1), Ordering::Relaxed);
+            pool.arm(limit);
             let out = ctx.with(|c| -> Result<String, String> {
                 let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
                 let f: Function = reg.get(key.as_str()).catch(&c).map_err(|e| e.to_string())?;
@@ -355,7 +381,7 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
                 let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
                 Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
             });
-            pool.deadline.store(0, Ordering::Relaxed);
+            pool.disarm();
             host::set_deadline(None);
             serde_json::from_str(&out?).map_err(|e| e.to_string())
         })
@@ -379,10 +405,10 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         let ctx = ensure_entry(pool, name, libs, own, defaults::text("script.entry"))?;
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
         let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
-        let limit = limit_ms(name, event).saturating_mul(1_000_000);
+        let limit = limit_ms(name, event);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.deadline.store((pool.epoch.elapsed().as_nanos() as u64).saturating_add(limit).max(1), Ordering::Relaxed);
+            pool.arm(limit);
             let out = ctx.with(|c| -> Result<String, String> {
                 let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
                 let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
@@ -395,7 +421,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
                 let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
                 Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
             });
-            pool.deadline.store(0, Ordering::Relaxed);
+            pool.disarm();
             host::set_deadline(None);
             let text = out?;
             let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;

@@ -70,7 +70,8 @@ fn run_cmd(argv: &[String], timeout_ms: u64, max_bytes: u64) -> rquickjs::Result
     let Some((prog, args)) = argv.split_first() else { return Ok(Run::Failed) };
     let env = with_settings(|st| st.env.clone())?;
     let started = Instant::now();
-    let r = run_bounded(prog, args, &env, timeout_ms, max_bytes);
+    // `script.exec_timeout_scale` stretches this wait too (1 in production; a loaded test machine raises it)
+    let r = run_bounded(prog, args, &env, timeout_ms.saturating_mul(defaults::num("script.exec_timeout_scale").max(1)), max_bytes);
     credit_blocking(started);
     Ok(r)
 }

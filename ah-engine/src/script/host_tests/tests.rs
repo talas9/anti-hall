@@ -71,7 +71,9 @@ fn lstat_readdir_and_readlink_describe_the_path_itself_and_are_bounded() {
     put_override(
         &h,
         "zz-fs",
-        &format!("function decide(p){{ var s = ah.fs.lstat('{h}/l'); var t = ah.fs.readlink('{h}/l'); var d = ah.fs.readdir('{h}/d'); return (s.kind === 'link' && t === '{h}/f' && d.join() === 'a,b,c' && ah.fs.readdir('{h}/f') === null && ah.fs.readlink('{h}/f') === null) ? 'allow' : 'defer'; }}"),
+        &format!(
+            "function decide(p){{ var s = ah.fs.lstat('{h}/l'); var t = ah.fs.readlink('{h}/l'); var d = ah.fs.readdir('{h}/d'); return (s.kind === 'link' && t === '{h}/f' && d.join() === 'a,b,c' && ah.fs.readdir('{h}/f') === null && ah.fs.readlink('{h}/f') === null) ? 'allow' : 'defer'; }}"
+        ),
     );
     assert_eq!(run_forced("zz-fs", &json!({}), &env(&h)), Some(Some(Verdict::Allow)));
 }
@@ -106,12 +108,14 @@ fn exec_kills_a_run_past_its_timeout_and_answers_null() {
     std::fs::write(format!("{bin}/git"), "#!/bin/sh\nsleep 30\n").unwrap();
     std::process::Command::new("chmod").args(["+x", &format!("{bin}/git")]).output().unwrap();
     put_override(&h, "zz-slow", "function decide(p){ return ah.exec('git', ['x'], {timeoutMs: 150}) === null ? 'allow' : 'defer'; }");
-    let e = RequestEnv::from_pairs([("HOME", h.as_str()), ("PATH", bin.as_str())]);
+    // the stub's `sleep` must be found (/bin:/usr/bin); with only `bin` on the PATH the stub failed at once with 127, and the test
+    // passed only when its shell was slower to start than the timeout
+    let path = format!("{bin}:/bin:/usr/bin");
+    let e = RequestEnv::from_pairs([("HOME", h.as_str()), ("PATH", path.as_str())]);
     let t = std::time::Instant::now();
     assert_eq!(run_forced("zz-slow", &json!({}), &e), Some(Some(Verdict::Allow)));
     assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
 }
-
 
 // ---- the clock, the scoped state operations and the small pure helpers of the host API ----
 
