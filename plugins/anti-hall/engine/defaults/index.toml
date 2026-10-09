@@ -50,6 +50,7 @@ files = [
     "script.toml",
     "mcp_reaper.toml",
     "devswarm_rt.toml",
+    "host_proc.toml",
     "task_tracker.toml",
     "settings_cli.toml",
     "operator.toml",

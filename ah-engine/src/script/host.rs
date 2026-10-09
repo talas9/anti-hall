@@ -101,6 +101,7 @@ pub(super) fn lift_deadline() {
 pub fn with_call<R>(st: Settings, f: impl FnOnce() -> R) -> R {
     CALL.with(|c| *c.borrow_mut() = Some(st));
     EXECS.with(|c| *c.borrow_mut() = 0);
+    super::host_proc::reset_call();
     let r = f();
     // a lock a script still holds when its call ends (an exception, an interrupt) is released here, never left to go stale
     for (_, held, _guard) in HELD.with(|h| std::mem::take(&mut *h.borrow_mut())).into_iter().rev() {
@@ -123,7 +124,7 @@ fn entry(key: &str) -> rquickjs::Result<&'static defaults::Entry> {
 }
 
 /// Compile (cached) a pattern for `flags`.
-fn with_re<R>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
+pub(super) fn with_re<R>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
     RES.with(|cache| {
         let mut m = cache.borrow_mut();
         let key = (src.to_string(), flags.to_string());
@@ -136,7 +137,7 @@ fn with_re<R>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::
             } else {
                 jsre::try_compile(src, flags.contains('i'))
             }
-                .ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
+            .ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
             if m.len() >= defaults::num("script.regex_cache_max") as usize {
                 m.clear();
             }
@@ -870,6 +871,8 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     super::host_io::install(c, &h)?;
     super::host_b3::install(c, &h)?;
     super::host_d::install(c, &h)?;
+    super::host_proc::install(c, &h)?;
+    super::host_ts::install(c, &h)?;
     c.globals().set("ahHost", h)?;
     Ok(())
 }

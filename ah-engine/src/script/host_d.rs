@@ -5,7 +5,7 @@
 //! | raw function | what it does |
 //! |---|---|
 //! | `transcriptTasks(path, variant, window, wide)` | the task list of a transcript tail, rebuilt exactly as the Node hooks rebuild it: see [`transcript_tasks`] |
-//! | `agentScan(path, tailBytes)` | every agent a transcript tail shows launched, with its times, output file and the ids with terminal evidence: see [`agent_scan`] |
+//! | `agentScan(path, tailBytes, ignoreUnansweredStops)` | every agent a transcript tail shows launched, with its times, output file, the ids with terminal evidence and the teammates with a message not yet answered: see [`agent_scan`] |
 //! | `jevRecordOutcome(id, hash, outcome, source, projectFrom)` | report a later observed result against a Jev decision by hash: see [`jev_record_outcome`] |
 //! | `jevEnabled()` | whether the Jev master switch is on for this request (an integration can still be off) |
 //! | `jevCacheHas(hash)` | whether the shared Jev answer cache holds an answer under `hash` (`null` when the file is one only JavaScript reads) |
@@ -123,12 +123,14 @@ pub fn rec_json(id: &str, r: &agent_scan::Rec) -> Value {
     })
 }
 
-/// `agentScan(path, tailBytes)`: JSON text. `{"launched":[...], "terminal":[ids]}` (every launched, adopted and live teammate
-/// agent in launch order; the ids whose terminal evidence stands), `null` when the transcript cannot be read, `{"unsure":true}`
-/// when it holds something only JavaScript could read (or a relative path).
-pub fn agent_scan(path: &str, tail: f64) -> String {
+/// `agentScan(path, tailBytes, ignoreUnansweredStops)`: JSON text. `{"launched":[...], "terminal":[ids], "pending":[...]}`: every
+/// launched, adopted and live teammate agent in launch order; the ids whose terminal evidence stands; the teammates sent a message
+/// they have not reported on since (`{"name","agentId","sentAtMs","lastIdleMs","lastSeenMs","live"}`, a time that is unknown is
+/// `null`). With `ignoreUnansweredStops` a `TaskStop` call with no result yet is not counted as stopping. `null` when the transcript
+/// cannot be read, `{"unsure":true}` when it holds something only JavaScript could read (or a relative path).
+pub fn agent_scan(path: &str, tail: f64, ignore_unanswered_stops: bool) -> String {
     let tail = if tail.is_finite() && tail > 0.0 { tail as u64 } else { defaults::num("agent_scan.tail_bytes") };
-    let opts = Opts { now_ms: super::host::now_ms(), ignore_unanswered_stops: false };
+    let opts = Opts { now_ms: super::host::now_ms(), ignore_unanswered_stops };
     match agent_scan::scan_transcript(path, tail, &opts) {
         Err(_) => json!({"unsure": true}).to_string(),
         Ok(None) => "null".into(),
@@ -136,7 +138,13 @@ pub fn agent_scan(path: &str, tail: f64) -> String {
             let launched: Vec<Value> = scan.launched.iter().map(|(id, r)| rec_json(id, r)).collect();
             let mut terminal: Vec<&String> = scan.terminal.iter().collect();
             terminal.sort();
-            json!({"launched": launched, "terminal": terminal}).to_string()
+            let fin = |x: f64| if x.is_finite() { json!(x) } else { Value::Null };
+            let pending: Vec<Value> = scan
+                .pending
+                .iter()
+                .map(|(name, p)| json!({"name": name, "agentId": p.agent_id, "sentAtMs": fin(p.sent_at_ms), "lastIdleMs": fin(p.last_idle_ms), "lastSeenMs": fin(p.last_seen_ms), "live": p.live}))
+                .collect();
+            json!({"launched": launched, "terminal": terminal, "pending": pending}).to_string()
         }
     }
 }
@@ -245,7 +253,7 @@ fn project_root(cwd: &str) -> rquickjs::Result<Option<String>> {
 /// Add the batch-6 functions to `ahHost`.
 pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set("transcriptTasks", Function::new(c.clone(), |p: String, v: String, w: f64, wide: f64| transcript_tasks(&p, &v, w, wide))?)?;
-    h.set("agentScan", Function::new(c.clone(), |p: String, t: f64| agent_scan(&p, t))?)?;
+    h.set("agentScan", Function::new(c.clone(), |p: String, t: f64, ignore: Option<bool>| agent_scan(&p, t, ignore.unwrap_or(false)))?)?;
     h.set(
         "jevRecordOutcome",
         Function::new(c.clone(), |id: String, hash: String, outcome: String, source: Option<String>, project: Option<String>| {

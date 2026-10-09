@@ -12,7 +12,8 @@ Object.assign(ah.transcript, {
   // Every agent the tail shows launched, in launch order, and the ids with terminal evidence: null (unreadable), {unsure: true}, or
   // {launched: [{id, adopted, outputFile, description, launchedAtMs, toolUseId, resumedAtMs, teammate, lastSeenMs, pendingMessage,
   // spawnInput}], terminal: [id]} (a time that is unknown is null).
-  agentScan: function (p, tailBytes) { var r = ahHost.agentScan(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
+  // {launched, terminal, pending} (see ahHost.agentScan); `ignoreStops` skips a TaskStop with no result yet
+  agentScan: function (p, tailBytes, ignoreStops) { var r = ahHost.agentScan(p, tailBytes || 0, !!ignoreStops); return r === null || r === undefined ? null : JSON.parse(r); },
 });
 Object.assign(ah.jev, {
   // Report a later observed result against the decision with that hash (the decision log row `outcome`); projectFrom: a directory.

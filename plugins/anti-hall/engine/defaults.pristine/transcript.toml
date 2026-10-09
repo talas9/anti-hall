@@ -109,3 +109,40 @@ value = ["<task-notification", "<command-", "<local-command", "<system-reminder"
 [transcript.msg_io]
 doc = "Printed when a transcript cannot be read; {path} and {err} are filled in."
 value = "Cannot read the transcript {path}: {err}."
+
+# ---- the text evidence of a transcript (`ah.transcript.evidence`, D88 batch 7) --------------------------------------------
+
+[transcript.evidence_max_bytes]
+doc = "Largest window `ah.transcript.evidence` reads from the end of a transcript, whatever the script asks for."
+value = 8388608
+min = 65536
+unit = "bytes"
+
+[transcript.evidence_max_chars]
+doc = "Most characters of text `ah.transcript.evidence` returns in all; a transcript whose evidence is larger is reported as unsure."
+value = 16777216
+min = 65536
+
+[transcript.ev_type_text]
+doc = "The content block type of a text block."
+value = "text"
+
+[transcript.ev_type_tool_use]
+doc = "The content block type of a tool call."
+value = "tool_use"
+
+[transcript.ev_type_tool_result]
+doc = "The content block type of a tool result."
+value = "tool_result"
+
+[transcript.ev_role_user]
+doc = "The role of a user transcript entry."
+value = "user"
+
+[transcript.ev_role_assistant]
+doc = "The role of an assistant transcript entry."
+value = "assistant"
+
+[transcript.ev_role_attachment]
+doc = "The role of a hook attachment transcript entry."
+value = "attachment"
