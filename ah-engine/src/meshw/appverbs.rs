@@ -14,7 +14,8 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
-use crate::checks::guardkit::ojson::{OVal, is_array_index_key, js_number_text};
+use crate::checks::guardkit::ojson::{OVal, is_array_index_key};
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::slice_utf16;
 use crate::defaults;
 use crate::dsact::runner::{Runner, System};
@@ -43,7 +44,7 @@ fn concat(v: Option<&OVal>) -> R<String> {
         None => "undefined".to_string(),
         Some(OVal::Null) => "null".to_string(),
         Some(OVal::Bool(b)) => b.to_string(),
-        Some(OVal::Num(x)) => js_number_text(*x),
+        Some(OVal::Num(x)) => to_js_string(*x),
         Some(OVal::Str(t)) => t.clone(),
         Some(_) => return defer("concat-container"),
     })
@@ -65,7 +66,7 @@ fn list_join(v: Option<&OVal>, sep: &str) -> R<String> {
     for i in items {
         parts.push(match i {
             OVal::Str(t) => t.clone(),
-            OVal::Num(x) => js_number_text(*x),
+            OVal::Num(x) => to_js_string(*x),
             // `join` prints null and undefined as empty
             OVal::Null => String::new(),
             _ => return defer("join-element"),

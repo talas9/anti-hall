@@ -11,7 +11,8 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
-use crate::checks::guardkit::ojson::{OVal, is_array_index_key, js_number_text};
+use crate::checks::guardkit::ojson::{OVal, is_array_index_key};
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::{js_number_of_str, js_trim};
 use crate::checks::jsport::date::{self, Parsed};
 use crate::defaults;
@@ -32,7 +33,7 @@ fn tpl(key: &str, args: &[(&str, &str)]) -> String {
 
 /// A number as JavaScript prints it.
 fn js(x: f64) -> String {
-    js_number_text(x)
+    to_js_string(x)
 }
 
 /// `Math.round(x)` for a non-negative number.

@@ -391,7 +391,7 @@ pub fn relay(inv: &Inv, a: &Args) -> R<Answer> {
         Some(x) => x.to_string(),
         None => defaults::text("devswarm_cli.relay_null").to_string(),
     };
-    let store_seq = crate::checks::guardkit::ojson::js_number_text(row["storeSeq"].as_f64().unwrap_or(f64::NAN));
+    let store_seq = crate::checks::jsport::num::to_js_string(row["storeSeq"].as_f64().unwrap_or(f64::NAN));
     let header = format!(
         "{}{sender_text}{}{store_seq}{}{source_bytes}{}",
         defaults::text("devswarm_cli.relay_head_from"),
