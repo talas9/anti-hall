@@ -582,7 +582,7 @@ value = "devswarm-cli-verify"
 
 [devswarm_cli.witness_copy_paths]
 doc = "Files and directories under the home copied into the witness's scratch home before the engine writes: what Node reads or rewrites for these verbs, and what the summary projection reads."
-value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1"]
+value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1"]
 
 [devswarm_cli.witness_node_snippet]
 doc = "The Node program of the witness: pins the clock, then loads the real devswarm.js as the main module so its own main() prints and exits. Arguments: the CLI path, the clock, then the verb's argv."
@@ -692,3 +692,169 @@ value = "review"
 [devswarm_cli.ready_v_block]
 doc = "The verdict with a proven risk."
 value = "block"
+
+# ---- app-state and app-sync (lane l8b) ----------------------------------------------------------------------------------
+
+[devswarm_cli.verb_app_state]
+doc = "The verb that prints the DevSwarm app database summary and the last sync's gap report (read-only)."
+value = "app-state"
+
+[devswarm_cli.verb_app_sync]
+doc = "The verb that runs the supervisor's app-database sync step on demand."
+value = "app-sync"
+
+[devswarm_cli.action_app_state]
+doc = "The `action` of an app-state result."
+value = "app-state"
+
+[devswarm_cli.action_app_sync]
+doc = "The `action` of an app-sync result."
+value = "app-sync"
+
+[devswarm_cli.flag_json]
+doc = "The flag that asks for the JSON form of a result."
+value = "json"
+
+[devswarm_cli.flag_dry_run]
+doc = "The app-sync flag that computes the sync and writes nothing."
+value = "dry-run"
+
+[devswarm_cli.app_short_id]
+doc = "How many characters of an id the app-state table shows (UTF-16 units)."
+value = 8
+min = 1
+max = 64
+
+[devswarm_cli.app_join_semi]
+doc = "The separator between workspaces in the app-state lines that list several."
+value = "; "
+
+[devswarm_cli.app_join_comma]
+doc = "The separator between the names in the app-state lines that list several (schema drift, gated capabilities, pending deletions)."
+value = ", "
+
+[devswarm_cli.app_no_db]
+doc = "The reason the app-state table gives when the result carries none."
+value = "no app DB"
+
+[devswarm_cli.app_msg_unavailable]
+doc = "The app-state text when the app database cannot be read."
+value = "DevSwarm app DB: unavailable ({reason}) — nothing to show."
+
+[devswarm_cli.app_version_unknown]
+doc = "The app version the app-state heading shows when the database names none."
+value = "(version unknown)"
+
+[devswarm_cli.app_msg_head]
+doc = "The first line of the app-state table."
+value = "DevSwarm app DB {version} — {builders} builders, {active} open, {archived} archived"
+
+[devswarm_cli.app_msg_missing]
+doc = "The app-state line naming schema parts the app no longer has."
+value = "⚠ DevSwarm app schema changed: {list}"
+
+[devswarm_cli.app_msg_gated]
+doc = "The app-state line naming capabilities that stay dormant."
+value = "capability-gated (dormant): {list}"
+
+[devswarm_cli.app_table_head]
+doc = "The header row of the app-state workspace table."
+value = "| rank | workspace | type | finish | brief | session |"
+
+[devswarm_cli.app_table_rule]
+doc = "The rule row under it."
+value = "|---|---|---|---|---|---|"
+
+[devswarm_cli.app_dash]
+doc = "What the table shows for an empty cell."
+value = "—"
+
+[devswarm_cli.app_pinned]
+doc = "The mark after the title of a pinned workspace."
+value = " [pinned]"
+
+[devswarm_cli.app_on_screen]
+doc = "The mark after the title of the workspace on screen."
+value = " [on screen]"
+
+[devswarm_cli.app_unverified]
+doc = "The mark after a session whose transcript does not corroborate the workspace."
+value = " (unverified)"
+
+[devswarm_cli.app_proto_key]
+doc = "The object key JavaScript treats specially (the verb is Node's for a session with that id)."
+value = "__proto__"
+
+[devswarm_cli.app_msg_unknown]
+doc = "The app-state line naming workspaces open in the app that anti-hall does not know."
+value = "open in the app, unknown to anti-hall: {list}"
+
+[devswarm_cli.app_msg_stale]
+doc = "The app-state line naming workspaces open in the app but marked archived in anti-hall."
+value = "⚠ open in the app but archived in anti-hall (stale marker — the app is right; the next app-DB sync retires it): {list}"
+
+[devswarm_cli.app_msg_would_mark]
+doc = "The app-state line saying how many descriptors the next sync marks archived."
+value = "next sync marks {n} descriptor(s) archived (app-archived or deleted in the app)"
+
+[devswarm_cli.app_msg_deletion]
+doc = "The app-state line naming workspaces pending deletion in the app."
+value = "pending app deletion (report only): {list}"
+
+[devswarm_cli.app_msg_no_gap_report]
+doc = "The app-state line when no supervisor sync has produced a gap report."
+value = "message gap report: no supervisor sync yet"
+
+[devswarm_cli.app_msg_gap]
+doc = "The app-state line for one repository's message gap."
+value = "messages {name}: app {app}, ingested {matched}, to archived targets {archived}, before ingest {pre}, GAP {gap}{reason}"
+
+[devswarm_cli.app_msg_gap_reason]
+doc = "The reason suffix of that line."
+value = " ({reason})"
+
+[devswarm_cli.app_msg_gap_branch]
+doc = "The app-state line for one branch's share of a gap."
+value = "  gap → {branch}: {n} (<1h {h1}, <1d {d1}, <7d {d7}, older {older})"
+
+[devswarm_cli.app_row]
+doc = "One workspace row of the app-state table."
+value = "| {rank} | {title} | {type} | {finish} | {brief} | {session} |"
+
+[devswarm_cli.app_title]
+doc = "The title cell: the label and the short id."
+value = "{label} ({id})"
+
+[devswarm_cli.witness_mask]
+doc = "A pattern the Node witness blanks in both outputs before it compares them: a measured duration is never the same twice."
+value = "\"elapsedMs\":[0-9.]+"
+
+[devswarm_cli.witness_mask_to]
+doc = "What the masked text becomes."
+value = "\"elapsedMs\":0"
+
+# ---- witness links (lane l8b) -------------------------------------------------------------------------------------------
+
+[devswarm_cli.witness_link_paths]
+doc = "Paths under the home the witness's scratch home links to the real ones instead of copying them: inputs Node only reads and that are too large to copy (the session transcripts the app-state table checks sessions against)."
+value = [".claude", ".devswarm", ".anti-hall/devswarm/store"]
+
+[devswarm_cli.ready_diff]
+doc = "The git subcommand that lists the changed files."
+value = "diff"
+
+[devswarm_cli.ready_raw]
+doc = "The git diff option that prints raw entries (modes, status, path)."
+value = "--raw"
+
+[devswarm_cli.ready_no_renames]
+doc = "The git diff option that reports a rename as a delete and an add."
+value = "--no-renames"
+
+[devswarm_cli.ready_merge_base]
+doc = "The git subcommand that answers ancestry questions."
+value = "merge-base"
+
+[devswarm_cli.ready_is_ancestor]
+doc = "The merge-base option that asks whether the first commit is an ancestor of the second."
+value = "--is-ancestor"

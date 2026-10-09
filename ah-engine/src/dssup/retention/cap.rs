@@ -119,7 +119,8 @@ impl CapPlan {
 impl CapPlan {
     /// The plan as an ordered object, in the key order `enforceArchiveCap` builds its result in.
     pub fn oval(&self, dry: bool) -> OVal {
-        let removed = self.removed.iter().map(|(f, b)| OVal::Obj(vec![("file".into(), OVal::Str(f.clone())), ("bytes".into(), OVal::Num(*b as f64))])).collect();
+        let removed =
+            self.removed.iter().map(|(f, b)| OVal::Obj(vec![("file".into(), OVal::Str(f.clone())), ("bytes".into(), OVal::Num(*b as f64))])).collect();
         let mut v = vec![
             ("totalBytes".to_string(), OVal::Num(self.total as f64)),
             ("capBytes".to_string(), OVal::Num(self.cap)),

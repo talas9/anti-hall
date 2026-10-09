@@ -29,6 +29,7 @@
 // - text that does not parse or decode is the absent value (Node JSON.parse catch parity)
 // A failure that must be seen goes through `crate::discard` instead.
 pub mod appdb;
+pub mod appverbs;
 pub mod args;
 pub mod common;
 pub mod cursors;
@@ -364,7 +365,9 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                 Some(Verb::InboxTick) => verify::prepare_tick(&inv),
                 Some(Verb::InboxReadPrimary) => verify::prepare_read_primary(&inv),
                 Some(Verb::Roster) => verify::prepare_roster(&inv),
-                v if cli_witnessed(v) => simple::prepare(&inv, matches!(v, Some(Verb::Gate | Verb::Workspaces)) || matches!(v, Some(Verb::Ext(e)) if extverbs::needs_store(e))),
+                v if cli_witnessed(v) => {
+                    simple::prepare(&inv, matches!(v, Some(Verb::Gate | Verb::Workspaces)) || matches!(v, Some(Verb::Ext(e)) if extverbs::needs_store(e)))
+                }
                 _ => None,
             };
             let r = std::panic::catch_unwind(|| run_native(&inv, &a));

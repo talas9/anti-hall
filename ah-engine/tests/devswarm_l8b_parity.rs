@@ -108,6 +108,21 @@ fn gitout(args: &[&str], cwd: &Path) -> String {
 
 /// The shared run: every case against Node, the engine, and the engine with no Node.
 fn check(fx: &Fx, cases: &[Lc], extra_dirs: &[(&str, PathBuf)], min_native: usize, min_deferred: usize) {
+    check_from(fx, cases, extra_dirs, &fx.seed_home, None, NOW, min_native, min_deferred);
+}
+
+/// [`check`] over another seed home (only `only_dirs` of it are copied) and clock base.
+#[allow(clippy::too_many_arguments)]
+fn check_from(
+    fx: &Fx,
+    cases: &[Lc],
+    extra_dirs: &[(&str, PathBuf)],
+    seed: &Path,
+    only_dirs: Option<&[&str]>,
+    now_base: i64,
+    min_native: usize,
+    min_deferred: usize,
+) {
     let other = fx.root.join("repo-other");
     fs::create_dir_all(&other).unwrap();
     git(&["init", "-q"], &other);
@@ -125,7 +140,7 @@ fn check(fx: &Fx, cases: &[Lc], extra_dirs: &[(&str, PathBuf)], min_native: usiz
         if std::env::var("AH_L8B_FILTER").is_ok_and(|f| !c.name.contains(&f)) {
             continue;
         }
-        let now = NOW + i as i64 * 7_919;
+        let now = now_base + i as i64 % 50;
         let cwd = match c.cwd {
             "child" => fx.child.clone(),
             "main" => fx.main.clone(),
@@ -135,7 +150,17 @@ fn check(fx: &Fx, cases: &[Lc], extra_dirs: &[(&str, PathBuf)], min_native: usiz
         };
         let homes: Vec<PathBuf> = ["node", "engine", "defer"].iter().map(|k| fx.root.join(format!("c{i}-{k}"))).collect();
         for h in &homes {
-            copy_tree(&fx.seed_home, h);
+            match only_dirs {
+                None => copy_tree(seed, h),
+                Some(ds) => {
+                    for d in ds {
+                        if seed.join(d).exists() {
+                            copy_tree(&seed.join(d), &h.join(d));
+                        }
+                    }
+                }
+            }
+            fs::create_dir_all(h.join(".anti-hall")).unwrap();
             fs::write(h.join(".anti-hall/settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
             (c.setup)(h);
         }
@@ -225,32 +250,52 @@ fn ready_repo(root: &Path) -> (PathBuf, BTreeMap<&'static str, String>) {
         fs::create_dir_all(f.parent().unwrap()).unwrap();
         fs::write(f, t).unwrap();
     };
-    branch("ok", &|r| {
-        w("a.txt", "a2\n", r);
-        w("src/new.rs", "n\n", r);
-    }, &mut shas);
-    branch("nested", &|r| {
-        w("src/deep/er/f.rs", "f\n", r);
-        w("a/b.txt", "1\n", r);
-        w("a/x/b.txt", "2\n", r);
-        w("a/x/y/b.txt", "3\n", r);
-        w("docs/y.md", "y\n", r);
-        w("name with space.txt", "s\n", r);
-    }, &mut shas);
-    branch("deleting", &|r| {
-        fs::remove_file(r.join(".planning/p.md")).unwrap();
-        fs::remove_file(r.join(".planning/deep/q.md")).unwrap();
-        fs::remove_file(r.join("docs/x.md")).unwrap();
-    }, &mut shas);
-    branch("gitlink", &|r| {
-        git(&["update-index", "--add", "--cacheinfo", &format!("160000,{c1},subm")], r);
-    }, &mut shas);
-    branch("odd", &|r| {
-        w("caf\u{e9}.txt", "e\n", r);
-        w("emoji-\u{1F600}.txt", "e\n", r);
-        w("tab\tname.txt", "t\n", r);
-        w("quo\"te.txt", "q\n", r);
-    }, &mut shas);
+    branch(
+        "ok",
+        &|r| {
+            w("a.txt", "a2\n", r);
+            w("src/new.rs", "n\n", r);
+        },
+        &mut shas,
+    );
+    branch(
+        "nested",
+        &|r| {
+            w("src/deep/er/f.rs", "f\n", r);
+            w("a/b.txt", "1\n", r);
+            w("a/x/b.txt", "2\n", r);
+            w("a/x/y/b.txt", "3\n", r);
+            w("docs/y.md", "y\n", r);
+            w("name with space.txt", "s\n", r);
+        },
+        &mut shas,
+    );
+    branch(
+        "deleting",
+        &|r| {
+            fs::remove_file(r.join(".planning/p.md")).unwrap();
+            fs::remove_file(r.join(".planning/deep/q.md")).unwrap();
+            fs::remove_file(r.join("docs/x.md")).unwrap();
+        },
+        &mut shas,
+    );
+    branch(
+        "gitlink",
+        &|r| {
+            git(&["update-index", "--add", "--cacheinfo", &format!("160000,{c1},subm")], r);
+        },
+        &mut shas,
+    );
+    branch(
+        "odd",
+        &|r| {
+            w("caf\u{e9}.txt", "e\n", r);
+            w("emoji-\u{1F600}.txt", "e\n", r);
+            w("tab\tname.txt", "t\n", r);
+            w("quo\"te.txt", "q\n", r);
+        },
+        &mut shas,
+    );
     branch("same", &|_| {}, &mut shas);
     git(&["checkout", "-q", "-b", "adv", &c1], &repo);
     w("adv.txt", "adv\n", &repo);
@@ -314,8 +359,18 @@ fn ready_cases(s: &BTreeMap<&'static str, String>) -> Vec<Lc> {
         }
     }
     // quotepath off: git prints the raw UTF-8 names
-    v.push(lc("ready-quotepath-off-bmp", &["ready-check", odd, "--allow", "caf*"], "rc", false, "ReadyCheck").env("GIT_CONFIG_COUNT", "1").env("GIT_CONFIG_KEY_0", "core.quotepath").env("GIT_CONFIG_VALUE_0", "false"));
-    v.push(lc("ready-quotepath-off-astral", &["ready-check", odd], "rc", false, "ReadyCheck").env("GIT_CONFIG_COUNT", "1").env("GIT_CONFIG_KEY_0", "core.quotepath").env("GIT_CONFIG_VALUE_0", "false"));
+    v.push(
+        lc("ready-quotepath-off-bmp", &["ready-check", odd, "--allow", "caf*"], "rc", false, "ReadyCheck")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "core.quotepath")
+            .env("GIT_CONFIG_VALUE_0", "false"),
+    );
+    v.push(
+        lc("ready-quotepath-off-astral", &["ready-check", odd], "rc", false, "ReadyCheck")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "core.quotepath")
+            .env("GIT_CONFIG_VALUE_0", "false"),
+    );
     v.push(lc("ready-an-astral-glob", &["ready-check", ok, "--allow", "\u{1F600}?"], "rc", false, "ReadyCheck"));
     v
 }
@@ -330,4 +385,75 @@ fn ready_check_matches_node() {
     let (rc, shas) = ready_repo(&fx.root);
     let cases = ready_cases(&shas);
     check(&fx, &cases, &[("rc", rc)], 35, 3);
+}
+
+// ---- app-state and app-sync ----------------------------------------------------------------------------------------------
+
+const CORPUS_DIRS: &[&str] = &[".anti-hall", ".claude", ".devswarm", "appdata"];
+
+fn corpus(root: &Path, name: &str, seed: u32, now: i64) -> PathBuf {
+    let home = root.join(name);
+    let sup = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/dssup_support");
+    let o = Command::new("node").arg(sup.join("as_corpus.js")).arg(&home).arg(seed.to_string()).arg(now.to_string()).arg("small").output().unwrap();
+    assert!(o.status.success(), "corpus: {}", String::from_utf8_lossy(&o.stderr));
+    home
+}
+
+/// Node's own sync, run once on a copy of the corpus' state, so the next sync has nothing to mark or retire.
+fn settle(home: &Path, now: i64) {
+    let sup = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/dssup_support");
+    let db = home.join("appdata/DevSwarm/devswarm.db");
+    let o = Command::new("node").arg(sup.join("as_reference.js")).arg(home).arg(now.to_string()).arg(&db).output().unwrap();
+    assert!(o.status.success(), "settle: {}", String::from_utf8_lossy(&o.stderr));
+}
+
+fn app_cases() -> Vec<Lc> {
+    let db = "{HOME}/appdata/DevSwarm/devswarm.db";
+    let live = |l: Lc| l.env("ANTIHALL_DEVSWARM_APP_DB", db).env("ANTIHALL_INGEST_DRY_RUN", "0");
+    let a = |name: &str, argv: &[&str], native: bool, label: &'static str| live(lc(name, argv, "nongit", native, label));
+    vec![
+        a("app-state-text", &["app-state"], true, "AppState"),
+        a("app-state-json", &["app-state", "--json"], true, "AppState"),
+        a("app-state-json-equals", &["app-state", "--json=1"], true, "AppState"),
+        a("app-state-extra-word", &["app-state", "whatever"], true, "AppState"),
+        lc("app-state-db-off", &["app-state"], "nongit", true, "AppState").env("ANTIHALL_DEVSWARM_APP_DB", "off"),
+        lc("app-state-db-off-json", &["app-state", "--json"], "nongit", true, "AppState").env("ANTIHALL_DEVSWARM_APP_DB", "off"),
+        lc("app-state-db-missing", &["app-state"], "nongit", true, "AppState").env("ANTIHALL_DEVSWARM_APP_DB", "{HOME}/nothing/here.db"),
+        a("app-sync-dry-run", &["app-sync", "--dry-run"], true, "AppSync"),
+        a("app-sync-env-dry", &["app-sync"], true, "AppSync").env("ANTIHALL_INGEST_DRY_RUN", "1"),
+        a("app-sync", &["app-sync"], true, "AppSync"),
+        lc("app-sync-db-off", &["app-sync"], "nongit", true, "AppSync").env("ANTIHALL_DEVSWARM_APP_DB", "off").env("ANTIHALL_INGEST_DRY_RUN", "0"),
+    ]
+}
+
+#[test]
+fn app_state_and_app_sync_match_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8bapp");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    // a settled installation (Node already marked and retired what it would): the verbs are native
+    let settled = corpus(&fx.root, "settled", 7, now);
+    settle(&settled, now - 1_000);
+    check_from(&fx, &app_cases(), &[], &settled, Some(CORPUS_DIRS), now, 8, 0);
+}
+
+#[test]
+fn app_sync_hands_a_retirement_to_node_with_nothing_written() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8bappraw");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let raw = corpus(&fx.root, "raw", 11, now);
+    let db = "{HOME}/appdata/DevSwarm/devswarm.db";
+    let cases = vec![
+        lc("app-state-unsettled", &["app-state", "--json"], "nongit", true, "AppState").env("ANTIHALL_DEVSWARM_APP_DB", db),
+        lc("app-sync-dry-unsettled", &["app-sync", "--dry-run"], "nongit", true, "AppSync").env("ANTIHALL_DEVSWARM_APP_DB", db),
+        lc("app-sync-unsettled-is-node", &["app-sync"], "nongit", false, "AppSync").env("ANTIHALL_DEVSWARM_APP_DB", db).env("ANTIHALL_INGEST_DRY_RUN", "0"),
+    ];
+    check_from(&fx, &cases, &[], &raw, Some(CORPUS_DIRS), now, 2, 1);
 }

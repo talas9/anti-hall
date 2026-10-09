@@ -783,6 +783,16 @@ fn prepare_into(inv: &Inv, with_store: bool, scratch: &Path) -> Option<PathBuf> 
             std::fs::copy(&src, &dst).ok()?;
         }
     }
+    // read-only inputs that are too big to copy (session transcripts) are linked
+    for rel in defaults::list("devswarm_cli.witness_link_paths") {
+        let src = inv.home.join(rel);
+        // the store verbs copy their own project's store; the link is for the verbs that only read the stores
+        if src.exists() && !with_store {
+            let dst = home.join(rel);
+            std::fs::create_dir_all(dst.parent()?).ok()?;
+            std::os::unix::fs::symlink(&src, dst).ok()?;
+        }
+    }
     // a caller outside any project has no store to copy: the verb answers without one (a refusal), and Node meets none either
     if with_store && let Some(real) = super::real_store(inv).ok().filter(|r| r.is_file()) {
         let key = real.parent()?.file_name()?.to_string_lossy().to_string();
@@ -845,6 +855,9 @@ pub fn run_witness(args: &[String]) -> i32 {
         return 0;
     };
     let real_home = std::env::var_os(defaults::text("mesh_write.env_home")).map(PathBuf::from).unwrap_or_default();
+    // Node under the scratch home would look for the app database there: it is given the real one's path (it only reads it)
+    let env_now: crate::meshw::ident::Env = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    let real_app_db = crate::meshw::ident::app_db_path(&real_home, &env_now).unwrap_or_else(|| defaults::text("mesh_write.app_db_off").to_string());
     let mut node = Command::new(defaults::text("mesh_write.node_bin"));
     node.arg("-e")
         .arg(defaults::text("devswarm_cli.witness_node_snippet"))
@@ -852,14 +865,20 @@ pub fn run_witness(args: &[String]) -> i32 {
         .arg(now)
         .args(argv)
         .env(defaults::text("mesh_write.env_home"), &home)
+        .env(defaults::text("mesh_write.env_app_db"), real_app_db.as_str())
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     match crate::meshw::verify::bounded_output(&mut node) {
         Ok(o) => {
             let read = |p: &Path| std::fs::read(p).unwrap_or_default();
-            let node_stdout = String::from_utf8_lossy(&o.stdout).replace(&home.to_string_lossy().into_owned(), &real_home.to_string_lossy());
+            // a measured duration is never the same twice: blanked on both sides
+            let mask = |t: String| match regex::Regex::new(defaults::text("devswarm_cli.witness_mask")) {
+                Ok(re) => re.replace_all(&t, defaults::text("devswarm_cli.witness_mask_to")).into_owned(),
+                Err(_) => t,
+            };
+            let node_stdout = mask(String::from_utf8_lossy(&o.stdout).replace(&home.to_string_lossy().into_owned(), &real_home.to_string_lossy()));
             let node_code = o.status.code().unwrap_or(-1);
-            let want_stdout = String::from_utf8_lossy(&read(&scratch.join("expect-stdout"))).into_owned();
+            let want_stdout = mask(String::from_utf8_lossy(&read(&scratch.join("expect-stdout"))).into_owned());
             let want_code: i32 = String::from_utf8_lossy(&read(&scratch.join("expect-code"))).trim().parse().unwrap_or(-1);
             let manifest: Vec<(String, String)> = serde_json::from_slice(&read(&scratch.join("expect-manifest"))).unwrap_or_default();
             let mut diff: Vec<String> = Vec::new();

@@ -85,7 +85,8 @@ fn bucket(age: f64) -> usize {
 }
 
 fn store_ts_set(db: &Path) -> Result<std::collections::HashSet<u64>, ()> {
-    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|_| ())?;
+    let c =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|_| ())?;
     let mut st = c.prepare(crate::sql::AS_NATIVE_TS).map_err(|_| ())?;
     let mut rows = st.query(rusqlite::params![defaults::text("devswarm_sup.as_native_like")]).map_err(|_| ())?;
     let mut out = std::collections::HashSet::new();
@@ -148,8 +149,12 @@ pub fn message_gaps(home: &Path, file: &str, snap: &Snap, now: i64) -> R<Option<
             continue;
         };
         let ingest_start = ts.iter().copied().min().map_or(f64::INFINITY, |m| m as f64);
-        let live: Vec<&str> =
-            snap.workspaces.iter().filter(|w| w.repository_id.as_deref() == Some(repo.id.as_str()) && !w.archived).filter_map(|w| w.branch_name.as_deref().filter(|b| !b.is_empty())).collect();
+        let live: Vec<&str> = snap
+            .workspaces
+            .iter()
+            .filter(|w| w.repository_id.as_deref() == Some(repo.id.as_str()) && !w.archived)
+            .filter_map(|w| w.branch_name.as_deref().filter(|b| !b.is_empty()))
+            .collect();
         let (mut matched, mut archived_target, mut pre, mut gap) = (0.0, 0.0, 0.0, 0.0);
         // branch -> [n, oldest, newest, lt1h, lt1d, lt7d, older], in first-seen order
         let mut by_branch: Vec<(String, [f64; 7])> = Vec::new();
@@ -195,7 +200,20 @@ pub fn message_gaps(home: &Path, file: &str, snap: &Snap, now: i64) -> R<Option<
         set(&mut r, "gap", n(gap));
         let bb = by_branch
             .into_iter()
-            .map(|(k, b)| (k, obj(vec![("n", n(b[0])), ("oldest", n(b[1])), ("newest", n(b[2])), ("lt1h", n(b[3])), ("lt1d", n(b[4])), ("lt7d", n(b[5])), ("older", n(b[6]))])))
+            .map(|(k, b)| {
+                (
+                    k,
+                    obj(vec![
+                        ("n", n(b[0])),
+                        ("oldest", n(b[1])),
+                        ("newest", n(b[2])),
+                        ("lt1h", n(b[3])),
+                        ("lt1d", n(b[4])),
+                        ("lt7d", n(b[5])),
+                        ("older", n(b[6])),
+                    ]),
+                )
+            })
             .collect();
         set(&mut r, "byBranch", OVal::Obj(bb));
         r.push(("ingestStart".into(), if ingest_start.is_finite() { n(ingest_start) } else { OVal::Null }));
@@ -206,13 +224,13 @@ pub fn message_gaps(home: &Path, file: &str, snap: &Snap, now: i64) -> R<Option<
 
 /// The `gaps` value kept from the previous `app-state.json` when it is still fresh, else `None` (scan again). `Err` for a shape
 /// the engine will not carry over.
-pub fn previous_gaps(prev: &Option<OVal>, now: i64) -> R<Option<OVal>> {
+pub fn previous_gaps(prev: &Option<OVal>, now: i64, cooldown: Option<f64>) -> R<Option<OVal>> {
     let Some(g) = prev.as_ref().and_then(|p| p.get("gaps")).filter(|g| g.truthy()) else { return Ok(None) };
     let at = match g.get("at") {
         Some(OVal::Num(a)) if a.is_finite() => *a,
         _ => return Ok(None),
     };
-    let cooldown = defaults::num("devswarm_sup.as_gap_cooldown_ms") as f64;
+    let cooldown = cooldown.unwrap_or_else(|| defaults::num("devswarm_sup.as_gap_cooldown_ms") as f64);
     if now as f64 - at >= cooldown || (now as f64) < at {
         return Ok(None);
     }
@@ -296,11 +314,14 @@ pub fn build(snap: &Snap, inp: &Inputs) -> R<Built> {
         if !w.active {
             continue;
         }
-        let cur = w.terminals.iter().filter(|t| t.terminal_type.as_deref() == Some(ai) && t.is_active == Some(true) && t.session_id.is_some()).fold(None::<&snap::Term>, |best, t| match best {
-            // `sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]`: the newest, the first of equals
-            Some(b) if b.created_at.unwrap_or(0.0) >= t.created_at.unwrap_or(0.0) => Some(b),
-            _ => Some(t),
-        });
+        let cur = w.terminals.iter().filter(|t| t.terminal_type.as_deref() == Some(ai) && t.is_active == Some(true) && t.session_id.is_some()).fold(
+            None::<&snap::Term>,
+            |best, t| match best {
+                // `sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]`: the newest, the first of equals
+                Some(b) if b.created_at.unwrap_or(0.0) >= t.created_at.unwrap_or(0.0) => Some(b),
+                _ => Some(t),
+            },
+        );
         if let Some(c) = cur {
             let sid = c.session_id.clone().unwrap_or_default();
             let wt = w.worktree_path_raw.as_deref().filter(|p| !p.is_empty()).or(w.worktree_path.as_deref()).unwrap_or("");

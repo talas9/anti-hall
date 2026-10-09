@@ -10,11 +10,20 @@ use crate::meshw::common::Inv;
 use crate::meshw::ident::R;
 use crate::meshw::send::Answer;
 
+/// A message of `devswarm_cli.toml` with its `{name}` placeholders filled in one pass (a value that itself contains `{x}` stays as is).
+pub fn tpl(key: &str, args: &[(&str, &str)]) -> String {
+    crate::checks::devswarm_role::text::fill_once(defaults::text(key), args)
+}
+
 /// Which verb of this family an argv names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ext {
     /// `ready-check <sha>`.
     ReadyCheck,
+    /// `app-state [--json]`.
+    AppState,
+    /// `app-sync [--dry-run]`.
+    AppSync,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -23,6 +32,10 @@ pub fn classify(a: &Args) -> Option<Ext> {
     let is = |k: &str| cmd == defaults::text(k);
     if is("devswarm_cli.verb_ready_check") {
         Some(Ext::ReadyCheck)
+    } else if is("devswarm_cli.verb_app_state") {
+        Some(Ext::AppState)
+    } else if is("devswarm_cli.verb_app_sync") {
+        Some(Ext::AppSync)
     } else {
         None
     }
@@ -37,5 +50,7 @@ pub fn needs_store(_v: Ext) -> bool {
 pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
     match v {
         Ext::ReadyCheck => super::gitverbs::ready_check(inv, a),
+        Ext::AppState => super::appverbs::app_state(inv, a),
+        Ext::AppSync => super::appverbs::app_sync(inv, a),
     }
 }

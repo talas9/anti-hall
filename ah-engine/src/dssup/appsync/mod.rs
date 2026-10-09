@@ -24,7 +24,7 @@ use super::tick::{Ctx, node};
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::dsact::runner::Runner;
-use crate::meshw::ident::{self, Defer};
+use crate::meshw::ident::{self, Defer, defer};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -63,11 +63,25 @@ fn ids_of(v: &Value) -> Vec<String> {
 }
 
 /// What one pass of the sync produced.
-struct Pass {
+pub struct Pass {
     /// `appDbSyncIfDue`' record.
-    record: Value,
+    pub record: Value,
     /// The `app-state.json` document (`None`: no database).
-    state: Option<OVal>,
+    pub state: Option<OVal>,
+    /// The `retiredMarkers` summary (`None`: no database).
+    pub retired: Option<OVal>,
+}
+
+/// How one pass runs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Opts {
+    /// Compute everything, write nothing and start no process.
+    pub dry: bool,
+    /// The message-gap cooldown in ms (`None`: `devswarm_sup.as_gap_cooldown_ms`); 0 scans every time.
+    pub cooldown: Option<f64>,
+    /// The CLI's rule: Node's dry-run check is made BEFORE the first write and a disagreement, a Node that cannot run, or a retirement
+    /// to do hands the whole verb to Node (a [`Defer`] with nothing written) instead of skipping that step.
+    pub strict: bool,
 }
 
 fn obj(v: Vec<(&str, OVal)>) -> OVal {
@@ -85,6 +99,12 @@ fn env_dry(ctx: &Ctx) -> bool {
 
 /// One pass. `dry`: compute everything, write nothing and start no process.
 fn pass(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Pass, Defer> {
+    pass_with(ctx, runner, Opts { dry, ..Opts::default() })
+}
+
+/// [`pass`] with its options given.
+pub fn pass_with(ctx: &Ctx, runner: &dyn Runner, o: Opts) -> Result<Pass, Defer> {
+    let dry = o.dry;
     let started = std::time::Instant::now();
     let elapsed = || started.elapsed().as_millis() as u64;
     let env: ident::Env = ctx.st.env.clone();
@@ -109,7 +129,7 @@ fn pass(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Pass, Defer> {
         write_state(&obj(vec![("v", n(1.0)), ("at", n(ctx.now as f64)), ("ok", OVal::Bool(false)), ("reason", OVal::Str(reason.into()))]));
         let rec = json!({"ran": true, "ok": true, "appDb": false, "reason": reason, "elapsedMs": elapsed(), "archived": null, "names": null,
             "unknownToAntiHall": null, "gapTotal": null, "gapsScanned": false, "schemaMissing": null, "error": null});
-        return Ok(Pass { record: rec, state: None });
+        return Ok(Pass { record: rec, state: None, retired: None });
     };
     // whatever the engine cannot read exactly like JavaScript must hand the sync over BEFORE the first write, so Node's own run
     // then reports the same counts it would have alone
@@ -119,9 +139,22 @@ fn pass(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Pass, Defer> {
     let marks = plan::plan_marks(ctx.home, &snap)?;
     let (mut marked, mut deleted, mut errors) = (0u64, 0u64, 0u64);
     let planned: Vec<String> = marks.marks.iter().map(|m| m.id.clone()).collect();
+    if o.strict && !dry {
+        // everything Node must agree to is asked before anything is written
+        if !planned.is_empty() && !matches!(ask_node(ctx, runner, "mark_dry_snippet"), Ok(v) if ids_of(&v) == planned) {
+            return defer("mark-witness");
+        }
+        // a retirement is executed by Node's own function: the verb is then Node's whole
+        if !plan::plan_retire(ctx.home, &snap, ctx.now)?.ids.is_empty() {
+            return defer("retire");
+        }
+    }
     if !planned.is_empty() && !dry {
-        match ask_node(ctx, runner, "mark_dry_snippet") {
+        match if o.strict { Ok(json!({"ids": planned.clone()})) } else { ask_node(ctx, runner, "mark_dry_snippet") } {
             Ok(v) if ids_of(&v) == planned => {
+                if o.strict {
+                    crate::meshw::mark_committed();
+                }
                 witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-mark", "match": true, "ids": planned.len()}));
                 for m in &marks.marks {
                     match plan::write_marker(ctx.home, m, ctx.now) {
@@ -139,9 +172,13 @@ fn pass(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Pass, Defer> {
         }
     }
     let pending = (planned.len() as u64).saturating_sub(if dry { 0 } else { marked });
-    let archived_summary = obj(vec![("marked", n(marked as f64)), ("pending", n(pending as f64)), ("deletedInApp", n(deleted as f64)), ("errors", n(errors as f64))]);
+    let archived_summary =
+        obj(vec![("marked", n(marked as f64)), ("pending", n(pending as f64)), ("deletedInApp", n(deleted as f64)), ("errors", n(errors as f64))]);
     // 2. the stale markers the app shows open
     let retire = plan::plan_retire(ctx.home, &snap, ctx.now)?;
+    if o.strict && !dry && !retire.ids.is_empty() {
+        return defer("retire-after-marks");
+    }
     let (mut retired, mut r_errors) = (0u64, 0u64);
     let mut r_pending = retire.ids.len() as u64;
     if !retire.ids.is_empty() && !dry {
@@ -165,6 +202,7 @@ fn pass(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Pass, Defer> {
         }
     }
     let retired_summary = obj(vec![("retired", n(retired as f64)), ("pending", n(r_pending as f64)), ("errors", n(r_errors as f64))]);
+    let retired_out = retired_summary.clone();
     // 3. what is on disk now
     let descs = plan::read_json_dir(&plan::dir_of(ctx.home, "devswarm_sup.as_dir_workspaces"))?;
     let archived = plan::read_json_dir(&plan::dir_of(ctx.home, "devswarm_sup.as_dir_archived"))?;
@@ -176,7 +214,7 @@ fn pass(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Pass, Defer> {
     };
     let names_summary = obj(vec![("checked", n(checked as f64)), ("refreshed", n(refreshed as f64))]);
     // 4. the gaps, at most every cooldown
-    let (gaps, scanned) = match state::previous_gaps(&prev, ctx.now)? {
+    let (gaps, scanned) = match state::previous_gaps(&prev, ctx.now, o.cooldown)? {
         Some(g) => (g, false),
         None => (file.as_deref().map_or(Ok(None), |f| state::message_gaps(ctx.home, f, &snap, ctx.now))?.unwrap_or(OVal::Null), true),
     };
@@ -190,7 +228,7 @@ fn pass(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Pass, Defer> {
         "archived": {"marked": marked, "pending": pending, "deletedInApp": deleted, "errors": errors},
         "names": {"checked": checked, "refreshed": refreshed}, "unknownToAntiHall": built.unknown, "gapTotal": total.map(|g| if g.fract() == 0.0 { json!(g as i64) } else { json!(g) }),
         "gapsScanned": scanned, "schemaMissing": snap.missing.len(), "error": null});
-    Ok(Pass { record: rec, state: Some(built.state) })
+    Ok(Pass { record: rec, state: Some(built.state), retired: Some(retired_out) })
 }
 
 /// The periodic comparison: Node's `syncAppState` in a dry run against the engine's own dry pass, byte for byte.

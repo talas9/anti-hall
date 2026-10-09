@@ -129,7 +129,7 @@ pub fn ready_check_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
     }
     let mut reasons: Vec<&str> = Vec::new();
     // ff: exit 0 = true, 1 = false, anything else (or no clean run) = unknown
-    let ff = match git(runner, cwd, &["merge-base", "--is-ancestor", base, sha]) {
+    let ff = match git(runner, cwd, &[defaults::text("devswarm_cli.ready_merge_base"), defaults::text("devswarm_cli.ready_is_ancestor"), base, sha]) {
         Some(p) if p.status == 0 => Some(true),
         Some(p) if p.status == 1 => Some(false),
         _ => None,
@@ -143,7 +143,7 @@ pub fn ready_check_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
     let mut list: Vec<String> = Vec::new();
     let (mut gitlinks, mut diff_known) = (0u32, false);
     let mut deleted: Vec<String> = Vec::new();
-    if let Some(p) = git(runner, cwd, &["diff", "--raw", "--no-renames", &range]).filter(|p| p.status == 0) {
+    if let Some(p) = git(runner, cwd, &[defaults::text("devswarm_cli.ready_diff"), defaults::text("devswarm_cli.ready_raw"), defaults::text("devswarm_cli.ready_no_renames"), &range]).filter(|p| p.status == 0) {
         diff_known = true;
         for line in p.stdout.split('\n') {
             if line.is_empty() {
