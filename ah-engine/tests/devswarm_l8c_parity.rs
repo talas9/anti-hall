@@ -424,3 +424,141 @@ fn nudge_matches_node() {
     ];
     check(&fx, &cases, &[], 4, 3);
 }
+
+// ---- supervision-report --------------------------------------------------------------------------------------------------
+
+/// `new Date(ms).toISOString()` for the dates these tests use.
+fn iso(ms: i64) -> String {
+    let days = ms.div_euclid(86_400_000);
+    let rem = ms.rem_euclid(86_400_000);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", rem / 3_600_000, rem / 60_000 % 60, rem / 1000 % 60, rem % 1000)
+}
+
+const DAY: i64 = 86_400_000;
+
+fn sup_row(ago_ms: i64, rest: &str) -> String {
+    format!("{{\"ts\":\"{}\",{rest}}}", iso(NOW - ago_ms))
+}
+
+fn sup_log() -> String {
+    let rows = vec![
+        sup_row(1000, "\"type\":\"plan\",\"id\":\"ws-a\",\"source\":\"plan-set\""),
+        sup_row(2000, "\"type\":\"step\",\"id\":\"ws-a\""),
+        sup_row(3000, "\"type\":\"step\",\"id\":\"ws-a\""),
+        sup_row(4000, "\"type\":\"warn\",\"id\":\"ws-a\",\"signal\":\"off-scope\",\"repeat\":true"),
+        sup_row(5000, "\"type\":\"warn\",\"id\":\"ws-a\",\"signal\":\"burn\""),
+        sup_row(6000, "\"type\":\"warn\",\"id\":\"ws-b\""),
+        sup_row(
+            7000,
+            "\"type\":\"correction\",\"signals\":[\"burn\",\"stall\"],\"jev\":[{\"integration\":\"supervision\",\"supports\":true},{\"integration\":\"supervision\",\"supports\":false},{}]",
+        ),
+        sup_row(8000, "\"type\":\"correction-followed\",\"signals\":[\"burn\"],\"jev\":[{\"integration\":\"supervision\",\"supports\":true}]"),
+        sup_row(9000, "\"type\":\"tokens\",\"id\":\"ws-a\",\"tokens\":1500"),
+        sup_row(9500, "\"type\":\"tokens\",\"id\":\"ws-b\",\"tokens\":2500000"),
+        sup_row(9800, "\"type\":\"tokens\",\"id\":\"ws-a\",\"tokens\":420"),
+        sup_row(10_000, "\"type\":\"tokens\",\"tokens\":\"many\""),
+        sup_row(11_000, "\"type\":\"extra\",\"id\":\"ws-a\""),
+        sup_row(12_000, "\"type\":\"done\",\"id\":\"ws-a\",\"durationMs\":5400000,\"stepsDone\":3,\"stepsPlanned\":4,\"tokensTotal\":9000"),
+        sup_row(13_000, "\"type\":\"done\",\"id\":\"ws-b\",\"durationMs\":900000,\"stepsDone\":2,\"stepsPlanned\":2,\"respawnOf\":\"ws-old\""),
+        sup_row(14_000, "\"type\":\"respawn\",\"id\":\"ws-a\",\"parked\":true"),
+        sup_row(15_000, "\"type\":\"respawn\",\"id\":\"ws-b\""),
+        sup_row(16_000, "\"type\":\"respawn-aborted\",\"stage\":\"park\""),
+        sup_row(17_000, "\"type\":\"respawn-progress\",\"latencyMs\":7200000"),
+        sup_row(18_000, "\"type\":\"jev\",\"integration\":\"supervision\",\"mode\":\"shadow\",\"agree\":true"),
+        sup_row(19_000, "\"type\":\"jev\",\"integration\":\"supervision\",\"mode\":\"on\",\"agree\":false"),
+        sup_row(20_000, "\"type\":\"jev\",\"mode\":\"on\",\"agree\":true"),
+        sup_row(2 * DAY + 5000, "\"type\":\"plan\",\"id\":\"ws-c\""),
+        sup_row(2 * DAY + 6000, "\"type\":\"done\",\"id\":\"ws-c\",\"durationMs\":60000,\"stepsDone\":1,\"stepsPlanned\":1,\"tokensTotal\":50"),
+        "not json at all".to_string(),
+        String::new(),
+        "42".to_string(),
+        "null".to_string(),
+        "{\"type\":\"plan\"}".to_string(),
+        "{\"ts\":\"yesterday\",\"type\":\"plan\"}".to_string(),
+        "{\"ts\":5,\"type\":\"plan\"}".to_string(),
+        sup_row(500, "\"type\":\"mystery\""),
+    ];
+    format!("{}\n", rows.join("\n"))
+}
+
+fn rotated_log() -> String {
+    let rows = vec![
+        sup_row(10 * DAY, "\"type\":\"plan\",\"id\":\"ws-old\""),
+        sup_row(10 * DAY + 1000, "\"type\":\"warn\",\"signal\":\"stall\""),
+        sup_row(10 * DAY + 2000, "\"type\":\"tokens\",\"id\":\"ws-old\",\"tokens\":321"),
+    ];
+    format!("{}\n", rows.join("\n"))
+}
+
+fn rollup_file(day_ago: i64, extra: &str) -> (String, String) {
+    let day = iso(NOW - day_ago * DAY)[..10].to_string();
+    let body = format!(
+        "{{\"complete\":true,\"v\":1,\"day\":\"{day}\",\"plans\":2,\"steps\":5,\"warnings\":{{\"off-scope\":3,\"drift\":1}},\"repeats\":1,\"corrections\":2,\"correctionsFollowed\":1,\"extras\":1,\"done\":1,\"durationsMs\":[1000,3000],\"stepsDone\":2,\"stepsPlanned\":3,\"jev\":{{\"supervision\":{{\"byMode\":{{\"on\":2}},\"n\":2,\"agree\":1,\"followed\":1,\"overridden\":1,\"progressWhenSupported\":1,\"progressWhenNotSupported\":0}}}},\"tokenPeriods\":[100,200],\"tokensByWorkspace\":{{\"ws-z\":300}},\"doneTokens\":[150],\"burnCorrections\":1,\"burnFollowed\":0,\"respawns\":1,\"respawnsParked\":1,\"respawnsAborted\":0,\"respawnProgressMs\":[60000],\"respawnsFinished\":0{extra}}}"
+    );
+    (format!(".anti-hall/logs/devswarm-supervision-daily/{day}.json"), body)
+}
+
+#[test]
+fn supervision_report_matches_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8csr");
+    let log = |h: &Path| {
+        put(h, ".anti-hall/logs/devswarm-supervision.ndjson", &sup_log());
+    };
+    let full = |h: &Path| {
+        put(h, ".anti-hall/logs/devswarm-supervision.ndjson", &sup_log());
+        put(h, ".anti-hall/logs/devswarm-supervision.ndjson.1", &rotated_log());
+        let (p, b) = rollup_file(20, "");
+        put(h, &p, &b);
+        let (p, b) = rollup_file(40, "");
+        put(h, &p, &b);
+        put(h, ".anti-hall/logs/devswarm-supervision-daily/notes.txt", "x");
+        put(h, ".anti-hall/logs/devswarm-supervision-daily/2026-01-01.json", "{torn");
+    };
+    let sr = |name: &str, argv: &[&str], native: bool| lc(name, argv, "nongit", native, "SupervisionReport");
+    let cases = vec![
+        sr("sr-no-log", &["supervision-report"], true),
+        sr("sr-no-log-json", &["supervision-report", "--json"], true),
+        sr("sr-default", &["supervision-report"], true).setup(log),
+        sr("sr-json", &["supervision-report", "--json"], true).setup(log),
+        sr("sr-json-equals-is-still-text", &["supervision-report", "--json=1"], true).setup(log),
+        sr("sr-days-one", &["supervision-report", "--days", "1"], true).setup(log),
+        sr("sr-days-fraction", &["supervision-report", "--days", "2.9", "--json"], true).setup(log),
+        sr("sr-days-bare-is-seven", &["supervision-report", "--days"], true).setup(log),
+        sr("sr-days-thirty-with-rollups", &["supervision-report", "--days", "30"], true).setup(full),
+        sr("sr-days-thirty-with-rollups-json", &["supervision-report", "--days=30", "--json"], true).setup(full),
+        sr("sr-days-sixty", &["supervision-report", "--days", "60", "--json"], true).setup(full),
+        sr("sr-days-zero", &["supervision-report", "--days", "0"], true),
+        sr("sr-days-negative", &["supervision-report", "--days", "-3"], true),
+        sr("sr-days-words", &["supervision-report", "--days", "soon"], true),
+        sr("sr-days-empty", &["supervision-report", "--days="], true),
+        sr("sr-integer-like-signal-is-node", &["supervision-report"], false).setup(|h| {
+            put(h, ".anti-hall/logs/devswarm-supervision.ndjson", &(sup_row(1000, "\"type\":\"warn\",\"signal\":\"123\"") + "\n"));
+        }),
+        sr("sr-null-rollup-is-node", &["supervision-report", "--days", "30"], false).setup(|h| {
+            let (p, _) = rollup_file(3, "");
+            put(h, &p, "null");
+        }),
+        sr("sr-string-rollup-field-is-node", &["supervision-report", "--days", "30"], false).setup(|h| {
+            let (p, b) = rollup_file(3, ",\"extra\":1");
+            put(h, &p, &b.replace("\"plans\":2", "\"plans\":\"2\""));
+        }),
+        sr("sr-odd-timestamp-is-node", &["supervision-report"], false).setup(|h| {
+            put(h, ".anti-hall/logs/devswarm-supervision.ndjson", "{\"ts\":\"Tue, 06 Oct 2026 10:00:00 GMT\",\"type\":\"plan\"}\n");
+        }),
+    ];
+    check(&fx, &cases, &[], 15, 4);
+}

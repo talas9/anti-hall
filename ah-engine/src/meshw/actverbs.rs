@@ -256,8 +256,8 @@ fn record_done(inv: &Inv, id: &str, key: &str, p: &OVal, now: f64) {
         f.push(("respawnOf".into(), from.clone()));
     }
     f.push(("tokensTotal".into(), tokens_total(inv, key)));
-    if let Some(line) = plan::record(inv, defaults::text("devswarm_cli.done_event"), &f, now) {
-        crate::meshw::note_written(&plan::log_rel(), line.as_bytes());
+    if plan::record(inv, defaults::text("devswarm_cli.done_event"), &f, now).is_some() {
+        plan::note_log(inv);
     }
 }
 
@@ -436,7 +436,11 @@ fn has_fresh_heartbeat(inv: &Inv, id: &str) -> bool {
             Some(OVal::Num(x)) => Some(*x),
             _ => None,
         },
-        _ => std::fs::metadata(&p).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64() * 1000.0),
+        _ => std::fs::metadata(&p)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64() * 1000.0),
     };
     let now = inv.now as f64;
     match ts {
@@ -500,7 +504,10 @@ fn mesh_rows(rows: &[Row], mesh_id: &str) -> R<Vec<Row>> {
 
 /// The refusal for an ambiguous prefix or mesh label: `{ action, ok:false, error, candidates, id }`.
 fn ambiguous(raw: &str, template: &str, ids: &[&str]) -> Answer {
-    let msg = crate::checks::devswarm_role::text::fill_once(template, &[("id", &quote(raw)), ("n", &ids.len().to_string()), ("ids", &ids.join(defaults::text("devswarm_cli.msg_ids_join")))]);
+    let msg = crate::checks::devswarm_role::text::fill_once(
+        template,
+        &[("id", &quote(raw)), ("n", &ids.len().to_string()), ("ids", &ids.join(defaults::text("devswarm_cli.msg_ids_join")))],
+    );
     let mut o = Obj::default();
     o.put("action", s(defaults::text("devswarm_cli.action_archive_request")))
         .put("ok", OVal::Bool(false))
@@ -541,9 +548,27 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
     let from = who.identity;
     crate::meshw::summary::check(&st, inv, Some(&id))?;
     let Some(lock) = idlock::acquire(&inv.write_home, &id) else { return defer("lock-busy") };
-    let hash = store::mesh_message_hash(Some(&from), Some(&id), defaults::text("mesh_write.mtype_direct"), defaults::text("devswarm_cli.archive_urgency"), &message, &inv.now.to_string(), false);
+    let hash = store::mesh_message_hash(
+        Some(&from),
+        Some(&id),
+        defaults::text("mesh_write.mtype_direct"),
+        defaults::text("devswarm_cli.archive_urgency"),
+        &message,
+        &inv.now.to_string(),
+        false,
+    );
     let nonce = ident::reader_nonce(&inv.home);
-    let row = store::mesh_message_row(Some(&from), Some(&id), false, &message, inv.now, defaults::text("devswarm_cli.archive_urgency"), &hash, false, nonce.as_deref());
+    let row = store::mesh_message_row(
+        Some(&from),
+        Some(&id),
+        false,
+        &message,
+        inv.now,
+        defaults::text("devswarm_cli.archive_urgency"),
+        &hash,
+        false,
+        nonce.as_deref(),
+    );
     let appended = st.append_mesh_row(&row);
     lock.release();
     let appended = appended.map_err(|e| ident::Defer(format!("archive-request-append:{e}")))?;

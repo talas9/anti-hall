@@ -582,7 +582,7 @@ value = "devswarm-cli-verify"
 
 [devswarm_cli.witness_copy_paths]
 doc = "Files and directories under the home copied into the witness's scratch home before the engine writes: what Node reads or rewrites for these verbs, and what the summary projection reads."
-value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/token-usage", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1"]
+value = [".anti-hall/bin", ".anti-hall/skip.json", ".anti-hall/settings.json", ".anti-hall/cache", ".anti-hall/devswarm/archive-ignore", ".anti-hall/devswarm/parent-gate", ".anti-hall/devswarm/maintainer-notices.jsonl", ".anti-hall/devswarm/plans", ".anti-hall/devswarm/workspaces", ".anti-hall/devswarm/heartbeats", ".anti-hall/devswarm/liveness", ".anti-hall/devswarm/cursors", ".anti-hall/devswarm/archived", ".anti-hall/devswarm/token-usage", ".anti-hall/devswarm/names", ".anti-hall/devswarm/app-state.json", ".anti-hall/devswarm/cache", ".anti-hall/devswarm/sender-aliases.json", ".anti-hall/logs/devswarm.jsonl", ".anti-hall/logs/devswarm.jsonl.1", ".anti-hall/logs/devswarm-supervision.ndjson", ".anti-hall/logs/devswarm-supervision.ndjson.1", ".anti-hall/logs/devswarm-supervision.ndjson.2", ".anti-hall/logs/devswarm-supervision.ndjson.3", ".anti-hall/logs/devswarm-supervision.ndjson.4", ".anti-hall/logs/devswarm-supervision.ndjson.5", ".anti-hall/logs/devswarm-supervision-daily"]
 
 [devswarm_cli.witness_node_snippet]
 doc = "The Node program of the witness: pins the clock, then loads the real devswarm.js as the main module so its own main() prints and exits. Arguments: the CLI path, the clock, then the verb's argv."
@@ -1078,3 +1078,169 @@ value = "nudge"
 [devswarm_cli.msg_nudge_no_descriptor]
 doc = "The refusal when no descriptor exists for the id; {id} is the id as JSON."
 value = "no descriptor for workspace {id}"
+
+# ---- supervision-report (lane l8c) --------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_supervision_report]
+doc = "The verb that prints the effectiveness report over the supervision metrics log."
+value = "supervision-report"
+
+[devswarm_cli.sr_action]
+doc = "The `action` of a supervision-report result."
+value = "supervision-report"
+
+[devswarm_cli.sr_usage]
+doc = "The usage error of supervision-report."
+value = "usage: devswarm.js supervision-report [--days N] [--json]"
+
+[devswarm_cli.flag_days]
+doc = "The supervision-report flag that sets how many UTC days the report covers."
+value = "days"
+
+[devswarm_cli.sr_json_word]
+doc = "The exact word that asks supervision-report for the JSON object instead of the text table."
+value = "--json"
+
+[devswarm_cli.sr_daily_dir]
+doc = "The directory under the logs directory that keeps the daily supervision rollups."
+value = "devswarm-supervision-daily"
+
+[devswarm_cli.sr_proto_key]
+doc = "The object key JavaScript treats specially (the report is Node's for a log that holds one)."
+value = "__proto__"
+
+[devswarm_cli.sr_unknown]
+doc = "The name the report files a warning signal, integration, mode or workspace under when the event names none."
+value = "unknown"
+
+[devswarm_cli.sr_burn]
+doc = "The warning signal that marks token burn."
+value = "burn"
+
+[devswarm_cli.sr_t_plan]
+doc = "The supervision event type: a step plan was written."
+value = "plan"
+
+[devswarm_cli.sr_t_step]
+doc = "The supervision event type: a child reported a step status change."
+value = "step"
+
+[devswarm_cli.sr_t_warn]
+doc = "The supervision event type: a straying warning was issued."
+value = "warn"
+
+[devswarm_cli.sr_t_correction]
+doc = "The supervision event type: the Primary sent a correction."
+value = "correction"
+
+[devswarm_cli.sr_t_followed]
+doc = "The supervision event type: step progress followed a correction."
+value = "correction-followed"
+
+[devswarm_cli.sr_t_tokens]
+doc = "The supervision event type: a step-progress period closed."
+value = "tokens"
+
+[devswarm_cli.sr_t_extra]
+doc = "The supervision event type: the child tagged user-requested extra work."
+value = "extra"
+
+[devswarm_cli.sr_t_done]
+doc = "The supervision event type: a child with a plan reported done."
+value = "done"
+
+[devswarm_cli.sr_t_respawn]
+doc = "The supervision event type: the Primary respawned a child."
+value = "respawn"
+
+[devswarm_cli.sr_t_aborted]
+doc = "The supervision event type: a respawn stopped before spawning."
+value = "respawn-aborted"
+
+[devswarm_cli.sr_t_progress]
+doc = "The supervision event type: first step progress in a respawned workspace."
+value = "respawn-progress"
+
+[devswarm_cli.sr_t_jev]
+doc = "The supervision event type: a Jev answer was first read from the cache."
+value = "jev"
+
+[devswarm_cli.sr_unit_m]
+doc = "The unit suffix of a token count in millions."
+value = "M"
+
+[devswarm_cli.sr_unit_k]
+doc = "The unit suffix of a token count in thousands."
+value = "k"
+
+[devswarm_cli.sr_dash]
+doc = "What the report shows for a value it does not have."
+value = "—"
+
+[devswarm_cli.sr_none]
+doc = "What the report shows for an empty list of warning signals."
+value = "none"
+
+[devswarm_cli.sr_comma]
+doc = "What separates the items of a list in the report."
+value = ", "
+
+[devswarm_cli.sr_pair]
+doc = "One name and its count in a report list."
+value = "{k} {n}"
+
+[devswarm_cli.sr_rate]
+doc = "A rate in percent after a count."
+value = " ({pct}%)"
+
+[devswarm_cli.sr_head]
+doc = "The first line of the report."
+value = "DevSwarm supervision — last {days} day(s) (since {since}, {with} with data)"
+
+[devswarm_cli.sr_plans]
+doc = "The plans line of the report."
+value = "  plans written:        {plans} (step updates {steps})"
+
+[devswarm_cli.sr_warn]
+doc = "The warnings line of the report."
+value = "  straying warnings:    {total} ({sig}; repeats {repeats})"
+
+[devswarm_cli.sr_corr]
+doc = "The corrections line of the report."
+value = "  corrections:          {sent} sent, {followed} followed by step progress{rate}"
+
+[devswarm_cli.sr_extras]
+doc = "The extras line of the report."
+value = "  extras tagged:        {n}"
+
+[devswarm_cli.sr_tokens]
+doc = "The tokens line of the report."
+value = "  tokens (weighted):    {total} over {periods} step period(s); median per step period {mp}, per completed step {mc}"
+
+[devswarm_cli.sr_burn_line]
+doc = "The token burn line of the report."
+value = "  token burn:           {w} warning(s), {c} correction(s), {f} followed by progress{rate}"
+
+[devswarm_cli.sr_done]
+doc = "The done line of the report."
+value = "  done with a plan:     {n} (median time-to-done {dur}, steps {sd}/{sp})"
+
+[devswarm_cli.sr_resp]
+doc = "The respawns line of the report."
+value = "  respawns:             {n} (WIP parked {parked}, not parked {np}, aborted {ab}); first step progress in {wp} (median {med}), finished {fin}"
+
+[devswarm_cli.sr_top]
+doc = "The line naming the workspaces that used the most tokens."
+value = "  top workspaces:       {list}"
+
+[devswarm_cli.sr_ws_item]
+doc = "One workspace and its token count in that line."
+value = "{id} {tok}"
+
+[devswarm_cli.sr_jev_none]
+doc = "The report line when no Jev answer was recorded."
+value = "  Jev: no answers yet"
+
+[devswarm_cli.sr_jev]
+doc = "The report line for one Jev integration."
+value = "  Jev {k}: {agree}/{n} agree with the deterministic result{rate} [{modes}]; Primary followed {fol} / overrode {ov}; progress after correction {ps} when Jev backed the warning, {pn} when not"
