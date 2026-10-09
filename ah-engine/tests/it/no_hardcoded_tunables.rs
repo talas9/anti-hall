@@ -173,7 +173,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/checks/guardkit/nodelock.rs", "out.len() < 11", "a base-36 u32 is at most 7 digits plus the separators of Node's lock name (a format)"),
     ("src/checks/jsport/home.rs", "16384", "the buffer of getpwuid_r, sized by the C library's recommendation"),
     ("src/checks/guardkit/jsval/mod.rs", "b.len() > 10", "a JavaScript array index is at most 10 digits (4294967294): the language's own limit"),
-    ("src/checks/guardkit/ojson.rs", "k.len() > 10", "a JavaScript array index is at most 10 digits (4294967294): the language's own limit"),
     (
         "src/checks/guardkit/jsdiff.rs",
         "m.contains(",
@@ -190,7 +189,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "the corpus of inputs JavaScript reads differently, run through every local classifier: test data in a shared helper file",
     ),
     ("src/checks/guardkit/jsval/mod.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
-    ("src/checks/guardkit/ojson.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     ("src/checks/session/jval.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     ("src/jev/question.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     // ---- git output and flag layouts ------------------------------------------------------------------------------

@@ -15,7 +15,6 @@ pub mod compact_decl;
 pub mod emit_dedupe;
 pub mod git;
 pub mod guardkit;
-pub mod handover;
 pub mod idle_agent_sweep;
 pub mod jsport;
 pub mod replykit;
