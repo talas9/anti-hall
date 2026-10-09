@@ -4418,6 +4418,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_help` | `help` |  |  | Help flag name. |
 | `mesh_write.flag_json` | `json` |  |  | Raw JSON output flag. |
 | `mesh_write.flag_last` | `last` |  |  | mesh read's newest-N flag. |
+| `mesh_write.flag_limit` | `limit` |  |  | The read-primary flag that overrides the per-call row cap (`--limit N`; a value that is not a finite positive number is ignored, a fractional one is floored to at least 1). |
 | `mesh_write.flag_message` | `message` |  |  | send's body flag. |
 | `mesh_write.flag_message_file` | `message-file` |  |  | send's body-from-file flag. |
 | `mesh_write.flag_message_stdin` | `message-stdin` |  |  | send's body-from-stdin flag. |
@@ -4597,7 +4598,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.quiet_failed` | `send failed` |  |  | The {why} of a failed send with neither error nor reason. |
 | `mesh_write.quiet_ok` | `sent seq {seq} -> {to}, {bytes} bytes, ok` |  |  | `send --quiet` line of a delivered send. Placeholders: {seq}, {to}, {bytes}. |
 | `mesh_write.quiet_unknown` | `(unknown)` |  |  | The {to} of a send with no recipient in the quiet line. |
-| `mesh_write.read_primary_flags` | `format, json, session` |  |  | The flags `inbox read-primary` may carry for the engine to answer it; any other flag (a window, an ownership override, an immediate ack, a limit) is Node's. |
+| `mesh_write.read_primary_flags` | `format, json, session, limit` |  |  | The flags `inbox read-primary` may carry for the engine to answer it; any other flag (a window, an ownership override, an immediate ack, a limit) is Node's. |
 | `mesh_write.reason_not_verified` | `send-not-verified` |  |  | `reason` of a send whose readback did not find the row. |
 | `mesh_write.receipt_id_prefix` | `r` |  |  | A read receipt id is this letter followed by lowercase letters and digits (readReadReceipt's /^r[a-z0-9]+$/). |
 | `mesh_write.receipt_keep_ms` | `604800000` |  |  | READ_RECEIPT_KEEP_MS: a read receipt file older than this is pruned by the next receipt written for the id; the engine leaves a pruning write to Node. |

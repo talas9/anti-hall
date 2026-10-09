@@ -377,6 +377,10 @@ pub const MESHW_REGISTRY_PATH_OF: &str = "SELECT worktree_path FROM registry WHE
 pub const MESHW_REGISTRY_UPSERT: &str = "INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq) VALUES (?, ?, ?, ?, ?, ?, ?, 1) ON CONFLICT(id) DO UPDATE SET worktree_path=excluded.worktree_path, session_id=excluded.session_id, inbox_path=excluded.inbox_path, cursor_path=excluded.cursor_path, nudge_command=excluded.nudge_command, updated_at=excluded.updated_at, write_seq=COALESCE(registry.write_seq,0)+1;";
 /// `upsertRegistry` on a store without `write_seq`.
 pub const MESHW_REGISTRY_UPSERT_LEGACY: &str = "INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET worktree_path=excluded.worktree_path, session_id=excluded.session_id, inbox_path=excluded.inbox_path, cursor_path=excluded.cursor_path, nudge_command=excluded.nudge_command, updated_at=excluded.updated_at;";
+/// Every gate row, oldest first (the Node witness compares the history of two stores).
+pub const MESHW_GATES_DUMP: &str = "SELECT workspace_id, gate_name, value, set_at, set_by FROM gates ORDER BY id ASC;";
+/// `setGate`.
+pub const MESHW_SET_GATE: &str = "INSERT INTO gates (workspace_id, gate_name, value, set_at, set_by) VALUES (?, ?, ?, ?, ?);";
 /// `setCursor`.
 pub const MESHW_SET_CURSOR: &str = "INSERT INTO cursors (workspace_id, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;";
 /// `setBroadcastCursor` and the write half of `advanceBroadcastCursor`.

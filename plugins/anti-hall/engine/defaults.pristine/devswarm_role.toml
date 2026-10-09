@@ -228,8 +228,9 @@ function meshRoute(argv, segments) {
     var ROUTES = [
       { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'] },
       { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] }, { words: ['inbox', 'tick'] }, { words: ['inbox', 'read-primary'] },
-      { words: ['help'] }, { words: [], anyOf: ['-h', '--help'] }, { words: ['skip'] }, { words: ['archive-ignore'] },
-      { words: ['archive-unignore'] }, { words: ['gate-intent'] }, { words: ['notice'] },
+      { words: ['help'] }, { words: [], anyOf: ['-h', '--h', '--help'] }, { words: ['skip'] }, { words: ['archive-ignore'] },
+      { words: ['archive-unignore'] }, { words: ['gate-intent'] }, { words: ['notice'] }, { words: ['plan'] }, { words: ['scope'] },
+      { words: ['gate'] }, { words: ['workspaces'] }, { words: ['logs'] }, { words: ['wake-directive'] },
     ];
     var routed = ROUTES.some(function (r) {
       return r.words.every(function (w, i) { return argv[i] === w; })
