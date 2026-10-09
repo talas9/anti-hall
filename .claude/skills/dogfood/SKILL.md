@@ -53,6 +53,29 @@ ask that project's Primary to collect from its workspaces and relay.
 - Every progress report to the owner includes: open entries by severity, fixed since last report,
   mistake rates of acting features.
 
+## 5. Track every piece of work on GitHub (issues + the "anti-hall roadmap" board)
+
+The repo's issues and Projects board organize all work. For every feature, bug, lane or release:
+
+- **Before starting:** find or open its issue (`gh issue list --search`, else `gh issue create`
+  from the feature/bug form), with type, priority, size, area, an estimate (hours) and a
+  milestone. Put `#n` in the session task subject. Text stays agnostic: no private paths, names
+  or session ids (public repo).
+- **Triage:** a new issue gets `status:triage` from the workflow. Decide within the session:
+  `status:accepted` + priority/size, or a comment saying why it is deferred. Never close or delete
+  an issue automatically.
+- **While working:** set `status:in-progress` and the board Status. Comment at each milestone:
+  approach chosen, lane/commit shas, test or replay evidence, blockers (`status:blocked` +
+  what blocks it). One comment per milestone, not per step.
+- **Branches, commits, PRs:** branch `<type>/<n>-slug`, commits reference `#n`, PR body
+  `Closes #n`, so a merge moves the item to Done.
+- **Done:** the closing comment states what was verified and how (command and result). An
+  issue whose work shipped without proof stays open, with the missing check named.
+- **Dogfood entries:** a misfire that needs a code fix gets an issue (`type:bug`, area of the
+  check). Link it from its ISSUES.md line (`issue #n`).
+- **Health round (section 2):** also list open `status:in-progress` issues with no comment for
+  24 h, plus `status:triage` issues older than a day, and fix or comment on each.
+
 ## Rules that still apply
 
 Evidence before verdicts. Never disable a guard to get past it; log it and work within it.
