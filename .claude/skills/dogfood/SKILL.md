@@ -40,7 +40,9 @@ sessions with status busy/idle, not offline) and send each a short message askin
 anti-hall misfires, wrong blocks, slowdowns or confusing messages they have hit since the last
 ask, with the exact message text and what they were doing. Ask; never instruct them to change
 anything. Record each answer (or "no reply") as entries with source `peer:<session name>`.
-Owner-ratified peer channel; keep it to one message per session per round.
+Owner-ratified peer channel; keep it to one message per session per round. DevSwarm
+workspace sessions are never messaged directly (devswarm-comms-guard blocks it, correctly):
+ask that project's Primary to collect from its workspaces and relay.
 
 ## 4. Fixing
 
