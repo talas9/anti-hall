@@ -76,7 +76,7 @@ value = { args = "", read_only = false, status = "implemented" }
 
 [cmd.agents]
 doc = "The agent tracker (feature 21): `status` lists every tracked agent (main sessions, subagents and background tasks, DevSwarm workspaces) with tokens, progress, last output, state and flags, plus today's reminder and recovery totals; `tick` runs one tracker tick now (the scheduled job `agent_tick` does the same every minute). It never stops or kills an agent."
-value = { args = "<status|tick> [--json]", read_only = false, status = "implemented" }
+value = { args = "<status|tick> [--json]", read_only = false, read_only_args = ["status"], status = "implemented" }
 
 [cmd.migrate]
 doc = "The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state, gate-intent and auto-archive state forward-migrations, the settings.json migration from the legacy jev.json and the stored plugin options, the Jev triage cache repair, the lock scratch sweep and the retention sweeps, with Node's report; `--dry-run` previews and writes nothing. Steps that need the DevSwarm stores are left to the Node doctor while DevSwarm state is present."

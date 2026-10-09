@@ -136,6 +136,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `devswarm-child-drain` | DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child) and when it would stay silent before counting any mail (not a Bash call, a subagent's call, an `inbox read-primary` command, no usable workspace id, no descriptor naming an inbox); anything that needs the unread count defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js). |
 | `sibling-sweep` | Stop and SubagentStop reminder: when the reply states the cause of a bug in a fix context and the turn shows no search for other occurrences of the same pattern, asks once per cause to search, fix or list every occurrence and state the search run; counts reminders and follow-through (engine-only, no Node twin). |
 | `handover-hygiene` | SessionStart advisory (engine-only, no Node twin): reports handovers that are unindexed, stale, missing a brief or malformed (no front matter, no Situation or Next action, a broken reference) once per distinct problem set; the same script builds the handover brief tree (`ah-engine handovers index\|check\|search`) and runs as the `handovers` scheduled job. |
+| `agent-reminders` | Delivers the agent tracker's queued reminders and advisories to the session or subagent that owns them, at its next UserPromptSubmit or PostToolUse (engine-only, advisory). |
 | `session-end-mcp-reaper` | SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node (port of session-end-mcp-reaper.js). |
 | `procwatch-advisory` | SessionStart, UserPromptSubmit and PreToolUse advisory: leftover processes of ended Claude sessions, agents silent past a threshold, processes of this session using too much CPU or memory, and low free disk; warns only (a kill is a per-class opt-in of the scheduled sweep, a block at critical disk an opt-in setting). |
 | `task-tracker` | UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the newRequest Jev label of each prompt and the previous turn's demand score; a session that could be a DevSwarm Primary, or has a task the per-turn DISPATCH NOW line would name or a dispatch-tier outcome still to record, defers to Node (port of task-tracker.js). |
@@ -927,7 +928,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `schedule.action_args` | `1 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
-| `schedule.actions` | `9 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.actions` | `10 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
@@ -936,7 +937,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `schedule.maintain_ms` | `86400000` | `AH_ENGINE_MAINTAIN_MS` | ms | Interval of the maintain job (D26); 0 turns it off. |
 | `schedule.procwatch_ms` | `30000` | `AH_ENGINE_PROCWATCH_MS` | ms | Interval of the process watch job (resource sampling; orphan scans run every procwatch.scan_every_s); 0 turns it off. |
 | `schedule.run_wait_ms` | `5000` |  | ms | How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms. |
-| `schedule.subprocess_actions` | `maintain, backup, jev_sweep, handovers` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
+| `schedule.subprocess_actions` | `maintain, backup, jev_sweep, handovers, agent_tick` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
 | `schedule.telemetry_rollup_ms` | `86400000` | `AH_ENGINE_TELEMETRY_ROLLUP_MS` | ms | Interval of the telemetry rollup job (D78); 0 turns it off. |
 | `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
 | `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
@@ -1776,14 +1777,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_SubagentStop` | `5 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCompleted` | `5 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCreated` | `5 entries` |  |  | The claude TaskCreated hook entries, in dispatch order. |
-| `dispatch.hooks_claude_UserPromptSubmit` | `9 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
-| `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_UserPromptSubmit` | `10 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreToolUse` | `10 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `17 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `5 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
-| `dispatch.hooks_codex_UserPromptSubmit` | `9 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_codex_UserPromptSubmit` | `10 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.in_process` | `0` | `AH_ENGINE_DISPATCH_IN_PROCESS` |  | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
 | `dispatch.list_banner` | `# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are:...` |  |  | The first line of the generated fallback list. |
 | `dispatch.list_comment_mark` | `#` |  |  | The mark that starts a comment line of the generated fallback list. |
@@ -4780,7 +4781,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `script.call_memory_bytes` | `16777216` |  | bytes | Heap a single script call may allocate above the runtime's size after its scripts were loaded; past it the call fails and defers. |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `sibling-sweep, handover-hygiene` |  |  | Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision. |
+| `script.engine_only_checks` | `sibling-sweep, handover-hygiene, agent-reminders` |  |  | Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
 | `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
 | `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
@@ -6025,6 +6026,63 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_watch.temp_default` | `/tmp` |  |  | The temp directory when the TMPDIR variable of the process is unset. |
 | `disk_watch.warn_gb` | `7 entries` |  |  | Warn when a watched volume has less than this free, in GB (diskWatch.warnGb; 0 = not used). |
 | `disk_watch.warn_pct` | `7 entries` |  |  | Warn when a watched volume has less than this percent free (diskWatch.warnPercent; 0 = not used). |
+
+### agent_tracker.toml / agent_reminders
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `agent_reminders.events` | `UserPromptSubmit, PostToolUse` |  |  | The hook events the agent-reminders check delivers on. |
+| `agent_reminders.fields` | `3 entries` |  |  | Hook payload fields the check reads: the event name, the session id, the subagent id. |
+| `agent_reminders.guard_name` | `agent-reminders` |  |  | The name the agent-reminders check goes by in the skip file and in messages. |
+| `agent_reminders.header` | `anti-hall agent tracker:` |  |  | The first line of a delivery. |
+| `agent_reminders.key_max` | `96` |  |  | Longest queue-file key kept (characters of the agent or session id). |
+
+### agent_tracker.toml / agent_tracker
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `agent_tracker.channels` | `6 entries` |  |  | The names of the delivery channels, as they appear in telemetry and the status table. |
+| `agent_tracker.claude_cli` | `15 entries` |  |  | The Claude Code CLI as a data source, used only where it beats parsing a transcript. bin: the program name (the environment variable named by env.claude_bin overrides it); version_args: how its version is read; agents_args: the JSON listing of background and interactive sessions (verified: no human-formatted output is ever parsed); verified: the Claude Code version each source was last verified on (a different version re-probes the source before it is trusted, and a failed probe falls back to the transcripts); busy / waiting / blocked / failed: the status words the listing uses; fields: the listing's field names. |
+| `agent_tracker.cooldowns` | `6 entries` |  |  | Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap). |
+| `agent_tracker.devswarm_fields` | `17 entries` |  |  | Field names of the DevSwarm descriptor, plan and wake-watch lock files the tracker reads (the DevSwarm format). |
+| `agent_tracker.fmt` | `10 entries` |  |  | Layout of the status table: columns (the header words, in order), the separator between columns, and the word for an absent value. ago_units: the suffixes used for seconds, minutes, hours and days in an age. |
+| `agent_tracker.kinds` | `4 entries` |  |  | The names of the kinds of agent the tracker follows: main (a Claude Code session), subagent (a subagent or background task of a session), workspace (a DevSwarm workspace's session), heartbeat (an agent known only by its heartbeat file). |
+| `agent_tracker.limits` | `41 entries` |  |  | Bounds and thresholds of one tick (milliseconds unless the name says otherwise). active_window_ms: a transcript untouched this long is not tracked. max_agents: most agents followed (newest first). first_read_bytes: how much of the end of a transcript is read the first time it is seen (its totals then count from there). read_max_bytes: most read from one transcript per tick. hung_ms: a running agent with no activity this long is hung; hung_pending_ms: the same while a tool call is still unanswered (a long build or wait is legitimate). loop_window: how many recent tool calls are compared; loop_repeats: identical calls in that window that make a loop; loop_edit_repeats: the same for edits of one file; loop_span_ms: the repeats must fall within this much time of the newest one (the same poll every few minutes is not a loop); error_window, error_repeats: the same for an identical error text. waste_window_ms: the window tokens and progress are compared over; waste_min_span_ms: the least history needed before it is judged; waste_min_tokens: tokens spent in the window below which nothing is wasted; waste_max_progress: progress units in that window at or below which the spend is waste; cache_read_pct: how much a cache-read token counts toward the spend, in percent. drift_min_events: edits and commands seen under the current step before drift is judged; drift_max_overlap_pct: the share of the step's words the recent work may share before it is drift; drift_min_step_words, drift_min_word_len: how small a step or a word is too small to judge; work_words_max: how many recent work words are kept. heartbeat_stale_ms: a running agent heartbeat older than this is stale (the Node watchdog default). monitor_min_bg: background tasks running before a missing wake path is reported; bg_bash_ms: how long a background shell command counts as running. confirm_ticks: ticks a signal must stay up before its first reminder. outcome_timeout_ms: a reminded signal still up after this is recorded as not recovered. fp_min_progress: progress that makes a cleared, un-reminded flag a false positive. samples_max: samples kept per agent. files_max: distinct edited files remembered per agent. series_every_ms: how often an agent's series sample is written to the telemetry store and the series file. series_retention_ms, series_max_bytes: age and size cut of the series file. day_retention: days of daily totals kept. state_max_bytes: a state file bigger than this is discarded (it is only a cache). delivered_max: delivered rows read per tick. text_cap: characters kept of a command, a step or an evidence line. claude_cli_timeout_ms: bound of one `claude` subprocess. probe_ttl_ms: how long a cached capability probe is trusted when the version did not change. stale_lock_ms: a wake-watch lock older than this does not count as armed (the DevSwarm wake-watch rule). queue_keep_ms: a fully delivered queue file is removed after this. |
+| `agent_tracker.owner_setting` | `6 entries` |  |  | Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes that name the owner channel append a notice to the owner notices file. |
+| `agent_tracker.paths` | `26 entries` |  |  | Where the tracker reads and writes. Relative to the user home unless noted: projects (the Claude Code transcripts), base (the anti-hall directory), dir (the tracker's own directory under base), state, series, reminders (one queue file per agent or session), delivered (what the hook delivered), outbox (reminders for DevSwarm workspaces, for the mesh action layer), notices (owner notices), probe (the cached Claude Code capability probe), heartbeats (the agent heartbeat files, under base), devswarm (the DevSwarm directory, under base), subagents (sub-directory of a session directory that holds its subagent transcripts), watcher (the wake-watch script, relative to the plugin root). |
+| `agent_tracker.patterns` | `4 entries` |  |  | Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed). |
+| `agent_tracker.remind_setting` | `6 entries` |  |  | Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued for any agent. |
+| `agent_tracker.routes` | `6 entries` |  |  | Where each signal goes. self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it (a subagent's parent session, a workspace's parent over the mesh, the newest active main session for a heartbeat); owner: the owner notices file (only while agents.ownerNotify is on). |
+| `agent_tracker.setting` | `6 entries` |  |  | Where the tracker's on/off switch is read from (agents.tracker, default on): off, a tick does nothing. |
+| `agent_tracker.signals` | `hung, looping, token_waste, drift, heartbeat_stale, monitor_unarmed` |  |  | The signals the tick evaluates, in order. A name not listed here is never raised. |
+| `agent_tracker.sources` | `2 entries` |  |  | The names of where an agent's numbers come from, as they appear in telemetry and the status JSON. |
+| `agent_tracker.spam` | `4 entries` |  |  | Spam control: max_per_tick (reminders queued in one tick, all agents), max_pending (undelivered reminders queued for one agent before more are held back), max_per_delivery (reminders put in front of an agent by one hook event), max_text (characters of one reminder). |
+| `agent_tracker.states` | `4 entries` |  |  | The names of an agent's states: running, waiting (finished its turn, or the host says it waits for input), done (a subagent that finished), stale (running but its heartbeat or transcript went quiet past the active window). |
+| `agent_tracker.summary` | `Delivers the agent tracker's queued reminders and advisories to the session o...` |  |  | One-line description of the agent-reminders check in the generated reference. |
+| `agent_tracker.tick_verb` | `tick` |  |  | The subcommand the scheduled job `agent_tick` runs. |
+| `agent_tracker.tools` | `8 entries` |  |  | Tool names by role: edit (change a file), shell (run a command), agent (launch a subagent), todo (a task list rewrite), task_update (a single task update), monitor / cron / wakeup (arm a wake path). |
+| `agent_tracker.transcript` | `41 entries` |  |  | Field and value names of the Claude Code transcript lines the tracker reads (the host's own format). |
+| `agent_tracker.wake` | `4 entries` |  |  | How long each kind of wake path keeps the session reachable, in milliseconds: monitor (a Monitor without persistent: true, which ends at its own cap), persistent (a persistent Monitor), cron (a CronCreate job), wakeup_slack (added to a ScheduleWakeup's own delay). |
+| `agent_tracker.weights` | `4 entries` |  |  | Progress units each kind of work is worth: commit (a successful git commit), step (a plan or task step completed), test (a test run that passed), file (a file edited for the first time). |
+| `agent_tracker.words` | `3 entries` |  |  | Words left out when a step is compared with the work done (drift), as one list; the split characters that cut a path or command into words. |
+
+### agent_tracker.toml / env
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `env.claude_bin` | `AH_ENGINE_CLAUDE_BIN` |  |  | Overrides the Claude Code program the agent tracker asks for its session listing (tests point it at a stand-in). |
+
+### agent_tracker.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.agent_tick` | `11 entries` |  |  | One agent-tracker tick: read what each agent did since the last tick, raise or clear signals, deliver reminders, record telemetry. Runs as a subprocess so a timeout kills it and anything it started; 0 turns it off. |
+
+### agent_tracker.toml / schedule
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `schedule.agent_tick_ms` | `60000` | `AH_ENGINE_AGENT_TICK_MS` | ms | Interval of the agent_tick job; 0 turns the tracker's ticks off. |
 
 ## Messages
 
