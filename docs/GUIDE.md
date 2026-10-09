@@ -39,7 +39,7 @@ owner-approved prune and message retention. Per-component detail is in the
 anti-hall is a Claude Code **marketplace + plugin**, plus a separate Codex-native port,
 that keeps coding assistants from acting before they verify. It ships always-on Node
 hooks (mechanical guards no prompt can talk around), a set of evidence-driven workflow
-skills, and a live two-line statusline. Pure Node.js, no dependencies, **macOS · Linux**
+skills, and a live two-line statusline. A small Rust engine answers the hooks with Node.js 22+ as the fallback, no npm dependencies, **macOS · Linux**
 (Node ≥ 22 on `PATH` is the only prerequisite; Windows is not supported).
 
 It targets four predictable failure modes: **eagerness** (acting before investigating),

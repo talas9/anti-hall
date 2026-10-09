@@ -6,10 +6,9 @@ description: ah-engine, the resident Rust program being built to answer anti-hal
 # Rust engine
 
 !!! info "Status"
-    The engine is ready for release and is not part of the current plugin release: the
-    plugin installs it itself once a release pins it. Until then every hook runs as a
-    Node.js script, as described in the rest of these docs. Details may change before it
-    ships.
+    The plugin installs the engine itself once a release pins a binary. Until the binary
+    is installed, or whenever it cannot answer, every hook runs as a Node.js script, as
+    described in the rest of these docs.
 
 ## What it is
 
