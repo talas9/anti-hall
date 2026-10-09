@@ -315,10 +315,6 @@ value = "Stop, never blocks: records the checkable claims of the last reply that
 doc = "The guard id this check answers to in skip.json."
 value = "claim-ledger"
 
-[claim_ledger.event]
-doc = "The only event this check answers."
-value = "Stop"
-
 [claim_ledger.setting]
 doc = "Where the on/off switch is read from (guards.claimLedger, default on)."
 value = { section = "guards", key = "claimLedger", env = "", aliases = [], option = "guards_claim_ledger", default = true }
@@ -369,30 +365,6 @@ value = 40
 min = 1
 max = 1000
 
-[claim_ledger.type_text]
-doc = "The content block type of a text block."
-value = "text"
-
-[claim_ledger.type_tool_use]
-doc = "The content block type of a tool call."
-value = "tool_use"
-
-[claim_ledger.type_tool_result]
-doc = "The content block type of a tool result."
-value = "tool_result"
-
-[claim_ledger.role_user]
-doc = "The role of a user transcript entry."
-value = "user"
-
-[claim_ledger.role_assistant]
-doc = "The role of an assistant transcript entry."
-value = "assistant"
-
-[claim_ledger.role_attachment]
-doc = "The role of a hook attachment transcript entry."
-value = "attachment"
-
 [claim_ledger.cls_hard]
 doc = "The class of a flag that would block once blocking is turned on."
 value = "hard"
@@ -421,9 +393,9 @@ value = "state-no-tool"
 doc = "The kind of a flag for an N days ago claim."
 value = "days-ago"
 
-[claim_ledger.count_re]
-doc = "Regex source (case-insensitive) of a count with a unit noun. The Node source starts with a look-behind that rejects a number glued to an identifier character; the check applies that rule by hand, because the regex engine has no look-behind."
-value = '(\d{1,6}(?:[.,]\d+)?)\s*(ms|s|sec|seconds|minutes|min|hours|days?|weeks?|workspaces?|rows?|files?|lines?|tests?|bytes?|KB|MB|chars?|items?|entries|messages?|hooks?|agents?|commits?|matches|unread|live)\b'
+[claim_ledger.count_js_re]
+doc = "JavaScript regex source (flags gi) of a count with a unit noun, as the Node hook has it: it starts with a look-behind that rejects a number glued to an identifier character (`V2-4 workspace` is a name, not a count of 4 workspaces)."
+value = '(?<![\w.-])(\d{1,6}(?:[.,]\d+)?)\s*(ms|s|sec|seconds|minutes|min|hours|days?|weeks?|workspaces?|rows?|files?|lines?|tests?|bytes?|KB|MB|chars?|items?|entries|messages?|hooks?|agents?|commits?|matches|unread|live)\b'
 
 [claim_ledger.sha_re]
 doc = "Regex source of a git SHA (7 to 40 lower-case hex digits)."
