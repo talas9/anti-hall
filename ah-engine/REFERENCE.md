@@ -2335,7 +2335,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
+| `output_verify.line_terminators` | `\n
+  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
@@ -5188,6 +5189,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.status_escalated` | `escalated` |  |  | The verdict status after an escalation. |
 | `devswarm_sup.status_nudged` | `nudged` |  |  | The verdict status after a poke. |
 | `devswarm_sup.sweep_tail_engine` | `engine` |  |  | The word of devswarm_sup.sweep_tail_mode that lets the engine take the ported part of the sweep tail. |
+| `devswarm_sup.sweep_tail_mode` | `6 entries` |  |  | Who runs the mesh fold of the update sweep tail (foldMeshDuplicates and its helpers): `node` leaves it entirely to Node's scheduled functions; `engine` lets the engine plan each fold, witness it against Node's own function on a scratch copy and apply it only when both agree, handing anything it cannot prove back to Node. Engine-only setting (Node does not read it). |
 | `devswarm_sup.tick_budget_ms` | `900000` |  | ms | Most time one tick spends starting duties; a duty not yet started when it is spent waits for the next tick. Each duty is also bounded by its own timeout_ms. |
 | `devswarm_sup.tick_ms` | `60000` |  | ms | How often the scheduler job `devswarm_supervisor` runs while the mode is `engine` (Node's installer sweeps every 60-120 s). The job does nothing where DevSwarm is absent or the mode is witness. |
 | `devswarm_sup.verdict_fields` | `7 items` |  |  | The fields of a liveness verdict Node's recovery keeps across an update, in its order (PRESERVED_VERDICT_FIELDS); a nudge or an escalation rewrites the file as status + these + the new fields. |
@@ -5331,23 +5333,36 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.action_adopted` | `adopted` |  |  | The detail action Node's orphan heal reports for an id it gave a registry row. |
 | `devswarm_recon.action_unhealable` | `unhealable` |  |  | The detail action Node's orphan heal reports for an id it cannot give a registry row. |
 | `devswarm_recon.ansi_re` | `\x1b\[[0-9;]*m` |  |  | The colour escape sequences stripped from an error text before it is recorded. |
+| `devswarm_recon.archived_forward_prefix` | `[forwarded from archived {id}] ` |  |  | The provenance prefix of a body forwarded from an archived partition (archivedForwardProvenancePrefix). {id}. |
 | `devswarm_recon.diff_chars` | `160` |  |  | Most characters of each side's line quoted in a difference text. |
 | `devswarm_recon.dir_liveness` | `liveness` |  |  | The persisted liveness verdicts directory, under the DevSwarm state directory. |
 | `devswarm_recon.dir_names` | `names` |  |  | The workspace display-name cache directory, under the DevSwarm state directory. |
+| `devswarm_recon.dir_retired` | `retired` |  |  | The directory of retired-id redirect files under the DevSwarm state directory (core.js retiredRedirectDir). |
 | `devswarm_recon.file_active_cache` | `hivecontrol-active.json` |  |  | The app-side active-workspace snapshot, under the DevSwarm state directory. |
 | `devswarm_recon.file_repo_unknown` | `repo-unknown.json` |  |  | The repository-not-known marker, under the DevSwarm state directory. |
 | `devswarm_recon.file_resume` | `reconcile-resume.json` |  |  | The reconcile resume marker (the ids a run left for the next one), under the DevSwarm state directory. |
 | `devswarm_recon.file_samples` | `devswarm-startup-samples.ndjson` |  |  | The start-up samples log, in the logs directory. |
 | `devswarm_recon.file_sampling_state` | `startup-sampling-state.json` |  |  | The start-up sampling state, under the DevSwarm state directory. |
 | `devswarm_recon.file_sweep_state` | `reconcile-sweep-state.json` |  |  | The reconcile sweep's cool-down file, under the DevSwarm state directory. |
+| `devswarm_recon.ghost_age_default_h` | `72` |  | h | The ghost-row age bar when the variable is unset or unusable (GHOST_ROW_MAX_AGE_H_DEFAULT). |
+| `devswarm_recon.ghost_age_env` | `ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H` |  |  | The environment variable that sets, in hours, how long a never-attended registry row must be untouched before it is a ghost (Node reads only this variable). |
+| `devswarm_recon.job_archived` | `retire-archived` |  |  | The label of the retire-archived-worktree-group job. |
+| `devswarm_recon.job_dup` | `retire-dup` |  |  | The label of the retire-worktree-duplicates job. |
+| `devswarm_recon.job_fold` | `fold-mesh` |  |  | The label of the mesh-fold job in the witness log and the scratch directory name. |
+| `devswarm_recon.job_forward_archived` | `forward-archived` |  |  | The label of the forward-archived-orphan-unread job. |
+| `devswarm_recon.job_ghosts` | `ghost-rows` |  |  | The label of the ghost-row witness job. |
 | `devswarm_recon.job_heal` | `heal-registry` |  |  | The label of the registry-heal job in the witness log and the scratch directory name. |
 | `devswarm_recon.job_orphans` | `heal-orphans` |  |  | The label of the orphan-partition heal job in the witness log and the scratch directory name. |
+| `devswarm_recon.label_derive` | `derive-summary` |  |  | The label of the closing summary unit of a fold. |
 | `devswarm_recon.log_component_cache` | `devswarm-archived-cache` |  |  | The component of the active-snapshot log lines. |
+| `devswarm_recon.log_gate_fold` | `lockstep` |  |  | The `gate` a fold writes into the cursor journal. |
 | `devswarm_recon.log_level_warn` | `warn` |  |  | The level of the partial-list guard's log line. |
 | `devswarm_recon.log_op_partial` | `partial-list-guard` |  |  | The operation of the partial-list guard's log line. |
+| `devswarm_recon.log_verb_fold` | `fold` |  |  | The `verb` a fold writes into the cursor journal. |
 | `devswarm_recon.mirror_eng` | `engine` |  |  | The name of the mirror the engine's op list is applied to, inside a job's scratch directory. |
 | `devswarm_recon.mirror_max_files` | `20000` |  |  | Most files a job's directory mirrors may hold; a larger input makes the job defer to Node (never a partial comparison). |
 | `devswarm_recon.mirror_node` | `node` |  |  | The name of the mirror Node works on, inside a job's scratch directory. |
+| `devswarm_recon.mode_engine` | `engine` |  |  | The value of devswarm_sup.sweep_tail_mode under which the engine plans, witnesses and applies the sweep tail itself. |
 | `devswarm_recon.msg_call_differs` | `call {i} returned {got} (engine says {want})` |  |  | A Node call returned a value other than the engine's. Placeholders: {i}, {got}, {want}. |
 | `devswarm_recon.msg_diff_length` | `{path}: length {node} vs {engine}` |  |  | A path whose lines agree but whose lengths differ. Placeholders: {path}, {node}, {engine}. |
 | `devswarm_recon.msg_diff_line` | `{path}: node `{node}` vs engine `{engine}`` |  |  | The first differing line of a path. Placeholders: {path}, {node}, {engine}. |
@@ -5360,24 +5375,37 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.norm_db_companions` | `-wal, -shm, -journal` |  |  | Endings of the files that belong to a SQLite database and are not part of its content. |
 | `devswarm_recon.norm_db_suffix` | `.db` |  |  | The ending of a store database file; the normaliser dumps it logically instead of comparing pages. |
 | `devswarm_recon.norm_log_suffixes` | `.jsonl, .jsonl.1` |  |  | Endings of the log files under the logs directory whose lines are masked (entry time and writer pid) before comparing. |
+| `devswarm_recon.norm_pid_mask` | `"pid":[0-9]+,"nonce"` |  |  | Pattern the normaliser blanks in a cursor-write journal: the writing process's pid (the engine and Node write their own). |
+| `devswarm_recon.norm_pid_mask_to` | `"pid":0,"nonce"` |  |  | What the pid pattern becomes. |
 | `devswarm_recon.norm_unreadable_db` | `unreadable-db` |  |  | What the normaliser records for a database it cannot open. |
 | `devswarm_recon.probe_args` | `workspace, info` |  |  | The hivecontrol arguments of a start-up probe, before the workspace id. |
 | `devswarm_recon.probe_timeout_ms` | `3000` |  | ms | How long one start-up probe may run (Node: PROBE_TIMEOUT_MS). |
+| `devswarm_recon.reason_anchor` | `mesh-anchor-attended` |  |  | The reason an attended mesh-anchor row was left (archiveLeftReason). |
+| `devswarm_recon.reason_forward_failed` | `forward-failed` |  |  | The reason a row whose forward failed is reported as left. |
+| `devswarm_recon.reason_live_descriptor` | `live-descriptor` |  |  | The reason a left row with a descriptor and a live session is given (archiveLeftReason). |
 | `devswarm_recon.reason_max` | `300` |  |  | Most characters (UTF-16 units) of an error text kept in the repository-not-known marker. |
 | `devswarm_recon.reason_no_descriptor` | `no-descriptor` |  |  | The reason of an unhealable orphan that has no descriptor in workspaces/ or archived/. |
 | `devswarm_recon.reason_wrong_store` | `wrong-store` |  |  | The reason of an unhealable orphan whose worktree belongs to another repository. |
+| `devswarm_recon.reason_no_live_session` | `descriptor-no-live-session` |  |  | The reason a left row with a descriptor and no live session is given (archiveLeftReason). |
+| `devswarm_recon.reason_raced` | `raced-re-register` |  |  | The reason a left row is given when it has no descriptor (archiveLeftReason). |
+| `devswarm_recon.reason_survivor_gone` | `survivor-gone` |  |  | Why a candidate was not folded: its survivor is not registered in the store. |
 | `devswarm_recon.recheck_ms` | `21600000` |  | ms | How long a repository-not-known marker suppresses the failing calls before one attempt re-tests it (Node: RECHECK_MS). |
 | `devswarm_recon.samples_max_bytes` | `5242880` |  | bytes | Largest the samples log grows before it is rotated to its one kept generation (Node: 5 MB). |
 | `devswarm_recon.samples_rotated_suffix` | `.1` |  |  | The ending of the rotated samples log. |
 | `devswarm_recon.scratch_prefix` | `recon-` |  |  | The start of a job's scratch directory name (under devswarm_sup.witness_dir). |
+| `devswarm_recon.seen_sep` | `.seen-` |  |  | The separator of a sibling-seen watermark file name, cursors/<caller>.seen-<sibling>.json (cursors.js SIBLING_SEEN_SEP). |
 | `devswarm_recon.set_active_floor_pct` | `7 entries` |  |  | Least percent of a project's previous active-workspace snapshot a new one must hold, or the previous one is kept (0 turns the floor off). Node: devswarm.activeFloorPct. |
 | `devswarm_recon.settings_files` | `.claude/settings.json` |  |  | Settings files (relative to the home) a mirror also holds, because the Node functions and the summary projection read them. |
 | `devswarm_recon.stage_heal_orphans` | `heal-orphan-partitions` |  |  | The name of the deferred post-update stage the orphan heal belongs to. |
+| `devswarm_recon.skip_prefix` | `skip:` |  |  | The start of the failure text of an op that wrote nothing and whose unit is simply handed back to Node. |
+| `devswarm_recon.status_gone` | `gone` |  |  | The status of a forward whose destination is not registered. |
+| `devswarm_recon.status_ok` | `ok` |  |  | The status of a forward that completed. |
 | `devswarm_recon.status_stale` | `stale` |  |  | The verdict status word that makes a workspace a start-up sampling candidate. |
 | `devswarm_recon.summary_dirs` | `workspaces, archived, cursors, heartbeats` |  |  | Directories under the DevSwarm state directory that the summary projection reads; a job that rewrites a summary mirrors them whole. |
 | `devswarm_recon.suppress_after` | `3` |  |  | How many sweeps in a row must meet the same repository-not-known error before the calls are suppressed (Node: SUPPRESS_AFTER). |
 | `devswarm_recon.synthetic_prefix` | `unclaimed:` |  |  | The start of a session id the registry mints for a row with no live session (such a session never confirms an identity). |
 | `devswarm_recon.tail_max_stores` | `3` |  |  | Most stores the engine takes through its own witnessed orphan heal in one supervisor tick (each costs one Node witness run). |
+| `devswarm_recon.why_dest_gone` | `dest-gone` |  |  | Why a forward was handed back: its destination partition is no longer registered in the store. |
 | `devswarm_recon.why_drift` | `drift:` |  |  | The start of the reason when a precondition changed between the plan and the apply (followed by what changed). |
 | `devswarm_recon.why_lock_busy` | `lock-busy` |  |  | Why a unit was handed back: its workspace lock is held by a live writer. |
 | `devswarm_recon.why_mirror` | `mirror-failed` |  |  | Why a unit was handed back: a scratch mirror could not be built or the engine's pass over it failed. |
@@ -5388,6 +5416,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.why_orphan_archived` | `orphan-archived` |  |  | Why a store was handed back: an orphan is archived (forward or drained, which are Node's) or the archive gate needs the liveness proof. |
 | `devswarm_recon.why_orphan_family` | `orphan-family` |  |  | Why a store was handed back: an orphan's worktree already has registry rows, so adopting it forwards its unread into the survivor (the fold, which is Node's). |
 | `devswarm_recon.why_rehome_across` | `rehome-across-stores` |  |  | Why a row was handed back: it is mis-keyed and moving it between stores (rehomeAcrossStores) is still Node's. |
+| `devswarm_recon.why_summary_orphan` | `summary-orphan` |  |  | Why a fold was handed back: after it the closing summary would meet an unregistered partition with unread mail, which only Node's projection classifies. |
 | `devswarm_recon.why_surrogate` | `surrogate-cut` |  |  | Why a decision was handed back: cutting the text at Node's length would split a surrogate pair. |
 | `devswarm_recon.witness_diffs` | `20` |  |  | Most differences one witness log line lists. |
 | `devswarm_recon.witness_file` | `.anti-hall/logs/devswarm-recon-witness.ndjson` |  |  | The reconcile-port witness log, one JSON line per gated job (match: true / false, or null when Node could not run), relative to the home directory. |

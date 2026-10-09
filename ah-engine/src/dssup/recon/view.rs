@@ -136,3 +136,172 @@ pub fn str_field(d: &OVal, key: &str) -> R<Option<String>> {
         Some(_) => defer("descriptor-field-type"),
     }
 }
+
+// ---- S6: what the fold reads of a store -----------------------------------------------------------------------------------------
+
+/// One message row as the fold copies it (`listMessages`' shape, the columns the forward uses).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Msg {
+    /// Milliseconds since the epoch (an integer; any other stored type is a deferral).
+    pub ts: i64,
+    /// The dedupe hash.
+    pub hash: Option<String>,
+    /// The body (`''` for SQL NULL, as `listMessages` reads it).
+    pub body: String,
+    /// The sender label.
+    pub sender: Option<String>,
+    /// The recipient partition.
+    pub recipient: Option<String>,
+    /// `direct` or `broadcast`.
+    pub mtype: Option<String>,
+    /// The urgency word.
+    pub urgency: Option<String>,
+    /// A heartbeat broadcast (`is_heartbeat === 1`).
+    pub is_heartbeat: bool,
+    /// A question that needs a reply (`needs_reply === 1`).
+    pub needs_reply: bool,
+    /// The original row's hash on a forwarded copy.
+    pub orig_hash: Option<String>,
+    /// The writing process's reader nonce.
+    pub instance_nonce: Option<String>,
+}
+
+fn shape<T, E: std::fmt::Display>(r: Result<T, E>, what: &str) -> R<T> {
+    r.map_err(|e| Defer(format!("{what}:{e}")))
+}
+
+/// A read-only handle on a store the fold plans from.
+pub fn reader(home: &Path, store: &str) -> R<crate::mesh::MeshReader> {
+    shape(crate::mesh::MeshReader::open(&store_db(home, store)), "store-open")
+}
+
+/// A partition's message rows in storage order.
+pub fn messages_of(rd: &crate::mesh::MeshReader, id: &str) -> R<Vec<Msg>> {
+    let mut st = shape(rd.conn().prepare(crate::sql::RECON_MESSAGES_OF), "messages-shape")?;
+    let mut rows = shape(st.query(rusqlite::params![id]), "messages-shape")?;
+    let mut out = Vec::new();
+    while let Some(r) = shape(rows.next(), "messages-read")? {
+        let ts = match shape(r.get_ref(1), "messages-read")? {
+            rusqlite::types::ValueRef::Integer(i) => i,
+            _ => return defer("message-ts-type"),
+        };
+        let text = |i: usize| shape(r.get::<_, Option<String>>(i), "message-text-type");
+        let flag = |i: usize| shape(r.get::<_, Option<i64>>(i), "message-flag-type").map(|v| v == Some(1));
+        out.push(Msg {
+            ts,
+            hash: text(2)?,
+            body: text(3)?.unwrap_or_default(),
+            sender: text(4)?,
+            recipient: text(5)?,
+            mtype: text(6)?,
+            urgency: text(7)?,
+            is_heartbeat: flag(8)?,
+            needs_reply: flag(9)?,
+            orig_hash: text(10)?,
+            instance_nonce: text(11)?,
+        });
+    }
+    Ok(out)
+}
+
+/// The number of message rows in a partition.
+pub fn message_count(rd: &crate::mesh::MeshReader, id: &str) -> R<i64> {
+    shape(rd.conn().query_row(crate::sql::RECON_MESSAGE_COUNT, rusqlite::params![id], |r| r.get::<_, i64>(0)), "messages-shape")
+}
+
+/// Whether any partition of the store already holds a row with this hash (what `INSERT OR IGNORE` on the hash tests).
+pub fn hash_present(rd: &crate::mesh::MeshReader, hash: &str) -> R<bool> {
+    let mut st = shape(rd.conn().prepare(crate::sql::RECON_HASH_PRESENT), "messages-shape")?;
+    shape(st.exists(rusqlite::params![hash]), "messages-read")
+}
+
+/// The `reader_cursors` rows of a partition.
+pub fn cursor_rows(rd: &crate::mesh::MeshReader, id: &str) -> R<Vec<crate::meshw::store::CursorRow>> {
+    crate::meshw::cursors::rows_from_reader(rd, id).map_err(|e| Defer(format!("cursor-rows:{e}")))
+}
+
+/// `cursors.value` of a partition (0 when there is no row).
+pub fn store_cursor(rd: &crate::mesh::MeshReader, id: &str) -> R<i64> {
+    Ok(shape(rd.cursor(id), "cursor-read")? as i64)
+}
+
+fn cursor_file(home: &Path, name: &str) -> PathBuf {
+    crate::meshw::idlock::devswarm_root(home).join(defaults::text("mesh_write.dir_cursors")).join(name)
+}
+
+/// The floor of the store namespace as `readerCursors.floorOf` reports it: the floor row when it exists, else the legacy
+/// floor computed dry (`#base` file or the shared pair, raised to the lowest per-instance file).
+pub fn store_floor(home: &Path, rd: &crate::mesh::MeshReader, id: &str, rows: &[crate::meshw::store::CursorRow]) -> R<i64> {
+    if let Some(f) = rows.iter().find(|r| r.ns == defaults::text("mesh_write.cursor_ns_store") && r.reader == defaults::text("mesh_write.cursor_floor_reader")) {
+        return Ok(f.value);
+    }
+    let json = defaults::text("mesh_write.json_suffix");
+    let legacy = crate::meshw::cursors::legacy_safe(id);
+    let base_file = cursor_file(home, &format!("{id}{}{json}", defaults::text("mesh_write.cursor_base_suffix")));
+    let baseline = if legacy && base_file.exists() {
+        crate::meshw::cursors::read_cursor(&base_file) as i64
+    } else {
+        (crate::meshw::cursors::read_cursor(&crate::meshw::cursors::primary_cursor_path(home, id)) as i64).max(store_cursor(rd, id)?)
+    };
+    if !legacy {
+        return Ok(baseline);
+    }
+    let prefix = format!("{id}{}", defaults::text("mesh_write.cursor_inst_sep"));
+    let short = defaults::num("mesh_write.legacy_cursor_short_len") as usize;
+    let mut min: Option<i64> = None;
+    if let Ok(rdir) = std::fs::read_dir(cursor_file(home, "")) {
+        for e in rdir.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(rest) = name.strip_prefix(&prefix).and_then(|r| r.strip_suffix(json)) else { continue };
+            if rest.len() != short || !rest.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                continue;
+            }
+            let v = crate::meshw::cursors::read_cursor(&e.path()) as i64;
+            min = Some(min.map_or(v, |m| m.min(v)));
+        }
+    }
+    Ok(min.map_or(baseline, |m| baseline.max(m)))
+}
+
+/// `hasReaderEvidence(id)`: something has drained this partition (a store cursor above 0, a floor above 0, or a read-path
+/// cursor file above 0).
+pub fn has_reader_evidence(home: &Path, rd: &crate::mesh::MeshReader, id: &str) -> R<bool> {
+    let rows = cursor_rows(rd, id)?;
+    if store_cursor(rd, id)?.max(store_floor(home, rd, id, &rows)?) > 0 {
+        return Ok(true);
+    }
+    Ok(crate::meshw::cursors::read_cursor(&crate::meshw::cursors::primary_cursor_path(home, id)) > 0.0)
+}
+
+/// `cursors/<id>.json` relative to the home.
+pub fn primary_cursor_rel(id: &str) -> String {
+    ds(&format!("{}/{id}{}", defaults::text("mesh_write.dir_cursors"), defaults::text("mesh_write.json_suffix")))
+}
+
+/// The sibling-seen watermark `cursors/<caller>.seen-<sibling>.json` relative to the home, `None` when either id is not safe
+/// for a watermark file name (`siblingSeenCursorPath`).
+pub fn seen_cursor_rel(caller: &str, sibling: &str) -> Option<String> {
+    let sep = defaults::text("devswarm_recon.seen_sep");
+    let ok = |id: &str| crate::meshw::idlock::is_safe_id(id) && !id.contains(sep);
+    (ok(caller) && ok(sibling)).then(|| ds(&format!("{}/{caller}{sep}{sibling}{}", defaults::text("mesh_write.dir_cursors"), defaults::text("mesh_write.json_suffix"))))
+}
+
+/// `heartbeats/<id>.json` relative to the home.
+pub fn heartbeat_rel(id: &str) -> String {
+    ds(&format!("{}/{id}{}", defaults::text("mesh_write.dir_heartbeats"), defaults::text("mesh_write.json_suffix")))
+}
+
+/// `retired/<id>.json` relative to the home (`retiredRedirectPath`).
+pub fn retired_rel(id: &str) -> String {
+    ds(&format!("{}/{id}{}", defaults::text("devswarm_recon.dir_retired"), defaults::text("mesh_write.json_suffix")))
+}
+
+/// What a partition looked like when a plan decided about it: message count, cursor, and every reader row.
+pub fn partition_sig(home: &Path, store: &str, id: &str) -> R<String> {
+    let rd = reader(home, store)?;
+    let mut s = format!("{}|{}", message_count(&rd, id)?, store_cursor(&rd, id)?);
+    for r in cursor_rows(&rd, id)? {
+        s.push_str(&format!("|{}:{}:{}:{:?}:{}", r.ns, r.reader, r.value, r.retired_line, r.updated_at));
+    }
+    Ok(s)
+}

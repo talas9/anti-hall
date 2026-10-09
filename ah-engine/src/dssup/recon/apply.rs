@@ -66,7 +66,20 @@ pub fn check(env: &Env, ops: &[Op]) -> Result<(), String> {
                     return Err(format!("{store}:{}", row.id));
                 }
             }
-            Op::Append { .. } | Op::Rename { .. } | Op::Derive { .. } | Op::Log { .. } => {}
+            Op::RemoveRegistryIf { store, id, pre, .. } => {
+                if row_now(env.home, store, id)?.map(Box::new).as_ref() != Some(pre) {
+                    return Err(format!("{store}:{id}"));
+                }
+            }
+            Op::Guard { store, partition, sig, files } => {
+                if super::view::partition_sig(env.home, store, partition).map_err(|d| d.0)? != *sig {
+                    return Err(format!("{store}:{partition}"));
+                }
+                for (rel, pre) in files {
+                    pre_ok(env.home, rel, pre)?;
+                }
+            }
+            Op::Append { .. } | Op::Rename { .. } | Op::Derive { .. } | Op::Log { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } => {}
         }
     }
     Ok(())
@@ -115,6 +128,89 @@ fn upsert(env: &Env, store: &str, row: &RegistryRow, pre: &Option<Box<RegRow>>) 
     })
     .map_err(|e| e.to_string())
     .and_then(|applied| if applied { Ok(()) } else { Err(format!("drift:{store}:{}", row.id)) })
+}
+
+/// The failure text of an op that wrote nothing and left the unit untouched: the unit is handed back, not failed.
+pub fn skip(why: &str) -> String {
+    format!("{}{why}", defaults::text("devswarm_recon.skip_prefix"))
+}
+
+fn open_store(env: &Env, store: &str) -> Result<MeshStore, String> {
+    MeshStore::open(&super::view::store_db(env.home, store)).map_err(|e| e.to_string())
+}
+
+/// `appendIntoPartition` for mesh rows: the destination's id lock, a recheck that it is still registered, then the inserts.
+fn forward(env: &Env, store: &str, dest: &str, rows: &[crate::meshw::store::MeshRow]) -> Result<(), String> {
+    let Some(held) = crate::meshw::idlock::acquire(env.home, dest) else { return Err(skip(defaults::text("devswarm_recon.why_lock_busy"))) };
+    let done = (|| -> Result<bool, String> {
+        let st = open_store(env, store)?;
+        if !st.is_registered(dest).map_err(|e| e.to_string())? {
+            return Ok(false);
+        }
+        for m in rows {
+            st.append_mesh_row(m).map_err(|e| e.to_string())?;
+        }
+        Ok(true)
+    })();
+    held.release();
+    match done {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(skip(defaults::text("devswarm_recon.why_dest_gone"))),
+        Err(e) => Err(e),
+    }
+}
+
+/// `raiseAllLossFree` (store namespace) and the legacy projection after it, with the clock the witness pinned.
+fn raise(env: &Env, store: &str, partition: &str, value: i64) -> Result<(), String> {
+    let st = open_store(env, store)?;
+    let ns = defaults::text("mesh_write.cursor_ns_store");
+    let moved = st
+        .cursor_txn(|tx| {
+            let rows = tx.rows(partition)?;
+            if crate::meshw::cursors::needs_import(&rows) {
+                return Ok(None);
+            }
+            let mut n = 0;
+            for r in rows.iter().filter(|r| r.ns == ns && r.value < value) {
+                let retired = crate::meshw::cursors::is_retired(r);
+                tx.put(&crate::meshw::store::CursorPut {
+                    partition: partition.into(),
+                    ns: ns.into(),
+                    reader: r.reader.clone(),
+                    value,
+                    retired_line: retired.then_some(Some(value)),
+                    updated_at: env.now,
+                })?;
+                n += 1;
+            }
+            Ok(Some(n))
+        })
+        .map_err(|e| e.to_string())?;
+    if moved.is_none() {
+        return Err(defaults::text("mesh_write.err_cursor_import_needed").to_string());
+    }
+    // dualWrite: best effort, upward only
+    if value > 0 {
+        if crate::meshw::cursors::legacy_safe(partition) {
+            let p = crate::meshw::cursors::primary_cursor_path(env.home, partition);
+            if crate::meshw::cursors::read_cursor(&p) < value as f64 {
+                crate::discard::harmless(crate::meshw::cursors::ack_to(&p, value as f64)); // keep: the projection is best-effort in Node
+            }
+        }
+        if (st.reader().cursor(partition).unwrap_or(0) as i64) < value {
+            crate::discard::harmless(st.set_cursor(partition, value, env.now)); // keep: as above
+        }
+    }
+    Ok(())
+}
+
+/// `removeRegistryIf`: the NULL-safe conditional delete of one registry row.
+fn remove_if(env: &Env, store: &str, id: &str, session_id: &Option<String>, updated_at: Option<i64>, write_seq: Option<i64>) -> Result<(), String> {
+    let st = open_store(env, store)?;
+    let c = st.reader().conn();
+    let n = crate::meshw::store::retry_busy(|| c.prepare_cached(crate::sql::RECON_REGISTRY_DELETE_IF)?.execute(rusqlite::params![id, session_id, updated_at, write_seq]))
+        .map_err(|e| e.to_string())?;
+    if n == 0 { Err(format!("drift:{store}:{id}")) } else { Ok(()) }
 }
 
 fn log_line(env: &Env, component: &str, op: &str, level: &str, msg: &str, ctx: &str) {
@@ -169,6 +265,10 @@ fn run_op(env: &Env, op: &Op) -> Result<(), String> {
             std::fs::rename(at(rel), at(to)).map_err(|e| e.to_string())
         }
         Op::Upsert { store, row, pre } => upsert(env, store, row, pre),
+        Op::Forward { store, dest, rows } => forward(env, store, dest, rows),
+        Op::RaiseCursors { store, partition, value } => raise(env, store, partition, *value),
+        Op::RemoveRegistryIf { store, id, session_id, updated_at, write_seq, .. } => remove_if(env, store, id, session_id, *updated_at, *write_seq),
+        Op::Guard { .. } => Ok(()),
         Op::Derive { store } => {
             let st = MeshStore::open(&super::view::store_db(env.home, store)).map_err(|e| e.to_string())?;
             match crate::meshw::summary::derive_after_write(&st, &env.inv(), store) {
@@ -207,6 +307,7 @@ pub fn unit(env: &Env, u: &Unit, hooks: &Hooks) -> UnitEnd {
         Err(what) => UnitEnd::Deferred(format!("{}{what}", defaults::text("devswarm_recon.why_drift"))),
         Ok(()) => match run(env, &u.label, &u.ops, hooks) {
             Ok(()) => UnitEnd::Applied,
+            Err(e) if e.starts_with(defaults::text("devswarm_recon.skip_prefix")) => UnitEnd::Deferred(e),
             Err(e) => UnitEnd::Failed(e),
         },
     };

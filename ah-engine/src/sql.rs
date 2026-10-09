@@ -525,3 +525,11 @@ pub const RECON_TABLES: &str = "SELECT name FROM sqlite_master WHERE type = 'tab
 pub const RECON_DUMP: &str = "SELECT * FROM \"{table}\" ORDER BY rowid;";
 /// The reconcile port: the registry row of one id, every column.
 pub const RECON_REGISTRY_ONE: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry WHERE id = ?;";
+/// The reconcile port: a partition's message rows in storage order, with the columns the fold copies.
+pub const RECON_MESSAGES_OF: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce FROM messages WHERE workspace_id = ? ORDER BY id ASC;";
+/// The reconcile port: whether any partition of the store already holds a row with this hash.
+pub const RECON_HASH_PRESENT: &str = "SELECT 1 FROM messages WHERE hash = ? LIMIT 1;";
+/// The reconcile port: the number of message rows in a partition.
+pub const RECON_MESSAGE_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?;";
+/// The reconcile port: `removeRegistryIf` (the guard compares session, `updated_at` and `write_seq`, NULL-safe).
+pub const RECON_REGISTRY_DELETE_IF: &str = "DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;";

@@ -24,6 +24,9 @@
 // - an unreadable optional file is the absent one (Node's try/catch, fail-open)
 // - the witness is advisory: a scratch file that cannot be removed only costs disk
 pub mod apply;
+pub mod archived;
+pub mod dup;
+pub mod fold;
 pub mod gate;
 pub mod heal;
 pub mod mirror;
@@ -32,7 +35,7 @@ pub mod orphans;
 pub mod side;
 pub mod view;
 
-use crate::meshw::store::RegistryRow;
+use crate::meshw::store::{MeshRow, RegistryRow};
 
 /// The inputs of a job that its mirrors hold: files (kept with their modification time), whole directories (small ones, with a
 /// file cap) and stores (copied with SQLite's online backup). Paths are relative to the home; stores are repo keys.
@@ -115,6 +118,56 @@ pub enum Op {
     Derive {
         /// The store (repo key).
         store: String,
+    },
+    /// The fold's forward (`appendIntoPartition`): under the destination's id lock, and only while the destination is still
+    /// registered in the store, add the rows to its partition (a row whose hash already exists anywhere in the store is
+    /// ignored, which is what makes a re-run harmless). A busy lock or a destination that went away writes nothing and hands
+    /// the unit back (`apply::skip`). Only ever adds rows.
+    Forward {
+        /// The store (repo key).
+        store: String,
+        /// The destination partition.
+        dest: String,
+        /// The rows, already addressed to `dest`.
+        rows: Vec<MeshRow>,
+    },
+    /// `readerCursors.raiseAllLossFree` on the store namespace, then the legacy projection (the shared cursor file, then the
+    /// `cursors` table, both upward only). Only valid after a forward that made every row below `value` reachable elsewhere.
+    RaiseCursors {
+        /// The store (repo key).
+        store: String,
+        /// The partition whose readers move.
+        partition: String,
+        /// The position every reader row below it is raised to.
+        value: i64,
+    },
+    /// `removeRegistryIf(id, guard)`: one conditional statement that deletes the registry row only while its session, its
+    /// `updated_at` and its `write_seq` are still what the plan read. The only removal the fold family performs.
+    RemoveRegistryIf {
+        /// The store (repo key).
+        store: String,
+        /// The registry id.
+        id: String,
+        /// The guard's session (`None`: SQL NULL).
+        session_id: Option<String>,
+        /// The guard's `updated_at`.
+        updated_at: Option<i64>,
+        /// The guard's `write_seq`.
+        write_seq: Option<i64>,
+        /// The row as the plan read it, re-checked before the statement.
+        pre: Box<RegRow>,
+    },
+    /// A precondition and nothing else: what a partition (its rows, positions and the files the decision read) looked like
+    /// when the plan decided. A drifted guard hands the whole unit back.
+    Guard {
+        /// The store (repo key).
+        store: String,
+        /// The partition.
+        partition: String,
+        /// Its signature (see `view::partition_sig`).
+        sig: String,
+        /// Files the decision read, with what they were.
+        files: Vec<(String, Pre)>,
     },
     /// One line of the central log, as `anti-hall-log.js` `logEvent` writes it.
     Log {

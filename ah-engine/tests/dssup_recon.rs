@@ -1,4 +1,4 @@
-//! The reconcile port, slices S0 to S2, against Node's own functions.
+//! The reconcile port, slices S0 to S2 and S6, against Node's own functions.
 //!
 //! Every case builds a scratch home, plans with the engine, and runs the witness gate: Node's function on one mirror, the engine's
 //! op list on another, byte-compared, then applied to the real (scratch) home. A case passes only when the gate agrees (or the
@@ -10,9 +10,9 @@ use ah_engine::checks::git::util::Settings;
 use ah_engine::checks::guardkit::ojson::OVal;
 use ah_engine::dsact::runner::{RunResult, RunSpec, Runner, System};
 use ah_engine::dssup::recon::gate::{self, Job, Verdict};
-use ah_engine::dssup::recon::{Hooks, Op, UnitEnd, apply, heal, norm, orphans, side};
+use ah_engine::dssup::recon::{Hooks, Op, UnitEnd, apply, archived, dup, fold, heal, norm, orphans, side};
 use ah_engine::dssup::tick::Ctx;
-use ah_engine::meshw::store::{MeshStore, RegistryRow};
+use ah_engine::meshw::store::{CursorPut, MeshRow, MeshStore, RegistryRow};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -947,6 +947,14 @@ fn crash_child() {
         let _ = apply::unit(&env, &p.unit, &Hooks { at: &hook });
         return;
     }
+    if std::env::var("RECON_CRASH_KIND").as_deref() == Ok("fold") {
+        let key = std::env::var("RECON_CRASH_KEY").unwrap();
+        let mut st = st;
+        st.env.insert("ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE".into(), "engine".into());
+        let ctx = Ctx { home: &home, root: &root, st: &st, now: NOW, engine_pokes: false };
+        let _ = fold::run(&ctx, &System::configured(), &key, &Hooks { at: &hook });
+        return;
+    }
     let key = std::env::var("RECON_CRASH_KEY").unwrap();
     if std::env::var("RECON_CRASH_KIND").as_deref() == Ok("orphans") {
         let _ = orphans::run(&ctx, &System::configured(), &key, &Hooks { at: &hook });
@@ -1129,6 +1137,737 @@ fn a_hivecontrol_stub_killed_mid_read_loses_nothing_the_engine_holds() {
     let r = System { hc: stub.to_string_lossy().into_owned() };
     let p = side::probe(&r, "w1");
     assert!(!p.ok, "a probe whose process was killed is a failed probe");
+}
+
+// ---------------------------------------------------------------- S6: the mesh fold
+
+/// A fixture whose engine switch for the sweep tail is on.
+fn fix6(tag: &str) -> Fix {
+    let mut f = fix(tag);
+    f.st.env.insert("ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE".into(), "engine".into());
+    f
+}
+
+impl Fix {
+    fn row_s(&self, key: &str, id: &str, wt: &str, sid: Option<&str>) {
+        let st = self.store(key);
+        let r = RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: sid.map(str::to_string), inbox_path: None, cursor_path: None, nudge_command: None };
+        assert!(st.upsert_registry(&r, 1_000, |_, _| true).unwrap());
+    }
+    fn db(&self, key: &str) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.home.join(self.ds(&format!("store/{key}/devswarm.db")))).unwrap()
+    }
+    fn touch(&self, key: &str, id: &str, updated_at: i64) {
+        self.db(key).execute("UPDATE registry SET updated_at = ?1 WHERE id = ?2", rusqlite::params![updated_at, id]).unwrap();
+    }
+    /// A direct message in `part`'s partition (`sender` empty makes it non-forwardable).
+    fn msg(&self, key: &str, part: &str, ts: i64, body: &str, sender: &str) {
+        let st = self.store(key);
+        st.append_mesh_row(&MeshRow {
+            workspace_id: part.into(),
+            ts,
+            hash: Some(format!("mesh:seed-{part}-{ts}-{}", body.len())),
+            body: body.into(),
+            sender: Some(sender.into()),
+            recipient: Some(part.into()),
+            mtype: Some("direct".into()),
+            urgency: Some("normal".into()),
+            ..MeshRow::default()
+        })
+        .unwrap();
+    }
+    fn floors(&self, key: &str, part: &str, v: i64) {
+        let put = |ns: &str, value: i64| CursorPut { partition: part.into(), ns: ns.into(), reader: "#floor".into(), value, retired_line: None, updated_at: 5 };
+        self.store(key).reader_cursor_txn(&[put("store", v), put("nd", 0)]).unwrap();
+    }
+    fn rows(&self, key: &str) -> Vec<String> {
+        ah_engine::dssup::recon::view::registry(&self.home, key).unwrap().into_iter().map(|r| r.row.id).collect()
+    }
+    fn msgs_in(&self, key: &str, part: &str) -> Vec<String> {
+        let c = self.db(key);
+        let mut st = c.prepare("SELECT body FROM messages WHERE workspace_id = ?1 ORDER BY id").unwrap();
+        st.query_map([part], |r| r.get::<_, String>(0)).unwrap().flatten().collect()
+    }
+}
+
+struct FoldCase {
+    name: &'static str,
+    /// Builds the home; returns the store key and the texts that depend on the home's path (replaced by `N0`, `N1` ...).
+    build: fn(&Fix) -> (String, Vec<String>),
+    retired: &'static [&'static str],
+    forwarded: i64,
+    /// Groups the engine hands to Node (nothing is planned or written for them).
+    deferred: usize,
+    /// Compared against Node's whole `foldMeshDuplicates` on a twin home (only when nothing is deferred).
+    whole: bool,
+}
+
+fn s6_base(f: &Fix) -> (String, String) {
+    let wt = f.repo("p");
+    let key = f.key_of(&wt);
+    (wt, key)
+}
+
+fn pair(k: &str, wt: &str) -> Vec<String> {
+    vec![k.to_string(), wt.to_string()]
+}
+
+fn s6_cases() -> Vec<FoldCase> {
+    vec![
+        FoldCase {
+            name: "live survivor, phantom with two unread",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg(&k, "w-ph", 10, "one", "snd");
+                f.msg(&k, "w-ph", 11, "two", "snd");
+                (k.clone(), vec![k, wt])
+            },
+            retired: &["w-ph"],
+            forwarded: 2,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "phantom without mail",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.row_s(&k, "w-ph", &wt, None);
+                (k.clone(), vec![k, wt])
+            },
+            retired: &["w-ph"],
+            forwarded: 0,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "descriptor-backed duplicate is forwarded and left",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.row_s(&k, "w-zdup", &wt, None);
+                f.descriptor("w-zdup", &desc_json("w-zdup", &wt, "", None, None));
+                f.floors(&k, "w-zdup", 0);
+                f.msg(&k, "w-zdup", 10, "kept", "snd");
+                (k.clone(), vec![k, wt])
+            },
+            retired: &[],
+            forwarded: 1,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "the id-first row is not the live one: the survivor needs liveness, Node's",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.row_s(&k, "w-adup", &wt, None);
+                f.floors(&k, "w-adup", 0);
+                f.msg(&k, "w-adup", 10, "kept", "snd");
+                (k.clone(), pair(&k, &wt))
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 1,
+            whole: false,
+        },
+        FoldCase {
+            name: "a retired partition left with unread mail cannot be summarised natively: Node's",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg(&k, "w-ph", 10, "native", "");
+                f.msg(&k, "w-ph", 11, "real", "snd");
+                (k.clone(), vec![k, wt])
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 1,
+            whole: false,
+        },
+        FoldCase {
+            name: "a floor above zero skips the consumed prefix",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 1);
+                f.msg(&k, "w-ph", 10, "read", "snd");
+                f.msg(&k, "w-ph", 11, "unread-a", "snd");
+                f.msg(&k, "w-ph", 12, "unread-b", "snd");
+                (k.clone(), vec![k, wt])
+            },
+            retired: &["w-ph"],
+            forwarded: 2,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "identical mail in two candidates is added once",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-a", &wt, Some("s1"));
+                f.row_s(&k, "w-b", &wt, None);
+                f.row_s(&k, "w-c", &wt, None);
+                for id in ["w-b", "w-c"] {
+                    f.floors(&k, id, 0);
+                }
+                // same sender, body, time: the forwarded copies share a hash; the seeded originals differ in their part name
+                f.msg(&k, "w-b", 10, "same", "snd");
+                f.msg(&k, "w-c", 10, "same", "snd");
+                (k.clone(), vec![k, wt])
+            },
+            retired: &["w-b", "w-c"],
+            forwarded: 1,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "a stale cross-reference makes two live-shaped rows: Node's survivor pick",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.row_s(&k, "w-x", &wt, Some("w-live"));
+                f.descriptor("w-x", &desc_json("w-x", &wt, "w-live", None, None));
+                (k.clone(), vec![k, wt])
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 1,
+            whole: false,
+        },
+        FoldCase {
+            name: "a lone subdirectory row is re-keyed to its toplevel",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                let sub = format!("{wt}/sub");
+                std::fs::create_dir_all(&sub).unwrap();
+                f.row_s(&k, "w-sub", &sub, Some("s1"));
+                (k.clone(), pair(&k, &wt))
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "a subdirectory row joins its toplevel's group and folds",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                let sub = format!("{wt}/sub");
+                std::fs::create_dir_all(&sub).unwrap();
+                f.row_s(&k, "w-a", &wt, Some("s1"));
+                f.row_s(&k, "w-b", &sub, None);
+                f.touch(&k, "w-a", NOW + 5); // the re-keyed row is stamped `now`; the live row must still win the fallback
+                f.floors(&k, "w-b", 0);
+                f.msg(&k, "w-b", 10, "from the subdir", "snd");
+                (k.clone(), pair(&k, &wt))
+            },
+            retired: &["w-b"],
+            forwarded: 1,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "an aged ghost folds into the lone non-ghost",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-anchor", &wt, Some("unclaimed:primary-x"));
+                f.row_s(&k, "w-ghost", &wt, None);
+                (k.clone(), pair(&k, &wt))
+            },
+            retired: &["w-ghost"],
+            forwarded: 0,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "a young ghost is only reported",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-anchor", &wt, Some("unclaimed:primary-x"));
+                f.row_s(&k, "w-ghost", &wt, None);
+                f.touch(&k, "w-ghost", NOW - 3_600_000);
+                (k.clone(), pair(&k, &wt))
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "two sessionless rows are refused (needs attention)",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-a", &wt, Some("unclaimed:a"));
+                f.row_s(&k, "w-b", &wt, Some("unclaimed:b"));
+                (k.clone(), pair(&k, &wt))
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "an attended anchor candidate is left",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                let anchor = ah_engine::meshw::ident::primary_workspace_id(&wt).unwrap();
+                f.row_s(&k, "z-live", &wt, Some("s1"));
+                f.row_s(&k, &anchor, &wt, None);
+                f.touch(&k, "z-live", 5_000); // the live row is the freshest, so it wins the fallback too
+                f.descriptor(&anchor, &desc_json(&anchor, &wt, "", None, None));
+                (k.clone(), vec![k, wt, anchor])
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "an unattended anchor candidate is folded",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                let anchor = ah_engine::meshw::ident::primary_workspace_id(&wt).unwrap();
+                f.row_s(&k, "z-live", &wt, Some("s1"));
+                f.row_s(&k, &anchor, &wt, None);
+                f.touch(&k, "z-live", 5_000); // the live row is the freshest, so it wins the fallback too
+                (k.clone(), vec![k, wt, anchor])
+            },
+            retired: &["N2"],
+            forwarded: 0,
+            deferred: 0,
+            whole: true,
+        },
+        FoldCase {
+            name: "two live sessions: the survivor needs liveness, Node's",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-a", &wt, Some("s1"));
+                f.row_s(&k, "w-b", &wt, Some("s2"));
+                (k.clone(), pair(&k, &wt))
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 1,
+            whole: false,
+        },
+        FoldCase {
+            name: "an anchor with a real session and no descriptor needs dormancy, Node's",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                let anchor = ah_engine::meshw::ident::primary_workspace_id(&wt).unwrap();
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.row_s(&k, &anchor, &wt, Some("s9"));
+                (k.clone(), vec![k, wt, anchor])
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 1,
+            whole: false,
+        },
+        FoldCase {
+            name: "unread mail without floor rows needs the legacy cursor import, Node's",
+            build: |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.row_s(&k, "w-ph", &wt, None);
+                f.msg(&k, "w-ph", 10, "one", "snd");
+                (k.clone(), pair(&k, &wt))
+            },
+            retired: &[],
+            forwarded: 0,
+            deferred: 1,
+            whole: false,
+        },
+    ]
+}
+
+/// The post-state with the home's own path and the case's path-dependent names replaced, without logs, locks or scratch.
+fn canon(f: &Fix, needles: &[String]) -> std::collections::BTreeMap<String, String> {
+    let home = f.home.to_string_lossy().into_owned();
+    let fix_up = |t: &str| {
+        let mut o = t.replace(&home, "HOME");
+        for (i, nd) in needles.iter().enumerate() {
+            o = o.replace(nd.as_str(), &format!("N{i}"));
+        }
+        o
+    };
+    norm::dump(&f.home)
+        .into_iter()
+        .filter(|(k, _)| !k.starts_with(".anti-hall/logs") && !k.starts_with(".anti-hall/work") && !k.contains("/locks/") && !k.starts_with("repos/") && !k.starts_with(".git"))
+        .map(|(k, v)| (fix_up(&k), fix_up(&v)))
+        .collect()
+}
+
+/// Node's whole `foldMeshDuplicates` on a home, with the clock pinned.
+fn node_whole_fold(f: &Fix, key: &str) -> Value {
+    let code = "const NOW=Number(process.argv[4]);Date.now=()=>NOW;process.env.HOME=process.argv[2];process.env.USERPROFILE=process.argv[2];process.env.ANTI_HALL_LOG_DIR=process.argv[2]+'/.anti-hall/logs';const F=require(process.argv[1]+'/scripts/devswarm-lib/fold.js');console.log(JSON.stringify(F.foldMeshDuplicates(process.argv[2],{repoKey:process.argv[3]})))";
+    let o = Command::new("node").args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), key, &NOW.to_string()]).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    serde_json::from_str(String::from_utf8_lossy(&o.stdout).lines().last().unwrap()).unwrap()
+}
+
+#[test]
+fn s6_fold_mesh_duplicates_matches_node_for_every_group_shape() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S6.fold-mesh-duplicates");
+    for c in s6_cases() {
+        let f = fix6("s6");
+        let (key, needles) = (c.build)(&f);
+        let name_of = |s: &str| if let Some(i) = s.strip_prefix('N').and_then(|d| d.parse::<usize>().ok()) { needles[i].clone() } else { s.to_string() };
+        let end = fold::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap_or_else(|d| panic!("{}: deferred {d:?}", c.name));
+        assert_eq!(end.verdict, Verdict::Agreed, "{}: {:?}", c.name, end.verdict);
+        let want: Vec<String> = c.retired.iter().map(|s| name_of(s)).collect();
+        assert_eq!(end.result.retired, want, "{}: retired (deferred {:?}, verdict {:?})", c.name, end.deferred, end.verdict);
+        assert_eq!(end.result.forwarded, c.forwarded, "{}: forwarded (deferred {:?} / {:?})", c.name, end.deferred, fold::plan_fold(&f.ctx(), &key).map(|p| p.deferred));
+        let plan = fold::plan_fold(&f.ctx(), &key).unwrap();
+        assert_eq!(plan.deferred.len(), c.deferred, "{}: deferred groups {:?}", c.name, plan.deferred);
+        if c.deferred == 0 {
+            // the engine's whole pass equals Node's whole function on a twin home, and a second pass writes nothing
+            assert!(end.deferred.is_empty(), "{}: {:?}", c.name, end.deferred);
+            if c.whole {
+                let twin = fix6("s6-twin");
+                let (tkey, tneedles) = (c.build)(&twin);
+                let node = node_whole_fold(&twin, &tkey);
+                assert_eq!(node["ok"], serde_json::json!(true), "{}: {node}", c.name);
+                let mut got: Vec<String> = node["retired"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+                let mut mine = end.result.retired.clone();
+                got.sort();
+                mine.sort();
+                assert_eq!(got.len(), mine.len(), "{}: node retired {node}", c.name);
+                assert_eq!(node["forwarded"].as_i64().unwrap(), end.result.forwarded, "{}", c.name);
+                assert_eq!(node["folded"].as_i64().unwrap(), end.result.folded, "{}", c.name);
+                assert_eq!(canon(&f, &needles), canon(&twin, &tneedles), "{}: engine and Node ended in different states", c.name);
+            }
+            let before = f.snapshot();
+            let again = fold::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap();
+            assert_eq!(again.verdict, Verdict::Agreed, "{} (second pass)", c.name);
+            assert!(again.result.retired.is_empty() && again.result.forwarded == 0, "{}: second pass acted", c.name);
+            assert_eq!(f.snapshot(), before, "{}: the second pass wrote something", c.name);
+        } else {
+            // a deferred group is untouched
+            assert!(end.result.retired.is_empty() && end.result.forwarded == 0, "{}", c.name);
+        }
+        t.case(c.deferred == 0);
+    }
+    t.print();
+}
+
+#[test]
+fn s6_the_engine_switch_is_off_by_default_and_a_deferred_store_writes_nothing() {
+    let f = fix("s6-off");
+    let (wt, k) = s6_base(&f);
+    f.row_s(&k, "w-live", &wt, Some("s1"));
+    f.row_s(&k, "w-ph", &wt, None);
+    let before = f.snapshot();
+    assert!(fold::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).is_err(), "mode node hands the store to Node");
+    assert_eq!(f.snapshot(), before);
+    // a missing store: nothing to fold, and nothing is created
+    let g = fix6("s6-none");
+    let end = fold::run(&g.ctx(), &System::configured(), "no-such-store", &Hooks::none()).unwrap();
+    assert!(end.result.retired.is_empty());
+    assert!(!g.home.join(g.ds("store/no-such-store")).exists());
+}
+
+#[test]
+fn s6_ghost_rows_match_nodes_ghost_registry_rows() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let f = fix6("s6-ghost");
+    let (wt, k) = s6_base(&f);
+    f.row_s(&k, "g-old", &wt, None); // a ghost
+    f.row_s(&k, "g-young", &wt, None);
+    f.touch(&k, "g-young", NOW - 1_000);
+    f.row_s(&k, "g-sess", &wt, Some("unclaimed:x"));
+    f.row_s(&k, "g-desc", &wt, None);
+    f.descriptor("g-desc", &desc_json("g-desc", &wt, "", None, None));
+    f.row_s(&k, "g-beat", &wt, None);
+    f.put(&f.ds("heartbeats/g-beat.json"), "{\"ts\":1}");
+    f.row_s(&k, "g-read", &wt, None);
+    f.floors(&k, "g-read", 3);
+    f.row_s(&k, "g-file", &wt, None);
+    f.put(&f.ds("cursors/g-file.json"), "0");
+    let ids: Vec<String> = ["g-old", "g-young", "g-sess", "g-desc", "g-beat", "g-read", "g-file"].iter().map(|s| s.to_string()).collect();
+    let (got, verdict) = fold::ghost_ids(&f.ctx(), &System::configured(), &k, &ids).unwrap();
+    assert_eq!(verdict, Verdict::Agreed);
+    assert_eq!(got, vec!["g-old".to_string()]);
+    // the age bar comes from the environment, as in Node
+    let mut env = HashMap::new();
+    env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), "2".to_string());
+    assert_eq!(fold::ghost_age_ms(&env).unwrap(), 7_200_000.0);
+    env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), "0x10".to_string());
+    assert!(fold::ghost_age_ms(&env).is_err());
+}
+
+#[test]
+fn s6_retire_worktree_duplicates_matches_node() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S6.retire-worktree-duplicates");
+    type Build = fn(&Fix) -> (String, String);
+    let cases: Vec<(&str, Build, Option<Value>)> = vec![
+        ("phantoms fold into the caller", |f| {
+            let (wt, k) = s6_base(f);
+            f.row_s(&k, "w-keep", &wt, Some("s1"));
+            f.row_s(&k, "w-ph", &wt, None);
+            f.floors(&k, "w-ph", 0);
+            f.msg(&k, "w-ph", 10, "m", "snd");
+            (wt, k)
+        }, Some(serde_json::json!({"retired": ["w-ph"], "forwarded": 1}))),
+        ("a distinct live child is forwarded to and left", |f| {
+            let (wt, k) = s6_base(f);
+            f.row_s(&k, "w-keep", &wt, Some("s1"));
+            f.row_s(&k, "w-kid", &wt, Some("s2"));
+            f.descriptor("w-kid", &desc_json("w-kid", &wt, "s2", None, None));
+            f.floors(&k, "w-kid", 0);
+            f.msg(&k, "w-kid", 10, "m", "snd");
+            (wt, k)
+        }, Some(serde_json::json!({"retired": [], "forwarded": 1, "left": ["w-kid"]}))),
+        ("nothing to fold", |f| {
+            let (wt, k) = s6_base(f);
+            f.row_s(&k, "w-keep", &wt, Some("s1"));
+            (wt, k)
+        }, None),
+    ];
+    for (name, build, want) in cases {
+        let f = fix6("s6-dup");
+        let (wt, _k) = build(&f);
+        let run = dup::retire_worktree_duplicates(&f.ctx(), &System::configured(), &wt, "w-keep", &wt, &Hooks::none()).unwrap_or_else(|d| panic!("{name}: deferred {d:?}"));
+        assert_eq!(run.verdict, Verdict::Agreed, "{name}: {:?}", run.verdict);
+        assert!(run.deferred.is_empty(), "{name}: {:?}", run.deferred);
+        assert_eq!(run.result, want, "{name}");
+        t.case(true);
+    }
+    t.print();
+}
+
+#[test]
+fn s6_retire_archived_worktree_group_matches_node() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S6.retire-archived-worktree-group");
+    type Build = fn(&Fix) -> (String, String);
+    let cases: Vec<(&str, Build, Value)> = vec![
+        ("one drainable sibling takes the mail", |f| {
+            let (wt, k) = s6_base(f);
+            f.row_s(&k, "w-live", &wt, Some("s1"));
+            f.descriptor("w-live", &desc_json("w-live", &wt, "s1", None, None));
+            f.row_s(&k, "w-ph", &wt, None);
+            f.floors(&k, "w-ph", 0);
+            f.msg(&k, "w-ph", 10, "m", "snd");
+            (wt, k)
+        }, serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [{"id": "w-live", "reason": "live-descriptor"}], "forwardedTo": "w-live"})),
+        ("no drainable sibling: phantoms fold into the archived row", |f| {
+            let (wt, k) = s6_base(f);
+            f.row_s(&k, "w-arch", &wt, None);
+            f.row_s(&k, "w-ph", &wt, None);
+            f.floors(&k, "w-ph", 0);
+            f.msg(&k, "w-ph", 10, "m", "snd");
+            (wt, k)
+        }, serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [], "forwardedTo": "w-arch"})),
+        ("the archived row is already gone: the survivor is missing", |f| {
+            let (wt, k) = s6_base(f);
+            f.row_s(&k, "w-ph", &wt, None);
+            f.floors(&k, "w-ph", 0);
+            f.msg(&k, "w-ph", 10, "m", "snd");
+            (wt, k)
+        }, serde_json::json!({"retired": [], "forwarded": 0, "left": [{"id": "w-ph", "reason": "survivor-gone"}], "forwardedTo": "w-arch"})),
+    ];
+    for (name, build, want) in cases {
+        let f = fix6("s6-arch");
+        let (wt, k) = build(&f);
+        let run = archived::retire_archived_worktree_group(&f.ctx(), &System::configured(), &k, "w-arch", &wt, &Hooks::none()).unwrap_or_else(|d| panic!("{name}: deferred {d:?}"));
+        assert_eq!(run.verdict, Verdict::Agreed, "{name}: {:?} {}", run.verdict, run.result);
+        assert!(run.deferred.is_empty(), "{name}: {:?}", run.deferred);
+        assert_eq!(run.result, want, "{name}");
+        t.case(true);
+    }
+    t.print();
+}
+
+#[test]
+fn s6_forward_archived_orphan_unread_matches_node() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S6.forward-archived-orphan-unread");
+    let day = 86_400_000;
+    let max_age = 30.0 * day as f64;
+    // a fresh and a stale unread, a non-forwardable one, and a read one below the floor
+    let f = fix6("s6-fwd");
+    let (wt, k) = s6_base(&f);
+    f.row_s(&k, "w-live", &wt, Some("s1"));
+    f.floors(&k, "w-arch", 1);
+    f.msg(&k, "w-arch", NOW - 100 * day, "already read", "snd");
+    f.msg(&k, "w-arch", NOW - day, "fresh", "snd");
+    f.msg(&k, "w-arch", NOW - 40 * day, "stale", "snd");
+    f.msg(&k, "w-arch", NOW - day + 1, "native", "");
+    let (res, verdict, ends) = archived::forward_archived_orphan_unread(&f.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
+    assert_eq!(verdict, Verdict::Agreed);
+    assert_eq!((res.forwarded, res.stale, res.status.as_str()), (1, 1, "ok"));
+    assert!(ends.iter().all(|e| *e == UnitEnd::Applied));
+    assert_eq!(f.msgs_in(&k, "w-live"), vec!["[forwarded from archived w-arch] fresh".to_string()]);
+    t.case(true);
+    // nothing is deleted from the archived partition, and a second pass adds nothing
+    assert_eq!(f.msgs_in(&k, "w-arch").len(), 4);
+    let (again, v2, _) = archived::forward_archived_orphan_unread(&f.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
+    assert_eq!((again.forwarded, v2), (0, Verdict::Agreed));
+    t.case(true);
+    // a survivor that is not registered answers `gone` and writes nothing
+    let g = fix6("s6-fwd2");
+    let (wt, k) = s6_base(&g);
+    g.row_s(&k, "w-other", &wt, Some("s1"));
+    g.floors(&k, "w-arch", 0);
+    g.msg(&k, "w-arch", NOW - day, "fresh", "snd");
+    let (res, verdict, _) = archived::forward_archived_orphan_unread(&g.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
+    assert_eq!((res.forwarded, res.status.as_str(), verdict), (0, "gone", Verdict::Agreed));
+    assert!(g.msgs_in(&k, "w-live").is_empty());
+    t.case(true);
+    t.print();
+}
+
+// ---- S6 crash safety: SIGKILL at each op boundary of a fold, then Node's next fold converges
+
+fn crash_fold_fixture(f: &Fix) -> String {
+    let (wt, k) = s6_base(f);
+    f.row_s(&k, "w-live", &wt, Some("s1"));
+    f.row_s(&k, "w-ph", &wt, None);
+    f.floors(&k, "w-ph", 0);
+    f.msg(&k, "w-ph", 10, "one", "snd");
+    f.msg(&k, "w-ph", 11, "two", "snd");
+    k
+}
+
+fn fold_state(f: &Fix, key: &str) -> (Vec<String>, Vec<(String, String)>, Vec<(String, String, i64)>) {
+    let c = f.db(key);
+    let rows = f.rows(key);
+    let mut st = c.prepare("SELECT workspace_id, hash FROM messages ORDER BY hash").unwrap();
+    let msgs: Vec<(String, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().flatten().collect();
+    let mut st = c.prepare("SELECT partition, ns, value FROM reader_cursors ORDER BY partition, ns, reader").unwrap();
+    let cur: Vec<(String, String, i64)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, f64>(2)? as i64))).unwrap().flatten().collect();
+    (rows, msgs, cur)
+}
+
+#[test]
+fn s6_a_sigkill_at_every_fold_op_boundary_loses_no_mail_and_nodes_next_fold_converges() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let reference = fix6("s6-crash-ref");
+    let rkey = crash_fold_fixture(&reference);
+    let r = fold::run(&reference.ctx(), &System::configured(), &rkey, &Hooks::none()).unwrap();
+    assert_eq!(r.verdict, Verdict::Agreed);
+    let (rrows, rmsgs, rcur) = fold_state(&reference, &rkey);
+    assert_eq!(rrows, vec!["w-live".to_string()]);
+    let rhashes: std::collections::BTreeSet<String> = rmsgs.iter().map(|m| m.1.clone()).collect();
+    let mut points: Vec<String> = Vec::new();
+    for w in ["before", "after"] {
+        for i in 0..7 {
+            points.push(format!("fold:w-ph:{i}:{w}"));
+        }
+        points.push(format!("derive-summary:0:{w}"));
+    }
+    let mut killed = 0;
+    let mut kinds = std::collections::BTreeSet::new();
+    for point in &points {
+        let f = fix6("s6-crash");
+        let k = crash_fold_fixture(&f);
+        let before: std::collections::BTreeSet<String> = fold_state(&f, &k).1.iter().map(|m| m.1.clone()).collect();
+        let o = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
+            .env("RECON_CRASH_HOME", &f.home)
+            .env("RECON_CRASH_AT", point)
+            .env("RECON_CRASH_KEY", &k)
+            .env("RECON_CRASH_KIND", "fold")
+            .output()
+            .unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        if o.status.signal() != Some(9) {
+            continue;
+        }
+        killed += 1;
+        kinds.insert(point.split(':').nth(2).map(str::to_string).unwrap_or_default());
+        let (rows, msgs, cur) = fold_state(&f, &k);
+        // no mail is lost and none appears twice
+        let hashes: std::collections::BTreeSet<String> = msgs.iter().map(|m| m.1.clone()).collect();
+        assert!(before.is_subset(&hashes), "{point}: a message hash disappeared");
+        assert_eq!(hashes.len(), msgs.len(), "{point}: a hash appears twice");
+        // each registry row is whole, and the survivor is never the one removed
+        assert!(rows.contains(&"w-live".to_string()), "{point}");
+        // a cursor never passes what was forwarded
+        let forwarded = msgs.iter().filter(|m| m.0 == "w-live").count() as i64;
+        for (p, ns, v) in &cur {
+            if p == "w-ph" && ns == "store" {
+                assert!(*v <= forwarded, "{point}: cursor {v} passed the forwarded prefix {forwarded}");
+            }
+        }
+        // Node's own next fold converges to the uninterrupted result
+        let node = node_whole_fold(&f, &k);
+        assert_eq!(node["ok"], serde_json::json!(true), "{point}: {node}");
+        let (rows2, msgs2, cur2) = fold_state(&f, &k);
+        assert_eq!(rows2, rrows, "{point}: converged registry");
+        let h2: std::collections::BTreeSet<String> = msgs2.iter().map(|m| m.1.clone()).collect();
+        assert_eq!(h2, rhashes, "{point}: converged mail");
+        assert_eq!(msgs2.len(), rmsgs.len(), "{point}: converged mail count");
+        assert_eq!(cur2.iter().filter(|c| c.0 == "w-ph" && c.1 == "store").map(|c| c.2).max(), rcur.iter().filter(|c| c.0 == "w-ph" && c.1 == "store").map(|c| c.2).max(), "{point}: converged cursor");
+    }
+    assert!(killed >= 10, "the kill points were reached ({killed})");
+    // the four named points: forward (0 is the guard, 1 the forward), cursor raise (2), tombstone (op after the journal lines), summary
+    for want in ["1", "2", "5", "0"] {
+        assert!(kinds.contains(want), "kill point {want} was exercised: {kinds:?}");
+    }
+}
+
+/// Read-only survey: what the planner would do on a snapshot of a real home (`RECON_SNAPSHOT_HOME`, made with
+/// `tests/recon_support/snapshot.js`). It plans every store and prints the tally; nothing is written or applied.
+#[test]
+#[ignore = "needs RECON_SNAPSHOT_HOME"]
+fn s6_survey_plans_over_a_snapshot() {
+    let Ok(home) = std::env::var("RECON_SNAPSHOT_HOME") else { return };
+    init_defaults();
+    let home = PathBuf::from(home);
+    let mut env: HashMap<String, String> = HashMap::new();
+    env.insert("HOME".into(), home.to_string_lossy().into_owned());
+    let st = Settings { home: home.to_string_lossy().into_owned(), env };
+    let root = ah_engine::defaults::root().unwrap();
+    let ctx = Ctx { home: &home, root: &root, st: &st, now: NOW, engine_pokes: false };
+    let mut reasons: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    let (mut stores, mut with_work, mut groups_deferred, mut units, mut store_deferred) = (0, 0, 0, 0, 0);
+    for e in std::fs::read_dir(home.join(".anti-hall/devswarm/store")).unwrap().flatten() {
+        let key = e.file_name().to_string_lossy().into_owned();
+        stores += 1;
+        match fold::plan_fold(&ctx, &key) {
+            Err(d) => {
+                store_deferred += 1;
+                *reasons.entry(format!("store:{}", d.0.split(':').next().unwrap_or(""))).or_default() += 1;
+            }
+            Ok(p) => {
+                if !p.job.units.is_empty() || !p.deferred.is_empty() || !p.result.needs_attention.is_empty() {
+                    with_work += 1;
+                }
+                units += p.job.units.len();
+                for (_, why) in &p.deferred {
+                    groups_deferred += 1;
+                    *reasons.entry(format!("group:{why}")).or_default() += 1;
+                }
+            }
+        }
+    }
+    println!("SURVEY stores={stores} with_work={with_work} planned_units={units} groups_deferred={groups_deferred} stores_deferred={store_deferred}");
+    for (k, v) in reasons {
+        println!("SURVEY   {k} = {v}");
+    }
 }
 
 // ---------------------------------------------------------------- the static guard
