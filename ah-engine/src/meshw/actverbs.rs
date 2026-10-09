@@ -274,8 +274,42 @@ fn tokens_total(inv: &Inv, key: &str) -> OVal {
     }
 }
 
-#[allow(dead_code)]
-fn unused(_: &Args) -> Vec<Row> {
-    let _ = (mesh_candidates, quote, refusal);
-    Vec::new()
+// ---- primary ------------------------------------------------------------------------------------------------------------
+
+/// Whether the caller is outside the project's Primary checkout (`seatVerdict(...).state === 'n/a'`): no worktree, or a child.
+/// Any other state needs the handover scan, the session transcripts or the seat holder's liveness: Node's.
+fn seat_not_applicable(inv: &Inv) -> R<bool> {
+    let c = ident::resolve_context(&inv.cwd, true)?;
+    let Some(wt) = c.worktree_root.clone() else { return Ok(true) };
+    Ok(!ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &inv.home, &inv.env)?)
+}
+
+/// `primary [status|takeover] [--session S]`: the answers outside a Primary checkout, which touch nothing.
+pub fn primary(inv: &Inv, a: &Args) -> R<Answer> {
+    let sid = a
+        .one(defaults::text("devswarm_cli.flag_session"))
+        .filter(|x| !x.is_empty())
+        .map(str::to_string)
+        .or_else(|| inv.env.get(defaults::text("mesh_write.env_session_id")).filter(|x| !x.is_empty()).cloned());
+    if !seat_not_applicable(inv)? {
+        return defer("primary-seat");
+    }
+    let sub = a.positionals.get(1).map(String::as_str);
+    if sub.is_none() || sub == Some(defaults::text("devswarm_cli.sub_status")) {
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(true))
+            .put("action", s(defaults::text("devswarm_cli.action_primary_status")))
+            .put("session", sid.as_deref().map_or(OVal::Null, s))
+            .put("state", s(defaults::text("devswarm_cli.seat_state_na")));
+        return Ok(answer(0, o.done()));
+    }
+    if sub != Some(defaults::text("devswarm_cli.sub_takeover")) {
+        let shown = quote(sub.unwrap_or_default());
+        return Ok(refusal(&[("error", s(&defaults::render("devswarm_cli.msg_primary_unknown_sub", &[("sub", &shown)])))]));
+    }
+    Ok(refusal(&[
+        ("action", s(defaults::text("devswarm_cli.action_primary_takeover"))),
+        ("reason", s(defaults::text("devswarm_cli.reason_not_primary_checkout"))),
+        ("error", s(defaults::text("devswarm_cli.msg_primary_takeover_na"))),
+    ]))
 }

@@ -26,6 +26,8 @@ pub enum Ext {
     AppSync,
     /// `done [<id>] [--summary TEXT]` (lane l8c).
     Done,
+    /// `primary [status|takeover]` (lane l8c).
+    Primary,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -40,6 +42,8 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::AppSync)
     } else if is("devswarm_cli.verb_done") {
         Some(Ext::Done)
+    } else if is("devswarm_cli.verb_primary") {
+        Some(Ext::Primary)
     } else {
         None
     }
@@ -57,5 +61,6 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::AppState => super::appverbs::app_state(inv, a),
         Ext::AppSync => super::appverbs::app_sync(inv, a),
         Ext::Done => super::actverbs::done(inv, a),
+        Ext::Primary => super::actverbs::primary(inv, a),
     }
 }
