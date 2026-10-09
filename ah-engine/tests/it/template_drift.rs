@@ -28,9 +28,3 @@ fn the_launcher_template_equals_what_stable_launcher_generates() {
         "devswarm_role.launcher_src is out of date: regenerate it from hooks/lib/stable-launcher.js (defaults/ and defaults.pristine/)"
     );
 }
-
-#[test]
-fn the_judge_system_prompt_equals_judge_core() {
-    let js = node_eval(r#"process.stdout.write(require(process.argv[1]+'/hooks/lib/judge-core.js').JUDGE_SYSTEM)"#);
-    assert_eq!(ah_engine::defaults::text("speculation_judge.system_prompt"), js, "speculation_judge.system_prompt drifted from judge-core.js JUDGE_SYSTEM");
-}

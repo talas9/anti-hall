@@ -50,6 +50,27 @@ const ALLOW: &[(&str, &str)] = &[
         "src/ops/shadow.rs",
         "the Node shadow of those tools: the detached child inherits the command's environment on purpose, so the Node script sees what the real run saw; its only switch is its own recursion guard",
     ),
+    (
+        "src/meshw/simple.rs",
+        "the detached `ah-engine mesh --verify` checker (same process as meshw/verify.rs): the real home it hands to the Node check it compares against",
+    ),
+    (
+        "src/script/host_proc.rs",
+        "the process's own time-zone variable, compared with the request's so a process age is converted in local time only when both read the same zone (a mismatch is unsure and defers); no request is answered from it",
+    ),
+    (
+        "src/script/mod.rs",
+        "`call_fn`, engine code that is not a hook (the GitHub poller, a statusline segment) reading a rule from a plugin script: there is no request, so the engine process's own settings environment selects the plugin home",
+    ),
+    ("src/dsact/runner.rs", "names the daemon's inherited variables to REMOVE from a spawned hivecontrol child (scrub prefixes from config); no value is read or used"),
+    (
+        "src/dswire/mod.rs",
+        "`Wire::start`, the DevSwarm layer's own startup in the daemon: detection of the host DevSwarm and its home are properties of the engine process, not of any request",
+    ),
+    (
+        "src/dswire/cli.rs",
+        "the `ah-engine devswarm` command-line process (and its one-shot state read): its own environment IS the caller's (the daemon is not involved, D76)",
+    ),
 ];
 
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {

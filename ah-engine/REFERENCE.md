@@ -3620,7 +3620,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `299 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `328 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -5083,9 +5083,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `299 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `328 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
-| `settings_cli.sections` | `16 items` |  |  | The settings sections in display order: key, label, description. |
+| `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
 ### operator.toml / defect
 
@@ -6350,7 +6350,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_wire.request_flag` | `--request` |  |  | The flag that carries an owner request's own id (the idempotency key's last part). |
 | `devswarm_wire.role_child_env` | `ANTIHALL_DEVSWARM_SOURCE_BRANCH` |  |  | The environment variable whose non-blank value marks a DevSwarm workspace child. |
 | `devswarm_wire.role_codex_env` | `` |  |  | Environment variables whose presence marks a Codex session (empty: no Codex marker is known). |
-| `devswarm_wire.role_matrix` | `20 entries` |  |  | Which roles may run each verb (the permission matrix). Reads are open to every role; the verbs that act (including skip, which switches a guard off, and the notice verb, whose --post is an act) are for the main session only. |
+| `devswarm_wire.role_matrix` | `23 entries` |  |  | Which roles may run each verb (the permission matrix). Reads are open to every role; the verbs that act (including skip, which switches a guard off, and the notice verb, whose --post is an act) are for the main session only. |
 | `devswarm_wire.role_words` | `main, child, subagent, codex` |  |  | The roles a caller can have, in this order: main (the interactive main session), child (a DevSwarm workspace child), subagent (a spawned agent or any automated caller), codex (a Codex session). |
 | `devswarm_wire.session_flag` | `--session` |  |  | The flag that names the session an advisory is for. |
 | `devswarm_wire.sql_last_selected` | `SELECT {col} FROM {table} WHERE {id} = ?1` |  |  | The statement that reads when a workspace was last selected in the app. {col} {table} {id} are the column, table and id column names. |
