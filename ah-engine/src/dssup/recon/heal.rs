@@ -150,7 +150,13 @@ pub fn plan(home: &Path, repo_key: &str) -> R<HealPlan> {
     let empty = |rows: Vec<Value>| json!({"repoKey": repo_key, "checked": 0, "healed": 0, "rehomed": 0, "skipped": 0, "rows": rows});
     if repo_key.is_empty() {
         let result = empty(Vec::new());
-        let job = Job { label: defaults::text("devswarm_recon.job_heal").into(), scope: Scope::default(), units: Vec::new(), calls: vec![json!({"fn": "healRegistry", "args": {"repoKey": repo_key}})], expect: vec![Some(result.clone())] };
+        let job = Job {
+            label: defaults::text("devswarm_recon.job_heal").into(),
+            scope: Scope::default(),
+            units: Vec::new(),
+            calls: vec![json!({"fn": "healRegistry", "args": {"repoKey": repo_key}})],
+            expect: vec![Some(result.clone())],
+        };
         return Ok(HealPlan { job, deferred: Vec::new(), result, ids: Vec::new(), pre_skipped: 0 });
     }
     let rows = registry(home, repo_key)?;

@@ -523,9 +523,7 @@ pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str) -> R<Resolved> {
     match mesh.len() {
         0 => Ok(Resolved::Id(raw.to_string())),
         1 => Ok(Resolved::Id(mesh.remove(0))),
-        _ => {
-            Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_mesh"), mesh))
-        }
+        _ => Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_mesh"), mesh)),
     }
 }
 

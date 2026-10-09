@@ -59,10 +59,10 @@ pub fn apply_git_env(cmd: &mut Command) {
         return;
     }
     for a in defaults::list("proc.git_env") {
-        if let Some((k, v)) = a.split_once('=') {
-            if !cmd.get_envs().any(|(name, _)| name == std::ffi::OsStr::new(k)) {
-                cmd.env(k, v);
-            }
+        if let Some((k, v)) = a.split_once('=')
+            && !cmd.get_envs().any(|(name, _)| name == std::ffi::OsStr::new(k))
+        {
+            cmd.env(k, v);
         }
     }
 }

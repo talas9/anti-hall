@@ -143,7 +143,22 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register | Ext::Correct | Ext::ReapOrphans | Ext::RegisterPrimary | Ext::Diagnose | Ext::Healthcheck | Ext::ReconcileRegistry)
+    matches!(
+        v,
+        Ext::Done
+            | Ext::Relay
+            | Ext::ArchiveRequest
+            | Ext::Nudge
+            | Ext::Unarchive
+            | Ext::Ensure
+            | Ext::Register
+            | Ext::Correct
+            | Ext::ReapOrphans
+            | Ext::RegisterPrimary
+            | Ext::Diagnose
+            | Ext::Healthcheck
+            | Ext::ReconcileRegistry
+    )
 }
 
 /// Run the verb.

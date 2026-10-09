@@ -637,7 +637,10 @@ fn a_child_writing_its_transcript_or_committing_is_not_poked_and_a_silent_one_is
     assert_eq!((s["ok"].clone(), s["by_action"]["poke"]["ok"].clone()), (json!(1), json!(1)));
     let log = std::fs::read_to_string(w.state.join("actions.ndjson")).unwrap();
     let rec: Value = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|r| r["t"] == "action").unwrap();
-    assert_eq!((rec["feature"].clone(), rec["action"].clone(), rec["target"].clone(), rec["outcome"].clone()), (json!("stall"), json!("poke"), json!("ws-1"), json!("ok")));
+    assert_eq!(
+        (rec["feature"].clone(), rec["action"].clone(), rec["target"].clone(), rec["outcome"].clone()),
+        (json!("stall"), json!("poke"), json!("ws-1"), json!("ok"))
+    );
     assert_eq!(rec["inputs"]["silent"], json!(true));
     assert_eq!(rec["inputs"]["lifecycle_active"], json!(true));
     assert_eq!(rec["inputs"]["paused"], json!(false));
@@ -702,7 +705,10 @@ fn the_silence_clock_reaching_stall_ms_re_reads_the_state_without_an_event() {
     let stub = Arc::new(Stub::default());
     stub.git_fail.lock().unwrap().push("status".into());
     let sink: ah_engine::dswire::Sink = Arc::new(|_f| {});
-    let rt = Rt::new(Cfg { stall_ms: 600, ..Cfg::from_defaults() }, Detection { app_db: Some(w.db.clone()), descriptors: true, mode: Mode::On, home: w.home.clone() });
+    let rt = Rt::new(
+        Cfg { stall_ms: 600, ..Cfg::from_defaults() },
+        Detection { app_db: Some(w.db.clone()), descriptors: true, mode: Mode::On, home: w.home.clone() },
+    );
     let env = RequestEnv::from_pairs([("HOME", w.home.to_string_lossy().into_owned())]);
     let wire = Wire::new(rt, &w.home, &w.state, None, sink, Box::new(Shared(stub.clone()))).with_executor(|_| Executor::Engine).with_env(env).with_act_gap(0);
     wire.reconcile(Cause::Startup);

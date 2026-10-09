@@ -313,18 +313,27 @@ impl Probe for FsProbe {
         let j = Self::read_json(self.plan_files().get(worktree)?)?;
         let OVal::Arr(steps) = j.get(defaults::text("devswarm_rt.plan_key_steps"))? else { return None };
         steps.iter().find_map(|s| match (s.get(defaults::text("devswarm_rt.plan_key_status")), s.get(defaults::text("devswarm_rt.plan_key_n"))) {
-            (Some(OVal::Str(st)), Some(OVal::Num(n))) if st == defaults::text("devswarm_rt.plan_status_doing") => Some(crate::checks::jsport::num::to_js_string(*n)),
+            (Some(OVal::Str(st)), Some(OVal::Num(n))) if st == defaults::text("devswarm_rt.plan_status_doing") => {
+                Some(crate::checks::jsport::num::to_js_string(*n))
+            }
             _ => None,
         })
     }
     fn other_activity_ms(&self, id: &str, worktree: Option<&str>) -> Vec<i64> {
         use crate::dswire::facts;
         let wanted = defaults::list("devswarm_rt.stall_sources");
-        let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64);
+        let mtime = |p: &Path| {
+            std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64)
+        };
         let mut out = Vec::new();
         if wanted.contains(&"transcript") {
             let descs = facts::descriptors(&self.home);
-            out.extend(descs.iter().filter(|d| d.id == id || worktree == Some(d.worktree.as_str())).filter_map(|d| mtime(&facts::transcript_path(&self.home, &d.worktree, &d.session))));
+            out.extend(
+                descs
+                    .iter()
+                    .filter(|d| d.id == id || worktree == Some(d.worktree.as_str()))
+                    .filter_map(|d| mtime(&facts::transcript_path(&self.home, &d.worktree, &d.session))),
+            );
         }
         if wanted.contains(&"git")
             && let Some(g) = worktree.and_then(facts::git_dir)

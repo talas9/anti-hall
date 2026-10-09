@@ -51,7 +51,11 @@ fn init_defaults() {
 fn fix(tag: &str) -> Fix {
     init_defaults();
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let home = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/work/recon-tests").join(format!("recon-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    let home = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/work/recon-tests").join(format!(
+        "recon-{tag}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let mut env: HashMap<String, String> = HashMap::new();
@@ -85,7 +89,10 @@ impl Fix {
     /// A linked worktree of `repo` named `name` (the repository gets an empty commit first); returns its real path.
     fn linked(&self, repo: &str, name: &str) -> String {
         let git = |args: &[&str], dir: &str| {
-            assert!(Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(dir).output().unwrap().status.success(), "git {args:?}");
+            assert!(
+                Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(dir).output().unwrap().status.success(),
+                "git {args:?}"
+            );
         };
         if !Command::new("git").args(["rev-parse", "--verify", "-q", "HEAD"]).current_dir(repo).output().unwrap().status.success() {
             git(&["commit", "--allow-empty", "-q", "-m", "i"], repo);
@@ -109,7 +116,14 @@ impl Fix {
     }
     fn row(&self, key: &str, id: &str, wt: &str, sid: &str) {
         let st = self.store(key);
-        let r = RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: Some(sid.into()), inbox_path: None, cursor_path: None, nudge_command: Some("[\"a\",\"b\"]".into()) };
+        let r = RegistryRow {
+            id: id.into(),
+            worktree_path: Some(wt.into()),
+            session_id: Some(sid.into()),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: Some("[\"a\",\"b\"]".into()),
+        };
         assert!(st.upsert_registry(&r, 1_000, |_, _| true).unwrap());
     }
     fn descriptor(&self, id: &str, json: &str) {
@@ -221,7 +235,8 @@ fn the_snapshot_tool_backs_up_and_anonymises_with_nodes_own_hashes() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let db = dst.home.join(dst.ds(&format!("store/{key}/devswarm.db")));
     let c = rusqlite::Connection::open(db).unwrap();
-    let rows: Vec<(String, String)> = c.prepare("SELECT body, hash FROM messages ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().flatten().collect();
+    let rows: Vec<(String, String)> =
+        c.prepare("SELECT body, hash FROM messages ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().flatten().collect();
     assert_eq!(rows.len(), 2);
     assert!(rows[0].0.starts_with("[forwarded from archived abc] anon-"), "prefix kept: {}", rows[0].0);
     assert!(!rows[0].0.contains("secret") && !rows[1].0.contains("secret"));
@@ -338,7 +353,19 @@ fn s1_active_cache_matches_node_including_the_floor_guard() {
     let t = Tally::new("S1.active-cache");
     let f = fix("s1e");
     let wt = f.repo("w");
-    let recs = |n: usize| OVal::Arr((0..n).map(|i| OVal::Obj(vec![("id".into(), OVal::Str(format!("id{i}"))), ("worktreePath".into(), OVal::Str(wt.clone())), ("repositoryId".into(), OVal::Str("r1".into()))])).collect());
+    let recs = |n: usize| {
+        OVal::Arr(
+            (0..n)
+                .map(|i| {
+                    OVal::Obj(vec![
+                        ("id".into(), OVal::Str(format!("id{i}"))),
+                        ("worktreePath".into(), OVal::Str(wt.clone())),
+                        ("repositoryId".into(), OVal::Str("r1".into())),
+                    ])
+                })
+                .collect(),
+        )
+    };
     let floor = side::active_floor_pct(&f.st);
     assert_eq!(floor, 50.0);
     let rel = side::active_rel();
@@ -360,7 +387,9 @@ fn s1_active_cache_matches_node_including_the_floor_guard() {
     let p = side::plan_active_cache(&f.home, &[("rk".into(), recs(2))], NOW + 2, 0.0).unwrap();
     let mut j = job_for("ac3", vec![p], &[]);
     j.scope.files.push(rel.clone());
-    j.calls = vec![serde_json::json!({"fn": "activeCache", "args": {"byRepoKey": {"rk": serde_json::from_str::<Value>(&recs(2).stringify()).unwrap()}, "now": NOW + 2, "floorPct": 0}})];
+    j.calls = vec![
+        serde_json::json!({"fn": "activeCache", "args": {"byRepoKey": {"rk": serde_json::from_str::<Value>(&recs(2).stringify()).unwrap()}, "now": NOW + 2, "floorPct": 0}}),
+    ];
     agreed(&f, &j);
     assert!(!f.read(&rel).unwrap().contains("\"id9\""));
     t.case(true);
@@ -375,7 +404,9 @@ fn s1_active_cache_matches_node_including_the_floor_guard() {
     let p = side::plan_active_cache(&f.home, &[("rk".into(), recs(2)), ("rk2".into(), recs(1))], NOW + 4, 0.0).unwrap();
     let mut j = job_for("ac5", vec![p], &[]);
     j.scope.files.push(rel);
-    j.calls = vec![serde_json::json!({"fn": "activeCache", "args": {"byRepoKey": {"rk": serde_json::from_str::<Value>(&recs(2).stringify()).unwrap(), "rk2": serde_json::from_str::<Value>(&recs(1).stringify()).unwrap()}, "now": NOW + 4, "floorPct": 0}})];
+    j.calls = vec![
+        serde_json::json!({"fn": "activeCache", "args": {"byRepoKey": {"rk": serde_json::from_str::<Value>(&recs(2).stringify()).unwrap(), "rk2": serde_json::from_str::<Value>(&recs(1).stringify()).unwrap()}, "now": NOW + 4, "floorPct": 0}}),
+    ];
     agreed(&f, &j);
     t.case(true);
     let rel_wt = OVal::Arr(vec![OVal::Obj(vec![("id".into(), OVal::Str("i".into())), ("worktreePath".into(), OVal::Str("relative/p".into()))])]);
@@ -396,7 +427,8 @@ fn s1_startup_sampling_matches_node_and_never_calls_read_messages() {
     let log = f.home.join("stub.log");
     let stub = stub_with(&f, &format!("HC_STUB_DIR={}\nHC_STUB_LOG={}\nHC_STUB_FORBID=read-messages\n", fx.display(), log.display()));
     let runner = System { hc: stub.to_string_lossy().into_owned() };
-    for (id, verdict) in [("w1", "{\"status\":\"stale\"}"), ("w2", "{\"notDraining\":true}"), ("w3", "{\"status\":\"live\"}"), ("w4", "{\"status\":\"stale\"}")] {
+    for (id, verdict) in [("w1", "{\"status\":\"stale\"}"), ("w2", "{\"notDraining\":true}"), ("w3", "{\"status\":\"live\"}"), ("w4", "{\"status\":\"stale\"}")]
+    {
         f.put(&f.ds(&format!("liveness/{id}.json")), verdict);
     }
     std::fs::write(fx.join("workspace_info_w1.out"), "{\"terminalId\":\"t1\",\"startup\":null}").unwrap();
@@ -504,7 +536,9 @@ struct HealCase {
 }
 
 fn desc_json(id: &str, wt: &str, sid: &str, owner: Option<&str>, repo: Option<&str>) -> String {
-    let mut s = format!("{{\"id\":\"{id}\",\"worktreePath\":\"{wt}\",\"sessionId\":\"{sid}\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"repoId\":null");
+    let mut s = format!(
+        "{{\"id\":\"{id}\",\"worktreePath\":\"{wt}\",\"sessionId\":\"{sid}\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"repoId\":null"
+    );
     if let Some(o) = owner {
         s.push_str(&format!(",\"ownerKey\":\"{o}\""));
     }
@@ -524,50 +558,92 @@ fn base(f: &Fix) -> (String, String, String) {
 
 fn heal_cases() -> Vec<HealCase> {
     vec![
-        HealCase { name: "empty store", build: |f| { let (_, k, _) = base(f); f.store(&k); }, deferred: &[] },
+        HealCase {
+            name: "empty store",
+            build: |f| {
+                let (_, k, _) = base(f);
+                f.store(&k);
+            },
+            deferred: &[],
+        },
         HealCase {
             name: "already healed",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", Some(&k), Some(&k))); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", &p, "s1");
+                f.descriptor("w1", &desc_json("w1", &p, "s1", Some(&k), Some(&k)));
+            },
             deferred: &[],
         },
         HealCase {
             name: "stale owner and repo keys",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", Some("deadbeef"), Some("other-1"))); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", &p, "s1");
+                f.descriptor("w1", &desc_json("w1", &p, "s1", Some("deadbeef"), Some("other-1")));
+            },
             deferred: &[],
         },
         HealCase {
             name: "keys missing from the descriptor",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", None, None)); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", &p, "s1");
+                f.descriptor("w1", &desc_json("w1", &p, "s1", None, None));
+            },
             deferred: &[],
         },
         HealCase {
             name: "stale registry worktree path",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", "/old/path", "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", Some(&k), Some(&k))); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", "/old/path", "s1");
+                f.descriptor("w1", &desc_json("w1", &p, "s1", Some(&k), Some(&k)));
+            },
             deferred: &[],
         },
         HealCase {
             name: "stale path and stale keys",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", "/old/path", "s1"); f.descriptor("w1", &desc_json("w1", &p, "s1", None, Some("zzz"))); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", "/old/path", "s1");
+                f.descriptor("w1", &desc_json("w1", &p, "s1", None, Some("zzz")));
+            },
             deferred: &[],
         },
         HealCase {
             name: "no descriptor",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", &p, "s1");
+            },
             deferred: &[],
         },
         HealCase {
             name: "descriptor of another session",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", "/old", "s1"); f.descriptor("w1", &desc_json("w1", &p, "foreign", None, None)); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", "/old", "s1");
+                f.descriptor("w1", &desc_json("w1", &p, "foreign", None, None));
+            },
             deferred: &[],
         },
         HealCase {
             name: "unclaimed sessions never confirm",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", "/old", "unclaimed:w1"); f.descriptor("w1", &desc_json("w1", &p, "unclaimed:w1", None, None)); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", "/old", "unclaimed:w1");
+                f.descriptor("w1", &desc_json("w1", &p, "unclaimed:w1", None, None));
+            },
             deferred: &[],
         },
         HealCase {
             name: "descriptor id differs",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.descriptor("w1", &desc_json("w9", &p, "s1", None, None)); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", &p, "s1");
+                f.descriptor("w1", &desc_json("w9", &p, "s1", None, None));
+            },
             deferred: &[],
         },
         HealCase {
@@ -584,7 +660,11 @@ fn heal_cases() -> Vec<HealCase> {
         },
         HealCase {
             name: "mis-keyed row goes to Node",
-            build: |f| { let (_, k, q) = base(f); f.row(&k, "w1", &q, "s1"); f.descriptor("w1", &desc_json("w1", &q, "s1", None, None)); },
+            build: |f| {
+                let (_, k, q) = base(f);
+                f.row(&k, "w1", &q, "s1");
+                f.descriptor("w1", &desc_json("w1", &q, "s1", None, None));
+            },
             deferred: &["w1"],
         },
         HealCase {
@@ -599,12 +679,19 @@ fn heal_cases() -> Vec<HealCase> {
         },
         HealCase {
             name: "worktree gone without an archived counterpart",
-            build: |f| { let (_, k, _) = base(f); f.row(&k, "w1", "/gone/for/good", "s1"); f.descriptor("w1", &desc_json("w1", "/gone/for/good", "s1", None, None)); },
+            build: |f| {
+                let (_, k, _) = base(f);
+                f.row(&k, "w1", "/gone/for/good", "s1");
+                f.descriptor("w1", &desc_json("w1", "/gone/for/good", "s1", None, None));
+            },
             deferred: &[],
         },
         HealCase {
             name: "unsafe id in the registry",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "bad id", &p, "s1"); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "bad id", &p, "s1");
+            },
             deferred: &[],
         },
         HealCase {
@@ -690,11 +777,30 @@ struct OrphanCase {
 
 fn orphan_cases() -> Vec<OrphanCase> {
     vec![
-        OrphanCase { name: "no store directory", build: |f| { let (_, k, _) = base(f); let _ = k; }, want: Ok((0, 0)) },
-        OrphanCase { name: "no orphans", build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.msg(&k, "w1"); }, want: Ok((0, 0)) },
+        OrphanCase {
+            name: "no store directory",
+            build: |f| {
+                let (_, k, _) = base(f);
+                let _ = k;
+            },
+            want: Ok((0, 0)),
+        },
+        OrphanCase {
+            name: "no orphans",
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", &p, "s1");
+                f.msg(&k, "w1");
+            },
+            want: Ok((0, 0)),
+        },
         OrphanCase {
             name: "one live orphan is adopted",
-            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &p, "so1", Some(&k), Some(&k))); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.msg(&k, "o1");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", Some(&k), Some(&k)));
+            },
             want: Ok((1, 0)),
         },
         OrphanCase {
@@ -720,10 +826,21 @@ fn orphan_cases() -> Vec<OrphanCase> {
             },
             want: Err("orphan-family"),
         },
-        OrphanCase { name: "no descriptor anywhere", build: |f| { let (_, k, _) = base(f); f.msg(&k, "o1"); }, want: Ok((0, 1)) },
+        OrphanCase {
+            name: "no descriptor anywhere",
+            build: |f| {
+                let (_, k, _) = base(f);
+                f.msg(&k, "o1");
+            },
+            want: Ok((0, 1)),
+        },
         OrphanCase {
             name: "descriptor of another repository",
-            build: |f| { let (_, k, q) = base(f); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &q, "so1", None, None)); },
+            build: |f| {
+                let (_, k, q) = base(f);
+                f.msg(&k, "o1");
+                f.descriptor("o1", &desc_json("o1", &q, "so1", None, None));
+            },
             want: Ok((0, 1)),
         },
         OrphanCase {
@@ -742,17 +859,31 @@ fn orphan_cases() -> Vec<OrphanCase> {
         },
         OrphanCase {
             name: "adopt beside an unhealable orphan with unread: the summary is Node's, the store is handed back",
-            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.msg(&k, "o3"); f.descriptor("o1", &desc_json("o1", &p, "so1", None, None)); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.msg(&k, "o1");
+                f.msg(&k, "o3");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+            },
             want: Err("summary-orphan"),
         },
         OrphanCase {
             name: "worktree family already in the registry",
-            build: |f| { let (p, k, _) = base(f); f.row(&k, "w1", &p, "s1"); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &p, "so1", None, None)); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.row(&k, "w1", &p, "s1");
+                f.msg(&k, "o1");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+            },
             want: Err("orphan-family"),
         },
         OrphanCase {
             name: "descriptor only in archived/",
-            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None)); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.msg(&k, "o1");
+                f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+            },
             want: Err("orphan-archived"),
         },
         OrphanCase {
@@ -787,12 +918,21 @@ fn orphan_cases() -> Vec<OrphanCase> {
         },
         OrphanCase {
             name: "unreadable archive marker",
-            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &p, "so1", None, None)); f.put(&f.ds("archived/o1.json"), "{not json"); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.msg(&k, "o1");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
+                f.put(&f.ds("archived/o1.json"), "{not json");
+            },
             want: Err("orphan-archived"),
         },
         OrphanCase {
             name: "a descriptor field of a type the engine does not model",
-            build: |f| { let (p, k, _) = base(f); f.msg(&k, "o1"); f.descriptor("o1", &desc_json("o1", &p, "so1", None, None).replace("\"so1\"", "5")); },
+            build: |f| {
+                let (p, k, _) = base(f);
+                f.msg(&k, "o1");
+                f.descriptor("o1", &desc_json("o1", &p, "so1", None, None).replace("\"so1\"", "5"));
+            },
             want: Err("descriptor-field-type"),
         },
         OrphanCase {
@@ -810,7 +950,11 @@ fn orphan_cases() -> Vec<OrphanCase> {
         },
         OrphanCase {
             name: "descriptor without a worktree",
-            build: |f| { let (_, k, _) = base(f); f.msg(&k, "o1"); f.descriptor("o1", "{\"id\":\"o1\",\"sessionId\":\"so1\"}"); },
+            build: |f| {
+                let (_, k, _) = base(f);
+                f.msg(&k, "o1");
+                f.descriptor("o1", "{\"id\":\"o1\",\"sessionId\":\"so1\"}");
+            },
             want: Ok((1, 0)),
         },
     ]
@@ -1012,11 +1156,22 @@ fn a_sigkill_at_every_op_boundary_leaves_a_state_nodes_next_sweep_converges_from
         assert!(path == "/old/path" || path.ends_with("/p"), "{point}: row is old or new: {path}");
         // Node's own next sweep converges to the uninterrupted result
         let code = "process.env.HOME=process.argv[2];const F=require(process.argv[1]+'/scripts/devswarm-lib/fold.js');F.healRegistry(process.argv[2],process.argv[3],{})";
-        let n = Command::new("node").args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), &k]).env("ANTI_HALL_LOG_DIR", f.home.join("logs")).output().unwrap();
+        let n = Command::new("node")
+            .args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), &k])
+            .env("ANTI_HALL_LOG_DIR", f.home.join("logs"))
+            .output()
+            .unwrap();
         assert!(n.status.success(), "{}", String::from_utf8_lossy(&n.stderr));
-        let norm_desc = |x: &Fix, key: &str| x.read(&x.ds("workspaces/w1.json")).unwrap().replace(key, "KEY").replace(&x.home.to_string_lossy().into_owned(), "HOME");
+        let norm_desc =
+            |x: &Fix, key: &str| x.read(&x.ds("workspaces/w1.json")).unwrap().replace(key, "KEY").replace(&x.home.to_string_lossy().into_owned(), "HOME");
         assert_eq!(norm_desc(&f, &k), norm_desc(&reference, &key), "{point}: converged descriptor");
-        let tup = |x: &Fix, key: &str| ah_engine::dssup::recon::view::registry(&x.home, key).unwrap().into_iter().map(|r| (r.row.id, r.row.worktree_path.map(|p| p.rsplit('/').next().unwrap_or("").to_string()), r.row.session_id)).collect::<Vec<_>>();
+        let tup = |x: &Fix, key: &str| {
+            ah_engine::dssup::recon::view::registry(&x.home, key)
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.row.id, r.row.worktree_path.map(|p| p.rsplit('/').next().unwrap_or("").to_string()), r.row.session_id))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(tup(&f, &k), tup(&reference, &key), "{point}: converged registry");
     }
     assert!(survived >= 4, "the kill points were reached ({survived})");
@@ -1034,7 +1189,11 @@ fn orphan_crash_fixture(f: &Fix) -> String {
 
 /// The registry as (id, worktree basename, session) triples.
 fn reg_tuples(f: &Fix, key: &str) -> Vec<(String, Option<String>, Option<String>)> {
-    ah_engine::dssup::recon::view::registry(&f.home, key).unwrap().into_iter().map(|r| (r.row.id, r.row.worktree_path.map(|p| p.rsplit('/').next().unwrap_or("").to_string()), r.row.session_id)).collect()
+    ah_engine::dssup::recon::view::registry(&f.home, key)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.row.id, r.row.worktree_path.map(|p| p.rsplit('/').next().unwrap_or("").to_string()), r.row.session_id))
+        .collect()
 }
 
 #[test]
@@ -1079,7 +1238,11 @@ fn s5_a_sigkill_at_every_adoption_and_summary_boundary_loses_nothing_and_nodes_n
         }
         // Node's own next pass converges to the uninterrupted result
         let code = "process.env.HOME=process.argv[2];const R=require(process.argv[1]+'/scripts/devswarm-lib/repair.js');R.healOrphanPartitions(process.argv[2],{repoKey:process.argv[3]})";
-        let n = Command::new("node").args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), &k]).env("ANTI_HALL_LOG_DIR", f.home.join("logs")).output().unwrap();
+        let n = Command::new("node")
+            .args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), &k])
+            .env("ANTI_HALL_LOG_DIR", f.home.join("logs"))
+            .output()
+            .unwrap();
         assert!(n.status.success(), "{}", String::from_utf8_lossy(&n.stderr));
         assert_eq!(reg_tuples(&f, &k), reg_tuples(&reference, &rkey), "{point}: converged registry");
         assert_eq!(msg_count(&f, &k), before, "{point}: still no message added by the convergence");
@@ -1161,7 +1324,14 @@ fn fix6(tag: &str) -> Fix {
 impl Fix {
     fn row_s(&self, key: &str, id: &str, wt: &str, sid: Option<&str>) {
         let st = self.store(key);
-        let r = RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: sid.map(str::to_string), inbox_path: None, cursor_path: None, nudge_command: None };
+        let r = RegistryRow {
+            id: id.into(),
+            worktree_path: Some(wt.into()),
+            session_id: sid.map(str::to_string),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
         assert!(st.upsert_registry(&r, 1_000, |_, _| true).unwrap());
     }
     fn db(&self, key: &str) -> rusqlite::Connection {
@@ -1510,7 +1680,13 @@ fn canon(f: &Fix, needles: &[String]) -> std::collections::BTreeMap<String, Stri
     };
     norm::dump(&f.home)
         .into_iter()
-        .filter(|(k, _)| !k.starts_with(".anti-hall/logs") && !k.starts_with(".anti-hall/work") && !k.contains("/locks/") && !k.starts_with("repos/") && !k.starts_with(".git"))
+        .filter(|(k, _)| {
+            !k.starts_with(".anti-hall/logs")
+                && !k.starts_with(".anti-hall/work")
+                && !k.contains("/locks/")
+                && !k.starts_with("repos/")
+                && !k.starts_with(".git")
+        })
         .map(|(k, v)| (fix_up(&k), fix_up(&v)))
         .collect()
 }
@@ -1537,7 +1713,14 @@ fn s6_fold_mesh_duplicates_matches_node_for_every_group_shape() {
         assert_eq!(end.verdict, Verdict::Agreed, "{}: {:?}", c.name, end.verdict);
         let want: Vec<String> = c.retired.iter().map(|s| name_of(s)).collect();
         assert_eq!(end.result.retired, want, "{}: retired (deferred {:?}, verdict {:?})", c.name, end.deferred, end.verdict);
-        assert_eq!(end.result.forwarded, c.forwarded, "{}: forwarded (deferred {:?} / {:?})", c.name, end.deferred, fold::plan_fold(&f.ctx(), &key).map(|p| p.deferred));
+        assert_eq!(
+            end.result.forwarded,
+            c.forwarded,
+            "{}: forwarded (deferred {:?} / {:?})",
+            c.name,
+            end.deferred,
+            fold::plan_fold(&f.ctx(), &key).map(|p| p.deferred)
+        );
         let plan = fold::plan_fold(&f.ctx(), &key).unwrap();
         assert_eq!(plan.deferred.len(), c.deferred, "{}: deferred groups {:?}", c.name, plan.deferred);
         if c.deferred == 0 {
@@ -1626,33 +1809,46 @@ fn s6_retire_worktree_duplicates_matches_node() {
     let t = Tally::new("S6.retire-worktree-duplicates");
     type Build = fn(&Fix) -> (String, String);
     let cases: Vec<(&str, Build, Option<Value>)> = vec![
-        ("phantoms fold into the caller", |f| {
-            let (wt, k) = s6_base(f);
-            f.row_s(&k, "w-keep", &wt, Some("s1"));
-            f.row_s(&k, "w-ph", &wt, None);
-            f.floors(&k, "w-ph", 0);
-            f.msg_at(&k, "w-ph", 10, "m", "snd");
-            (wt, k)
-        }, Some(serde_json::json!({"retired": ["w-ph"], "forwarded": 1}))),
-        ("a distinct live child is forwarded to and left", |f| {
-            let (wt, k) = s6_base(f);
-            f.row_s(&k, "w-keep", &wt, Some("s1"));
-            f.row_s(&k, "w-kid", &wt, Some("s2"));
-            f.descriptor("w-kid", &desc_json("w-kid", &wt, "s2", None, None));
-            f.floors(&k, "w-kid", 0);
-            f.msg_at(&k, "w-kid", 10, "m", "snd");
-            (wt, k)
-        }, Some(serde_json::json!({"retired": [], "forwarded": 1, "left": ["w-kid"]}))),
-        ("nothing to fold", |f| {
-            let (wt, k) = s6_base(f);
-            f.row_s(&k, "w-keep", &wt, Some("s1"));
-            (wt, k)
-        }, None),
+        (
+            "phantoms fold into the caller",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-keep", &wt, Some("s1"));
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg_at(&k, "w-ph", 10, "m", "snd");
+                (wt, k)
+            },
+            Some(serde_json::json!({"retired": ["w-ph"], "forwarded": 1})),
+        ),
+        (
+            "a distinct live child is forwarded to and left",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-keep", &wt, Some("s1"));
+                f.row_s(&k, "w-kid", &wt, Some("s2"));
+                f.descriptor("w-kid", &desc_json("w-kid", &wt, "s2", None, None));
+                f.floors(&k, "w-kid", 0);
+                f.msg_at(&k, "w-kid", 10, "m", "snd");
+                (wt, k)
+            },
+            Some(serde_json::json!({"retired": [], "forwarded": 1, "left": ["w-kid"]})),
+        ),
+        (
+            "nothing to fold",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-keep", &wt, Some("s1"));
+                (wt, k)
+            },
+            None,
+        ),
     ];
     for (name, build, want) in cases {
         let f = fix6("s6-dup");
         let (wt, _k) = build(&f);
-        let run = dup::retire_worktree_duplicates(&f.ctx(), &System::configured(), &wt, "w-keep", &wt, &Hooks::none()).unwrap_or_else(|d| panic!("{name}: deferred {d:?}"));
+        let run = dup::retire_worktree_duplicates(&f.ctx(), &System::configured(), &wt, "w-keep", &wt, &Hooks::none())
+            .unwrap_or_else(|d| panic!("{name}: deferred {d:?}"));
         assert_eq!(run.verdict, Verdict::Agreed, "{name}: {:?}", run.verdict);
         assert!(run.deferred.is_empty(), "{name}: {:?}", run.deferred);
         assert_eq!(run.result, want, "{name}");
@@ -1669,35 +1865,48 @@ fn s6_retire_archived_worktree_group_matches_node() {
     let t = Tally::new("S6.retire-archived-worktree-group");
     type Build = fn(&Fix) -> (String, String);
     let cases: Vec<(&str, Build, Value)> = vec![
-        ("one drainable sibling takes the mail", |f| {
-            let (wt, k) = s6_base(f);
-            f.row_s(&k, "w-live", &wt, Some("s1"));
-            f.descriptor("w-live", &desc_json("w-live", &wt, "s1", None, None));
-            f.row_s(&k, "w-ph", &wt, None);
-            f.floors(&k, "w-ph", 0);
-            f.msg_at(&k, "w-ph", 10, "m", "snd");
-            (wt, k)
-        }, serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [{"id": "w-live", "reason": "live-descriptor"}], "forwardedTo": "w-live"})),
-        ("no drainable sibling: phantoms fold into the archived row", |f| {
-            let (wt, k) = s6_base(f);
-            f.row_s(&k, "w-arch", &wt, None);
-            f.row_s(&k, "w-ph", &wt, None);
-            f.floors(&k, "w-ph", 0);
-            f.msg_at(&k, "w-ph", 10, "m", "snd");
-            (wt, k)
-        }, serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [], "forwardedTo": "w-arch"})),
-        ("the archived row is already gone: the survivor is missing", |f| {
-            let (wt, k) = s6_base(f);
-            f.row_s(&k, "w-ph", &wt, None);
-            f.floors(&k, "w-ph", 0);
-            f.msg_at(&k, "w-ph", 10, "m", "snd");
-            (wt, k)
-        }, serde_json::json!({"retired": [], "forwarded": 0, "left": [{"id": "w-ph", "reason": "survivor-gone"}], "forwardedTo": "w-arch"})),
+        (
+            "one drainable sibling takes the mail",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.descriptor("w-live", &desc_json("w-live", &wt, "s1", None, None));
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg_at(&k, "w-ph", 10, "m", "snd");
+                (wt, k)
+            },
+            serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [{"id": "w-live", "reason": "live-descriptor"}], "forwardedTo": "w-live"}),
+        ),
+        (
+            "no drainable sibling: phantoms fold into the archived row",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-arch", &wt, None);
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg_at(&k, "w-ph", 10, "m", "snd");
+                (wt, k)
+            },
+            serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [], "forwardedTo": "w-arch"}),
+        ),
+        (
+            "the archived row is already gone: the survivor is missing",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg_at(&k, "w-ph", 10, "m", "snd");
+                (wt, k)
+            },
+            serde_json::json!({"retired": [], "forwarded": 0, "left": [{"id": "w-ph", "reason": "survivor-gone"}], "forwardedTo": "w-arch"}),
+        ),
     ];
     for (name, build, want) in cases {
         let f = fix6("s6-arch");
         let (wt, k) = build(&f);
-        let run = archived::retire_archived_worktree_group(&f.ctx(), &System::configured(), &k, "w-arch", &wt, &Hooks::none()).unwrap_or_else(|d| panic!("{name}: deferred {d:?}"));
+        let run = archived::retire_archived_worktree_group(&f.ctx(), &System::configured(), &k, "w-arch", &wt, &Hooks::none())
+            .unwrap_or_else(|d| panic!("{name}: deferred {d:?}"));
         assert_eq!(run.verdict, Verdict::Agreed, "{name}: {:?} {}", run.verdict, run.result);
         assert!(run.deferred.is_empty(), "{name}: {:?}", run.deferred);
         assert_eq!(run.result, want, "{name}");
@@ -1723,7 +1932,8 @@ fn s6_forward_archived_orphan_unread_matches_node() {
     f.msg_at(&k, "w-arch", NOW - day, "fresh", "snd");
     f.msg_at(&k, "w-arch", NOW - 40 * day, "stale", "snd");
     f.msg_at(&k, "w-arch", NOW - day + 1, "native", "");
-    let (res, verdict, ends) = archived::forward_archived_orphan_unread(&f.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
+    let (res, verdict, ends) =
+        archived::forward_archived_orphan_unread(&f.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
     assert_eq!(verdict, Verdict::Agreed);
     assert_eq!((res.forwarded, res.stale, res.status.as_str()), (1, 1, "ok"));
     assert!(ends.iter().all(|e| *e == UnitEnd::Applied));
@@ -1830,7 +2040,11 @@ fn s6_a_sigkill_at_every_fold_op_boundary_loses_no_mail_and_nodes_next_fold_conv
         let h2: std::collections::BTreeSet<String> = msgs2.iter().map(|m| m.1.clone()).collect();
         assert_eq!(h2, rhashes, "{point}: converged mail");
         assert_eq!(msgs2.len(), rmsgs.len(), "{point}: converged mail count");
-        assert_eq!(cur2.iter().filter(|c| c.0 == "w-ph" && c.1 == "store").map(|c| c.2).max(), rcur.iter().filter(|c| c.0 == "w-ph" && c.1 == "store").map(|c| c.2).max(), "{point}: converged cursor");
+        assert_eq!(
+            cur2.iter().filter(|c| c.0 == "w-ph" && c.1 == "store").map(|c| c.2).max(),
+            rcur.iter().filter(|c| c.0 == "w-ph" && c.1 == "store").map(|c| c.2).max(),
+            "{point}: converged cursor"
+        );
     }
     assert!(killed >= 10, "the kill points were reached ({killed})");
     // the four named points: forward (0 is the guard, 1 the forward), cursor raise (2), tombstone (op after the journal lines), summary

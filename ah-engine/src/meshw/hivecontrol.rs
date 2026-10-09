@@ -13,8 +13,8 @@
 //! exit, output past the buffer limit). Node waits for a child that ignores its termination signal for ever; the engine
 //! kills it after a short grace, so a hanging binary is never worse than a missing one.
 use crate::checks::guardkit::ojson::OVal;
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::js_trim;
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::meshw::ident::Env;
 use std::io::Read;

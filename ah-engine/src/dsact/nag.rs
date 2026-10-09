@@ -64,11 +64,8 @@ impl Act<'_> {
         }
         let started = std::time::Instant::now();
         let now = self.live.now_ms();
-        let (feature, outs, trig) = (
-            defaults::list("devswarm_act.feature_names")[1],
-            defaults::list("devswarm_act.outcome_words"),
-            defaults::list("devswarm_act.trigger_words")[1],
-        );
+        let (feature, outs, trig) =
+            (defaults::list("devswarm_act.feature_names")[1], defaults::list("devswarm_act.outcome_words"), defaults::list("devswarm_act.trigger_words")[1]);
         let kind = defaults::text("devswarm_act.nag_kind");
         let mut state = self.nag_state();
         let mut per: serde_json::Map<String, Value> = state.get("ws").and_then(Value::as_object).cloned().unwrap_or_default();
@@ -79,7 +76,19 @@ impl Act<'_> {
         for id in per.keys().filter(|id| !active.contains(id)).cloned().collect::<Vec<_>>() {
             let head = per.remove(&id).map(|e| e["lastHead"].clone()).unwrap_or(Value::Null);
             self.tele.attempt(
-                &Attempt { feature, action: defaults::text("devswarm_act.nag_resolved"), trigger: trig, id: &id, head: &head, gates: json!({}), outcome: outs[0], reason: None, latency_ms: 0, key: "", via_execute: false },
+                &Attempt {
+                    feature,
+                    action: defaults::text("devswarm_act.nag_resolved"),
+                    trigger: trig,
+                    id: &id,
+                    head: &head,
+                    gates: json!({}),
+                    outcome: outs[0],
+                    reason: None,
+                    latency_ms: 0,
+                    key: "",
+                    via_execute: false,
+                },
                 now,
             );
         }
@@ -100,7 +109,19 @@ impl Act<'_> {
             let capped = d["blockers"].as_array().is_some_and(|b| b.iter().any(|x| x["gate"] == "hourly-cap"));
             if capped {
                 self.tele.attempt(
-                    &Attempt { feature, action: "notify", trigger: trig, id, head: &facts["head"], gates: gate_values(&d["blockers"]), outcome: outs[1], reason: Some("hourly-cap"), latency_ms: 0, key: "", via_execute: false },
+                    &Attempt {
+                        feature,
+                        action: "notify",
+                        trigger: trig,
+                        id,
+                        head: &facts["head"],
+                        gates: gate_values(&d["blockers"]),
+                        outcome: outs[1],
+                        reason: Some("hourly-cap"),
+                        latency_ms: 0,
+                        key: "",
+                        via_execute: false,
+                    },
                     now,
                 );
             } else if d["blockers"].as_array().is_some_and(|b| !b.is_empty() && !b.iter().all(|x| x["gate"] == "cadence")) {
@@ -137,14 +158,51 @@ impl Act<'_> {
                     let e = per.entry(id.clone()).or_insert_with(|| json!({"cycles": 0}));
                     let cycles = if e["lastHead"] == h { e["cycles"].as_u64().unwrap_or(0) + 1 } else { 1 };
                     *e = json!({"lastHead": head, "lastNagMs": now, "cycles": cycles});
-                    self.tele.attempt(&Attempt { feature, action: "notify", trigger: trig, id, head: &h, gates, outcome: outs[0], reason: None, latency_ms: latency, key, via_execute: false }, now);
+                    self.tele.attempt(
+                        &Attempt {
+                            feature,
+                            action: "notify",
+                            trigger: trig,
+                            id,
+                            head: &h,
+                            gates,
+                            outcome: outs[0],
+                            reason: None,
+                            latency_ms: latency,
+                            key,
+                            via_execute: false,
+                        },
+                        now,
+                    );
                     if cycles >= ignored {
-                        self.tele.mistake(feature, defaults::text("devswarm_act.mistake_nag_ignored"), &format!("{id}:{head}"), id, json!({"cycles": cycles, "edge": d["edge"]}), now);
+                        self.tele.mistake(
+                            feature,
+                            defaults::text("devswarm_act.mistake_nag_ignored"),
+                            &format!("{id}:{head}"),
+                            id,
+                            json!({"cycles": cycles, "edge": d["edge"]}),
+                            now,
+                        );
                     }
                 }
                 Err(why) => {
                     self.ledger.finish(key, kind, id, now, Word::Failed, Some(why));
-                    self.tele.attempt(&Attempt { feature, action: "notify", trigger: trig, id, head: &h, gates, outcome: outs[2], reason: Some(why), latency_ms: latency, key, via_execute: false }, now);
+                    self.tele.attempt(
+                        &Attempt {
+                            feature,
+                            action: "notify",
+                            trigger: trig,
+                            id,
+                            head: &h,
+                            gates,
+                            outcome: outs[2],
+                            reason: Some(why),
+                            latency_ms: latency,
+                            key,
+                            via_execute: false,
+                        },
+                        now,
+                    );
                 }
             }
         }

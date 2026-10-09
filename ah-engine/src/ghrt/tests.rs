@@ -854,7 +854,10 @@ fn a_ready_pull_request_is_announced_once_per_head_and_merged_once_with_everythi
     assert_eq!(edge_kinds(&fx).iter().filter(|k| *k == "ready").count(), 1);
     let r = merge_report(&fx);
     // the merge commit could not be read (the stub has no answer): after give_up_ms the follow-up ends as unknown, not as clean
-    assert_eq!((r["by_action"]["merge"]["ok"].clone(), r["by_action"]["notify"]["ok"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone()), (json!(1), json!(1), json!(0), json!(0)));
+    assert_eq!(
+        (r["by_action"]["merge"]["ok"].clone(), r["by_action"]["notify"]["ok"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone()),
+        (json!(1), json!(1), json!(0), json!(0))
+    );
     let log = std::fs::read_to_string(fx.cfg.state_dir().join("actions.ndjson")).unwrap();
     let merge: Value = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|r| r["action"] == "merge").unwrap();
     assert_eq!(merge["target"], json!(format!("acme/widgets#7@{sha}")));
@@ -886,14 +889,23 @@ fn auto_merge_off_still_announces_and_notify_off_records_without_telling_session
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn every_ready_condition_is_required() {
     // (name, what to change after the baseline, the condition that must read false)
     let cases: [(&str, &dyn Fn(&Stub), &str); 5] = [
-        ("draft", &|s: &Stub| s.set("pulls", 200, "\"pd\"", json!([{"number": 7, "state": "open", "draft": true, "base": {"ref": "main"}, "title": "t"}])), "not_draft"),
+        (
+            "draft",
+            &|s: &Stub| s.set("pulls", 200, "\"pd\"", json!([{"number": 7, "state": "open", "draft": true, "base": {"ref": "main"}, "title": "t"}])),
+            "not_draft",
+        ),
         ("behind", &|s: &Stub| s.set("pull", 200, "\"db\"", json!({"mergeable_state": "behind", "mergeable": true})), "up_to_date"),
         ("blocked", &|s: &Stub| s.set("pull", 200, "\"dk\"", json!({"mergeable_state": "blocked", "mergeable": true})), "mergeable_state_ok"),
         ("changes", &|s: &Stub| s.set("reviews", 200, "\"vc\"", json!([{"user": {"login": "x"}, "state": "CHANGES_REQUESTED"}])), "no_changes_requested"),
-        ("ci", &|s: &Stub| s.set("checks", 200, "\"cf\"", json!({"check_runs": [{"name": "build", "status": "completed", "conclusion": "failure"}]})), "ci_green"),
+        (
+            "ci",
+            &|s: &Stub| s.set("checks", 200, "\"cf\"", json!({"check_runs": [{"name": "build", "status": "completed", "conclusion": "failure"}]})),
+            "ci_green",
+        ),
     ];
     for (name, change, cond) in cases {
         let (fx, s) = becomes_ready(&format!("cond-{name}"));
@@ -907,11 +919,17 @@ fn every_ready_condition_is_required() {
     // no approval needed when the setting says so; a missing required check is never ready
     let (fx, s) = becomes_ready("cond-noreview");
     s.set("reviews", 200, "\"v0\"", json!([]));
-    let cfg = Cfg::shipped().in_dir(&fx.cfg.state_dir()).with("github_rt.ready_require_approval", json!(false)).with("github_rt.ready_auto_merge", json!(false));
+    let cfg =
+        Cfg::shipped().in_dir(&fx.cfg.state_dir()).with("github_rt.ready_require_approval", json!(false)).with("github_rt.ready_auto_merge", json!(false));
     poll::tick(&cfg, &s, T0 + 100_000, false);
     assert_eq!(fx.repo_state("r1").status["ready"], json!(true));
     let (fx, s) = becomes_ready("cond-required");
-    s.set("rules", 200, "\"rq\"", json!([{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "build"}, {"context": "e2e"}]}}]));
+    s.set(
+        "rules",
+        200,
+        "\"rq\"",
+        json!([{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "build"}, {"context": "e2e"}]}}]),
+    );
     s.set("pull", 200, "\"dr\"", json!({"mergeable_state": "clean", "mergeable": true}));
     fx.cfg.int("github_rt.rules_ms");
     fx.tick(&s, T0 + 100_000);
@@ -924,12 +942,17 @@ fn every_ready_condition_is_required() {
 #[test]
 fn github_refusing_the_merge_is_logged_as_refused_and_never_retried_for_that_head() {
     let (fx, s) = becomes_ready("ready-refused");
-    *s.merge_reply.borrow_mut() = Some(Ok((false, String::from("GraphQL: Pull request is not mergeable: the base branch policy prohibits the merge. (mergePullRequest)"))));
+    *s.merge_reply.borrow_mut() =
+        Some(Ok((false, String::from("GraphQL: Pull request is not mergeable: the base branch policy prohibits the merge. (mergePullRequest)"))));
     fx.tick(&s, T0 + 100_000);
     fx.tick(&s, T0 + 5_000_000);
     assert_eq!(s.merges.borrow().len(), 1, "one attempt per head, whatever the answer");
     let r = merge_report(&fx);
-    assert_eq!((r["refused"].clone(), r["ok"].clone(), r["failed"].clone()), (json!(1), json!(1), json!(0)), "the notice is ok; the merge was refused by GitHub's rule");
+    assert_eq!(
+        (r["refused"].clone(), r["ok"].clone(), r["failed"].clone()),
+        (json!(1), json!(1), json!(0)),
+        "the notice is ok; the merge was refused by GitHub's rule"
+    );
     assert_eq!(r["by_action"]["merge"]["refused"], json!(1));
     assert_eq!(r["followups_pending"], json!(0), "nothing was merged, nothing to check afterwards");
     // another failure kind counts as failed
@@ -990,10 +1013,17 @@ fn a_merge_whose_base_branch_goes_red_or_is_reverted_is_a_mistake_and_a_clean_on
     s.set("commits", 200, "\"k3\"", json!([{"sha": "z", "commit": {"message": "unrelated"}}]));
     fx.tick(&s, t + wait + 60_000);
     let r = merge_report(&fx);
-    assert_eq!((r["mistakes"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone()), (json!(0), json!(1), json!(0)), "still watching for a revert");
+    assert_eq!(
+        (r["mistakes"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone()),
+        (json!(0), json!(1), json!(0)),
+        "still watching for a revert"
+    );
     fx.tick(&s, t + 90_000_000);
     let r = merge_report(&fx);
-    assert_eq!((r["mistakes"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone(), r["mistake_rate"].clone()), (json!(0), json!(0), json!(1), json!(0.0)));
+    assert_eq!(
+        (r["mistakes"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone(), r["mistake_rate"].clone()),
+        (json!(0), json!(0), json!(1), json!(0.0))
+    );
 }
 
 #[test]

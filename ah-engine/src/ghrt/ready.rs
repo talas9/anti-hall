@@ -86,7 +86,16 @@ fn target(slug: &str, number: u64, sha: &str) -> String {
 
 fn emit_act(feature: &str, action: &str, outcome: crate::telemetry::event::Outcome, ms: u64, target: &str, reason: &str, key: &str) {
     let tok = actlog::token;
-    crate::telemetry::emit::act(&crate::telemetry::emit::ActRec { feature, action, outcome, latency_ms: ms, target: &tok(target), inputs: "", reason: &tok(reason), action_id: &tok(key) });
+    crate::telemetry::emit::act(&crate::telemetry::emit::ActRec {
+        feature,
+        action,
+        outcome,
+        latency_ms: ms,
+        target: &tok(target),
+        inputs: "",
+        reason: &tok(reason),
+        action_id: &tok(key),
+    });
 }
 
 /// Log the notice of a ready pull request (the `ready` edge was recorded).
@@ -94,7 +103,11 @@ pub(super) fn log_notice(cfg: &Cfg, status: &Value, slug: &str, now: u64) {
     let (n, sha) = (status["number"].as_u64().unwrap_or(0), status["sha"].as_str().unwrap_or(""));
     let (feature, action) = (word(cfg, "feature"), word(cfg, "notify"));
     let t = target(slug, n, sha);
-    actlog::record(&cfg.state_dir(), &Action { feature: &feature, action: &action, target: &t, inputs: status["ready_conditions"].clone(), outcome: "ok", reason: "", latency_ms: 0 }, now);
+    actlog::record(
+        &cfg.state_dir(),
+        &Action { feature: &feature, action: &action, target: &t, inputs: status["ready_conditions"].clone(), outcome: "ok", reason: "", latency_ms: 0 },
+        now,
+    );
     emit_act(&feature, &action, crate::telemetry::event::Outcome::Allow, 0, &t, "", &ready_key(slug, n, sha));
 }
 
@@ -146,7 +159,11 @@ pub(super) fn try_merge(ctx: &Ctx, st: &mut State, repo: &mut Repo, status: &Val
             let t = target(&repo.slug, number, &sha);
             let mut inputs = status["ready_conditions"].clone();
             inputs["workspace_branch"] = json!(false);
-            actlog::record(&cfg.state_dir(), &Action { feature: &feature, action: &action, target: &t, inputs, outcome: "refused", reason: &word(cfg, "out_of_scope"), latency_ms: 0 }, ctx.now);
+            actlog::record(
+                &cfg.state_dir(),
+                &Action { feature: &feature, action: &action, target: &t, inputs, outcome: "refused", reason: &word(cfg, "out_of_scope"), latency_ms: 0 },
+                ctx.now,
+            );
             emit_act(&feature, &action, crate::telemetry::event::Outcome::Block, 0, &t, &word(cfg, "out_of_scope"), &key);
         }
         return;
@@ -171,7 +188,8 @@ pub(super) fn try_merge(ctx: &Ctx, st: &mut State, repo: &mut Repo, status: &Val
     };
     let same = again["number"].as_u64() == Some(number) && again["sha"].as_str() == Some(sha.as_str());
     if again["ready"] != json!(true) || !same {
-        let why = if same { format!("{}: {}", word(cfg, "live_recheck_failed"), failed_conditions(&again["ready_conditions"])) } else { word(cfg, "head_moved") };
+        let why =
+            if same { format!("{}: {}", word(cfg, "live_recheck_failed"), failed_conditions(&again["ready_conditions"])) } else { word(cfg, "head_moved") };
         log("refused", &why, again["ready_conditions"].clone());
         return;
     }
@@ -190,7 +208,10 @@ pub(super) fn try_merge(ctx: &Ctx, st: &mut State, repo: &mut Repo, status: &Val
         Ok((false, text)) => {
             let low = text.to_lowercase();
             let rule = cfg.strs("github_rt.ready_refusal_patterns").iter().any(|p| low.contains(&p.to_lowercase()));
-            (if rule { "refused" } else { "failed" }, text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(cfg.int("github_rt.error_chars") as usize).collect())
+            (
+                if rule { "refused" } else { "failed" },
+                text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(cfg.int("github_rt.error_chars") as usize).collect(),
+            )
         }
         Err(api::Fail::Missing) => ("failed", cfg.word("state_missing", &[])),
         Err(api::Fail::Timeout) => ("failed", String::from("timeout")),
@@ -207,7 +228,15 @@ pub(super) fn try_merge(ctx: &Ctx, st: &mut State, repo: &mut Repo, status: &Val
     }
 }
 
-fn fetch_val(ctx: &Ctx, st: &mut State, repo: &mut Repo, key: &str, extra: &[(&str, &str)], prev_used: &mut Option<(u64, u64)>, parse_it: &dyn Fn(&Value) -> Value) -> Option<Value> {
+fn fetch_val(
+    ctx: &Ctx,
+    st: &mut State,
+    repo: &mut Repo,
+    key: &str,
+    extra: &[(&str, &str)],
+    prev_used: &mut Option<(u64, u64)>,
+    parse_it: &dyn Fn(&Value) -> Value,
+) -> Option<Value> {
     let path = ctx.path(key, repo, extra);
     match ctx.fetch(st, repo, &path, true, prev_used, parse_it) {
         Got::Val(v) if !v.is_null() => Some(v),
@@ -221,7 +250,8 @@ pub(super) fn followups(ctx: &Ctx, st: &mut State, prev_used: &mut Option<(u64, 
     let (feature, merge) = (word(cfg, "feature"), word(cfg, "merge"));
     let window = format!("{merge}_window");
     let f = cfg.value("github_rt.ready_followup");
-    let (retry, give_up, revert_window) = (f["retry_ms"].as_u64().unwrap_or(0), f["give_up_ms"].as_u64().unwrap_or(0), f["revert_window_ms"].as_u64().unwrap_or(0));
+    let (retry, give_up, revert_window) =
+        (f["retry_ms"].as_u64().unwrap_or(0), f["give_up_ms"].as_u64().unwrap_or(0), f["revert_window_ms"].as_u64().unwrap_or(0));
     for fu in actlog::followups_due(&cfg.state_dir(), &feature, ctx.now) {
         let (action, tgt) = (fu["action"].as_str().unwrap_or("").to_string(), fu["target"].as_str().unwrap_or("").to_string());
         let c = &fu["ctx"];
@@ -232,26 +262,40 @@ pub(super) fn followups(ctx: &Ctx, st: &mut State, prev_used: &mut Option<(u64, 
         let done = |res: &str| actlog::followup_done(&cfg.state_dir(), &feature, &action, &tgt, res, None, ctx.now);
         let later = |ms: u64| actlog::followup_done(&cfg.state_dir(), &feature, &action, &tgt, "", Some(ctx.now + ms), ctx.now);
         let give_up_now = || ctx.now.saturating_sub(merged_ms) >= give_up;
-        let mistake = |kind_key: &str, detail_key: &str| actlog::mistake(&cfg.state_dir(), &feature, &merge, &tgt, &word(cfg, kind_key), &word(cfg, detail_key), ctx.now);
+        let mistake =
+            |kind_key: &str, detail_key: &str| actlog::mistake(&cfg.state_dir(), &feature, &merge, &tgt, &word(cfg, kind_key), &word(cfg, detail_key), ctx.now);
         let Some(info) = fetch_val(ctx, st, &mut repo, "merge_info", &[("number", &num)], prev_used, &|b| parse::merge_info(b)) else {
-            if give_up_now() { done("unknown") } else { later(retry) }
+            if give_up_now() {
+                done("unknown")
+            } else {
+                later(retry)
+            }
             continue;
         };
         let (merge_sha, base) = (info["merge_commit_sha"].as_str().unwrap_or("").to_string(), info["base"].as_str().unwrap_or("").to_string());
         if info["merged"] != json!(true) || merge_sha.is_empty() {
-            if give_up_now() { done("unknown") } else { later(retry) }
+            if give_up_now() {
+                done("unknown")
+            } else {
+                later(retry)
+            }
             continue;
         }
         repo.sha = merge_sha.clone();
         let reverted = |st: &mut State, repo: &mut Repo, prev_used: &mut Option<(u64, u64)>| -> Option<bool> {
             let title = c["title"].as_str().unwrap_or("").to_string();
             let ms = merge_sha.clone();
-            fetch_val(ctx, st, repo, "commits", &[("base", &base)], prev_used, &move |b| parse::revert_check(b, &ms, &title)).map(|v| v["reverted"] == json!(true))
+            fetch_val(ctx, st, repo, "commits", &[("base", &base)], prev_used, &move |b| parse::revert_check(b, &ms, &title))
+                .map(|v| v["reverted"] == json!(true))
         };
         if action == merge {
             let sha = merge_sha.clone();
             let Some(ck) = fetch_val(ctx, st, &mut repo, "checks", &[], prev_used, &|b| parse::runs(cfg, b, "check_runs", &sha)) else {
-                if give_up_now() { done("unknown") } else { later(retry) }
+                if give_up_now() {
+                    done("unknown")
+                } else {
+                    later(retry)
+                }
                 continue;
             };
             if ck["running"].as_u64().unwrap_or(0) > 0 && !give_up_now() {

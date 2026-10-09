@@ -513,7 +513,8 @@ pub const AS_MESSAGES: &str = "SELECT repositoryId, toBranch, createdAt FROM wor
 /// The timestamps of the app messages a store has ingested.
 pub const AS_NATIVE_TS: &str = "SELECT ts FROM messages WHERE hash LIKE ?1";
 /// The reconcile port: every registry row with the two columns the conditional operations compare.
-pub const RECON_REGISTRY_ALL: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry ORDER BY id ASC;";
+pub const RECON_REGISTRY_ALL: &str =
+    "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry ORDER BY id ASC;";
 /// The reconcile port, orphan heal: the workspace ids a store holds messages for (`listWorkspaceIds`, first source).
 pub const RECON_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages;";
 /// The reconcile port, orphan heal: the ids of the registry rows (`listWorkspaceIds`, second source).
@@ -527,7 +528,8 @@ pub const RECON_TABLES: &str = "SELECT name FROM sqlite_master WHERE type = 'tab
 /// The reconcile port's normaliser: every row of a table in storage order (`{table}` is filled from `RECON_TABLES`).
 pub const RECON_DUMP: &str = "SELECT * FROM \"{table}\" ORDER BY rowid;";
 /// The reconcile port: the registry row of one id, every column.
-pub const RECON_REGISTRY_ONE: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry WHERE id = ?;";
+pub const RECON_REGISTRY_ONE: &str =
+    "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry WHERE id = ?;";
 /// The reconcile port: a partition's message rows in storage order, with the columns the fold copies.
 pub const RECON_MESSAGES_OF: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce FROM messages WHERE workspace_id = ? ORDER BY id ASC;";
 /// The reconcile port: whether any partition of the store already holds a row with this hash.

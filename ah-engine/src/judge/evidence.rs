@@ -3,9 +3,9 @@
 //! Mirrors `hooks/lib/inference-check.js` `collectEvidence(lines, { raw: true })`, `lastUserPrompt`, `textOf` and
 //! `fencedBlocks`. Lines are parsed with [`crate::checks::replykit::json`], which keeps key order, because an object
 //! without text is written back with `JSON.stringify`; a line that parser cannot represent exactly is a [`Defer`].
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::jsport::text::slice16_lossy;
 use crate::checks::replykit::Defer;
 use crate::checks::replykit::json::{self, Oj, ParseError};

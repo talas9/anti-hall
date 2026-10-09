@@ -10,8 +10,8 @@
 // - a field that is absent is the empty string in the hash (Node: `x != null ? String(x) : ''`)
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::js_trim;
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::jsport::date::{Parsed, parse as date_parse};
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::meshw::idlock;
 use crate::meshw::store::{MeshStore, hex};
@@ -151,11 +151,8 @@ pub fn branch_sender(registry: &[(String, String)], branch: &str) -> Option<Stri
         return None;
     }
     let want = branch_dir(branch);
-    let mut hits: Vec<&String> = registry
-        .iter()
-        .filter(|(_, wt)| Path::new(wt).file_name().is_some_and(|n| n.to_string_lossy() == want.as_str()))
-        .map(|(id, _)| id)
-        .collect();
+    let mut hits: Vec<&String> =
+        registry.iter().filter(|(_, wt)| Path::new(wt).file_name().is_some_and(|n| n.to_string_lossy() == want.as_str())).map(|(id, _)| id).collect();
     hits.sort();
     hits.dedup();
     if hits.len() == 1 { Some(hits[0].clone()) } else { None }

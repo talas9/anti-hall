@@ -97,7 +97,16 @@ fn strings(v: &Value) -> Option<Vec<String>> {
 impl<'a> Act<'a> {
     /// A layer over `live` and `runner`.
     pub fn new(home: &Path, state_dir: &Path, env: RequestEnv, live: &'a dyn LiveState, runner: &'a dyn Runner) -> Act<'a> {
-        Act { home: home.into(), state_dir: state_dir.into(), env, live, runner, ledger: Ledger::open(state_dir), tele: super::tele::Tele::new(state_dir), probe: RefCell::new(None) }
+        Act {
+            home: home.into(),
+            state_dir: state_dir.into(),
+            env,
+            live,
+            runner,
+            ledger: Ledger::open(state_dir),
+            tele: super::tele::Tele::new(state_dir),
+            probe: RefCell::new(None),
+        }
     }
 
     pub(super) fn settings(&self) -> ActSettings {
@@ -135,6 +144,7 @@ impl<'a> Act<'a> {
 
     /// Whether `origin` may start `kind`: the automatic set is `devswarm_act.automatic_kinds`, the owner set `owner_kinds`, and the
     /// kinds the engine does not execute answer `deferred`.
+    #[allow(clippy::result_large_err)] // the refusal is the full report the caller returns as is
     pub fn permit(&self, origin: Origin, kind: &str) -> Result<(), Report> {
         if defaults::list("devswarm_act.deferred_kinds").contains(&kind) {
             return Err(Report::new(kind, "", "", Word::Deferred, json!({})));
@@ -296,7 +306,6 @@ impl<'a> Act<'a> {
         Some(d)
     }
 
-
     /// One auto-archive of `id`, whatever started it (`trigger`: a sweep or a state-change event). Decides from fresh facts (or uses
     /// `plan`, a decision the caller just made), takes the per-workspace in-flight lock, reads the facts AGAIN, acts only if the
     /// workspace is still eligible, verifies in the app database, and records the attempt in the telemetry. A workspace that is
@@ -312,7 +321,19 @@ impl<'a> Act<'a> {
         let key = first["key"].as_str().unwrap_or_default().to_string();
         let record = |outcome: &str, reason: Option<&str>, gates: Value, via_execute: bool| {
             self.tele.attempt(
-                &Attempt { feature, action: "archive", trigger, id, head: &head, gates, outcome, reason, latency_ms: started.elapsed().as_millis() as u64, key: &key, via_execute },
+                &Attempt {
+                    feature,
+                    action: "archive",
+                    trigger,
+                    id,
+                    head: &head,
+                    gates,
+                    outcome,
+                    reason,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    key: &key,
+                    via_execute,
+                },
                 self.live.now_ms(),
             );
         };
@@ -325,7 +346,12 @@ impl<'a> Act<'a> {
         let again = self.auto_candidate(id, s);
         let Some(d) = again.as_ref().filter(|d| d.get("eligible").and_then(Value::as_bool) == Some(true)) else {
             self.log(&json!({"ts": self.live.now_ms(), "kind": kind, "id": id, "outcome": Word::Stale.text()}));
-            record(outs[1], Some(defaults::text("devswarm_act.msg_stale")), gate_values(&again.as_ref().map(|a| a["blockers"].clone()).unwrap_or(json!([]))), false);
+            record(
+                outs[1],
+                Some(defaults::text("devswarm_act.msg_stale")),
+                gate_values(&again.as_ref().map(|a| a["blockers"].clone()).unwrap_or(json!([]))),
+                false,
+            );
             return One::Stale;
         };
         let live = self.live;
@@ -378,7 +404,11 @@ impl<'a> Act<'a> {
                 }
                 One::Stale => push(&mut sum, "failed", json!({"id": id, "reason": Word::Stale.text()})),
                 One::Refused(why) => push(&mut sum, "failed", json!({"id": id, "reason": why, "outcome": Word::Refused.text()})),
-                One::Failed(r) => push(&mut sum, "failed", json!({"id": id, "reason": r.detail.get("error").cloned().unwrap_or(json!(r.word.text())), "outcome": r.word.text()})),
+                One::Failed(r) => push(
+                    &mut sum,
+                    "failed",
+                    json!({"id": id, "reason": r.detail.get("error").cloned().unwrap_or(json!(r.word.text())), "outcome": r.word.text()}),
+                ),
             }
         }
         let owned: Vec<Value> = cands.iter().filter(|c| eligible(c) || c.get("soft").and_then(Value::as_bool) == Some(true)).map(|c| c["id"].clone()).collect();

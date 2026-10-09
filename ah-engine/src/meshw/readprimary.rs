@@ -204,10 +204,7 @@ fn finish(m: Msg, legacy_from: &dyn Fn(&str) -> Option<String>) -> R<(OVal, f64)
         o.put("instanceNonceShort", s(&short)).put("fromLine", OVal::Str(format!("{sender}@{short}")));
     }
     // a legacy row with no sender: a `DONE: <branch> ...` notice is attributed from its branch at read time (nothing is rewritten)
-    let sender = get(&o, "sender")
-        .filter(|v| !matches!(v, OVal::Null))
-        .or_else(|| body.as_deref().and_then(legacy_from).map(|id| OVal::Str(id)))
-        .unwrap_or(OVal::Null);
+    let sender = get(&o, "sender").filter(|v| !matches!(v, OVal::Null)).or_else(|| body.as_deref().and_then(legacy_from).map(OVal::Str)).unwrap_or(OVal::Null);
     let broadcast = matches!(get(&o, "mtype"), Some(OVal::Str(t)) if t == defaults::text("mesh_write.mtype_broadcast"));
     let body_text = body.unwrap_or_default();
     let len = body_text.len() as f64;

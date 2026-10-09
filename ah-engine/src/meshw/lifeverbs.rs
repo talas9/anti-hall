@@ -292,7 +292,14 @@ struct RegFlags {
 fn reg_flags(a: &Args) -> R<RegFlags> {
     let name = |k: &str| defaults::text(k);
     // an empty value is a value in JavaScript (`one()` returns ''), and falsy: Node's handling of it is not reproduced
-    for k in ["devswarm_cli.flag_worktree", "devswarm_cli.flag_session", "devswarm_cli.flag_reg_inbox", "devswarm_cli.flag_reg_cursor", "devswarm_cli.flag_reg_nudge", "devswarm_cli.flag_reg_repo_id"] {
+    for k in [
+        "devswarm_cli.flag_worktree",
+        "devswarm_cli.flag_session",
+        "devswarm_cli.flag_reg_inbox",
+        "devswarm_cli.flag_reg_cursor",
+        "devswarm_cli.flag_reg_nudge",
+        "devswarm_cli.flag_reg_repo_id",
+    ] {
         if a.flags.get(name(k)).is_some_and(|v| v.iter().any(|x| matches!(x, crate::meshw::args::FlagVal::S(t) if t.is_empty()))) {
             return defer("empty-flag");
         }
@@ -832,7 +839,11 @@ pub fn correct(inv: &Inv, a: &Args) -> R<Answer> {
     let sent = crate::meshw::send::run(inv, &send_args)?;
     let sent_result = OVal::parse(sent.stdout.trim_end()).ok_or_else(|| ident::Defer("committed:send-result".into()))?;
     let effect = sent.effect.clone();
-    let reply = |o: Obj| Answer { code: if sent.code == 0 && matches!(o.0.iter().find(|(k, _)| k == "ok"), Some((_, OVal::Bool(true)))) { 0 } else { 2 }, stdout: format!("{}\n", o.done().stringify()), effect: effect.clone() };
+    let reply = |o: Obj| Answer {
+        code: if sent.code == 0 && matches!(o.0.iter().find(|(k, _)| k == "ok"), Some((_, OVal::Bool(true)))) { 0 } else { 2 },
+        stdout: format!("{}\n", o.done().stringify()),
+        effect: effect.clone(),
+    };
     if sent.code != 0 {
         let mut o = Obj::default();
         o.put("ok", OVal::Bool(false))
@@ -907,15 +918,16 @@ fn reap_result(ok: bool, fields: &[(&str, OVal)]) -> Obj {
 pub fn reap_orphans(inv: &Inv, a: &Args) -> R<Answer> {
     let apply = a.has(defaults::text("devswarm_cli.flag_apply"));
     let Some(repo_key) = ident::resolve_context(&inv.cwd, true)?.repo_key else {
-        let o = reap_result(false, &[("reason", s(defaults::text("devswarm_cli.reap_reason_no_project"))), ("error", s(defaults::text("devswarm_cli.msg_reap_no_project")))]);
+        let o = reap_result(
+            false,
+            &[("reason", s(defaults::text("devswarm_cli.reap_reason_no_project"))), ("error", s(defaults::text("devswarm_cli.msg_reap_no_project")))],
+        );
         return Ok(answer(2, o.done()));
     };
     // collectOrphanCandidates opens the project's store (Node creates a missing one) and reads its summary
     let Some(_reader) = crate::meshw::tick::open_reader(inv, &repo_key)? else { return defer("no-store") };
     let store = common::open_store(inv, &repo_key)?;
-    let refuse = |reason: &str, error: String| -> Answer {
-        answer(2, reap_result(false, &[("reason", s(reason)), ("error", s(&error))]).done())
-    };
+    let refuse = |reason: &str, error: String| -> Answer { answer(2, reap_result(false, &[("reason", s(reason)), ("error", s(&error))]).done()) };
     let max_n = if apply {
         let flag = defaults::text("devswarm_cli.flag_max");
         let raw = a.one(flag);

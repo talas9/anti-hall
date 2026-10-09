@@ -993,7 +993,7 @@ pub fn scan_transcript(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> 
     let mut first = t.drop_first;
     loop {
         // a script call cut at its request's deadline stops here; the host turns the cut into the call's failure
-        if seq % defaults::num("agent_scan.cut_check_lines").max(1) == 0 && crate::deadline::cut_due() {
+        if seq.is_multiple_of(defaults::num("agent_scan.cut_check_lines").max(1)) && crate::deadline::cut_due() {
             return Ok(None);
         }
         match t.read_line(&mut buf) {

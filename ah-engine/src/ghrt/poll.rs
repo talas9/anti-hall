@@ -308,7 +308,15 @@ impl Ctx<'_> {
     }
 
     /// One conditional GET. `soft`: a 403/404 means "not available" (an empty summary), not an error of the repo.
-    pub(super) fn fetch(&self, st: &mut State, repo: &mut Repo, path: &str, soft: bool, prev_used: &mut Option<(u64, u64)>, parse: &dyn Fn(&Value) -> Value) -> Got {
+    pub(super) fn fetch(
+        &self,
+        st: &mut State,
+        repo: &mut Repo,
+        path: &str,
+        soft: bool,
+        prev_used: &mut Option<(u64, u64)>,
+        parse: &dyn Fn(&Value) -> Value,
+    ) -> Got {
         if !self.allow(st) {
             return Got::Stop;
         }

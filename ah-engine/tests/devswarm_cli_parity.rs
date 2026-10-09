@@ -914,7 +914,13 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
                 })
             };
             for k in te.keys().chain(tn.keys()) {
-                assert!(unstamp(te.get(k)) == unstamp(tn.get(k)), "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}", c.name, te.get(k), tn.get(k));
+                assert!(
+                    unstamp(te.get(k)) == unstamp(tn.get(k)),
+                    "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}",
+                    c.name,
+                    te.get(k),
+                    tn.get(k)
+                );
             }
             for w in &c.writes {
                 assert!(homes[1].join(w).is_file(), "{}: expected the verb to have written {w}", c.name);

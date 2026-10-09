@@ -130,7 +130,11 @@ fn tree(home: &Path) -> BTreeMap<String, String> {
         .into_iter()
         .map(|(k, v)| {
             let text = String::from_utf8_lossy(&v).replace(home.to_string_lossy().as_ref(), "<HOME>");
-            let text = if k.ends_with("app-archived.json") { regex::Regex::new(r#""mtimeMs":[0-9.]+"#).unwrap().replace_all(&text, r#""mtimeMs":0"#).into_owned() } else { text };
+            let text = if k.ends_with("app-archived.json") {
+                regex::Regex::new(r#""mtimeMs":[0-9.]+"#).unwrap().replace_all(&text, r#""mtimeMs":0"#).into_owned()
+            } else {
+                text
+            };
             (k.clone(), if k.contains("devswarm.jsonl") && !k.ends_with(".lock") { mask_log(&text) } else { text })
         })
         .collect()
@@ -765,24 +769,30 @@ fn register_primary_matches_node() {
         }),
         r("rp-outside-a-git-worktree", &["register-primary"], "nongit", true),
         r("rp-another-project-is-node", &["register-primary", "--session", "s-o"], "other", false),
-        r("rp-child-builder-is-refused", &["register-primary", "--session", "s-b"], "child", true).env(app.0, app.1).setup(move |h| builders(h, &[("cb-1", &c1, 0, 1, "child")])),
-        r("rp-child-builder-with-force", &["register-primary", "--session", "s-b", "--force"], "child", true).env(app.0, app.1).setup(move |h| builders(h, &[("cb-1", &c2, 0, 1, "child")])),
+        r("rp-child-builder-is-refused", &["register-primary", "--session", "s-b"], "child", true)
+            .env(app.0, app.1)
+            .setup(move |h| builders(h, &[("cb-1", &c1, 0, 1, "child")])),
+        r("rp-child-builder-with-force", &["register-primary", "--session", "s-b", "--force"], "child", true)
+            .env(app.0, app.1)
+            .setup(move |h| builders(h, &[("cb-1", &c2, 0, 1, "child")])),
         r("rp-primary-builder-registers", &["register-primary", "--session", "s-b"], "main", true).env(app.0, app.1).setup({
             let m = fx.main.clone();
             move |h| builders(h, &[("pb-1", &m, 0, 1, "primary")])
         }),
         r("rp-live-holder-is-refused", &["register-primary", "--session", "s-intruder"], "main", true).setup(move |h| session_alive(h, "sess-primary")),
-        r("rp-live-holder-with-force", &["register-primary", "--session", "s-intruder", "--force"], "main", true).setup(move |h| session_alive(h, "sess-primary")),
-        r("rp-live-holder-same-session-registers", &["register-primary", "--session", "sess-primary"], "main", true).setup(move |h| session_alive(h, "sess-primary")),
-        r("rp-live-holder-with-an-app-database-is-node", &["register-primary", "--session", "s-intruder"], "main", false)
-            .env(app.0, app.1)
-            .setup(move |h| {
-                session_alive(h, "sess-primary");
-                builders(h, &[("pb-1", &m2, 0, 1, "primary")]);
-            }),
+        r("rp-live-holder-with-force", &["register-primary", "--session", "s-intruder", "--force"], "main", true)
+            .setup(move |h| session_alive(h, "sess-primary")),
+        r("rp-live-holder-same-session-registers", &["register-primary", "--session", "sess-primary"], "main", true)
+            .setup(move |h| session_alive(h, "sess-primary")),
+        r("rp-live-holder-with-an-app-database-is-node", &["register-primary", "--session", "s-intruder"], "main", false).env(app.0, app.1).setup(move |h| {
+            session_alive(h, "sess-primary");
+            builders(h, &[("pb-1", &m2, 0, 1, "primary")]);
+        }),
         r("rp-child-environment-is-node", &["register-primary", "--session", "s-e"], "main", false).env("DEVSWARM_SOURCE_BRANCH", "feat"),
         r("rp-empty-session-flag-is-node", &["register-primary", "--session", ""], "main", false),
-        r("rp-archived-child-builder-is-refused-too", &["register-primary", "--session", "s-a"], "child", true).env(app.0, app.1).setup(move |h| builders(h, &[("ab-1", &c3, 1, 0, "child")])),
+        r("rp-archived-child-builder-is-refused-too", &["register-primary", "--session", "s-a"], "child", true)
+            .env(app.0, app.1)
+            .setup(move |h| builders(h, &[("ab-1", &c3, 1, 0, "child")])),
     ];
     check(&fx, &cases, &[], 16, 3);
 }
@@ -876,7 +886,11 @@ fn diagnose_and_healthcheck_match_node() {
                 let (k, c) = (k2.clone(), c2.clone());
                 move |h| {
                     registry_row(h, &k, "desc-only", &c, Some("unclaimed:desc-only"));
-                    put(h, ".anti-hall/devswarm/workspaces/desc-only.json", &format!("{{\"id\":\"desc-only\",\"worktreePath\":\"{c}\",\"sessionId\":\"real-session\"}}"));
+                    put(
+                        h,
+                        ".anti-hall/devswarm/workspaces/desc-only.json",
+                        &format!("{{\"id\":\"desc-only\",\"worktreePath\":\"{c}\",\"sessionId\":\"real-session\"}}"),
+                    );
                 }
             }),
             m("an-orphan-partition-is-node", &["--json"], "main", false).setup({

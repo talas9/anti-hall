@@ -297,7 +297,10 @@ fn a_stopped_subagent_is_done_not_hung_and_a_live_one_still_is() {
     write(&sess(&h, "parent"), &[prompt(n - 60 * MIN, "/w"), notice(n - 30 * MIN, "abc", "killed")]);
     let dir = h.join(".claude/projects/p/parent/subagents");
     for id in ["abc", "def"] {
-        write(&dir.join(format!("agent-{id}.jsonl")), &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)]);
+        write(
+            &dir.join(format!("agent-{id}.jsonl")),
+            &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)],
+        );
     }
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);

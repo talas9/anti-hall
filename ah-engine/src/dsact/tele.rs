@@ -42,6 +42,7 @@ pub struct Attempt<'a> {
 }
 
 #[derive(Default)]
+#[allow(clippy::type_complexity)] // (metric name, labels, value) rows, read once by the metrics flush
 struct Inner {
     counters: Vec<(String, Vec<(String, String)>, u64)>,
     lat: Vec<(String, u64)>,
@@ -100,17 +101,23 @@ impl Tele {
             crate::telemetry::emit::act(&self.rec(a.feature, a.action, a.outcome, a.latency_ms, a.id, a.reason.unwrap_or_default(), a.key));
         }
         let mut g = self.lock();
-        g.counters.push((
-            "dsx_actions".into(),
-            vec![("feature".into(), a.feature.into()), ("outcome".into(), a.outcome.into())],
-            1,
-        ));
+        g.counters.push(("dsx_actions".into(), vec![("feature".into(), a.feature.into()), ("outcome".into(), a.outcome.into())], 1));
         g.lat.push((a.feature.into(), a.latency_ms.saturating_mul(1000)));
         let col = outs.iter().position(|o| *o == a.outcome).unwrap_or(0);
         g.totals[feature_ix(a.feature)][col] += 1;
     }
 
-    fn rec<'b>(&self, feature: &'b str, action: &'b str, outcome: &str, latency_ms: u64, target: &'b str, reason: &'b str, key: &'b str) -> crate::telemetry::emit::ActRec<'b> {
+    #[allow(clippy::too_many_arguments)] // the fields of one act record
+    fn rec<'b>(
+        &self,
+        feature: &'b str,
+        action: &'b str,
+        outcome: &str,
+        latency_ms: u64,
+        target: &'b str,
+        reason: &'b str,
+        key: &'b str,
+    ) -> crate::telemetry::emit::ActRec<'b> {
         use crate::telemetry::event::Outcome;
         let outs = defaults::list("devswarm_act.outcome_words");
         let outcome = match outs.iter().position(|o| *o == outcome) {
@@ -128,7 +135,10 @@ impl Tele {
         }
         append_line(&self.dir.join(defaults::text("devswarm_act.mistakes_file")), &Value::String(format!("{signal}|{key}")));
         crate::telemetry::emit::mistake(&self.rec(feature, signal, defaults::list("devswarm_act.outcome_words")[0], 0, id, "", key));
-        append_line(&self.file(), &json!({"ts": now_ms, "type": "mistake", "feature": feature, "signal": signal, "target": {"id": id, "key": key}, "detail": detail}));
+        append_line(
+            &self.file(),
+            &json!({"ts": now_ms, "type": "mistake", "feature": feature, "signal": signal, "target": {"id": id, "key": key}, "detail": detail}),
+        );
         let mut g = self.lock();
         g.counters.push(("dsx_mistakes".into(), vec![("feature".into(), feature.into()), ("signal".into(), signal.into())], 1));
         g.totals[feature_ix(feature)][3] += 1;

@@ -16,13 +16,7 @@ use std::path::Path;
 pub fn act_rec(r: &Report, latency_ms: u64) -> ActRec<'_> {
     let map = defaults::raw("devswarm_act.audit_outcomes");
     let word = r.word.text();
-    let outcome = map
-        .as_table()
-        .into_iter()
-        .flatten()
-        .find(|(_, l)| l.strings().contains(&word))
-        .and_then(|(o, _)| Outcome::parse(o))
-        .unwrap_or(Outcome::Skip);
+    let outcome = map.as_table().into_iter().flatten().find(|(_, l)| l.strings().contains(&word)).and_then(|(o, _)| Outcome::parse(o)).unwrap_or(Outcome::Skip);
     let reason = if r.word == Word::Done { "" } else { word };
     ActRec { feature: &r.kind, action: &r.kind, outcome, latency_ms, target: &r.id, inputs: "", reason, action_id: &r.key }
 }
@@ -182,7 +176,14 @@ pub fn findings(a: &Value) -> Vec<(&'static str, String)> {
         let bad = succ.is_some_and(|r| (1.0 - r) * 100.0 > fw) || mis.is_some_and(|r| r * 100.0 > mw);
         let text = defaults::render(
             "devswarm_act.msg_audit_feature",
-            &[("feature", name), ("runs", &f["runs"]), ("done", &f["done"]), ("failed", &f["failed"]), ("refused", &f["refused"]), ("mistakes", &f["mistakenActions"])],
+            &[
+                ("feature", name),
+                ("runs", &f["runs"]),
+                ("done", &f["done"]),
+                ("failed", &f["failed"]),
+                ("refused", &f["refused"]),
+                ("mistakes", &f["mistakenActions"]),
+            ],
         );
         out.push((if bad { "warn" } else { "ok" }, text));
     }
@@ -216,7 +217,8 @@ mod tests {
             act("auto-archive", "block", "k6", "refused", 1),
             act("poke", "allow", "p1", "", 5),
         ];
-        let mistakes = [json!({"h": "auto-archive", "action_id": "k2"}), json!({"h": "auto-archive", "action_id": "k2"}), json!({"h": "poke", "action_id": "nope"})];
+        let mistakes =
+            [json!({"h": "auto-archive", "action_id": "k2"}), json!({"h": "auto-archive", "action_id": "k2"}), json!({"h": "poke", "action_id": "nope"})];
         let f = features(&acts, &mistakes);
         let a = &f["byFeature"]["auto-archive"];
         assert_eq!((a["runs"].as_u64(), a["done"].as_u64(), a["failed"].as_u64(), a["refused"].as_u64()), (Some(6), Some(2), Some(1), Some(3)));
@@ -256,7 +258,8 @@ mod tests {
     fn build_reads_fixture_files_and_the_doctor_findings_flag_trouble() {
         let d = std::env::temp_dir().join(format!("ah-audit-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join(defaults::text("devswarm_act.ledger_file")), "{\"ts\":100,\"key\":\"z\",\"kind\":\"poke\",\"outcome\":\"started\"}\nnot json\n").unwrap();
+        std::fs::write(d.join(defaults::text("devswarm_act.ledger_file")), "{\"ts\":100,\"key\":\"z\",\"kind\":\"poke\",\"outcome\":\"started\"}\nnot json\n")
+            .unwrap();
         let acts: Vec<Value> = (0..5).map(|i| act("f", if i < 3 { "allow" } else { "error" }, &format!("k{i}"), "", 1)).collect();
         let a = build(&d, 200, 1, &acts, &[]);
         assert!(has_data(&a));
@@ -268,7 +271,15 @@ mod tests {
 
     #[test]
     fn a_report_maps_to_the_shared_act_schema() {
-        let r = Report { kind: "auto-archive".into(), id: "ws1".into(), key: "auto-archive:ws1:abc".into(), word: Word::Refused, detail: Value::Null, inputs: Value::Null, latency_ms: 0 };
+        let r = Report {
+            kind: "auto-archive".into(),
+            id: "ws1".into(),
+            key: "auto-archive:ws1:abc".into(),
+            word: Word::Refused,
+            detail: Value::Null,
+            inputs: Value::Null,
+            latency_ms: 0,
+        };
         let rec = act_rec(&r, 7);
         assert_eq!((rec.outcome, rec.reason, rec.feature, rec.action_id), (Outcome::Block, "refused", "auto-archive", "auto-archive:ws1:abc"));
         let ev = crate::telemetry::emit::act_call(&rec);

@@ -183,7 +183,8 @@ fn diagnose_store(inv: &Inv, repo_key: &str) -> R<Diagnosis> {
             Some(OVal::Bool(b)) => Some(b.to_string()),
             Some(_) => return defer("descriptor-session-type"),
         };
-        let sid: Option<String> = if !is_real_sid(reg_sid, &d.id) && is_real_sid(desc_sid.as_deref(), &d.id) { desc_sid.clone() } else { reg_sid.map(str::to_string) };
+        let sid: Option<String> =
+            if !is_real_sid(reg_sid, &d.id) && is_real_sid(desc_sid.as_deref(), &d.id) { desc_sid.clone() } else { reg_sid.map(str::to_string) };
         let wt = d.worktree_path.as_deref().filter(|x| !x.is_empty());
         let archived = v.archived(&d.id, wt)?;
         let live_sid = sid.as_deref().filter(|x| !x.is_empty());
@@ -391,7 +392,10 @@ pub fn diagnose(inv: &Inv, a: &Args) -> R<Answer> {
     let parts: Vec<String> = parts.iter().map(|(k, c)| format!("{k}={c}")).collect();
     let status = if degraded { text("devswarm_cli.diag_status_degraded") } else { text("devswarm_cli.diag_status_ok") };
     let tail = warning.map_or(String::new(), |w| tpl("devswarm_cli.diag_line_warning", &[("warning", &w)]));
-    let line = tpl("devswarm_cli.diag_line", &[("status", status), ("scope", &tpl("devswarm_cli.diag_scope", &[("key", &repo_key)])), ("parts", &parts.join(" ")), ("warning", &tail)]);
+    let line = tpl(
+        "devswarm_cli.diag_line",
+        &[("status", status), ("scope", &tpl("devswarm_cli.diag_scope", &[("key", &repo_key)])), ("parts", &parts.join(" ")), ("warning", &tail)],
+    );
     Ok(answer(0, line))
 }
 

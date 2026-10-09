@@ -43,7 +43,11 @@ impl Wire {
         let out = outcome(r.word);
         let reason = if out == "ok" { String::new() } else { format!("{} {}", r.word.text(), r.detail) };
         let inputs = r.inputs.get("inputs").cloned().unwrap_or_else(|| r.inputs.clone());
-        actlog::record(&self.state_dir, &Action { feature: word("feature"), action: &r.kind, target: &r.id, inputs, outcome: out, reason: &reason, latency_ms: r.latency_ms }, now as u64);
+        actlog::record(
+            &self.state_dir,
+            &Action { feature: word("feature"), action: &r.kind, target: &r.id, inputs, outcome: out, reason: &reason, latency_ms: r.latency_ms },
+            now as u64,
+        );
         self.count(&mut |m| m.inc("dswire_stall_actions", &[("kind", &r.kind), ("outcome", out)]));
         if out == "ok" {
             let last = r.inputs.pointer("/inputs/last_activity_ms").and_then(Value::as_i64).unwrap_or(0);
@@ -67,7 +71,12 @@ impl Wire {
         let gap = defaults::num("devswarm_rt.stall_check_min_gap_ms") as i64;
         if now - self.last_stall.load(Ordering::SeqCst) >= gap {
             let stall = self.rt.cfg().stall_ms;
-            let reached = self.rt.current().workspaces.values().any(|w| w.lifecycle.value == Lifecycle::Active && w.activity.value == Activity::Working && w.activity.observed_ms + stall <= now);
+            let reached = self
+                .rt
+                .current()
+                .workspaces
+                .values()
+                .any(|w| w.lifecycle.value == Lifecycle::Active && w.activity.value == Activity::Working && w.activity.observed_ms + stall <= now);
             if reached {
                 self.last_stall.store(now, Ordering::SeqCst);
                 self.reconcile(Cause::Event);

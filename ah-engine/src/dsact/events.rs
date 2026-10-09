@@ -133,7 +133,11 @@ impl Act<'_> {
                 One::Refused(why) => push(&mut sum, "failed", json!({"id": id, "reason": why, "outcome": Word::Refused.text()})),
                 One::Failed(r) => {
                     acted += 1;
-                    push(&mut sum, "failed", json!({"id": id, "reason": r.detail.get("error").cloned().unwrap_or(json!(r.word.text())), "outcome": r.word.text()}));
+                    push(
+                        &mut sum,
+                        "failed",
+                        json!({"id": id, "reason": r.detail.get("error").cloned().unwrap_or(json!(r.word.text())), "outcome": r.word.text()}),
+                    );
                 }
             }
         }
@@ -154,7 +158,9 @@ impl Act<'_> {
                 continue;
             }
             let head = key.rsplit(':').next().unwrap_or_default();
-            if self.live.archived(&id) == Some(false) && self.tele.mistake(feature, defaults::text("devswarm_act.mistake_unarchived"), &key, &id, json!({"archivedAt": at}), now) {
+            if self.live.archived(&id) == Some(false)
+                && self.tele.mistake(feature, defaults::text("devswarm_act.mistake_unarchived"), &key, &id, json!({"archivedAt": at}), now)
+            {
                 n += 1;
             }
             let Some(post) = self.live.post_archive(&id) else { continue };

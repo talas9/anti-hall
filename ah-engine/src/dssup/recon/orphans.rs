@@ -162,13 +162,20 @@ pub fn plan(home: &Path, repo_key: &str) -> R<OrphanPlan> {
     if !home.join(view::store_rel(repo_key)).exists() {
         // Node never opens or creates a store just to look for orphans
         let result = empty_result(repo_key, Vec::new(), 0, 0);
-        let job = Job { label: defaults::text("devswarm_recon.job_orphans").into(), scope: Default::default(), units: Vec::new(), calls: Vec::new(), expect: Vec::new() };
+        let job = Job {
+            label: defaults::text("devswarm_recon.job_orphans").into(),
+            scope: Default::default(),
+            units: Vec::new(),
+            calls: Vec::new(),
+            expect: Vec::new(),
+        };
         return Ok(OrphanPlan { job, result, adopts: Vec::new() });
     }
     let rows = registry(home, repo_key)?;
     let have: HashSet<&str> = rows.iter().map(|r| r.row.id.as_str()).collect();
     let broadcast = defaults::text("mesh_write.broadcast_partition");
-    let orphans: Vec<String> = workspace_ids(home, repo_key)?.into_iter().filter(|id| id != broadcast && !have.contains(id.as_str()) && is_safe_id(id)).collect();
+    let orphans: Vec<String> =
+        workspace_ids(home, repo_key)?.into_iter().filter(|id| id != broadcast && !have.contains(id.as_str()) && is_safe_id(id)).collect();
     // descriptors first (live, else archived), then the ones with none
     let (mut with, mut without) = (Vec::new(), Vec::new());
     for id in orphans {
@@ -224,14 +231,20 @@ pub fn plan(home: &Path, repo_key: &str) -> R<OrphanPlan> {
             *family.entry(m).or_default() += 1;
         }
         let row = RegistryRow { id: id.clone(), worktree_path: wt, session_id: session, inbox_path: inbox, cursor_path: cursor, nudge_command: None };
-        units.push(Unit { label: format!("orphan:{id}"), lock: Some(id.clone()), ops: vec![Op::Upsert { store: repo_key.to_string(), row: Box::new(row), pre: None::<Box<RegRow>> }] });
+        units.push(Unit {
+            label: format!("orphan:{id}"),
+            lock: Some(id.clone()),
+            ops: vec![Op::Upsert { store: repo_key.to_string(), row: Box::new(row), pre: None::<Box<RegRow>> }],
+        });
         adopts.push((id.clone(), detail.len()));
         adopted += 1;
         detail.push(json!({"id": id, "action": defaults::text("devswarm_recon.action_adopted")}));
     }
     for id in without {
         unhealable += 1;
-        detail.push(json!({"id": id, "action": defaults::text("devswarm_recon.action_unhealable"), "reason": defaults::text("devswarm_recon.reason_no_descriptor")}));
+        detail.push(
+            json!({"id": id, "action": defaults::text("devswarm_recon.action_unhealable"), "reason": defaults::text("devswarm_recon.reason_no_descriptor")}),
+        );
     }
     let mut scope = super::side::scope_for(&[]);
     scope.stores.push(repo_key.to_string());
@@ -261,7 +274,8 @@ pub fn run(ctx: &Ctx, runner: &dyn Runner, repo_key: &str, hooks: &Hooks) -> R<O
         }
     }
     if !gone.is_empty() {
-        let detail: Vec<Value> = p.result["detail"].as_array().cloned().unwrap_or_default().into_iter().enumerate().filter(|(i, _)| !gone.contains(i)).map(|(_, v)| v).collect();
+        let detail: Vec<Value> =
+            p.result["detail"].as_array().cloned().unwrap_or_default().into_iter().enumerate().filter(|(i, _)| !gone.contains(i)).map(|(_, v)| v).collect();
         result["adopted"] = json!(p.adopts.len() - gone.len());
         result["detail"] = Value::Array(detail);
     }

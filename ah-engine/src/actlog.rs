@@ -77,7 +77,14 @@ pub fn mistake(dir: &Path, feature: &str, action: &str, target: &str, kind: &str
     // the shared telemetry schema (kind `mistake`); the matching `act` event is emitted where the action runs (dsact for pokes)
     let tok = token;
     crate::telemetry::emit::mistake(&crate::telemetry::emit::ActRec {
-        feature: &tok(feature), action: &tok(action), outcome: crate::telemetry::event::Outcome::Advise, latency_ms: 0, target: &tok(target), inputs: "", reason: &tok(kind), action_id: "",
+        feature: &tok(feature),
+        action: &tok(action),
+        outcome: crate::telemetry::event::Outcome::Advise,
+        latency_ms: 0,
+        target: &tok(target),
+        inputs: "",
+        reason: &tok(kind),
+        action_id: "",
     });
     append(dir, &json!({"t": "mistake", "ts": now, "feature": feature, "action": action, "target": target, "kind": kind, "detail": detail}));
 }
@@ -174,7 +181,22 @@ pub fn report(dir: &Path, only: Option<&str>, now: u64, window_ms: u64) -> Value
     }
     let mut feats: std::collections::BTreeMap<String, F> = std::collections::BTreeMap::new();
     for name in defaults::raw("actions.features").as_table().map(|t| t.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()).unwrap_or_default() {
-        feats.insert(name, F { by_action: Map::new(), ok: 0, refused: 0, failed: 0, mistakes: Default::default(), by_kind: Map::new(), verified: 0, mistaken_followups: 0, latency_sum: 0, latency_n: 0, latency_max: 0 });
+        feats.insert(
+            name,
+            F {
+                by_action: Map::new(),
+                ok: 0,
+                refused: 0,
+                failed: 0,
+                mistakes: Default::default(),
+                by_kind: Map::new(),
+                verified: 0,
+                mistaken_followups: 0,
+                latency_sum: 0,
+                latency_n: 0,
+                latency_max: 0,
+            },
+        );
     }
     for line in text.lines() {
         let Ok(r) = serde_json::from_str::<Value>(line) else { continue };
@@ -244,7 +266,7 @@ pub fn report(dir: &Path, only: Option<&str>, now: u64, window_ms: u64) -> Value
                 "by_action": f.by_action,
                 "mistakes": f.mistakes.len(), "mistakes_by_kind": f.by_kind, "mistake_rate": rate(f.mistakes.len() as u64, f.ok),
                 "followups_verified": f.verified, "followups_pending": pending,
-                "latency_ms": {"avg": if f.latency_n > 0 { json!(f.latency_sum / f.latency_n) } else { Value::Null }, "max": f.latency_max},
+                "latency_ms": {"avg": f.latency_sum.checked_div(f.latency_n).map_or(Value::Null, |v| json!(v)), "max": f.latency_max},
             }),
         );
     }
@@ -266,7 +288,12 @@ pub fn run_cli(rest: &[String]) -> (Value, i32) {
         return (json!({"recorded": {"feature": a[0], "action": a[1], "target": a[2], "kind": a[3]}}), 0);
     }
     let feature = rest.iter().skip(1).find(|a| !a.starts_with("--")).map(String::as_str);
-    let window = rest.iter().position(|a| a == "--window").and_then(|i| rest.get(i + 1)).and_then(|v| v.parse::<u64>().ok()).unwrap_or_else(|| defaults::num("actions.window_ms"));
+    let window = rest
+        .iter()
+        .position(|a| a == "--window")
+        .and_then(|i| rest.get(i + 1))
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or_else(|| defaults::num("actions.window_ms"));
     (report(&dir, feature, now, window), 0)
 }
 

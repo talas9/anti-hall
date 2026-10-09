@@ -346,7 +346,7 @@ mod tests {
         let (dir, r, inbox, cur) = fixture("lead", &["native:a", "native:b", "native:c"], 0);
         let u = run(&r, &inbox, &cur, 2.0, 0.0);
         assert_eq!((u.nd_skipped, u.nd_unread_lines.len(), u.unread), (2, 1, 1));
-        assert_eq!(0 + u.nd_skipped + u.nd_unread_lines.len(), 3, "the ack target is the total");
+        assert_eq!(u.nd_skipped + u.nd_unread_lines.len(), 3, "the ack target is the total");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 }

@@ -769,10 +769,10 @@ pub fn busy_state(file: &Path, now: f64, fresh_ms: f64) -> R<Busy> {
     let Some(sc) = scan(file)? else { return Ok(none) };
     let open = open_tool(&sc.w)?;
     let fresh = is_fresh(now, sc.mtime, fresh_ms);
-    if let Some(o) = &open {
-        if defaults::list("devswarm_cli.rr_tr_wait_tools").contains(&o.tool.as_str()) || !fresh {
-            return Ok(Busy { busy: false, waiting: true, question: o.question.clone() });
-        }
+    if let Some(o) = &open
+        && (defaults::list("devswarm_cli.rr_tr_wait_tools").contains(&o.tool.as_str()) || !fresh)
+    {
+        return Ok(Busy { busy: false, waiting: true, question: o.question.clone() });
     }
     if !fresh {
         return Ok(none);

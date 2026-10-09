@@ -193,7 +193,11 @@ fn node_cli(home: &Path, cwd: &Path, argv: &[String], now: i64, env: &[(String, 
     let e: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     c.arg("-e").arg(SNIPPET).arg(&cli).arg(now.to_string()).args(argv).current_dir(cwd).env_clear().envs(base_env(home, &home.join("state"), &e));
     let o = run(&mut c, None);
-    Out { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned() }
+    Out {
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+    }
 }
 
 fn engine_cli(home: &Path, cwd: &Path, argv: &[String], now: i64, env: &[(String, String)]) -> Out {
@@ -201,7 +205,11 @@ fn engine_cli(home: &Path, cwd: &Path, argv: &[String], now: i64, env: &[(String
     let e: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     c.arg("mesh").args(argv).current_dir(cwd).env_clear().envs(base_env(home, &home.join("state"), &e)).env("AH_ENGINE_MESH_NOW_MS", now.to_string());
     let o = run(&mut c, None);
-    Out { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned() }
+    Out {
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+    }
 }
 
 /// The pid and the random part of a WAL entry id differ between the two processes by design.
@@ -330,7 +338,10 @@ fn run_cases(fx: &Fx, w: &W, cases: &[Lc], min_native: usize, min_deferred: usiz
             assert!(pre == snap(&homes[2]), "{}: a deferral wrote", c.name);
         }
     }
-    eprintln!("l8e tick --child parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", cases.len());
+    eprintln!(
+        "l8e tick --child parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written",
+        cases.len()
+    );
     if std::env::var("AH_L8E_FILTER").is_err() {
         assert!(native >= min_native && deferred >= min_deferred, "{native} native, {deferred} deferred");
     }
@@ -560,11 +571,40 @@ fn child_tick_drains_the_queue_like_node() {
         case("count-as-text", &["--quiet"], true, queued("you have 2 unread", two.clone(), vec![])),
         case("messages-wrapper-object", &["--quiet"], true, queued("2", format!("{{\"messages\":{two}}}"), vec![])),
         case("data-wrapper-object", &["--quiet"], true, queued("2", format!("{{\"data\":{two}}}"), vec![])),
-        case("single-message-object", &["--quiet"], true, queued("1", "{\"message\":\"solo\",\"fromBranch\":\"main\",\"createdAt\":\"2026-10-09T10:00:00Z\"}".into(), vec![])),
-        case("message-without-created-at-hashes-the-whole-object", &["--quiet"], true, queued("1", "[{\"message\":\"no date\",\"fromBranch\":\"main\"}]".into(), vec![])),
-        case("message-with-unusual-fields", &["--quiet"], true, queued("1", "[{\"message\":{\"a\":[1,2]},\"fromBranch\":7,\"status\":null,\"toBranch\":\"x\",\"createdAt\":\"2026-10-09T10:00:00+04:00\"}]".into(), vec![])),
-        case("unicode-and-newlines-in-the-body", &["--quiet"], true, queued("1", "[{\"message\":\"caf\\u00e9\\n\\u2603 line two\",\"createdAt\":\"2026-10-09T10:00:00Z\"}]".into(), vec![])),
-        case("duplicate-inside-one-batch", &["--quiet"], true, queued("2", msgs(&[("same", "2026-10-09T10:00:00Z"), ("same", "2026-10-09T10:00:00Z")]), vec![])),
+        case(
+            "single-message-object",
+            &["--quiet"],
+            true,
+            queued("1", "{\"message\":\"solo\",\"fromBranch\":\"main\",\"createdAt\":\"2026-10-09T10:00:00Z\"}".into(), vec![]),
+        ),
+        case(
+            "message-without-created-at-hashes-the-whole-object",
+            &["--quiet"],
+            true,
+            queued("1", "[{\"message\":\"no date\",\"fromBranch\":\"main\"}]".into(), vec![]),
+        ),
+        case(
+            "message-with-unusual-fields",
+            &["--quiet"],
+            true,
+            queued(
+                "1",
+                "[{\"message\":{\"a\":[1,2]},\"fromBranch\":7,\"status\":null,\"toBranch\":\"x\",\"createdAt\":\"2026-10-09T10:00:00+04:00\"}]".into(),
+                vec![],
+            ),
+        ),
+        case(
+            "unicode-and-newlines-in-the-body",
+            &["--quiet"],
+            true,
+            queued("1", "[{\"message\":\"caf\\u00e9\\n\\u2603 line two\",\"createdAt\":\"2026-10-09T10:00:00Z\"}]".into(), vec![]),
+        ),
+        case(
+            "duplicate-inside-one-batch",
+            &["--quiet"],
+            true,
+            queued("2", msgs(&[("same", "2026-10-09T10:00:00Z"), ("same", "2026-10-09T10:00:00Z")]), vec![]),
+        ),
         case("shortfall-count-three-read-one", &["--quiet"], true, queued("3", msgs(&[("only one", "2026-10-09T10:00:00Z")]), vec![])),
         case("unparseable-read-is-a-shortfall-and-kept-in-the-wal", &["--quiet"], true, queued("1", "this is not json".into(), vec![])),
         case("read-prints-an-empty-array", &["--quiet"], true, queued("1", "[]".into(), vec![])),
@@ -595,7 +635,11 @@ fn child_tick_drains_the_queue_like_node() {
             let f = queued("1", msgs(&[("wal torn", "2026-10-09T10:00:00Z")]), vec![]);
             move |h| {
                 f(h);
-                put(h, "wal/pull-child-1.ndjson", "{\"t\":\"batch\",\"e\":\"1-1-1-aaaa\",\"ts\":1,\"raw\":\"[]\"}\n{\"t\":\"done\",\"e\":\"1-1-1-aaaa\",\"ts\":2}\n{\"t\":\"batch\",\"e\":\"9-9-");
+                put(
+                    h,
+                    "wal/pull-child-1.ndjson",
+                    "{\"t\":\"batch\",\"e\":\"1-1-1-aaaa\",\"ts\":1,\"raw\":\"[]\"}\n{\"t\":\"done\",\"e\":\"1-1-1-aaaa\",\"ts\":2}\n{\"t\":\"batch\",\"e\":\"9-9-",
+                );
             }
         }),
         // ---- replay: the states a crash leaves behind ----
@@ -720,7 +764,9 @@ fn child_tick_registers_a_workspace_without_a_descriptor_like_node() {
             }
         })
         .env("DEVSWARM_BUILDER_ID", "child-1"),
-        case("defer-register-from-the-primary-checkout-a-row-of-that-worktree-exists", &["--quiet"], false, un.clone()).env("DEVSWARM_BUILDER_ID", "child-1").cwd("main"),
+        case("defer-register-from-the-primary-checkout-a-row-of-that-worktree-exists", &["--quiet"], false, un.clone())
+            .env("DEVSWARM_BUILDER_ID", "child-1")
+            .cwd("main"),
         case("defer-register-declares-but-a-legacy-instance-cursor-maps", &["--quiet"], false, {
             let un = un.clone();
             move |h| {
@@ -884,7 +930,20 @@ fn a_kill_at_every_step_loses_and_duplicates_nothing_whoever_runs_next() {
                 }
                 let inbox_lines = read_inbox(&copy).lines().filter(|l| !l.trim().is_empty()).count();
                 let expected = if k.batch_survives { 2 } else { 0 };
-                assert_eq!(inbox_lines, expected, "{}: {killer:?} killed, {next:?} next: the inbox holds {inbox_lines} lines, not {expected}; wal {:?} locks {:?} stdout {:?} stderr {:?}", k.name, wal_text(&copy), fs::read_dir(ds(&copy).join("locks")).unwrap().flatten().map(|e| (e.file_name(), fs::read_to_string(e.path()).unwrap_or_default())).collect::<Vec<_>>(), r.stdout, r.stderr);
+                assert_eq!(
+                    inbox_lines,
+                    expected,
+                    "{}: {killer:?} killed, {next:?} next: the inbox holds {inbox_lines} lines, not {expected}; wal {:?} locks {:?} stdout {:?} stderr {:?}",
+                    k.name,
+                    wal_text(&copy),
+                    fs::read_dir(ds(&copy).join("locks"))
+                        .unwrap()
+                        .flatten()
+                        .map(|e| (e.file_name(), fs::read_to_string(e.path()).unwrap_or_default()))
+                        .collect::<Vec<_>>(),
+                    r.stdout,
+                    r.stderr
+                );
                 let wal = wal_text(&copy);
                 if k.batch_survives {
                     assert_eq!(wal.matches("\"t\":\"batch\"").count(), 1, "{}: one batch in the log", k.name);
@@ -896,11 +955,21 @@ fn a_kill_at_every_step_loses_and_duplicates_nothing_whoever_runs_next() {
         let (first_name, first) = &finals[0];
         for (name, f) in &finals[1..] {
             for key in f.0.keys().chain(first.0.keys()) {
-                assert!(f.0.get(key) == first.0.get(key), "{}: {name} differs from {first_name} at {key}:\n {:?}\n {:?}", k.name, f.0.get(key), first.0.get(key));
+                assert!(
+                    f.0.get(key) == first.0.get(key),
+                    "{}: {name} differs from {first_name} at {key}:\n {:?}\n {:?}",
+                    k.name,
+                    f.0.get(key),
+                    first.0.get(key)
+                );
             }
             assert!(f.1 == first.1, "{}: {name} store differs from {first_name}: {}", k.name, first_diff(&first.1, &f.1));
         }
-        eprintln!("kill point {}: node/engine x node/engine all settle to the same state ({} lines in the inbox)", k.name, if k.batch_survives { 2 } else { 0 });
+        eprintln!(
+            "kill point {}: node/engine x node/engine all settle to the same state ({} lines in the inbox)",
+            k.name,
+            if k.batch_survives { 2 } else { 0 }
+        );
     }
 }
 
@@ -938,8 +1007,10 @@ fn a_date_form_the_engine_does_not_reproduce_leaves_the_batch_pending_for_node()
     assert!(wal_text(&ours).contains("\"t\":\"done\""), "Node closed the batch");
     let key_db = |h: &Path| ds(h).join("store").join(&fx.repo_key).join("devswarm.db");
     // the second tick (Node, real clock) ensured the registration once more, so only the message rows are compared
-    let norm = |h: &Path| {
-        mask_dump(&raw_dump(&key_db(h))).lines().filter(|l| l.contains("hash=t\"native:")).collect::<Vec<_>>().join("\n")
-    };
-    assert!(!norm(&ours).is_empty() && norm(&ours) == norm(&reference), "the store ends as Node's own pull leaves it: {}", first_diff(&norm(&reference), &norm(&ours)));
+    let norm = |h: &Path| mask_dump(&raw_dump(&key_db(h))).lines().filter(|l| l.contains("hash=t\"native:")).collect::<Vec<_>>().join("\n");
+    assert!(
+        !norm(&ours).is_empty() && norm(&ours) == norm(&reference),
+        "the store ends as Node's own pull leaves it: {}",
+        first_diff(&norm(&reference), &norm(&ours))
+    );
 }

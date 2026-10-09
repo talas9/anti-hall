@@ -156,7 +156,11 @@ mod tests {
         std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
         let st = |home: &std::path::Path| Settings { home: home.to_string_lossy().into_owned(), env: Default::default() };
         assert_eq!(LineCfg::read(&st(&d)), cfg(), "no file: the shipped defaults (on)");
-        std::fs::write(d.join(".anti-hall/settings.json"), r#"{"statusline":{"devswarm":{"enabled":false,"format":"dsw {parts}","max_chars":12,"stale_ms":5000}}}"#).unwrap();
+        std::fs::write(
+            d.join(".anti-hall/settings.json"),
+            r#"{"statusline":{"devswarm":{"enabled":false,"format":"dsw {parts}","max_chars":12,"stale_ms":5000}}}"#,
+        )
+        .unwrap();
         assert_eq!(LineCfg::read(&st(&d)), LineCfg { enabled: false, format: "dsw {parts}".into(), max_chars: 12, stale_ms: 5000 });
     }
 

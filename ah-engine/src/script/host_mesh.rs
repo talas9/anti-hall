@@ -29,7 +29,7 @@ use std::path::Path;
 
 thread_local! {
     /// The app-cache writes the lookups of this call owe.
-    static OWED: RefCell<Vec<crate::meshw::appdb::CacheWrite>> = RefCell::new(Vec::new());
+    static OWED: RefCell<Vec<crate::meshw::appdb::CacheWrite>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A new script call starts: no cache write is owed yet.

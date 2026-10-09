@@ -523,7 +523,8 @@ fn orphan_report(h: &Path, pids: &[(u64, &str)]) {
     let listed: Vec<Value> = pids.iter().map(|(p, c)| json!({"pid": p, "cmd": c, "class": "other", "cwd": "/Users/u/Projects/other-app"})).collect();
     let dir = h.join(".anti-hall/ah-engine");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("procwatch-report.json"), json!({"ts_s": now, "modes": {}, "orphans": {"count": listed.len(), "listed": listed}}).to_string()).unwrap();
+    std::fs::write(dir.join("procwatch-report.json"), json!({"ts_s": now, "modes": {}, "orphans": {"count": listed.len(), "listed": listed}}).to_string())
+        .unwrap();
 }
 
 #[test]

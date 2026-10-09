@@ -18,13 +18,13 @@
 // - malformed input is the empty request (Node: JSON.parse catch prints {})
 // A failure that must be seen goes through `crate::discard` instead.
 
-use crate::checks::jsport::num::to_js_string;
 use super::settings::{Route, anthropic_key_visible, integration_backend, route};
 use super::{cli, telemetry};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::text::js_trim;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::jsport::text::slice16_lossy;
-use crate::checks::replykit::json::{quote};
+use crate::checks::replykit::json::quote;
 use crate::defaults;
 use crate::jev::cascade;
 use crate::jev::client::{Answer, JevClient};

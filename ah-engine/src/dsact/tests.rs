@@ -654,7 +654,6 @@ fn the_comparison_counts_calls_only_one_side_made() {
     assert_eq!(super::shadow::compare("t", &[a.clone(), a.clone()], std::slice::from_ref(&a))["onlyEngine"].as_array().unwrap().len(), 1);
 }
 
-
 // ---- DevSwarm expansion: event-driven auto-archive (feature 3), the nag (feature 2), telemetry --------------------------------
 
 mod dsx {
