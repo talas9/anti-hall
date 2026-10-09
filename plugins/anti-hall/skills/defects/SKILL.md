@@ -19,13 +19,13 @@ layer).
 
 ## The five core verbs
 
-All invocations are `node plugins/anti-hall/scripts/defect.js <verb> ...` run from an
-anti-hall checkout, or `node <plugin-root>/scripts/defect.js <verb> ...` when resolving
+All invocations are `sh plugins/anti-hall/scripts/ah-run.sh defect <verb> ...` run from an
+anti-hall checkout, or `sh <plugin-root>/scripts/ah-run.sh defect <verb> ...` when resolving
 the plugin root generically (mirrors the `doctor`/`debt` skills' invocation style).
 
 1. **report** — file a new defect (or add an occurrence to an existing one via dedup).
    ```
-   node plugins/anti-hall/scripts/defect.js report \
+   sh plugins/anti-hall/scripts/ah-run.sh defect report \
      --class hook-crash --sev p1 \
      --sym "command-guard throws on empty argv" \
      --repro "run command-guard.js with stdin ''" \
@@ -44,8 +44,8 @@ the plugin root generically (mirrors the `doctor`/`debt` skills' invocation styl
    defect 001e6bb600c5's `partial` status to make `list --open` report 0 while real
    P0/P1 defects sat unresolved). `--json` for machine output.
    ```
-   node plugins/anti-hall/scripts/defect.js list --mine --json
-   node plugins/anti-hall/scripts/defect.js list --unfinished --json
+   sh plugins/anti-hall/scripts/ah-run.sh defect list --mine --json
+   sh plugins/anti-hall/scripts/ah-run.sh defect list --unfinished --json
    ```
 3. **show `<fp>`** — every line of one defect (its fingerprint), open or archived.
 4. **rule `<fp>` --status ack|fixed|partial|wontfix|notabug|dup** — MAINTAINER-ONLY.
@@ -67,10 +67,10 @@ These three verbs turn the channel into a bug history, so the same thing is not 
 in circles. They read every record: reported defects plus fixes imported from git.
 
 ```bash
-node plugins/anti-hall/scripts/defect.js backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
-node plugins/anti-hall/scripts/defect.js backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
-node plugins/anti-hall/scripts/defect.js recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
-node plugins/anti-hall/scripts/defect.js similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
+sh plugins/anti-hall/scripts/ah-run.sh defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
+sh plugins/anti-hall/scripts/ah-run.sh defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
+sh plugins/anti-hall/scripts/ah-run.sh defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
+sh plugins/anti-hall/scripts/ah-run.sh defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
 ```
 
 - **`backfill`** imports every `fix:` / `fix(scope):` commit as a record with status

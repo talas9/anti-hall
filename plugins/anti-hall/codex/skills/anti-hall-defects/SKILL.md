@@ -40,18 +40,18 @@ fresher read than the once-per-24h nudge, run `list` directly (below) rather tha
 ## The five core verbs
 
 ```bash
-node "$ANTI_HALL_ROOT/scripts/defect.js" report \
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect report \
   --class hook-crash --sev p1 \
   --sym "command-guard throws on empty argv" \
   --repro "run command-guard.js with stdin ''" \
   --claimed "should exit 0" --observed "TypeError: Cannot read...stack"
 
-node "$ANTI_HALL_ROOT/scripts/defect.js" list --mine --json
-node "$ANTI_HALL_ROOT/scripts/defect.js" list --open --json         # status === 'open' only (untriaged)
-node "$ANTI_HALL_ROOT/scripts/defect.js" list --unfinished --json   # open + ack + partial + regressed (closed set excluded)
-node "$ANTI_HALL_ROOT/scripts/defect.js" show <fp> --json
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect list --mine --json
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect list --open --json         # status === 'open' only (untriaged)
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect list --unfinished --json   # open + ack + partial + regressed (closed set excluded)
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect show <fp> --json
 # rule is MAINTAINER-ONLY:
-node "$ANTI_HALL_ROOT/scripts/defect.js" rule <fp> --status fixed --fixed-in 0.79.0 --commit <sha>
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect rule <fp> --status fixed --fixed-in 0.79.0 --commit <sha>
 ```
 
 `--status` (exactly 6, closed vocabulary): `ack`, `fixed`, `partial`, `wontfix`,
@@ -73,10 +73,10 @@ These three verbs turn the channel into a bug history, so the same thing is not 
 in circles. They read every record: reported defects plus fixes imported from git.
 
 ```bash
-node "$ANTI_HALL_ROOT/scripts/defect.js" backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
-node "$ANTI_HALL_ROOT/scripts/defect.js" backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
-node "$ANTI_HALL_ROOT/scripts/defect.js" recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
-node "$ANTI_HALL_ROOT/scripts/defect.js" similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
 ```
 
 - **`backfill`** imports every `fix:` / `fix(scope):` commit as a record with status

@@ -115,11 +115,11 @@ Interpretation:
 If hooks are missing, install them:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/install-codex.js"
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex
 ```
 
 For global install:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/install-codex.js" --global
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex --global
 ```

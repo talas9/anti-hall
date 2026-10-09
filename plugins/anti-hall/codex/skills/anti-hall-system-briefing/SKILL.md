@@ -18,7 +18,7 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 ```
 
 Two parts: **(1) this guide** — terms, rules, skills, verbs, settings; **(2) a live
-inventory** — `node "$ANTI_HALL_ROOT/scripts/briefing.js"` (or `--json`) enumerates the
+inventory** — `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" briefing` (or `--json`) enumerates the
 hooks, helpers, skills and DevSwarm substrate this build ships, from `hooks.json` and the
 files on disk. Codex has no `/config` panel and no statusline hook; skills are named
 `anti-hall-<name>`. For "is it working", use `anti-hall-doctor`.

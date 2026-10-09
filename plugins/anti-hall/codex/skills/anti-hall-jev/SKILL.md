@@ -20,7 +20,7 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-All commands below run as `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" <verb>`.
+All commands below run as `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup <verb>`.
 
 ## The credential never travels through the model
 
@@ -31,7 +31,7 @@ itself.
 
 ## Primary flow: activate / enable / set up jev
 
-1. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" status`.
+1. `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup status`.
 2. Key already present (`key present: yes`) → skip to step 5.
 3. No key: ask which provider it's for — **Vercel AI Gateway** (default,
    recommended, the only live-verified transport) or **TypeSafe direct**
@@ -42,16 +42,16 @@ itself.
    themselves with echo off:
 
    ```bash
-   read -rs K && printf '%s' "$K" | node "$ANTI_HALL_ROOT/scripts/jev-setup.js" set-key --transport vercel && unset K
+   read -rs K && printf '%s' "$K" | sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup set-key --transport vercel && unset K
    ```
 
    (`--transport typesafe` if that's the pick). If they paste the key in chat
    instead, pipe it to `set-key` via stdin and never repeat it back:
 
    ```bash
-   printf '%s' "<pasted key>" | node "$ANTI_HALL_ROOT/scripts/jev-setup.js" set-key --transport <vercel|typesafe>
+   printf '%s' "<pasted key>" | sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup set-key --transport <vercel|typesafe>
    ```
-5. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" enable [--transport vercel|typesafe]`.
+5. `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup enable [--transport vercel|typesafe]`.
 6. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" test` — one real classification
    call; prints ok/latency/confidence or a failure reason, never the key. On
    `http-401`/`http-403`, tell the user the key was rejected and ask them to
@@ -70,7 +70,7 @@ budget (a retry with under ~150 ms left is skipped; the primary is held back ~60
 After 3 consecutive eligible failures a per-vendor circuit breaker skips that vendor for 5 minutes, then probes it
 again (state: `~/.anti-hall/cache/jev-breaker.json`).
 
-- Set: `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" enable --transport typesafe --fallback vercel`
+- Set: `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup enable --transport typesafe --fallback vercel`
   (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
 - Keys are VENDOR-BOUND: a key is never sent to a vendor it was not entered for. Store one per vendor: the
   `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
