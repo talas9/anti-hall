@@ -72,7 +72,7 @@ fn pending_hashes(home: &Path, stage: &str) -> Vec<String> {
 
 /// `devswarm_sup.sweep_tail_mode` is `engine`.
 fn tail_by_engine(ctx: &Ctx) -> bool {
-    super::setting(ctx.st, "devswarm_sup.set_sweep_tail_mode").as_str() == Some(defaults::text("devswarm_sup.sweep_tail_engine"))
+    super::setting(ctx.st, "devswarm_sup.sweep_tail_mode").as_str() == Some(defaults::text("devswarm_sup.sweep_tail_engine"))
 }
 
 /// The ported part of a stage, run before Node's stage function when the mode says so: the orphan-partition heal, store by store,

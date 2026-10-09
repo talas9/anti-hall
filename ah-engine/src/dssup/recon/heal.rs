@@ -49,7 +49,7 @@ pub struct HealRun {
 }
 
 /// `String(v)` of a JSON value for the types the engine models.
-fn js_string(v: Option<&OVal>) -> R<String> {
+pub(super) fn js_string(v: Option<&OVal>) -> R<String> {
     Ok(match v {
         None => "undefined".to_string(),
         Some(OVal::Null) => "null".to_string(),
@@ -78,7 +78,7 @@ fn nonempty_str(v: Option<&OVal>) -> Option<&str> {
 }
 
 /// JavaScript truthiness of the descriptor's `worktreePath`; only strings are modelled.
-fn truthy_path(v: Option<&OVal>) -> R<Option<String>> {
+pub(super) fn truthy_path(v: Option<&OVal>) -> R<Option<String>> {
     match v {
         None | Some(OVal::Null) => Ok(None),
         Some(OVal::Str(t)) => Ok((!t.is_empty()).then(|| t.clone())),

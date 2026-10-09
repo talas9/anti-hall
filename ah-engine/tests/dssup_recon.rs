@@ -892,7 +892,7 @@ fn s5_the_sweep_tail_mode_selects_the_engine_part_of_the_deferred_stage() {
         f.put(&f.ds("deferred-sweep-state.json"), "{\"nextStageIndex\":1}");
         f.put(".anti-hall/update-sweep-state.json", &format!("{{\"healOrphanPartitions\":{{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[\"{k}\"]}}}}"));
         if let Some(m) = mode {
-            f.st.env.insert("ANTIHALL_DEVSWARM_SUP_SWEEP_TAIL_MODE".into(), m.into());
+            f.st.env.insert("ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE".into(), m.into());
         }
         (f, k)
     };

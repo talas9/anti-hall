@@ -533,3 +533,5 @@ pub const RECON_HASH_PRESENT: &str = "SELECT 1 FROM messages WHERE hash = ? LIMI
 pub const RECON_MESSAGE_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?;";
 /// The reconcile port: `removeRegistryIf` (the guard compares session, `updated_at` and `write_seq`, NULL-safe).
 pub const RECON_REGISTRY_DELETE_IF: &str = "DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;";
+/// The reconcile port's `removeRegistryIf`: delete the row only while it still is the one the plan read (NULL-safe `IS`).
+pub const RECON_REGISTRY_REMOVE_IF: &str = "DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;";

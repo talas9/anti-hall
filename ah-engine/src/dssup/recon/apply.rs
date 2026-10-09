@@ -36,6 +36,12 @@ impl Env<'_> {
         }
     }
 
+    /// A scratch mirror (the witness redirects its central log; the real home never does). A mirror's inodes are its own, so
+    /// an inode recorded from the real home is only checked on the real one.
+    fn is_mirror(&self) -> bool {
+        self.log_dir.is_some()
+    }
+
     fn log_dir(&self) -> PathBuf {
         self.log_dir.clone().unwrap_or_else(|| self.home.join(defaults::text("mesh_write.dir_anti_hall")).join(defaults::text("mesh_write.dir_logs")))
     }
@@ -79,10 +85,39 @@ pub fn check(env: &Env, ops: &[Op]) -> Result<(), String> {
                     pre_ok(env.home, rel, pre)?;
                 }
             }
-            Op::Append { .. } | Op::Rename { .. } | Op::Derive { .. } | Op::Log { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } => {}
+            Op::Link { from, pre, ino, .. } => {
+                pre_ok(env.home, from, pre)?;
+                if !env.is_mirror()
+                    && let Some(want) = ino
+                    && ino_of(&env.home.join(from)) != Some(*want)
+                {
+                    return Err(from.clone());
+                }
+            }
+            Op::Remove { store, guard } => {
+                if row_now(env.home, store, &guard.row.id)?.map(Box::new).as_ref() != Some(guard) {
+                    return Err(format!("{store}:{}", guard.row.id));
+                }
+            }
+            Op::Append { .. } | Op::Rename { .. } | Op::Derive { .. } | Op::Log { .. } | Op::UnlinkLinked { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } => {}
         }
     }
     Ok(())
+}
+
+/// `(device, inode)` of the file at `p` without following a link; `None` when it is not there.
+pub fn ino_of(p: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
+}
+
+fn remove_if(env: &Env, store: &str, guard: &RegRow) -> Result<(), String> {
+    let st = MeshStore::open(&super::view::store_db(env.home, store)).map_err(|e| e.to_string())?;
+    let c = st.reader().conn();
+    let g = &guard.row;
+    let n = crate::meshw::store::retry_busy(|| c.prepare_cached(crate::sql::RECON_REGISTRY_REMOVE_IF)?.execute(rusqlite::params![g.id, g.session_id, guard.updated_at, guard.write_seq]))
+        .map_err(|e| e.to_string())?;
+    if n == 1 { Ok(()) } else { Err(format!("drift:{store}:{}", g.id)) }
 }
 
 fn upsert(env: &Env, store: &str, row: &RegistryRow, pre: &Option<Box<RegRow>>) -> Result<(), String> {
@@ -269,6 +304,19 @@ fn run_op(env: &Env, op: &Op) -> Result<(), String> {
         Op::RaiseCursors { store, partition, value } => raise(env, store, partition, *value),
         Op::RemoveRegistryIf { store, id, session_id, updated_at, write_seq, .. } => remove_if(env, store, id, session_id, *updated_at, *write_seq),
         Op::Guard { .. } => Ok(()),
+        Op::Link { from, to, .. } => {
+            mkparent(&at(to))?;
+            match std::fs::hard_link(at(from), at(to)) {
+                Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(e.to_string()),
+                _ => Ok(()),
+            }
+        }
+        Op::UnlinkLinked { rel, other } => match (ino_of(&at(rel)), ino_of(&at(other))) {
+            (None, _) => Ok(()),
+            (Some(a), Some(b)) if a == b => std::fs::remove_file(at(rel)).map_err(|e| e.to_string()),
+            _ => Err(defaults::render("devswarm_recon.msg_not_linked", &[("rel", rel), ("other", other)])),
+        },
+        Op::Remove { store, guard } => remove_if(env, store, guard),
         Op::Derive { store } => {
             let st = MeshStore::open(&super::view::store_db(env.home, store)).map_err(|e| e.to_string())?;
             match crate::meshw::summary::derive_after_write(&st, &env.inv(), store) {
