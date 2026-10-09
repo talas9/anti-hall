@@ -283,6 +283,18 @@ fn receipt_record(rid: &str, id: &str, reader: Option<&str>, now: i64, ops: Vec<
     r.done()
 }
 
+/// Record the project's summary file as it stands now (the witness compares it with Node's).
+fn note_summary(inv: &Inv, repo_key: &str) {
+    let rel = format!(
+        "{}/{}/{}/{repo_key}{}",
+        defaults::text("mesh_write.dir_anti_hall"),
+        defaults::text("mesh_write.dir_devswarm"),
+        defaults::text("mesh_write.dir_summaries"),
+        defaults::text("mesh_write.json_suffix")
+    );
+    crate::meshw::set_written(&rel, &std::fs::read(inv.write_home.join(&rel)).unwrap_or_default());
+}
+
 /// A descriptor field that `nOrNull` would stringify as is: a string, or nothing. Anything else is JavaScript's own text.
 fn text_or_null(desc: &OVal, key: &str) -> R<Option<String>> {
     match desc.get(key) {
@@ -524,8 +536,14 @@ struct PromoCtx {
 
 /// Everything the read decided, before its one write.
 struct Planned {
-    stdout: String,
+    /// The result object Node prints as JSON.
+    result: OVal,
+    /// What `--format text` prints instead.
+    text: Option<String>,
     record: String,
+    /// The ack `--ack-after-print` applies right after the receipt is filed (settled here, before any write).
+    ack: Option<crate::meshw::inbox::AckPlan>,
+    repo_key: String,
     dir: PathBuf,
     file: PathBuf,
     rel: String,
@@ -564,7 +582,18 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     crate::meshw::mark_committed();
     crate::meshw::note_written(&planned.rel, planned.record.as_bytes());
-    Ok(Answer { code: 0, stdout: format!("{}\n", planned.stdout), effect: Effect::None })
+    let mut result = planned.result;
+    if let Some(ack) = planned.ack {
+        // the ack (cmdInboxAckPrimary on the receipt just filed) is part of the printed result, as `autoAck`
+        let applied = crate::meshw::inbox::apply_ack(inv, ack);
+        result.set("autoAck", applied.done());
+        // the ack stamped the receipt: the witness compares the receipt as it now stands
+        crate::meshw::set_written(&planned.rel, &std::fs::read(&planned.file).unwrap_or_default());
+        // and re-derived the summary
+        note_summary(inv, &planned.repo_key);
+    }
+    let stdout = planned.text.unwrap_or_else(|| result.stringify());
+    Ok(Answer { code: 0, stdout: format!("{stdout}\n"), effect: Effect::None })
 }
 
 /// The read itself (see [`run`]). `promoted` is `Some(classic)` on the pass that follows a promotion.
@@ -748,8 +777,17 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>) -> R<Planned> {
             )),
         )
         .put("ackHint", s(defaults::text("mesh_write.ack_hint")));
-    let stdout = if format_text && !json_flag { text_lines(&rows) } else { out.done().stringify() };
-    let record = receipt_record(&rid, id, reader.as_deref(), inv.now, ops, hashes).stringify();
+    let text = (format_text && !json_flag).then(|| text_lines(&rows));
+    let result = out.done();
+    let record_val = receipt_record(&rid, id, reader.as_deref(), inv.now, ops, hashes);
+    let record = record_val.stringify();
+    // `--ack-after-print`: the ack of the receipt this read files, in the same call. Everything it can refuse or cannot apply is
+    // settled now, so the receipt is never filed for an ack the engine would then have to hand to Node
+    let ack = if a.has(defaults::text("mesh_write.flag_ack_after_print")) {
+        Some(crate::meshw::inbox::plan_ack(inv, id, &rid, false, Some(record_val))?)
+    } else {
+        None
+    };
     let file: PathBuf = dir.join(format!("{rid}{}", defaults::text("mesh_write.json_suffix")));
     let rel = format!(
         "{}/{}/{}/{id}/{rid}{}",
@@ -758,7 +796,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>) -> R<Planned> {
         defaults::text("mesh_write.dir_read_receipts"),
         defaults::text("mesh_write.json_suffix")
     );
-    Ok(Planned { stdout, record, dir, file, rel, promo })
+    Ok(Planned { result, text, record, ack, repo_key: o.repo_key.clone(), dir, file, rel, promo })
 }
 
 #[cfg(test)]

@@ -97,6 +97,27 @@ fn mask_rid(text: &str) -> String {
     regex::Regex::new(r"\b(r[0-9a-z]{8})[0-9a-f]{12}\b").unwrap().replace_all(text, "${1}<rand>").into_owned()
 }
 
+/// The cursor-write journal (`cursor-log/<repo>.ndjson`) stamps each line with the wall clock and the writer's pid, which differ
+/// between the engine and Node by design: both are blanked, as in the log mask below.
+fn mask_journal(text: &str) -> String {
+    regex::Regex::new(r#""(ts|pid)":[0-9]+"#).unwrap().replace_all(text, r#""$1":0"#).into_owned()
+}
+
+/// A reader-cursor row's `updated_at` is the wall clock of whichever process moved it (Node's `Date.now()` is pinned in these
+/// tests, the engine's clock is real): blanked on those rows only, so the registry's `updated_at` (the case's own clock) is still compared.
+fn mask_dump(dump: &str) -> String {
+    dump.lines()
+        .map(|l| {
+            if l.contains("reader=t\"") && l.contains(" ns=t\"") {
+                regex::Regex::new(r"updated_at=i[0-9]+").unwrap().replace_all(l, "updated_at=<wall>").into_owned()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Blank the writer's pid and the wall-clock timestamp of every central-log line (see the module doc).
 fn mask_log(text: &str) -> String {
     let ts = regex::Regex::new(r#"(?m)^\{"ts":"[^"]*""#).unwrap();
@@ -110,6 +131,7 @@ fn tree(home: &Path) -> BTreeMap<String, String> {
         .map(|(k, v)| {
             let text = String::from_utf8_lossy(&v).replace(home.to_string_lossy().as_ref(), "<HOME>");
             let text = if k.contains("devswarm.jsonl") && !k.ends_with(".lock") { mask_log(&text) } else { text };
+            let text = if k.contains("/cursor-log/") { mask_journal(&text) } else { text };
             (mask_rid(&k), mask_rid(&text))
         })
         .collect()
@@ -216,7 +238,7 @@ fn check_from(
                 assert!(te.get(k) == tn.get(k), "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}", c.name, te.get(k), tn.get(k));
             }
             if key_db(&homes[0]).is_file() {
-                let (de, dn) = (raw_dump(&key_db(&homes[1])), raw_dump(&key_db(&homes[0])));
+                let (de, dn) = (mask_dump(&raw_dump(&key_db(&homes[1]))), mask_dump(&raw_dump(&key_db(&homes[0]))));
                 assert!(de == dn, "{}: the store differs: {}", c.name, first_diff(&dn, &de));
             }
             // `send` has no background Node witness (it is checked in shadow mode); its log line is compared in the tree above
@@ -493,4 +515,68 @@ fn done_refusals_match_node() {
         d("done-still-reports", &["done", "--summary", "merged"], "child", true),
     ];
     check(&fx, &cases, &[], 9, 1);
+}
+
+// ---- read-primary --ack-after-print ----------------------------------------------------------------------------------------
+
+#[test]
+fn ack_after_print_matches_node() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("l8dack");
+    let (rk, wt) = (fx.repo_key.clone(), fx.child.clone());
+    let claimed = {
+        let (rk, wt) = (rk.clone(), wt.clone());
+        move |h: &Path| set_sessions(h, &wt, &rk, Some("sess-a"), Some("sess-a"))
+    };
+    let marked = {
+        let (rk, wt) = (rk.clone(), wt.clone());
+        move |h: &Path| set_sessions(h, &wt, &rk, Some("unclaimed:child-1"), Some("unclaimed:child-1"))
+    };
+    // every message already behind the floor: nothing is left to read or ack
+    let already_read = {
+        let (claimed, rk) = (claimed.clone(), rk.clone());
+        move |h: &Path| {
+            claimed(h);
+            let db = h.join(".anti-hall/devswarm/store").join(&rk).join("devswarm.db");
+            let c = rusqlite::Connection::open(db).unwrap();
+            c.execute("UPDATE reader_cursors SET value = 99 WHERE partition = 'child-1' AND ns = 'store' AND reader = '#floor'", []).unwrap();
+        }
+    };
+    let with_ndjson = {
+        let (rk, wt) = (rk.clone(), wt.clone());
+        move |h: &Path| {
+            set_sessions(h, &wt, &rk, Some("sess-a"), Some("sess-a"));
+            let p = h.join(".anti-hall/devswarm/workspaces/child-1.json");
+            let mut v: Value = serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+            v["inboxPath"] = Value::String(h.join("inbox/child-1.ndjson").to_string_lossy().into());
+            v["cursorPath"] = Value::String(h.join("cursors/child-1.cursor").to_string_lossy().into());
+            fs::write(&p, v.to_string()).unwrap();
+            put(
+                h,
+                "inbox/child-1.ndjson",
+                "{\"fromBranch\":\"b\",\"message\":\"from the file\",\"status\":\"new\",\"createdAt\":1790000005000,\"_h\":\"hh1\"}\n",
+            );
+            put(h, "cursors/child-1.cursor", "0");
+        }
+    };
+    let rp = |name: &str, extra: &[&str], cwd: &'static str, native: bool| {
+        let argv: Vec<&str> = ["inbox", "read-primary", "child-1"].iter().chain(extra.iter()).copied().collect();
+        lc(name, &argv, cwd, native, "InboxReadPrimary")
+    };
+    let cases = vec![
+        rp("ack-after-print", &["--ack-after-print"], "child", true).setup(claimed.clone()),
+        rp("ack-after-print-text", &["--ack-after-print", "--format", "text"], "child", true).setup(claimed.clone()),
+        rp("ack-after-print-json-over-text", &["--ack-after-print", "--format", "text", "--json"], "child", true).setup(claimed.clone()),
+        rp("ack-after-print-with-a-limit", &["--ack-after-print", "--limit", "5"], "child", true).setup(claimed.clone()),
+        rp("ack-after-print-nothing-left", &["--ack-after-print"], "child", true).setup(already_read),
+        rp("ack-after-print-with-a-promotion", &["--ack-after-print", "--session", "sess-real"], "child", true).setup(marked),
+        rp("ack-after-print-as-owner-is-node", &["--ack-after-print", "--ack-as-owner"], "child", false).setup(claimed.clone()),
+        rp("ack-after-print-over-an-ndjson-inbox-is-node", &["--ack-after-print"], "child", false).setup(with_ndjson),
+        rp("ack-after-print-from-the-primary-checkout-is-node", &["--ack-after-print"], "main", false).setup(claimed.clone()),
+        rp("ack-after-print-on-the-legacy-flag-is-node", &["--ack-after-print", "--legacy-ack-now"], "child", false).setup(claimed),
+    ];
+    check(&fx, &cases, &[], 6, 4);
 }

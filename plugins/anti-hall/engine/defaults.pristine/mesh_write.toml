@@ -1664,8 +1664,8 @@ doc = "The value of `--format` that selects the plain-text rendering."
 value = "text"
 
 [mesh_write.read_primary_flags]
-doc = "The flags `inbox read-primary` may carry for the engine to answer it; any other flag (a window, an ownership override, an immediate ack, a limit) is Node's."
-value = ["format", "json", "session", "limit"]
+doc = "The flags `inbox read-primary` may carry for the engine to answer it; any other flag (an ownership override, `--legacy-ack-now`, `--unread`, `--with-broadcasts`) is Node's."
+value = ["format", "json", "session", "limit", "ack-after-print"]
 
 [mesh_write.flag_limit]
 doc = "The read-primary flag that overrides the per-call row cap (`--limit N`; a value that is not a finite positive number is ignored, a fractional one is floored to at least 1)."
@@ -1852,3 +1852,7 @@ value = 20
 [mesh_write.hivecontrol_read_chunk]
 doc = "How many bytes the engine reads from a hivecontrol pipe at a time."
 value = 8192
+
+[mesh_write.flag_ack_after_print]
+doc = "The `inbox read-primary` flag that acks the receipt it files in the same call (the ack's result is printed as `autoAck`)."
+value = "ack-after-print"
