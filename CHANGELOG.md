@@ -6,6 +6,23 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.203.4 (2026-10-10)
+
+### Repo
+
+These changes affect the GitHub repository only, not the installed plugin.
+
+- Copilot CLI install fix: the Copilot slot now always checks out its lockfile folder, so `npm ci` works when tools are `none`.
+- Claude and Copilot error diagnostics: each failing slot writes its own error line to the job summary.
+- Force-model dispatch: `community.yml` takes a `force-model` input that bypasses the daily cap for a test run.
+- `AI_DAILY_CAP` now counts actual model calls per day (a marker artifact is recorded when a slot answers), not workflow runs.
+- PR alerts in `pr-check`, and `triage.yml` folded into `community` and `pr-check`.
+- Docs-drift check plus a release docs review.
+- Discussions participation: announcements, Q&A follow-up, idea to issue conversion, and the `/triage` and `/explain` commands.
+- The weekly digest now posts privately to the project board.
+- Full board reconcile with Last update and Progress fields.
+- Dependabot auto-merge for patch and minor updates into `dev`.
+
 ## 0.203.3 (2026-10-10)
 
 ### Repo
