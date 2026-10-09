@@ -37,8 +37,8 @@ function registered(manifest) {
 
 function counts() {
   const dirs = (d) => fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).length;
-  const claude = registered(P('hooks', 'hooks.json'));
-  const codex = registered(P('codex', 'hooks', 'hooks.json'));
+  const claude = registered(P('hooks', 'hooks.registry.json'));
+  const codex = registered(P('codex', 'hooks', 'hooks.registry.json'));
   return {
     hooks: fs.readdirSync(P('hooks')).filter((f) => f.endsWith('.js')).length,
     registered: claude.size,

@@ -1,0 +1,28 @@
+# Dependency budget for ah-engine (crate plan item 10). `tests/dep_budget.rs` counts the distinct crates in the normal
+# dependency graph (`cargo tree --prefix none --edges normal`, the engine itself excluded) and fails when the count passes
+# `max_crates`, so crate creep is a reviewed change to this file instead of a side effect of a `cargo add`.
+#
+# Raise `max_crates` in the same commit that adds a dependency, with the measured delta and the reason; lower it when a
+# dependency goes away.
+
+[budget]
+# Distinct `name version` entries in the normal graph for the host target, counted by the test (the `(*)` repeat markers and
+# the engine itself are not counted). 2026-10-07: 53 measured, plus the approved tikv-jemallocator (+2, in the tree since,
+# measured 55 on 118852f). 2026-10-08 (D88 spike, script lane): rquickjs 0.14.0 with default features off adds 5 measured
+# crates (rquickjs, rquickjs-core, rquickjs-sys, allocator-api2, equivalent; hashbrown and foldhash were already in the
+# tree): 55 -> 60. Build-only dependencies (cc for the QuickJS-NG C sources) are not in the normal graph.
+# 2026-10-09 (process watch, reaper lane): sysinfo 0.39.6 (exact pin, `system` feature only) adds 3 measured crates: 60 -> 63.
+# 2026-10-09 (realtime lane R1): notify =8.2.0 (default features off, only macos_fsevent) adds 5 on the macOS host (+notify, notify-types, fsevent-sys, walkdir, same-file)
+# and 7 on Linux hosts; base_crates is the midpoint (69) and the one-crate headroom covers the Linux hosts. Reason: DECISIONS.md "Realtime watch backend".
+# 2026-10-09 (startup lane): sysinfo is gone (the process table is libc in src/procwatch/table.rs; sysinfo's macOS build linked IOKit and
+# CoreFoundation and cost ~1 ms of dyld work per short-lived invocation) and macOS has its own kqueue backend over libc
+# (src/watch/kq.rs; the notify crate's FSEvents backend linked CoreServices and CoreFoundation). The crates measured per host by
+# `cargo tree` (engine excluded): macOS arm64 60 (Intel 58, no jemalloc), Linux x86_64 and arm64 67. The Linux-only crates are
+# notify, notify-types, inotify, inotify-sys, mio, walkdir, same-file (inotify watching); base_crates is the macOS arm64 count
+# plus one and the headroom is the Linux-only set, so every host stays inside [base - 1, base + headroom].
+base_crates = 61
+# Crates approved but not yet in the tree; the headroom covers their own entries only.
+approved = []
+approved_headroom = 6
+# The limit the test enforces: base_crates + approved_headroom.
+max_crates = 67

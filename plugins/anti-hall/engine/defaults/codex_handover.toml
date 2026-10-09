@@ -1,0 +1,856 @@
+# ah-engine shipped defaults for the handover and Codex hooks ported from Node (handover-resume, precompact-snapshot,
+# codex-availability, codex-quota-detect, codex-nudge) and the JavaScript-behavior helpers they share (checks::jsport).
+#
+# Every pattern, message, file name, setting name and limit of these checks lives here. Regex sources use JavaScript
+# syntax (the Node hooks are the authority) and are translated by `checks::guardkit::jsre`. Format: see the header of
+# engine.toml.
+
+[codex_handover.avail_context_codex]
+doc = "The availability text for a Codex session (no Claude models, Workflow scripts or codex:codex-rescue agent type)."
+value = "Codex binary detected on PATH (per a SessionStart PATH probe). This is NECESSARY BUT NOT SUFFICIENT -- it does NOT prove Codex is authenticated or functional, only that a spawn is worth ATTEMPTING. If a nested Codex run fails or returns nothing, fall back one gpt tier down for that seat -- that check is still the real backstop no matter what this probe says. Coordinators should read ~/.anti-hall/codex-availability.json instead of re-probing."
+
+[codex_handover.avail_event]
+doc = "The hook event name in the availability advisory."
+value = "SessionStart"
+
+[codex_handover.avail_guard]
+doc = "The guard id the availability messages answer to."
+value = "codex-availability"
+
+[codex_handover.avail_instead]
+doc = "Advice line of the availability tip."
+value = "Workflow scripts have no filesystem and cannot read this fact, so pass args.codexAvailable=true into ship-it/deadly-loop Workflow invocations (same pattern as args.fableAvailable) so the Critic seat attempts agentType:'codex:codex-rescue' first. Outside a Workflow, prefer agentType:'codex:codex-rescue' for the deadly-loop/ship-it Critic seat and for everyday correctness-review plus a share of implementation load; coordinators there should read ~/.anti-hall/codex-availability.json instead of re-probing."
+
+[codex_handover.avail_note_instead]
+doc = "Advice of the unavailability warning; {tier} is where to route the review."
+value = "route correctness review to {tier} until then."
+
+[codex_handover.avail_note_what]
+doc = "Headline of the warning that Codex is unavailable; {until} is an ISO time and {reason} the recorded reason."
+value = "Codex unavailable until {until} ({reason})."
+
+[codex_handover.avail_source]
+doc = "The source recorded with a PATH probe result."
+value = "path-probe"
+
+[codex_handover.avail_summary]
+doc = "One-line description of the codex-availability check in the generated reference."
+value = "SessionStart: probes PATH for a real codex executable, records it, folds a Codex job-log usage-limit error into the quota record and tells the session (port of codex-availability.js)."
+
+[codex_handover.avail_tier_claude]
+doc = "Where a Claude session routes review while Codex is unavailable."
+value = "Sonnet"
+
+[codex_handover.avail_tier_codex]
+doc = "Where a Codex session routes review while Codex is unavailable."
+value = "a lower gpt tier"
+
+[codex_handover.avail_what]
+doc = "Headline of the availability tip when the Codex binary is on PATH."
+value = "Codex binary detected on PATH (per a SessionStart PATH probe)."
+
+[codex_handover.avail_why]
+doc = "Reason line of the availability tip."
+value = "Necessary but not sufficient: it does not prove Codex is authenticated or functional, only that a spawn is worth attempting. If a Codex spawn returns null at runtime, take the documented Opus/Sonnet fallback; that null-check is still the real backstop."
+
+[codex_handover.availability_file]
+doc = "The shared Codex availability and quota file, relative to the home directory."
+value = ".anti-hall/codex-availability.json"
+
+[codex_handover.branch_prefix]
+doc = "The prefix of the branch line of `git status --porcelain --branch`."
+value = "## "
+
+[codex_handover.branch_unknown]
+doc = "The branch shown when git gives no branch line."
+value = "(unknown)"
+
+[codex_handover.cell_max]
+doc = "Longest table cell in a snapshot, in UTF-16 units."
+value = 200
+
+[codex_handover.checklist_title]
+doc = "The heading text of a handover's resume-verification checklist (compared without case)."
+value = "Resume-verification checklist"
+
+[codex_handover.codex_binary]
+doc = "The executable name probed on PATH."
+value = "codex"
+
+[codex_handover.codex_dir_name]
+doc = "The directory name that marks a Codex path."
+value = ".codex"
+
+[codex_handover.cooldown_default_label]
+doc = "What the quota advisory says when the outage has no end time."
+value = "(cooldown default)"
+
+[codex_handover.core_worktree_key]
+doc = "The key that, in a git directory's config, names a submodule checkout; a config holding it is left to the Node hook."
+value = "worktree"
+
+[codex_handover.date_max_ms]
+doc = "The largest time a JavaScript Date holds, in milliseconds either side of the epoch."
+value = 8640000000000000
+unit = "ms"
+
+[codex_handover.default_cooldown_ms]
+doc = "How long an outage with no usable end time is assumed to last."
+value = 21600000
+unit = "ms"
+
+[codex_handover.detail_files]
+doc = "The detail files a handover may sit beside, in the order the resume lists them."
+value = ["state.md", "decisions.md", "trials.md", "knowledge.md"]
+
+[codex_handover.detail_state]
+doc = "The detail file that holds the task list snapshot."
+value = "state.md"
+
+[codex_handover.detail_trials]
+doc = "The detail file that holds the do-not-repeat list."
+value = "trials.md"
+
+[codex_handover.details_sep]
+doc = "Separator of the detail file names in the resume steps."
+value = " / "
+
+[codex_handover.detect_scan_cap]
+doc = "How much of a Codex result is searched for a quota message, in UTF-16 units."
+value = 20000
+
+[codex_handover.detect_summary]
+doc = "One-line description of the codex-quota-detect check in the generated reference."
+value = "Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:codex-rescue Agent result, once, in the shared availability file (port of codex-quota-detect.js)."
+
+[codex_handover.git_binary]
+doc = "The git executable the hooks run."
+value = "git"
+
+[codex_handover.git_max_buffer]
+doc = "Most output a git call may produce before it counts as failed."
+value = 1048576
+unit = "bytes"
+
+[codex_handover.git_poll_ms]
+doc = "How often a running git call is checked for completion."
+value = 2
+unit = "ms"
+
+[codex_handover.git_scrub_env]
+doc = "Git location variables removed before the identity resolver asks git, so its answer derives from the directory alone."
+value = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_PREFIX"]
+
+[codex_handover.gitdir_key]
+doc = "The key of a `.git` file that names the real git directory."
+value = "gitdir:"
+
+[codex_handover.handover_plain]
+doc = "The name of the first handover of a session."
+value = "HANDOVER.md"
+
+[codex_handover.handover_prefix]
+doc = "The start of a handover file name."
+value = "HANDOVER"
+
+[codex_handover.handovers_dir]
+doc = "Where handovers and snapshots live, relative to the repository root."
+value = ".anti-hall/handovers"
+
+[codex_handover.head_none]
+doc = "The HEAD shown when the repository has no commit."
+value = "(no commits)"
+
+[codex_handover.identity_git_timeout_ms]
+doc = "Time limit of the git call that finds a superproject."
+value = 10000
+unit = "ms"
+
+[codex_handover.index_file]
+doc = "The handover index file name."
+value = "INDEX.md"
+
+[codex_handover.index_sep]
+doc = "The column separator of an INDEX.md row."
+value = "·"
+
+[codex_handover.index_seq_prefix]
+doc = "The text before the sequence number in the sequence column of an INDEX.md row."
+value = "seq "
+
+[codex_handover.job_log_suffix]
+doc = "The suffix of a Codex job log file name."
+value = ".log"
+
+[codex_handover.job_logs_dir]
+doc = "The directory of job logs inside each repository state directory."
+value = "jobs"
+
+[codex_handover.job_max_age_ms]
+doc = "Oldest job log that is scanned, by modification time."
+value = 86400000
+unit = "ms"
+
+[codex_handover.job_max_dirs]
+doc = "How many repository job directories are scanned for a usage-limit error."
+value = 20
+
+[codex_handover.job_max_files]
+doc = "How many job logs are scanned for a usage-limit error."
+value = 10
+
+[codex_handover.job_state_dir]
+doc = "Where the Codex companion keeps its background job state, relative to the home directory."
+value = ".claude/plugins/data/codex-openai-codex/state"
+
+[codex_handover.job_tail_bytes]
+doc = "How much of the end of a job log is read."
+value = 8192
+unit = "bytes"
+
+[codex_handover.judge_child_env]
+doc = "Environment variable that marks a Jev judge child process, whose hooks do nothing."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[codex_handover.judge_child_on]
+doc = "Value of the judge child variable that turns the hooks into no-ops."
+value = "1"
+
+[codex_handover.max_dirty_listed]
+doc = "How many dirty files a snapshot lists."
+value = 50
+
+[codex_handover.max_message_chars]
+doc = "Longest user message a snapshot keeps whole, in UTF-16 units."
+value = 4000
+
+[codex_handover.max_submodule_hops]
+doc = "Most superproject levels the identity resolver climbs."
+value = 32
+
+[codex_handover.max_user_messages]
+doc = "How many of the last user messages a snapshot keeps."
+value = 10
+
+[codex_handover.md_suffix]
+doc = "The suffix of a handover or snapshot file name."
+value = ".md"
+
+[codex_handover.months]
+doc = "Month names, lower case, in calendar order (a date string may use the full name or its first three letters)."
+value = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+
+[codex_handover.neg_instead]
+doc = "Advice line when no handover exists at all."
+value = "the handover skill writes under .anti-hall/handovers/; check there."
+
+[codex_handover.neg_what]
+doc = "Headline when no handover exists at all."
+value = "No session handover found under .anti-hall/handovers/."
+
+[codex_handover.neg_why]
+doc = "Reason line when no handover exists at all."
+value = "If one was written this session, it may be in the wrong location."
+
+[codex_handover.not_typed_re]
+doc = "JavaScript source of the harness-injected user entries that are not something the user typed."
+value = '^<(task-notification|local-command-|system-reminder|bash-std(out|err)|command-(name|message|args))'
+
+[codex_handover.nudge_agent_re]
+doc = "JavaScript source (flag i) of an agent type that is a Codex agent."
+value = '^codex\b|^codex:'
+
+[codex_handover.nudge_agent_tools]
+doc = "Tool names that spawn an agent."
+value = ["Agent", "Task"]
+
+[codex_handover.nudge_allowed]
+doc = "Allowed line of the Codex nudge."
+value = "skip it if the change is trivial, already reviewed, or Codex is unavailable."
+
+[codex_handover.nudge_child_keys]
+doc = "Keys under which a transcript entry nests further entries that may hold tool calls."
+value = ["content", "message", "messages", "tool_uses", "parts"]
+
+[codex_handover.nudge_code_ext_re]
+doc = "JavaScript source (flag i) of the file names that count as code for the Codex nudge."
+value = '\.(js|jsx|mjs|cjs|ts|tsx|vue|svelte|dart|py|go|rs|java|kt|swift|c|cc|cpp|h|hpp|rb|php|cs|scala|sh|bash|sql)$'
+
+[codex_handover.nudge_codex_word]
+doc = "The word in a skill call that marks a Codex review (compared without case)."
+value = "codex"
+
+[codex_handover.nudge_edit_tools]
+doc = "Tool names whose calls count as code edits."
+value = ["Edit", "Write", "MultiEdit"]
+
+[codex_handover.nudge_guard]
+doc = "The guard id of the Codex nudge: its messages, its skip-file key and its escape hatch."
+value = "codex-nudge"
+
+[codex_handover.nudge_instead]
+doc = "Advice line of the Codex nudge."
+value = "before calling it done, spawn a `codex:codex-rescue` agent (or run /codex:rescue) on the diff; keep planning/architecture review on Opus."
+
+[codex_handover.nudge_jev_id]
+doc = "The Jev integration the Codex nudge consults."
+value = "codexNudgeSubstantial"
+
+[codex_handover.nudge_jev_instructions]
+doc = "The question the Codex nudge puts to Jev (a noul question; Node: the `instructions` of the codexNudgeSubstantial consult)."
+value = 'This session is about to be nudged to get an independent Codex review because it made several "substantial" code-file edits. Judge the edit summary below: are these edits genuinely substantial (logic/behavior changes worth a second-opinion review), as opposed to only comments/strings/log lines /formatting?'
+
+[codex_handover.nudge_jev_true]
+doc = "The criterion of a true answer to the Codex nudge question."
+value = "genuinely substantial — logic/behavior changed"
+
+[codex_handover.nudge_jev_false]
+doc = "The criterion of a false answer to the Codex nudge question."
+value = "trivial — only comments/strings/log lines/formatting changed"
+
+[codex_handover.nudge_jev_files]
+doc = "How many edited file names the Codex nudge question's summary lists."
+value = 20
+min = 1
+
+[codex_handover.nudge_jev_files_label]
+doc = "The first line of the Codex nudge question's summary, before the file list."
+value = "files: "
+
+[codex_handover.nudge_jev_edits_label]
+doc = "The second line of the Codex nudge question's summary, before the edit count."
+value = "edits: "
+
+[codex_handover.nudge_max]
+doc = "The most Codex nudges a session gets."
+value = 2
+
+[codex_handover.nudge_min_default]
+doc = "Edits needed before the Codex nudge fires when nothing sets the threshold."
+value = 3
+
+[codex_handover.nudge_min_env]
+doc = "Environment variable of the Codex nudge threshold."
+value = "ANTIHALL_CODEX_NUDGE_MIN"
+
+[codex_handover.nudge_min_floor]
+doc = "Lowest value the Codex nudge threshold can take (a smaller setting is raised to it)."
+value = 1
+
+[codex_handover.nudge_min_key]
+doc = "Settings key of the Codex nudge threshold (codexNudge.min)."
+value = "min"
+
+[codex_handover.nudge_more]
+doc = "Text after the listed file names when there are more."
+value = ", …"
+
+[codex_handover.nudge_names_sep]
+doc = "Separator of the file names the nudge lists."
+value = ", "
+
+[codex_handover.nudge_override]
+doc = "Override line of the Codex nudge."
+value = "set ANTIHALL_CODEX_NUDGE=off to silence"
+
+[codex_handover.nudge_section]
+doc = "Settings section of the Codex nudge threshold."
+value = "codexNudge"
+
+[codex_handover.nudge_session_hash_len]
+doc = "Length of the transcript-path hash used as the session key when a payload has no session id."
+value = 16
+
+[codex_handover.nudge_sig_sep]
+doc = "Separator of the sorted base names the nudge signature hashes."
+value = "|"
+
+[codex_handover.nudge_skill_tool]
+doc = "The tool name that invokes a skill."
+value = "Skill"
+
+[codex_handover.nudge_state_prefix]
+doc = "The start of the Codex nudge per-session state file name (and the prune stamp key)."
+value = "codex-nudge-state"
+
+[codex_handover.nudge_summary]
+doc = "One-line description of the codex-nudge check in the generated reference."
+value = "Stop: one soft nudge to get a Codex second opinion after several substantial code edits with no Codex review; defers when Jev is enabled for it (port of codex-nudge.js)."
+
+[codex_handover.nudge_tail_bytes]
+doc = "How much of the end of the transcript the Codex nudge reads."
+value = 524288
+unit = "bytes"
+
+[codex_handover.nudge_what]
+doc = "Headline of the Codex nudge; {edits} edits across {files} files, {names} the first file names and {more} the sign of more."
+value = "this session made {edits} substantial code edit(s) across {files} file(s) ({names}{more}) with no Codex second opinion (advisory)."
+
+[codex_handover.nudge_why]
+doc = "Reason line of the Codex nudge."
+value = "An independent Codex review catches correctness bugs (off-by-one, races, subtle low-level bugs)."
+
+[codex_handover.ordinal_re]
+doc = "JavaScript source (flag i) of a day number with its ordinal suffix."
+value = '(\d)(?:st|nd|rd|th)\b'
+
+[codex_handover.path_separator]
+doc = "Separator of the entries of the PATH variable."
+value = ":"
+
+[codex_handover.precompact_git_timeout_ms]
+doc = "Time limit of each git call of the PreCompact snapshot."
+value = 2000
+unit = "ms"
+
+[codex_handover.precompact_guard]
+doc = "The guard id of the PreCompact snapshot (its skip-file key)."
+value = "precompact-snapshot"
+
+[codex_handover.precompact_prefix]
+doc = "The start of a PreCompact snapshot file name, through the dash before its number."
+value = "PRECOMPACT-"
+
+[codex_handover.precompact_summary]
+doc = "One-line description of the precompact-snapshot check in the generated reference."
+value = "PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it (port of precompact-snapshot.js)."
+
+[codex_handover.prefix_continuation]
+doc = "Lead-in of the resume pointer after a clear or compaction."
+value = "A session handover was found for this continuation"
+
+[codex_handover.prefix_previous]
+doc = "Lead-in of the resume pointer at a fresh start."
+value = "A previous session left a handover"
+
+[codex_handover.projects_dir]
+doc = "The host's per-project transcript directory, relative to the home directory."
+value = ".claude/projects"
+
+[codex_handover.proto_key]
+doc = "A key whose merge into an object JavaScript treats specially; a state file holding it is left to the Node hook."
+value = "__proto__"
+
+[codex_handover.quota_default_reason]
+doc = "The reason recorded for an outage that gives none."
+value = "quota exhausted"
+
+[codex_handover.quota_event]
+doc = "The hook event name in the quota advisory."
+value = "PostToolUse"
+
+[codex_handover.quota_guard]
+doc = "The guard id the quota advisory answers to."
+value = "codex-quota"
+
+[codex_handover.quota_instead]
+doc = "Advice line of the quota advisory."
+value = "route correctness review to Sonnet."
+
+[codex_handover.quota_re]
+doc = "JavaScript source (flag i) of the Codex quota or rate-limit exhaustion message."
+value = '\b(out of|exceed(?:ed|s)?|exhausted|hit (?:your|the)|ran out of)\b[^.\n]{0,40}\b(quota|rate limit|usage limit)\b'
+
+[codex_handover.quota_reason_chars]
+doc = "How much of a quota message is kept as its reason, in UTF-16 units."
+value = 120
+
+[codex_handover.quota_reason_max]
+doc = "Longest reason stored in the quota record, in UTF-16 units."
+value = 300
+
+[codex_handover.quota_target_words]
+doc = "Words a quota message needs; text with none of them cannot be one (compared without case)."
+value = ["quota", "rate limit", "usage limit"]
+
+[codex_handover.quota_what]
+doc = "Headline of the quota advisory; {reason} is the reason found in the result."
+value = "codex:codex-rescue reported quota exhaustion ({reason})."
+
+[codex_handover.quota_why]
+doc = "Reason line of the quota advisory; {until} is an ISO time or the cooldown label."
+value = "Recorded to ~/.anti-hall/codex-availability.json until {until}; Codex is unavailable until then."
+
+[codex_handover.rescue_re]
+doc = "JavaScript source (flag i) of the agent type of the Codex rescue seat."
+value = '^codex[:/-]?(?:codex-)?rescue$'
+
+[codex_handover.resume_do_instead]
+doc = "The line before the numbered resume steps."
+value = "Do instead: follow this guided resume path."
+
+[codex_handover.resume_event]
+doc = "The hook event name in the resume advisory when the payload names none."
+value = "SessionStart"
+
+[codex_handover.resume_freshness]
+doc = "The git freshness line; {head}, {commits} and {dirty}."
+value = "Freshness (measured now): HEAD {head}; {commits} commit(s) since this handover was written (committer date after its mtime); {dirty} dirty file(s) in the working tree. Any non-zero count means the handover's git/state claims may be stale -- re-verify them before trusting them."
+
+[codex_handover.resume_git_timeout_ms]
+doc = "Time limit of each git call of the handover resume."
+value = 1500
+unit = "ms"
+
+[codex_handover.resume_guard]
+doc = "The guard id the handover resume messages answer to."
+value = "handover-resume"
+
+[codex_handover.resume_head]
+doc = "First line of the resume pointer; {prefix}, {path}, {seq_label}, {pred}, {date}, {sid} and {outcome}."
+value = "💡 anti-hall · handover-resume: {prefix}: {path} ({seq_label}{pred} | date {date} | session {sid}){outcome}"
+
+[codex_handover.resume_max_age_ms]
+doc = "Oldest handover or snapshot the resume still points at."
+value = 604800000
+unit = "ms"
+
+[codex_handover.resume_note]
+doc = "Closing note of the resume pointer."
+value = "Note: this handover supersedes the auto-compact summary and any legacy CONTINUE-HERE-style file for continuation state: where they conflict, trust the handover -- it is the evidence-backed record; the compact summary is lossy."
+
+[codex_handover.resume_outcome]
+doc = "The outcome part of the resume pointer; {outcome}."
+value = " -- INDEX.md outcome: {outcome}"
+
+[codex_handover.resume_pred]
+doc = "The predecessor part of the resume pointer; {pred}."
+value = ", predecessor {pred}"
+
+[codex_handover.resume_sources]
+doc = "The SessionStart sources that count as a continuation (clear or compaction)."
+value = ["clear", "compact"]
+
+[codex_handover.resume_state_prefix]
+doc = "The start of the per-session resume state file name."
+value = "handover-resume-state-"
+
+[codex_handover.resume_summary]
+doc = "One-line description of the handover-resume check in the generated reference."
+value = "SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js)."
+
+[codex_handover.resume_writer]
+doc = "The writer-kept-running line; {sid}, {min} and {iso}."
+value = "Writer kept running: session {sid} kept running {min} min after this handover was written (its transcript last wrote at {iso}) -- its Next Action may be stale; check what it did after the handover (mesh mail, workspaces, uncommitted edits) before acting on it."
+
+[codex_handover.rollout_prefix]
+doc = "The start of a Codex rollout transcript file name."
+value = "rollout-"
+
+[codex_handover.rollout_suffix]
+doc = "The end of a Codex rollout transcript file name."
+value = ".jsonl"
+
+[codex_handover.rule_file_claude]
+doc = "The rules file a Claude session re-reads."
+value = "CLAUDE.md"
+
+[codex_handover.rule_file_codex]
+doc = "The rules file a Codex session re-reads."
+value = "AGENTS.md"
+
+[codex_handover.scratch_leaf]
+doc = "The scratchpad directory name inside the session directory."
+value = "scratchpad"
+
+[codex_handover.scratch_prefix]
+doc = "The start of the per-user scratchpad directory name, before the user id."
+value = "claude-"
+
+[codex_handover.seq_max_digits]
+doc = "Most digits of a handover sequence number the port reads; more is left to the Node hook."
+value = 15
+
+[codex_handover.serde_range_msg]
+doc = "Start of the error text of the engine's JSON parser for a number out of range (JavaScript parses it)."
+value = "number out of range"
+
+[codex_handover.serde_recursion_msg]
+doc = "Start of the error text of the engine's JSON parser for nesting past its limit (JavaScript parses it)."
+value = "recursion limit exceeded"
+
+[codex_handover.setting_nudge]
+doc = "Where the Codex nudge switch is read from (codexNudge.enabled, default on)."
+value = { section = "codexNudge", key = "enabled", env = "ANTIHALL_CODEX_NUDGE", option = "codex_nudge_enabled", default = true }
+
+[codex_handover.setting_precompact]
+doc = "Where the PreCompact snapshot switch is read from (maintenance.precompactSnapshot, default on)."
+value = { section = "maintenance", key = "precompactSnapshot", option = "maintenance_precompact_snapshot", default = true }
+
+[codex_handover.setting_quota_detect]
+doc = "Where the Codex quota detection switch is read from (guards.codexQuotaDetect, default on)."
+value = { section = "guards", key = "codexQuotaDetect", env = "ANTIHALL_CODEX_QUOTA_DETECT", option = "guards_codex_quota_detect", default = true }
+
+[codex_handover.setting_resume]
+doc = "Where the handover resume switch is read from (context.handoverResume, default on)."
+value = { section = "context", key = "handoverResume", option = "context_handover_resume", default = true }
+
+[codex_handover.snap_branch]
+doc = "The branch line of a snapshot."
+value = "branch: {branch}"
+
+[codex_handover.snap_clean]
+doc = "The suffix of the dirty files line when none is dirty."
+value = " (clean)"
+
+[codex_handover.snap_dirty]
+doc = "The dirty files line of a snapshot; {count} and {clean}."
+value = "dirty files: {count}{clean}"
+
+[codex_handover.snap_fence_close]
+doc = "The line that closes a quoted message."
+value = "````"
+
+[codex_handover.snap_fence_open]
+doc = "The line that opens a quoted message."
+value = "````text"
+
+[codex_handover.snap_h_custom]
+doc = "Heading of the compact instructions section of a snapshot."
+value = "## /compact instructions (verbatim)"
+
+[codex_handover.snap_h_handover]
+doc = "Heading of the newest handover section of a snapshot."
+value = "## Newest handover"
+
+[codex_handover.snap_h_messages]
+doc = "Heading of the user messages section; {count}."
+value = "## Last {count} user message(s), verbatim, oldest first"
+
+[codex_handover.snap_h_repo]
+doc = "Heading of the repository state section of a snapshot."
+value = "## Repo state"
+
+[codex_handover.snap_h_tasks]
+doc = "Heading of the task list section of a snapshot."
+value = "## Task list snapshot (from the transcript)"
+
+[codex_handover.snap_handover_found]
+doc = "The newest handover line; {path} and {modified} (an ISO time)."
+value = "{path} (modified {modified})"
+
+[codex_handover.snap_handover_none]
+doc = "The newest handover line when none exists."
+value = "none found under .anti-hall/handovers/ — no HANDOVER*.md exists for this repo"
+
+[codex_handover.snap_head]
+doc = "The HEAD line of a snapshot."
+value = "HEAD: {head}"
+
+[codex_handover.snap_indent]
+doc = "The indent of a listed dirty file."
+value = "    "
+
+[codex_handover.snap_intro]
+doc = "Explanation line of a snapshot; {trigger} is the compaction trigger."
+value = "Mechanical crash dump written by anti-hall's PreCompact hook right before compaction (trigger: {trigger}). NOT a handover: no model judgment went into it. Read it with the newest handover; the user messages below are verbatim (they may carry session rules the compact summary dropped)."
+
+[codex_handover.snap_messages_none]
+doc = "The user messages line when none was found."
+value = "none found in the readable transcript tail"
+
+[codex_handover.snap_more]
+doc = "The line after the listed dirty files when more exist; {count}."
+value = "    … +{count} more"
+
+[codex_handover.snap_msg_head]
+doc = "Heading of one user message; {i} and {ts}."
+value = "### {i}{ts}"
+
+[codex_handover.snap_newer]
+doc = "Snapshot line when the snapshot is newer than the handover; {path}."
+value = "Pre-compaction snapshot (newer than the handover): {path} -- anti-hall's PreCompact hook saved it mechanically right before compaction (git state, task-list snapshot, the last user messages verbatim). Work happened AFTER the handover was written: read this snapshot right after the handover to catch up, and carry any session rules quoted in its user messages forward."
+
+[codex_handover.snap_not_git]
+doc = "The git line of a snapshot outside a repository."
+value = "git: not a git repository (or git unavailable)"
+
+[codex_handover.snap_older]
+doc = "Snapshot line when the handover is newer; {path}."
+value = "Pre-compaction snapshot (older than the handover, which already covers it): {path} -- open it only if the handover is missing something."
+
+[codex_handover.snap_pwd]
+doc = "The working directory line of a snapshot."
+value = "pwd: {cwd}"
+
+[codex_handover.snap_table_head]
+doc = "The header row of the task table."
+value = "| id | subject | status |"
+
+[codex_handover.snap_table_row]
+doc = "One task table row; {id}, {subject} and {status}."
+value = "| {id} | {subject} | {status} |"
+
+[codex_handover.snap_table_rule]
+doc = "The rule row of the task table."
+value = "|---|---|---|"
+
+[codex_handover.snap_tasks_empty]
+doc = "The task list line for an empty list."
+value = "empty list"
+
+[codex_handover.snap_tasks_none]
+doc = "The task list line when no list could be read."
+value = "not derivable — no TodoWrite/TaskCreate/TaskUpdate calls in the readable transcript tail"
+
+[codex_handover.snap_title]
+doc = "First line of a snapshot; {session}, {n} and {now}."
+value = "# PRECOMPACT snapshot — {session} · #{n} · {now}"
+
+[codex_handover.snap_truncated]
+doc = "A message cut at the limit; {head} is what is kept and {count} how much was cut."
+value = "{head}\n[… truncated {count} chars]"
+
+[codex_handover.snap_ts_sep]
+doc = "Separator before a message timestamp."
+value = " · "
+
+[codex_handover.snaponly_instead]
+doc = "Advice line when only a snapshot exists."
+value = "read it fully before trusting the compact summary; once state is re-established, write a real handover with the anti-hall handover skill."
+
+[codex_handover.snaponly_what]
+doc = "Headline when only a snapshot exists; {path} and {written}."
+value = "no HANDOVER*.md was written for this session, but a pre-compaction snapshot exists: {path} (written {written})."
+
+[codex_handover.snaponly_why]
+doc = "Reason line when only a snapshot exists."
+value = "It holds git state, a task-list snapshot and the last user messages verbatim, which may carry session rules the compact summary dropped. It is a crash dump, not a handover (no judgment went into it)."
+
+[codex_handover.state_dir]
+doc = "The per-user state directory, relative to the home directory."
+value = ".anti-hall"
+
+[codex_handover.status_deleted]
+doc = "The status that removes a task from the snapshot."
+value = "deleted"
+
+[codex_handover.status_pending]
+doc = "The status of a task that has none."
+value = "pending"
+
+[codex_handover.step_checklist]
+doc = "Resume step when the handover has a checklist; {rule} and {path}."
+value = "Run its Resume-verification checklist (git status, pwd, {rule} re-read, smoke command) BEFORE trusting any written state, THEN append a line to {path}: `resume-verified: <ISO timestamp> -- <one-line git-status/pwd/smoke summary>`."
+
+[codex_handover.step_continue]
+doc = "Resume step: continue."
+value = "Continue from the single Next Action."
+
+[codex_handover.step_details]
+doc = "Resume step: the detail files; {files}."
+value = "Load detail files ONLY as needed via the pointer table ({files})."
+
+[codex_handover.step_generic]
+doc = "Resume step when the handover has no checklist; {rule} and {path}."
+value = "No Resume-verification checklist section was found in it -- fall back to a generic check BEFORE trusting any written state: `git status --short --branch`, `pwd`, {rule} re-read. THEN append a line to {path}: `resume-verified: <ISO timestamp> -- <one-line git-status/pwd summary>`."
+
+[codex_handover.step_read]
+doc = "Resume step: read the handover; {path}."
+value = "Read {path} FULLY -- front matter (first ~15 lines) carries Situation + Next Action."
+
+[codex_handover.step_readback]
+doc = "Resume step: tell the user what was understood."
+value = "READ-BACK: before any new work, tell the user in your own words (not a paste) the goal, the single Next Action and every active rule from its \"Session rules (verbatim)\" section, and invite corrections."
+
+[codex_handover.step_tasks]
+doc = "Resume step: rebuild the task list."
+value = "Recreate/reconcile your task list from state.md's Task list snapshot BEFORE working."
+
+[codex_handover.step_trials]
+doc = "Resume step: the do-not-repeat list."
+value = "Check trials.md do-not-repeat list before re-attempting anything."
+
+[codex_handover.task_created_re]
+doc = "JavaScript source of the result text that carries a new task's number."
+value = 'Task #(\d+) created successfully'
+
+[codex_handover.task_line_words]
+doc = "Words a transcript line must contain to be parsed for the task list."
+value = ["TodoWrite", "TaskCreate", "TaskUpdate", "created successfully"]
+
+[codex_handover.tmp_default]
+doc = "The temporary directory when none of those variables is set."
+value = "/tmp"
+
+[codex_handover.tmp_env]
+doc = "Environment variables that name the temporary directory, first set one wins."
+value = ["TMPDIR", "TMP", "TEMP"]
+
+[codex_handover.tmp_roots]
+doc = "Temporary directories always searched for the session scratchpad, besides the one the environment names."
+value = ["/tmp", "/private/tmp"]
+
+[codex_handover.transcript_tail_bytes]
+doc = "How much of the end of the transcript the PreCompact snapshot reads."
+value = 1572864
+unit = "bytes"
+
+[codex_handover.trigger_unknown]
+doc = "What a snapshot records for any other trigger."
+value = "unknown-trigger"
+
+[codex_handover.triggers]
+doc = "The PreCompact trigger values a snapshot records as they are."
+value = ["manual", "auto"]
+
+[codex_handover.try_again_re]
+doc = "JavaScript source (flag i) of the usage-limit wording that names when to try again."
+value = '\btry again (?:at|after|on)?\s*([A-Za-z0-9:,+\-\/ ]{1,60})'
+
+[codex_handover.unknown_session]
+doc = "The session name used when a payload carries no usable session id."
+value = "unknown-session"
+
+[codex_handover.until_re]
+doc = "JavaScript source (flag i) of a trailing clause that names when Codex is back; the original lookahead after the terminator is written as a consumed character, which changes neither the match start nor the capture."
+value = '\b(?:until|resets?(?: at)?|resum(?:e|ing)(?: at)?|available again(?: at)?)\s+([^\n]{1,80}?)(?:[.,;](?:\s|$)|\n|$)'
+
+[codex_handover.utc_words]
+doc = "Words after a date and time that mean UTC (compared without case)."
+value = ["utc", "gmt", "z"]
+
+[codex_handover.weekdays]
+doc = "Weekday names, lower case (a date string may lead with one, full or its first three letters)."
+value = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+
+[codex_handover.writer_grace_ms]
+doc = "How long after a handover its writer may keep writing before the resume says it kept running."
+value = 300000
+unit = "ms"
+
+[codex_handover.agent_type_keys]
+doc = "The fields of a spawn that can name the agent type, in the order they are tried."
+value = ["subagent_type", "agentType", "agent_type"]
+
+[codex_handover.argv_status]
+doc = "The git arguments that list the branch line and the dirty files for a snapshot."
+value = ["status", "--porcelain=v1", "--branch"]
+
+[codex_handover.argv_log]
+doc = "The git arguments that print the newest commit's short hash and subject."
+value = ["log", "-1", "--format=%h %s"]
+
+[codex_handover.argv_head]
+doc = "The git arguments that print the short HEAD hash."
+value = ["rev-parse", "--short", "HEAD"]
+
+[codex_handover.argv_count]
+doc = "The git arguments that count the commits since a time; {since} is epoch seconds."
+value = ["rev-list", "--count", "--since=@{since}", "HEAD"]
+
+[codex_handover.argv_porcelain]
+doc = "The git arguments that list the dirty files for the resume freshness line."
+value = ["status", "--porcelain"]
+
+[codex_handover.argv_super]
+doc = "The git arguments that print the superproject checkout of a repository; {root} is the repository."
+value = ["-C", "{root}", "rev-parse", "--show-superproject-working-tree"]
+
+[codex_handover.tz_var]
+doc = "The environment variable that sets the time zone; a request whose value differs from this process's has its local-time conversions left to the Node hook."
+value = "TZ"
+
+[codex_handover.utc_zone_names]
+doc = "Values of the TZ variable that name UTC itself (no offset, no daylight saving): a request that sets one of these has its local date computed from the UTC clock; any other value of TZ hands the hook to Node."
+value = ["UTC", "GMT", "Etc/UTC", "Etc/GMT", "UCT", "Etc/UCT", "Zulu", "Etc/Zulu", "Universal", "Etc/Universal", "Greenwich", "Etc/Greenwich"]

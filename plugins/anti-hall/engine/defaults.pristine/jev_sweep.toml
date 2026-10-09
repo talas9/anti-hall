@@ -1,0 +1,68 @@
+# ah-engine shipped defaults for the Jev evidence sweep (the `jev::sweep` module, `ah-engine jev sweep`, the scheduled job `jev_sweep`).
+# Format: see the header of engine.toml. The sweep is where the facts of the three supervisor integrations that ask a model about a
+# child workspace (devswarmWaitKind, devswarmLoop, devswarmStepMap) are gathered: from the child's plan file, its own transcript, its
+# git log, the CI runs of its branch and the mesh store. It hands each decision to the evidence gate (jev_evidence.toml), which
+# decides by rule, skips for lack of evidence, or asks, and writes one row per decision. Every window, limit, command, pattern and
+# word below is tuned here, never in Rust. A child is only looked at for an integration whose mode is not off.
+
+[job.jev_sweep]
+doc = "Gather the evidence of each live child workspace and put the supervisor's Jev questions (is a quiet child stuck or waiting, is it looping, which plan step does a summary describe) through the evidence gate. Runs as a subprocess so a timeout kills it and every model call it started; 0 turns it off. The modes of the three integrations decide whether any child is looked at."
+value = { kind = "engine", action = "jev_sweep", every_key = "schedule.jev_sweep_ms", jitter_ms = 60000, timeout_ms = 900000, retries = 1, backoff_ms = 60000, backoff_max_ms = 600000, cooldown_ms = 900000, catch_up = "skip", persist = false }
+
+[schedule.jev_sweep_ms]
+doc = "Interval of the jev_sweep job; 0 turns it off."
+value = 900000
+env = "AH_ENGINE_JEV_SWEEP_MS"
+unit = "ms"
+
+[sweep.integrations]
+doc = "The integrations the sweep gathers evidence for, in the order they are decided."
+value = ["devswarmWaitKind", "devswarmLoop", "devswarmStepMap"]
+
+[sweep.paths]
+doc = "Where the sweep reads, relative to the anti-hall home directory unless noted: plans (one JSON per child), workspaces (descriptors), archived (archive records), store (per-repo mesh stores), state (the sweep's own re-ask memory); transcripts is relative to the user home, and the transcript of a child is <transcripts>/<its worktree path with / \\ : . replaced by the dash>/<session id><transcript_ext>."
+value = { plans = "devswarm/plans", workspaces = "devswarm/workspaces", archived = "devswarm/archived", store = "devswarm/store", state = "devswarm/jev-sweep-state.json", transcripts = ".claude/projects", store_file = "devswarm.db", plan_ext = ".json", transcript_ext = ".jsonl", path_dash_chars = "/\\:." }
+
+[sweep.limits]
+doc = "Bounds of one sweep. loop_factor: a child on the same step for this many times the quiet window (setting_step_stall) is a loop candidate; a child with no step progress for the window is quiet (WaitKind). lookback_min: how far back repeated commands, errors and owner prompts are counted. tool_tail, text_tail: tool calls and assistant texts put in the pack. tail_bytes: the end of the transcript that is read. arg_cap, text_cap, err_cap, msg_cap: characters kept of a tool argument, an assistant text, an error and a mesh message. max_children: children examined per sweep. reask_ms: a question whose subject has not changed is not asked again before this. max_steps_map: a plan with more steps is not asked about. step_match_ms: a summary sent with a step belongs to the step whose own timestamp is within this of it. commit_lookback: commits read from git. mesh_sent: the newest messages the child sent that are read. repeat_min, repeat_show, edit_repeat_min, repeat_error_min: a command (or an error text) seen this many times on the step is a repeat; a file edited edit_repeat_min times is a repeat; repeat_show: repeats put in the pack."
+value = { loop_factor = 2, lookback_min = 60, tool_tail = 15, text_tail = 3, tail_bytes = 524288, arg_cap = 140, text_cap = 260, err_cap = 120, msg_cap = 200, max_children = 20, reask_ms = 1800000, max_steps_map = 30, step_match_ms = 5000, commit_lookback = 50, mesh_sent = 20, repeat_min = 2, repeat_show = 6, edit_repeat_min = 3, repeat_error_min = 3 }
+
+[sweep.transcript]
+doc = "How a transcript line is read. arg_keys: the tool input fields tried in order for the one-line argument of a tool call. edit_tools: tools that edit a file (their file_path field is counted). revert_patterns: a command containing one counts as a revert. background_tools: tools that start a background job. usage_limit_patterns: a recent assistant text or tool error containing one (case-insensitive) means the child is paused on a usage limit. skip_prompt_prefixes: user lines that start this way are not owner prompts. task_note_prefix: a user line that starts this way is a background-task notification."
+value = { arg_keys = ["command", "file_path", "pattern", "path", "description", "prompt", "query", "url"], edit_tools = ["Edit", "Write", "MultiEdit"], revert_patterns = ["git reset --hard", "git revert", "git checkout --", "git restore", "git checkout ."], background_tools = ["Agent", "Task"], usage_limit_patterns = ["usage limit", "limit reached", "you've hit your limit", "rate limit"], skip_prompt_prefixes = ["<command", "<local-command", "<system-reminder", "<task-notification"], task_note_prefix = "<task-notification" }
+
+[sweep.git]
+doc = "Read-only git commands run in the child's worktree ({wt}); {branch} is the branch name the second one printed. log prints one commit per line as <epoch seconds><log_sep><subject>. timeout_ms bounds each."
+value = { log = ["git", "-C", "{wt}", "log", "-50", "--format=%ct%x01%s"], branch = ["git", "-C", "{wt}", "rev-parse", "--abbrev-ref", "HEAD"], log_sep = "\u0001", timeout_ms = 5000 }
+
+[sweep.ci]
+doc = "The CI runs of the child's branch ({branch}), asked of the GitHub CLI; off when enabled is false or the command is missing, and then the ci_running fact is simply absent. running_statuses: run statuses that mean still running. Output is JSON with these fields."
+value = { enabled = true, argv = ["gh", "run", "list", "--branch", "{branch}", "--limit", "10", "--json", "status,name,conclusion,createdAt,updatedAt"], timeout_ms = 15000, running_statuses = ["in_progress", "queued", "waiting", "pending", "requested"], recent_runs = 3 }
+
+[sweep.words]
+doc = "The words the sweep writes into evidence lines and its result. line_tool: {ago} {name} {arg}. line_text: {ago} {text}. line_msg: {ago} {dir} {ask} {text}. line_ci: {name} {status} {ago}. line_repeat: {cmd} {n}. line_error_repeat: {text} {n} (an error text seen again and again on the step). line_error: {text}. line_commit: {ago} {subject}. line_summary: {ago} {text}. dir_out and dir_in: the direction words of a mesh line; ask: written when the message asked for a reply. dur_m, dur_h, dur_d: the duration suffixes (minutes, hours, days); plan_state_done, plan_state_doing: the status words a plan step uses. result keys are fixed."
+value = { line_tool = "{ago} {name}: {arg}", line_text = "{ago} \"{text}\"", line_msg = "{ago} {dir}{ask}: {text}", line_ci = "{name} {status} {ago}", line_repeat = "\"{cmd}\" x{n}", line_error_repeat = "error \"{text}\" x{n}", line_error = "{text}", line_commit = "{ago} {subject}", line_summary = "{ago} {text}", dir_out = "child to parent", dir_in = "to child", ask = " (asked for a reply)", ago_fmt = "-{dur}", dur_m = "m", dur_h = "h", dur_d = "d", step_done = "done" }
+
+[sweep.duration]
+doc = "Duration units: minutes in an hour and hours in a day, and the largest value shown in the smaller unit before the next is used (the same rule as the plan's own duration text)."
+value = { minutes_per_hour = 60, hours_per_day = 24, ms_per_minute = 60000 }
+
+[sweep.setting_step_stall]
+doc = "Where the quiet-child window is read from: devswarm.stepStallMin (minutes) through the engine's settings layer (the environment variable, then settings.json, then the plugin option, then the default). A value under floor_min is raised to it (the settings schema's own minimum)."
+value = { section = "devswarm", key = "stepStallMin", env = "ANTIHALL_DEVSWARM_STEP_STALL_MIN", option = "devswarm_step_stall_min", default = 30, floor_min = 5 }
+
+[sweep.setting_held]
+doc = "Where the owner's held workspace ids are read from: devswarm.heldPartitions (a comma-separated list) through the engine's settings layer (the environment variable, then settings.json). A held child is never asked about."
+value = { section = "devswarm", key = "heldPartitions", env = "ANTIHALL_DEVSWARM_HELD_PARTITIONS", default = "" }
+
+[sweep.setting_warn_max]
+doc = "Where the most straying warnings per signal and step are read from: devswarm.strayWarnMax (0 turns warnings off) through the engine's settings layer; the advisory loop warning the sweep may add follows the same cap."
+value = { section = "devswarm", key = "strayWarnMax", env = "ANTIHALL_DEVSWARM_STRAY_WARN_MAX", option = "devswarm_stray_warn_max", default = 2, min = 0, max = 10 }
+
+[sweep.act]
+doc = "What the sweep does with an answer it may act on (the integration is on and a rule decided or the confidence met the threshold). stray_dir: the straying state the supervisor writes, one JSON per plan key, relative to the anti-hall directory; min_confidence_pct: a model answer for the integration needs at least this confidence to be acted on (Loop: 90, as before); rule_confidence_pct: the confidence shown with a rule's answer; wait_signals: the warnings a WaitKind answer is attached to; loop_hosts: the warnings a Loop answer is attached to, in order (when none exists a looping answer adds its own advisory warning); loop_signal: that warning's signal name; loop_key: its key ({n} the step, {since} when the step began); confidence_scale: a confidence is rounded to 1/this (100: two decimals)."
+value = { stray_dir = "devswarm/stray", min_confidence_pct = { devswarmLoop = 90 }, rule_confidence_pct = 100, wait_signals = ["idle", "stall"], loop_hosts = ["burn", "stall"], loop_signal = "loop", loop_key = "loop:{n}:{since}", confidence_scale = 100 }
+
+[sweep.act_words]
+doc = "The words an answer is shown with on a warning. wait_true and wait_false: the verdict of a WaitKind answer (stuck, or waiting for something outside); loop_true and loop_false: the verdict of a Loop answer; loop_reason: the reason of the advisory loop warning ({dur} is how long the step has been running). Event types written to the supervision log (meshw owns the file): ev_jev (an answer acted on, once per subject), ev_warn (an advisory warning issued); mode_on: the mode word the event carries; rt_pr_name and rt_pr_unnamed: how the linked PR is named in the CI lines taken from the realtime layer ({n} its number)."
+value = { wait_true = "stuck", wait_false = "waiting on CI/owner/peer, not stuck", loop_true = "looping", loop_false = "not looping", loop_reason = "Jev thinks it is looping on the step ({dur})", ev_jev = "jev", ev_warn = "warn", mode_on = "on", rt_pr_name = "PR #{n}", rt_pr_unnamed = "PR" }

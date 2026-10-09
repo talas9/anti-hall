@@ -441,9 +441,9 @@ test('nudge hook: throttled to at most once per 24h via the stamp file', () => {
 
 test('nudge hook is registered on SessionStart ONLY (absent from the Stop array) in both hooks.json files', () => {
   const claudeHooks = JSON.parse(fs.readFileSync(
-    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'hooks.json'), 'utf8'));
+    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'hooks.registry.json'), 'utf8'));
   const codexHooks = JSON.parse(fs.readFileSync(
-    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.json'), 'utf8'));
+    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.registry.json'), 'utf8'));
 
   function commandsIn(section) {
     const list = [];

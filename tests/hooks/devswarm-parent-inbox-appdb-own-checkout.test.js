@@ -3,9 +3,9 @@
 //
 // FIELD REPORT: the DevSwarm app self-registers its own "primary builder" row
 // under an id OTHER than anti-hall's own primaryId (e.g. an app builder id
-// like `76cf862f…`, label "SkyCrew", worktree === the Primary's own main
+// like `76cf862f…`, label "DemoApp", worktree === the Primary's own main
 // checkout). Before this fix such a row fell through to the generic CHILD
-// path, producing a false "SkyCrew (76cf862f) N unread" nag with wrong
+// path, producing a false "DemoApp (76cf862f) N unread" nag with wrong
 // child-shaped wording ("messages YOU sent").
 //
 // ATTEMPT #1 (reverted): folding ANY row whose worktree matched the Primary's
@@ -90,11 +90,11 @@ function runInbox(home, envOverride) {
       writeSharedSummary(h.home, {
         '76cf862f': { worktreePath: REPO_CWD, total: 2, cursor: 0, unread: 2, directUnread: 2, urgencyMax: 'normal' },
       });
-      const dbPath = writeAppDb(h.home, [{ id: '76cf862f', builderType: 'primary', worktreePath: REPO_CWD, label: 'SkyCrew' }]);
+      const dbPath = writeAppDb(h.home, [{ id: '76cf862f', builderType: 'primary', worktreePath: REPO_CWD, label: 'DemoApp' }]);
       const r = runInbox(h.home, { ANTIHALL_DEVSWARM_APP_DB: dbPath });
       const c = ctx(r);
       assert.strictEqual(tableRow(c, '76cf862f'), '', 'the app-primary row must NEVER appear as a standalone child table row');
-      assert.ok(!/SkyCrew \(76cf862f\)/.test(c), 'must never render the false child-shaped nag: ' + c);
+      assert.ok(!/DemoApp \(76cf862f\)/.test(c), 'must never render the false child-shaped nag: ' + c);
       assert.match(c, /devswarm-own-inbox/, 'its unread must instead surface via the own-unread path');
       assert.match(c, /2 unread/);
     } finally { h.cleanup(); }

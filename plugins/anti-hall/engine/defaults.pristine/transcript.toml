@@ -1,0 +1,148 @@
+# ah-engine transcript index defaults (X1, D22). Format: see the header of engine.toml.
+#
+# The index reads a session transcript (JSONL) incrementally and keeps a bounded set of facts the hooks ask for.
+# Every cap here bounds memory per indexed transcript; a hook never sees a line, only facts.
+
+[transcript.initial_window_bytes]
+doc = "Bytes read from the end of a transcript the first time it is indexed (a long transcript is never read from the start); mirrors MAX_TAIL_BYTES of hooks/lib/transcript-tail.js."
+value = 1572864
+min = 4096
+unit = "bytes"
+
+[transcript.max_update_bytes]
+doc = "Most appended bytes one refresh reads; when more than this was appended since the last refresh the index skips ahead to the newest bytes and counts a gap instead of stalling the hook."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[transcript.fingerprint_bytes]
+doc = "Leading bytes of the file hashed to notice a rewritten or rotated transcript."
+value = 256
+min = 16
+max = 4096
+unit = "bytes"
+
+[transcript.recent_tool_uses]
+doc = "How many of the newest tool uses of any tool the index keeps."
+value = 64
+min = 1
+
+[transcript.tool_input_max_bytes]
+doc = "Largest serialized tool input kept as is for a recent tool use; a larger input is replaced by null and flagged."
+value = 4096
+unit = "bytes"
+
+[transcript.task_tools]
+doc = "Names of the task tools whose uses and string results are kept in order, so a task list can be rebuilt from the index (mirrors hooks/lib/task-state.js)."
+value = ["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]
+
+[transcript.task_events]
+doc = "How many of the newest task-tool uses and results the index keeps."
+value = 4096
+min = 1
+
+[transcript.task_input_max_bytes]
+doc = "Largest serialized task-tool input kept as is; a larger input is replaced by null and flagged."
+value = 65536
+unit = "bytes"
+
+[transcript.task_result_max_bytes]
+doc = "Longest task-tool result text kept; the rest is cut at a character boundary and flagged."
+value = 1024
+unit = "bytes"
+
+[transcript.notifications_kept]
+doc = "How many of the newest task-notification blocks the index keeps."
+value = 2048
+min = 1
+
+[transcript.task_statuses_kept]
+doc = "How many of the newest task_status attachments (agents re-injected by a compaction) the index keeps."
+value = 256
+min = 1
+
+[transcript.assistant_text_max_bytes]
+doc = "Longest last-assistant text kept; the rest is cut at a character boundary and flagged."
+value = 1048576
+unit = "bytes"
+
+[transcript.prompt_max_bytes]
+doc = "Longest last typed prompt kept; the rest is cut at a character boundary and flagged."
+value = 65536
+unit = "bytes"
+
+[transcript.max_kinds]
+doc = "Most distinct record kinds counted separately; further kinds are counted under the overflow kind."
+value = 64
+min = 4
+
+[transcript.overflow_kind]
+doc = "Kind name that collects records whose type is missing or not a string, and kinds beyond the limit."
+value = "other"
+
+[transcript.malformed_kind]
+doc = "Kind name that counts non-empty lines that are not a JSON object."
+value = "malformed"
+
+[transcript.max_indexes]
+doc = "Most transcripts the registry indexes at once; the least recently used one is dropped beyond this."
+value = 32
+min = 1
+
+[transcript.idle_ttl_ms]
+doc = "How long the registry keeps an index nobody asked for; a dropped index is rebuilt from the file on the next request."
+value = 21600000
+unit = "ms"
+
+[transcript.terminal_statuses]
+doc = "Task-notification statuses that mean an agent has ended (hooks/lib/agent-scan.js TERMINAL_NOTIFICATION_STATUS), case-insensitive."
+value = "completed failed stopped killed cancelled canceled"
+
+[transcript.final_statuses]
+doc = "Task-notification statuses the DevSwarm idle gate treats as final (companion/lib/devswarm-idle.js FINAL_STATUS), case-insensitive."
+value = "completed failed stopped"
+
+[transcript.non_prompt_prefixes]
+doc = "Text starts that mark a user entry as injected, not typed (hooks/lib/inference-check.js lastUserPrompt)."
+value = ["<task-notification", "<command-", "<local-command", "<system-reminder"]
+
+[transcript.msg_io]
+doc = "Printed when a transcript cannot be read; {path} and {err} are filled in."
+value = "Cannot read the transcript {path}: {err}."
+
+# ---- the text evidence of a transcript (`ah.transcript.evidence`, D88 batch 7) --------------------------------------------
+
+[transcript.evidence_max_bytes]
+doc = "Largest window `ah.transcript.evidence` reads from the end of a transcript, whatever the script asks for."
+value = 8388608
+min = 65536
+unit = "bytes"
+
+[transcript.evidence_max_chars]
+doc = "Most characters of text `ah.transcript.evidence` returns in all; a transcript whose evidence is larger is reported as unsure."
+value = 16777216
+min = 65536
+
+[transcript.ev_type_text]
+doc = "The content block type of a text block."
+value = "text"
+
+[transcript.ev_type_tool_use]
+doc = "The content block type of a tool call."
+value = "tool_use"
+
+[transcript.ev_type_tool_result]
+doc = "The content block type of a tool result."
+value = "tool_result"
+
+[transcript.ev_role_user]
+doc = "The role of a user transcript entry."
+value = "user"
+
+[transcript.ev_role_assistant]
+doc = "The role of an assistant transcript entry."
+value = "assistant"
+
+[transcript.ev_role_attachment]
+doc = "The role of a hook attachment transcript entry."
+value = "attachment"

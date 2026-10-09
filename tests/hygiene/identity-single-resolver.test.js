@@ -29,6 +29,8 @@ const PATTERNS = {
 
 // ALLOWLIST: 'relative/file.js': { pattern: count }. Shrink per batch (B1..B6).
 const ALLOWLIST = {
+  // engine/logic/command.js is hooks/command-guard.js run as it is over the engine's compatibility layer (lane d88fd)
+  'engine/logic/command.js': { 'stat-dotgit': 1 },
   'companion/devswarm-ingest.js': { 'primaryWorkspaceId-call': 1 },
   'companion/install-devswarm-ingest.js': { 'primaryWorkspaceId-call': 1 },
   // B1: resolvers are identity shims; the one left is the injected-io (fake git) test seam.

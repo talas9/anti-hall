@@ -50,6 +50,8 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | Doc | What it covers |
 |---|---|
 | [`KB-jev-classifier.md`](./KB-jev-classifier.md) | Jev (TypeSafe System One) opt-in classifier: [Enable Jev](./KB-jev-classifier.md#enable-jev) (full text and the measured result), every wired integration, metrics, cost and budget watch. |
+| [`AH-ENGINE.md`](./AH-ENGINE.md) | The optional ah-engine: a small Rust program that answers hook calls without starting Node per call. Install (pinned sha256), go-live and rollback, config failover and self-heal, telemetry, what still runs on Node, pre-release measurements. |
+| [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Developer guide: prerequisites, building the plugin and the Rust engine, every test suite, local install, debugging, the porting workflow, branches and releases. Every command in it is run by `ah-engine/scripts/doc-check.sh`. |
 | [`HOOK-LATENCY.md`](./HOOK-LATENCY.md) | Measured hook latency: wall p50/p95 and CPU per hook, and the per-tool-call total for each event. |
 | [`KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) | DevSwarm & the `hivecontrol` CLI — multi-workspace orchestration. |
 | [`KB-devswarm-app-db.md`](./KB-devswarm-app-db.md) | The DevSwarm desktop app's database: what anti-hall reads (read-only), field evidence, sync, screenshot sync, 2.5.3 notes. |
@@ -108,6 +110,18 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `defects` | "file an anti-hall bug" | file/list/show/rule on anti-hall's own defect reports |
 | `jev` | "activate jev" | asks for your Vercel AI Gateway or TypeSafe key, installs it, enables and tests it |
 | `settings` | "anti-hall settings", "set auto-handover to 80%" | show or change any setting; one unified `~/.anti-hall/settings.json`, browsable via `show`/`get`/`set`/`reset` |
+| `engine-agents` | spawning, messaging or stopping agents, keeping the task list, or delegating work and a delegation, task or mo | Subagent, task-list, delegation and routing guards (generated from the engine registry) |
+| `engine-devswarm` | working in or with DevSwarm workspaces and a DevSwarm gate, role directive or wake guard applies | The DevSwarm role, gate and wake guards (generated from the engine registry) |
+| `engine-devswarm-supervisor` | tuning or checking the DevSwarm supervisor sweep (auto-archive, pokes, app sync, retention, reconcile, housekeeping) | The supervisor sweep switches (generated from the engine registry) |
+| `engine-doctor` | checking whether anti-hall works, repairing it, migrating its state, or scanning what it can do on this machin | Health check, repair, migrations and capability scans (generated from the engine registry) |
+| `engine-github` | committing, pushing, merging or releasing and a git or merge guard applies | Git, merge and release guards (generated from the engine registry) |
+| `engine-guards` | an anti-hall guard blocked, warned or injected something, or you need to know which guard covers a rule | What the automatic guards check and how to read a block (generated from the engine registry) |
+| `engine-handovers` | writing or resuming a handover, or compacting context, and a handover or compaction guard applies | Handover, resume and compaction guards (generated from the engine registry) |
+| `engine-mesh` | you need to read workspace messages, unread counts or the per-project mailbox through the engine | Read the DevSwarm message store and per-project mailboxes (generated from the engine registry) |
+| `engine-resources` | you need the engine daemon status, metrics, impact, telemetry, a backup or restore, a scheduled job, or contex | Daemon status, metrics, backups, schedules and limits (generated from the engine registry) |
+| `engine-processes` | a warning names an orphaned process, a stuck agent, heavy CPU or memory use or low disk space, or you need to tune or switch off the process, resource or disk watch | Leftover processes, runaway CPU or memory and low disk space (generated from the engine registry) |
+| `engine-settings` | changing or reading an anti-hall setting or switch, looking up an engine reference, or configuring the Jev cla | Settings switches, the generated reference and the Jev classifier (generated from the engine registry) |
+| `engine` | you need to know what the anti-hall engine can do, which engine verbs your session may run, or which engine sk | start here: the role-gated engine verbs and the area skills (generated from the engine registry) |
 
 ## Knowledge base (KB-*)
 

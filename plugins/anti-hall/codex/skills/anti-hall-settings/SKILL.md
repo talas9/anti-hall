@@ -20,7 +20,7 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-All commands below run as `node "$ANTI_HALL_ROOT/scripts/settings.js" <verb>`.
+All commands below run as `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings <verb>`.
 
 ## No `/config` equivalent on Codex
 
@@ -38,7 +38,7 @@ On Claude Code, a non-default value stored in Claude Code's plugin options by ea
 If the user named the setting and the value ("turn off the merge gate", "set
 auto-handover to 80%", "disable Jev"), resolve it to a `section.key` and value and apply it:
 ```bash
-node "$ANTI_HALL_ROOT/scripts/settings.js" set <section.key> <value>
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings set <section.key> <value>
 ```
 then confirm with the single-key line from `get <section.key>`. Never print the full
 table for a direct change. A validation failure (out-of-range number, unknown enum
@@ -86,8 +86,8 @@ thread run inline. Because that file lives in the working tree, a cloned repo co
 ship one — so it applies ONLY after the user trusts that exact file content with `trust-command-allow`:
 
 ```
-node <plugin-root>/scripts/settings.js trust-command-allow [<repo>]              # print patterns, record nothing
-node <plugin-root>/scripts/settings.js trust-command-allow [<repo>] --confirmed  # record the trust
+sh <plugin-root>/scripts/ah-run.sh settings trust-command-allow [<repo>]              # print patterns, record nothing
+sh <plugin-root>/scripts/ah-run.sh settings trust-command-allow [<repo>] --confirmed  # record the trust
 ```
 
 Trust is a sha256 of the file bytes stored OUTSIDE the repo in
@@ -108,8 +108,8 @@ delegating them. It uses the same trust model as the command allowlist and appli
 only after the user trusts that exact file content with `trust-edit-allow`:
 
 ```
-node <plugin-root>/scripts/settings.js trust-edit-allow [<repo>]              # print paths, record nothing
-node <plugin-root>/scripts/settings.js trust-edit-allow [<repo>] --confirmed  # record the trust
+sh <plugin-root>/scripts/ah-run.sh settings trust-edit-allow [<repo>]              # print paths, record nothing
+sh <plugin-root>/scripts/ah-run.sh settings trust-edit-allow [<repo>] --confirmed  # record the trust
 ```
 
 Trust lives in `~/.anti-hall/trusted-edit-allow.json`, and any edit to the file revokes
@@ -124,7 +124,7 @@ Kill-switch: `guards.projectEditAllow=false`.
 The opt-in speculation-judge (`jev.semanticJudge`, off by default) has a one-line switch:
 
 ```bash
-node "$ANTI_HALL_ROOT/scripts/settings.js" judge on|off|status
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings judge on|off|status
 ```
 
 `on` sets the flag, then says whether an Anthropic key is visible to the CLI (never the key
@@ -157,7 +157,7 @@ have no switch on purpose, and why.
 1. `show` prints every section's tables — run it ONLY when the user explicitly asks to
    see their settings:
    ```bash
-   node "$ANTI_HALL_ROOT/scripts/settings.js" show        # or: show --section <key> [--all]
+   sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings show        # or: show --section <key> [--all]
    ```
    Present the output as-is. Advanced/tuning knobs are hidden unless `--all`.
 
@@ -242,9 +242,19 @@ new prompt, the Stop hook delivers the directive once instead. Before every comp
 `precompact-snapshot.js` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
 next to the handovers (it never blocks compaction).
 
+## Engine settings (the optional `ah-engine`)
+
+The per-hook switches above (`guards.*`, `safety.*`, `context.*`, ...) are honoured by the engine and by the Node hooks alike, so
+`set` works the same with or without the engine. The engine's own tunables (limits, texts, rules, dispatch rows, `telemetry.enabled`,
+`telemetry.retention_days`, per-entry `mode` on/shadow/off) are NOT `settings.js` keys: they are plain files in the plugin's
+`engine/` directory plus the engine's `config.toml`. Show them with `ah-engine config --json` (each value with its source),
+validate an edit with `ah-engine config validate <file>`, restore a missing key with `ah-engine config heal`. A bad edit falls back
+to the last-known-good copy, then the pristine copy, then Node. Never edit `engine/defaults.pristine/`. Skipping the engine
+download is the setting `engine.bootstrap` (boolean, default true; `settings.js set engine.bootstrap false`), or the env var `AH_ENGINE_BOOTSTRAP=0`, which overrides the setting.
+
 ## Resetting a setting
 
-`node "$ANTI_HALL_ROOT/scripts/settings.js" reset <section.key>` removes the
+`sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings reset <section.key>` removes the
 settings.json override for that one key, so the legacy source or schema default
 takes over again.
 
@@ -252,9 +262,9 @@ takes over again.
 
 Every subcommand takes `--json`:
 ```bash
-node "$ANTI_HALL_ROOT/scripts/settings.js" show --json
-node "$ANTI_HALL_ROOT/scripts/settings.js" get jev.enabled --json
-node "$ANTI_HALL_ROOT/scripts/settings.js" set limitConserve.threshold 90 --json
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings show --json
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings get jev.enabled --json
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings set limitConserve.threshold 90 --json
 ```
 
 ## What this skill never does

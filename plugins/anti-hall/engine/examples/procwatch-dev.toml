@@ -1,0 +1,29 @@
+# Example extra orphan classes for the process watch (copy to the engine state directory as procwatch-classes.toml:
+# ~/.anti-hall/ah-engine/procwatch-classes.toml). These are NOT shipped defaults: they are what one engine-development setup
+# needs. A class here is tried before the shipped ones. `mode` is written in the file itself (the file is your explicit choice):
+# off | report | kill. As for every class, a process is touched only when it carries the Claude marker, its owner session is gone,
+# nothing above it is a live session, it is older than min_age_s, and it is not under the plugin's own state or install paths.
+
+# Daemons built by tests from build directories (a test binary that serves and was never stopped).
+[[classes]]
+name = "test_daemon"
+mode = "report"
+cmd_re = '(?i)/target/(debug|release)/(deps/)?[^ /]+ +serve( |$)'
+min_age_s = 1800
+children = false
+
+# Long sleepers a test script started to prove a timeout, whose parent test run is gone.
+[[classes]]
+name = "test_sleeper"
+mode = "report"
+cmd_re = '(?i)(^|/)sleep +[0-9]{3,}( |$)'
+min_age_s = 600
+children = false
+
+# Cargo, nextest and the test binaries they run, orphaned when their queue wrapper died.
+[[classes]]
+name = "cargo_children"
+mode = "report"
+cmd_re = '(?i)(^|[ /])(cargo|cargo-nextest|rustc|rustdoc)( |$)|/target/(debug|release)/deps/'
+min_age_s = 1800
+children = true

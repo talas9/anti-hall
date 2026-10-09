@@ -38,10 +38,10 @@ function all() {
   return out;
 }
 
-test('37 skills found (17 Claude + 20 Codex)', () => {
+test('61 skills found (29 Claude + 32 Codex)', () => {
   const s = all();
-  assert.strictEqual(s.filter((x) => x.label === 'claude').length, 17);
-  assert.strictEqual(s.filter((x) => x.label === 'codex').length, 20);
+  assert.strictEqual(s.filter((x) => x.label === 'claude').length, 29);
+  assert.strictEqual(s.filter((x) => x.label === 'codex').length, 32);
 });
 
 test('every description (+ when_to_use) is <= 200 chars and every body has "## When to use"', () => {
@@ -49,7 +49,8 @@ test('every description (+ when_to_use) is <= 200 chars and every body has "## W
     const { fm, body } = parse(s.file);
     const len = unquote(fm.description || '').length + unquote(fm.when_to_use || '').length;
     assert.ok(len > 0 && len <= CAP, `${s.label}/${s.name}: description length ${len}`);
-    assert.match(body, /^## When to use$/m, `${s.label}/${s.name}: missing "## When to use"`);
+    // the engine skills are generated from the engine registry (small trigger-first main skill + one per area), no long body
+    if (!/^(anti-hall-)?engine(-|$)/.test(s.name)) assert.match(body, /^## When to use$/m, `${s.label}/${s.name}: missing "## When to use"`);
   }
 });
 

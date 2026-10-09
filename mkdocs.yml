@@ -22,24 +22,19 @@ theme:
     edit: material/pencil
   font: false
   palette:
-    - media: "(prefers-color-scheme)"
+    # Dark first; light is one click away. One accent (verified green-teal) in both.
+    - scheme: slate
+      primary: custom
+      accent: custom
       toggle:
-        icon: material/brightness-auto
+        icon: material/weather-sunny
         name: Switch to light mode
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
+    - scheme: default
       primary: custom
       accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/weather-sunny
-        name: Switch to system preference
   features:
     - navigation.instant
     - navigation.instant.progress
@@ -73,6 +68,8 @@ exclude_docs: |
 
 not_in_nav: |
   KB.md
+  AH-ENGINE.md
+  DEVELOPMENT.md
 
 validation:
   nav:
@@ -118,6 +115,7 @@ nav:
       - Update: start/update.md
       - Uninstall: start/uninstall.md
   - Features:
+      - features/index.md
       - Guards and checks: features/guards.md
       - Task tracking: features/tasks.md
       - Handovers and context: features/handovers.md

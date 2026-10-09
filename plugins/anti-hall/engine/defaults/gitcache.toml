@@ -1,0 +1,175 @@
+# ah-engine per-repo git cache defaults (X3, D61). Format: see the header of engine.toml.
+#
+# The cache memoizes what the guards would otherwise spawn `git` for. An entry is valid while the stat signature of
+# the repository's HEAD, index, config, packed-refs and current branch ref is unchanged and its TTL has not passed.
+
+[gitcache.git_binary]
+doc = "The git program the cache runs on a miss."
+value = "git"
+
+[gitcache.timeout_ms]
+doc = "Wall-clock limit of one git invocation; the child is killed as a process group when it passes."
+value = 3000
+min = 100
+unit = "ms"
+
+[gitcache.poll_ms]
+doc = "How often the cache checks whether a running git child has exited."
+value = 2
+min = 1
+unit = "ms"
+
+[gitcache.ttl_ms]
+doc = "Hard lifetime of a cached fact even when its signature has not changed (D61); the signature, not this, is what makes a fact fresh."
+value = 60000
+min = 1
+unit = "ms"
+
+[gitcache.dirty_ttl_ms]
+doc = "Lifetime of the cached dirty bit. A working-tree edit changes none of the signed files, so the dirty bit is bounded by time; a destructive decision must use the exact read instead."
+value = 1000
+unit = "ms"
+
+[gitcache.max_repos]
+doc = "Most repositories cached at once; the least recently used one is dropped beyond this."
+value = 64
+min = 1
+
+[gitcache.max_config_keys]
+doc = "Most distinct config keys memoized per repository; the memos of a repository are dropped when a further key would exceed this."
+value = 64
+min = 1
+
+[gitcache.idle_ttl_ms]
+doc = "How long the cache keeps a repository nobody asked about."
+value = 3600000
+unit = "ms"
+
+[gitcache.max_ref_dirs]
+doc = "Most remote-tracking directories whose mtime is signed for the upstream fact."
+value = 32
+min = 1
+
+[gitcache.file_head]
+doc = "Name of the HEAD file inside the git directory; its content is part of the signature."
+value = "HEAD"
+
+[gitcache.file_index]
+doc = "Name of the index file inside the git directory; its stat is part of the signature."
+value = "index"
+
+[gitcache.file_config]
+doc = "Name of the repository config file inside the common directory; its stat is part of the signature."
+value = "config"
+
+[gitcache.file_config_worktree]
+doc = "Name of the per-worktree config file inside the git directory; its stat is part of the signature."
+value = "config.worktree"
+
+[gitcache.file_packed_refs]
+doc = "Name of the packed refs file inside the common directory; its stat is part of the signature."
+value = "packed-refs"
+
+[gitcache.file_commondir]
+doc = "Name of the file inside a linked worktree's git directory that points to the common directory."
+value = "commondir"
+
+[gitcache.dir_remote_refs]
+doc = "Directory of remote-tracking refs, relative to the common directory."
+value = "refs/remotes"
+
+[gitcache.dot_git]
+doc = "Name of the entry that marks a work tree (a directory, or a file for a submodule or linked worktree)."
+value = ".git"
+
+[gitcache.gitdir_prefix]
+doc = "Start of the line in a `.git` file that names the git directory."
+value = "gitdir:"
+
+[gitcache.head_ref_prefix]
+doc = "Start of a HEAD file's content when HEAD names a branch ref."
+value = "ref:"
+
+[gitcache.global_configs]
+doc = "Global and system config files whose stat is part of every signature, relative to the home directory when not absolute (an alias or setting can live in any of them)."
+value = [".gitconfig", ".config/git/config", "/etc/gitconfig"]
+
+[gitcache.env_home]
+doc = "Environment variable that holds the home directory."
+value = "HOME"
+
+[gitcache.env_xdg_config]
+doc = "Environment variable that holds the XDG config directory."
+value = "XDG_CONFIG_HOME"
+
+[gitcache.xdg_git_config]
+doc = "Path of git's config below the XDG config directory."
+value = "git/config"
+
+[gitcache.bypass_env]
+doc = "Environment variables that change how git finds or reads a repository; with any of them set the cache refuses, and the caller runs git itself."
+value = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_INDEX_FILE", "GIT_NAMESPACE"]
+
+[gitcache.run_env]
+doc = "Environment assignments (NAME=value) added to every git invocation; GIT_OPTIONAL_LOCKS=0 keeps `status` from rewriting the index and so invalidating the cache."
+value = ["GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0"]
+
+[gitcache.argv_toplevel]
+doc = "git arguments that print the work tree root."
+value = "rev-parse --show-toplevel"
+
+[gitcache.argv_git_dir]
+doc = "git arguments that print the absolute git directory."
+value = "rev-parse --absolute-git-dir"
+
+[gitcache.argv_head]
+doc = "git arguments that print the commit HEAD points to."
+value = "rev-parse HEAD"
+
+[gitcache.argv_branch]
+doc = "git arguments that print the current branch name (fails on a detached HEAD)."
+value = "symbolic-ref --short HEAD"
+
+[gitcache.argv_upstream]
+doc = "git arguments that print the upstream of the current branch (fails when none is set)."
+value = "rev-parse --abbrev-ref --symbolic-full-name @{upstream}"
+
+[gitcache.argv_remotes]
+doc = "git arguments that list the configured remotes."
+value = "remote"
+
+[gitcache.argv_aliases]
+doc = "git arguments that list configured aliases, NUL separated."
+value = ["config", "-z", "--get-regexp", "^alias\\."]
+
+[gitcache.argv_config_get]
+doc = "git arguments that read one config value; the key is appended."
+value = "config --get"
+
+[gitcache.argv_config_path]
+doc = "git arguments that read one path-valued config value with `~` expanded; the key is appended."
+value = "config --path --get"
+
+[gitcache.argv_status]
+doc = "git arguments that print the working tree state in the stable porcelain format."
+value = "status --porcelain=v1"
+
+[gitcache.alias_prefix]
+doc = "Prefix of the config names that `argv_aliases` prints, removed from each alias name."
+value = "alias."
+
+[gitcache.msg_not_resolved]
+doc = "Printed when no repository can be found for a directory; {dir} is filled in."
+value = "No git work tree found at or above {dir}."
+
+[gitcache.msg_bypassed]
+doc = "Printed when the environment changes how git finds the repository, so the cache refuses; {name} is filled in."
+value = "The cache is bypassed because {name} is set."
+
+[gitcache.msg_run]
+doc = "Printed when git could not be run or timed out; {args} and {err} are filled in."
+value = "Could not run git {args}: {err}."
+
+[gitcache.msg_gitfile]
+doc = "Printed when a `.git` file does not name a git directory; {path} is filled in."
+value = "{path} is not a valid gitdir file."

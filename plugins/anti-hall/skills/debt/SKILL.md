@@ -55,9 +55,9 @@ It runs `plugins/anti-hall/scripts/harvest-debt.js` (pure Node, cross-platform, 
 Invoke:
 
 ```
-node plugins/anti-hall/scripts/harvest-debt.js              # human table
-node plugins/anti-hall/scripts/harvest-debt.js --json       # machine-readable
-node plugins/anti-hall/scripts/harvest-debt.js --dir src --stale-days 60
+sh plugins/anti-hall/scripts/ah-run.sh harvest              # human table
+sh plugins/anti-hall/scripts/ah-run.sh harvest --json       # machine-readable
+sh plugins/anti-hall/scripts/ah-run.sh harvest --dir src --stale-days 60
 ```
 
 ## Reading the report

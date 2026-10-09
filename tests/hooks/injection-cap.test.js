@@ -31,7 +31,7 @@ const { makeHome } = require('../helpers/fixtures.js');
 // the HARD regression line is the cap itself.
 const CAP = 10000;
 
-const HOOKS_JSON = path.join(HOOKS_DIR, 'hooks.json');
+const HOOKS_JSON = path.join(HOOKS_DIR, 'hooks.registry.json');
 
 // Representative payloads for each context-injecting event.
 function payloadFor(event) {

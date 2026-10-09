@@ -20,7 +20,7 @@
 - Blocks risky git actions outright: force-pushes, and AI credit lines in commit messages and GitHub PR/issue/release text.
 - Keeps the main conversation responsive by pushing heavy commands and file edits to helper agents, and caps runaway agent spawning.
 - Adds skills you can call by name for debugging to a proven root cause, reviewing risky changes, and writing a session handover.
-- Works with Claude Code (plugin) and Codex (separate port). Pure Node, nothing else to install.
+- Works with Claude Code (plugin) and Codex (separate port). Hooks are Node; an optional small Rust engine (`ah-engine`) is downloaded once, checked against a pinned sha256, and answers most hook calls without starting Node (Node stays the fallback and the final word).
 
 ## Install
 
@@ -60,7 +60,7 @@ Add `.anti-hall/` to your project's `.gitignore`: anti-hall keeps per-project se
 
 ## Network and data
 
-No telemetry or analytics. One request is on by default: an update check to GitHub (a tag-list request, no project data; turn it off with `versionAlerts.antiHall`). The optional classifier features (Jev, semantic judge, mesh triage) are off by default and send the text they judge only to the provider you configure. Everything else stays in `~/.anti-hall/` and `<repo>/.anti-hall/`. Full table: [PRIVACY.md](PRIVACY.md).
+No analytics and nothing is reported to anyone. Two requests are on by default: an update check to GitHub (a tag-list request, no project data; turn it off with `versionAlerts.antiHall`) and a one-time download of the `ah-engine` binary from the GitHub Release (sha256-pinned; skip it with the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0`). The engine keeps local-only usage counters (hook name, outcome, latency, never content; `telemetry.enabled`). The optional classifier features (Jev, semantic judge, mesh triage) are off by default and send the text they judge only to the provider you configure. Everything else stays in `~/.anti-hall/` and `<repo>/.anti-hall/`. Full table: [PRIVACY.md](PRIVACY.md).
 
 ### What it runs and writes
 
@@ -80,6 +80,8 @@ These are the notable things it runs and writes outside the project. Hook state 
 **[Documentation start page](docs/README.md)**: install and uninstall, what each guard blocks and how to turn it off, settings, Jev, DevSwarm, troubleshooting, contributing, security and the changelog.
 
 Escape hatches, remaining limits and hook latency: [Limits and escape hatches](docs/GUIDE.md#limits-and-escape-hatches).
+
+Building, testing and releasing the plugin and the Rust engine: [Development guide](docs/DEVELOPMENT.md).
 
 ## Links
 

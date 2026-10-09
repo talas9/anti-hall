@@ -1,0 +1,97 @@
+name: ah-engine-deps
+
+# Weekly dependency refresh for the Rust engine (D84): `cargo update`, the full gates, cargo audit and cargo deny, then
+# a pull request to dev when Cargo.lock changed. A red gate fails the run and opens nothing. Dependabot covers the
+# Cargo.toml requirement bumps (majors); this covers the lock.
+#
+# Note: the repository setting "Allow GitHub Actions to create and approve pull requests" must be on. A pull request
+# opened with GITHUB_TOKEN does not trigger other workflows, so this run is itself the gate.
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ah-engine-deps
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+    defaults:
+      run:
+        working-directory: ah-engine
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        with:
+          tool: cargo-audit,cargo-deny
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Update the lock
+        run: cargo update
+      - name: Audit and deny (always, so a new advisory fails the weekly run even when the lock is unchanged)
+        run: |
+          cargo audit
+          cargo deny check
+      - name: Did the lock change
+        id: lock
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Cargo.lock is already current."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Gates
+        if: steps.lock.outputs.changed == 'true'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          set -eu
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo doc --no-deps
+          ./test.sh
+      - name: Git parity (oneshot and daemon, must be 100%)
+        if: steps.lock.outputs.changed == 'true'
+        run: |
+          set -eu
+          cargo build --release
+          node parity/run-git.js --engine target/release/ah-engine --hooks ../plugins/anti-hall/hooks --corpus parity/corpus.jsonl --mode both --out "$RUNNER_TEMP/mismatches.json" | tee "$RUNNER_TEMP/parity.txt"
+          # run-git.js reports agreement but does not set an exit code, so check the numbers here.
+          [ "$(grep -c 'agreement: .* = 100.00%' "$RUNNER_TEMP/parity.txt")" = 2 ]
+      - name: Open the pull request
+        if: steps.lock.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: .
+        run: |
+          set -eu
+          if [ -n "$(gh pr list --base dev --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("deps/ah-engine-")) | .number')" ]; then
+            echo "A weekly dependency pull request is already open; not opening another."
+            exit 0
+          fi
+          branch="deps/ah-engine-$(date -u +%Y-%m-%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add ah-engine/Cargo.lock
+          git commit -m "ah-engine: weekly cargo update (D84)"
+          git push origin "$branch"
+          gh pr create --base dev --head "$branch" --title "ah-engine: weekly cargo update (D84)" \
+            --body "Automated \`cargo update\`. The full gates (fmt, clippy, doc, test.sh, git parity), cargo audit and cargo deny passed on this lock."

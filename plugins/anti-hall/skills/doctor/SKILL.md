@@ -160,7 +160,7 @@ Flags:
 
 | Invocation | Behavior |
 |---|---|
-| `node hooks/doctor.js` (no flags) | FULL detection, **read-only** — no repair pass. This is the default. |
+| `sh scripts/ah-run.sh doctor` (no flags) | FULL detection, **read-only** — no repair pass. This is the default. |
 | `--repair` / `--fix` | FULL detection + apply AUTO-SAFE fixes + GATED daemon fixes only when the DevSwarm gate is open. |
 | `--dry-run` | Detection + print exactly what WOULD be fixed. **Writes nothing** (threads each installer's own `--dry-run`, migrate-state `dryRun:true`). |
 | `--check` | **PURE read-only** — detects + reports everything, mutates NOTHING. The CI / scripting path. |
@@ -232,11 +232,16 @@ subagent** (`model:"haiku"` — an execution-shaped spawn with no explicit model
 model-routing-guard's strict-mode block) and relay the report:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js"           # diagnose only (default, read-only)
-node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --repair  # diagnose + apply the safe repairs
-node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --dry-run # show what --repair would fix
-node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --check   # read-only (CI)
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" doctor           # diagnose only (default, read-only)
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" doctor --repair  # diagnose + apply the safe repairs
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" doctor --dry-run # show what --repair would fix
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" doctor --check   # read-only (CI)
 ```
+
+The engine runs the doctor (`ah-engine doctor`); Node's `hooks/doctor.js` answers only when the engine is absent. The engine
+doctor names what it does not check yet (the DevSwarm runtime checks of an active session, `--prune-cache`,
+`--reclaim-ingest-lock`, `--logs`): run `node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js"` with that flag for those. The explicit
+`--repair-ingest-orphans`, `--repair-test-stores` and `--repair-resurrected` flags preview by default and act with `--apply`.
 
 Add `--quiet` for just the one-line verdict. Exit code is non-zero if any critical check
 (or repair) fails, so it is scriptable in CI too — use `--check` there to keep it read-only.

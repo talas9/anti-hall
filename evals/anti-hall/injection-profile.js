@@ -94,7 +94,7 @@ function findCommand(hooksJson, event, script) {
 }
 
 function loadHooks(dir, flavour) {
-  const p = flavour === 'codex' ? path.join(dir, 'codex', 'hooks', 'hooks.json') : path.join(dir, 'hooks', 'hooks.json');
+  const p = flavour === 'codex' ? path.join(dir, 'codex', 'hooks', 'hooks.registry.json') : path.join(dir, 'hooks', 'hooks.registry.json');
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; }
 }
 

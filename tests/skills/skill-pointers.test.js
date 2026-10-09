@@ -97,7 +97,7 @@ test('every /anti-hall:<name> pointer resolves to skills/<name>/SKILL.md with ma
 });
 
 test('every /anti-hall:<name> pointer referenced from a codex-invoked file also has codex/skills/anti-hall-<name>/SKILL.md', () => {
-  const codexHooksPath = path.join(ROOT, 'codex', 'hooks', 'hooks.json');
+  const codexHooksPath = path.join(ROOT, 'codex', 'hooks', 'hooks.registry.json');
   const codexHooks = JSON.parse(fs.readFileSync(codexHooksPath, 'utf8'));
 
   // Collect every hook script basename Codex's hooks.json actually invokes.

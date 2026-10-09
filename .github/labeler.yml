@@ -1,4 +1,4 @@
-# Path-based area labels for pull requests (actions/labeler, run by workflows/triage.yml).
+# Path-based area labels for pull requests (actions/labeler, run by workflows/pr-check.yml).
 # Labels are only added, never removed (sync-labels: false).
 area:engine:
   - changed-files:

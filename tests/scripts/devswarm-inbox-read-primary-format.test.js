@@ -1,5 +1,5 @@
 'use strict';
-// peer request C (SkyCrew + tf3 Primaries, 2026-09-26):
+// peer request C (DemoApp + tf3 Primaries, 2026-09-26):
 //   - `inbox read-primary <id> --format text` -> one from/seq/body block per
 //     message, plain text, instead of the raw JSON.
 //   - `inbox read-primary <id> --ack-after-print` -> opt-in immediate ack

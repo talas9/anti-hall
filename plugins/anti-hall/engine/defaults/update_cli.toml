@@ -1,0 +1,628 @@
+# ah-engine shipped defaults for the operator commands `update` and `install-codex` (D81, lane L9b): the ports of
+# skills/update/scripts/update.js and codex/install-codex.js. Format: see the header of engine.toml.
+#
+# The texts are the Node scripts' own, word for word: tests/operator_parity.rs runs the script and the command on the same seeded
+# scratch home and compares their output and the files they leave behind.
+
+# ---- environment variable names -----------------------------------------------------------------------------------------
+
+[env.update_marketplace_dir]
+doc = "Overrides the marketplace clone `update` works on (an absolute path to an existing directory, else ignored with a warning). Test-only escape hatch."
+value = "ANTIHALL_MARKETPLACE_DIR"
+
+[env.update_postpull_budget]
+doc = "Time budget in ms for the post-pull stages of `update` (0 = unlimited); also sizes the wait for the Node stage run."
+value = "ANTIHALL_UPDATE_POSTPULL_BUDGET_MS"
+
+[env.update_quiet]
+doc = "When 1 (or true), `update` prints no `[update] <stage> start/done` progress lines on stderr. Settings key updates.quiet is the other source."
+value = "ANTIHALL_UPDATE_QUIET"
+
+[env.claude_execpath]
+doc = "The running Claude Code binary; the fallback `update` runs `plugin update` with when `claude` is not on the PATH."
+value = "CLAUDE_CODE_EXECPATH"
+
+# ---- shadow comparison --------------------------------------------------------------------------------------------------
+
+[operator.shadow]
+doc = "1 = the Node version of an operator command runs read-only beside the engine's (update: `--check` after the update; install-codex: `--dry-run` before the write) and a difference in the reported result is logged. The engine's result is always the real one; the Node script is never run in a way that repeats a side effect. 0 = off."
+value = 1
+min = 0
+max = 1
+
+[operator.shadow_timeout_ms]
+doc = "How long the Node shadow run may take before it is abandoned (nothing is logged for an abandoned run)."
+value = 30000
+unit = "ms"
+min = 1000
+
+[operator.shadow_update_log]
+doc = "Event-log text when the Node `update.js --check` disagrees with the engine's update about the latest version."
+value = "update shadow mismatch: node --check reports latest {nl}, the engine updated to {el}"
+
+[operator.shadow_check_log]
+doc = "Event-log text when the Node `update.js --check` prints a different status line than `update --check`."
+value = "update --check shadow mismatch: node={node} engine={engine}"
+
+[operator.shadow_codex_log]
+doc = "Event-log text when the Node `install-codex.js --dry-run` reports something other than what the engine then wrote."
+value = "install-codex shadow mismatch: node={node} engine={engine}"
+
+[operator.dry_run_flag]
+doc = "The flag that makes install-codex write nothing (given to the Node shadow run)."
+value = "--dry-run"
+
+[operator.codex_script_rel]
+doc = "The Node installer inside the plugin directory."
+value = "codex/install-codex.js"
+
+# ---- update: paths and limits ---------------------------------------------------------------------------------------------
+
+[update.marketplace_rel]
+doc = "The marketplace clone of the plugin, relative to the home directory."
+value = ".claude/plugins/marketplaces/anti-hall"
+
+[update.cache_rel]
+doc = "The version-pinned cache root, relative to the plugins root (two levels above the marketplace clone)."
+value = "cache/anti-hall/anti-hall"
+
+[update.installed_json]
+doc = "The harness-owned registry of installed plugins under the plugins root. `update` reads it and never writes it."
+value = "installed_plugins.json"
+
+[update.plugin_src_rel]
+doc = "The plugin directory inside the marketplace clone."
+value = "plugins/anti-hall"
+
+[update.plugin_json_rel]
+doc = "The plugin manifest inside the plugin directory (its version is the version authority)."
+value = ".claude-plugin/plugin.json"
+
+[update.changelog_file]
+doc = "The changelog at the top of the marketplace clone."
+value = "CHANGELOG.md"
+
+[update.remote_manifest]
+doc = "The manifest as git names it on a remote ref (`--check` reads the remote version from it)."
+value = "plugins/anti-hall/.claude-plugin/plugin.json"
+
+[update.node_script_rel]
+doc = "The Node update script inside the plugin directory, run with --post-pull-only for the stages the engine does not port (the DevSwarm store sweeps and the settings migration)."
+value = "skills/update/scripts/update.js"
+
+[update.max_bytes]
+doc = "Largest manifest, registry or changelog `update` reads; a larger file counts as unread."
+value = 4194304
+unit = "bytes"
+min = 1024
+
+[update.json_max_depth]
+doc = "Nesting past which a JSON file `update` reads counts as unreadable."
+value = 512
+min = 8
+
+[update.git_timeout_ms]
+doc = "How long one git call of `update` may take before it fails into the offline path."
+value = 20000
+unit = "ms"
+min = 1000
+
+[update.harness_timeout_ms]
+doc = "How long `claude plugin update` may take before the registration is reported as failed."
+value = 20000
+unit = "ms"
+min = 1000
+
+[update.default_postpull_budget_ms]
+doc = "The post-pull stages' overall budget when the environment does not set one."
+value = 90000
+unit = "ms"
+
+[update.reexec_margin_ms]
+doc = "Extra wait for the Node stage run beyond its budget and the harness registration (one overrunning stage plus process start)."
+value = 60000
+unit = "ms"
+
+[update.poll_ms]
+doc = "How often `update` checks a child process it waits for."
+value = 25
+unit = "ms"
+min = 1
+
+[update.git_bin]
+doc = "The git binary."
+value = "git"
+
+[update.claude_bin]
+doc = "The Claude Code binary the harness registration runs."
+value = "claude"
+
+[update.settings_file]
+doc = "The settings file, relative to the home directory (updates.quiet is read from it)."
+value = ".anti-hall/settings.json"
+
+# ---- update: commands -----------------------------------------------------------------------------------------------------
+
+[update.git_status]
+doc = "git arguments: is the clone clean."
+value = ["status", "--porcelain"]
+
+[update.git_pull]
+doc = "git arguments: fast-forward only. Never a merge, a rebase or a force."
+value = ["pull", "--ff-only"]
+
+[update.git_fetch]
+doc = "git arguments: fetch without merging (`--check`)."
+value = ["fetch", "--quiet"]
+
+[update.git_upstream]
+doc = "git arguments: the upstream ref of the current branch."
+value = ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+
+[update.git_default_ref]
+doc = "The remote ref used when the branch has no upstream."
+value = "origin/HEAD"
+
+[update.git_show]
+doc = "git arguments to read a file from a ref: the word, then `<ref>:<path>` is appended."
+value = ["show"]
+
+[update.harness_args]
+doc = "The arguments the harness registration runs the Claude binary with."
+value = ["plugin", "update", "anti-hall@anti-hall"]
+
+[update.git_spawn_error]
+doc = "What a git call that could not start reads as ({code} is ENOENT for a missing binary)."
+value = "spawnSync {prog} {code}"
+
+[update.git_timeout_error]
+doc = "What a call that ran past its timeout reads as."
+value = "spawnSync {prog} ETIMEDOUT"
+
+[update.git_failed_error]
+doc = "What a call that exited non-zero with nothing on stderr reads as."
+value = "Command failed: {cmd}"
+
+[update.git_error_fallback]
+doc = "The reason when a git error has no text at all."
+value = "git error"
+
+[update.offline_patterns]
+doc = "The ONLY pull-failure shapes that fail open (case-insensitive): network, resolver and no-git errors. Any other pull failure is a hard STOP."
+value = [
+  "could not resolve host", "unable to access", "could not read from remote", "failed to connect",
+  "connection (?:refused|reset|timed? ?out)", "network is unreachable", "temporary failure in name resolution",
+  "no route to host", "operation timed out", "timed out", "command not found",
+  "not recognized as an internal or external command",
+  "ENOENT", "EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH",
+]
+
+[update.semver_re]
+doc = "A version string: X.Y.Z with an optional pre-release or build suffix; no path separators. Fully anchored."
+value = "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
+
+[update.heading_re]
+doc = "A changelog section heading; the first group is the version."
+value = "^##\\s+v?([0-9]+(?:\\.[0-9]+)*)(?-u:\\b)"
+
+[update.version_prefix_re]
+doc = "The leading numeric part of a version string."
+value = "^([0-9]+(?:\\.[0-9]+)*)"
+
+[update.confirm_re]
+doc = "A harness reply that asks for a confirmation (command-source installs); the engine never supplies it."
+value = "(?i)accept-command|sha256"
+
+[update.confirm_shown]
+doc = "How many UTF-16 units of that reply are shown."
+value = 300
+
+[update.failed_re]
+doc = "The words in a status action that make the human summary read as a failure."
+value = "(?i-u)\\bSTOP\\b|dirty|diverged|failed|error"
+
+# ---- update: status texts -------------------------------------------------------------------------------------------------
+
+[update_msg.override_ignored]
+doc = "Printed first when the marketplace override is not an absolute path to an existing directory."
+value = "warning: ANTIHALL_MARKETPLACE_DIR ignored (not an absolute path to an existing directory): {path}"
+
+[update_msg.check_failed]
+doc = "`--check` action when the remote could not be read."
+value = "check failed (offline / no git): {reason}"
+
+[update_msg.unknown_installed]
+doc = "Action when no source yields an installed version: never reported as up to date."
+value = "unknown-installed-version — could not determine the installed anti-hall version (installed_plugins.json, cache dirs, and plugin.json all yielded no valid X.Y.Z); reinstall the plugin or inspect ~/.claude/plugins/installed_plugins.json"
+
+[update_msg.available]
+doc = "`--check` action when a newer version exists."
+value = "update available ({installed} → {latest}) — run without --check to apply"
+
+[update_msg.up_to_date]
+doc = "Action when nothing is newer."
+value = "already up to date"
+
+[update_msg.lag_behind]
+doc = "Appended when the harness registry is BEHIND the cache."
+value = " [installed_plugins.json reports {json}, cache shows {cache} — run {cmd}, then /reload-plugins]"
+
+[update_msg.lag_ahead]
+doc = "Appended when the registry is AHEAD of the cache."
+value = " [installed_plugins.json reports {json}, cache shows {cache} — run /reload-plugins to load the registered build (restart only if a hook or skill path still shows the old version)]"
+
+[update_msg.no_git]
+doc = "Action when git cannot read the clone."
+value = "offline / no git — cannot update: {reason}"
+
+[update_msg.stop_dirty]
+doc = "Action when the clone has local changes: a hard STOP."
+value = "STOP: marketplace clone has local changes — refusing to pull. Resolve them in {dir}"
+
+[update_msg.pull_offline]
+doc = "Action when the pull failed with an offline shape."
+value = "update failed (offline / network): {reason}"
+
+[update_msg.pull_stop]
+doc = "Action when the pull failed any other way: a hard STOP."
+value = "STOP: git pull --ff-only failed (likely divergence) — resolve manually in {dir} ({reason})"
+
+[update_msg.reload]
+doc = "Action when the cache was synced and nothing else is needed."
+value = "run /reload-plugins"
+
+[update_msg.harness_ok]
+doc = "Action after a successful harness registration."
+value = "run /reload-plugins — the harness now registers {latest} (restart Claude Code only if a hook or skill path still shows the old version afterwards)"
+
+[update_msg.harness_manual]
+doc = "Action after a failed harness registration."
+value = "run manually: {cmd} — then run /reload-plugins (restart Claude Code only if a hook or skill path still shows the old version afterwards)"
+
+[update_msg.harness_noop]
+doc = "Detail when the harness already registers the latest version."
+value = "harness already registered at latest (or version unknown) — nothing to do"
+
+[update_msg.harness_confirm]
+doc = "Detail when the harness asks for a confirmation."
+value = "harness update requires confirmation — run manually: {cmd} (see: {text})"
+
+[update_msg.harness_done]
+doc = "Detail after a successful registration."
+value = "harness re-registered to {latest} — run /reload-plugins to load it (restart Claude Code only if a hook or skill path still shows the old version afterwards)"
+
+[update_msg.harness_failed]
+doc = "Detail after a failed registration."
+value = "harness update failed — run manually: {cmd}, then run /reload-plugins ({reason})"
+
+[update_msg.unknown_error]
+doc = "The reason when a failed registration has no text."
+value = "unknown error"
+
+[update_msg.cache_no_target]
+doc = "Cache sync reason."
+value = "no target version"
+
+[update_msg.cache_unsafe]
+doc = "Cache sync reason."
+value = "unsafe version string"
+
+[update_msg.cache_no_root]
+doc = "Cache sync reason."
+value = "cache root absent (nothing to mirror)"
+
+[update_msg.cache_has]
+doc = "Cache sync reason."
+value = "cache already has {version}"
+
+[update_msg.cache_no_src]
+doc = "Cache sync reason."
+value = "plugin source dir missing"
+
+[update_msg.cache_copied]
+doc = "Cache sync reason."
+value = "copied {version}"
+
+[update_msg.cache_failed]
+doc = "Cache sync reason."
+value = "copy failed: {error}"
+
+[update_msg.stage_script_missing]
+doc = "Why a post-pull stage could not run in Node. Placeholder: script."
+value = "{script} is not there"
+
+[update_msg.stage_start]
+doc = "Progress line on stderr before a stage."
+value = "[update] {name} start\n"
+
+[update_msg.stage_done]
+doc = "Progress line on stderr after a stage."
+value = "[update] {name} done {ms}ms\n"
+
+[update_msg.stage_harness]
+doc = "The name of the harness-registration stage in the progress lines."
+value = "harness-register"
+
+[update_msg.no_home]
+doc = "Printed when no home directory can be found."
+value = "update: cannot find the home directory"
+
+# ---- update: the human summary --------------------------------------------------------------------------------------------
+
+[update_human.icon_failed]
+doc = "Summary icon: not updated."
+value = "❌"
+
+[update_human.icon_updated]
+doc = "Summary icon: updated."
+value = "⬆️"
+
+[update_human.icon_ok]
+doc = "Summary icon: already up to date."
+value = "✅"
+
+[update_human.head]
+doc = "First summary line."
+value = "{icon} anti-hall · update: {state}"
+
+[update_human.state_failed]
+doc = "Head state."
+value = "not updated"
+
+[update_human.state_updated]
+doc = "Head state."
+value = "updated to v{latest}"
+
+[update_human.state_ok]
+doc = "Head state."
+value = "already up to date"
+
+[update_human.unknown]
+doc = "Shown for a missing installed version."
+value = "(unknown)"
+
+[update_human.installed]
+doc = "Summary line."
+value = "  installed: {value}"
+
+[update_human.latest]
+doc = "Summary line."
+value = "  latest:    {value}"
+
+[update_human.updated]
+doc = "Summary line."
+value = "  updated:   {value}{synced}"
+
+[update_human.cache_synced]
+doc = "Appended to the updated line when the cache was synced."
+value = " (cache synced)"
+
+[update_human.action]
+doc = "Summary line."
+value = "  action:    {value}"
+
+[update_human.reconcile_item]
+doc = "One reconcile result."
+value = "    - {id}: {bits}"
+
+[update_human.bit_imported]
+doc = "Reconcile result part."
+value = "imported {n}"
+
+[update_human.bit_duplicate]
+doc = "Reconcile result part."
+value = "duplicate {n}"
+
+[update_human.bit_locked]
+doc = "Reconcile result part."
+value = "locked — another pull in progress, skipped"
+
+[update_human.bit_lost]
+doc = "Reconcile result part."
+value = "LOST {n}"
+
+[update_human.bit_skipped]
+doc = "Reconcile result part."
+value = "skipped: {reason}"
+
+[update_human.bit_archived]
+doc = "The skip reason when a result names none."
+value = "archived"
+
+[update_human.bit_error]
+doc = "Reconcile result part."
+value = "ERROR: {error}"
+
+[update_human.store_item]
+doc = "One healed store."
+value = "    - {repoKey}: {rows}"
+
+[update_human.changelog_head]
+doc = "Heading above the changelog delta."
+value = "Changelog delta:"
+
+[update_human.stage_lines]
+doc = "The stage lines of the summary, in order: the status key, the line prefix (with its padding), and which detail follows (`reconcile` and `heal` list more)."
+value = [
+  { key = "reconcile", prefix = "  reconcile: ", more = "reconcile" },
+  { key = "fold", prefix = "  fold:      ", more = "" },
+  { key = "foldAllStores", prefix = "  fold-all-stores: ", more = "" },
+  { key = "healOrphanPartitions", prefix = "  heal-orphan-partitions: ", more = "" },
+  { key = "foldArchivedRows", prefix = "  fold-archived-rows: ", more = "" },
+  { key = "readerCursorsImport", prefix = "  reader-cursors-import: ", more = "" },
+  { key = "mergeSplitBackendStores", prefix = "  merge-split-backend-stores: ", more = "" },
+  { key = "readerFloorRepair", prefix = "  reader-floor-repair: ", more = "" },
+  { key = "appArchivedMarkers", prefix = "  app-archived-markers: ", more = "" },
+  { key = "childSenderLabels", prefix = "  child-sender-labels: ", more = "" },
+  { key = "dualPartitionAcks", prefix = "  dual-partition-acks: ", more = "" },
+  { key = "cursorHygiene", prefix = "  cursor-hygiene: ", more = "" },
+  { key = "replyStateMigrate", prefix = "  reply-state-migrate: ", more = "" },
+  { key = "gateIntentsMigrate", prefix = "  gate-intents-migrate: ", more = "" },
+  { key = "autoArchivedStateMigrate", prefix = "  auto-archived-state-migrate: ", more = "" },
+  { key = "settingsMigrate", prefix = "  settings-migrate: ", more = "" },
+  { key = "healRegistryRows", prefix = "  heal-registry-rows: ", more = "heal" },
+  { key = "codexGraphifyHooksMigrate", prefix = "  codex-graphify-hooks-migrate: ", more = "" },
+  { key = "wakeMonitor", prefix = "  wake-monitor: ", more = "" },
+  { key = "harnessRegistered", prefix = "  harness-register: ", more = "" },
+]
+
+[update.v_strip_re]
+doc = "A leading v on a version."
+value = "^[vV]"
+
+[update.enoent]
+doc = "The error word for a binary that is not there."
+value = "ENOENT"
+
+[update.zero_version]
+doc = "The version a missing remote version is compared as."
+value = "0"
+
+[update.null_word]
+doc = "How a missing version reads inside a text."
+value = "null"
+
+[update.undefined_word]
+doc = "How a missing stage field reads inside a text."
+value = "undefined"
+
+[update.zero_word]
+doc = "How a missing count reads."
+value = "0"
+
+[update.post_pull_flag]
+doc = "The flag that runs only the post-pull part (also the flag passed to the Node stage script)."
+value = "--post-pull-only"
+
+[update.check_flag]
+doc = "The flag that only compares versions."
+value = "--check"
+
+[update_msg.remote_json_bad]
+doc = "The reason when the remote manifest is not JSON."
+value = "invalid JSON in the remote manifest"
+
+[update_human.bit_sep]
+doc = "Separator of the parts of one reconcile result."
+value = ", "
+
+[update_human.latest_none]
+doc = "The version in the head line when none is known."
+value = "?"
+
+# ---- install-codex ------------------------------------------------------------------------------------------------------
+
+[codex_install.dir]
+doc = "The Codex configuration directory name (under the home directory for --global, else under the working directory)."
+value = ".codex"
+
+[codex_install.hooks_file]
+doc = "The Codex hooks file inside it."
+value = "hooks.json"
+
+[codex_install.config_file]
+doc = "The Codex configuration file inside it."
+value = "config.toml"
+
+[codex_install.thin_hooks_rel]
+doc = "The generated one-wrapper-call-per-event registration, relative to the plugin directory."
+value = "codex/hooks/hooks.json"
+
+[codex_install.root_token]
+doc = "The placeholder in that file the installer replaces with the plugin directory."
+value = "${PLUGIN_ROOT}"
+
+[codex_install.hook_group_re]
+doc = "A hook command that belongs to anti-hall (after backslashes become slashes): a path under its hooks directory, or its thin trigger."
+value = "/plugins/anti-hall/hooks/|/hooks/ah-hook\\.sh\""
+
+[codex_install.features_with_hooks_re]
+doc = "A [features] table that already sets `hooks`."
+value = "(?m)\\[features\\][\\s\\S]*?^\\s*hooks\\s*="
+
+[codex_install.features_heading]
+doc = "The [features] table heading."
+value = "[features]"
+
+[codex_install.features_nl]
+doc = "The heading with its line break, replaced by itself plus the hooks setting."
+value = "[features]\n"
+
+[codex_install.features_nl_hooks]
+doc = "The replacement."
+value = "[features]\nhooks = true\n"
+
+[codex_install.features_new]
+doc = "The table appended to a file with none."
+value = "[features]\nhooks = true\n"
+
+[codex_install.trailing_ws_re]
+doc = "Trailing whitespace of a file."
+value = "\\s*$"
+
+[codex_install.separator]
+doc = "What replaces that trailing whitespace before an appended table."
+value = "\n\n"
+
+[codex_install.backup_fmt]
+doc = "The name of the copy kept of a file before it changes: the file name, then this with the time."
+value = "{file}.bak-{stamp}"
+
+[codex_install.heading]
+doc = "First output line."
+value = "anti-hall Codex install ({scope}): {status}\n"
+
+[codex_install.scope_global]
+doc = "Scope word."
+value = "global"
+
+[codex_install.scope_project]
+doc = "Scope word."
+value = "project"
+
+[codex_install.status_dry]
+doc = "Status word for --dry-run."
+value = "would update"
+
+[codex_install.status_done]
+doc = "Status word."
+value = "updated"
+
+[codex_install.line_hooks]
+doc = "Output line."
+value = "- hooks: {path} {state}\n"
+
+[codex_install.line_config]
+doc = "Output line."
+value = "- config: {path} {state}\n"
+
+[codex_install.changed]
+doc = "State word."
+value = "changed"
+
+[codex_install.unchanged]
+doc = "State word."
+value = "unchanged"
+
+[codex_install.notes]
+doc = "The closing notes, each one output line."
+value = [
+  "- note: edit guards run on apply_patch only (Codex >= 0.134); shell writes bypass them, and subagent lifecycle hooks are Codex skill/workflow protocols, not hard hooks.\n",
+  "- note: Codex/OMX status_line uses built-in IDs only; anti-hall does not inject an unsupported AH version footer item.\n",
+]
+
+[codex_install.err_no_root]
+doc = "Printed when the plugin directory cannot be found."
+value = "install-codex: cannot find the plugin directory (pass --root <dir> or set the plugin-root variable)"
+
+[codex_install.err_hooks]
+doc = "Printed when the generated registration cannot be read or has no `hooks`."
+value = "install-codex: cannot read the hook registration {path}: {error}"
+
+[codex_install.err_write]
+doc = "Printed when a file cannot be written."
+value = "install-codex: cannot write {path}: {error}"
+
+[codex_install.err_home]
+doc = "Printed when --global is asked for and no home directory can be found."
+value = "install-codex: cannot find the home directory"

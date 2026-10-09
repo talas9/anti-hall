@@ -25,11 +25,24 @@ Every behavioral or shipped-content change bumps the version and follows this ch
    - `gh run list --commit <sha>` → wait for the run at that sha to finish; `gh run view <id> --json jobs` → every job of the run (the `plan matrix` job plus all 10 `node:test` shard jobs) `success`.
    - Red → fix on `dev`, push, tag the new commit `rc-v<version>.2`, and repeat.
    - Tag retention: `rc-v*` tags are left in place after the release; the owner prunes old ones. Do not delete them as part of a release. The update check needs at least one `vX.Y.Z` tag, and release notes live in `CHANGELOG.md`, not in old tags.
-7. - [ ] **Pull request `dev` → `main`.** Open it with `gh pr create --base main --head dev`. The required `tests-passed` and `dev-only` checks must be green. Merging IS the release: the marketplace clone fetches only `refs/heads/main` and fast-forwards it, and the updater copies a version into the plugin cache only when that version's directory is absent — so a red commit on `main` gets installed and cannot be replaced under the same version number (0.102.2 shipped red this way). Never merge on a red run. Merge with a merge commit or fast-forward, never squash: `dev` and `main` must stay in step.
+7. - [ ] **Pull request `dev` → `main`.** If this release ships a new or changed `ah-engine.lock`, the lock PR must already be merged into `dev` (see "Engine release" below). Open it with `gh pr create --base main --head dev`. The required `tests-passed` and `dev-only` checks must be green. Merging IS the release: the marketplace clone fetches only `refs/heads/main` and fast-forwards it, and the updater copies a version into the plugin cache only when that version's directory is absent — so a red commit on `main` gets installed and cannot be replaced under the same version number (0.102.2 shipped red this way). Never merge on a red run. Merge with a merge commit or fast-forward, never squash: `dev` and `main` must stay in step.
    - The docs site (`tools/build-site.js`, `.github/workflows/pages.yml`) deploys automatically when a release merges to `main`. One-time repo setting: Settings → Pages → Source: GitHub Actions (or `gh api -X POST repos/{owner}/{repo}/pages -f build_type=workflow`).
-8. - [ ] After the merge: pull `main`, then TAG (manual, by agent): `git tag v<version>` then `git push origin v<version>`. Create a GitHub Release from the tag with that version's CHANGELOG section.
+8. - [ ] After the merge: pull `main`, then (if the release ships an engine lock) FIRST push the engine tag `ah-engine-v<engine version>` on the merge commit (see "Engine release"), then TAG (manual, by agent): `git tag v<version>` then `git push origin v<version>`. Create a GitHub Release from the tag with that version's CHANGELOG section.
 9. - [ ] Propagate to the live marketplace dir only (`~/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/`); do NOT overwrite version-pinned `cache/.../<ver>/` snapshots.
 10. - [ ] Consider publish venues (see below) for notable releases.
+
+## Engine release
+
+The plugin pins one exact engine build in `ah-engine.lock` (root) and its byte-identical copy `plugins/anti-hall/ah-engine.lock`; users download the binary from the `ah-engine-v<engine version>` GitHub Release on SessionStart and install it only if its sha256 equals the lock. Details and the workflow are in `ah-engine/RELEASING.md`. Order:
+
+1. **Dispatch `ah-engine-release`** (Actions, `workflow_dispatch`) from a branch that will be merged into `dev` (the base defaults to `dev`; `main` is rejected). It builds and tests all six targets plus the source tarball, then opens a PR that adds the two lock files.
+2. **Merge the lock PR into `dev`** (re-run checks by closing and reopening it: PRs opened with the default token start no workflows). `node --test` then also runs `tests/hooks/ah-engine-fallback.test.js`, which requires the two locks to be byte-equal and to list the six targets.
+3. Continue the normal checklist through the `dev` → `main` pull request and its merge.
+4. **Tag `ah-engine-v<engine version>` on the merge commit right after the merge and push it.** The publish job checks the tagged commit is on `main`, so it cannot run earlier; until the Release exists, users who updated get a 404, the bootstrap logs a failure, retries after 6 hours and the Node hooks stay in use (harmless, so keep the window short).
+5. Wait for the publish run to go green and the GitHub Release to list the archives, `SHA256SUMS` and the attestation. Only then push `v<version>` and create the plugin's GitHub Release.
+6. Smoke test on a clean HOME: SessionStart installs `~/.anti-hall/ah-engine/bin/ah-engine` and `bootstrap.log` shows `ok:`; with the network off the Node hooks still answer.
+
+The engine's `Cargo.toml` version changes only when engine source changes (the lock's fingerprint must match the source at the tag); a plugin-only release does not touch it.
 
 ## Doc-currency rule
 

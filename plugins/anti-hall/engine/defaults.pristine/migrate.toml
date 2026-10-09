@@ -1,0 +1,513 @@
+# ah-engine shipped defaults for `ah-engine migrate` and the repair pass of `ah-engine doctor --repair` (D81): the persisted-state
+# migrations and sweeps the Node doctor ran, as the engine runs them. Names and numbers here are the Node plugin's own (the
+# on-disk layout under ~/.anti-hall, the retention windows, the marker file); the row texts the engine prints are Node's too, so
+# the two reports compare byte for byte (tests/migrate_parity.rs). Format: see the header of engine.toml.
+
+# ---- where the state lives (all relative to the home directory unless noted) ----------------------------------------------
+
+[migrate.base_dir]
+doc = "The per-user anti-hall directory under the home directory."
+value = ".anti-hall"
+
+[migrate.devswarm_dir]
+doc = "The DevSwarm state directory under the anti-hall directory."
+value = "devswarm"
+
+[migrate.logs_dir]
+doc = "The log directory under the anti-hall directory."
+value = "logs"
+
+[migrate.markers_file]
+doc = "The per-version completion markers of the migrations, shared with the Node update and supervisor (a JSON object under the anti-hall directory)."
+value = "update-sweep-state.json"
+
+[migrate.settings_file]
+doc = "The unified settings file under the anti-hall directory."
+value = "settings.json"
+
+[migrate.settings_lock_suffix]
+doc = "Appended to the settings file path to name the lock the Node settings writer takes."
+value = ".lock"
+
+[migrate.host_settings_file]
+doc = "The host's settings file under the home directory, read for the plugin options it stores (never written)."
+value = ".claude/settings.json"
+
+[migrate.plugin_config_keys]
+doc = "The keys the host may store this plugin's answers under in its settings file, lowest priority first."
+value = ["anti-hall", "anti-hall@anti-hall"]
+
+[migrate.plugin_option_env_prefix]
+doc = "The prefix of the environment variable the host exports for each plugin option (followed by the upper-cased option name)."
+value = "CLAUDE_PLUGIN_OPTION_"
+
+[migrate.plugin_manifest]
+doc = "The plugin manifest under the plugin root, whose version stamps a migration as done."
+value = ".claude-plugin/plugin.json"
+
+[migrate.parent_gate_dir]
+doc = "The directory of the parent-gate state files under the DevSwarm directory."
+value = "parent-gate"
+
+[migrate.replies_re]
+doc = "The name pattern of a reply-state file."
+value = "-replies\\.json$"
+
+[migrate.auto_archive_log]
+doc = "The log of automatic archives under the logs directory, one JSON record per line."
+value = "devswarm-auto-archive.ndjson"
+
+[migrate.auto_archived_file]
+doc = "The durable record of automatic archives under the DevSwarm directory."
+value = "auto-archived.json"
+
+[migrate.auto_archive_action]
+doc = "The action word of a successful automatic archive in the log."
+value = "auto-archive"
+
+[migrate.legacy_files]
+doc = "The legacy root-level state files copied into the dated history structure."
+value = [".anti-hall-progress.md", ".anti-hall-history.md"]
+
+[migrate.legacy_dest]
+doc = "Where the legacy state files are copied to, relative to the project root."
+value = ".anti-hall/history/legacy"
+
+[migrate.jev_triage_cache]
+doc = "The Jev triage cache under the anti-hall directory."
+value = "cache/jev-triage.json"
+
+[migrate.jev_integration_ids]
+doc = "The Jev integration ids whose per-integration value moved from the jev section to the jevIntegrations section of settings.json."
+value = ["speculation", "triage", "newRequest", "claimLedger", "outputVerifyGuard", "gitGuardSelfCredit", "modelRouting", "tasklistTrivial", "codexNudgeSubstantial", "mergeGateHedge", "parentGateQuestion", "supervisorBlockerLabel", "findingDedup"]
+
+[migrate.settings_section_jev]
+doc = "The settings section the per-integration values used to live in."
+value = "jev"
+
+[migrate.settings_section_integrations]
+doc = "The settings section the per-integration values live in now."
+value = "jevIntegrations"
+
+[migrate.integrations_key_prefix]
+doc = "The prefix of the old dotted key of a per-integration value inside the jev section."
+value = "integrations."
+
+[migrate.settings_marker_key]
+doc = "The marker key of the settings forward-migration."
+value = "migrateSettingsFromLegacy"
+
+[migrate.settings_lock_stale_ms]
+doc = "A settings lock older than this is taken over by the next writer."
+value = 30000
+unit = "ms"
+
+[migrate.settings_lock_wait_ms]
+doc = "How long a settings write waits for the lock before it gives up."
+value = 2000
+unit = "ms"
+
+[migrate.settings_lock_step_ms]
+doc = "The pause between attempts to take the settings lock."
+value = 20
+unit = "ms"
+
+# ---- the lock scratch sweep -------------------------------------------------------------------------------------------------
+
+[migrate.lock_scratch_re]
+doc = "The name pattern of the scratch files a lock leaves behind when a process dies mid-acquire, mid-refresh or mid-reclaim."
+value = "\\.lock\\.(?:reclaim\\.)?(?:tmp|reap|hb)[-.]|\\.lock\\.reclaim$"
+
+[migrate.lock_scratch_stale_ms]
+doc = "A lock scratch file older than this can belong to no operation still running and is removed."
+value = 900000
+unit = "ms"
+
+[migrate.locks_dir]
+doc = "The directory of the DevSwarm locks under the DevSwarm directory."
+value = "locks"
+
+[migrate.store_dir]
+doc = "The directory of the per-project DevSwarm stores under the DevSwarm directory."
+value = "store"
+
+[migrate.store_journal_dir]
+doc = "The journal directory inside a store, which also holds locks."
+value = "journal"
+
+[migrate.store_hash_res]
+doc = "The name patterns of a store directory: the legacy eight-hex form and the repository-key form."
+value = ["^[0-9a-fA-F]{8}$", "^[a-z0-9-]{1,40}-[0-9a-f]{6}$"]
+
+[migrate.devswarm_state_dirs]
+doc = "The DevSwarm directories whose contents the engine does not migrate (workspace descriptors, per-project stores, archive markers, recovery intents): while any holds an entry, the store-backed migrations are left to the Node doctor."
+value = ["workspaces", "store", "archived", "archived-retired", "recovery-intent"]
+
+# ---- drain markers ----------------------------------------------------------------------------------------------------------
+
+[migrate.drain_dir]
+doc = "The directory of in-flight drain markers under the DevSwarm directory."
+value = "drain"
+
+[migrate.drain_ttl]
+doc = "The drain marker time to live: the settings entry (section and key; its environment variable and bounds are in migrate_settings.toml) and the default when no source sets it."
+value = { section = "devswarm", key = "drainTtlMs", default = 600000 }
+
+[migrate.workspaces_dir]
+doc = "The directory of the workspace descriptors under the DevSwarm directory."
+value = "workspaces"
+
+[migrate.unclaimed_prefix]
+doc = "The prefix of the synthetic session id a workspace carries until its real session is known."
+value = "unclaimed:"
+
+# ---- retention sweeps -------------------------------------------------------------------------------------------------------
+
+[migrate.retention_sweeps]
+doc = "The age-based retention sweeps: id, directory (relative to the base, or to the DevSwarm directory when devswarm is true), file suffix, the environment variable of the window (used alone, as a positive integer, when key is empty), the settings key it is read through (section devswarm), and the default window in days."
+value = [
+  { id = "sweep-reaped-logs", dir = "reaped", devswarm = true, suffix = ".ndjson", env = "ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS", key = "reapedRetentionDays", days = 30 },
+  { id = "sweep-send-receipts", dir = "send-receipts", devswarm = true, suffix = ".json", env = "ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS", key = "sendReceiptRetentionDays", days = 7 },
+  { id = "sweep-auto-handover-state", dir = "auto-handover", devswarm = false, suffix = ".json", env = "ANTIHALL_AUTO_HANDOVER_STATE_RETENTION_DAYS", key = "", days = 30 },
+  { id = "sweep-context-pct-state", dir = "context-pct", devswarm = false, suffix = ".json", env = "ANTIHALL_CONTEXT_PCT_STATE_RETENTION_DAYS", key = "", days = 30 },
+  { id = "sweep-child-gate", dir = "child-gate", devswarm = true, suffix = ".json", env = "ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS", key = "childGateRetentionDays", days = 14 },
+]
+
+[migrate.devswarm_section]
+doc = "The settings section the DevSwarm retention windows and the drain marker time to live are read from."
+value = "devswarm"
+
+[migrate.summaries]
+doc = "The stale-summary sweep: the directory under the DevSwarm directory, the settings key of the window (section devswarm) and its default in days."
+value = { dir = "summaries", key = "summaryRetentionDays", days = 30 }
+
+[migrate.cursors]
+doc = "The cursor sweeps: the cursor and inbox directories under the DevSwarm directory, the separator of a sibling watermark name, and the pattern of a per-instance cursor file name."
+value = { cursors = "cursors", inbox = "inbox", seen_sep = ".seen-", nd_re = "^(.+)#nd-[0-9a-f]+\\.json$", inbox_ext = ".ndjson" }
+
+[migrate.safe_id_re]
+doc = "The pattern of an identifier that is safe to use in a file name."
+value = "^[A-Za-z0-9._-]+$"
+
+[migrate.gate_state_excluded_re]
+doc = "A parent-gate JSON file whose name matches this is a reply-state file, not a gate-loop state file (case-insensitive)."
+value = "(?i)-replies\\.json$"
+
+[migrate.gate_intents_key]
+doc = "The key of the stated-intent map a gate-loop state file gains when it lacks it."
+value = "intents"
+
+[migrate.gate_acks_key]
+doc = "The key of the acknowledgement count a gate-loop state file gains when it lacks it."
+value = "intentAcks"
+
+[migrate.json_depth]
+doc = "The deepest nesting of a JSON state file this port reads the way JavaScript does; a file nested deeper is left alone."
+value = 128
+
+[migrate.reply_passes]
+doc = "How many times a reply-state rewrite re-reads its source before it gives up (a reply keeps arriving) and leaves the file as it is."
+value = 3
+
+[migrate.action]
+doc = "The action word of the JSON report of the migration pass."
+value = "migrations-only"
+
+[migrate.registry]
+doc = "The all-store forward-migrations of the Node migration registry, in order, as id:marker-key. Each needs the DevSwarm stores, so the engine reports them done only when there is no DevSwarm state and otherwise leaves them to the Node doctor."
+value = [
+  "merge-split-backend-stores:mergeSplitBackendStores",
+  "fold-all-stores:foldAllStores",
+  "heal-orphan-partitions:healOrphanPartitions",
+  "fold-archived-rows:foldArchivedRows",
+  "fold-archived-family-descriptors:foldArchivedFamilyDescriptors",
+  "repair-reader-floors:repairReaderFloors",
+  "reconcile-dual-partition-acks:reconcileDualPartitionAcks",
+  "mark-app-archived:markAppArchived",
+  "retire-stale-archived-markers:retireStaleArchivedMarkers",
+  "repair-child-sender-labels:repairChildSenderLabels",
+  "fold-read-receipts:foldReadReceipts",
+]
+
+# ---- report texts (Node's, byte for byte; `{name}` marks a placeholder) --------------------------------------------------------
+
+[migrate_msg.nothing]
+doc = "A step with nothing to do."
+value = "nothing to migrate"
+
+[migrate_msg.dry_run]
+doc = "A step that would migrate, in a preview. Placeholder: {detail}."
+value = "[dry-run] would migrate: {detail}"
+
+[migrate_msg.migrated]
+doc = "A step that migrated. Placeholder: {detail}."
+value = "migrated: {detail}"
+
+[migrate_msg.still_pending]
+doc = "A step whose work was still pending after it ran. Placeholder: {detail}."
+value = "still pending after migrate: {detail}"
+
+[migrate_msg.raised]
+doc = "A step that raised an error. Placeholders: {id}, {error}."
+value = "{id} raised: {error}"
+
+[migrate_msg.deferred]
+doc = "A step that needs the DevSwarm stores, which the engine does not migrate yet, while DevSwarm state is present."
+value = "left to the Node doctor: DevSwarm store state is present and the engine does not migrate DevSwarm stores yet; not stamped, so the Node doctor still does it"
+
+[migrate_msg.already_applied]
+doc = "A migration already stamped for this plugin version. Placeholder: {version}."
+value = "already applied for {version} (marker)"
+
+[migrate_msg.marker_failed]
+doc = "Appended to a step whose completion marker could not be written."
+value = " \u2014 marker write failed; retries next run"
+
+[migrate_msg.heal_dry_run]
+doc = "The registry heal step in a preview."
+value = "[dry-run] would sweep every per-project store registry for mis-keyed/stale rows (devswarm.js healRegistry)"
+
+[migrate_msg.heal_none]
+doc = "The registry heal step when there is no store to sweep."
+value = "checked 0 registry row(s) across 0 store(s) \u2014 nothing mis-keyed/stale"
+
+[migrate_msg.reply_files]
+doc = "The detail of the reply-state step. Placeholder: {n}."
+value = "{n} reply-state file(s)"
+
+[migrate_msg.gate_files]
+doc = "The detail of the gate-intents step. Placeholder: {n}."
+value = "{n} gate-state file(s)"
+
+[migrate_msg.archive_records]
+doc = "The detail of the auto-archive state step. Placeholder: {n}."
+value = "{n} auto-archive record(s)"
+
+[migrate_msg.settings_migrated]
+doc = "The settings migration's result. Placeholder: {n}."
+value = "{n} legacy field(s) forward-migrated into settings.json"
+
+[migrate_msg.settings_errors]
+doc = "Appended to the settings migration's result when some fields failed. Placeholder: {n}."
+value = "; {n} error(s)"
+
+[migrate_msg.not_stamped]
+doc = "Appended when a settings migration finished cleanly but its marker could not be written."
+value = " \u2014 not stamped, retries next run"
+
+[migrate_msg.triage_unreadable]
+doc = "The Jev triage cache repair when the cache cannot be read."
+value = "no readable jev-triage cache \u2014 nothing to repair"
+
+[migrate_msg.triage_not_object]
+doc = "The Jev triage cache repair when the cache is not an object."
+value = "jev-triage cache is not an object \u2014 left alone"
+
+[migrate_msg.nothing_to_repair]
+doc = "The Jev triage cache repair when no entry is poisoned."
+value = "nothing to repair"
+
+[migrate_msg.triage_dry_run]
+doc = "The Jev triage cache repair in a preview. Placeholder: {n}."
+value = "[dry-run] would drop {n} poisoned no-label cache entries"
+
+[migrate_msg.triage_fixed]
+doc = "The Jev triage cache repair's result. Placeholders: {n}, {kept}."
+value = "dropped {n} poisoned no-label jev-triage cache entries (re-triaged on next read); kept {kept}"
+
+[migrate_msg.triage_raised]
+doc = "The Jev triage cache repair when it raised. Placeholder: {error}."
+value = "raised: {error}"
+
+[migrate_msg.no_lock_dirs]
+doc = "The lock scratch sweep when no lock directory exists."
+value = "no lock dirs"
+
+[migrate_msg.lock_scratch]
+doc = "The lock scratch sweep's count. Placeholder: {n}."
+value = "{n} stale lock scratch file(s)"
+
+[migrate_msg.could_not_list]
+doc = "A sweep that could not list a directory. Placeholders: {dir}, {error}."
+value = "could not list {dir}: {error}"
+
+[migrate_msg.drain_removed]
+doc = "A stale drain marker that was removed. Placeholders: {id}, {age}."
+value = "removed stale drain marker {id} (age {age}ms)"
+
+[migrate_msg.drain_not_removed]
+doc = "A stale drain marker that could not be removed. Placeholder: {id}."
+value = "failed to remove stale drain marker {id}"
+
+[migrate_msg.could_not_remove]
+doc = "A file a retention sweep could not remove. Placeholders: {path}, {error}."
+value = "could not remove {path}: {error}"
+
+[migrate_msg.could_not_raise]
+doc = "A cursor file that could not be raised. Placeholders: {path}, {error}."
+value = "could not raise {path}: {error}"
+
+[migrate_msg.watermark_declined]
+doc = "The sibling watermark sweep when no store has a registry row to compare against (it never deletes on an empty read)."
+value = "no registry rows readable in any store \u2014 watermark sweep declined (never deletes on an empty read)"
+
+[migrate_msg.sweep_failed]
+doc = "A sweep some of whose items failed. Placeholders: {n}, {total}, {msgs}."
+value = "{n} of {total} item(s) failed: {msgs}"
+
+[migrate_msg.sweep_nothing_pending]
+doc = "A sweep in a preview that found nothing."
+value = "nothing pending"
+
+[migrate_msg.sweep_pending]
+doc = "A sweep in a preview that found items. Placeholder: {n}."
+value = "{n} item(s) pending (dry run \u2014 nothing touched)"
+
+[migrate_msg.sweep_handled]
+doc = "A sweep that handled items. Placeholder: {n}."
+value = "{n} item(s) handled"
+
+[migrate_msg.sweep_nothing]
+doc = "A sweep that had nothing to do."
+value = "nothing to do"
+
+[migrate.test_markers]
+doc = "Environment variables whose presence marks a test run, in which a state-changing run refuses to touch the real home directory."
+value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST", "ANTIHALL_TEST_ISOLATION"]
+
+[migrate_msg.no_home]
+doc = "The migrate command when no home directory is known."
+value = "no home directory: set HOME or pass --home <dir>"
+
+[migrate_msg.real_home_refused]
+doc = "The migrate command in a test run pointed at the real home. Placeholder: {home}."
+value = "refused in a test run: {home} is the real user home; isolate HOME or pass --home <fixture dir>"
+
+[migrate_msg.unknown_version]
+doc = "The version shown when the plugin manifest cannot be read."
+value = "(unknown)"
+
+[migrate_msg.row_line]
+doc = "One line of the migrate report for a person. Placeholders: {status}, {id}, {msg}."
+value = "[{status}] {id}: {msg}"
+
+[migrate_msg.summary]
+doc = "The last line of the migrate report for a person. Placeholders: {fixed}, {skipped}, {failed}."
+value = "{fixed} fixed, {skipped} skipped, {failed} failed"
+
+[migrate.max_file_bytes]
+doc = "The most bytes of one state file a step reads (the files are small: settings, markers, reply state, cursors); a larger file is left as it is and noted, so no read costs more than this in memory."
+value = 16777216
+unit = "bytes"
+
+[migrate.max_line_bytes]
+doc = "The longest line of a log a step reads (one JSON record); a longer line is skipped and counted, never buffered whole."
+value = 4194304
+unit = "bytes"
+
+[migrate.max_dir_entries]
+doc = "The most entries of one directory a step lists at once; a larger directory is reported as an error instead of being held in memory (the retention sweeps stream a directory and have no such limit)."
+value = 200000
+
+[migrate.max_notes]
+doc = "The most notes (errors a step swallowed) a run keeps and prints."
+value = 200
+
+[migrate_msg.note_io]
+doc = "A file call that failed and that the step could not put in a row. Placeholders: {what}, {path}, {error}."
+value = "{error}"
+
+[migrate_msg.note_unparseable]
+doc = "A state file that does not parse as JSON; it is left exactly as it is. Placeholder: {path}."
+value = "{path} is not valid JSON; left as it is"
+
+[migrate_msg.too_large]
+doc = "A file too large to read whole. Placeholder: {cap}."
+value = "file larger than {cap} bytes"
+
+[migrate_msg.note_unsure]
+doc = "A state file with content this port cannot read the way JavaScript does; it is left as it is and counted as an error. Placeholder: {path}."
+value = "{path} holds JSON this build does not read exactly as Node does; left as it is"
+
+[migrate_msg.note_growing]
+doc = "A reply-state file that kept growing while it was rewritten; it is left as it is. Placeholder: {path}."
+value = "{path} kept changing while it was rewritten; left as it is"
+
+[migrate_msg.note_not_object]
+doc = "A gate-loop state file that is not a JSON object; it is left as it is. Placeholder: {path}."
+value = "{path} is not a JSON object; left as it is"
+
+[migrate_msg.note_long_lines]
+doc = "Lines of a log too long to read, skipped. Placeholders: {path}, {n}."
+value = "{n} line(s) of {path} are longer than the read limit and were skipped"
+
+[migrate_msg.note_lock_busy]
+doc = "The settings file is locked by another writer past the wait limit; nothing was written. Placeholder: {path}."
+value = "{path} is being written by another process; skipped, retried next run"
+
+[migrate_msg.note_line]
+doc = "One note on stderr: an error a step swallowed and could not put in a row. Placeholder: {note}."
+value = "note: {note}"
+
+[migrate_msg.dir_too_large]
+doc = "A directory with more entries than a step lists at once. Placeholder: {cap}."
+value = "directory has more than {cap} entries"
+
+[migrate_msg.no_cwd]
+doc = "The working directory cannot be determined and --cwd was not given. Placeholder: {error}."
+value = "cannot determine the working directory ({error}); pass --cwd <dir>"
+
+# ---- step names, file-name parts and numbers the code used to carry ----------------------------------------------------------------
+
+[migrate.ids]
+doc = "The step ids of the report (Node's), and the action word of the steps whose action differs from their id."
+value = { legacy = "migrate-legacy", legacy_action = "migrate-legacy-state", store = "migrate-devswarm-store", reply = "migrate-reply-state", gate = "migrate-gate-intents", archived = "migrate-auto-archived-state", lock = "sweep-lock-scratch", lock_action = "sweep-stale-lock-scratch-files", mesh = "fold-mesh-duplicates", settings = "migrate-settings-from-legacy", triage = "repair-jev-triage-cache", owner = "owner-key-migrate", recover = "recover-archive-intent", heal = "heal-registry-rows", drain = "sweep-drain-markers", promote = "promote-unclaimed", watermarks = "sweep-sibling-watermarks", nd = "reconcile-nd-cursors", summaries = "gc-stale-summaries", statusline = "migrate-statusline-engine" }
+
+[migrate.json_ext]
+doc = "The extension of a JSON state file."
+value = ".json"
+
+[migrate.tmp_ext]
+doc = "The extension of the scratch file an atomic write goes through."
+value = ".tmp"
+
+[migrate.corrupt_infix]
+doc = "Appended (with a millisecond stamp) to the name a corrupt settings file is renamed to."
+value = ".corrupt-"
+
+[migrate.walk_depth]
+doc = "How many levels of subdirectories a retention sweep descends into (the receipts directory is partitioned by day, one level)."
+value = 1
+
+[migrate.day_ms]
+doc = "Milliseconds in a retention day."
+value = 86400000
+unit = "ms"
+
+[migrate.gate_acks_default]
+doc = "The value a gate-loop state file's acknowledgement count gets when it lacks one."
+value = 0
+
+[migrate_msg.deferred_git]
+doc = "The legacy copy when the git location of the working directory cannot be confirmed without Node."
+value = "left to the Node doctor: the git location of the working directory cannot be confirmed here"
+
+[migrate.errnos]
+doc = "Node's error code and description for the operating-system errors a state file call can meet, by errno."
+value = [
+  { errno = 2, code = "ENOENT", text = "no such file or directory" },
+  { errno = 13, code = "EACCES", text = "permission denied" },
+  { errno = 17, code = "EEXIST", text = "file already exists" },
+  { errno = 20, code = "ENOTDIR", text = "not a directory" },
+  { errno = 21, code = "EISDIR", text = "illegal operation on a directory" },
+  { errno = 28, code = "ENOSPC", text = "no space left on device" },
+  { errno = 30, code = "EROFS", text = "read-only file system" },
+]
+
+[migrate.errno_fallback]
+doc = "Node's error code and description used for an error not in the table."
+value = { code = "EIO", text = "i/o error" }
+
+[migrate_msg.node_error]
+doc = "A file call's error as Node prints it. Placeholders: {code}, {text}, {syscall}, {path}."
+value = "{code}: {text}, {syscall} '{path}'"

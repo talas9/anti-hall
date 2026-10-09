@@ -161,9 +161,20 @@ function sidechainMtimeMs(transcriptPath, id) {
 }
 
 
-// transcriptCandidates(transcriptPath, now, thresholdMs) -> [{ key, id, label, age, snapshot }]
+// transcriptCandidates(transcriptPath, sessionId, now, thresholdMs) -> [{ key, id, label, age, snapshot }]
 // `snapshot` is the dedupe key: output_file mtime in ms, or 'missing'.
-function transcriptCandidates(transcriptPath, now, thresholdMs) {
+// fromOtherSession(outputFile, sessionId) -> true when the output file sits in another session's task
+// directory (.../<session id>/tasks/<id>.output): an agent a previous session started, carried into this
+// transcript by a restart or compaction. No session id / another path shape -> false.
+function fromOtherSession(outputFile, sessionId) {
+  if (!sessionId || typeof outputFile !== 'string') return false;
+  const parts = outputFile.split('/');
+  const n = parts.length;
+  if (n < 3 || parts[n - 2] !== 'tasks') return false;
+  return parts[n - 3].length === 36 && parts[n - 3] !== sessionId;
+}
+
+function transcriptCandidates(transcriptPath, sessionId, now, thresholdMs) {
   let scan = null;
   if (transcriptPath) {
     const { readTail } = require('./lib/transcript-tail.js');
@@ -178,6 +189,7 @@ function transcriptCandidates(transcriptPath, now, thresholdMs) {
     // inference, not proof of silence: it stays visible in running lists and
     // the stop-note, but never causes a block (whatever the threshold).
     if (rec.pendingMessage) continue;
+    if (fromOtherSession(rec.outputFile, sessionId)) continue; // a previous session's agent, not ours
 
     let referenceMs = NaN;
     let snapshot = 'missing';
@@ -224,6 +236,7 @@ function transcriptCandidates(transcriptPath, now, thresholdMs) {
       key: 't:' + id,
       id,
       resumedAtMs,
+      shell: rec.taskType === 'local_bash',
       label: rec.description ? oneLine(rec.description, 60) : oneLine(id, 60),
       age,
       snapshot,
@@ -338,7 +351,7 @@ function main() {
   } catch (_) { /* diagnostics only */ }
 
   let candidates = [];
-  try { candidates = candidates.concat(transcriptCandidates(transcriptPath, now, thresholdMs)); } catch (_) { /* fail-open: skip this source */ }
+  try { candidates = candidates.concat(transcriptCandidates(transcriptPath, sessionId, now, thresholdMs)); } catch (_) { /* fail-open: skip this source */ }
   try { candidates = candidates.concat(heartbeatCandidates(home, now, thresholdMs, sessionId)); } catch (_) { /* fail-open: skip this source */ }
   mark('sidechain-heartbeat');
 
@@ -445,10 +458,13 @@ function main() {
   }
   persist();
 
+  const anyShell = shownCandidates.some((c) => c.shell);
+  const anyAgent = shownCandidates.some((c) => !c.shell);
+  const noun = anyShell ? (anyAgent ? 'background subagent(s)/shell(s)' : 'background shell(s)') : 'background subagent(s)';
   const MAX_NAMED = 3;
   const shown = shownCandidates.slice(0, MAX_NAMED).map((c) => {
     const mins = Math.floor(c.age / 60000);
-    return c.label + ' — silent ' + mins + 'm';
+    return (c.shell ? 'shell: ' : '') + c.label + ' — silent ' + mins + 'm';
   }).join('; ');
   const more = shownCandidates.length > MAX_NAMED ? ', +' + (shownCandidates.length - MAX_NAMED) + ' more' : '';
 
@@ -467,7 +483,7 @@ function main() {
   mark('decision');
   const reason = require('./lib/block-message.js').blockMessage({
     guard: 'silent-agent-nudge',
-    what: shownCandidates.length + ' of your own background subagent(s) have gone silent past the ' + minMinutes + 'm threshold: ' + shown + more + '.',
+    what: shownCandidates.length + ' of your own ' + noun + ' have gone silent past the ' + minMinutes + 'm threshold: ' + shown + more + '.',
     why: 'Advisory only; nothing was auto-killed.',
     instead: 'check on ' + (shownCandidates.length === 1 ? 'it' : 'them') + ' (TaskOutput), or re-dispatch with tighter scope if dead (TaskStop first, per orchestration rule I). Verify, do not assume.',
     allowed: 'set ANTIHALL_SILENT_AGENT_NUDGE=off to silence this nudge',

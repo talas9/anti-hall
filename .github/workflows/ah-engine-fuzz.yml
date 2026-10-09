@@ -1,0 +1,50 @@
+name: ah-engine-fuzz
+
+# Nightly fuzzing of the engine's hand-written parsers (ah-engine/fuzz: a separate crate on the nightly toolchain). Each
+# target runs for a bounded time; the corpus persists between runs in the Actions cache and a crash uploads its reproducer.
+# Scheduled and manual only, so a push or pull request never waits for it.
+on:
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds to fuzz each target
+        default: '600'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [heredoc, json, glob]
+    defaults:
+      run:
+        working-directory: ah-engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        with:
+          tool: cargo-fuzz
+      - uses: actions/cache@v4
+        with:
+          path: ah-engine/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      # -timeout: a single input slower than this is a hang; -rss_limit_mb: more memory than this is an OOM; -max_len bounds the input.
+      - name: Fuzz
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=${{ inputs.seconds || '600' }} -timeout=10 -rss_limit_mb=2048 -max_len=4096
+      - name: Keep the reproducer of a crash
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: ah-engine/fuzz/artifacts/${{ matrix.target }}

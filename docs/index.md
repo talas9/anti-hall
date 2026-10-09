@@ -32,13 +32,29 @@ of skills you can call by name. Together they stop the assistant from:
 - **flooding your main conversation**: heavy commands and file edits go to helper agents,
   and runaway agent spawning is capped.
 
-It is pure Node.js with no dependencies. It runs on macOS and Linux (including WSL on
+A small Rust engine answers the hooks; Node.js 22+ is the fallback. There are no npm dependencies. It runs on macOS and Linux (including WSL on
 Windows). Everything it keeps stays on your machine, apart from one update check, which
 you can turn off ([details](#network-and-privacy)).
 
+<div class="grid cards" markdown>
+
+- :material-check-decagram: **Verify first**
+
+    No claim without a check: speculation, "done" and made-up APIs are sent back.
+
+- :octicons-shield-check-16: **Safe git**
+
+    No force-pushes, no AI credit lines in commits or GitHub text.
+
+- :material-speedometer: **Fast**
+
+    A Rust engine answers hooks from memory; Node is the exact fallback.
+
+</div>
+
 ## Install in one minute
 
-You need **Node.js 22 or newer** on your `PATH` (`node --version`).
+You need **Node.js 22 or newer** on your `PATH` (`node --version`), the fallback that always works. The engine binary is fetched for you (needs `curl` or `wget`, and `tar`).
 
 === "Claude Code"
 
@@ -66,14 +82,20 @@ assistant reads it and changes course; you rarely need to do anything.
 
 **The assistant tries to force-push.** The command never runs:
 
+<div class="ah-term" markdown>
+
 ```text
 ⛔ anti-hall · git-guard: force push is blocked.
 Why: Rewriting published history is a deliberate human action.
 Do instead: do it manually with explicit owner confirmation, never from an automated push.
 ```
 
+</div>
+
 **The assistant guesses instead of checking.** A reply that ends on "probably" with
 nothing to back it up is sent back once:
+
+<div class="ah-term" markdown>
 
 ```text
 ⛔ anti-hall · speculation-guard: your reply states something speculative ('probably')
@@ -83,13 +105,19 @@ Do instead: verify it with a tool, or say what is unverified ('I don't know, her
 I would check'), then continue.
 ```
 
+</div>
+
 **The main session runs a long command itself.** Builds, test suites and deploys go to a
 helper agent, which returns a short summary instead of pages of output:
+
+<div class="ah-term" markdown>
 
 ```text
 ⛔ anti-hall · command-guard: heavy command (verb: npm) blocked in the main thread.
 Why: Raw output floods the main thread.
 ```
+
+</div>
 
 **Other things you will see:**
 
@@ -112,17 +140,36 @@ mesh triage) are off by default and only send the text they judge to the provide
 configure. Everything else stays in `~/.anti-hall/` and `<repo>/.anti-hall/`. The full
 table is in [PRIVACY.md](../PRIVACY.md).
 
+!!! tip "Not happy with a check?"
+    Every guard has a setting, and you can tell the assistant to skip one for a short
+    while. See [Turning a check off](troubleshooting.md#turning-a-check-off).
+
 ## Where next
 
 <div class="grid cards" markdown>
 
-- :material-rocket-launch: **[Getting started](start/install.md)**: install, update and
-  uninstall on Claude Code and Codex.
-- :material-shield-check: **[Guards and checks](features/guards.md)**: what each guard
-  stops and how to turn it off.
-- :material-tune: **[Settings](settings/index.md)**: every setting with its default,
-  generated from the code.
-- :material-lifebuoy: **[Troubleshooting](troubleshooting.md)**: the doctor, common
-  messages, and what they mean.
+- :material-rocket-launch: **[Getting started](start/install.md)**
+
+    Install, update and uninstall on Claude Code and Codex.
+
+- :material-shield-check: **[Guards and checks](features/guards.md)**
+
+    What each guard stops and how to turn it off.
+
+- :material-speedometer: **[Rust engine](features/engine.md)**
+
+    One resident process answers hooks fast; Node is the safety net.
+
+- :material-tune: **[Settings](settings/index.md)**
+
+    Every setting with its default, generated from the code.
+
+- :material-lifebuoy: **[Troubleshooting](troubleshooting.md)**
+
+    The doctor, common messages, and what they mean.
+
+- :octicons-git-pull-request-16: **[Contributing](contributing.md)**
+
+    Branch flow, tests, and where the contributor docs live.
 
 </div>

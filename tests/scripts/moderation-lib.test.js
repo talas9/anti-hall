@@ -143,7 +143,7 @@ test('rank: priority first, blockers sink', () => {
 });
 
 test('templates referenced by the scripts exist', () => {
-  for (const t of ['needs-info', 'off-topic', 'triage-brief', 'qa-answer', 'pr-summary', 'privacy', 'stale-check', 'roadmap-digest', 'roadmap-digest-issue']) {
+  for (const t of ['needs-info', 'off-topic', 'triage-brief', 'qa-answer', 'pr-summary', 'privacy', 'stale-check', 'roadmap-digest', 'release-announcement', 'idea-accepted']) {
     assert.ok(fs.existsSync(path.join(DIR, '..', '..', 'moderation', 'templates', t + '.md')), t);
   }
 });
@@ -162,6 +162,22 @@ test('commit identity: allow-list passes, others fail with a masked email', () =
   assert.strictEqual(bad.length, 1);
   assert.strictEqual(bad[0].msg, 'commit c3c3c3c3c3 authored as m***@e***; re-author as the maintainer identity');
   assert.strictEqual(maskEmail('mo@example.org'), 'm***@e***');
+});
+
+test('commit identity: commits before identity_check_since are grandfathered; later ones are checked', () => {
+  const since = Date.parse(cfg.privacy.identity_check_since) / 1000;
+  assert.ok(Number.isFinite(since));
+  const me = cfg.privacy.commit_email_allow[0];
+  const oldT = since - 86400, newT = since + 86400;
+  const old = identityHits(`o1\tbad@example.org\tbad@example.org\t${oldT}\t${oldT}\n`, cfg);
+  assert.strictEqual(old.length, 0);
+  assert.strictEqual(old.grandfathered, 1);
+  const bad = identityHits(`n1n1n1n1n1n1\tbad@example.org\t${me}\t${newT}\t${newT}\n`, cfg);
+  assert.strictEqual(bad.length, 1);
+  assert.strictEqual(bad.grandfathered, 0);
+  assert.strictEqual(identityHits(`n2\t${me}\t${me}\t${newT}\t${newT}\n`, cfg).length, 0);
+  // only one date old: still checked
+  assert.strictEqual(identityHits(`m1\tbad@example.org\t${me}\t${oldT}\t${newT}\n`, cfg).length, 1);
 });
 
 test('sanitize escapes all markup characters; comment and backslash payloads stay inert', () => {

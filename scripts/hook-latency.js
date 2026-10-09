@@ -150,7 +150,7 @@ async function sample(n, fn) { // n runs, first dropped
 }
 
 async function bench(opts) {
-  const hooksJson = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  const hooksJson = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.registry.json'), 'utf8'));
   const fx = makeFixture();
   const meta = {
     date: new Date().toISOString(), platform: process.platform + ' ' + os.release(), cpu: os.cpus()[0].model, node: process.version,
@@ -200,7 +200,7 @@ async function bench(opts) {
 // starts every matching hook together with the CPU probe on; wall is the group's
 // spawn-to-last-exit time, CPU is the sum of the hooks' own CPU in that run.
 async function benchGrouped(opts) {
-  const hooksJson = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  const hooksJson = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.registry.json'), 'utf8'));
   const fx = makeFixture();
   const meta = {
     date: new Date().toISOString(), platform: process.platform + ' ' + os.release(), cpu: os.cpus()[0].model, node: process.version,

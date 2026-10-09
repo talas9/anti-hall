@@ -7,13 +7,13 @@ description: Install anti-hall for Claude Code or Codex, and check that it works
 
 ## Before you start
 
-- **Node.js 22 or newer** on your `PATH`. Check with `node --version`. Every hook is
-  started as `node <hook>.js`; if the shell Claude Code uses cannot find `node`, the hooks
+- **Node.js 22 or newer** on your `PATH`. Check with `node --version`. The engine answers hooks
+  when it is installed, and every other hook is started as `node <hook>.js`; if the shell Claude Code uses cannot find `node`, the hooks
   are skipped without an error.
 - **macOS or Linux.** WSL on Windows works (it runs the Linux build). Native Windows is
   not supported yet.
 
-There is nothing else to install: no npm packages and no native modules.
+The plugin fetches the Rust engine binary itself, checked against a pinned sha256, and needs `curl` or `wget` plus `tar` for that. If the download fails, Node runs the hooks as before. There are no npm packages to install.
 
 ## Claude Code
 

@@ -1,4 +1,3 @@
-{{marker}}
 ### PR check (automated)
 
 | Check | Result |
@@ -13,6 +12,8 @@
 **Checklist**
 
 {{checklist}}
+
+{{scanning}}
 
 {{summary}}
 

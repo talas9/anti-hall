@@ -1,0 +1,138 @@
+# ah-engine defaults of the generic process primitives a check script calls (`ah.proc.*`, D88 batch 7): the bounded process
+# listing, the age and service-manager probes, the bounded signal and the bounded sleep. Format: see the header of engine.toml.
+#
+# A primitive here holds no rule about WHICH process may be signalled: the script decides that from the listing, and the signal
+# primitive only refuses what no script may ever do (a pid below 2, the engine itself or its parent, a pid the script's own
+# listing did not show, a forced signal for a pid that was not first asked politely, more than the per-call cap).
+# The regular expressions are JavaScript source compiled by the engine's JavaScript translator.
+
+[hostproc.list_command]
+doc = "The process listing command and its arguments: pid, parent pid and command line of every process."
+value = ["ps", "-axo", "pid=,ppid=,command="]
+
+[hostproc.etimes_command]
+doc = "The age probe that reports elapsed seconds (Linux); the pid list is appended as the last argument."
+value = ["ps", "-o", "pid=,etimes=", "-p"]
+
+[hostproc.lstart_command]
+doc = "The age probe that reports the start time (macOS and BSD, which have no elapsed-seconds column); the pid list is appended as the last argument."
+value = ["ps", "-o", "pid=,lstart=", "-p"]
+
+[hostproc.service_list_command]
+doc = "The command that lists the processes the macOS service manager owns."
+value = ["launchctl", "list"]
+
+[hostproc.list_timeout_ms]
+doc = "How long the process listing may take before it counts as failed."
+value = 3000
+min = 100
+unit = "ms"
+
+[hostproc.probe_timeout_ms]
+doc = "How long an age probe or the service-manager listing may take (an age probe that times out leaves the age unknown; a service-manager listing that times out leaves every pid unverifiable)."
+value = 2000
+min = 100
+unit = "ms"
+
+[hostproc.list_max_bytes]
+doc = "The largest process listing accepted; a bigger one counts as a failed listing."
+value = 33554432
+min = 65536
+unit = "bytes"
+
+[hostproc.probe_max_bytes]
+doc = "The largest age-probe or service-manager output read; a bigger one is reported as unsure."
+value = 1048576
+min = 4096
+unit = "bytes"
+
+[hostproc.list_line_re]
+doc = "JavaScript regex source (case-sensitive) of one process listing line: pid, parent pid, command line."
+value = '^\s*(\d+)\s+(\d+)\s+(.*)$'
+
+[hostproc.etimes_line_re]
+doc = "JavaScript regex source (case-sensitive) of one elapsed-seconds line: pid, seconds."
+value = '^\s*(\d+)\s+(\d+)\s*$'
+
+[hostproc.lstart_line_re]
+doc = "JavaScript regex source (case-sensitive) of one start-time line: pid, start time."
+value = '^\s*(\d+)\s+(.+?)\s*$'
+
+[hostproc.lstart_form_re]
+doc = "JavaScript regex source (case-sensitive) of the one start-time text the engine reads itself, the form `ps -o lstart=` prints: weekday, month, day of month, time, year. Any other text makes the ages unsure, whose date parser the engine does not reproduce."
+value = '^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ([ 0-3]\d) ([0-2]\d):([0-5]\d):([0-5]\d) (\d{4})$'
+
+[hostproc.months]
+doc = "The month abbreviations of the start-time form, January first."
+value = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+[hostproc.tz_env]
+doc = "The environment variable that moves the time zone Node would read a start time in; when a request sets it differently from the engine's own, start times are unsure."
+value = "TZ"
+
+[hostproc.service_header_re]
+doc = "JavaScript regex source (case-insensitive) of the header line of the service-manager listing."
+value = '^PID\s'
+
+[hostproc.platform_launchd]
+doc = "The Rust operating-system name on which the service-manager listing is consulted (Node's darwin)."
+value = "macos"
+
+[hostproc.platform_systemd]
+doc = "The Rust operating-system name on which the control-group file is consulted (Node's linux)."
+value = "linux"
+
+[hostproc.cgroup_path]
+doc = "The control-group file of a process; `{pid}` is the process id."
+value = "/proc/{pid}/cgroup"
+
+[hostproc.cgroup_marker]
+doc = "The text in a control-group file that marks a systemd service."
+value = ".service"
+
+[hostproc.poll_ms]
+doc = "How often a running command is checked for completion."
+value = 2
+min = 1
+unit = "ms"
+
+[hostproc.read_ms]
+doc = "The least time to wait for a finished command's output after it exits; it may also use what is left of the command's timeout. Output that never arrives fails the command (never an empty listing)."
+value = 1000
+min = 1
+unit = "ms"
+
+[hostproc.max_exact_id]
+doc = "Process ids at or above this are reported as unsure: the engine holds an id exactly as JavaScript prints it only below 2^53."
+value = 9007199254740992
+
+[hostproc.max_hour]
+doc = "The largest hour of a start time the engine reads itself (the form allows 24 to 29, which JavaScript carries into the next day)."
+value = 23
+
+[hostproc.min_year]
+doc = "The earliest year of a start time the engine reads itself."
+value = 1970
+
+[hostproc.min_signal_pid]
+doc = "The lowest process id a signal may name; pid 0 and 1 (every process of a group, init) are never signalled."
+value = 2
+min = 2
+
+[hostproc.signal_max_per_call]
+doc = "The most signals one script call may send, polite and forced together; the rest are refused."
+value = 512
+min = 1
+max = 4096
+
+[hostproc.sleep_max_ms]
+doc = "The longest one `ah.sleep` call waits; a longer request waits this long."
+value = 5000
+min = 1
+unit = "ms"
+
+[hostproc.sleep_total_max_ms]
+doc = "The most time all `ah.sleep` calls of one script call may wait in total; a call past it returns at once."
+value = 10000
+min = 1
+unit = "ms"

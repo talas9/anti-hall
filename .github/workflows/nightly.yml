@@ -58,6 +58,7 @@ jobs:
       contents: read
       issues: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: open or update the nightly failure issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -71,7 +72,7 @@ jobs:
           n=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
                 --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ -n "$n" ]; then
-            gh issue comment "$n" --body "$body"
+            printf '%s' "$body" | ./.github/scripts/bot-comment.sh "$n" ci-failure
           else
             gh issue create --title "$title" --body "$body"
           fi

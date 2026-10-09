@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const TEMPLATE_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.json');
+const TEMPLATE_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.registry.json');
 const INSTALLER_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'install-codex.js');
 
 // Normalized full command of every hook a hooks-registry object (either the
@@ -37,40 +37,20 @@ function hookFilesByEvent(hooksObj) {
   return out;
 }
 
-function readTemplateHookSets() {
-  const raw = fs.readFileSync(TEMPLATE_PATH, 'utf8');
-  const parsed = JSON.parse(raw);
-  return hookFilesByEvent(parsed.hooks);
-}
+const THIN_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.json');
 
-function readInstallerHookSets() {
-  // install-codex.js requires 'fs'/'path'/'os' at load time and computes
-  // ANTI_HALL_HOOKS from repo-relative paths purely via require() — safe to
-  // require directly for its exported registry without running the CLI.
+// The installer no longer hand-lists hooks: it consumes the generated thin file (one wrapper call per event, produced by
+// the Rust generator from dispatch.toml). The per-hook behaviour parity (old registry vs thin trigger) is gated in
+// ah-engine/tests/it/flip_parity.rs; this test pins that the installer writes exactly the generated file.
+test('codex hook parity: install-codex.js registers exactly the generated codex/hooks/hooks.json, per event', () => {
   delete require.cache[require.resolve(INSTALLER_PATH)];
   const { ANTI_HALL_HOOKS } = require(INSTALLER_PATH);
-  return hookFilesByEvent(ANTI_HALL_HOOKS);
-}
-
-test('codex hook parity: install-codex.js registers the same hook files as codex/hooks/hooks.json, per event', () => {
-  const template = readTemplateHookSets();
-  const installer = readInstallerHookSets();
-
-  const events = new Set([...Object.keys(template), ...Object.keys(installer)]);
-  const mismatches = [];
-  for (const event of events) {
-    const templateSet = template[event] || new Set();
-    const installerSet = installer[event] || new Set();
-    const missingFromInstaller = [...templateSet].filter((f) => !installerSet.has(f)).sort();
-    const extraInInstaller = [...installerSet].filter((f) => !templateSet.has(f)).sort();
-    if (missingFromInstaller.length || extraInInstaller.length) {
-      mismatches.push({ event, missingFromInstaller, extraInInstaller });
-    }
-  }
-
-  assert.deepStrictEqual(
-    mismatches,
-    [],
-    'install-codex.js hook registry drifted from codex/hooks/hooks.json:\n' + JSON.stringify(mismatches, null, 2)
-  );
+  const root = path.join(REPO, 'plugins', 'anti-hall');
+  const thin = JSON.parse(fs.readFileSync(THIN_PATH, 'utf8').split('${PLUGIN_ROOT}').join(root)).hooks;
+  assert.deepStrictEqual(ANTI_HALL_HOOKS, thin);
+  // and the per-hook registry (what the Node readers use) covers the same events the thin file triggers, or fewer
+  const reg = JSON.parse(fs.readFileSync(TEMPLATE_PATH, 'utf8')).hooks;
+  for (const ev of Object.keys(reg)) assert.ok(thin[ev], 'registry event ' + ev + ' has a thin trigger');
+  const sets = hookFilesByEvent(reg);
+  assert.ok(sets.PreToolUse.size > 0);
 });

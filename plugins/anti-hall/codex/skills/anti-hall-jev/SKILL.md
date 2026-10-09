@@ -20,7 +20,7 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-All commands below run as `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" <verb>`.
+All commands below run as `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup <verb>`.
 
 ## The credential never travels through the model
 
@@ -31,7 +31,7 @@ itself.
 
 ## Primary flow: activate / enable / set up jev
 
-1. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" status`.
+1. `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup status`.
 2. Key already present (`key present: yes`) → skip to step 5.
 3. No key: ask which provider it's for — **Vercel AI Gateway** (default,
    recommended, the only live-verified transport) or **TypeSafe direct**
@@ -42,23 +42,23 @@ itself.
    themselves with echo off:
 
    ```bash
-   read -rs K && printf '%s' "$K" | node "$ANTI_HALL_ROOT/scripts/jev-setup.js" set-key --transport vercel && unset K
+   read -rs K && printf '%s' "$K" | sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup set-key --transport vercel && unset K
    ```
 
    (`--transport typesafe` if that's the pick). If they paste the key in chat
    instead, pipe it to `set-key` via stdin and never repeat it back:
 
    ```bash
-   printf '%s' "<pasted key>" | node "$ANTI_HALL_ROOT/scripts/jev-setup.js" set-key --transport <vercel|typesafe>
+   printf '%s' "<pasted key>" | sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup set-key --transport <vercel|typesafe>
    ```
-5. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" enable [--transport vercel|typesafe]`.
+5. `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup enable [--transport vercel|typesafe]`.
 6. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" test` — one real classification
    call; prints ok/latency/confidence or a failure reason, never the key. On
    `http-401`/`http-403`, tell the user the key was rejected and ask them to
    confirm BOTH the key and the provider choice, then re-run `set-key`.
 7. `status` again to show the final state.
    - Tip: if the owner knows their per-call rate, set `costPerCall` in
-     `~/.anti-hall/jev.json` now so `jev-report.js` can estimate spend.
+     `~/.anti-hall/jev.json` now so `ah-run.sh jev-report` can estimate spend.
 
 ## Backup transport ("jev fallback")
 
@@ -70,7 +70,7 @@ budget (a retry with under ~150 ms left is skipped; the primary is held back ~60
 After 3 consecutive eligible failures a per-vendor circuit breaker skips that vendor for 5 minutes, then probes it
 again (state: `~/.anti-hall/cache/jev-breaker.json`).
 
-- Set: `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" enable --transport typesafe --fallback vercel`
+- Set: `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup enable --transport typesafe --fallback vercel`
   (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
 - Keys are VENDOR-BOUND: a key is never sent to a vendor it was not entered for. Store one per vendor: the
   `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
@@ -91,7 +91,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   their built-in rules, exactly as when Jev is off.
 - Privacy: with a backup on, the same (secret-scrubbed) decision text can reach the second vendor.
 - Decision rows in `jev-assist.ndjson` carry `transport` (and `fellBack: true` when the backup served it).
-- `jev-report.js` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
+- `ah-run.sh jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
 - UNVERIFIED: which status each vendor returns for an exhausted balance (Vercel `402` per community
   reports; TypeSafe undocumented), so both 402 and 429 are treated as eligible.
 
@@ -166,7 +166,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   identity-binds to `claude --resume` processes), and `codexNudgeSubstantial`
   (self-referential inside a Codex session) are Claude-only. `findingDedup` runs on
   BOTH platforms — see the `anti-hall-deadly-loop` skill's synthesis step.
-- "how is jev doing" / "jev scorecard": run `jev-report.js`, then for each row
+- "how is jev doing" / "jev scorecard": run `ah-run.sh jev-report`, then for each row
   explain KEEP (promote-worthy) / REMOVE (offer to set mode off) / REVIEW (not
   enough data, needs more labels, label-only, or p95 latency over budget).
   Mention the headline one-liner per integration for a quick summary.
@@ -199,10 +199,10 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   choice integration reaches 20 labelled decisions and 50+ calls it can reach
   REMOVE (bad-outcome/failure-rate gates, unchanged) or KEEP (gated on its own
   would-change rate in place of changed-decision rate, since that stays 0).
-- `jev-report.js --exclude-project <name>` (repeatable) drops a leaked project's raw rows
+- `ah-run.sh jev-report --exclude-project <name>` (repeatable) drops a leaked project's raw rows
   (daily rollups have no project, so they are unaffected); the report also lists
   `triggers seen: N` for rare-trigger integrations.
-- `jev-report.js --since <iso> --until <iso>` / `--exclude-window <iso>..<iso>`
+- `ah-run.sh jev-report --since <iso> --until <iso>` / `--exclude-window <iso>..<iso>`
   (repeatable) exclude rows by `ts` before anything else, from both the live
   `jev-assist.ndjson`/`jev-triage.ndjson` AND every rotated generation `.1` ..
   `.N` (`jev.logRotatedFiles`, default 10; older days come from the daily
@@ -213,7 +213,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   window / M total (K excluded)` line (also a `window` object in `--json`
   output) — the only way to confirm two runs actually covered the same rows
   before comparing their agreement/changed-rate numbers.
-- `jev-report.js --weekly [--json]` — compact ALWAYS-7-day summary, one line
+- `ah-run.sh jev-report --weekly [--json]` — compact ALWAYS-7-day summary, one line
   per integration (`[mode]`, suggestion, short reason, calls). A SessionStart
   hook (`hooks/jev-weekly-scorecard.js`, shared with the Claude port) checks
   this automatically at most once every 7 days (latch:
@@ -262,7 +262,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   cwd-basename fallback as decision rows — they used to have none at all. A
   pre-fix outcome row still groups under `unknown` and cannot be repaired
   retroactively (no source cwd to recover it from).
-- `node "$ANTI_HALL_ROOT/scripts/jev-report.js" [--window 24h|7d]` — read-only
+- `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-report [--window 24h|7d]` — read-only
   KEEP/REVIEW/REMOVE summary per integration. Two cost signals: `costPerCall` in
   `~/.anti-hall/jev.json` for a manual estimate (else `n/a`), and an automatic
   REAL cost parsed from each call's own response when the gateway reports one —
@@ -279,10 +279,10 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   watching). Over `usdPerDay`, the assist layer logs ONE
   `type:"budget-warning"` row per calendar day to `jev-assist.ndjson` -- no
   existing user-facing Jev notice path exists in this build, so it surfaces
-  only via `jev-report.js`. `minCreditUsd` triggers the SAME once-per-day
+  only via `ah-run.sh jev-report`. `minCreditUsd` triggers the SAME once-per-day
   cadence for the Vercel credit balance instead of spend, checked at report
   time only. Jev is NEVER auto-disabled by a budget.
-- `node "$ANTI_HALL_ROOT/scripts/jev-report.js" label <hash> [tp|fp]` -- the
+- `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-report label <hash> [tp|fp]` -- the
   ONLY write path this script has (verdict omitted = read-only inspect);
   appends to a separate, append-only `~/.anti-hall/logs/jev-labels.ndjson`
   (the hash `h` is already the decision's stable id), never touching
@@ -300,7 +300,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   evaluation -- a would-have-changed row carries `shadow: true`), in a
   separate `~/.anti-hall/logs/jev-audit.ndjson`, mode 600, keyed by hash. `label
   <hash>` prints it if one exists. Deletion is manual-only:
-  `jev-report.js prune-audit --days N` -- never automatic.
+  `ah-run.sh jev-report prune-audit --days N` -- never automatic.
 
 Text sent to the gateway (prompt, last assistant message, commit/PR text, test output) is passed through a best-effort redactor first: text matching known token shapes (API keys, Bearer tokens, `password=` style assignments, PEM blocks, JWTs, URL credentials, emails, long token-like runs) is replaced with `[REDACTED...]` placeholders. Redaction is best-effort, not a guarantee.
 

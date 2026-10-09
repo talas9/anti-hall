@@ -15,12 +15,16 @@ setting, and you can skip one for a short while.
 Every block has the same three parts: what was stopped, why, and what to do instead. The
 assistant reads it and takes the other path. For example:
 
+<div class="ah-term" markdown>
+
 ```text
 ⛔ anti-hall · git-guard: a commit message with an AI/assistant self-credit trailer
 (Co-Authored-By / "Generated with <AI>") is blocked.
 Why: Commits carry no AI co-author credit.
 Do instead: re-run the commit without that trailer.
 ```
+
+</div>
 
 ## The main guards
 
@@ -48,12 +52,16 @@ including the opt-in gates (`guards.mergeGate`, `guards.shipitGate`), are in the
 Long command output and file edits go to helper agents, which return a short summary. The
 coordinator keeps the overview and checks each helper's result instead of trusting it.
 
+<div class="ah-term" markdown>
+
 ```text
 ⛔ anti-hall · command-guard: heavy command (verb: npm) blocked in the main thread.
 Why: Raw output floods the main thread.
 Do instead: ... a single command: delegate to a subagent (it returns a short summary).
 Allowed here: piped to tail/head/wc/grep -c: `node --test <1-2 files>`, ...
 ```
+
+</div>
 
 Short checks are still allowed in the main session, such as one or two test files piped
 to `tail`, or a `--check` / `--dry-run` run. The full list is in the message itself.
@@ -64,6 +72,8 @@ to `tail`, or a `--check` / `--dry-run` run. The full list is in the message its
 something with a hedge word and does not say it is unverified, the reply is sent back
 once:
 
+<div class="ah-term" markdown>
+
 ```text
 ⛔ anti-hall · speculation-guard: your reply states something speculative ('probably')
 without verifying it or flagging it as unverified.
@@ -71,6 +81,8 @@ Why: Unverified claims read as facts.
 Do instead: verify it with a tool, or say what is unverified ('I don't know, here is what
 I would check'), then continue.
 ```
+
+</div>
 
 Honest hedging passes: a reply that says "I haven't checked" or "not verified", cites a
 `file:line`, or says it will verify, is not blocked. The same reply is never blocked twice,
