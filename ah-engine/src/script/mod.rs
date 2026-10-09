@@ -399,6 +399,9 @@ mod tests_host_e;
 #[path = "host_tests_d/tests.rs"]
 mod tests_host_d;
 #[cfg(test)]
+#[path = "host_tests_f/tests.rs"]
+mod tests_host_f;
+#[cfg(test)]
 #[path = "golden_d6/tests.rs"]
 mod tests_golden_d6;
 #[cfg(test)]

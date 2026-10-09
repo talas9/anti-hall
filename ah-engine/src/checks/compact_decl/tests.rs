@@ -45,7 +45,9 @@ fn the_tail_drops_a_partial_first_line_and_a_missing_file_has_none() {
     let f = d.join("t.jsonl");
     std::fs::write(&f, "aaaa\nbbbb\ncccc").unwrap();
     assert_eq!(read_tail(f.to_str().unwrap(), 100), Some(vec!["aaaa".into(), "bbbb".into(), "cccc".into()]));
-    assert_eq!(read_tail(f.to_str().unwrap(), 9), Some(vec!["bbbb".into(), "cccc".into()]));
+    // a window that does not reach the start of the file always drops its first line (it may be a partial one), as Node's tail reader does
+    assert_eq!(read_tail(f.to_str().unwrap(), 9), Some(vec!["cccc".into()]));
+    assert_eq!(read_tail(f.to_str().unwrap(), 11), Some(vec!["bbbb".into(), "cccc".into()]));
     assert!(read_tail(d.join("missing").to_str().unwrap(), 9).is_none());
     assert!(contains_ci(b"it is Safe to", b"SAFE") && !contains_ci(b"abc", b""));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state

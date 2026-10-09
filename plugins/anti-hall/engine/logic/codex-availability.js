@@ -196,7 +196,7 @@ function cxQuotaNote(home, codex) {
   var iso;
   try { iso = new Date(q.until).toISOString(); } catch (e) { return ''; }
   var what = text.render(cxT('avail_note_what'), { until: iso, reason: q.reason });
-  var instead = text.render(cxT('avail_note_instead'), { tier: cxT(codex ? 'avail_tier_codex' : 'avail_tier_claude') });
+  var instead = text.render(cxT('avail_note_instead'), { tier: codex ? cxT('avail_tier_codex') : cxT('avail_tier_claude') });
   return text.message('warn', cxT('avail_guard'), { what: what, instead: instead }) + '\n';
 }
 
