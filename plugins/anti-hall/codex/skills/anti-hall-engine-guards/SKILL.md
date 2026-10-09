@@ -48,5 +48,6 @@ What the automatic guards check and how to read a block.
 - `guards.allowAnthropicEnvKey` = false: The home-only switch that lets ANTHROPIC_API_KEY count as a key (guards.allowAnthropicEnvKey; no env, no plugin option)
 - `guards.pruneCompletedTasksAfter` = 10: How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)
 - `guards.handoverHygiene` = true: Where the on/off switch is read from (guards.handoverHygiene, default on)
+- `devswarm_sup.witness` = "on": Run the non-acting Node witness for the native supervisor duties: on | off
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

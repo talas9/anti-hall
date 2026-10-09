@@ -325,6 +325,18 @@ pub fn write(cwd: &str, verb: &str, args: &str, session: &str) -> Outcome {
         }
     }
     if !spoolable(verb) {
+        // a verb that needs an answer waits for the daemon this client just started: a cold start (defaults, storage) can
+        // outlast the retries, and failing then would leave the daemon starting and the caller with nothing
+        if spawned {
+            let until = std::time::Instant::now() + defaults::millis("spool.read_wait_ms");
+            while std::time::Instant::now() < until {
+                match client::exchange(&sock, req.as_bytes(), deadline) {
+                    Exch::Reply(Kind::Ok, body) => return Outcome::Answered(body),
+                    Exch::Reply(Kind::Err, why) => return Outcome::Refused(why),
+                    _ => std::thread::sleep(defaults::millis("spool.read_poll_ms")),
+                }
+            }
+        }
         return Outcome::Failed(defaults::text("msg.cli_no_daemon").to_string());
     }
     let rec = Record {

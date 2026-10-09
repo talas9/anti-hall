@@ -120,6 +120,20 @@ value = "project:"
 doc = "Project verbs a client may spool when the engine is down or busy: writes whose answer it does not need."
 value = ["put", "set", "setex"]
 
+[spool.read_wait_ms]
+doc = "How long a project verb that cannot be spooled (a take or a read) keeps waiting for a daemon the client has just started, after the retries are used up. A cold daemon needs its defaults and storage loaded first."
+value = 5000
+unit = "ms"
+min = 0
+max = 60000
+
+[spool.read_poll_ms]
+doc = "Pause between attempts while a non-spoolable project verb waits for a cold-started daemon."
+value = 25
+unit = "ms"
+min = 1
+max = 1000
+
 [spool.retries]
 doc = "Retries of a project write before it is spooled (the first attempt is not counted)."
 value = 4
