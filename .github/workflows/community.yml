@@ -42,6 +42,10 @@ on:
         type: choice
         options: [issue, discussion]
         default: issue
+      force-model:
+        description: Test the model path - bypass the owner/bot author skip, the short/complete-form skips and the daily cap
+        type: boolean
+        default: false
       dry-run:
         description: Log the decisions without writing anything
         type: boolean

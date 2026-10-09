@@ -105,11 +105,15 @@ async function gate({ github, context, core }) {
   const item = await loadItem({ github, context });
   const owner = context.payload.repository.owner.login;
   const dispatch = !!item.dispatch;
-  const skip = L.skipReason(item.user, dispatch ? '' : owner, cfg);
+  // A manual run with force-model tests the model path on any item (owner or bot authored): it bypasses
+  // the author skip, the "owner item"/short/complete-form research skips and the daily cap.
+  const force = dispatch && String(context.payload.inputs['force-model']) === 'true';
+  const skip = force && item.user ? '' : L.skipReason(item.user, dispatch ? '' : owner, cfg);
   const isOwner = !dispatch && skip === 'owner';
   const text = item.comment ? item.comment.body : `${item.title || ''}\n${item.body || ''}`;
   const state = { item: { kind: item.kind, number: item.number, node_id: item.node_id, comment: item.comment ? { id: item.comment.id, node_id: item.comment.node_id } : null, author: L.safeLogin(item.user && item.user.login), category: item.category || null, labels: item.labels || [], opened: !!item.opened, url: item.url || null, title: item.title, body: String(item.body || '').slice(0, 4000) }, skip, event: `${context.eventName}.${context.payload.action || ''}` };
 
+  if (force) state.force = true;
   if (skip === 'bot' || skip === 'no-author') return finish(core, state, null);
 
   state.privacy = L.privacyScan(text, cfg, process.env.PRIVATE_DENYLIST).slice(0, cfg.privacy.max_hits_reported);
@@ -163,7 +167,7 @@ async function gate({ github, context, core }) {
     const bodyLen = String(body || '').length;
     const tiny = bodyLen < r.min_body_chars;
     const complete = item.kind === 'issue' && formComplete(body) && bodyLen < r.complete_form_max_body_chars;
-    if (state.forced || (!isOwner && !dup && !tiny && !complete)) {
+    if (state.forced || force || (!isOwner && !dup && !tiny && !complete)) {
       const isQa = item.category === cfg.triage.qa_category;
       const purpose = isQa ? 'qa-answer' : 'brief';
       const isFeature = (state.triage && state.triage.type === 'type:feature') || item.category === 'ideas';
@@ -210,7 +214,7 @@ async function capCall(github, context, state, call, chain, cfg) {
     const cap = Number(process.env.AI_DAILY_CAP || cfg.model.default_daily_cap);
     const b = await L.budget(github, context, 'community.yml', cap);
     state.budget = b;
-    if (!b.ok) { state.model_skip = `daily cap reached (${b.used}/${cap})`; return null; }
+    if (!b.ok && !state.force) { state.model_skip = `daily cap reached (${b.used}/${cap})`; return null; }
   } else if (call) {
     state.model_skip = 'AI_PROVIDER=none';
     return null;
