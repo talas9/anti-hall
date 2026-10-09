@@ -250,3 +250,53 @@ value = "hivecontrol workspace list returned {new} record(s) for {key}, below th
 [devswarm_recon.synthetic_prefix]
 doc = "The start of a session id the registry mints for a row with no live session (such a session never confirms an identity)."
 value = "unclaimed:"
+
+# ---- S6: the mesh fold ---------------------------------------------------------------------------------------------------------
+
+[devswarm_recon.skip_prefix]
+doc = "The start of the failure text of an op that wrote nothing and whose unit is simply handed back to Node."
+value = "skip:"
+
+[devswarm_recon.why_dest_gone]
+doc = "Why a forward was handed back: its destination partition is no longer registered in the store."
+value = "dest-gone"
+
+
+
+
+
+
+
+[devswarm_recon.dir_retired]
+doc = "The directory of retired-id redirect files under the DevSwarm state directory (core.js retiredRedirectDir)."
+value = "retired"
+
+[devswarm_recon.seen_sep]
+doc = "The separator of a sibling-seen watermark file name, cursors/<caller>.seen-<sibling>.json (cursors.js SIBLING_SEEN_SEP)."
+value = ".seen-"
+
+
+
+
+
+
+
+
+
+
+
+
+
+min = 1
+max = 87600
+unit = "h"
+
+
+[devswarm_recon.norm_pid_mask]
+doc = "Pattern the normaliser blanks in a cursor-write journal: the writing process's pid (the engine and Node write their own)."
+value = '"pid":[0-9]+,"nonce"'
+
+[devswarm_recon.norm_pid_mask_to]
+doc = "What the pid pattern becomes."
+value = '"pid":0,"nonce"'
+

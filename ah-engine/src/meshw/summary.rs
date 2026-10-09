@@ -302,7 +302,7 @@ fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, id: &str, nd: bool) 
 }
 
 /// `archiveCompleteIds(home)`: `archived/<id>.json` present and `workspaces/<id>.json` absent.
-fn archive_complete_ids(home: &Path) -> HashSet<String> {
+pub(crate) fn archive_complete_ids(home: &Path) -> HashSet<String> {
     let root = devswarm_root(home);
     let dir = root.join(defaults::text("mesh_write.dir_archived"));
     let mut out = HashSet::new();

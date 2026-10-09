@@ -8,6 +8,7 @@
 //! * a symbolic link is its target;
 //! * the central log is blanked where the engine and Node differ by design (entry time and writer pid), by the same masks the
 //!   mesh witness uses (`devswarm_cli.log_masks`);
+//! * a cursor-write journal is blanked where the writer's pid sits (`devswarm_recon.norm_pid_mask`);
 //! * any other file is its bytes (lossy UTF-8, which is lossless for the JSON the sweeps write).
 use crate::defaults;
 use rusqlite::types::ValueRef;
@@ -62,6 +63,18 @@ fn is_log(rel: &str) -> bool {
     rel.starts_with(&logs) && defaults::list("devswarm_recon.norm_log_suffixes").iter().any(|s| rel.ends_with(s))
 }
 
+fn is_cursor_log(rel: &str) -> bool {
+    rel.starts_with(&format!("{}/{}/", super::view::root_rel(), defaults::text("mesh_write.dir_cursor_log")))
+}
+
+/// The writer's pid blanked in a cursor-write journal line (the engine and Node write their own).
+fn mask_pid(text: &str) -> String {
+    match regex::Regex::new(defaults::text("devswarm_recon.norm_pid_mask")) {
+        Ok(re) => re.replace_all(text, regex::NoExpand(defaults::text("devswarm_recon.norm_pid_mask_to"))).into_owned(),
+        Err(_) => text.to_string(),
+    }
+}
+
 fn walk(base: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
@@ -82,7 +95,13 @@ fn walk(base: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
                 dump_db(&p)
             } else {
                 let raw = String::from_utf8_lossy(&std::fs::read(&p).unwrap_or_default()).into_owned();
-                if is_log(&rel) { crate::meshw::clog::masked(&raw) } else { raw }
+                if is_log(&rel) {
+                    crate::meshw::clog::masked(&raw)
+                } else if is_cursor_log(&rel) {
+                    mask_pid(&raw)
+                } else {
+                    raw
+                }
             };
             if md.nlink() > 1 {
                 text.push_str(&format!("\n#nlink={}", md.nlink()));

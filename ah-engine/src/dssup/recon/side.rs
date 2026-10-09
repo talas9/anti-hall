@@ -517,7 +517,7 @@ pub fn touched(u: &Unit) -> Vec<String> {
                 out.push(rel.clone());
                 out.push(to.clone());
             }
-            Op::Upsert { .. } | Op::Derive { .. } | Op::Log { .. } => {}
+            Op::Upsert { .. } | Op::Derive { .. } | Op::Log { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } | Op::RemoveRegistryIf { .. } | Op::Guard { .. } => {}
         }
     }
     out.sort();
