@@ -924,3 +924,23 @@ pub fn human_text(inv: &Inv, rows: &[Obj], all: bool, now: f64) -> R<String> {
     }
     Ok(lines.join("\n"))
 }
+
+/// The row-state readers of the roster for another verb (`diagnose`, `healthcheck`): the same archived and live verdicts.
+pub(crate) struct Verdicts<'a>(Eng<'a>);
+
+impl<'a> Verdicts<'a> {
+    /// Verdicts for one project at the invocation's clock.
+    pub(crate) fn new(inv: &'a Inv, repo_key: &'a str) -> Verdicts<'a> {
+        Verdicts(Eng { inv, now: inv.now as f64, repo_key, dormant: std::cell::OnceCell::new() })
+    }
+
+    /// `rowEligibility(...).archived`: anti-hall's archive marker or the app's verdict.
+    pub(crate) fn archived(&self, id: &str, wt: Option<&str>) -> R<bool> {
+        archived(&self.0, id, wt)
+    }
+
+    /// `computeRowLive` / `isSiblingPartitionLive` of a row (`session` already empty-to-none).
+    pub(crate) fn live(&self, id: &str, wt: Option<&str>, session: Option<&str>) -> R<bool> {
+        row_live(&self.0, id, wt, session)
+    }
+}

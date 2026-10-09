@@ -92,7 +92,7 @@ function meshRoute(argv, segments) {
       { words: ['help'] }, { words: [], anyOf: ['-h', '--h', '--help'] }, { words: ['skip'] }, { words: ['archive-ignore'] },
       { words: ['archive-unignore'] }, { words: ['gate-intent'] }, { words: ['notice'] }, { words: ['plan'] }, { words: ['scope'] },
       { words: ['gate'] }, { words: ['workspaces'] }, { words: ['logs'] }, { words: ['wake-directive'] },
-      { words: ['ready-check'] }, { words: ['app-state'] }, { words: ['app-sync'] }, { words: ['done'] }, { words: ['primary'] }, { words: ['relay'] }, { words: ['archive-request'] }, { words: ['nudge'] }, { words: ['supervision-report'] }, { words: ['sync-ui'] }, { words: ['retention'] }, { words: ['reap-orphans'] }, { words: ['correct'] }, { words: ['register'] }, { words: ['ensure'] }, { words: ['migrate-owner-keys'] }, { words: ['unarchive'] }, { words: ['archive'] }, { words: ['register-primary'] },
+      { words: ['ready-check'] }, { words: ['app-state'] }, { words: ['app-sync'] }, { words: ['done'] }, { words: ['primary'] }, { words: ['relay'] }, { words: ['archive-request'] }, { words: ['nudge'] }, { words: ['supervision-report'] }, { words: ['sync-ui'] }, { words: ['retention'] }, { words: ['reap-orphans'] }, { words: ['correct'] }, { words: ['register'] }, { words: ['ensure'] }, { words: ['migrate-owner-keys'] }, { words: ['unarchive'] }, { words: ['archive'] }, { words: ['register-primary'] }, { words: ['diagnose'] }, { words: ['healthcheck'] },
     ];
     var routed = ROUTES.some(function (r) {
       return r.words.every(function (w, i) { return argv[i] === w; })

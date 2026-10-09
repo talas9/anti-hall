@@ -2404,3 +2404,61 @@ value = "DEVSWARM_BUILDER_ID"
 [devswarm_cli.regprim_child_env]
 doc = "The variable DevSwarm sets only on a child workspace."
 value = "DEVSWARM_SOURCE_BRANCH"
+
+# ---- diagnose, healthcheck ----------------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_diagnose]
+doc = "The verb that projects the mesh's health (rows, partitions, orphans)."
+value = "diagnose"
+
+[devswarm_cli.verb_healthcheck]
+doc = "The verb that turns the same projection into a pass or fail."
+value = "healthcheck"
+
+[devswarm_cli.diag_reason_no_project]
+doc = "The `reason` of a diagnosis asked outside any project."
+value = "no-project"
+
+[devswarm_cli.diag_line_no_project]
+doc = "The one-line answer of diagnose outside any project."
+value = "diagnose: no-project (cwd is not inside a DevSwarm project)"
+
+[devswarm_cli.health_line_no_project]
+doc = "The one-line answer of healthcheck outside any project."
+value = "healthcheck: no-project (cwd is not inside a DevSwarm project)"
+
+[devswarm_cli.diag_warn_dead]
+doc = "The warning for partitions with 2+ registry rows and no live session; {n} is how many."
+value = "{n} dead split(s) (2+ registry rows, no live session draining either — mail can strand)"
+
+[devswarm_cli.diag_warn_mixed]
+doc = "The warning for partitions with 2+ registry rows and exactly one live; {n} is how many."
+value = "{n} mixed split(s) (2+ registry rows, exactly 1 live — a send can still resolve to the dead row)"
+
+[devswarm_cli.diag_warn_join]
+doc = "What joins two warnings."
+value = "; "
+
+[devswarm_cli.diag_line_warning]
+doc = "The warning suffix of a one-line answer."
+value = " — warning: {warning}"
+
+[devswarm_cli.diag_status_ok]
+doc = "The status word of a healthy mesh."
+value = "ok"
+
+[devswarm_cli.diag_status_degraded]
+doc = "The status word of a mesh with structural drift."
+value = "degraded"
+
+[devswarm_cli.diag_scope]
+doc = "The scope part of a one-line answer; {key} is the project key."
+value = " (scope: {key})"
+
+[devswarm_cli.diag_line]
+doc = "The one-line answer of diagnose; {parts} are the counts."
+value = "diagnose: {status}{scope} [{parts}]{warning}"
+
+[devswarm_cli.health_line]
+doc = "The one-line answer of healthcheck; {parts} are the counts."
+value = "healthcheck: {status}{scope} [{parts}]{warning}"

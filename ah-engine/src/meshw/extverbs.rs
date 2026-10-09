@@ -56,6 +56,10 @@ pub enum Ext {
     Archive,
     /// `register-primary` (lane dsA).
     RegisterPrimary,
+    /// `diagnose [--json]` (lane dsA).
+    Diagnose,
+    /// `healthcheck [--json]` (lane dsA).
+    Healthcheck,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -100,6 +104,10 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Archive)
     } else if is("devswarm_cli.verb_register_primary") {
         Some(Ext::RegisterPrimary)
+    } else if is("devswarm_cli.verb_diagnose") {
+        Some(Ext::Diagnose)
+    } else if is("devswarm_cli.verb_healthcheck") {
+        Some(Ext::Healthcheck)
     } else {
         None
     }
@@ -107,7 +115,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register | Ext::Correct | Ext::ReapOrphans | Ext::RegisterPrimary)
+    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register | Ext::Correct | Ext::ReapOrphans | Ext::RegisterPrimary | Ext::Diagnose | Ext::Healthcheck)
 }
 
 /// Run the verb.
@@ -132,6 +140,8 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::ReapOrphans => super::lifeverbs::reap_orphans(inv, a),
         Ext::Archive => super::archiveverb::archive(inv, a),
         Ext::RegisterPrimary => super::lifeverbs::register_primary(inv, a),
+        Ext::Diagnose => super::diagverbs::diagnose(inv, a),
+        Ext::Healthcheck => super::diagverbs::healthcheck(inv, a),
     }
 }
 

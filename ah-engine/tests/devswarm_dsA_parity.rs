@@ -786,3 +786,119 @@ fn register_primary_matches_node() {
     ];
     check(&fx, &cases, &[], 16, 3);
 }
+
+// ---- diagnose / healthcheck ----------------------------------------------------------------------------------------------
+
+/// A registry row of the project's store: (id, worktree, session, updated_at).
+fn registry_row(h: &Path, key: &str, id: &str, wt: &str, session: Option<&str>) {
+    let db = dsroot(h).join("store").join(key).join("devswarm.db");
+    let c = rusqlite::Connection::open(db).unwrap();
+    c.execute(
+        "INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq) VALUES (?, ?, ?, NULL, NULL, NULL, ?, 1)",
+        rusqlite::params![id, wt, session, NOW - 60_000],
+    )
+    .unwrap();
+}
+
+fn orphan_mail(h: &Path, key: &str, partition: &str) {
+    let db = dsroot(h).join("store").join(key).join("devswarm.db");
+    let c = rusqlite::Connection::open(db).unwrap();
+    c.execute(
+        "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, 'mesh:orph', 'lost', 'x', ?, 'direct', 'low', 0, 0, NULL, NULL, (SELECT COALESCE(MAX(seq),0)+1 FROM messages))",
+        rusqlite::params![partition, NOW - 1000, partition],
+    )
+    .unwrap();
+}
+
+#[test]
+fn diagnose_and_healthcheck_match_node() {
+    need_node!();
+    let fx = fixture("dsadiag");
+    let key = fx.repo_key.clone();
+    let (child, main) = (fx.child.to_string_lossy().to_string(), fx.main.to_string_lossy().to_string());
+    let app = ("ANTIHALL_DEVSWARM_APP_DB", "{HOME}/app.db");
+    let d = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "Diagnose");
+    let hc = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "Healthcheck");
+    // a second registry row on the child worktree: a partitioned mesh id
+    let twin = {
+        let (k, c) = (key.clone(), child.clone());
+        move |h: &Path, sid: Option<&str>| registry_row(h, &k, "child-twin", &c, sid)
+    };
+    let fresh = |h: &Path, id: &str| heartbeat(h, id, NOW - 1000);
+    let mut cases: Vec<Lc> = Vec::new();
+    for (verb, mk) in [("diagnose", 0), ("healthcheck", 1)] {
+        let m = |name: &str, extra: &[&str], cwd: &'static str, native: bool| {
+            let mut argv = vec![verb];
+            argv.extend_from_slice(extra);
+            let nm = format!("{verb}-{name}");
+            if mk == 0 { d(&nm, &argv, cwd, native) } else { hc(&nm, &argv, cwd, native) }
+        };
+        let (t1, t2, t3, t4) = (twin.clone(), twin.clone(), twin.clone(), twin.clone());
+        let k = key.clone();
+        let k2 = key.clone();
+        let (c1, c2) = (child.clone(), child.clone());
+        cases.extend(vec![
+            m("seed-human", &[], "main", true),
+            m("seed-json", &["--json"], "main", true),
+            m("from-a-child", &["--json"], "child", true),
+            m("outside-a-project-human", &[], "nongit", true),
+            m("outside-a-project-json", &["--json"], "nongit", true),
+            m("project-without-a-store", &["--json"], "other", false),
+            m("fresh-heartbeat-makes-a-row-live", &["--json"], "main", true).setup(move |h| fresh(h, "child-1")),
+            m("all-quiet-heartbeats", &["--json"], "main", true).setup(move |h| {
+                for id in ["child-1", "child-2"] {
+                    heartbeat(h, id, NOW - 1000);
+                }
+            }),
+            m("live-split", &["--json"], "main", true).setup(move |h| {
+                t1(h, Some("s-twin"));
+                heartbeat(h, "child-1", NOW - 1000);
+                heartbeat(h, "child-twin", NOW - 1000);
+            }),
+            m("mixed-split", &["--json"], "main", true).setup(move |h| {
+                t2(h, Some("s-twin"));
+                heartbeat(h, "child-1", NOW - 1000);
+            }),
+            m("mixed-split-human", &[], "main", true).setup({
+                let c = c1.clone();
+                let k = k.clone();
+                move |h| {
+                    registry_row(h, &k, "child-twin", &c, Some("s-twin"));
+                    heartbeat(h, "child-1", NOW - 1000);
+                }
+            }),
+            m("dead-split", &["--json"], "main", true).setup(move |h| {
+                t3(h, Some("unclaimed:x"));
+                heartbeat(h, "child-1", NOW - 1_000_000_000);
+            }),
+            m("dead-split-human", &[], "main", true).setup(move |h| t4(h, None)),
+            m("descriptor-session-fills-a-synthetic-registry-one", &["--json"], "main", true).setup({
+                let (k, c) = (k2.clone(), c2.clone());
+                move |h| {
+                    registry_row(h, &k, "desc-only", &c, Some("unclaimed:desc-only"));
+                    put(h, ".anti-hall/devswarm/workspaces/desc-only.json", &format!("{{\"id\":\"desc-only\",\"worktreePath\":\"{c}\",\"sessionId\":\"real-session\"}}"));
+                }
+            }),
+            m("an-orphan-partition-is-node", &["--json"], "main", false).setup({
+                let k = key.clone();
+                move |h| orphan_mail(h, &k, "nobody-home")
+            }),
+            m("app-archived-row", &["--json"], "main", true).env(app.0, app.1).setup({
+                let c = child.clone();
+                move |h| builders(h, &[("child-1", Path::new(&c), 1, 0, "child")])
+            }),
+            m("app-open-row", &["--json"], "main", true).env(app.0, app.1).setup({
+                let c = child.clone();
+                move |h| builders(h, &[("child-1", Path::new(&c), 0, 1, "child")])
+            }),
+            m("another-primary-checkout-row", &["--json"], "main", true).setup({
+                let (k, mw) = (key.clone(), main.clone());
+                move |h| registry_row(h, &k, "primary-extra", &mw, Some("s-extra"))
+            }),
+        ]);
+    }
+    for c in &mut cases {
+        c.witness = true;
+    }
+    check(&fx, &cases, &[], 28, 4);
+}
