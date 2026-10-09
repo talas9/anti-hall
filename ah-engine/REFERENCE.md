@@ -6136,8 +6136,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `resource_watch.keep_s` | `3600` |  | s | A warning stays in the report this long, so a session that starts or prompts later still sees it once. |
 | `resource_watch.mac_pressure_level` | `7 entries` |  |  | Warn when the macOS memory pressure level is at least this (2 warn, 4 critical; resourceWatch.macPressureLevel; 0 turns it off). |
 | `resource_watch.mac_pressure_sysctl` | `kern.memorystatus_vm_pressure_level` |  |  | The macOS sysctl name of the memory pressure level. |
+| `resource_watch.mac_swap_sysctl` | `vm.swapusage` |  |  | The macOS sysctl name of the swap usage record. |
 | `resource_watch.max_tracked` | `256` |  |  | The most processes whose CPU history is kept (the busiest first); the rest are not tracked. |
 | `resource_watch.mem_mb` | `7 entries` |  |  | Warn when a process of a live session holds at least this much memory, in MB (resourceWatch.memoryMb). |
+| `resource_watch.meminfo_path` | `/proc/meminfo` |  |  | The Linux memory statistics file (swap in use is SwapTotal minus SwapFree). |
 | `resource_watch.msg_cpu_limit` | `{pct}% over {window}s` |  |  | CPU threshold text; {pct}. |
 | `resource_watch.msg_cpu_usage` | `{pct}% CPU for {window}s` |  |  | CPU usage text; {pct} percent, {window} seconds. |
 | `resource_watch.msg_instead` | `Nothing was stopped or slowed. Check whether the work is expected; if not, as...` |  |  | What to do. |
@@ -7536,6 +7538,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `realtime.max_delay_ms` | `1000` | `AH_ENGINE_RT_MAX_DELAY_MS` | ms | A file that keeps changing is still reported at least this often (the ceiling on debounce_ms), so a busy source is never starved. |
 | `realtime.max_entries` | `2048` |  |  | The most matching files one watched directory is tracked for. A directory with more reports a rescan signal when it changes, so a huge directory cannot grow the watcher's memory. |
 | `realtime.mounts_file` | `/proc/self/mounts` |  |  | The file that lists mounted filesystems with their types on Linux (including WSL2); the longest mount point that holds a watched directory names its filesystem type. macOS asks the system (statfs) instead. |
+| `realtime.msg_too_many_files` | `more than {cap} matching files` |  |  | Why a directory is polled instead of watched with events when more files than the cap match; {cap} is `realtime.max_entries`. |
 | `realtime.poll_ms` | `750` | `AH_ENGINE_RT_POLL_MS` | ms | How often a polled directory is listed and its watched files stat'ed, in milliseconds. Only directories that cannot use OS events are polled (9p, drvfs, NFS, SMB, FUSE, a directory that does not exist yet, backend = poll), so this is the detection latency of those: at most this plus debounce_ms. Polling costs CPU in proportion to the files watched divided by this interval. |
 | `realtime.queue_cap` | `512` |  |  | The most distinct changed files held before they are reported. Past it the held changes are dropped and ONE rescan signal is sent instead (the consumer reconciles everything), so the queue and its output stay bounded however large the storm. |
 | `realtime.sqlite_suffixes` | `-wal, -shm, -journal` |  |  | Suffixes of the files SQLite keeps beside a database (write-ahead log, shared memory, rollback journal). Watching a database name also watches the name plus each suffix, because a commit lands in the -wal file and a checkpoint can truncate it. |
