@@ -383,9 +383,14 @@ function verifyPython(cands, bin, deadline) {
   for (const [, group] of byMod) {
     if (spawns++ >= MAX_MODULES || Date.now() > deadline) break;
     const checks = group.map((c) => [c.receiverPath, c.attr]);
-    // -s: ignore the user site-packages dir (and its .pth files) — closes the
-    // PYTHONUSERBASE/.pth startup-exec vector. Main site-packages still resolve.
-    const codes = spawnJSON(bin, ['-s', '-c', PY_PROBE, JSON.stringify(checks)], tmp);
+    // -I (isolated: implies -s, -E and no cwd on sys.path): ignores the user
+    // site-packages dir (and its .pth files) — closes the PYTHONUSERBASE/.pth
+    // startup-exec vector — and keeps the probe's own `import sys, json, os`
+    // (which runs before the sys.path scrub) from resolving in the temp dir:
+    // with -s, '' (cwd) led sys.path, so Python listed the whole temp directory
+    // (tens of seconds once it holds ~500k entries) and a planted json.py there
+    // would run. Main site-packages still resolve.
+    const codes = spawnJSON(bin, ['-I', '-c', PY_PROBE, JSON.stringify(checks)], tmp);
     if (!Array.isArray(codes)) continue;
     group.forEach((c, i) => { if (codes[i] === 0) fakes.push(c); });
   }
