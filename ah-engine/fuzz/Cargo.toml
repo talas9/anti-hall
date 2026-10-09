@@ -22,13 +22,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "shell"
-path = "fuzz_targets/shell.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "json"
 path = "fuzz_targets/json.rs"
 test = false

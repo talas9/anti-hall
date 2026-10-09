@@ -1,7 +1,7 @@
-//! Benchmarks for the pattern matcher and the shell tokenizers (`cargo bench --bench parsers`). The `**/**/**` groups
+//! Benchmarks for the pattern matcher and the heredoc opener parser (`cargo bench --bench parsers`). The `**/**/**` groups
 //! are the worst case for a backtracking glob: time must stay flat-linear in the text length.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
-use ah_engine::checks::command::shell;
+use ah_engine::checks::git::tokenize as tk;
 use ah_engine::hookcfg::when::glob_match;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
@@ -33,8 +33,15 @@ fn tokenizers(c: &mut Criterion) {
     let big = format!("{small} ; {heredoc}\n").repeat(40);
     let mut g = c.benchmark_group("tokenize");
     for (name, text) in [("small", small.to_string()), ("heredoc", heredoc.to_string()), ("big", big)] {
-        g.bench_with_input(BenchmarkId::new("shell_split_detailed", name), &text, |b, t| b.iter(|| shell::split_detailed(black_box(t))));
-        g.bench_with_input(BenchmarkId::new("shell_heredoc_bodies", name), &text, |b, t| b.iter(|| shell::heredoc_bodies_in(black_box(t))));
+        let chars: Vec<char> = text.chars().collect();
+        g.bench_with_input(BenchmarkId::new("heredoc_openers", name), &chars, |b, cs| {
+            b.iter(|| {
+                let mut st = tk::ArithScan::new();
+                for i in 0..cs.len() {
+                    black_box(tk::parse_heredoc_at(black_box(cs), i, &mut st));
+                }
+            })
+        });
     }
     g.finish();
 }
