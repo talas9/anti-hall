@@ -1,0 +1,8 @@
+# gitleaks config for privacy-scan.yml, loaded from the PR base commit (a PR cannot weaken it).
+# Default rule set plus repo-specific allowlists for test fixtures with fake credentials.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic credentials in test fixtures"
+paths = ['''^tests/fixtures/''', '''^evals/anti-hall/cases/''', '''(^|/)package-lock\.json$''']

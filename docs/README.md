@@ -4,6 +4,29 @@ The start page: every doc, grouped, one line each. New here? Read the
 [`GUIDE.md`](./GUIDE.md) sections you need; [`KB.md`](./KB.md) is the canonical,
 maintained knowledge base (ground truth, staleness ledger, topic map).
 
+## Docs site
+
+The pages of the published docs site, https://talas9.github.io/anti-hall/ (built with MkDocs from this folder; the settings
+reference and the changelog pages are generated at build time by `tools/site_gen.py`).
+
+| Page | What it covers |
+|---|---|
+| [`index.md`](./index.md) | Docs site home: what anti-hall is, install, what you'll notice in your first session. |
+| [`start/install.md`](./start/install.md) | Install for Claude Code and Codex, keep `.anti-hall/` out of git, check it works. |
+| [`start/update.md`](./start/update.md) | Update on Claude Code and Codex. |
+| [`start/uninstall.md`](./start/uninstall.md) | Remove the plugin, the statusline and the optional companions. |
+| [`features/guards.md`](./features/guards.md) | Each guard, its message, its setting, skipping one, and what guards do not do. |
+| [`features/tasks.md`](./features/tasks.md) | Task tracking: task-guard, tasklist-guard, the progress file and the fix ledger. |
+| [`features/handovers.md`](./features/handovers.md) | Automatic and manual handovers, resuming, keeping context small. |
+| [`features/skills.md`](./features/skills.md) | Every skill, when to use it, and the Codex skill names. |
+| [`features/statusline.md`](./features/statusline.md) | The optional two-line statusline: install, consolidate, remove. |
+| [`features/devswarm.md`](./features/devswarm.md) | The optional DevSwarm integration and its companions. |
+| [`features/engine.md`](./features/engine.md) | The Rust engine (not in a release yet): what it is, live answers and Node fallback. |
+| [`settings/index.md`](./settings/index.md) | Changing settings: the skill, `/config`, the CLI, precedence, safety settings. |
+| [`troubleshooting.md`](./troubleshooting.md) | The doctor, common problems, what the messages mean, turning a check off. |
+| [`contributing.md`](./contributing.md) | Contributing links and how to build the docs site. |
+| [`background.md`](./background.md) | Introduces the research notes (KB-*) shown under Background on the site. |
+
 ## Getting started
 
 | Doc | What it covers |
@@ -41,7 +64,9 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Project layout, running the tests, adding a guard. |
 | [`../SECURITY.md`](../SECURITY.md) | Report a vulnerability privately, not in a public issue. |
 | [`../CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Expected behaviour and how to report a conduct problem. |
+| [`../SUPPORT.md`](../SUPPORT.md) | Where to ask a question, report a bug or get help. |
 | [`../RELEASING.md`](../RELEASING.md) | The release checklist and the `dev` → `main` branch flow. |
+| [`REPO-PIPELINES.md`](./REPO-PIPELINES.md) | Every GitHub workflow, its trigger and whether it gates, plus the repository's policy files and security settings. |
 | [`CONTRACT-1.0.md`](./CONTRACT-1.0.md) | What semver freezes at 1.0: settings keys, CLI verbs, hooks, state paths, Codex parity. |
 | [`../AGENTS.md`](../AGENTS.md) | The protocol for Codex and cross-tool agents. |
 | [`../plugins/anti-hall/README.md`](../plugins/anti-hall/README.md) | The plugin directory page (ships inside the plugin). |

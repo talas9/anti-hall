@@ -1,0 +1,14 @@
+{"type":"object","additionalProperties":false,"required":["type","area","priority","size","estimate_hours","milestone","related","files","docs","approach","risks","questions","rationale"],"properties":{
+"type":{"type":"string","enum":["type:bug","type:feature","type:docs","type:chore"]},
+"area":{"type":"string","enum":["area:engine","area:devswarm","area:hooks","area:statusline","area:codex","area:ci","area:docs","area:release","area:command-guard","area:git-guard","area:edit-guard","area:agent-guards","area:stop-guards","none"]},
+"priority":{"type":"string","enum":["priority:P0","priority:P1","priority:P2","priority:P3"]},
+"size":{"type":"string","enum":["size:S","size:M","size:L","size:XL"]},
+"estimate_hours":{"type":"number","minimum":0.5,"maximum":200},
+"milestone":{"type":"string","enum":["v0.300.0","v0.301 engine-only (Node removed)","v1.0","none"]},
+"related":{"type":"array","maxItems":5,"items":{"type":"object","required":["number","relation"],"properties":{"number":{"type":"integer","minimum":1},"relation":{"type":"string","enum":["duplicate","related"]}}}},
+"files":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":200}},
+"docs":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":200}},
+"approach":{"type":"array","maxItems":5,"items":{"type":"string","maxLength":200}},
+"risks":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":200}},
+"questions":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":200}},
+"rationale":{"type":"string","maxLength":500}}}

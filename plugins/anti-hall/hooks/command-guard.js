@@ -1973,7 +1973,10 @@ function isFlaggedInterpreterScript(segment) {
 // anti-hall CLI exemptions must still see the wrapped `node <dir>/devswarm.js
 // roster` as the segment's own verb (field report: the `timeout N node ...
 // roster | head` form blocked while the same line without `timeout` passed).
-const TIMEOUT_PREFIX_RE = /^\s*timeout\s+(?:-[ks]\s+\S+\s+|-\S+\s+)*\d+[smhd]?\s+/;
+// The two flag alternatives are kept disjoint (`-k`/`-s` + whitespace only
+// matches the first) so a run of `-k -x -k -x ...` cannot backtrack
+// exponentially (CodeQL js/redos).
+const TIMEOUT_PREFIX_RE = /^\s*timeout\s+(?:-[ks]\s+\S+\s+|-(?![ks]\s)\S+\s+)*\d+[smhd]?\s+/;
 
 // A shell control keyword that merely introduces the next command
 // (`for t in a b; do <cmd>`, `then <cmd>`, `if <cmd>`) is not part of that
