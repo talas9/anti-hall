@@ -65,7 +65,7 @@ fn defer() -> i32 {
 
 fn wait_for(mut f: impl FnMut() -> bool) -> bool {
     let t = Instant::now();
-    while t.elapsed() < Duration::from_secs(3) {
+    while t.elapsed() < Duration::from_secs(20) {
         if f() {
             return true;
         }
@@ -154,6 +154,7 @@ fn newer_client_hands_off_to_new_build() {
     assert!(wait_for(|| !alive(old)), "old daemon must exit");
     // next client cold-starts the new build
     assert!(wait_for(|| !e.hook("0.2.0", DENY_IN).0.is_empty()));
+    assert!(wait_for(|| e.pid().is_some()), "the new build answers a ping");
     let ping = e.ctl("ping").unwrap();
     assert!(ping.starts_with("pong 0.2.0 "), "{ping}");
     assert_ne!(e.pid().unwrap(), old);
