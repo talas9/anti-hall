@@ -15,6 +15,7 @@ use crate::checks::guardkit::ojson::{OVal, is_array_index_key, js_number_text};
 use crate::checks::guardkit::text::{js_number_of_str, js_trim};
 use crate::checks::jsport::date::{self, Parsed};
 use crate::defaults;
+use crate::dssup::appsync::{plan as asplan, snap, state as asstate};
 use crate::meshw::args::Args;
 use crate::meshw::common::{Inv, Obj, n, s};
 use crate::meshw::ident::{R, defer};
@@ -732,4 +733,315 @@ pub fn supervision_report(inv: &Inv, a: &Args) -> R<Answer> {
         return Ok(answer(0, report_value(&rep)));
     }
     Ok(Answer { code: 0, stdout: format!("{}\n", format_report(&rep)), effect: Effect::None })
+}
+
+// ---- sync-ui ------------------------------------------------------------------------------------------------------------
+
+/// `normTitle(s)` of `companion/lib/devswarm-ui-sync.js`: NFKC, white space collapsed, a trailing ellipsis dropped, lower case.
+fn norm_title(x: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let nf: String = x.nfkc().collect();
+    let mut collapsed = String::new();
+    let mut in_space = false;
+    for c in nf.chars() {
+        if crate::checks::guardkit::text::is_js_space(c) {
+            if !in_space {
+                collapsed.push(' ');
+            }
+            in_space = true;
+        } else {
+            collapsed.push(c);
+            in_space = false;
+        }
+    }
+    let mut t = js_trim(&collapsed).to_string();
+    // `/\s*(?:…|\.\.\.)$/u`
+    let ell = defaults::text("devswarm_cli.sui_ellipsis");
+    let dots = defaults::text("devswarm_cli.sui_dots");
+    let cut = t.strip_suffix(ell).or_else(|| t.strip_suffix(dots)).map(str::len);
+    if let Some(len) = cut {
+        t.truncate(len);
+        t = js_trim(&t).to_string();
+    }
+    t.to_lowercase()
+}
+
+fn utf16_len(x: &str) -> usize {
+    x.encode_utf16().count()
+}
+
+/// `titleMatches(shot, label)`.
+fn title_matches(shot: &str, label: Option<&str>) -> bool {
+    let a = norm_title(shot);
+    let b = norm_title(label.unwrap_or_default());
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a == b {
+        return true;
+    }
+    let (short, long) = if utf16_len(&a) <= utf16_len(&b) { (&a, &b) } else { (&b, &a) };
+    utf16_len(short) >= defaults::num("devswarm_cli.sui_min_prefix") as usize && long.starts_with(short.as_str())
+}
+
+fn rank_key(w: &snap::Ws) -> f64 {
+    w.rank.unwrap_or(f64::INFINITY)
+}
+
+fn visible(w: &snap::Ws) -> bool {
+    match w.is_hidden {
+        None => !w.archived,
+        Some(h) => !h,
+    }
+}
+
+fn label_val(l: Option<&str>) -> OVal {
+    l.map_or(OVal::Null, s)
+}
+
+fn str_list(items: &[String]) -> OVal {
+    OVal::Arr(items.iter().map(|x| s(x)).collect())
+}
+
+/// `planUiSync({ titles, snapshot, repositoryId, descriptors, markers, names })`.
+fn plan_ui_sync(titles: &[String], snapshot: Option<&snap::Snap>, repository_id: Option<&str>, descriptors: &[String], markers: &[String], names: &[(String, String)]) -> OVal {
+    let titles: Vec<&String> = titles.iter().filter(|t| !js_trim(t).is_empty()).collect();
+    let mut out = Obj::default();
+    let Some(sn) = snapshot else {
+        out.put("appDb", OVal::Bool(false))
+            .put("matched", OVal::Arr(vec![]))
+            .put("ambiguous", OVal::Arr(vec![]))
+            .put("unmatched", OVal::Arr(titles.iter().map(|t| s(t)).collect()))
+            .put("toArchive", OVal::Arr(vec![]))
+            .put("titleUpdates", OVal::Arr(vec![]))
+            .put("conflicts", OVal::Arr(vec![]))
+            .put("unknown", str_list(descriptors));
+        return out.done();
+    };
+    let scoped: Vec<&snap::Ws> =
+        sn.workspaces.iter().filter(|w| w.builder_type.as_deref() != Some(defaults::text("mesh_write.builder_type_primary")) && repository_id.is_none_or(|r| r.is_empty() || w.repository_id.as_deref() == Some(r))).collect();
+    let mut visible_by_rank: Vec<&snap::Ws> = scoped.iter().copied().filter(|w| visible(w)).collect();
+    visible_by_rank.sort_by(|a, b| rank_key(a).partial_cmp(&rank_key(b)).unwrap_or(std::cmp::Ordering::Equal));
+    let name_of = |id: &str| names.iter().find(|(k, _)| k == id).map(|(_, v)| v.as_str());
+    let mut shown: Vec<&str> = Vec::new();
+    let (mut matched, mut ambiguous, mut unmatched, mut title_updates, mut conflicts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (pos, title) in titles.iter().enumerate() {
+        let mut cands: Vec<&snap::Ws> = scoped.iter().copied().filter(|w| title_matches(title, w.label.as_deref())).collect();
+        if cands.len() > 1 {
+            let vis: Vec<&snap::Ws> = cands.iter().copied().filter(|w| visible(w)).collect();
+            if !vis.is_empty() {
+                cands = vis;
+            }
+        }
+        if cands.len() > 1
+            && let Some(by_pos) = visible_by_rank.get(pos)
+            && cands.iter().any(|c| c.id == by_pos.id)
+        {
+            cands = vec![by_pos];
+        }
+        if cands.is_empty() {
+            unmatched.push(s(title));
+            continue;
+        }
+        if cands.len() > 1 {
+            let list = cands
+                .iter()
+                .map(|c| {
+                    let mut o = Obj::default();
+                    o.put("id", s(&c.id)).put("label", label_val(c.label.as_deref())).put("rank", opt(c.rank));
+                    o.done()
+                })
+                .collect();
+            let mut o = Obj::default();
+            o.put("title", s(title)).put("candidates", OVal::Arr(list));
+            ambiguous.push(o.done());
+            continue;
+        }
+        let w = cands[0];
+        shown.push(&w.id);
+        let mut m = Obj::default();
+        m.put("title", s(title)).put("id", s(&w.id)).put("label", label_val(w.label.as_deref())).put("archivedInApp", OVal::Bool(w.archived));
+        matched.push(m.done());
+        if w.archived {
+            let mut c = Obj::default();
+            c.put("id", s(&w.id)).put("label", label_val(w.label.as_deref())).put("kind", s(defaults::text("devswarm_cli.sui_kind_visible_archived")));
+            conflicts.push(c.done());
+        }
+        if let Some(l) = w.label.as_deref().filter(|l| !l.is_empty())
+            && name_of(&w.id) != Some(l)
+        {
+            let mut u = Obj::default();
+            u.put("id", s(&w.id))
+                .put("from", name_of(&w.id).map_or(OVal::Null, s))
+                .put("to", s(l))
+                .put("truncatedAtSpawn", OVal::Bool(l.ends_with(defaults::text("devswarm_cli.sui_ellipsis"))));
+            title_updates.push(u.done());
+        }
+    }
+    let by_id = |id: &str| scoped.iter().copied().rev().find(|w| w.id == id);
+    let mut to_archive = Vec::new();
+    for id in descriptors {
+        let Some(w) = by_id(id) else { continue };
+        if w.archived && !shown.contains(&id.as_str()) && !markers.contains(id) {
+            let mut a = Obj::default();
+            a.put("id", s(id)).put("label", label_val(w.label.as_deref()));
+            to_archive.push(a.done());
+        }
+    }
+    let mut seen: Vec<&String> = Vec::new();
+    for id in markers {
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        if let Some(w) = by_id(id)
+            && w.active
+        {
+            let mut c = Obj::default();
+            c.put("id", s(&w.id)).put("label", label_val(w.label.as_deref())).put("kind", s(defaults::text("devswarm_cli.sui_kind_marker_active")));
+            conflicts.push(c.done());
+        }
+    }
+    out.put("appDb", OVal::Bool(true))
+        .put("matched", OVal::Arr(matched))
+        .put("ambiguous", OVal::Arr(ambiguous))
+        .put("unmatched", OVal::Arr(unmatched))
+        .put("toArchive", OVal::Arr(to_archive))
+        .put("titleUpdates", OVal::Arr(title_updates))
+        .put("conflicts", OVal::Arr(conflicts))
+        .put("unknown", OVal::Arr(vec![]));
+    out.done()
+}
+
+/// Whether `devswarm.screenshotSync` could be anything but its default (on): any tier that might name it sends the verb to Node.
+fn screenshot_setting_untouched(inv: &Inv) -> bool {
+    let squash = |x: &str| x.to_ascii_lowercase().replace(['_', '-'], "");
+    let needle = squash(defaults::text("devswarm_cli.sui_setting_word"));
+    if inv.env.keys().any(|k| squash(k).contains(&needle)) {
+        return false;
+    }
+    let ah = inv.home.join(defaults::text("mesh_write.dir_anti_hall"));
+    for f in defaults::list("devswarm_cli.sui_setting_files") {
+        if let Ok(b) = std::fs::read(ah.join(f))
+            && squash(&String::from_utf8_lossy(&b)).contains(&needle)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// One snapshot-and-records gathering of `sync-ui` (`gather()`): `(snapshot, repositoryId, plan, table, descriptor ids)`.
+fn gather_ui(inv: &Inv, titles: &[String]) -> R<(Option<snap::Snap>, Option<String>, OVal, Vec<OVal>)> {
+    let file = crate::meshw::ident::app_db_path(&inv.home, &inv.env);
+    let snapshot = match &file {
+        Some(f) => snap::read(f)?,
+        None => None,
+    };
+    let repository_id = match &snapshot {
+        Some(sn) => {
+            let main = crate::meshw::ident::resolve_context(&inv.cwd, false)?.main_worktree.unwrap_or_else(|| inv.cwd.clone());
+            let resolved = crate::meshw::ident::resolve_abs(&main);
+            let norm = crate::meshw::ident::realpath(&resolved).unwrap_or(resolved);
+            let direct = sn.repositories.iter().find(|r| r.path.as_deref() == Some(norm.as_str()));
+            match direct {
+                Some(r) => Some(r.id.clone()),
+                None => sn.workspaces.iter().find(|w| w.worktree_path.as_deref() == Some(norm.as_str()) && w.repository_id.as_deref().is_some_and(|x| !x.is_empty())).and_then(|w| w.repository_id.clone()),
+            }
+        }
+        None => None,
+    };
+    let descriptors: Vec<String> = asplan::read_json_dir(&asplan::dir_of(&inv.home, "devswarm_sup.as_dir_workspaces"))?.into_iter().map(|d| d.id).collect();
+    let markers: Vec<String> = asplan::read_json_dir(&asplan::dir_of(&inv.home, "devswarm_sup.as_dir_archived"))?.into_iter().map(|d| d.id).collect();
+    let mut names: Vec<(String, String)> = Vec::new();
+    if let Some(sn) = &snapshot {
+        for w in &sn.workspaces {
+            if crate::meshw::idlock::is_safe_id(&w.id)
+                && let Some(nm) = asstate::read_name(&inv.home, &w.id)
+            {
+                names.push((w.id.clone(), nm));
+            }
+        }
+    }
+    let plan = plan_ui_sync(titles, snapshot.as_ref(), repository_id.as_deref(), &descriptors, &markers, &names);
+    let mut table: Vec<OVal> = Vec::new();
+    if let Some(sn) = &snapshot {
+        let mut rows: Vec<&snap::Ws> = sn
+            .workspaces
+            .iter()
+            .filter(|w| {
+                w.builder_type.as_deref() != Some(defaults::text("mesh_write.builder_type_primary"))
+                    && repository_id.as_deref().is_none_or(|r| r.is_empty() || w.repository_id.as_deref() == Some(r))
+                    && (w.active || descriptors.contains(&w.id))
+            })
+            .collect();
+        rows.sort_by(|a, b| rank_key(a).partial_cmp(&rank_key(b)).unwrap_or(std::cmp::Ordering::Equal));
+        for w in rows {
+            let app = if w.archived {
+                defaults::text("devswarm_cli.sui_app_archived")
+            } else if w.active {
+                defaults::text("devswarm_cli.sui_app_open")
+            } else {
+                defaults::text("devswarm_cli.sui_app_closed")
+            };
+            let anti = if markers.contains(&w.id) {
+                defaults::text("devswarm_cli.sui_app_archived")
+            } else if descriptors.contains(&w.id) {
+                defaults::text("devswarm_cli.sui_ah_active")
+            } else {
+                defaults::text("devswarm_cli.sr_dash")
+            };
+            let cached = names.iter().find(|(k, _)| *k == w.id).map(|(_, v)| v.as_str());
+            let mut o = Obj::default();
+            o.put("id", s(&w.id)).put("title", label_val(w.label.as_deref())).put("app", s(app)).put("antiHall", s(anti)).put("cachedName", cached.map_or(OVal::Null, s));
+            table.push(o.done());
+        }
+    }
+    Ok((snapshot, repository_id, plan, table))
+}
+
+/// `sync-ui --titles-json F [--yes ...]`: the dry run. Applying the plan (archived markers, the names cache) is Node's.
+pub fn sync_ui(inv: &Inv, a: &Args) -> R<Answer> {
+    if !screenshot_setting_untouched(inv) {
+        return defer("screenshot-setting");
+    }
+    let file = a.one(defaults::text("devswarm_cli.flag_titles_json")).filter(|f| !f.is_empty());
+    let raw = match file {
+        Some(f) => match std::fs::read(f) {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            Err(_) => return defer("titles-file"),
+        },
+        None if a.has(defaults::text("devswarm_cli.flag_stdin")) => return defer("titles-stdin"),
+        None => {
+            let mut o = Obj::default();
+            o.put("ok", OVal::Bool(false)).put("action", s(defaults::text("devswarm_cli.sui_action"))).put("error", s(defaults::text("devswarm_cli.sui_msg_needs_titles")));
+            return Ok(answer(2, o.done()));
+        }
+    };
+    let titles: Option<Vec<String>> = match OVal::parse(&raw) {
+        Some(OVal::Arr(items)) => items.iter().map(|x| if let OVal::Str(t) = x { Some(t.clone()) } else { None }).collect(),
+        Some(v @ OVal::Obj(_)) => match v.get("titles") {
+            Some(OVal::Arr(items)) => items.iter().map(|x| if let OVal::Str(t) = x { Some(t.clone()) } else { None }).collect(),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(titles) = titles else {
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(false)).put("action", s(defaults::text("devswarm_cli.sui_action"))).put("error", s(defaults::text("devswarm_cli.sui_msg_bad_titles")));
+        return Ok(answer(2, o.done()));
+    };
+    if a.has(defaults::text("devswarm_cli.flag_yes")) {
+        return defer("apply");
+    }
+    let (snapshot, repository_id, plan, table) = gather_ui(inv, &titles)?;
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(true))
+        .put("action", s(defaults::text("devswarm_cli.sui_action")))
+        .put("dryRun", OVal::Bool(true))
+        .put("appDb", OVal::Bool(snapshot.is_some()))
+        .put("repositoryId", repository_id.as_deref().map_or(OVal::Null, s))
+        .put("plan", plan)
+        .put("before", OVal::Arr(table));
+    Ok(answer(0, o.done()))
 }
