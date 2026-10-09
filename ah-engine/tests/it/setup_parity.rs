@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 type R<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -452,7 +451,7 @@ impl Mock {
 }
 
 fn read_head(s: &mut TcpStream) -> Option<(String, String)> {
-    s.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    s.set_read_timeout(Some(crate::common::IO_CEILING)).ok()?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") {

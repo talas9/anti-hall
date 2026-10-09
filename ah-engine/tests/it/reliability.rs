@@ -97,7 +97,7 @@ impl Drop for Env {
 
 fn wait_for(mut f: impl FnMut() -> bool) -> bool {
     let t = Instant::now();
-    while t.elapsed() < Duration::from_secs(5) {
+    while t.elapsed() < crate::common::READY_CEILING {
         if f() {
             return true;
         }
@@ -113,7 +113,7 @@ fn alive(pid: u32) -> bool {
 
 fn raw_exchange(e: &Env, req: &[u8]) -> Vec<u8> {
     let mut s = std::os::unix::net::UnixStream::connect(e.eng().join("e.sock")).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.set_read_timeout(Some(crate::common::IO_CEILING)).unwrap();
     ah_engine::discard::harmless(s.write_all(req)); // the daemon may reply and close before an oversize body is fully sent
     ah_engine::discard::harmless(s.shutdown(std::net::Shutdown::Write));
     let mut b = Vec::new();

@@ -109,7 +109,7 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
         fn drop(&mut self) {
             let _ = client::ctl("stop");
             let t = Instant::now();
-            while self.1.try_wait().ok().flatten().is_none() && t.elapsed() < Duration::from_secs(3) {
+            while self.1.try_wait().ok().flatten().is_none() && t.elapsed() < common::READY_CEILING {
                 std::thread::sleep(Duration::from_millis(20));
             }
             common::reap(&self.0, || {});

@@ -505,7 +505,7 @@ struct Mock {
 }
 
 fn read_request(s: &mut TcpStream) -> Option<Seen> {
-    s.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    s.set_read_timeout(Some(crate::common::IO_CEILING)).ok()?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let head_end = loop {

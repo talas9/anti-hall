@@ -39,7 +39,7 @@ struct Mock {
 type Reply = (&'static str, Vec<String>, Vec<u8>);
 
 fn read_request(s: &mut TcpStream) -> Option<Seen> {
-    s.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    s.set_read_timeout(Some(Duration::from_secs(30))).ok()?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let head_end = loop {

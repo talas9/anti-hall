@@ -39,7 +39,7 @@ fn mock() -> (u16, Arc<Mutex<usize>>) {
     std::thread::spawn(move || {
         for c in l.incoming() {
             let Ok(mut c) = c else { break };
-            ah_engine::discard::harmless(c.set_read_timeout(Some(Duration::from_secs(5))));
+            ah_engine::discard::harmless(c.set_read_timeout(Some(crate::common::IO_CEILING)));
             let mut buf = [0u8; 8192];
             let mut got = Vec::new();
             while let Ok(n) = c.read(&mut buf) {

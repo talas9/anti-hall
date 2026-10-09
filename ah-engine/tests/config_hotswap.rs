@@ -72,7 +72,7 @@ fn layered_config_hot_swaps_without_dropping_requests() {
         fn drop(&mut self) {
             let _ = client::ctl("stop");
             let t = Instant::now();
-            while self.1.try_wait().ok().flatten().is_none() && t.elapsed() < Duration::from_secs(3) {
+            while self.1.try_wait().ok().flatten().is_none() && t.elapsed() < common::READY_CEILING {
                 std::thread::sleep(Duration::from_millis(20));
             }
             common::reap(&self.0, || {});

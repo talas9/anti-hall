@@ -8,6 +8,12 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+/// Ceiling for a wait on a daemon or child to become ready or to exit. Waits poll, so a healthy run returns at once; the
+/// ceiling only has to outlast a machine under load (a cold start took over 3 s on a busy one).
+pub const READY_CEILING: Duration = Duration::from_secs(20);
+/// Ceiling for a blocking socket read in a test that is waiting for the other side (mock servers, a daemon's reply).
+pub const IO_CEILING: Duration = Duration::from_secs(30);
+
 /// True when a process with this pid exists.
 pub fn alive(pid: i32) -> bool {
     // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
@@ -66,13 +72,13 @@ pub fn reap(state_dir: &Path, stop: impl Fn()) {
         }
     }
     let Some(pid) = pid else { return };
-    if !wait_dead(pid, Duration::from_millis(1500)) {
+    if !wait_dead(pid, READY_CEILING / 2) {
         // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
         unsafe { libc::kill(pid, libc::SIGTERM) };
-        if !wait_dead(pid, Duration::from_millis(1500)) {
+        if !wait_dead(pid, READY_CEILING / 2) {
             // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
             unsafe { libc::kill(pid, libc::SIGKILL) };
-            wait_dead(pid, Duration::from_millis(1500));
+            wait_dead(pid, READY_CEILING / 2);
         }
     }
     if !std::thread::panicking() {

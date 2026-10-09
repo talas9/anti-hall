@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 static N: AtomicUsize = AtomicUsize::new(0);
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -37,7 +36,7 @@ fn jev_server(answers: Value) -> u16 {
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(mut c) = conn else { break };
-            c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            c.set_read_timeout(Some(crate::common::IO_CEILING)).unwrap();
             let mut buf = Vec::new();
             let mut chunk = [0u8; 4096];
             while let Ok(n) = c.read(&mut chunk) {
