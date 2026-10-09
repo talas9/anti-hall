@@ -217,7 +217,10 @@ fn check_from(
                 assert!(te.get(k) == tn.get(k), "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}", c.name, te.get(k), tn.get(k));
             }
             if key_db(&homes[0]).is_file() {
-                let (de, dn) = (raw_dump(&key_db(&homes[1])), raw_dump(&key_db(&homes[0])));
+                let (de, dn) = (
+                    raw_dump(&key_db(&homes[1])).replace(homes[1].to_string_lossy().as_ref(), "<HOME>"),
+                    raw_dump(&key_db(&homes[0])).replace(homes[0].to_string_lossy().as_ref(), "<HOME>"),
+                );
                 assert!(de == dn, "{}: the store differs: {}", c.name, first_diff(&dn, &de));
             }
             pending.push((c.name.clone(), homes[1].join("state")));
@@ -485,4 +488,91 @@ fn migrate_owner_keys_matches_node() {
         }),
     ];
     check(&fx, &cases, &[], 13, 1);
+}
+
+// ---- ensure / register ---------------------------------------------------------------------------------------------------
+
+/// A second linked worktree of the fixture's repository (the seeded registry already holds a row for the child's worktree, so
+/// a registration there would fold that row: Node's).
+fn second_worktree(fx: &Fx) -> PathBuf {
+    let p = fx.root.join("wt-two");
+    gitout(&["worktree", "add", "-q", "-b", "two", p.to_str().unwrap()], &fx.main);
+    real(&p)
+}
+
+#[test]
+fn ensure_and_register_match_node() {
+    need_node!();
+    let fx = fixture("l8hreg");
+    let wt2 = second_worktree(&fx);
+    let w2 = wt2.to_string_lossy().to_string();
+    let child = fx.child.to_string_lossy().to_string();
+    let key = fx.repo_key.clone();
+    let extra: Vec<(&str, PathBuf)> = vec![("wt2", wt2.clone())];
+    let e = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "Ensure");
+    let r = |name: &str, argv: &[&str], cwd: &'static str, native: bool| lc(name, argv, cwd, native, "Register");
+    let put_desc = |id: &str, body: String| {
+        let id = id.to_string();
+        move |h: &Path| put(h, &format!(".anti-hall/devswarm/workspaces/{id}.json"), &body)
+    };
+    let home_paths = |h: &Path, id: &str| (h.join(format!(".anti-hall/devswarm/inbox/{id}.ndjson")), h.join(format!(".anti-hall/devswarm/cursors/{id}.json")));
+    let full = {
+        let (w, k) = (w2.clone(), key.clone());
+        move |h: &Path| {
+            let (i, c) = home_paths(h, "reg-full");
+            put(
+                h,
+                ".anti-hall/devswarm/workspaces/reg-full.json",
+                &format!(
+                    "{{\"id\":\"reg-full\",\"worktreePath\":\"{w}\",\"sessionId\":\"s-full\",\"inboxPath\":\"{}\",\"cursorPath\":\"{}\",\"nudgeCommand\":null,\"repoId\":null,\"repoKey\":\"{k}\",\"ownerKey\":\"{k}\"}}",
+                    i.display(),
+                    c.display()
+                ),
+            );
+        }
+    };
+    let bare = put_desc("reg-bare", format!("{{\"id\":\"reg-bare\",\"worktreePath\":\"{w2}\",\"sessionId\":\"s-bare\"}}"));
+    let hashed = put_desc("reg-hash", format!("{{\"id\":\"reg-hash\",\"worktreePath\":\"{w2}\",\"sessionId\":\"s\",\"ownerKey\":\"{}\"}}", hash8("reg-hash")));
+    let foreign = put_desc("reg-foreign", format!("{{\"id\":\"reg-foreign\",\"worktreePath\":\"{w2}\",\"sessionId\":\"s\",\"ownerKey\":\"other-project-abc123\",\"repoKey\":\"other-project-abc123\"}}"));
+    let upd = put_desc("reg-upd", format!("{{\"id\":\"reg-upd\",\"worktreePath\":\"{w2}\",\"sessionId\":\"old\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"repoId\":null,\"ownerKey\":\"{key}\",\"repoKey\":\"{key}\",\"extra\":{{\"z\":1,\"a\":2}}}}"));
+    let archived_twin = {
+        let w = w2.clone();
+        move |h: &Path| put(h, ".anti-hall/devswarm/archived/reg-arch.json", &format!("{{\"id\":\"reg-arch\",\"worktreePath\":\"{w}\",\"sessionId\":\"s\"}}"))
+    };
+    let broken = |h: &Path| put(h, ".anti-hall/devswarm/workspaces/reg-broken.json", "{not json");
+    let archived_twin2 = archived_twin.clone();
+    let cases = vec![
+        e("ens-creates-a-registration", &["ensure", "reg-new", "--worktree", &w2, "--session", "s-new"], "wt2", true),
+        e("ens-creates-from-the-primary-checkout", &["ensure", "reg-new", "--worktree", &w2, "--session", "s-new"], "main", true),
+        e("ens-existing-steady-state", &["ensure", "reg-full", "--worktree", &w2, "--session", "ignored"], "wt2", true).setup(full.clone()),
+        e("ens-existing-backfills-owner-and-paths", &["ensure", "reg-bare"], "wt2", true).setup(bare.clone()),
+        e("ens-existing-hash-bucket-is-node", &["ensure", "reg-hash"], "wt2", false).setup(hashed),
+        e("ens-existing-other-project-is-node", &["ensure", "reg-foreign"], "wt2", false).setup(foreign),
+        e("ens-archived-twin-is-node", &["ensure", "reg-arch", "--worktree", &w2, "--session", "s"], "wt2", false).setup(archived_twin),
+        e("ens-reserved-id-is-node", &["ensure", "reg.base", "--worktree", &w2, "--session", "s"], "wt2", false),
+        e("ens-without-worktree-is-node", &["ensure", "reg-nowt", "--session", "s"], "wt2", false),
+        e("ens-without-session-is-node", &["ensure", "reg-nosess", "--worktree", &w2], "wt2", false),
+        e("ens-second-row-of-a-worktree-is-node", &["ensure", "reg-dup", "--worktree", &child, "--session", "s"], "wt2", false),
+        e("ens-another-project-worktree-is-node", &["ensure", "reg-x", "--worktree", fx.root.join("repo-other").to_str().unwrap(), "--session", "s"], "wt2", false),
+        e("ens-a-path-that-is-no-worktree", &["ensure", "reg-x", "--worktree", fx.root.join("not-a-repo").to_str().unwrap(), "--session", "s"], "wt2", true),
+        e("ens-outside-a-project-is-node", &["ensure", "reg-new", "--worktree", &w2, "--session", "s"], "nongit", false),
+        e("ens-primary-label-is-node", &["ensure", "primary-0123abcd", "--worktree", &w2, "--session", "s"], "wt2", false),
+        e("ens-unreadable-descriptor-is-node", &["ensure", "reg-broken", "--worktree", &w2, "--session", "s"], "wt2", false).setup(broken),
+        e("ens-unsafe-id", &["ensure", "../x"], "wt2", true),
+        e("ens-no-id", &["ensure"], "wt2", true),
+        r("reg-creates", &["register", "reg-new", "--worktree", &w2, "--session", "s-new"], "wt2", true),
+        r("reg-creates-with-a-nudge-command", &["register", "reg-new", "--worktree", &w2, "--session", "s-new", "--nudge", "hivecontrol", "--nudge", "poke"], "wt2", true),
+        r("reg-relative-worktree-is-resolved", &["register", "reg-new", "--worktree", ".", "--session", "s-new"], "wt2", true),
+        r("reg-with-a-repo-id", &["register", "reg-new", "--worktree", &w2, "--session", "s", "--repo-id", "repo-77"], "wt2", true),
+        r("reg-with-a-repo-id-env", &["register", "reg-new", "--worktree", &w2, "--session", "s"], "wt2", true).env("DEVSWARM_REPO_ID", "env-repo-9"),
+        r("reg-updates-a-descriptor-keeping-its-fields", &["register", "reg-upd", "--session", "fresh-session"], "wt2", true).setup(upd),
+        r("reg-re-registers-the-same-descriptor", &["register", "reg-full", "--worktree", &w2, "--session", "s-full"], "wt2", true).setup(full),
+        r("reg-over-an-archived-twin-revives-nothing-else", &["register", "reg-arch", "--worktree", &w2, "--session", "s"], "wt2", true).setup(archived_twin2),
+        r("reg-without-session-is-node", &["register", "reg-nosess", "--worktree", &w2], "wt2", false),
+        r("reg-second-row-of-a-worktree-is-node", &["register", "reg-dup", "--worktree", &child, "--session", "s"], "wt2", false),
+        r("reg-reserved-id-is-node", &["register", "x.inst-abcdef", "--worktree", &w2, "--session", "s"], "wt2", false),
+        r("reg-unsafe-id", &["register", "a/b"], "wt2", true),
+        r("reg-empty-flag-value-is-node", &["register", "reg-new", "--worktree", "", "--session", "s"], "wt2", false),
+    ];
+    check(&fx, &cases, &extra, 16, 15);
 }

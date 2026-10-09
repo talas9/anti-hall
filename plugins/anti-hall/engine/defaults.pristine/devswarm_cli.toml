@@ -1906,3 +1906,41 @@ value = "migrate-owner-keys"
 [devswarm_cli.migrate_tmp_suffix]
 doc = "The ending of the staging file a descriptor rewrite is made in before it is renamed over the descriptor."
 value = "tmp"
+
+# ---- ensure / register (lane l8h) ---------------------------------------------------------------------------------------
+
+[devswarm_cli.verb_ensure]
+doc = "The verb that registers a workspace if it is not registered yet (idempotent)."
+value = "ensure"
+
+[devswarm_cli.verb_register]
+doc = "The verb that registers (or updates) a workspace's descriptor and registry row."
+value = "register"
+
+[devswarm_cli.action_exists]
+doc = "The `action` an ensure of an already registered workspace reports."
+value = "exists"
+
+[devswarm_cli.action_updated]
+doc = "The `action` a register over an existing descriptor reports."
+value = "updated"
+
+[devswarm_cli.action_registered]
+doc = "The `action` a register of a new workspace reports."
+value = "registered"
+
+[devswarm_cli.flag_reg_inbox]
+doc = "The flag naming the durable inbox file of a registration."
+value = "inbox"
+
+[devswarm_cli.flag_reg_cursor]
+doc = "The flag naming the cursor file of a registration."
+value = "cursor"
+
+[devswarm_cli.flag_reg_nudge]
+doc = "The flag (repeatable) holding the words of a workspace's nudge command."
+value = "nudge"
+
+[devswarm_cli.flag_reg_repo_id]
+doc = "The flag naming the DevSwarm repository id of a registration."
+value = "repo-id"

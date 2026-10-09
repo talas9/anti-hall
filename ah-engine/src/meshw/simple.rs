@@ -920,7 +920,9 @@ pub fn run_witness(args: &[String]) -> i32 {
                 let same = if crate::meshw::clog::is_log_rel(rel) {
                     crate::meshw::clog::delta_equal(&read(&home.join(rel)), log_before, &read(&scratch.join(file)))
                 } else {
-                    read(&scratch.join(file)) == read(&home.join(rel))
+                    // a path Node wrote into a descriptor names the scratch home: the engine's names the real one
+                    let theirs = String::from_utf8_lossy(&read(&home.join(rel))).replace(home.to_string_lossy().as_ref(), &real_home.to_string_lossy());
+                    read(&scratch.join(file)) == theirs.as_bytes()
                 };
                 if !same {
                     diff.push(rel.clone());

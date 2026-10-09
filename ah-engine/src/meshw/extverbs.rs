@@ -44,6 +44,10 @@ pub enum Ext {
     Unarchive,
     /// `migrate-owner-keys` (lane l8h).
     MigrateOwnerKeys,
+    /// `ensure <id>` (lane l8h).
+    Ensure,
+    /// `register <id>` (lane l8h).
+    Register,
 }
 
 /// The verb of a parsed argv (help requests are the `simple` module's and never reach here).
@@ -76,6 +80,10 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::Unarchive)
     } else if is("devswarm_cli.verb_migrate_owner_keys") {
         Some(Ext::MigrateOwnerKeys)
+    } else if is("devswarm_cli.verb_ensure") {
+        Some(Ext::Ensure)
+    } else if is("devswarm_cli.verb_register") {
+        Some(Ext::Register)
     } else {
         None
     }
@@ -83,7 +91,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
 
 /// Whether the verb reads the project's store (the witness then copies it).
 pub fn needs_store(v: Ext) -> bool {
-    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive)
+    matches!(v, Ext::Done | Ext::Relay | Ext::ArchiveRequest | Ext::Nudge | Ext::Unarchive | Ext::Ensure | Ext::Register)
 }
 
 /// Run the verb.
@@ -102,6 +110,8 @@ pub fn run(inv: &Inv, a: &Args, v: Ext) -> R<Answer> {
         Ext::Retention => super::reportverbs::retention(inv, a),
         Ext::Unarchive => super::lifeverbs::unarchive(inv, a),
         Ext::MigrateOwnerKeys => super::lifeverbs::migrate_owner_keys(inv, a),
+        Ext::Ensure => super::lifeverbs::ensure(inv, a),
+        Ext::Register => super::lifeverbs::register(inv, a),
     }
 }
 
