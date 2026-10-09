@@ -446,3 +446,57 @@ pub const MESHW_APP_LENGTH_CLOSE: &str = ")";
 pub const MESHW_APP_LIST_SEP: &str = ", ";
 /// Identifier quote of the select list.
 pub const MESHW_APP_QUOTE: &str = "\"";
+
+// ---- retention (src/dssup/retention): the statements of `companion/lib/devswarm-retention.js`, verbatim where Node's text is
+// one fixed statement ----
+
+/// The partitions that hold messages (`planStore`).
+pub const RT_PARTITIONS: &str = "SELECT DISTINCT workspace_id AS w FROM messages";
+/// The rows of one partition.
+pub const RT_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?1";
+/// A partition's rows in order, without the body (the body's length only).
+pub const RT_ROWS: &str = "SELECT id, ts, seq, needs_reply, is_heartbeat, sender, urgency, body IS NULL AS tomb, COALESCE(LENGTH(body),0) AS blen, hash, typeof(body) AS bt FROM messages WHERE workspace_id = ?1 ORDER BY id ASC";
+/// The same, with the body (the broadcast partition's run detection reads it).
+pub const RT_ROWS_BODY: &str = "SELECT id, ts, seq, needs_reply, is_heartbeat, sender, urgency, body IS NULL AS tomb, COALESCE(LENGTH(body),0) AS blen, hash, typeof(body) AS bt, body FROM messages WHERE workspace_id = ?1 ORDER BY id ASC";
+/// One row's body.
+pub const RT_BODY: &str = "SELECT body FROM messages WHERE id = ?1";
+/// Every workspace's broadcast cursor.
+pub const RT_BC_ALL: &str = "SELECT value FROM broadcast_cursors";
+/// One workspace's broadcast cursor.
+pub const RT_BC_ONE: &str = "SELECT value FROM broadcast_cursors WHERE workspace_id = ?1";
+/// The registry rows (id and NDJSON inbox path).
+pub const RT_REGISTRY: &str = "SELECT id, inbox_path FROM registry ORDER BY id ASC";
+/// A partition's reader cursor rows.
+pub const RT_READER_ROWS: &str = "SELECT ns, reader, value, retired_line FROM reader_cursors WHERE partition = ?1";
+/// A partition's store-namespace reader rows (the in-transaction bound).
+pub const RT_READER_STORE: &str = "SELECT reader, value, retired_line FROM reader_cursors WHERE partition = ?1 AND ns = 'store'";
+/// Whether a legacy cursor row exists.
+pub const RT_CURSOR_ROW: &str = "SELECT 1 FROM cursors WHERE workspace_id = ?1";
+/// A legacy cursor row's value.
+pub const RT_CURSOR_VALUE: &str = "SELECT value FROM cursors WHERE workspace_id = ?1";
+/// A row's current state, read inside the tombstoning transaction.
+pub const RT_ROW_NOW: &str = "SELECT workspace_id, ts, hash, needs_reply, body IS NOT NULL FROM messages WHERE id = ?1";
+/// A row's position in its partition.
+pub const RT_POSITION: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?1 AND id <= ?2";
+/// The tombstone: the body goes, everything else stays.
+pub const RT_TOMBSTONE: &str = "UPDATE messages SET body = NULL WHERE id = ?1 AND body IS NOT NULL";
+/// The columns an archived row keeps (before the placeholders).
+pub const RT_FULL_OPEN: &str = "SELECT id, workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE body IS NOT NULL AND id IN (";
+/// The end of that statement.
+pub const RT_FULL_CLOSE: &str = ") ORDER BY id";
+/// Page and freelist counts.
+pub const RT_PAGE_COUNT: &str = "PRAGMA page_count";
+/// See above.
+pub const RT_FREELIST_COUNT: &str = "PRAGMA freelist_count";
+/// Reclaim the freed space.
+pub const RT_VACUUM: &str = "VACUUM";
+/// Fold the log back into the database file.
+pub const RT_CHECKPOINT: &str = "PRAGMA wal_checkpoint(TRUNCATE)";
+/// Start the tombstoning transaction.
+pub const RT_BEGIN: &str = "BEGIN IMMEDIATE";
+/// Commit it.
+pub const RT_COMMIT: &str = "COMMIT";
+/// Roll it back.
+pub const RT_ROLLBACK: &str = "ROLLBACK";
+/// A broadcast row's sequence number and heartbeat flag.
+pub const RT_ROW_BROADCAST: &str = "SELECT seq, is_heartbeat FROM messages WHERE id = ?1";

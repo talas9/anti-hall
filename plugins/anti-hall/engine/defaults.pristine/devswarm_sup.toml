@@ -137,8 +137,8 @@ doc = "Sync the DevSwarm app state (archived flags, names, message gaps) into ap
 value = { kind = "node", gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.appDbSyncIfDue({home:process.argv[2]})))' }
 
 [devswarm_sup."duty.retention"]
-doc = "Bounded growth of the message stores: archive-first tombstoning of old message bodies under Node's own retention rules, state and lock (retention-state.json, locks/retention.lock). No row is deleted."
-value = { kind = "node", gate = "tick", timeout_ms = 300000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";console.log(JSON.stringify(require(process.argv[1]+"/companion/lib/devswarm-retention.js").sweep({home:process.argv[2]})))' }
+doc = "Bounded growth of the message stores: archive-first tombstoning of old, fully read message bodies (never a row delete; positions and dedupe depend on every row staying), native in the armed state. The engine plans natively and writes only when Node's own planner, run read only on the same store, agrees on the exact rows; a disagreement or a witness that cannot run does nothing and is logged. The one-time dry-run report phase, the journal fold and the archive cap stay Node's own functions."
+value = { kind = "node", native = true, gate = "tick", timeout_ms = 300000, witness_timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";console.log(JSON.stringify(require(process.argv[1]+"/companion/lib/devswarm-retention.js").sweep({home:process.argv[2]})))', witness_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");const spec=JSON.parse(process.argv[3]);const home=process.argv[2];const st={stores:{},holds:spec.holds||{},phase:"armed"};const plan=R.planStore({home,hash:spec.hash,settings:spec.settings,now:spec.now,state:st,ignoreAge:true});const dry=R.pruneStore({home,hash:spec.hash,settings:spec.settings,now:spec.now,state:st,dryRun:true});const p={};for(const k of Object.keys(plan.partitions)){const x=plan.partitions[k];p[k]={rows:x.rows,candidates:x.candidates,candidateBytes:x.candidateBytes,tombstoned:x.tombstoned,bound:x.bound,protected:{tooNew:x.protected.tooNew,keepLast:x.protected.keepLast,unread:x.protected.unread,question:x.protected.question,ndjson:x.protected.ndjson,broadcast:x.protected.broadcast,held:x.protected.held}}}console.log(JSON.stringify({cands:plan.candidates.map((c)=>[c.id,c.pos,c.partition,c.blen,c.oldEnough?1:0]),dry:{ok:dry.ok,error:dry.error,skipped:dry.skipped||null,ageCandidates:dry.ageCandidates,sizeCandidates:dry.sizeCandidates,candidateBytes:dry.candidateBytes,overLimit:dry.overLimit},parts:p}))', fold_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.foldLegacyJournal({home:process.argv[2],hash:process.argv[3],env:process.env})))', cap_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.enforceArchiveCap({home:process.argv[2],settings:JSON.parse(process.argv[3])})))' }
 
 [devswarm_sup."duty.housekeeping"]
 doc = "Disk hygiene: sweep the reaped-workspace logs and the child-gate files by the doctor's repair rules. Node's housekeeping-sweep-state.json keeps the cool-down. Native: removes only files older than the retention window, one directory level, only the sweep's own suffix."
@@ -679,3 +679,284 @@ max = 100000
 [devswarm_sup.lv_spec_file]
 doc = "The file in a witness scratch directory that holds the witness's inputs (the clock, the thresholds and each workspace's previous verdict text)."
 value = "spec.json"
+
+# ---- retention, native (src/dssup/retention) ---------------------------------------------------------------------------------
+# The settings are Node's (devswarm.retention.*), read exactly (no rounding of a fractional value). Everything below the settings is
+# a rule or a name of Node's retention module (companion/lib/devswarm-retention.js), kept here so none is compiled into the binary.
+
+[devswarm_sup.set_rt_days]
+doc = "Days of message bodies kept before they are archived and tombstoned; 0 switches retention off. Node: devswarm.retention.days."
+value = { type = "number", section = "devswarm", key = "retention.days", env = "ANTIHALL_DEVSWARM_RETENTION_DAYS", min = 0, default = 30, exact = true }
+
+[devswarm_sup.set_rt_max_store_mb]
+doc = "Store size limit in MB: above it the oldest eligible bodies are tombstoned whatever their age; 0 = no limit. Node: devswarm.retention.maxStoreMB."
+value = { type = "number", section = "devswarm", key = "retention.maxStoreMB", env = "ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB", min = 0, default = 100, exact = true }
+
+[devswarm_sup.set_rt_keep]
+doc = "The newest messages of each partition that are never tombstoned (by age or by size). Node: devswarm.retention.keepPerPartition."
+value = { type = "number", section = "devswarm", key = "retention.keepPerPartition", env = "ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION", min = 0, default = 200, exact = true }
+
+[devswarm_sup.set_rt_archive]
+doc = "Write a body to the gzip archive before tombstoning it (restorable). Off means a tombstoned body is gone. Node: devswarm.retention.archive."
+value = { type = "bool", section = "devswarm", key = "retention.archive", env = "ANTIHALL_DEVSWARM_RETENTION_ARCHIVE", default = true }
+
+[devswarm_sup.set_rt_archive_max_mb]
+doc = "Archive size cap in MB; 0 = never evict an archive month. Node: devswarm.retention.archiveMaxMB."
+value = { type = "number", section = "devswarm", key = "retention.archiveMaxMB", env = "ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB", min = 0, default = 0, exact = true }
+
+[devswarm_sup.set_rt_budget_ms]
+doc = "Time budget of one store's tombstoning batches (environment only, as in Node: ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS)."
+value = { type = "number", section = "devswarm_sup_env", key = "retention_budget_ms", env = "ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS", min = 0, default = 5000, exact = true }
+
+[devswarm_sup.set_dry_run_retention]
+doc = "Dry run of the native retention: it plans and compares with Node's planner, logs what it would tombstone and writes nothing (no archive, no tombstone, no state)."
+value = { type = "bool", section = "devswarm_sup", key = "dryRun.retention", env = "ANTIHALL_DEVSWARM_SUP_DRYRUN_RETENTION", default = false }
+
+[devswarm_sup.set_rt_require_witness]
+doc = "Tombstone only when Node's planner ran and agreed. Turn off only when Node is decommissioned and the agreement record is proven; the engine then relies on its own two identical plans and its in-transaction checks."
+value = { type = "bool", section = "devswarm_sup", key = "retention.requireWitness", env = "ANTIHALL_DEVSWARM_SUP_RETENTION_REQUIRE_WITNESS", default = true }
+
+[devswarm_sup.rt_day_ms]
+doc = "Milliseconds in the retention window's day."
+value = 86400000
+min = 1000
+max = 86400000
+
+[devswarm_sup.rt_mb]
+doc = "Bytes in a megabyte of the size limits."
+value = 1048576
+min = 1024
+max = 1073741824
+
+[devswarm_sup.rt_batch_rows]
+doc = "Rows archived and tombstoned per transaction."
+value = 500
+min = 1
+max = 100000
+
+[devswarm_sup.rt_recent_runs]
+doc = "Runs of identical broadcasts at the end of the broadcast partition that stay readable (the store's recent-broadcast cap plus the boundary run)."
+value = 51
+min = 1
+max = 10000
+
+[devswarm_sup.rt_vacuum_ratio]
+doc = "Reclaim space (VACUUM) when the freelist, or the bytes tombstoned this run, exceed this share of the file; always when enforcing the size limit."
+value = "0.2"
+
+[devswarm_sup.rt_store_min_interval_ms]
+doc = "A store is revisited by the sweep at most this often."
+value = 21600000
+min = 60000
+max = 31536000000
+unit = "ms"
+
+[devswarm_sup.rt_lock_stale_ms]
+doc = "A retention lock older than this is taken over (Node: LOCK_STALE_MS)."
+value = 600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.rt_size_rounds]
+doc = "Most rounds of size-limit pruning in one visit of a store."
+value = 3
+min = 1
+max = 100
+
+[devswarm_sup.rt_busy_ms]
+doc = "How long a store opened by the retention waits for another writer (Node: PRAGMA busy_timeout)."
+value = 3000
+min = 0
+max = 600000
+unit = "ms"
+
+[devswarm_sup.rt_short_len]
+doc = "Length of the hexadecimal short id in a legacy instance cursor file name."
+value = 6
+min = 1
+max = 64
+
+[devswarm_sup.rt_db_file]
+doc = "A store's sqlite file name."
+value = "devswarm.db"
+
+[devswarm_sup.rt_store_dir]
+doc = "The stores directory under the DevSwarm state directory."
+value = "store"
+
+[devswarm_sup.rt_cursors_dir]
+doc = "The legacy cursor files under the DevSwarm state directory."
+value = "cursors"
+
+[devswarm_sup.rt_state_file]
+doc = "Retention's state file under the DevSwarm state directory (Node's retention-state.json)."
+value = "retention-state.json"
+
+[devswarm_sup.rt_lock_file]
+doc = "Retention's lock file under the DevSwarm state directory."
+value = "locks/retention.lock"
+
+[devswarm_sup.rt_archive_dir]
+doc = "The archive of tombstoned bodies under the DevSwarm state directory."
+value = "archive"
+
+[devswarm_sup.rt_log_file]
+doc = "Retention's event log, relative to the home directory (Node's file; the engine appends the same events)."
+value = ".anti-hall/logs/devswarm-retention.ndjson"
+
+[devswarm_sup.rt_held_file]
+doc = "When each store last had a comparison that held its tombstoning back (a JSON object store -> ms), relative to the home directory."
+value = ".anti-hall/logs/devswarm-retention-held.json"
+
+[devswarm_sup.rt_backend_marker]
+doc = "The file in a store directory that names its backend."
+value = "BACKEND"
+
+[devswarm_sup.rt_backend_journal]
+doc = "The backend word of a journal store (retention skips it)."
+value = "journal"
+
+[devswarm_sup.rt_wal_suffix]
+doc = "The suffix of a sqlite file's write-ahead log."
+value = "-wal"
+
+[devswarm_sup.rt_archive_ext]
+doc = "The extension of an archive month file."
+value = ".ndjson.gz"
+
+[devswarm_sup.rt_journal_dir]
+doc = "A store's legacy journal directory."
+value = "journal"
+
+[devswarm_sup.rt_journal_ext]
+doc = "The extension of a raw journal file."
+value = ".ndjson"
+
+[devswarm_sup.rt_hash_sep]
+doc = "In a partition id, the character that marks a legacy cursor artefact (such an id has no legacy cursor files of its own)."
+value = "#"
+
+[devswarm_sup.rt_seen_marker]
+doc = "In a partition id, the marker of a legacy seen-file."
+value = ".seen-"
+
+[devswarm_sup.rt_base_marker]
+doc = "The infix of a partition's legacy base cursor file (<id>#base.json)."
+value = "#base"
+
+[devswarm_sup.rt_inst_marker]
+doc = "The infix of a partition's legacy instance cursor files (<id>#inst-<short>.json)."
+value = "#inst-"
+
+[devswarm_sup.rt_broadcast_partition]
+doc = "The id of the shared broadcast partition."
+value = "*mesh-broadcast*"
+
+[devswarm_sup.rt_row_cols]
+doc = "The columns of an archived row, in the order Node writes them."
+value = ["id", "workspace_id", "ts", "hash", "body", "sender", "recipient", "mtype", "urgency", "is_heartbeat", "needs_reply", "orig_hash", "instance_nonce", "seq"]
+
+[devswarm_sup.rt_archived_at]
+doc = "The field added to an archived row: when it was archived."
+value = "archivedAt"
+
+[devswarm_sup.rt_gzip_bin]
+doc = "The gzip executable (resolved on PATH). Without one the engine declines and Node's own function archives."
+value = "gzip"
+
+[devswarm_sup.rt_gzip_args]
+doc = "Arguments that make gzip compress stdin to stdout without a name or timestamp."
+value = ["-c", "-n"]
+
+[devswarm_sup.rt_gunzip_args]
+doc = "Arguments that make gzip decompress stdin to stdout."
+value = ["-d", "-c"]
+
+[devswarm_sup.rt_hash_re_legacy]
+doc = "The shape of a legacy store directory name (eight hexadecimal digits)."
+value = "^[0-9a-fA-F]{8}$"
+
+[devswarm_sup.rt_hash_re_repokey]
+doc = "The shape of a repoKey store directory name."
+value = "^[a-z0-9-]{1,40}-[0-9a-f]{6}$"
+
+[devswarm_sup.rt_state_stores]
+doc = "The state key that holds each store's last run."
+value = "stores"
+
+[devswarm_sup.rt_state_holds]
+doc = "The state key that holds the restore holds."
+value = "holds"
+
+[devswarm_sup.rt_state_phase]
+doc = "The state key that holds the phase."
+value = "phase"
+
+[devswarm_sup.rt_state_tombstoned]
+doc = "The store-record key that counts the rows tombstoned in total."
+value = "tombstoned"
+
+[devswarm_sup.rt_state_max_archived]
+doc = "The store-record key that holds the highest archived row id."
+value = "maxArchivedId"
+
+[devswarm_sup.rt_phase_armed]
+doc = "The phase in which sweeps act."
+value = "armed"
+
+[devswarm_sup.rt_phase_dry]
+doc = "The phase of a machine's first run (a dry-run report only)."
+value = "dry-run"
+
+[devswarm_sup.rt_ev_prune_batch]
+doc = "The log event of one committed batch."
+value = "prune-batch"
+
+[devswarm_sup.rt_ev_over_limit]
+doc = "The log event of a store still over its limit after a visit."
+value = "over-limit"
+
+[devswarm_sup.rt_ev_over_limit_protected]
+doc = "The log event of a store over its limit with nothing more that may be pruned."
+value = "over-limit-protected"
+
+[devswarm_sup.rt_reason_lock_busy]
+doc = "The answer when another retention run holds the lock."
+value = "lock-busy"
+
+[devswarm_sup.rt_msg_witness_output]
+doc = "Why a witness answer was not used: its output did not parse."
+value = "the witness output did not parse"
+
+[devswarm_sup.rt_msg_node_plan]
+doc = "Why a comparison failed: Node's planner did not plan the store."
+value = "Node's planner did not plan the store"
+
+[devswarm_sup.rt_msg_cand_differ]
+doc = "Why a comparison failed: the candidate rows differ (followed by the first differing index and the two counts)."
+value = "the candidate rows differ at index"
+
+[devswarm_sup.rt_msg_parts_differ]
+doc = "Why a comparison failed: a partition's statistics differ."
+value = "a partition's statistics differ from Node's"
+
+[devswarm_sup.rt_msg_choice_differ]
+doc = "Why a comparison failed: the counts chosen differ. {engine} and {node} are the two records."
+value = "the rows chosen differ: engine {engine}, Node {node}"
+
+[devswarm_sup.rt_no_table_text]
+doc = "The text of SQLite's error for a table an older store does not have yet (such a store has no reader cursors: no rows, not an error)."
+value = "no such table"
+
+[devswarm_sup.rt_msg_no_witness]
+doc = "Why nothing was tombstoned: Node's planner could not run and the witness is required."
+value = "the witness could not run"
+
+[devswarm_sup.rt_msg_unstable]
+doc = "Why nothing was tombstoned: the store changed while the plan was compared."
+value = "the store changed during the comparison"
+
+[devswarm_sup.rt_text_types]
+doc = "The SQLite storage types a message body may have for the engine to plan it (text, or NULL for a tombstone); any other type (a blob, a number) is a value Node would turn into text its own way, so the sweep is Node's."
+value = ["text", "null"]
