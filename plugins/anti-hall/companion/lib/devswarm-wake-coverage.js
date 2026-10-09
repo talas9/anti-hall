@@ -53,13 +53,7 @@ function wakeCoverage(opts) {
     // Watcher: fresh lock ts + a pid that is not provably dead.
     let watcherLive = false;
     try {
-      const wake = require('./devswarm-wake-watch.js');
-      const lock = JSON.parse(fs.readFileSync(wake.lockPathFor(home, id), 'utf8'));
-      const ts = lock && Number(lock.ts);
-      const fresh = Number.isFinite(ts) && (now - ts) <= wake.WATCH_LOCK_STALE_MS;
-      const pid = lock && Number.isInteger(lock.pid) ? lock.pid : null;
-      const alive = pid != null ? require('./liveness.js').pidIsAlive(pid) : null;
-      watcherLive = !!(fresh && alive !== false);
+      watcherLive = require('./devswarm-wake-watch.js').watcherLiveForWorkspace(home, id, now);
     } catch (_) { watcherLive = false; } // no/garbled lock => not live
 
     // Cron: tick marker age.
