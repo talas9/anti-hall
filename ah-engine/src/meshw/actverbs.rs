@@ -562,7 +562,7 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
     let raw_id = id;
     let id = match resolve_archive_id(inv, id)? {
         Resolved::Id(x) => x,
-        Resolved::Ambiguous(tpl, ids) => return Ok(Resolved::refusal(defaults::text("devswarm_cli.action_archive_request"), false, &raw_id, tpl, &ids)),
+        Resolved::Ambiguous(tpl, ids) => return Ok(Resolved::refusal(defaults::text("devswarm_cli.action_archive_request"), false, raw_id, tpl, &ids)),
     };
     let heal = common::self_heal(inv)?;
     let cwd = inv.cwd.as_str();

@@ -34,10 +34,10 @@ pub(crate) fn copy_tree_linked(src: &Path, dst: &Path, seen: &mut std::collectio
                 copy_tree_linked(&s, &d, seen)?;
             } else if ft.is_file() {
                 let key = std::fs::metadata(&s).ok().filter(|m| m.nlink() > 1).map(|m| (m.dev(), m.ino()));
-                if let Some(first) = key.and_then(|k| seen.get(&k)) {
-                    if std::fs::hard_link(first, &d).is_ok() {
-                        continue;
-                    }
+                if let Some(first) = key.and_then(|k| seen.get(&k))
+                    && std::fs::hard_link(first, &d).is_ok()
+                {
+                    continue;
                 }
                 if std::fs::copy(&s, &d).is_err() {
                     std::fs::write(&d, b"")?;

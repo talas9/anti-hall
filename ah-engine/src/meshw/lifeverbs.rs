@@ -241,8 +241,9 @@ pub fn migrate_owner_keys(inv: &Inv, _a: &Args) -> R<Answer> {
         let Some(lock) = idlock::acquire(&inv.home, &it.id) else { continue };
         // re-read under the lock: never overwrite a concurrent live mutation
         let fix = read_descriptor_file(&it.path).map(|d| migration_fix(&d, it.archived, &it.id));
-        match fix {
-            Some(Ok(Fix::Backfill(out))) => {
+        // a descriptor that changed to need the re-home (or to be unreadable) between the scan and the lock is left for the next run
+        if let Some(Ok(Fix::Backfill(out))) = fix {
+            {
                 crate::meshw::mark_committed();
                 let mut tmp = it.path.as_os_str().to_os_string();
                 tmp.push(format!(".{}.{}", std::process::id(), defaults::text("devswarm_cli.migrate_tmp_suffix")));
@@ -258,8 +259,6 @@ pub fn migrate_owner_keys(inv: &Inv, _a: &Args) -> R<Answer> {
                     errors += 1.0;
                 }
             }
-            // a descriptor that changed to need the re-home (or to be unreadable) between the scan and the lock: left for the next run
-            _ => {}
         }
         lock.release();
     }
