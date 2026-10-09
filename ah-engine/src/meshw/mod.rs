@@ -50,6 +50,7 @@ pub mod readprimary;
 pub mod reportverbs;
 pub mod roster;
 pub mod rosterrows;
+pub mod rostertail;
 pub mod send;
 pub mod simple;
 pub mod store;

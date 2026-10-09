@@ -6,8 +6,7 @@
 //! The roster is a read: nothing is written (`computeSummary` is the pure projection, the app database is opened read only,
 //! the app-archived verdict never uses the cross-invocation cache here). So a case the engine cannot reproduce is handed to
 //! Node, and Node then answers from the same untouched files. The cases handed to Node, per row class:
-//! * a row whose session transcript exists: Node reads the transcript's tail to say whether the child waits on a human
-//!   (`childBusyState`), which the engine does not;
+//! * a transcript the engine cannot read exactly as JavaScript does (see `rostertail`: a number or an id of an odd shape);
 //! * a row with a step plan (the plan label, the token burn, the straying signals);
 //! * a native `hivecontrol` child that is not already a store row (it adds a row of its own, with the archived-by-worktree join),
 //!   a child whose repository id disagrees with the trusted lookup (Node logs it), the split-brain fallback row;
@@ -33,6 +32,7 @@ use crate::meshw::hivecontrol;
 use crate::meshw::ident::{self, R, defer};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::plan;
+use crate::meshw::rostertail;
 use crate::meshw::store::MeshStore;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -300,9 +300,9 @@ fn row_live(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>) -> R<boo
     }
 }
 
-/// The part of `childBusyState` the engine can settle: a child without a session or worktree, a heartbeat of another session or
-/// a transcript that is missing, unreadable or empty reports nothing. A transcript with content is read by Node.
-fn waiting_known_absent(e: &Eng, id: &str, wt: &str, session: &str) -> R<bool> {
+/// The `waiting-on-human` hint of `childBusyState`: a heartbeat of another session reports nothing; otherwise the bounded tail
+/// of the session transcript is read (`rostertail`), which also reports nothing for a missing, unreadable or empty file.
+fn waiting_hint(e: &Eng, id: &str, wt: &str, session: &str) -> R<Option<String>> {
     if is_safe_id(id)
         && let Some(beat) = read_obj(&file_in(e, "mesh_write.dir_heartbeats", id))
         && let Some(theirs) = beat.get(key("mesh_write.field_session_id"))
@@ -315,7 +315,7 @@ fn waiting_known_absent(e: &Eng, id: &str, wt: &str, session: &str) -> R<bool> {
             _ => return defer("heartbeat-session-type"),
         };
         if theirs != session {
-            return Ok(true);
+            return Ok(None);
         }
     }
     if session.contains('/') || session.contains('\\') || session.contains("..") {
@@ -332,10 +332,7 @@ fn waiting_known_absent(e: &Eng, id: &str, wt: &str, session: &str) -> R<bool> {
         .join(key("devswarm_sup.lv_projects_dir"))
         .join(encoded)
         .join(format!("{session}{}", key("devswarm_sup.lv_transcript_ext")));
-    match std::fs::metadata(&file) {
-        Ok(m) if m.is_file() && m.len() > 0 => Ok(false),
-        _ => Ok(true),
-    }
+    rostertail::waiting_hint(&file, e.now)
 }
 
 /// `rosterHints(home, id, worktreePath, now, sessionId, { registryBacked })`.
@@ -365,9 +362,9 @@ fn hints(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>) -> R<Vec<St
         h.push(key("devswarm_cli.rr_hint_phantom").to_string());
     }
     if let (Some(sid), Some(w)) = (session, wt)
-        && !waiting_known_absent(e, id, w, sid)?
+        && let Some(hint) = waiting_hint(e, id, w, sid)?
     {
-        return defer("transcript-present");
+        h.push(hint);
     }
     Ok(h)
 }

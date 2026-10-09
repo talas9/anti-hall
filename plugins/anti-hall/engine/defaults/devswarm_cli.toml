@@ -1726,6 +1726,109 @@ value = "archive-pending"
 doc = "The hint of a workspace anti-hall archived that the app still shows."
 value = "app-live"
 
+[devswarm_cli.rr_hint_waiting]
+doc = "The hint of a row whose child waits on a human (a question or plan approval left open, or an unresolved tool call in a transcript that has gone quiet)."
+value = "waiting-on-human"
+
+[devswarm_cli.rr_hint_waiting_q]
+doc = "The same hint with the question's preview: `{question}`."
+value = "waiting-on-human: {question}"
+
+[devswarm_cli.rr_tr_tail_bytes]
+doc = "How much of the end of a session transcript the roster reads to find out whether the child waits on a human (Node: TAIL_BYTES)."
+value = 2097152
+min = 4096
+max = 67108864
+unit = "bytes"
+
+[devswarm_cli.rr_tr_fresh_ms]
+doc = "A transcript written within this long counts as fresh: a fresh transcript with an unresolved ordinary tool call is a running tool, not a wait (Node: DEFAULT_BUSY_FRESH_MS)."
+value = 300000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_cli.rr_tr_future_skew_ms]
+doc = "A transcript time this far ahead of the clock is not trusted as fresh (Node: FUTURE_SKEW_MS)."
+value = 60000
+min = 0
+max = 3600000
+unit = "ms"
+
+[devswarm_cli.rr_tr_question_len]
+doc = "Longest question preview, in UTF-16 units; a longer one is cut and ends with the ellipsis (Node: QUESTION_TRUNCATE_LEN)."
+value = 120
+min = 2
+max = 1000
+
+[devswarm_cli.rr_tr_types]
+doc = "Transcript entry types, in this order: system, user, assistant."
+value = ["system", "user", "assistant"]
+
+[devswarm_cli.rr_tr_block_tool_use]
+doc = "The type of a content block that calls a tool."
+value = "tool_use"
+
+[devswarm_cli.rr_tr_block_tool_result]
+doc = "The type of a content block that answers a tool call."
+value = "tool_result"
+
+[devswarm_cli.rr_tr_block_text]
+doc = "The type of a content block that carries text."
+value = "text"
+
+[devswarm_cli.rr_tr_subtype_fire]
+doc = "The system entry subtype of a scheduled task firing (the next harness prompt is then a wake)."
+value = "scheduled_task_fire"
+
+[devswarm_cli.rr_tr_subtypes_close]
+doc = "The system entry subtypes that close the turn before them."
+value = ["stop_hook_summary", "turn_duration"]
+
+[devswarm_cli.rr_tr_wait_tools]
+doc = "The tools that pause the harness for a human, in this order: the question tool, the plan approval tool."
+value = ["AskUserQuestion", "ExitPlanMode"]
+
+[devswarm_cli.rr_tr_questions_field]
+doc = "The field of the question tool's input that lists its questions."
+value = "questions"
+
+[devswarm_cli.rr_tr_question_field]
+doc = "The field of a question (or of the question tool's input) that holds the question text."
+value = "question"
+
+[devswarm_cli.rr_tr_plan_field]
+doc = "The field of the plan approval tool's input that holds the plan."
+value = "plan"
+
+[devswarm_cli.rr_tr_notification_tag]
+doc = "What a background-task notification prompt begins with."
+value = "<task-notification>"
+
+[devswarm_cli.rr_tr_stop_prefix]
+doc = "What a stop-hook feedback prompt begins with."
+value = "Stop hook feedback:"
+
+[devswarm_cli.rr_tr_wake_words]
+doc = "Lower-case phrases that make a notification prompt the child's own mailbox wake (matched ignoring ASCII case)."
+value = ["mailbox wake", "wake-watch"]
+
+[devswarm_cli.rr_tr_inert_text]
+doc = "Stands for the text of a prompt block whose text is a number, true or an object: JavaScript's String() of those never begins like a notification or a hook prompt."
+value = "-"
+
+[devswarm_cli.rr_tr_defer_errors]
+doc = "Parser error texts for a transcript line JavaScript would still read (a lone surrogate escape, a number out of range, nesting past the parser limit): the roster is then answered by Node."
+value = ["hex escape", "out of range", "recursion limit"]
+
+[devswarm_cli.rr_tr_expecting]
+doc = "What the transcript parser names as the thing it reads, in its own error text."
+value = "a transcript value"
+
+[devswarm_cli.rr_tr_iso_pattern]
+doc = "The form of an entry time the roster is sure JavaScript's Date.parse reads: an ISO stamp in UTC (day 1..28 so every month is valid). An entry time of another form is left to Node unless another entry has one of this form."
+value = '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|1\d|2[0-8])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,9})?Z$'
+
 [devswarm_cli.rr_app_live_message]
 doc = "The message about workspaces the app still shows. `{count}` is how many, `{cmds}` the commands that archive them."
 value = "app still shows {count} workspace(s) you archived — run: {cmds}"
