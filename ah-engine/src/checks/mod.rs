@@ -195,7 +195,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &verify_first_orch::VerifyFirstOrch,
         &verify_first_orch::VerifyFirstOrchCodex,
         &verify_first_prompt::VerifyFirst,
-        &idle_agent_sweep::IdleAgentSweep,
+        &scripted::IDLE_AGENT_SWEEP,
         &scripted::EMIT_DEDUPE_RESET,
         &scripted::LIMIT_CONSERVE_INJECT,
         &scripted::AUTO_HANDOVER,

@@ -286,14 +286,6 @@ value = { past = "closed", verb = "close", why_head = "an open agent holds a thr
 doc = "The tag a background task's completion notice starts with; a turn that is one is not a human turn."
 value = "<task-notification>"
 
-[idle_sweep.re_codex_rollout]
-doc = "A Codex rollout transcript path (JavaScript regex)."
-value = '(^|[\\/])rollout-[^\\/]*\.jsonl$'
-
-[idle_sweep.re_codex_dir]
-doc = "A path under a .codex directory (JavaScript regex)."
-value = '[\\/]\.codex[\\/]'
-
 [idle_sweep.re_minutes]
 doc = "The age shown after an agent, which the dedupe hash ignores (JavaScript regex, replaced globally)."
 value = '\(\d+m\)'

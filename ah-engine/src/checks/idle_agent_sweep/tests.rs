@@ -1,7 +1,6 @@
-//! Unit tests of the idle-agent-sweep check. The full Node comparison is `tests/prompt_emit_parity`.
+//! Unit tests of the transcript replays behind the idle-agent-sweep script. The full Node comparison is `tests/prompt_emit_parity`.
 use super::*;
 use serde_json::json;
-use std::collections::HashMap;
 
 const T0: f64 = 1_790_000_000_000.0;
 
@@ -118,38 +117,3 @@ fn codex_agents_are_finished_until_closed_or_retasked() {
     assert_eq!(codex::finished(&again).unwrap(), vec![]);
 }
 
-#[test]
-fn the_advisory_names_ten_counts_the_rest_and_ends_the_oldest_first() {
-    let list: Vec<Idle> = (0..12).map(|i| Idle { id: format!("a{i}"), label: format!("a{i}"), idle_since_ms: T0 - (60 - i) as f64 * 60_000.0 }).collect();
-    let t = message(&list, false, T0).unwrap();
-    insta::assert_snapshot!("advisory_twelve_idle_agents", t);
-    let c = message(&list[..1], true, T0).unwrap();
-    insta::assert_snapshot!("advisory_one_codex_agent", c);
-}
-
-#[test]
-fn labels_are_one_line_cut_at_sixty_units_and_never_inside_a_pair() {
-    assert_eq!(one_line("a \t\n b\u{1}c", 60), Ok("a b c".into()));
-    assert_eq!(one_line(&"n".repeat(61), 60), Ok(format!("{}…", "n".repeat(60))));
-    assert_eq!(one_line(&format!("{} tail", "p".repeat(59)), 60), Ok(format!("{}…", "p".repeat(59))), "the trailing space of the cut is trimmed");
-    assert_eq!(one_line(&format!("{}😀z", "e".repeat(59)), 60), Err(Defer));
-    assert_eq!(one_line(&format!("{}😀z", "e".repeat(58)), 60), Ok(format!("{}😀…", "e".repeat(58))));
-}
-
-#[test]
-fn the_platform_is_codex_for_a_turn_id_or_a_rollout_path() {
-    assert!(is_codex(&json!({"turn_id": "t"}), "/x/t.jsonl"));
-    assert!(!is_codex(&json!({"turn_id": ""}), "/x/t.jsonl"));
-    assert!(is_codex(&json!({}), "/home/u/rollout-2026-abc.jsonl"));
-    assert!(is_codex(&json!({}), "/home/u/.codex/sessions/x.jsonl"));
-    assert!(!is_codex(&json!({}), "/home/u/rollout-x/t.jsonl"));
-    assert!(!is_codex(&json!({}), "/home/u/rollout-x.json"));
-}
-
-#[test]
-fn the_injected_clock_needs_the_isolation_marker() {
-    let s = |env: &[(&str, &str)]| Settings { home: "/h".into(), env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<HashMap<_, _>>() };
-    assert_eq!(now(&s(&[("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", " 1790000000000 ")])), T0);
-    assert!(now(&s(&[("ANTIHALL_TEST_NOW_MS", "1790000000000")])) > T0 + 1.0e9, "without the marker the real clock is used");
-    assert!(now(&s(&[("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", "soon")])) > T0 + 1.0e9);
-}
