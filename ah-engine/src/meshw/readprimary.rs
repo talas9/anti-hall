@@ -337,7 +337,12 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let (store_base, nd_base) = tick::read_bases(inv, &o.reader, id, cursor_file.as_deref())?;
     let total_store = o.reader.message_count(id).map_err(|e| ident::Defer(format!("store-read:{e}")))?;
-    let limit = defaults::num("mesh_write.inbox_read_limit") as usize;
+    // `--limit N`: a finite positive number replaces the default cap (floored, at least 1); anything else is ignored
+    let limit = a
+        .one(defaults::text("mesh_write.flag_limit"))
+        .map(crate::checks::guardkit::text::js_number_of_str)
+        .filter(|x| x.is_finite() && *x > 0.0)
+        .map_or(defaults::num("mesh_write.inbox_read_limit") as usize, |x| x.floor().max(1.0) as usize);
     let floor_pos = |x: f64| if x.is_finite() && x > 0.0 { x.floor() } else { 0.0 };
     let mut msgs: Vec<Msg> = Vec::new();
     let (unread_count, total_out);

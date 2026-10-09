@@ -38,6 +38,7 @@ pub mod ident;
 pub mod idlock;
 pub mod inbox;
 pub mod plan;
+pub mod planverbs;
 pub mod read;
 pub mod readprimary;
 pub mod roster;
@@ -48,6 +49,7 @@ pub mod summary;
 pub mod tick;
 pub mod union;
 pub mod verify;
+pub mod wsverbs;
 
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
@@ -159,6 +161,19 @@ pub enum Verb {
     /// A verb that needs no store: `help` and the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`,
     /// `gate-intent`, `notice --list` (see [`simple`]).
     Simple(simple::Simple),
+    /// `plan set|show <id>` (see [`planverbs`]).
+    Plan,
+    /// `scope add <id>` (see [`planverbs`]).
+    Scope,
+    /// `gate <id> --set ... --clear ...` (see [`wsverbs`]).
+    Gate,
+    /// `workspaces list` (see [`wsverbs`]).
+    Workspaces,
+}
+
+/// Whether the verb is checked by the CLI-verb Node witness (`simple::prepare` / `launch` / `run_witness`).
+fn cli_witnessed(v: Option<Verb>) -> bool {
+    matches!(v, Some(Verb::Simple(_) | Verb::Plan | Verb::Scope | Verb::Gate | Verb::Workspaces))
 }
 
 /// The verb's name as the telemetry log spells it (`Send`, `MeshRead`, `MeshHistory`, `InboxAckPrimary`).
@@ -178,6 +193,18 @@ pub fn verb_of(a: &args::Args) -> Option<Verb> {
     let p1 = a.positionals.get(1).map(String::as_str);
     if p0 == defaults::text("mesh_write.verb_send") {
         return Some(Verb::Send);
+    }
+    if p0 == defaults::text("devswarm_cli.verb_plan") {
+        return Some(Verb::Plan);
+    }
+    if p0 == defaults::text("devswarm_cli.verb_scope") {
+        return Some(Verb::Scope);
+    }
+    if p0 == defaults::text("devswarm_cli.verb_gate") {
+        return Some(Verb::Gate);
+    }
+    if p0 == defaults::text("devswarm_cli.verb_workspaces") {
+        return Some(Verb::Workspaces);
     }
     if p0 == defaults::text("mesh_write.verb_mesh") && p1 == Some(defaults::text("mesh_write.verb_read")) {
         return Some(Verb::MeshRead);
@@ -218,6 +245,10 @@ pub fn run_native(inv: &Inv, a: &args::Args) -> R<Answer> {
         Some(Verb::InboxReadPrimary) => readprimary::run(inv, a),
         Some(Verb::Roster) => roster::run(inv, a),
         Some(Verb::Simple(v)) => simple::run(inv, a, v),
+        Some(Verb::Plan) => planverbs::run_plan(inv, a),
+        Some(Verb::Scope) => planverbs::run_scope(inv, a),
+        Some(Verb::Gate) => wsverbs::run_gate(inv, a),
+        Some(Verb::Workspaces) => wsverbs::run_workspaces(inv, a),
         None => ident::defer("not-ported"),
     }
 }
@@ -305,7 +336,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
         return exec_node(&argv);
     }
     // a help request (or any verb of `simple`) never reads fd 0
-    let wants_stdin = a.has(defaults::text("mesh_write.flag_message_stdin")) && !matches!(verb_of(&a), Some(Verb::Simple(_)));
+    let wants_stdin = a.has(defaults::text("mesh_write.flag_message_stdin")) && !cli_witnessed(verb_of(&a));
     let stdin = wants_stdin.then(read_stdin);
     match m {
         Mode::On => {
@@ -324,7 +355,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                 Some(Verb::InboxTick) => verify::prepare_tick(&inv),
                 Some(Verb::InboxReadPrimary) => verify::prepare_read_primary(&inv),
                 Some(Verb::Roster) => verify::prepare_roster(&inv),
-                Some(Verb::Simple(_)) => simple::prepare(&inv),
+                v if cli_witnessed(v) => simple::prepare(&inv, matches!(v, Some(Verb::Gate | Verb::Workspaces))),
                 _ => None,
             };
             let r = std::panic::catch_unwind(|| run_native(&inv, &a));
@@ -335,7 +366,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
             match step {
                 Next::Print(ans) => {
                     if let Some(sc) = &scratch {
-                        if matches!(verb_of(&a), Some(Verb::Simple(_))) {
+                        if cli_witnessed(verb_of(&a)) {
                             simple::launch(sc, &inv, &argv, &ans);
                         } else {
                             verify::launch(sc, &inv, &argv, &ans.stdout);
@@ -363,7 +394,18 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
         // Node consumes while it runs) cannot be replayed, so it only runs in Node and is counted
         _ if matches!(
             verb_of(&a),
-            Some(Verb::InboxAckPrimary | Verb::Heartbeat | Verb::InboxTick | Verb::InboxReadPrimary | Verb::Roster | Verb::Simple(_))
+            Some(
+                Verb::InboxAckPrimary
+                    | Verb::Heartbeat
+                    | Verb::InboxTick
+                    | Verb::InboxReadPrimary
+                    | Verb::Roster
+                    | Verb::Simple(_)
+                    | Verb::Plan
+                    | Verb::Scope
+                    | Verb::Gate
+                    | Verb::Workspaces
+            )
         ) =>
         {
             // logged BEFORE Node runs: with no stdin to forward the engine replaces itself with Node and never returns

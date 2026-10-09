@@ -976,6 +976,15 @@ pub fn derive_after_write(st: &MeshStore, inv: &Inv, repo_key: &str) -> Option<S
     r.unwrap_or_else(|_| Some("summary-panic".to_string()))
 }
 
+/// `deriveSummary(store, {home, env, now})` where the caller also prints from the projection: the summary, and the write
+/// failure (as text) when the refresh could not be written. The projection itself failing is an `Err` (the caller decides:
+/// before its write that is a deferral).
+pub fn derive_value(st: &MeshStore, inv: &Inv, repo_key: &str) -> R<(OVal, Option<String>)> {
+    let sum = compute(st, inv, None)?;
+    let failed = write_atomic(&inv.write_home, repo_key, &sum).err().map(|e| format!("summary-write:{e}"));
+    Ok((sum, failed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

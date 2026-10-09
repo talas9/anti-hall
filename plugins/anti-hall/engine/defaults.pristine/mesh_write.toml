@@ -1665,7 +1665,11 @@ value = "text"
 
 [mesh_write.read_primary_flags]
 doc = "The flags `inbox read-primary` may carry for the engine to answer it; any other flag (a window, an ownership override, an immediate ack, a limit) is Node's."
-value = ["format", "json", "session"]
+value = ["format", "json", "session", "limit"]
+
+[mesh_write.flag_limit]
+doc = "The read-primary flag that overrides the per-call row cap (`--limit N`; a value that is not a finite positive number is ignored, a fractional one is floored to at least 1)."
+value = "limit"
 
 [mesh_write.inbox_read_limit]
 doc = "DEFAULT_INBOX_READ_LIMIT: the most unread rows one read-primary returns; a larger backlog is truncated by Node's per-source cap, which the engine leaves to Node."

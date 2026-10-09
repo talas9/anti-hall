@@ -160,6 +160,11 @@ fn array_index(k: &str) -> Option<u32> {
     k.parse::<u64>().ok().filter(|n| *n < 4_294_967_295).map(|n| n as u32)
 }
 
+/// Whether `k` is a canonical array index, the keys a JavaScript object lists first.
+pub fn is_array_index_key(k: &str) -> bool {
+    array_index(k).is_some()
+}
+
 /// `String(n)` for a finite number.
 pub fn js_number_text(n: f64) -> String {
     if n == 0.0 || !n.is_finite() {

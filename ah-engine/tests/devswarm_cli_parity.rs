@@ -34,10 +34,12 @@ struct Case {
     label: &'static str,
     /// Files under the home that must exist after the verb (proof the case wrote what it should).
     writes: Vec<&'static str>,
+    /// The working directory, relative to the test root (`cwd`: no checkout; `wt-child`: a linked worktree).
+    cwd: &'static str,
 }
 
 fn case(name: &str, argv: &[&str], label: &'static str) -> Case {
-    Case { name: name.into(), argv: argv.iter().map(|s| (*s).into()).collect(), setup: nothing, env: vec![], native: true, label, writes: vec![] }
+    Case { name: name.into(), argv: argv.iter().map(|s| (*s).into()).collect(), setup: nothing, env: vec![], native: true, label, writes: vec![], cwd: "cwd" }
 }
 
 fn nothing(_: &Path) {}
@@ -138,8 +140,164 @@ fn notices_ts_infinity(h: &Path) {
     put(h, ".anti-hall/devswarm/maintainer-notices.jsonl", "{\"id\":\"o\",\"ts\":\"Infinity\"}\n{\"id\":\"p\",\"ts\":2}\n");
 }
 
+fn settings_with(h: &Path, devswarm: &str) {
+    put(h, ".anti-hall/settings.json", &format!("{{\"mesh\":{{\"engine_writes\":\"on\"}},\"devswarm\":{devswarm}}}\n"));
+}
+fn wake_cron_setting(h: &Path) {
+    settings_with(h, "{\"wakeCron\":\"*/5  1,2 * * 1-5\"}");
+}
+fn wake_cron_bad(h: &Path) {
+    settings_with(h, "{\"wakeCron\":\"* * * *\"}");
+}
+fn wake_cron_letters(h: &Path) {
+    settings_with(h, "{\"wakeCron\":\"a b c d e\"}");
+}
+fn rearm_inline(h: &Path) {
+    settings_with(h, "{\"rearmOnTickOnly\":false}");
+}
+fn launchers_installed(h: &Path) {
+    put(h, ".anti-hall/bin/devswarm.js", "// stable launcher\n");
+    put(h, ".anti-hall/bin/wake-watch.js", "// stable watcher\n");
+}
+fn cli_launcher_only(h: &Path) {
+    put(h, ".anti-hall/bin/devswarm.js", "// stable launcher\n");
+}
+fn launcher_is_a_directory(h: &Path) {
+    fs::create_dir_all(h.join(".anti-hall/bin/devswarm.js")).unwrap();
+}
+
+fn log_line(ts: &str, component: &str, level: &str, repo: &str, msg: &str) -> String {
+    format!("{{\"ts\":\"{ts}\",\"component\":\"{component}\",\"level\":\"{level}\",\"repoKey\":\"{repo}\",\"msg\":\"{msg}\"}}")
+}
+fn central_log(h: &Path) {
+    let rows = [
+        log_line("2026-11-18T10:06:40.000Z", "a-comp", "debug", "repo-1", "old debug"),
+        log_line("2026-11-18T10:36:40.000Z", "b-comp", "info", "repo-2", "half hour ago"),
+        "{broken line".to_string(),
+        "   ".to_string(),
+        log_line("2026-11-18T11:00:40.500Z", "a-comp", "warn", "repo-1", "six minutes"),
+        "{\"ts\":\"2026-11-18T11:03:00.000Z\",\"component\":\"c-comp\",\"level\":\"error\",\"extra\":{\"n\":[1,2]},\"2\":\"int key\"}".to_string(),
+        log_line("2026-11-18T11:06:30.000Z", "a-comp", "error", "repo-1", "ten seconds"),
+        "{\"ts\":\"2026-11-18T11:06:35.000Z\",\"component\":7,\"level\":true}".to_string(),
+        "{\"component\":\"no-ts\",\"level\":\"info\"}".to_string(),
+    ];
+    put(h, ".anti-hall/logs/devswarm.jsonl", &(rows.join("\n") + "\n"));
+}
+fn central_log_and_rotated(h: &Path) {
+    put(h, ".anti-hall/logs/devswarm.jsonl", &(log_line("2026-11-18T11:00:00.000Z", "now", "info", "repo-1", "current") + "\n"));
+    put(
+        h,
+        ".anti-hall/logs/devswarm.jsonl.1",
+        &(log_line("2026-11-18T08:00:00.000Z", "older", "warn", "repo-1", "rotated away")
+            + "\n"
+            + &log_line("2026-11-18T10:59:00.000Z", "older", "error", "repo-2", "just before")
+            + "\n"),
+    );
+}
+fn central_log_odd_entry(h: &Path) {
+    put(h, ".anti-hall/logs/devswarm.jsonl", "{\"ts\":\"2026-11-18T11:00:00.000Z\",\"component\":\"x\",\"level\":\"info\"}\n42\n");
+}
+fn central_log_odd_ts(h: &Path) {
+    put(h, ".anti-hall/logs/devswarm.jsonl", "{\"ts\":\"yesterday\",\"component\":\"x\",\"level\":\"info\"}\n");
+}
+fn central_log_object_component(h: &Path) {
+    put(h, ".anti-hall/logs/devswarm.jsonl", "{\"ts\":\"2026-11-18T11:00:00.000Z\",\"component\":{\"a\":1},\"level\":\"info\"}\n");
+}
+fn central_log_surrogate(h: &Path) {
+    put(h, ".anti-hall/logs/devswarm.jsonl", "{\"ts\":\"2026-11-18T11:00:00.000Z\",\"msg\":\"\\ud800\"\n");
+}
+fn custom_log_dir(h: &Path) {
+    put(h, "elsewhere/devswarm.jsonl", &(log_line("2026-11-18T11:00:00.000Z", "moved", "info", "repo-1", "in the override dir") + "\n"));
+}
+
 fn long_reason() -> String {
     "x".repeat(2300)
+}
+
+/// The child worktree the plan cases register (the test root's `wt-child`, a real path).
+fn wt(h: &Path) -> String {
+    h.parent().unwrap().join("wt-child").to_string_lossy().into_owned()
+}
+
+fn descriptor(h: &Path) {
+    put(h, ".anti-hall/devswarm/workspaces/ws-1.json", &format!("{{\"id\":\"ws-1\",\"worktreePath\":{}}}", serde_json::to_string(&wt(h)).unwrap()));
+}
+
+fn descriptor_odd_worktree(h: &Path) {
+    put(h, ".anti-hall/devswarm/workspaces/ws-1.json", "{\"id\":\"ws-1\",\"worktreePath\":7}");
+}
+
+fn plan_key(h: &Path) -> String {
+    // the worktree's mesh id, as the plan file is named
+    let o = Command::new("node")
+        .args(["-e", "console.log(require(process.argv[1]).resolveContext(process.argv[2]).meshId)"])
+        .arg(plugin_root().join("companion/lib/identity.js"))
+        .arg(wt(h))
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("HOME", h)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+fn put_plan(h: &Path, text: &str) {
+    put(h, &format!(".anti-hall/devswarm/plans/{}.json", plan_key(h)), text);
+}
+
+fn plan_in_progress(h: &Path) {
+    descriptor(h);
+    put_plan(
+        h,
+        &format!(
+            "{{\"v\":1,\"key\":\"k\",\"id\":\"ws-1\",\"worktreePath\":{},\"source\":\"spawn\",\"created_at\":1,\"base\":null,\"steps\":[{{\"n\":1,\"text\":\"alpha\",\"status\":\"done\",\"ts\":2,\"started_at\":2}},{{\"n\":2,\"text\":\"beta\",\"status\":\"doing\",\"ts\":3,\"started_at\":3}},{{\"n\":3,\"text\":\"gamma\",\"status\":\"todo\",\"ts\":null,\"started_at\":null}}],\"scope_globs\":[\"src/**\"],\"extras\":[{{\"glob\":\"docs/**\",\"note\":\"asked\",\"ts\":4}}],\"step_ts\":3,\"current\":2,\"warned_at\":null,\"warned_step\":null,\"summaries\":[],\"supervisor\":{{\"x\":1}},\"done_reported_at\":9}}",
+            serde_json::to_string(&wt(h)).unwrap()
+        ),
+    );
+}
+
+fn plan_with_odd_extras(h: &Path) {
+    descriptor(h);
+    put_plan(h, "{\"steps\":[{\"n\":1,\"text\":\"a\",\"status\":\"todo\"}],\"extras\":[null]}");
+}
+
+fn plan_with_string_extras(h: &Path) {
+    descriptor(h);
+    put_plan(h, "{\"steps\":[{\"n\":1,\"text\":\"a\",\"status\":\"todo\"}],\"extras\":\"nope\",\"scope_globs\":0}");
+}
+
+fn plan_without_steps_array(h: &Path) {
+    descriptor(h);
+    put_plan(h, "{\"steps\":\"none\",\"keep\":1}");
+}
+
+fn plan_with_bad_steps(h: &Path) {
+    descriptor(h);
+    put_plan(h, "{\"steps\":[1,2]}");
+}
+
+fn plan_by_id(h: &Path) {
+    put(
+        h,
+        ".anti-hall/devswarm/plans/loose-id.json",
+        "{\"steps\":[{\"n\":1,\"text\":\"a\",\"status\":\"doing\",\"ts\":5,\"started_at\":5},{\"n\":2,\"text\":\"b\",\"status\":\"todo\"}],\"created_at\":1}",
+    );
+}
+
+fn plan_with_many_extras(h: &Path) {
+    descriptor(h);
+    let extras: Vec<String> = (0..50).map(|i| format!("{{\"glob\":\"g{i}\",\"note\":\"n\",\"ts\":1}}")).collect();
+    put_plan(h, &format!("{{\"steps\":[{{\"n\":1,\"text\":\"a\",\"status\":\"todo\"}}],\"extras\":[{}]}}", extras.join(",")));
+}
+
+fn steps_file(h: &Path) {
+    put(h, "../cwd/steps.md", "Plan:\n1. first thing\n2. second thing\n3. third thing\n");
+}
+
+fn huge_log(h: &Path) {
+    let p = h.join(".anti-hall/logs/devswarm-supervision.ndjson");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(p, vec![b'x'; 1024 * 1024 + 1]).unwrap();
 }
 
 fn cases(verbs: &[String]) -> Vec<Case> {
@@ -317,6 +475,89 @@ fn cases(verbs: &[String]) -> Vec<Case> {
         true,
         vec![],
     );
+    // ---- wake-directive ----
+    let child = |agent: &str| -> Vec<(&'static str, String)> {
+        let mut e = vec![("DEVSWARM_SOURCE_BRANCH", "feature".to_string())];
+        if !agent.is_empty() {
+            e.push(("DEVSWARM_AI_AGENT", agent.to_string()));
+        }
+        e
+    };
+    let mut wd = |n: &str, a: &[&str], setup: fn(&Path), env: Vec<(&'static str, String)>, native: bool| {
+        let mut c = case(n, a, "WakeDirective");
+        c.setup = setup;
+        c.env = env;
+        c.native = native;
+        v.push(c);
+    };
+    wd("wake-claude", &["wake-directive", "ws-1"], nothing, child("claude"), true);
+    wd("wake-claude-json-flag-is-ignored", &["wake-directive", "ws-1", "--json"], nothing, child("claude"), true);
+    wd("wake-codex", &["wake-directive", "ws-1"], nothing, child("codex"), true);
+    wd("wake-agent-unset", &["wake-directive", "ws-1"], nothing, child(""), true);
+    wd("wake-agent-uppercase-and-padded", &["wake-directive", "ws-1"], nothing, child(" Claude\t"), true);
+    wd("wake-agent-non-ascii", &["wake-directive", "ws-1"], nothing, child("clàude"), false);
+    wd("wake-cron-setting", &["wake-directive", "ws-1"], wake_cron_setting, child("claude"), true);
+    wd("wake-cron-with-too-few-fields", &["wake-directive", "ws-1"], wake_cron_bad, child("claude"), true);
+    wd("wake-cron-with-letters", &["wake-directive", "ws-1"], wake_cron_letters, child("claude"), true);
+    wd("wake-rearm-inline", &["wake-directive", "ws-1"], rearm_inline, child("claude"), true);
+    wd("wake-stable-launchers", &["wake-directive", "ws-1"], launchers_installed, child("claude"), true);
+    wd("wake-stable-cli-launcher-only", &["wake-directive", "ws-1"], cli_launcher_only, child("claude"), true);
+    wd("wake-stable-launcher-is-a-directory", &["wake-directive", "ws-1"], launcher_is_a_directory, child("claude"), true);
+    wd(
+        "wake-the-argv-id-wins-over-the-env-id",
+        &["wake-directive", "ws-1"],
+        nothing,
+        {
+            let mut e = child("claude");
+            e.push(("DEVSWARM_BUILDER_ID", "other-id".into()));
+            e
+        },
+        true,
+    );
+    wd("wake-primary-is-node", &["wake-directive", "ws-1"], nothing, vec![("DEVSWARM_AI_AGENT", "claude".into())], false);
+    wd("wake-blank-source-branch-is-a-primary", &["wake-directive", "ws-1"], nothing, vec![("DEVSWARM_SOURCE_BRANCH", "  ".into())], false);
+    wd("wake-no-id", &["wake-directive"], nothing, child("claude"), true);
+    wd("wake-unsafe-id", &["wake-directive", "a/b"], nothing, child("claude"), true);
+    // ---- logs ----
+    let none = || -> Vec<(&'static str, String)> { vec![] };
+    let mut lg = |n: &str, a: &[&str], setup: fn(&Path), env: Vec<(&'static str, String)>, native: bool| {
+        let mut c = case(n, a, "Logs");
+        c.setup = setup;
+        c.env = env;
+        c.native = native;
+        v.push(c);
+    };
+    lg("logs-no-file", &["logs"], nothing, none(), true);
+    lg("logs-all", &["logs"], central_log, none(), true);
+    lg("logs-repo", &["logs", "--repo", "repo-1"], central_log, none(), true);
+    lg("logs-component", &["logs", "--component", "a-comp"], central_log, none(), true);
+    lg("logs-min-level-warn", &["logs", "--min-level", "warn"], central_log, none(), true);
+    lg("logs-min-level-debug", &["logs", "--min-level=debug"], central_log, none(), true);
+    lg("logs-min-level-unknown", &["logs", "--min-level", "loud"], central_log, none(), false);
+    lg("logs-since-hour", &["logs", "--since", "1h"], central_log, none(), true);
+    lg("logs-since-minutes", &["logs", "--since", "10m"], central_log, none(), true);
+    lg("logs-since-fraction-days", &["logs", "--since", "0.01d"], central_log, none(), true);
+    lg("logs-since-milliseconds", &["logs", "--since", "30000"], central_log, none(), true);
+    lg("logs-since-uppercase-unit-with-space", &["logs", "--since", "2 H"], central_log, none(), true);
+    lg("logs-since-garbage-is-no-filter", &["logs", "--since", "soon"], central_log, none(), true);
+    lg("logs-since-seconds", &["logs", "--since", "20s"], central_log, none(), true);
+    lg("logs-limit", &["logs", "--limit", "2"], central_log, none(), true);
+    lg("logs-limit-zero", &["logs", "--limit", "0"], central_log, none(), true);
+    lg("logs-limit-fraction", &["logs", "--limit", "2.9"], central_log, none(), true);
+    lg("logs-limit-negative-is-ignored", &["logs", "--limit", "-4"], central_log, none(), true);
+    lg("logs-limit-word-is-ignored", &["logs", "--limit", "many"], central_log, none(), true);
+    lg("logs-combined", &["logs", "--repo", "repo-1", "--min-level", "info", "--since", "1h", "--limit", "2"], central_log, none(), true);
+    lg("logs-rotated-file-is-read-when-the-window-reaches-back", &["logs", "--since", "3h"], central_log_and_rotated, none(), true);
+    lg("logs-rotated-file-is-read-when-the-limit-needs-it", &["logs", "--limit", "5"], central_log_and_rotated, none(), true);
+    lg("logs-rotated-file-is-left-alone-when-the-current-one-suffices", &["logs", "--limit", "1"], central_log_and_rotated, none(), true);
+    lg("logs-a-line-that-is-not-an-object", &["logs"], central_log_odd_entry, none(), false);
+    lg("logs-a-ts-that-is-not-iso-with-since", &["logs", "--since", "1h"], central_log_odd_ts, none(), false);
+    lg("logs-a-ts-that-is-not-iso-without-since", &["logs"], central_log_odd_ts, none(), true);
+    lg("logs-an-object-component", &["logs"], central_log_object_component, none(), false);
+    lg("logs-an-object-component-filtered-out", &["logs", "--component", "other"], central_log_object_component, none(), true);
+    lg("logs-a-lone-surrogate-escape", &["logs"], central_log_surrogate, none(), false);
+    lg("logs-log-dir-override", &["logs"], custom_log_dir, vec![("ANTI_HALL_LOG_DIR", "{HOME}/elsewhere".into())], true);
+    lg("logs-test-context-refuses-the-real-home", &["logs"], central_log, vec![("NODE_TEST_CONTEXT", "child".into())], false);
     // ---- notice ----
     let mut nn = |n: &str, a: &[&str], setup: fn(&Path), native: bool| {
         let mut c = case(n, a, "Notice");
@@ -335,6 +576,217 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     nn("notice-usage-with-other-flag", &["notice", "--ttl", "7d"], nothing, true);
     nn("notice-post-is-node", &["notice", "--post", "hello"], nothing, false);
     nn("notice-post-and-list-is-node", &["notice", "--list", "--post", "x"], nothing, false);
+    // ---- plan / scope ----
+    let two = "1. first step\n2. second step";
+    let mut pl = |n: &str, a: &[&str], label: &'static str, setup: fn(&Path), native: bool, cwd: &'static str, env: Vec<(&'static str, String)>| {
+        let mut c = case(n, a, label);
+        c.setup = setup;
+        c.native = native;
+        c.cwd = cwd;
+        c.env = env;
+        v.push(c);
+    };
+    let none = || vec![];
+    pl("plan-show-without-a-plan", &["plan", "show", "ws-1"], "Plan", descriptor, true, "cwd", none());
+    pl("plan-show", &["plan", "show", "ws-1"], "Plan", plan_in_progress, true, "cwd", none());
+    pl("plan-show-by-id-only", &["plan", "show", "loose-id"], "Plan", plan_by_id, true, "cwd", none());
+    pl("plan-show-bad-steps-shape", &["plan", "show", "ws-1"], "Plan", plan_with_bad_steps, false, "cwd", none());
+    pl("plan-show-descriptor-with-a-number-for-a-path", &["plan", "show", "ws-1"], "Plan", descriptor_odd_worktree, false, "cwd", none());
+    pl(
+        "plan-show-the-callers-own-id-names-the-checkout",
+        &["plan", "show", "ws-9"],
+        "Plan",
+        nothing,
+        true,
+        "wt-child",
+        vec![("DEVSWARM_BUILDER_ID", "ws-9".into())],
+    );
+    pl("plan-no-id", &["plan", "set"], "Plan", nothing, true, "cwd", none());
+    pl("plan-unsafe-id", &["plan", "show", "../x"], "Plan", nothing, true, "cwd", none());
+    pl("plan-no-sub", &["plan"], "Plan", nothing, true, "cwd", none());
+    pl("plan-bogus-sub", &["plan", "bogus", "ws-1"], "Plan", descriptor, true, "cwd", none());
+    pl("plan-set-creates", &["plan", "set", "ws-1", "--steps", two], "Plan", descriptor, true, "cwd", none());
+    pl("plan-set-creates-without-a-descriptor", &["plan", "set", "ws-1", "--steps", two], "Plan", nothing, true, "cwd", none());
+    pl(
+        "plan-set-callers-own-checkout",
+        &["plan", "set", "ws-9", "--steps", two],
+        "Plan",
+        nothing,
+        true,
+        "wt-child",
+        vec![("DEVSWARM_BUILDER_ID", "ws-9".into())],
+    );
+    pl(
+        "plan-set-with-scope",
+        &["plan", "set", "ws-1", "--steps", two, "--scope", "src/**, `lib/*.js`,docs/**  src/**"],
+        "Plan",
+        descriptor,
+        true,
+        "cwd",
+        none(),
+    );
+    pl("plan-set-with-a-bare-scope", &["plan", "set", "ws-1", "--steps", two, "--scope"], "Plan", descriptor, true, "cwd", none());
+    pl("plan-set-with-repeated-scope", &["plan", "set", "ws-1", "--steps", two, "--scope", "a", "--scope", "b,c"], "Plan", descriptor, true, "cwd", none());
+    pl("plan-set-identical-is-a-no-op", &["plan", "set", "ws-1", "--steps", "1. alpha\n2. beta\n3. gamma"], "Plan", plan_in_progress, true, "cwd", none());
+    pl(
+        "plan-set-identical-new-scope",
+        &["plan", "set", "ws-1", "--steps", "1. alpha\n2. beta\n3. gamma", "--scope", "x/**"],
+        "Plan",
+        plan_in_progress,
+        true,
+        "cwd",
+        none(),
+    );
+    pl(
+        "plan-set-changed-keeps-unchanged-steps-and-notes-the-drop",
+        &["plan", "set", "ws-1", "--steps", "1. alpha\n2. different\n3. gamma\n4. delta"],
+        "Plan",
+        plan_in_progress,
+        true,
+        "cwd",
+        none(),
+    );
+    pl(
+        "plan-set-replaced-first-step-drops-the-done-count",
+        &["plan", "set", "ws-1", "--steps", "1. other\n2. beta"],
+        "Plan",
+        plan_in_progress,
+        true,
+        "cwd",
+        none(),
+    );
+    pl("plan-set-over-a-plan-with-a-string-extras", &["plan", "set", "ws-1", "--steps", two], "Plan", plan_with_string_extras, true, "cwd", none());
+    pl(
+        "plan-set-over-a-plan-without-a-steps-array-starts-over",
+        &["plan", "set", "ws-1", "--steps", two],
+        "Plan",
+        plan_without_steps_array,
+        true,
+        "cwd",
+        none(),
+    );
+    pl("plan-set-over-a-plan-with-bad-steps", &["plan", "set", "ws-1", "--steps", two], "Plan", plan_with_bad_steps, false, "cwd", none());
+    pl("plan-set-by-id-plan-file", &["plan", "set", "loose-id", "--steps", "1. a\n2. b\n3. c"], "Plan", plan_by_id, true, "cwd", none());
+    pl("plan-set-descriptor-with-a-number-for-a-path", &["plan", "set", "ws-1", "--steps", two], "Plan", descriptor_odd_worktree, false, "cwd", none());
+    pl("plan-set-supervision-log-due-for-rotation", &["plan", "set", "ws-1", "--steps", two], "Plan", huge_log, false, "cwd", none());
+    pl("plan-set-no-steps", &["plan", "set", "ws-1"], "Plan", descriptor, true, "cwd", none());
+    pl("plan-set-bare-steps", &["plan", "set", "ws-1", "--steps"], "Plan", descriptor, true, "cwd", none());
+    pl("plan-set-one-step-is-no-plan", &["plan", "set", "ws-1", "--steps", "1. only"], "Plan", descriptor, true, "cwd", none());
+    pl("plan-set-prose-is-no-plan", &["plan", "set", "ws-1", "--steps", "do this then that"], "Plan", descriptor, true, "cwd", none());
+    pl(
+        "plan-set-forms",
+        &["plan", "set", "ws-1", "--steps", "intro\n  - 1) a\n* 2: b\nSTEP 3. c\n  step   4:\td\n5.e\n5. e2\n- Step 6 - f"],
+        "Plan",
+        descriptor,
+        true,
+        "cwd",
+        none(),
+    );
+    pl("plan-set-crlf", &["plan", "set", "ws-1", "--steps", "1. a\r\n2. b\r\n3. c\r"], "Plan", descriptor, true, "cwd", none());
+    pl("plan-set-lone-cr-in-a-line", &["plan", "set", "ws-1", "--steps", "1. a\n2. b\rmore\n3. c\n4. d"], "Plan", descriptor, true, "cwd", none());
+    pl(
+        "plan-set-second-list-restarting-ends-the-first",
+        &["plan", "set", "ws-1", "--steps", "1. a\n2. b\n1. c\n2. d\n3. e"],
+        "Plan",
+        descriptor,
+        true,
+        "cwd",
+        none(),
+    );
+    pl(
+        "plan-set-restart-before-two-items-replaces-the-first",
+        &["plan", "set", "ws-1", "--steps", "1. a\n1. b\n2. c"],
+        "Plan",
+        descriptor,
+        true,
+        "cwd",
+        none(),
+    );
+    pl("plan-set-gap-in-the-numbers", &["plan", "set", "ws-1", "--steps", "1. a\n2. b\n4. d\n3. c"], "Plan", descriptor, true, "cwd", none());
+    pl("plan-set-four-digit-number", &["plan", "set", "ws-1", "--steps", "1. a\n2. b\n1000. c"], "Plan", descriptor, true, "cwd", none());
+    pl(
+        "plan-set-unicode-spaces-and-text",
+        &["plan", "set", "ws-1", "--steps", "\u{a0}1.\u{3000}ünï \u{1F600} cödé  \n2.\u{2003}second\u{feff}"],
+        "Plan",
+        descriptor,
+        true,
+        "cwd",
+        none(),
+    );
+    pl("plan-set-line-separator-inside-a-line", &["plan", "set", "ws-1", "--steps", "1. a\u{2028}b\n2. c\n3. d"], "Plan", descriptor, true, "cwd", none());
+    pl(
+        "plan-set-fifty-one-steps",
+        &["plan", "set", "ws-1", "--steps", &(1..=60).map(|i| format!("{i}. step {i}")).collect::<Vec<_>>().join("\n")],
+        "Plan",
+        descriptor,
+        true,
+        "cwd",
+        none(),
+    );
+    pl("plan-set-a-long-step-is-cut", &["plan", "set", "ws-1", "--steps", &format!("1. {}\n2. b", "x".repeat(260))], "Plan", descriptor, true, "cwd", none());
+    pl(
+        "plan-set-a-cut-through-a-surrogate-pair",
+        &["plan", "set", "ws-1", "--steps", &format!("1. {}\u{1F600}tail\n2. b", "x".repeat(199))],
+        "Plan",
+        descriptor,
+        false,
+        "cwd",
+        none(),
+    );
+    pl("plan-set-steps-file", &["plan", "set", "ws-1", "--steps-file", "steps.md"], "Plan", steps_file, true, "cwd", none());
+    pl("plan-set-steps-wins-over-steps-file", &["plan", "set", "ws-1", "--steps", two, "--steps-file", "steps.md"], "Plan", steps_file, true, "cwd", none());
+    pl("plan-set-missing-steps-file", &["plan", "set", "ws-1", "--steps-file", "nope.md"], "Plan", descriptor, false, "cwd", none());
+    pl("scope-add", &["scope", "add", "ws-1", "--glob", "src/**", "--note", "the user asked for it"], "Scope", plan_in_progress, true, "cwd", none());
+    pl("scope-add-creates-a-plan", &["scope", "add", "ws-1", "--glob", "src/**", "--note", "n"], "Scope", descriptor, true, "cwd", none());
+    pl("scope-add-without-descriptor-or-plan", &["scope", "add", "ws-1", "--glob", "a", "--note", "n"], "Scope", nothing, true, "cwd", none());
+    pl(
+        "scope-add-same-glob-same-note-is-a-no-op",
+        &["scope", "add", "ws-1", "--glob", "docs/**", "--note", "asked"],
+        "Scope",
+        plan_in_progress,
+        true,
+        "cwd",
+        none(),
+    );
+    pl(
+        "scope-add-same-glob-new-note",
+        &["scope", "add", "ws-1", "--glob", "docs/**", "--note", "changed my mind"],
+        "Scope",
+        plan_in_progress,
+        true,
+        "cwd",
+        none(),
+    );
+    pl(
+        "scope-add-several-globs",
+        &["scope", "add", "ws-1", "--glob", "a/**", "--glob", "b/**,c/**", "--glob", "a/**", "--note", "n"],
+        "Scope",
+        plan_in_progress,
+        true,
+        "cwd",
+        none(),
+    );
+    pl("scope-add-long-note-is-cut", &["scope", "add", "ws-1", "--glob", "a", "--note", &"y".repeat(400)], "Scope", plan_in_progress, true, "cwd", none());
+    pl(
+        "scope-add-note-cut-through-a-surrogate-pair",
+        &["scope", "add", "ws-1", "--glob", "a", "--note", &format!("{}\u{1F600}z", "y".repeat(299))],
+        "Scope",
+        plan_in_progress,
+        false,
+        "cwd",
+        none(),
+    );
+    pl("scope-add-extras-full", &["scope", "add", "ws-1", "--glob", "new", "--note", "n"], "Scope", plan_with_many_extras, true, "cwd", none());
+    pl("scope-add-extras-is-not-an-array", &["scope", "add", "ws-1", "--glob", "new", "--note", "n"], "Scope", plan_with_string_extras, true, "cwd", none());
+    pl("scope-add-extras-holds-a-null", &["scope", "add", "ws-1", "--glob", "new", "--note", "n"], "Scope", plan_with_odd_extras, false, "cwd", none());
+    pl("scope-add-no-glob", &["scope", "add", "ws-1", "--note", "n"], "Scope", plan_in_progress, true, "cwd", none());
+    pl("scope-add-blank-globs", &["scope", "add", "ws-1", "--glob", " , ", "--note", "n"], "Scope", plan_in_progress, true, "cwd", none());
+    pl("scope-add-no-note", &["scope", "add", "ws-1", "--glob", "a"], "Scope", plan_in_progress, true, "cwd", none());
+    pl("scope-add-blank-note", &["scope", "add", "ws-1", "--glob", "a", "--note", "  \n"], "Scope", plan_in_progress, true, "cwd", none());
+    pl("scope-bogus-sub", &["scope", "remove", "ws-1", "--glob", "a", "--note", "n"], "Scope", plan_in_progress, true, "cwd", none());
+    pl("scope-no-id", &["scope", "add"], "Scope", nothing, true, "cwd", none());
+    pl("scope-unsafe-id", &["scope", "add", "a/b", "--glob", "a", "--note", "n"], "Scope", nothing, true, "cwd", none());
+    pl("scope-supervision-log-due-for-rotation", &["scope", "add", "ws-1", "--glob", "a", "--note", "n"], "Scope", huge_log, false, "cwd", none());
     v
 }
 
@@ -361,6 +813,10 @@ fn node_cli(home: &Path, cwd: &Path, argv: &[String], now: i64, env: &[(&str, &s
 fn engine_cli(home: &Path, cwd: &Path, argv: &[String], now: i64, env: &[(&str, &str)]) -> Run {
     let a: Vec<&str> = argv.iter().map(String::as_str).collect();
     engine_verb(home, &home.join("state"), cwd, &a, now, None, env)
+}
+
+fn refs<'a>(e: &'a [(&'static str, String)]) -> Vec<(&'a str, &'a str)> {
+    e.iter().map(|(k, v)| (*k, v.as_str())).collect()
 }
 
 fn with_path<'a>(mut e: Vec<(&'a str, &'a str)>, p: &'a str) -> Vec<(&'a str, &'a str)> {
@@ -391,6 +847,12 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
     let _cleanup = Cleanup(root.clone());
     let cwd = root.join("cwd");
     fs::create_dir_all(&cwd).unwrap();
+    // a checkout with a linked worktree: the plan cases register the worktree (`wt-child`) as a workspace
+    let repo = root.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    git(&["init", "-q"], &repo);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"], &repo);
+    git(&["worktree", "add", "-q", "-b", "child", root.join("wt-child").to_str().unwrap()], &repo);
     let tools = tools_path(&root, true);
     let nonode = tools_path(&root, false);
     // the verb list is Node's own (also checks the shipped list)
@@ -408,6 +870,10 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
     let (mut native, mut deferred) = (0, 0);
     let mut pending: Vec<(String, PathBuf)> = Vec::new();
     for (i, c) in all.iter().enumerate() {
+        // a developer's shortcut: run only the cases whose name contains this text
+        if std::env::var("AH_CLI_PARITY_FILTER").is_ok_and(|f| !c.name.contains(&f)) {
+            continue;
+        }
         let now = NOW + i as i64 * 7_919;
         let homes: Vec<PathBuf> = ["node", "engine", "defer"].iter().map(|k| root.join(format!("h{i}-{k}"))).collect();
         for h in &homes {
@@ -415,9 +881,12 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
             fs::write(h.join(".anti-hall/settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
             (c.setup)(h);
         }
-        let env: Vec<(&str, &str)> = c.env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let n = node_cli(&homes[0], &cwd, &c.argv, now, &with_path(env.clone(), tools.as_str()));
-        let e = engine_cli(&homes[1], &cwd, &c.argv, now, &with_path(env.clone(), tools.as_str()));
+        // `{HOME}` in a value is each side's own home
+        let env_of = |h: &Path| -> Vec<(&str, String)> { c.env.iter().map(|(k, v)| (*k, v.replace("{HOME}", &h.to_string_lossy()))).collect() };
+        let (env_n, env_e, env_d) = (env_of(&homes[0]), env_of(&homes[1]), env_of(&homes[2]));
+        let cwd = root.join(c.cwd);
+        let n = node_cli(&homes[0], &cwd, &c.argv, now, &with_path(refs(&env_n), tools.as_str()));
+        let e = engine_cli(&homes[1], &cwd, &c.argv, now, &with_path(refs(&env_e), tools.as_str()));
         let log = last_log(&homes[1].join("state"));
         let answered = log["result"] == "native";
         assert_eq!(answered, c.native, "{}: expected native={} but the engine logged {log}", c.name, c.native);
@@ -444,7 +913,7 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
             };
             assert_eq!(mask(&e.stdout, &homes[1]), mask(&n.stdout, &homes[0]), "{}: the fallback prints what Node prints", c.name);
             let pre = tree(&homes[2]);
-            let d = engine_cli(&homes[2], &cwd, &c.argv, now, &with_path(env.clone(), nonode.as_str()));
+            let d = engine_cli(&homes[2], &cwd, &c.argv, now, &with_path(refs(&env_d), nonode.as_str()));
             assert_eq!(d.code, 75, "{}: a deferral the engine cannot hand to Node exits 75, got {} / {}", c.name, d.code, d.stdout);
             assert!(d.stdout.is_empty(), "{}: nothing is printed on a deferral: {}", c.name, d.stdout);
             assert_eq!(last_log(&homes[2].join("state"))["result"], "defer", "{}", c.name);
@@ -464,7 +933,9 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
         assert_eq!(line["result"], "match", "{name}: the background Node witness disagrees: {line}");
     }
     eprintln!("devswarm cli parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", all.len());
-    assert!(native >= 150 && deferred >= 10, "{native} native, {deferred} deferred");
+    if std::env::var("AH_CLI_PARITY_FILTER").is_err() {
+        assert!(native >= 200 && deferred >= 20, "{native} native, {deferred} deferred");
+    }
 }
 
 /// `ah-engine devswarm <verb> <devswarm.js argv>`: the role matrix decides who may run it, then it is the same front as
@@ -546,4 +1017,173 @@ fn the_devswarm_command_runs_the_cli_verbs_under_the_role_matrix() {
     // an unknown verb is still refused by the command, before anything runs
     let (code, _, err) = engine(&hm, &["no-such-verb"], &[]);
     assert!(code == 64 && err.contains("unknown devswarm verb"), "{code} {err}");
+}
+
+// ---- the verbs that read or write the project's store (gate, workspaces list) -------------------------------------------
+
+struct StoreCase {
+    name: &'static str,
+    argv: Vec<&'static str>,
+    /// `child` (the registered child worktree), `main` (the Primary checkout), `other` (another project), `nongit`.
+    cwd: &'static str,
+    setup: fn(&Path),
+    native: bool,
+    label: &'static str,
+}
+
+fn sc(name: &'static str, argv: &[&'static str], cwd: &'static str, native: bool, label: &'static str) -> StoreCase {
+    StoreCase { name, argv: argv.to_vec(), cwd, setup: nothing, native, label }
+}
+
+/// A descriptor of `child-1` naming its worktree (the seed registers the row but writes no descriptor file).
+fn child_descriptor(h: &Path) {
+    let wt = h.parent().unwrap().join("wt-child");
+    put(
+        h,
+        ".anti-hall/devswarm/workspaces/child-1.json",
+        &format!("{{\"id\":\"child-1\",\"worktreePath\":{}}}", serde_json::to_string(&wt.to_string_lossy()).unwrap()),
+    );
+}
+
+/// A descriptor stranded in the legacy hash bucket of its id.
+fn stranded_descriptor(h: &Path) {
+    let o = Command::new("node")
+        .args(["-e", "console.log(require(process.argv[1]).hashFromWorkspaceId('stray-1'))"])
+        .arg(plugin_root().join("companion/lib/devswarm-store.js"))
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("HOME", h)
+        .output()
+        .unwrap();
+    let hash = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    put(h, ".anti-hall/devswarm/workspaces/stray-1.json", &format!("{{\"id\":\"stray-1\",\"worktreePath\":\"/nowhere/stray\",\"ownerKey\":\"{hash}\"}}"));
+}
+
+fn odd_descriptor_id(h: &Path) {
+    put(h, ".anti-hall/devswarm/workspaces/odd-1.json", "{\"id\":5,\"worktreePath\":\"/nowhere/odd\"}");
+}
+
+fn foreign_registration(h: &Path) {
+    put(h, ".anti-hall/devswarm/workspaces/child-1.json", "{\"id\":\"child-1\",\"worktreePath\":\"/nowhere/foreign\",\"repoKey\":\"repo-someone-else\"}");
+}
+
+fn store_cases() -> Vec<StoreCase> {
+    let mut v = vec![
+        sc("gate-set", &["gate", "child-1", "--set", "tests_passed"], "child", true, "Gate"),
+        sc("gate-set-several-and-clear", &["gate", "child-1", "--set", "tests_passed,merged_verified", "--clear", "done"], "child", true, "Gate"),
+        sc("gate-set-repeated-and-duplicated", &["gate", "child-1", "--set", "a", "--set", "b,a, c ", "--clear", "d"], "child", true, "Gate"),
+        sc("gate-clear-with-a-setter", &["gate", "child-1", "--clear", "tests_passed", "--by", "someone"], "child", true, "Gate"),
+        sc("gate-all-required-gates-make-archive-ready", &["gate", "child-1", "--set", "merged,tests_passed,done"], "child", false, "Gate"),
+        sc("gate-from-the-primary-checkout", &["gate", "child-1", "--set", "tests_passed"], "main", true, "Gate"),
+        sc("gate-an-untracked-id", &["gate", "nobody", "--set", "tests_passed"], "child", true, "Gate"),
+        sc("gate-no-flags", &["gate", "child-1"], "child", true, "Gate"),
+        sc("gate-blank-flags", &["gate", "child-1", "--set", " , "], "child", true, "Gate"),
+        sc("gate-bare-flags", &["gate", "child-1", "--set"], "child", true, "Gate"),
+        sc("gate-unsafe-id", &["gate", "../x", "--set", "a"], "child", true, "Gate"),
+        sc("gate-no-id", &["gate", "--set", "a"], "child", true, "Gate"),
+        sc("gate-merged-is-node", &["gate", "child-1", "--set", "merged"], "child", false, "Gate"),
+        sc("gate-outside-any-project", &["gate", "nobody", "--set", "a"], "nongit", false, "Gate"),
+        StoreCase { setup: child_descriptor, ..sc("gate-registered-here-from-another-project", &["gate", "child-1", "--set", "a"], "other", true, "Gate") },
+        StoreCase { setup: child_descriptor, ..sc("gate-registered-here-from-no-project", &["gate", "child-1", "--set", "a"], "nongit", true, "Gate") },
+        StoreCase { setup: child_descriptor, ..sc("gate-registered-here-from-here", &["gate", "child-1", "--set", "a"], "child", true, "Gate") },
+        StoreCase {
+            setup: foreign_registration,
+            ..sc("gate-registered-under-a-persisted-foreign-key", &["gate", "child-1", "--set", "a"], "child", true, "Gate")
+        },
+        sc("workspaces-list", &["workspaces", "list"], "child", true, "Workspaces"),
+        sc("workspaces-default-sub", &["workspaces"], "child", true, "Workspaces"),
+        sc("workspaces-from-the-primary-checkout", &["workspaces", "list"], "main", true, "Workspaces"),
+        sc("workspaces-explicit-workspace", &["workspaces", "list", "--workspace", "child-1"], "child", true, "Workspaces"),
+        sc("workspaces-empty-workspace", &["workspaces", "list", "--workspace="], "child", true, "Workspaces"),
+        sc("workspaces-bogus-sub", &["workspaces", "bogus"], "child", true, "Workspaces"),
+        sc("workspaces-outside-any-project", &["workspaces", "list"], "nongit", false, "Workspaces"),
+        StoreCase { setup: stranded_descriptor, ..sc("workspaces-a-stranded-descriptor-is-nodes", &["workspaces", "list"], "child", false, "Workspaces") },
+        StoreCase {
+            setup: odd_descriptor_id,
+            ..sc("workspaces-a-descriptor-with-a-numeric-id-is-nodes", &["workspaces", "list"], "child", false, "Workspaces")
+        },
+        StoreCase { setup: child_descriptor, ..sc("workspaces-with-a-descriptor", &["workspaces", "list"], "child", true, "Workspaces") },
+    ];
+    v.push(sc("workspaces-bare-worktree-flag", &["workspaces", "list", "--worktree"], "child", true, "Workspaces"));
+    v
+}
+
+#[test]
+fn gate_and_workspaces_list_match_node_on_a_seeded_store() {
+    if !node_sqlite_available() {
+        eprintln!("SKIPPED: Node with node:sqlite is not available, so there is no Node to compare with");
+        return;
+    }
+    let fx = fixture("clistore");
+    let other = fx.root.join("repo-other");
+    fs::create_dir_all(&other).unwrap();
+    git(&["init", "-q"], &other);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"], &other);
+    let other = real(&other);
+    let nongit = fx.root.join("not-a-repo");
+    fs::create_dir_all(&nongit).unwrap();
+    let nongit = real(&nongit);
+    let tools = tools_path(&fx.root, true);
+    let nonode = tools_path(&fx.root, false);
+    let key_dir = |h: &Path| h.join(".anti-hall/devswarm/store").join(&fx.repo_key).join("devswarm.db");
+    let (mut native, mut deferred) = (0, 0);
+    let mut pending: Vec<(String, PathBuf)> = Vec::new();
+    for (i, c) in store_cases().iter().enumerate() {
+        let now = NOW + i as i64 * 7_919;
+        let cwd = match c.cwd {
+            "child" => fx.child.clone(),
+            "main" => fx.main.clone(),
+            "other" => other.clone(),
+            _ => nongit.clone(),
+        };
+        let homes: Vec<PathBuf> = ["node", "engine", "defer"].iter().map(|k| fx.root.join(format!("s{i}-{k}"))).collect();
+        for h in &homes {
+            copy_tree(&fx.seed_home, h);
+            fs::write(h.join(".anti-hall/settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
+            (c.setup)(h);
+        }
+        let argv: Vec<String> = c.argv.iter().map(|s| (*s).to_string()).collect();
+        let n = node_cli(&homes[0], &cwd, &argv, now, &[("PATH", tools.as_str())]);
+        let e = engine_cli(&homes[1], &cwd, &argv, now, &[("PATH", tools.as_str())]);
+        let log = last_log(&homes[1].join("state"));
+        assert_eq!(log["result"] == "native", c.native, "{}: expected native={} but the engine logged {log}", c.name, c.native);
+        if c.native {
+            native += 1;
+            assert_eq!(log["verb"], c.label, "{}: telemetry names the verb", c.name);
+            let (es, ns) = (e.stdout.replace(homes[1].to_string_lossy().as_ref(), "<HOME>"), n.stdout.replace(homes[0].to_string_lossy().as_ref(), "<HOME>"));
+            assert_eq!((e.code, &es), (n.code, &ns), "{}: stdout/exit differ\n engine: {es:?}\n node:   {ns:?}", c.name);
+            let (te, tn) = (tree(&homes[1]), tree(&homes[0]));
+            for k in te.keys().chain(tn.keys()) {
+                assert!(te.get(k) == tn.get(k), "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}", c.name, te.get(k), tn.get(k));
+            }
+            let (de, dn) = (raw_dump(&key_dir(&homes[1])), raw_dump(&key_dir(&homes[0])));
+            assert!(de == dn, "{}: the store differs: {}", c.name, first_diff(&dn, &de));
+            pending.push((c.name.to_string(), homes[1].join("state")));
+        } else {
+            deferred += 1;
+            assert_eq!(e.code, n.code, "{}: exit code of the fallback", c.name);
+            let pre = (tree(&homes[2]), raw_dump(&key_dir(&homes[2])));
+            let d = engine_cli(&homes[2], &cwd, &argv, now, &[("PATH", nonode.as_str())]);
+            assert_eq!(d.code, 75, "{}: a deferral the engine cannot hand to Node exits 75, got {} / {}", c.name, d.code, d.stdout);
+            assert!(d.stdout.is_empty(), "{}: nothing is printed on a deferral: {}", c.name, d.stdout);
+            assert_eq!(last_log(&homes[2].join("state"))["result"], "defer", "{}", c.name);
+            assert!(pre == (tree(&homes[2]), raw_dump(&key_dir(&homes[2]))), "{}: a deferral wrote", c.name);
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    for (name, state) in &pending {
+        let line = loop {
+            if let Some(l) = verify_lines(state).into_iter().last() {
+                break l;
+            }
+            assert!(std::time::Instant::now() < deadline, "{name}: the Node witness never logged");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        assert_eq!(line["result"], "match", "{name}: the background Node witness disagrees: {line}");
+    }
+    eprintln!(
+        "store cli parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written",
+        store_cases().len()
+    );
+    assert!(native >= 15 && deferred >= 4, "{native} native, {deferred} deferred");
 }
