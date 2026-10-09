@@ -9,7 +9,7 @@ const path = require('node:path');
 
 const DIR = path.resolve(__dirname, '..', '..', '.github', 'scripts', 'moderation');
 const L = require(path.join(DIR, 'lib.js'));
-const { scan } = require(path.join(DIR, 'privacy-scan.js'));
+const { scan, identityHits, maskEmail } = require(path.join(DIR, 'privacy-scan.js'));
 const { addedLines } = require(path.join(DIR, 'pr.js'));
 const { verifiedPaths } = require(path.join(DIR, 'community.js'));
 const { rank } = require(path.join(DIR, 'roadmap.js'));
@@ -61,8 +61,9 @@ test('every prompt has a parseable schema and the shared rules', () => {
     const p = L.prompt(name);
     assert.strictEqual(p.schema.type, 'object', name);
     assert.ok(p.system.includes('BEGIN-UNTRUSTED'), name);
-    assert.ok(cfg.model.claude_models[name], `claude model alias for ${name}`);
-    assert.ok(!/claude-|\d{8}/.test(cfg.model.claude_models[name]), 'aliases only, no pinned versions');
+    const mm = L.modelFor(cfg, name);
+    assert.ok(mm.claude && mm.copilot, `models for ${name}`);
+    assert.ok(!/claude-|\d{8}/.test(mm.claude), 'claude slot uses aliases only, no pinned versions');
   }
 });
 
@@ -141,4 +142,19 @@ test('templates referenced by the scripts exist', () => {
   for (const t of ['needs-info', 'off-topic', 'triage-brief', 'qa-answer', 'pr-summary', 'privacy', 'stale-check', 'roadmap-digest', 'roadmap-digest-issue']) {
     assert.ok(fs.existsSync(path.join(DIR, '..', '..', 'moderation', 'templates', t + '.md')), t);
   }
+});
+
+test('model routing: classify is haiku, text jobs sonnet, unlisted jobs opus', () => {
+  assert.strictEqual(L.modelFor(cfg, 'moderate').claude, 'haiku');
+  for (const j of ['brief', 'qa-answer', 'pr-summary', 'docs-inspector', 'digest']) assert.strictEqual(L.modelFor(cfg, j).claude, 'sonnet', j);
+  assert.strictEqual(L.modelFor(cfg, 'something-else').claude, 'opus');
+});
+
+test('commit identity: allow-list passes, others fail with a masked email', () => {
+  const ok = 'a1\ttalas9@gmail.com\tnoreply@github.com\nb2\t123+bot@users.noreply.github.com\t123+bot@users.noreply.github.com\n';
+  assert.deepStrictEqual(identityHits(ok, cfg), []);
+  const bad = identityHits('c3c3c3c3c3c3\tmohammed@example.org\ttalas9@gmail.com\n', cfg);
+  assert.strictEqual(bad.length, 1);
+  assert.strictEqual(bad[0].msg, 'commit c3c3c3c3c3 authored as m***@e***; re-author as the maintainer identity');
+  assert.strictEqual(maskEmail('mo@tx.io'), 'm***@t***');
 });

@@ -139,7 +139,16 @@
     "providers": ["claude", "copilot"],
     "default_chain": "claude,copilot",
     "default_daily_cap": 50,
-    "claude_models": { "moderate": "haiku", "brief": "sonnet", "qa-answer": "sonnet", "pr-summary": "sonnet", "digest": "sonnet" },
+    "models_doc": "Model per job and provider slot. claude = alias used by the primary and secondary Claude tokens (aliases only, never a pinned version). copilot = Copilot CLI --model value, used only on the Copilot fallback; set repo variable COPILOT_MODEL (e.g. auto) to override all jobs when the Copilot plan allows only Auto. The 'default' row applies to any job not listed (strongest). Sources: Copilot CLI model ids https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference ; Codex model list: codex CLI models cache (codex-cli 0.160) and https://developers.openai.com/codex/models",
+    "models": {
+      "moderate": { "claude": "haiku", "copilot": "claude-haiku-4.5" },
+      "brief": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
+      "qa-answer": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
+      "pr-summary": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
+      "docs-inspector": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
+      "digest": { "claude": "sonnet", "copilot": "claude-sonnet-5.5" },
+      "default": { "claude": "opus", "copilot": "claude-opus-5.5" }
+    },
     "max_input_chars": 20000,
     "max_summary_chars": 1500,
     "allowed_link_prefixes": ["https://github.com/talas9/anti-hall", "https://talas9.github.io/anti-hall"]
@@ -153,6 +162,8 @@
     },
     "email_allow": ["@example\\.(com|org|net|test|invalid)$", "\\.(test|invalid|example|local)$", "noreply", "@users\\.noreply\\.github\\.com$", "@anthropic\\.com$", "@github\\.com$", "^git@github\\.com$"],
     "skip_paths": ["^tests/fixtures/", "^\\.github/moderation/config\\.json$", "(^|/)package-lock\\.json$", "\\.lock$"],
+    "commit_email_allow": ["talas9@gmail.com", "*@users.noreply.github.com", "noreply@github.com"],
+    "commit_email_allow_doc": "Author and committer emails allowed on commits in a PR or push range (maintainer identity, GitHub noreply incl. bots, web-merge noreply). Case-insensitive; * matches any local part.",
     "max_hits_reported": 30
   }
 }

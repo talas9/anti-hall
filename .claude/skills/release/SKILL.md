@@ -103,3 +103,5 @@ through its PR or `gh issue close <n> --comment "<evidence>"`.
 `main` merge green (`tests-passed`, `dev-only`), tag pushed, GitHub Release published from the
 CHANGELOG section, Pages run green, CodeQL clean or ticketed, milestone closed, marketplace dir
 propagated. Anything missing stays an open checklist item on the release issue.
+
+Model routing for agents and lanes: see the "Model routing" section in `.claude/skills/README.md`.

@@ -191,3 +191,5 @@ The full release sequence is the `release` skill.
 | `stale` | `stale.yml` (60 days idle; never closes) | Comment whether it still matters; a human closes. |
 
 Bots never close, lock or delete; neither does a session without the owner's OK.
+
+Model routing for agents and lanes: see the "Model routing" section in `.claude/skills/README.md`.

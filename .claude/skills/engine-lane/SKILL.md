@@ -78,3 +78,5 @@ Never delete user data.
 - After the patch is handed over (commits fetched or a patch file written), delete the lane's
   `ah-engine/target/` (multi-GB) and remove the scratch worktree once the coordinator has the
   commits (`git worktree remove <dir>`; see `repo-hygiene`).
+
+Model routing for agents and lanes: see the "Model routing" section in `.claude/skills/README.md`.

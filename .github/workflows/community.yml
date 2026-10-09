@@ -61,6 +61,7 @@ jobs:
       prompt: ${{ steps.gate.outputs.prompt }}
       schema: ${{ steps.gate.outputs.schema }}
       claude_model: ${{ steps.gate.outputs.claude_model }}
+      copilot_model: ${{ steps.gate.outputs.copilot_model }}
       tools: ${{ steps.gate.outputs.tools }}
       max_turns: ${{ steps.gate.outputs.max_turns }}
       chain: ${{ steps.gate.outputs.chain }}
@@ -95,11 +96,13 @@ jobs:
       prompt: ${{ needs.gate.outputs.prompt }}
       schema: ${{ needs.gate.outputs.schema }}
       claude_model: ${{ needs.gate.outputs.claude_model }}
+      copilot_model: ${{ needs.gate.outputs.copilot_model }}
       chain: ${{ needs.gate.outputs.chain }}
       tools: ${{ needs.gate.outputs.tools }}
       max_turns: ${{ fromJSON(needs.gate.outputs.max_turns) }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
 
   apply:
     needs: [gate, model]

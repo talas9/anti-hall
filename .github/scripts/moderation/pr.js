@@ -73,7 +73,8 @@ async function gate({ github, context, core }) {
     if (call) {
       core.setOutput('prompt', L.buildPrompt(call.purpose, call.untrusted, call.context, cfg));
       core.setOutput('schema', JSON.stringify(L.prompt(call.purpose).schema));
-      core.setOutput('claude_model', cfg.model.claude_models[call.purpose]);
+      core.setOutput('claude_model', L.modelFor(cfg, call.purpose).claude);
+      core.setOutput('copilot_model', L.modelFor(cfg, call.purpose).copilot);
       core.setOutput('chain', chain.join(','));
     }
   } else {

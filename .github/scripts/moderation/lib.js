@@ -370,9 +370,15 @@ function record(logName, entry) {
   return row;
 }
 
+// Model per job and provider slot from config.models (falls back to the 'default' row).
+function modelFor(cfg, purpose) {
+  const m = cfg.model.models;
+  return m[purpose] || m.default;
+}
+
 // Model result handed over by ai-model.yml (job outputs): validated, or null.
 function modelResult(env, schemaName) {
-  const provider = env.MODEL_PROVIDER || 'none';
+  const provider = env.MODEL_PROVIDER || 'none'; // slot: primary | secondary | copilot | none
   const reason = env.MODEL_REASON || '';
   const latency = Number(env.MODEL_LATENCY_MS || 0) || null;
   if (provider === 'none') return { provider: 'none', reason: reason || 'not called', latency, data: null };
@@ -384,5 +390,5 @@ function modelResult(env, schemaName) {
 module.exports = {
   loadConfig, template, allowedUrl, render, safeLogin, skipReason, links, foreignLinks, classify, similarity, formField,
   triageRules, sizeFromLines, privacyScan, prRules, bumpRisk, sanitize, parseModelJson, validate, prompt, buildPrompt,
-  chain, budget, isRateLimit, humanRemovedLabel, record, modelResult,
+  chain, budget, isRateLimit, humanRemovedLabel, record, modelResult, modelFor,
 };
