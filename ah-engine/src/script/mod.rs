@@ -501,3 +501,6 @@ mod tests_host_d;
 #[cfg(test)]
 #[path = "host_tests_e/tests.rs"]
 mod tests_host_e;
+#[cfg(test)]
+#[path = "golden_f/tests.rs"]
+mod tests_golden_f;

@@ -108,6 +108,13 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             literals.insert(format!("tasklist_guard.{}", &c[1]));
         }
     }
+    // the task-tracker script reads its `task_tracker.*` keys through the helpers `ttT('short_name')` and `ttN('short_name')`
+    let tt_re = regex::Regex::new(r#"\btt[TN]\('([a-z][a-z0-9_]*)'\)"#).unwrap();
+    for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == "task-tracker.js")) {
+        for c in tt_re.captures_iter(&fs::read_to_string(f).unwrap()) {
+            literals.insert(format!("task_tracker.{}", &c[1]));
+        }
+    }
     let indirect = |k: &str| {
         k.starts_with("cmd.") // handlers are checked against the registry by cli::tests; planned commands have no handler
             || k.starts_with("protocol.") // documents the wire format; the request words are parsed in daemon.rs

@@ -105,10 +105,6 @@ doc = "How far ahead of now a stored timestamp may be (clock skew) before it cou
 value = 300000
 unit = "ms"
 
-[task_tracker.json_max_depth]
-doc = "How deeply nested a state file may be before the engine hands the read to Node."
-value = 64
-
 [task_tracker.open_zero]
 doc = "The open-tasks line when no countable task is open; `{blocked}` is the blocked-tasks tail."
 value = "open tasks: 0{blocked}."

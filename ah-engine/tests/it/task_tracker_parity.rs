@@ -489,7 +489,7 @@ fn cases() -> Vec<Case> {
     );
     // the burst collapse: a queued prompt delivered twice with the same text
     v.push(case("burst-same-session-twice", vec![step(p("s1")), step(p("s1"))]).env("ANTIHALL_INJECTION_REPEAT_EVERY", "0"));
-    v.push(case("dedupe-store-garbage", vec![step(p("s1"))]).file(".anti-hall/emit-dedupe/dedupe-s1.json", "{oops").defer());
+    v.push(case("dedupe-store-garbage", vec![step(p("s1"))]).file(".anti-hall/emit-dedupe/dedupe-s1.json", "{oops"));
     v
 }
 

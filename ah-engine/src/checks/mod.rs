@@ -26,11 +26,8 @@ pub mod replykit;
 pub mod scripted;
 pub mod session;
 pub mod spawnctx;
-pub mod task_tracker;
 pub mod taskkit;
 pub mod taskstate;
-pub mod verify_first_orch;
-pub mod verify_first_prompt;
 
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
@@ -188,9 +185,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::INBOX_READ_GUARD,
         &scripted::PHASE_TRACKER,
         &scripted::ORCH_ON_SPAWN,
-        &verify_first_orch::VerifyFirstOrch,
-        &verify_first_orch::VerifyFirstOrchCodex,
-        &verify_first_prompt::VerifyFirst,
+        &scripted::VERIFY_FIRST_ORCH,
+        &scripted::VERIFY_FIRST_ORCH_CODEX,
+        &scripted::VERIFY_FIRST,
         &scripted::IDLE_AGENT_SWEEP,
         &scripted::EMIT_DEDUPE_RESET,
         &scripted::LIMIT_CONSERVE_INJECT,
@@ -243,7 +240,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &crate::dswire::consume::RtAdvisory,
         &scripted::SESSION_END_MCP_REAPER,
         &scripted::PROCWATCH_ADVISORY,
-        &task_tracker::TaskTracker,
+        &scripted::TASK_TRACKER,
     ];
     &ALL
 }

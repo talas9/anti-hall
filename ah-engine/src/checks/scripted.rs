@@ -123,6 +123,18 @@ pub static COMPACT_ADVICE_GUARD: Scripted = Scripted::new("compact-advice-guard"
 /// `session-end-mcp-reaper`.
 pub static SESSION_END_MCP_REAPER: Scripted = Scripted::new("session-end-mcp-reaper", "mcp_reaper.summary");
 
+/// `verify-first` (UserPromptSubmit).
+pub static VERIFY_FIRST: Scripted = Scripted::new("verify-first", "verify_first.summary");
+
+/// `verify-first-orch` (SessionStart, the Claude hook entry).
+pub static VERIFY_FIRST_ORCH: Scripted = Scripted::new("verify-first-orch", "verify_first_orch.summary");
+
+/// `verify-first-orch-codex` (SessionStart, the Codex hook entry).
+pub static VERIFY_FIRST_ORCH_CODEX: Scripted = Scripted::new("verify-first-orch-codex", "verify_first_orch.summary_codex");
+
+/// `task-tracker` (UserPromptSubmit).
+pub static TASK_TRACKER: Scripted = Scripted::new("task-tracker", "task_tracker.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 
