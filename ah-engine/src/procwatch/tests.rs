@@ -907,9 +907,17 @@ fn shadow_stuck_agents_match_the_node_watchdog_on_heartbeats() {
     assert_eq!(engine, ["b-stuck", "c-very-stuck"].into_iter().map(str::to_string).collect());
 }
 
+/// Whether the Node session-end reaper (the shadow of the engine's `session-end-mcp-reaper` script) selects `cmd` as an orphaned
+/// MCP server: parent PID 1, an MCP signature, not a test runner or dev server.
+fn node_reaper_selects(cmd: &str) -> bool {
+    let hooks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks");
+    let js = "const r=require(process.argv[1]+'/session-end-mcp-reaper.js');const m=require(process.argv[1]+'/../companion/mcp-reaper.js');process.stdout.write(String(r.matchesInvariant({pid:10,ppid:1,cmd:process.argv[2]},m,null,null)));";
+    let out = std::process::Command::new("node").args(["-e", js]).arg(&hooks).arg(cmd).output().expect("run node");
+    String::from_utf8_lossy(&out.stdout) == "true"
+}
+
 #[test]
 fn shadow_mcp_orphans_are_a_superset_of_what_the_mcp_reaper_selects() {
-    use crate::checks::mcp_reaper::select::{Proc, matches_invariant};
     let h = scratch("shadow-mcp");
     let cfg = cfg_default(&h);
     let class = "mcp_server";
@@ -924,7 +932,7 @@ fn shadow_mcp_orphans_are_a_superset_of_what_the_mcp_reaper_selects() {
         "/usr/bin/vim notes.txt",
     ];
     for cmd in cmds {
-        let reaper = matches_invariant(&Proc { pid: 10.0, ppid: 1.0, cmd: cmd.to_string() }, None, None);
+        let reaper = node_reaper_selects(cmd);
         let mut f = Fake { rows: vec![row(1, 0, 9 * DAY, "/sbin/launchd"), row(10, 1, 9 * DAY, cmd)], ..Fake::default() };
         f.envs.insert(10, marked(4_000_000));
         let rows = f.rows.clone();
