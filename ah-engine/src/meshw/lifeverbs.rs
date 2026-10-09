@@ -607,7 +607,7 @@ fn correction_text(id: &str, plan: &OVal, stray: Option<&OVal>, now: f64) -> R<S
     let (n, text) = match cur {
         Some(st) => {
             let n = match st.get("n") {
-                Some(OVal::Num(x)) => crate::checks::guardkit::ojson::js_number_text(*x),
+                Some(OVal::Num(x)) => crate::checks::jsport::num::to_js_string(*x),
                 _ => return defer("plan-shape"),
             };
             let text = match st.get("text") {

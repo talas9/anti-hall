@@ -254,7 +254,7 @@ pub fn section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
     let any_fail = tests.iter().any(|t| matches!(t, Verdict::Fail(_)));
     let sched = installed(ctx);
     let n_desc = descriptors(ctx);
-    let env_active = crate::checks::devswarm_gates::devswarm_active(&Settings::from_env(&RequestEnv::from(ctx.env.clone())));
+    let env_active = crate::checks::spawnctx::devswarm_active(&Settings::from_env(&RequestEnv::from(ctx.env.clone())));
     let active = env_active || n_desc > 0;
     if !active && sched.is_none() && syntax.is_empty() && !any_fail {
         return;
