@@ -1241,6 +1241,7 @@ fn start_scheduler(sh: &Arc<Shared>) {
                 crate::procwatch::run_job(&crate::paths::dir(), &home, &rec)
             }
             "devswarm_reconcile" => Ok(crate::dswire::scheduled()),
+            "devswarm_supervisor" => Ok(crate::dssup::cli::scheduled()),
             "noop" => Ok(String::new()),
             other => Err(defaults::render("msg.schedule_unknown_action", &[("job", &"-"), ("action", &other)])),
         }

@@ -21,6 +21,7 @@ pub mod dispatch;
 pub mod docs;
 pub mod doctor;
 pub mod dsact;
+pub mod dssup;
 pub mod dswire;
 pub mod error;
 pub mod frame;
