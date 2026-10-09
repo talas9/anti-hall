@@ -21,6 +21,7 @@
 //   M2: drop the supervisor's `active.records.length` admission check
 //       -> "a failed/empty probe writes NOTHING" fails.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

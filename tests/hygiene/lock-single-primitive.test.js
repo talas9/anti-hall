@@ -43,6 +43,9 @@ const ALLOWLIST = {
   'companion/lib/devswarm-read-wal.js': {
     'excl-create': { count: 2, reason: 'read-WAL spill + last-resort spill files: each entry id is unique, O_EXCL only refuses to overwrite a spilled entry' },
   },
+  'hooks/lib/orch-full-state.js': {
+    'excl-create': { count: 1, reason: 'one-shot per-epoch ORCH_FULL claim slot: O_EXCL decides exactly one sender; no holder, staleness, reclaim or release (a retry is a second slot file, never a reclaim)' },
+  },
   'hooks/lib/defect-store.js': {
     'excl-create': { count: 1, reason: 'defect report files are created once (O_EXCL refuses to clobber an existing report) then appended' },
   },

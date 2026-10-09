@@ -56,7 +56,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const crypto = require('crypto');
+const crypto = require('./lazy-node.js').crypto; // lazy: loaded on first use
 
 const DEFAULT_WINDOW_MS = 15000;
 const DEFAULT_KEEPALIVE_TURNS = 10;

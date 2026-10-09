@@ -131,7 +131,7 @@ test('KEEP verdict + mode not already "on" -> notice fires, latch updated', () =
     assert.strictEqual(r.status, 0);
     assert.ok(r.json, `expected JSON output; stdout=${r.stdout}`);
     assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'SessionStart');
-    assert.match(r.json.hookSpecificOutput.additionalContext, /Jev scorecard: speculation ready to switch ON — run \/anti-hall:jev/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /jev-scorecard: speculation is ready to switch ON\.[\s\S]*run \/anti-hall:jev/);
     const latch = readLatch(h.home);
     assert.ok(latch && Number.isFinite(latch.lastCheckedTs), 'latch must be updated after a check');
   } finally { h.cleanup(); }
@@ -157,7 +157,7 @@ test('REMOVE verdict + mode not already "off" -> notice fires with OFF direction
     const r = testHook(HOOK, sessionStartPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
     assert.ok(r.json, `expected JSON output; stdout=${r.stdout}`);
-    assert.match(r.json.hookSpecificOutput.additionalContext, /Jev scorecard: modelRouting ready to switch OFF — run \/anti-hall:jev/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /jev-scorecard: modelRouting is ready to switch OFF\.[\s\S]*run \/anti-hall:jev/);
   } finally { h.cleanup(); }
 });
 

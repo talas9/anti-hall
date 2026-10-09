@@ -12,8 +12,13 @@ const cp = require('child_process');
 
 const DIR = '.anti-hall';
 const EXCLUDE_LINE = '.anti-hall/';
-const REMINDER_LINE = 'anti-hall: .anti-hall/ is not git-ignored in this repo — add `.anti-hall/` to .gitignore ' +
-  '(or run /anti-hall:doctor --repair) so session notes are never committed.';
+const REMINDER_LINE = require('./block-message.js').message({
+  kind: 'warn',
+  guard: 'gitignore-hint',
+  what: '.anti-hall/ is not git-ignored in this repo.',
+  why: 'Session notes must never be committed.',
+  instead: 'add `.anti-hall/` to .gitignore (or run /anti-hall:doctor --repair).',
+});
 const REMINDER_EVERY_MS = 7 * 24 * 60 * 60 * 1000;
 
 function gitEnv() {

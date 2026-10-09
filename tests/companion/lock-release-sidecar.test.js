@@ -4,6 +4,7 @@
 // wake-watch heartbeat loop treats a transient refresh 'error' as "retry next
 // tick", exiting only on a genuine lost lock or after the lock's stale bound.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

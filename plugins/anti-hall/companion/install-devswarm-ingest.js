@@ -220,11 +220,13 @@ function noteTmpWorktreeGuardTripped(p) {
   _tmpWorktreeGuardNoted = true;
   try {
     process.stderr.write(
-      'anti-hall: install-devswarm-ingest.js resolved a WorkingDirectory (' + p + ') under the system'
-      + ' temp directory — forcing dry-run to prevent registering a REAL launchd/systemd daemon whose'
+      '⚠️ anti-hall · install-devswarm-ingest: resolved a WorkingDirectory (' + p + ') under the system'
+      + ' temp directory; forcing dry-run.\n'
+      + 'Why: a real install would register a REAL launchd/systemd daemon whose'
       + ' WorkingDirectory is a scratch/tmp worktree (the same defect class as TMP_HOME_GUARD: a review'
       + ' agent or test fixture clone under a session scratchpad, which crash-loops launchd at exit 78'
-      + ' EX_CONFIG once the fixture is cleaned up). Set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if'
+      + ' EX_CONFIG once the fixture is cleaned up).\n'
+      + 'Override (only if the user explicitly asked): set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 if'
       + ' this run genuinely needs the real, unmocked spawn path from a temp worktree.\n'
     );
   } catch (_) {}
@@ -243,9 +245,10 @@ function noteNodeTestContextGuardTripped() {
   _nodeTestContextGuardNoted = true;
   try {
     process.stderr.write(
-      'anti-hall: install-devswarm-ingest.js detected NODE_TEST_CONTEXT (running under `node --test`'
-      + ' or a child process spawned from it) — forcing dry-run to prevent a real launchd/systemd'
-      + ' registration leak (defect ec33954162ef). Set ANTIHALL_INGEST_DRY_RUN=1 explicitly if this'
+      '⚠️ anti-hall · install-devswarm-ingest: detected NODE_TEST_CONTEXT (running under `node --test`'
+      + ' or a child process spawned from it); forcing dry-run.\n'
+      + 'Why: prevents a real launchd/systemd registration leak (defect ec33954162ef).\n'
+      + 'Override (only if the user explicitly asked): set ANTIHALL_INGEST_DRY_RUN=1 explicitly if this'
       + ' run genuinely needs the real, unmocked spawn path.\n'
     );
   } catch (_) {}
@@ -260,11 +263,13 @@ function noteTmpHomeGuardTripped() {
   _tmpHomeGuardNoted = true;
   try {
     process.stderr.write(
-      'anti-hall: install-devswarm-ingest.js resolved HOME (' + HOME + ') under the system temp'
-      + ' directory — forcing dry-run to prevent registering a REAL launchd/systemd daemon whose'
+      '⚠️ anti-hall · install-devswarm-ingest: resolved HOME (' + HOME + ') under the system temp'
+      + ' directory; forcing dry-run.\n'
+      + 'Why: a real install would register a REAL launchd/systemd daemon whose'
       + ' live process would then write into your operator ~/.anti-hall store instead of this'
       + ' scratch one (defect d1c57e67998f: a review agent temp-HOME experiment did exactly this'
-      + ' live). Set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if this run genuinely needs the'
+      + ' live).\n'
+      + 'Override (only if the user explicitly asked): set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if this run genuinely needs the'
       + ' real, unmocked spawn path under a temp HOME.\n'
     );
   } catch (_) {}
@@ -302,7 +307,7 @@ function validateArgs(argv) {
   }
   for (const a of list) {
     if (typeof a === 'string' && a.startsWith('-') && !KNOWN_FLAGS.includes(a)) {
-      process.stderr.write(`unknown option: ${a}\n`);
+      process.stderr.write(`❌ anti-hall · install-devswarm-ingest: unknown option: ${a}\n`);
       process.stderr.write(usageText() + '\n');
       process.exit(1);
     }
@@ -610,18 +615,15 @@ function resolveHivecontrolPath(opts) {
 // is fixed. Extracted as a pure function so the wording is locked down by test
 // without spawning a real installer subprocess.
 function hivecontrolUnresolvedWarningLines() {
-  const bar = '!'.repeat(70);
   return [
-    bar,
-    `WARNING: could not resolve the ${HIVECONTROL_BIN_NAME} CLI (env var, cache, login shell,`,
+    `⚠️ anti-hall · install-devswarm-ingest: could not resolve the ${HIVECONTROL_BIN_NAME} CLI (env var, cache, login shell,`,
     '  and known install locations all missed).',
     `  A scheduler-launched daemon gets a MINIMAL PATH (${MINIMAL_UNIT_PATH}), so without a`,
     `  baked path every \`${HIVECONTROL_BIN_NAME} workspace monitor\` call will fail ENOENT and`,
-    '  NOTHING will be ingested until this is fixed.',
-    '  FIX: install/expose the DevSwarm CLI on your login shell\'s PATH, or export',
+    '  Nothing will be ingested until this is fixed.',
+    '  Do instead: install/expose the DevSwarm CLI on your login shell\'s PATH, or export',
     `  ${HIVECONTROL_ENV_VAR}=/absolute/path/to/${HIVECONTROL_BIN_NAME} and re-run this installer.`,
     '  Installing anyway (the daemon runs in degraded mode and doctor will report it).',
-    bar,
   ];
 }
 
@@ -1943,7 +1945,7 @@ function orphanReapPlan(opts) {
     if (e.eligible && (e.plistPresent || e.pathExists)) {
       try {
         process.stderr.write(
-          'anti-hall: orphanReapPlan invariant violated — eligible entry ' + (e.label || e.unit || '(unknown)')
+          '❌ anti-hall · devswarm-ingest: orphanReapPlan invariant violated; eligible entry ' + (e.label || e.unit || '(unknown)')
           + ' has plistPresent=' + e.plistPresent + ' pathExists=' + e.pathExists
           + ' (must both be false). Returning an EMPTY plan (fail-closed).\n'
         );
@@ -2029,7 +2031,7 @@ const REAPER_KILL_RE = /\b(pkill|kill\s+-9|kill\s+-KILL|SIGKILL)\b/;
 // silence — it would turn a harmless script into one that hunts this daemon.
 const REAPER_ALLOWLIST_VAR_RE = /^[\s]*([A-Za-z_][A-Za-z0-9_]*ALLOW(?:LIST|ED)?[A-Za-z0-9_]*)\s*=/m;
 // The token that must appear in that allowlist for this daemon to survive.
-const REAPER_DAEMON_TOKEN = 'devswarm-ingest';
+const REAPER_DAEMON_MARKER = 'devswarm-ingest';
 const REAPER_MAX_FILES = 40;          // bound the scan
 const REAPER_MAX_BYTES = 512 * 1024;  // never slurp a huge file
 
@@ -2068,7 +2070,7 @@ function detectReaperGuard(opts) {
     if (!REAPER_KILL_RE.test(body)) continue; // names itself a reaper but kills nothing -> not our concern
     const varMatch = body.match(REAPER_ALLOWLIST_VAR_RE);
     if (!varMatch) continue; // kill-by-INCLUSION reaper (or unrecognizable): cannot target this daemon -> silent
-    const allowlisted = body.indexOf(REAPER_DAEMON_TOKEN) !== -1;
+    const allowlisted = body.indexOf(REAPER_DAEMON_MARKER) !== -1;
     // Report the WORST case found: an already-protective guard must never mask
     // a second, unprotective one.
     if (!out.found || (out.allowlisted && !allowlisted)) {
@@ -2097,7 +2099,7 @@ function reaperWarningLines(detection) {
     `  be SIGKILLed mid-run (this has happened: the daemon then leaks its lock and the`,
     `  scheduler's relaunch-on-exit turns it into a refuse->exit->relaunch loop).`,
     `  FIX (manual, by you — anti-hall never edits files outside its own repo): add`,
-    `  '${REAPER_DAEMON_TOKEN}' to ${varName} in that script, then reload the guard.`,
+    `  '${REAPER_DAEMON_MARKER}' to ${varName} in that script, then reload the guard.`,
   ];
 }
 
@@ -2259,7 +2261,7 @@ module.exports = {
   macInstallProject, macUninstallProject, linuxInstallProject, linuxUninstallProject,
   LEGACY_UNIT_HASH_RE, PROJECT_UNIT_KEY_RE,
   // v0.65 — memory-guard/reaper detection (DETECT-AND-REPORT ONLY; doctor reuses these):
-  detectReaperGuard, reaperWarningLines, claudeScriptsDir, REAPER_DAEMON_TOKEN,
+  detectReaperGuard, reaperWarningLines, claudeScriptsDir, REAPER_DAEMON_MARKER,
   // v0.66 — hivecontrol discovery + baked unit environment:
   HIVECONTROL_BIN_NAME, HIVECONTROL_ENV_VAR, MINIMAL_UNIT_PATH,
   resolveHivecontrolPath, unitEnvFor, firstBinLine, sdEnvValue, parseCronCommand,

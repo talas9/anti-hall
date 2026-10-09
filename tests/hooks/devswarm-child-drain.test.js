@@ -4,6 +4,7 @@
 // --to`, invisible to an NDJSON-only reader) must surface on a Bash tool
 // call, not just once per UserPromptSubmit.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -60,7 +61,7 @@ function ctx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 
-test('CHILD, store-only mesh-direct unread (NDJSON empty) -> injects DEVSWARM INBOX nudge', () => {
+test('CHILD, store-only mesh-direct unread (NDJSON empty) -> injects devswarm-inbox nudge', () => {
   const h = makeHome();
   try {
     seedDescriptor(h.home, 'child-1');
@@ -68,7 +69,7 @@ test('CHILD, store-only mesh-direct unread (NDJSON empty) -> injects DEVSWARM IN
     const r = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
     assert.strictEqual(r.status, 0);
     assert.ok(r.json, `must emit JSON on inject; stdout=${r.stdout}`);
-    assert.ok(ctx(r).includes('DEVSWARM INBOX'), `must carry the DEVSWARM INBOX banner; ctx=${ctx(r)}`);
+    assert.ok(ctx(r).includes('devswarm-inbox'), `must carry the devswarm-inbox banner; ctx=${ctx(r)}`);
     assert.ok(ctx(r).includes('1 unread'), `must report the store-only unread count; ctx=${ctx(r)}`);
     assert.ok(ctx(r).includes('inbox ack child-1'), `must prescribe the cursor-advancing ack command; ctx=${ctx(r)}`);
     assert.ok(!ctx(r).includes('inbox read child-1`'), 'must NOT prescribe the non-mutating `inbox read` as the remedy');
@@ -121,7 +122,7 @@ test('THROTTLE: same unread count within the window -> second call is suppressed
     seedDescriptor(h.home, 'child-1');
     seedStoreOnlyDirect(h.home, 'child-1', 'first');
     const r1 = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
-    assert.ok(ctx(r1).includes('DEVSWARM INBOX'), 'first call must inject');
+    assert.ok(ctx(r1).includes('devswarm-inbox'), 'first call must inject');
     const r2 = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
     assert.strictEqual(r2.stdout.trim(), '', 'second call with an UNCHANGED count within the throttle window must be suppressed');
   } finally { h.cleanup(); }
@@ -178,7 +179,7 @@ test('MAIN THREAD payload (no subagent markers) still injects the drain nudge, u
     seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
     const r = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
     assert.strictEqual(r.status, 0);
-    assert.ok(ctx(r).includes('DEVSWARM INBOX'), `main-thread injection must be unaffected; ctx=${ctx(r)}`);
+    assert.ok(ctx(r).includes('devswarm-inbox'), `main-thread injection must be unaffected; ctx=${ctx(r)}`);
   } finally { h.cleanup(); }
 });
 

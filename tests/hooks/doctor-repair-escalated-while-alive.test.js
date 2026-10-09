@@ -12,6 +12,7 @@
 // production function itself is a pure read (descriptor list + liveness file
 // + isSessionAliveRow) with no side effect of its own.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

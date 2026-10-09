@@ -56,6 +56,11 @@
 // flush race on macOS Node 18/20 (mirrors limit-conserve-inject.js / task-tracker.js).
 
 'use strict';
+require('./lib/judge-child-exit');
+
+// Cheap no-op exit for a session this hook cannot act on (non-DevSwarm, child,
+// setting off) BEFORE the heavy requires below — see lib/devswarm-primary-gate.js.
+require('./lib/devswarm-primary-gate.js').exitIfInert(module, { setting: 'parentInbox' });
 
 const fs = require('fs');
 const os = require('os');
@@ -273,7 +278,7 @@ const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 // `message-child`/`message-parent` strings (uses the `message-*` wildcard form)
 // so it never re-introduces the blocked native verbs into emitted hook text.
 const OVERRIDE_REASSERT =
-  'DEVSWARM COMMS OVERRIDE: mesh only — native hivecontrol messaging blocked. ' +
+  '💡 anti-hall · devswarm-comms: mesh only — native hivecontrol messaging blocked. ' +
   'Check: `roster` / `mesh read`. Direct: `send --to <meshId>`.';
 
 // TITLE_INSTRUCTION (item 4b, residual of task #7): field evidence (v0.73.0 live
@@ -332,7 +337,7 @@ function uiSyncAsk(home, sessionId, appDbState, rowIds, now) {
     if (fs.existsSync(p)) return null;
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify({ at: now, ids }));
-    return 'DEVSWARM SYNC: ' + why + ' Ask the owner (once) for a screenshot of the DevSwarm workspace list (left sidebar), then follow the devswarm skill\'s "screenshot sync" steps (`devswarm.js sync-ui`).';
+    return '💡 anti-hall · devswarm-sync: ' + why + ' Ask the owner (once) for a screenshot of the DevSwarm workspace list (left sidebar), then follow the devswarm skill\'s "screenshot sync" steps (`devswarm.js sync-ui`).';
   } catch (_) { return null; }
 }
 
@@ -442,8 +447,11 @@ function normalizeTableAges(t) {
   // carries ages too — dropped here so a ticking clock never re-sends the table.
   // A row without a plan never contains this text, so its line is unchanged.
   // The P2 token figure (' · 1.8M tok') rises every sweep and is dropped too.
+  // The unread count is dropped as well: it changes on nearly every busy turn
+  // and the same unread state is already injected per turn by the inbox/urgent
+  // segments, so re-sending the whole table for it only re-paid ~1k chars.
   return String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l)
-    ? l.replace(/\|[^|]*\|\s*$/, '| |').replace(/ · \d+[mhd](?= · (?:progress|no progress))/g, '').replace(/ · progress \d+[mhd] ago/g, '')
+    ? l.replace(/\|[^|]*\|\s*$/, '| |').replace(/\|\s*\d+\s*\|\s*\|\s*$/, '| | |').replace(/ · \d+[mhd](?= · (?:progress|no progress))/g, '').replace(/ · progress \d+[mhd] ago/g, '')
       .replace(/ · [\d.]+[kM]? tok\b/g, '')
     : l)).join('\n');
 }
@@ -674,7 +682,7 @@ function riskMarker(r) {
 // row never silently vanishes behind a bare count.
 function buildWorkspaceTable(rows, now, capped, hidden, hiddenRows, archivedHidden) {
   const lines = [
-    'DEVSWARM WORKSPACES (re-sent on change, else every 10 turns):',
+    '💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):',
     '| workspace | status | finish | unread | last |',
     '|---|---|---|---|---|',
   ];
@@ -886,7 +894,7 @@ function buildUnreadSegment(list, home) {
   const extra = list.length > MAX_LISTED ? ' +' + (list.length - MAX_LISTED) + ' more' : '';
   const anyUnread = list.some((w) => w.unread > 0);
   let body = (
-    'DEVSWARM PARENT INBOX: ' + list.length + ' active workspace(s) need attention — '
+    '⚠️ anti-hall · devswarm-parent-inbox: ' + list.length + ' active workspace(s) need attention — '
     + shown.join('; ') + extra + '. '
   );
   body += anyUnread
@@ -943,7 +951,7 @@ function buildUrgentUnreadSegment(list, home) {
   // never advances any cursor — it is not a remedy. STOP and poke/escalate
   // the unresponsive child instead.
   return (
-    'DEVSWARM URGENT INBOX: ' + list.length + ' workspace(s) have an URGENT/HIGH-priority '
+    '⚠️ anti-hall · devswarm-urgent-inbox: ' + list.length + ' workspace(s) have an URGENT/HIGH-priority '
     + 'direct message waiting, unread — ' + shown.join('; ') + extra + '. CHILD NOT DRAINING: '
     + 'STOP and poke it NOW (`node ' + CLI + ' send --to <id> --message-file <path>`) or escalate — '
     + 'do not wait to see if it drains on its own — before continuing.'
@@ -1078,7 +1086,7 @@ function buildOwnUnreadSegment(count, id, urgencyMax, unanswered, informational,
 function buildOwnUnreadSegmentBody(count, id, urgencyMax, unanswered, informational) {
   const unansweredList = Array.isArray(unanswered) ? unanswered : [];
   const informationalList = Array.isArray(informational) ? informational : [];
-  const prefix = isHighUrgency(urgencyMax) ? 'DEVSWARM OWN INBOX — URGENT PRIORITY: ' : 'DEVSWARM OWN INBOX — PRIORITY: ';
+  const prefix = isHighUrgency(urgencyMax) ? '⚠️ anti-hall · devswarm-own-inbox: urgent priority — ' : '⚠️ anti-hall · devswarm-own-inbox: priority — ';
 
   if (count > 0) {
     let body = (
@@ -1382,7 +1390,7 @@ function buildBroadcastSegment(rows, home) {
     return '- ' + urgentTag + kindTag + who + ': ' + body;
   });
   return (
-    'DEVSWARM BROADCAST (advisory roster/FYI feed — react ONLY if you judge it '
+    '💡 anti-hall · devswarm-broadcast: (advisory roster/FYI feed — react ONLY if you judge it '
     + 'relevant; NEVER blocks your turn, regardless of urgency):\n' + shown.join('\n')
   );
 }
@@ -1395,7 +1403,7 @@ function buildArchiveSegment(ids) {
   const shown = ids.slice(0, MAX_LISTED).join(', ');
   const extra = ids.length > MAX_LISTED ? ' (+' + (ids.length - MAX_LISTED) + ' more)' : '';
   return (
-    'DEVSWARM ARCHIVE-READY: workspace(s) ' + shown + extra + ' are complete '
+    '💡 anti-hall · devswarm-archive-ready: workspace(s) ' + shown + extra + ' are complete '
     + '(all required gates met). VERIFY this workspace is MERGED + TESTED + DEPLOYED '
     + 'per YOUR repo\'s policy (using your own tooling; anti-hall does not check this), '
     + 'then run `node ' + CLI + ' archive-request <id>` to ask the child to archive. '
@@ -1430,7 +1438,7 @@ function buildOrphansSegment(list) {
   );
   const extra = safe.length > MAX_MESH_ISSUES ? ' +' + (safe.length - MAX_MESH_ISSUES) + ' more' : '';
   return (
-    '⚠ DEVSWARM ORPHANED MESH: ' + safe.length + ' partition(s) with unread but no live workspace '
+    '⚠️ anti-hall · devswarm-orphaned-mesh: ' + safe.length + ' partition(s) with unread but no live workspace '
     + 'to read them — ' + shown.join(', ') + extra + '. Investigate/re-address; nothing is currently '
     + 'watching this inbox.'
   );
@@ -1451,7 +1459,7 @@ function buildStaleRegistrySegment(list) {
   );
   const extra = safe.length > MAX_MESH_ISSUES ? ' +' + (safe.length - MAX_MESH_ISSUES) + ' more' : '';
   return (
-    '⚠ DEVSWARM STALE WORKSPACE(S): ' + safe.length + ' workspace(s) whose worktree is gone but '
+    '⚠️ anti-hall · devswarm-stale-workspaces: ' + safe.length + ' workspace(s) whose worktree is gone but '
     + 'still hold unread — ' + shown.join(', ') + extra + '. Investigate or clean up the registry '
     + 'entry.'
   );
@@ -2534,11 +2542,11 @@ function main() {
     if (capped) logTableCap(home, activeRows.length, shown.length);
     if (shown.length || archivedHidden) {
       // D3: on-change dedupe (lib/emit-dedupe.js rule b) — re-emitted only when
-      // the table changed beyond relative ages, or as a keepalive every
-      // 10 unchanged DELIVERED turns. Fail-open: emit.
+      // the table changed beyond relative ages and unread counts, or as a keepalive
+      // every guards.injectionRepeatEvery unchanged DELIVERED turns. Fail-open: emit.
       const table = buildWorkspaceTable(shown, now, capped, activeRows.length - shown.length, evicted, archivedHidden);
       if (dedupeEmit(home, sessionId, 'parent-inbox-table', table,
-        { transcriptPath, keepaliveTurns: 10, normalize: normalizeTableAges })) {
+        { transcriptPath, keepaliveTurns: Number.isFinite(overrideRepeat) && overrideRepeat > 0 ? overrideRepeat : 0, normalize: normalizeTableAges })) {
         segments.push(table);
         segments.push(TITLE_INSTRUCTION);
       }

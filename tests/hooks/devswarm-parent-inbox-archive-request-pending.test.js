@@ -3,7 +3,7 @@
 //
 // FIELD REPORT (SkyCrew, 399105fe/e75cade3): once the Primary had already run
 // `archive-request <id>` against a child, BOTH the "CHILD NOT DRAINING" per-
-// turn nag AND the (separately cooldown'd) "DEVSWARM ARCHIVE-READY" reminder
+// turn nag AND the (separately cooldown'd) "devswarm-archive-ready" reminder
 // kept re-instructing it to poke/re-send the identical request — even hours
 // later, even while the child's session was still nominally live — because
 // neither one had any notion of "a request for this exact workspace is
@@ -45,7 +45,7 @@ const REPO_KEY = repokey.repoKeyForWorktree(REPO_CWD);
 function payload() { return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi' }; }
 function withCwd(payloadFn) { return { ...payloadFn(), cwd: REPO_CWD }; }
 function ctx(r) { return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || ''; }
-function segment(c, banner) { return c.split('\n\n').find((s) => s.startsWith(banner)) || ''; }
+function segment(c, banner) { return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || ''; }
 
 function swarmDir(home) {
   const d = path.join(home, '.anti-hall', 'devswarm');
@@ -104,8 +104,8 @@ test('PENDING: not-draining verdict + pending archive-request (live session) -> 
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.strictEqual(segment(c, 'DEVSWARM URGENT INBOX'), '', `no urgent nag while pending; ctx=${c}`);
-    assert.strictEqual(segment(c, 'DEVSWARM PARENT INBOX'), '', `no standard nag while pending; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-urgent-inbox'), '', `no urgent nag while pending; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-parent-inbox'), '', `no standard nag while pending; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -123,7 +123,7 @@ test('PENDING: ARCHIVE-READY re-nudge suppressed for a LIVE session with a pendi
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.strictEqual(segment(c, 'DEVSWARM ARCHIVE-READY'), '',
+    assert.strictEqual(segment(c, 'devswarm-archive-ready'), '',
       `the archive-ready nudge must not re-instruct sending an already-pending request; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -142,7 +142,7 @@ test('DEAD SESSION EXEMPT: ARCHIVE-READY re-nudge still fires when the session i
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(segment(c, 'DEVSWARM ARCHIVE-READY').includes('wsDeadPending'),
+    assert.ok(segment(c, 'devswarm-archive-ready').includes('wsDeadPending'),
       `a dead session's archive-ready nudge must keep firing (it directly archives next run); ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -161,7 +161,7 @@ test('RESUMED WORK: a real (non-archive-request) unread row alongside the pendin
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(segment(c, 'DEVSWARM URGENT INBOX').includes('wsResumed'),
+    assert.ok(segment(c, 'devswarm-urgent-inbox').includes('wsResumed'),
       `a real unread row mixed in must resume the nag; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -179,8 +179,8 @@ test('RESOLVED: no unread at all (request drained) -> no nag, not archive_reques
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.strictEqual(segment(c, 'DEVSWARM URGENT INBOX'), '', `nothing unread -> no nag; ctx=${c}`);
-    assert.ok(segment(c, 'DEVSWARM ARCHIVE-READY').includes('wsDrained'),
+    assert.strictEqual(segment(c, 'devswarm-urgent-inbox'), '', `nothing unread -> no nag; ctx=${c}`);
+    assert.ok(segment(c, 'devswarm-archive-ready').includes('wsDrained'),
       `once resolved, the archive-ready nudge resumes normally; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -199,7 +199,7 @@ test('STALE: a pending archive-request older than devswarm.archiveRequestRenagHo
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(segment(c, 'DEVSWARM URGENT INBOX').includes('wsStalePending'),
+    assert.ok(segment(c, 'devswarm-urgent-inbox').includes('wsStalePending'),
       `a request pending for over the default 24h re-nag window must resume nagging; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -222,7 +222,7 @@ test('STALE: devswarm.archiveRequestRenagHours is configurable via ANTIHALL_DEVS
       expectJson: true,
     });
     const c = ctx(r);
-    assert.ok(segment(c, 'DEVSWARM URGENT INBOX').includes('wsCfgPending'),
+    assert.ok(segment(c, 'devswarm-urgent-inbox').includes('wsCfgPending'),
       `a shortened renag window must resume nagging sooner; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -241,7 +241,7 @@ test('STUCK STATUS UNAFFECTED: a genuinely escalated child still nags even with 
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(segment(c, 'DEVSWARM PARENT INBOX').includes('wsStuck') || segment(c, 'DEVSWARM URGENT INBOX').includes('wsStuck'),
+    assert.ok(segment(c, 'devswarm-parent-inbox').includes('wsStuck') || segment(c, 'devswarm-urgent-inbox').includes('wsStuck'),
       `a genuinely escalated/stuck status is a different signal and must still nag; ctx=${c}`);
   } finally { h.cleanup(); }
 });

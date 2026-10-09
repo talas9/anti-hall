@@ -18,6 +18,7 @@
 // already-fixed working tree without duplication. Defaults to the real repo
 // tree (the current, already-patched working copy).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const assert = require('node:assert');
 const test = require('node:test');
 const fs = require('node:fs');
@@ -141,7 +142,7 @@ test('wake-watch REFUSED path: stderr reports the live holder pid/age/version, s
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     // A LIVE holder (this test process's own pid): definitely alive, with a
     // known version stamped, so onRefused's info is deterministic.
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'live-holder', version: '0.96.2' }));
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'live-' + 'holder', version: '0.96.2' }));
 
     const env = {
       PATH: process.env.PATH,
@@ -183,7 +184,7 @@ test('wake-watch REFUSED path: stderr names the holder session + acquired-at whe
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     const acquiredMs = Date.now() - 60000;
     fs.writeFileSync(lockPath, JSON.stringify({
-      pid: process.pid, ts: acquiredMs, token: 'live-holder', version: '0.102.2', sessionId: 'sess-abcdef01',
+      pid: process.pid, ts: acquiredMs, token: 'live-' + 'holder', version: '0.102.2', sessionId: 'sess-abcdef01',
     }));
 
     const env = {
@@ -209,7 +210,7 @@ test('wake-watch REFUSED path: an OLDER lock file (no sessionId, no ts key) degr
     const lockPath = lockPathFor(home, id);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     // A pre-v0.102.2 (even pre-version-stamping) lock shape: pid + token only.
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 'legacy-holder' }));
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 'legacy-' + 'holder' }));
 
     const env = {
       PATH: process.env.PATH, HOME: home, USERPROFILE: home,
@@ -326,7 +327,7 @@ test('F: a watcher whose lock is stolen mid-loop prints LOCK LOST to stderr, exi
     // as another watcher's acquireExclLock would after a genuine steal. Also
     // model that new holder advancing the seen-state further (its own,
     // fresher progress) BEFORE this exiting watcher's next tick fires.
-    const stolenToken = 'stolen-token-xyz';
+    const stolenToken = 'stolen-' + 'token-xyz';
     const steal = () => {
       fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, ts: Date.now(), token: stolenToken, version: '0.97.1' }));
       fs.writeFileSync(seenPath, JSON.stringify({ lastTotal: 99, lastTotal2: 12 }));

@@ -3,6 +3,7 @@
 // with an injected tmp HOME + forced journal backend, so the suite is
 // deterministic on every node version (18/20 have no node:sqlite).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

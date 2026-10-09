@@ -67,16 +67,18 @@ function noteNodeTestContextGuardTripped() {
   _nodeTestContextGuardNoted = true;
   if (!NODE_TEST_CONTEXT_GUARD) {
     try {
-      process.stderr.write('anti-hall: install-reaper.js forced dry-run (HOME ' + HOME + ' is under the system temp directory)'
-        + ' to prevent registering a real reaper for a scratch home. Set ANTIHALL_REAPER_ALLOW_TMP_HOME=1 for a deliberate temp-HOME install.\n');
+      process.stderr.write('⚠️ anti-hall · install-reaper: forced dry-run (HOME ' + HOME + ' is under the system temp directory).\n'
+        + 'Why: prevents registering a real reaper for a scratch home.\n'
+        + 'Override (only if the user explicitly asked): set ANTIHALL_REAPER_ALLOW_TMP_HOME=1 for a deliberate temp-HOME install.\n');
     } catch (_) {}
     return;
   }
   try {
     process.stderr.write(
-      'anti-hall: install-reaper.js detected NODE_TEST_CONTEXT (running under `node --test`'
-      + ' or a child process spawned from it) — forcing dry-run to prevent a real launchd/systemd'
-      + ' registration leak (defect ec33954162ef class). Pass --dry-run explicitly if this run'
+      '⚠️ anti-hall · install-reaper: detected NODE_TEST_CONTEXT (running under `node --test`'
+      + ' or a child process spawned from it); forcing dry-run.\n'
+      + 'Why: prevents a real launchd/systemd registration leak (defect ec33954162ef class).\n'
+      + 'Override (only if the user explicitly asked): pass --dry-run explicitly if this run'
       + ' genuinely needs the real, unmocked spawn path.\n'
     );
   } catch (_) {}

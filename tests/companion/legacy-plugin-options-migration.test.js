@@ -24,7 +24,9 @@ function seed(home, options, key, shape) {
 }
 const HEADLINE = ['safety.gitGuard', 'safety.commandGuard', 'safety.editGuard', 'safety.swarmGuard', 'autoHandover.enabled',
   'autoHandover.pct', 'jev.enabled', 'devswarm.supervisorMode', 'guards.modelRouting', 'limitConserve.mode'];
-const eligible = () => SCHEMA.allSettings().filter((e) => e.pluginOption && !e.headline && !e.locked && !e.homeOnly);
+const LOCKED_KEYS = ['devswarm.maintainerNotice.post', 'guards.allowAnthropicEnvKey', 'guards.allowSubagentMailbox', 'guards.editGuardAllow',
+  'guards.gitAliasResolve', 'guards.gitReusedMessageCheck', 'guards.stashGuard', 'jev.allowLegacyKeyRead', 'jev.genericKeyVendor', 'safety.commandGuard', 'safety.editGuard', 'safety.gitGuard', 'safety.swarmGuard'];
+const eligible = () => SCHEMA.allSettings().filter((e) => e.pluginOption && !e.headline && !e.homeOnly);
 // n-th distinct valid non-default value for a setting (undefined when the type has no such value).
 function alt(e, n) {
   const cands = e.type === 'boolean' ? [!e.default]
@@ -42,13 +44,11 @@ function allStored(n) {
   return o;
 }
 
-test('25 advanced settings carry pluginOptionLegacy and none of them is in the manifest', () => {
+test('every non-headline pluginOption setting is flagged pluginOptionLegacy and none of them is in the manifest', () => {
   const legacy = SCHEMA.allSettings().filter((e) => e.pluginOptionLegacy);
-  assert.strictEqual(legacy.length, 25);
-  for (const e of legacy) {
-    assert.ok(e.advanced && e.pluginOption, e.key);
-    assert.strictEqual(manifest.userConfig[e.pluginOption], undefined, e.pluginOption);
-  }
+  assert.strictEqual(legacy.length, 140);
+  assert.deepStrictEqual(legacy.map((e) => e.pluginOption).sort(), SCHEMA.allSettings().filter((e) => e.pluginOption && !e.headline).map((e) => e.pluginOption).sort());
+  for (const e of legacy) assert.strictEqual(manifest.userConfig[e.pluginOption], undefined, e.pluginOption);
 });
 
 test('old value keeps working with NO migration: stored option is still read (source plugin-option)', () => {
@@ -91,13 +91,15 @@ test('headline: exactly the 10 headline keys are flagged, each keeps its manifes
   }
 });
 
-test('migration scope: every pluginOption key except headline, locked, homeOnly', () => {
+test('migration scope: every pluginOption key except headline and homeOnly; the 4 non-headline locked keys are in scope', () => {
   const keys = eligible();
-  assert.ok(keys.length >= 130, 'eligible count ' + keys.length);
-  for (const e of keys) assert.ok(!HEADLINE.includes(e.section + '.' + e.key) && !e.locked && !e.homeOnly);
+  assert.ok(keys.length >= 100, 'eligible count ' + keys.length);
+  for (const e of keys) assert.ok(!HEADLINE.includes(e.section + '.' + e.key) && !e.homeOnly);
+  assert.deepStrictEqual(keys.filter((e) => e.locked).map((e) => e.section + '.' + e.key).sort(),
+    ['devswarm.maintainerNotice.post', 'guards.allowSubagentMailbox', 'guards.editGuardAllow', 'guards.stashGuard']);
 });
 
-test('migrateLegacyPluginOptions: copies non-default values, skips defaults/already-set/invalid/locked/headline, never touches ~/.claude/settings.json', () => {
+test('migrateLegacyPluginOptions: copies non-default values (locked ones as confirmed), skips defaults/already-set/invalid/headline, never touches ~/.claude/settings.json', () => {
   const home = makeHome();
   try {
     seed(home.home, {
@@ -105,29 +107,30 @@ test('migrateLegacyPluginOptions: copies non-default values, skips defaults/alre
       devswarm_stray_warn_max: 2,               // == schema default -> skipped
       devswarm_step_stall_min: 99,              // already set in settings.json -> kept
       devswarm_burn_cache_read_pct: 'banana',   // invalid -> skipped, not an error
-      guards_edit_guard_allow: 'docs/**',       // locked -> never migrated
-      guards_stash_guard: true,                 // locked -> never migrated
+      guards_edit_guard_allow: 'docs/**',       // locked, risky 'add' -> copied as human-confirmed
+      guards_stash_guard: true,                 // locked -> copied as human-confirmed
       guards_allow_plain_push: false,           // non-advanced, still a row: migrated now
       auto_handover_pct: 60,                    // headline -> never migrated
     });
     settings.set('devswarm', 'stepStallMin', 12, { home: home.home });
     const before = fs.readFileSync(claudeSettings(home.home), 'utf8');
     const r = M.migrateLegacyPluginOptions(home.home, { env: {} });
-    assert.deepStrictEqual(r, { migrated: 2, skipped: 1, errors: 0 });
+    assert.deepStrictEqual(r, { migrated: 4, skipped: 1, errors: 0 });
     const store = settings.load({ home: home.home });
     assert.strictEqual(store.guards.silentAgentNudgeMin, 45);
     assert.strictEqual(store.guards.allowPlainPush, false);
-    assert.strictEqual(store.guards.editGuardAllow, undefined);
-    assert.strictEqual(store.guards.stashGuard, undefined);
+    assert.strictEqual(store.guards.editGuardAllow, 'docs/**');
+    assert.strictEqual(store.guards.stashGuard, true);
     assert.strictEqual(store.autoHandover, undefined);
     assert.strictEqual(store.devswarm.stepStallMin, 12);
     assert.strictEqual(store.devswarm.strayWarnMax, undefined);
     assert.strictEqual(store.devswarm.burnCacheReadPct, undefined);
     assert.strictEqual(fs.readFileSync(claudeSettings(home.home), 'utf8'), before, 'Claude settings must be byte-identical (no write, no delete)');
-    assert.deepStrictEqual(M.migrateLegacyPluginOptions(home.home, { env: {} }), { migrated: 0, skipped: 3, errors: 0 }, 'idempotent');
+    assert.deepStrictEqual(M.migrateLegacyPluginOptions(home.home, { env: {} }), { migrated: 0, skipped: 5, errors: 0 }, 'idempotent');
     assert.strictEqual(settings.source('guards', 'silentAgentNudgeMin', { home: home.home, env: {} }), 'file');
-    // locked/headline values keep resolving through the legacy read tier
+    assert.strictEqual(settings.source('guards', 'editGuardAllow', { home: home.home, env: {} }), 'file');
     assert.strictEqual(settings.get('guards', 'editGuardAllow', undefined, { home: home.home, env: {} }), 'docs/**');
+    // headline values keep resolving through the plugin-option tier
     assert.strictEqual(settings.get('autoHandover', 'pct', undefined, { home: home.home, env: {} }), 60);
   } finally { home.cleanup(); }
 });
@@ -166,7 +169,7 @@ test('pluginConfigs: plugin-ID key outranks the bare name; flat outranks nested;
   } finally { home.cleanup(); }
 });
 
-test('REPRODUCED REVIEW BUG: env narrow + stored wide must not flip to wide (locked key is never migrated; non-locked skipped on conflict)', () => {
+test('REPRODUCED REVIEW BUG: env narrow + stored wide must not flip to wide (locked and non-locked both skipped on conflict)', () => {
   const home = makeHome();
   try {
     seed(home.home, { guards_edit_guard_allow: 'wide/*', guards_silent_agent_nudge_min: 45 });
@@ -174,7 +177,7 @@ test('REPRODUCED REVIEW BUG: env narrow + stored wide must not flip to wide (loc
     const b = effective(home.home, env);
     const r = M.migrateLegacyPluginOptions(home.home, { env });
     assert.strictEqual(r.migrated, 0);
-    assert.strictEqual(r.skipped, 1, 'the non-locked conflicting key is skipped');
+    assert.strictEqual(r.skipped, 2, 'both conflicting keys (locked editGuardAllow, non-locked nudge) are skipped');
     assert.strictEqual(b['guards.editGuardAllow'], 'narrow/*');
     assert.deepStrictEqual(effective(home.home, env), b);
     assert.strictEqual(settings.load({ home: home.home }).guards, undefined);
@@ -293,3 +296,97 @@ test('wired: runSettingsMigration (update.js / doctor --repair path) performs it
     assert.strictEqual(M.runSettingsMigration(home.home, { version: '9.9.9', env: {} }).status, 'skipped');
   } finally { home.cleanup(); }
 });
+
+// PRECEDENCE for a setting whose manifest row was removed (a non-advanced one, guards.outputVerifyGuard):
+// env > ~/.anti-hall/settings.json > stored old plugin option (both key forms) > legacy > default;
+// a stored value equal to the schema default counts as unset.
+test('removed-row precedence: env > settings.json > stored option (flat/nested, both key forms) > default; default-equal stored = unset', () => {
+  const e = SCHEMA.findSetting('guards', 'outputVerifyGuard');
+  assert.ok(!e.advanced && e.pluginOptionLegacy && e.env);
+  const ho = () => makeHome();
+  for (const [key, shape] of [['anti-hall', 'nested'], ['anti-hall', 'flat'], ['anti-hall@anti-hall', 'nested'], ['anti-hall@anti-hall', 'flat']]) {
+    const home = ho();
+    try {
+      seed(home.home, { guards_output_verify_guard: false }, key, shape);
+      assert.strictEqual(settings.get('guards', 'outputVerifyGuard', undefined, { home: home.home, env: {} }), false, key + '/' + shape);
+      assert.strictEqual(settings.source('guards', 'outputVerifyGuard', { home: home.home, env: {} }), 'plugin-option');
+      settings.set('guards', 'outputVerifyGuard', true, { home: home.home, env: {} });
+      assert.strictEqual(settings.get('guards', 'outputVerifyGuard', undefined, { home: home.home, env: {} }), true, 'settings.json beats stored option');
+      assert.strictEqual(settings.get('guards', 'outputVerifyGuard', undefined, { home: home.home, env: { [e.env]: 'off' } }), false, 'env beats settings.json');
+    } finally { home.cleanup(); }
+  }
+  const home = ho();
+  try {
+    seed(home.home, { guards_output_verify_guard: true });
+    assert.strictEqual(settings.source('guards', 'outputVerifyGuard', { home: home.home, env: {} }), 'default');
+  } finally { home.cleanup(); }
+});
+
+test('removed-row null-default budget keys keep working: a stored value is real; absent resolves to null', () => {
+  for (const k of ['usdPerDay', 'usdPerWeek', 'minCreditUsd']) {
+    const e = SCHEMA.findSetting('jev', 'budget.' + k);
+    assert.ok(e.pluginOption && e.pluginOptionLegacy && e.default === null, k);
+    const home = makeHome();
+    try {
+      assert.strictEqual(settings.get('jev', 'budget.' + k, undefined, { home: home.home, env: {} }), null);
+      seed(home.home, { [e.pluginOption]: 5 });
+      assert.strictEqual(settings.get('jev', 'budget.' + k, undefined, { home: home.home, env: {} }), 5);
+    } finally { home.cleanup(); }
+  }
+});
+
+test('safety: locked set unchanged; homeOnly keys ignore stored options and env', () => {
+  const locked = SCHEMA.allSettings().filter((e) => e.locked).map((e) => e.section + '.' + e.key).sort();
+  assert.deepStrictEqual(locked, LOCKED_KEYS);
+  for (const e of SCHEMA.allSettings().filter((x) => x.homeOnly)) {
+    const home = makeHome();
+    try {
+      const env = {};
+      if (e.env) env[e.env] = e.type === 'boolean' ? String(!e.default) : 'x';
+      if (e.pluginOption) env['CLAUDE_PLUGIN_OPTION_' + e.pluginOption.toUpperCase()] = e.type === 'boolean' ? String(!e.default) : 'x';
+      if (e.pluginOption) seed(home.home, { [e.pluginOption]: e.type === 'boolean' ? !e.default : 'x' });
+      assert.deepStrictEqual(settings.get(e.section, e.key, undefined, { home: home.home, env }), e.default, e.section + '.' + e.key);
+    } finally { home.cleanup(); }
+  }
+});
+
+// DOWNGRADE: after migrateLegacyPluginOptions the value lives in settings.json, which outranks the stored plugin option,
+// so an older plugin version (that still has the row and reads settings.json first) resolves the same effective value.
+test('downgrade: after migration the settings-file value wins over the stored option', () => {
+  const home = makeHome();
+  try {
+    seed(home.home, { guards_silent_agent_nudge_min: 45 });
+    const o = { home: home.home, env: {} };
+    assert.strictEqual(settings.get('guards', 'silentAgentNudgeMin', undefined, o), 45);
+    M.migrateLegacyPluginOptions(home.home, { env: {} });
+    assert.strictEqual(settings.source('guards', 'silentAgentNudgeMin', o), 'file');
+    assert.strictEqual(settings.get('guards', 'silentAgentNudgeMin', undefined, o), 45);
+  } finally { home.cleanup(); }
+});
+
+// A locked key's stored /config value must survive its row leaving the manifest AND the stored option
+// later disappearing from pluginConfigs (e.g. pruned by Claude Code): the migration copies it into
+// settings.json as a human-confirmed write, so an armed stash guard never falls back to its default false.
+for (const key of ['anti-hall', 'anti-hall@anti-hall']) {
+  test('locked guards.stashGuard set in /config under pluginConfigs[' + key + '] still resolves true after pluginConfigs is emptied; second run is a byte-identical no-op', () => {
+    const home = makeHome();
+    try {
+      seed(home.home, { guards_stash_guard: true, guards_allow_subagent_mailbox: true }, key);
+      const o = { home: home.home, env: {} };
+      assert.strictEqual(settings.get('guards', 'stashGuard', undefined, o), true);
+      const r = M.migrateLegacyPluginOptions(home.home, { env: {} });
+      assert.deepStrictEqual(r, { migrated: 2, skipped: 0, errors: 0 });
+      fs.writeFileSync(claudeSettings(home.home), JSON.stringify({ theme: 'x', pluginConfigs: {} }));
+      assert.strictEqual(settings.get('guards', 'stashGuard', undefined, o), true, 'stash guard stays armed');
+      assert.strictEqual(settings.source('guards', 'stashGuard', o), 'file');
+      assert.strictEqual(settings.get('guards', 'allowSubagentMailbox', undefined, o), true, 'risky-direction locked value copied as confirmed');
+      const file = path.join(home.home, '.anti-hall', 'settings.json');
+      const before = fs.readFileSync(file, 'utf8');
+      seed(home.home, { guards_stash_guard: true, guards_allow_subagent_mailbox: true }, key);
+      assert.deepStrictEqual(M.migrateLegacyPluginOptions(home.home, { env: {} }), { migrated: 0, skipped: 2, errors: 0 });
+      fs.writeFileSync(claudeSettings(home.home), JSON.stringify({ theme: 'x', pluginConfigs: {} }));
+      assert.deepStrictEqual(M.migrateLegacyPluginOptions(home.home, { env: {} }), { migrated: 0, skipped: 0, errors: 0 });
+      assert.strictEqual(fs.readFileSync(file, 'utf8'), before, 'settings.json byte-identical after re-runs');
+    } finally { home.cleanup(); }
+  });
+}

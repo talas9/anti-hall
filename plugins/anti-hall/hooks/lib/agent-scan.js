@@ -158,6 +158,9 @@ const NOT_A_REPORT_KEYS = ['origin', 'promptSource', 'turnOrigin', 'permissionMo
 // written: observed never later than the entry (0 of 3374). Beyond this skew it
 // is forged or garbage.
 const REPORT_FUTURE_SKEW_MS = 5000;
+// idleReason values that end a teammate's work (field: "available" on a final
+// report, "failed" on an errored turn; no idleReason = waiting on its own work).
+const FINISHED_IDLE_REASON = /^(available|failed)$/;
 // teammateIdles(entry, entryTs, spawned) -> [{name, ts}] from a genuine teammate
 // report. ALL must hold: a `user` entry with a bare-string content; none of
 // NOT_A_REPORT_KEYS (isSidechain only when true); the string BEGINS with the
@@ -189,7 +192,7 @@ function teammateIdles(entry, entryTs, spawned) {
     if (!o || o.type !== 'idle_notification' || o.from !== m[1]) continue;
     const inner = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
     if (Number.isFinite(inner) && Number.isFinite(entryTs) && inner > entryTs + REPORT_FUTURE_SKEW_MS) continue;
-    out.push({ name: m[1], ts: Number.isFinite(inner) && Number.isFinite(entryTs) ? inner : entryTs });
+    out.push({ name: m[1], ts: Number.isFinite(inner) && Number.isFinite(entryTs) ? inner : entryTs, reason: typeof o.idleReason === 'string' ? o.idleReason : '' });
   }
   return out;
 }
@@ -256,7 +259,8 @@ const { notificationTexts: idleNotificationTexts } = require('../../companion/li
 const RESUME_SKEW_SLACK_MS = 2000;
 
 // scanTranscript(transcriptPath) -> { launched: Map<id, {outputFile, description, launchedAtMs}>, terminal: Set<id>,
-//   pendingMessages: Map<teammate name, {sentAtMs, lastIdleMs, lastSeenMs, live, agentId}> } | null
+//   pendingMessages: Map<teammate name, {sentAtMs, lastIdleMs, lastSeenMs, live, agentId}>,
+//   finishedTeammates: Map<teammate name, {idleSinceMs, reason, agentId}> } | null
 // preLines (optional): already-read tail lines, so a caller that also parses
 // the transcript for other reasons reads it only once.
 // opts.nowMs: clock for the pending-message bound (default Date.now()).
@@ -285,12 +289,12 @@ function scanTranscript(transcriptPath, preLines, opts) {
   const taskStops = [];
   const erroredToolUseIds = new Set();
   const answeredToolUseIds = new Set();
-  // Teammate lifecycle events, name -> [{kind:'spawn'|'send'|'idle'|'stop', ts, seq}].
+  // Teammate lifecycle events, name -> [{kind:'spawn'|'send'|'idle'|'stop', ts, seq, reason?}].
   const teamEvents = new Map();
   const teamInfo = new Map(); // name -> { toolUseId, agentId } from its spawn record
-  const teamEvent = (name, kind, ts, evSeq) => {
+  const teamEvent = (name, kind, ts, evSeq, reason) => {
     if (!teamEvents.has(name)) teamEvents.set(name, []);
-    teamEvents.get(name).push({ kind, ts, seq: evSeq });
+    teamEvents.get(name).push({ kind, ts, seq: evSeq, reason: reason || '' });
   };
   const answersCall = (toolUseId, names) => {
     const c = toolUseId !== undefined ? toolUses.get(toolUseId) : undefined;
@@ -410,7 +414,7 @@ function scanTranscript(transcriptPath, preLines, opts) {
       }
     }
 
-    if (hasIdle) for (const i of teammateIdles(entry, entryTs, teamInfo)) teamEvent(i.name, 'idle', i.ts, seq);
+    if (hasIdle) for (const i of teammateIdles(entry, entryTs, teamInfo)) teamEvent(i.name, 'idle', i.ts, seq, i.reason);
 
     if (entry.type !== 'user') continue;
 
@@ -569,6 +573,14 @@ function scanTranscript(transcriptPath, preLines, opts) {
   // "idle" (unknown): the first idle after a send then reads as consumption,
   // i.e. the scan stays silent rather than claim a pending message it cannot show.
   const pendingMessages = new Map();
+  // FINISHED, NOT STOPPED: the replay ends idle on an idle_notification whose
+  // idleReason is "available" or "failed" (the turn ended with the teammate's
+  // final report), with no later send or TaskStop. An idle_notification with no
+  // idleReason is a teammate waiting on its own background work (observed text:
+  // "still running the full suite; waiting on the monitor"), so it does not
+  // count. Background agents are not listed: their "completed" notification
+  // already ended them (TaskStop answers "not running (status: completed)").
+  const finishedTeammates = new Map();
   for (const [name, evs] of teamEvents) {
     // Only names seen as teammates (spawned or reporting); "Message sent to
     // X's inbox" is also the result text for a peer session.
@@ -581,6 +593,7 @@ function scanTranscript(transcriptPath, preLines, opts) {
     let queuedAt = NaN; // newest send waiting for the current turn to end
     let pendingAt = NaN; // newest send the current turn is working on
     let lastIdleMs = NaN;
+    let lastIdleReason = '';
     for (const e of ordered) {
       if (e.kind === 'spawn') { state = 'busy'; queuedAt = NaN; pendingAt = NaN; }
       else if (e.kind === 'stop') { state = 'stopped'; queuedAt = NaN; pendingAt = NaN; }
@@ -589,9 +602,14 @@ function scanTranscript(transcriptPath, preLines, opts) {
         if (state === 'idle') { state = 'busy'; pendingAt = e.ts; } else queuedAt = e.ts;
       } else { // idle
         lastIdleMs = e.ts;
+        lastIdleReason = e.reason || '';
         if (Number.isFinite(queuedAt)) { pendingAt = queuedAt; queuedAt = NaN; state = 'busy'; }
         else { pendingAt = NaN; state = 'idle'; }
       }
+    }
+    if (state === 'idle' && FINISHED_IDLE_REASON.test(lastIdleReason) && Number.isFinite(lastIdleMs) && !backgroundIds.has(name)) {
+      const info = teamInfo.get(name) || {};
+      finishedTeammates.set(name, { idleSinceMs: lastIdleMs, reason: lastIdleReason, agentId: info.agentId || '' });
     }
     const sentAtMs = Number.isFinite(queuedAt) ? queuedAt : pendingAt;
     if (!Number.isFinite(sentAtMs)) continue;
@@ -615,41 +633,76 @@ function scanTranscript(transcriptPath, preLines, opts) {
     terminal.delete(name);
   }
 
-  return { launched, terminal, pendingMessages };
+  return { launched, terminal, pendingMessages, finishedTeammates };
 }
 
-// runningAgents(transcriptPath) -> [{ id, description, launchedAtMs, pendingMessage? }] —
-// launched in this transcript and not yet terminal. null when unreadable.
-function runningAgents(transcriptPath, preLines, opts) {
-  const scan = scanTranscript(transcriptPath, preLines, opts);
-  if (!scan) return null;
+// rowsOf(scan) -> the running rows (launched, not terminal).
+function rowsOf(scan) {
   const out = [];
   for (const [id, rec] of scan.launched) {
     if (scan.terminal.has(id)) continue;
     const row = { id, description: rec.description || '', launchedAtMs: rec.launchedAtMs };
     if (rec.spawnInput) row.spawnInput = rec.spawnInput; // the Agent/Task input that launched it (absent when its spawn is outside the window)
     if (rec.pendingMessage) row.pendingMessage = true; // teammate sent a message it has not yet reported on
+    // Newest sign of life: launch, SendMessage resume, a pending teammate message,
+    // or a write to the agent's output file. NaN when none is known.
+    row.resumedAtMs = rec.resumedAtMs;
+    let act = NaN;
+    for (const v of [rec.launchedAtMs, rec.resumedAtMs, rec.lastSeenMs]) if (Number.isFinite(v) && !(v <= act)) act = v;
+    if (rec.outputFile) {
+      try { const m = require('fs').statSync(rec.outputFile).mtimeMs; if (Number.isFinite(m) && !(m <= act)) act = m; } catch (_) { /* absent -> no signal */ }
+    }
+    row.lastActivityMs = act;
     out.push(row);
   }
   return out;
 }
 
-// runningAgentsOrNull(transcriptPath, preLines) -> [{...}] | null. Like
-// runningAgents, but null ("unknown") when the count cannot be trusted: the scan
-// is unreadable, or the transcript is larger than the capped tail window and no
-// agent was found in it — a launch that sits BEFORE the window is invisible, so
-// an empty result there is "unknown", not "0 running" (L34 field: DISPATCH NOW
-// said "0 running" while a pre-window agent was still pending).
-function runningAgentsOrNull(transcriptPath, preLines, opts) {
-  const out = runningAgents(transcriptPath, preLines, opts);
-  if (out === null) return null;
-  if (out.length === 0) {
-    try {
-      const { MAX_TAIL_BYTES } = require('./transcript-tail.js');
-      if (require('fs').statSync(transcriptPath).size > MAX_TAIL_BYTES) return null;
-    } catch (_) { return null; }
-  }
-  return out;
+// runningAgents(transcriptPath) -> [{ id, description, launchedAtMs, resumedAtMs, lastActivityMs, pendingMessage? }] —
+// launched in this transcript and not yet terminal. null when unreadable.
+function runningAgents(transcriptPath, preLines, opts) {
+  const scan = scanTranscript(transcriptPath, preLines, opts);
+  return scan ? rowsOf(scan) : null;
 }
 
-module.exports = { scanTranscript, runningAgents, runningAgentsOrNull, extractTexts, TERMINAL_NOTIFICATION_STATUS };
+// WIDE_TAIL_BYTES — the one-shot widened read used ONLY when the normal 1.5MB
+// window shows no running agent but the file is larger than it. ROOT CAUSE of the
+// "running-agent count unknown" line firing after agents had launched AND
+// completed a few turns earlier: an empty in-window result on an over-window file
+// was always "unknown" (a pre-window launch is invisible), even though the window
+// already held the launches and their terminal notifications. Reading further
+// back lets the scan PROVE the count for any session whose agents sit within this
+// bound; beyond it the count stays unprovable and the caller says so.
+const WIDE_TAIL_BYTES = 12 * 1024 * 1024;
+
+// agentCountProof(transcriptPath, preLines, opts) -> { running: [...] | null, seen: string[], windowBytes }
+// running null = UNPROVEN. seen = ids of agents launched in the scanned window
+// (all finished when running is null), so a caller can say what it did see.
+function agentCountProof(transcriptPath, preLines, opts) {
+  const scan = scanTranscript(transcriptPath, preLines, opts);
+  if (!scan) return { running: null, seen: [], windowBytes: 0 };
+  const rows = rowsOf(scan);
+  if (rows.length > 0) return { running: rows, seen: [...scan.launched.keys()], windowBytes: 0 };
+  const { MAX_TAIL_BYTES, readTail } = require('./transcript-tail.js');
+  let size;
+  try { size = require('fs').statSync(transcriptPath).size; } catch (_) { return { running: null, seen: [], windowBytes: 0 }; }
+  if (size <= MAX_TAIL_BYTES) return { running: rows, seen: [...scan.launched.keys()], windowBytes: size };
+  const wide = scanTranscript(transcriptPath, readTail(transcriptPath, WIDE_TAIL_BYTES), opts);
+  if (!wide) return { running: null, seen: [...scan.launched.keys()], windowBytes: MAX_TAIL_BYTES };
+  const wrows = rowsOf(wide);
+  const seen = [...wide.launched.keys()];
+  if (wrows.length > 0) return { running: wrows, seen, windowBytes: WIDE_TAIL_BYTES };
+  if (size <= WIDE_TAIL_BYTES) return { running: [], seen, windowBytes: size };
+  return { running: null, seen, windowBytes: WIDE_TAIL_BYTES };
+}
+
+// runningAgentsOrNull(transcriptPath, preLines) -> [{...}] | null. Like
+// runningAgents, but null ("unknown") when the count cannot be trusted: the scan
+// is unreadable, or the transcript is larger than the widened window and no
+// agent was found in it (a launch before the window is invisible, so an empty
+// result there is "unknown", not "0 running" — L34 field).
+function runningAgentsOrNull(transcriptPath, preLines, opts) {
+  return agentCountProof(transcriptPath, preLines, opts).running;
+}
+
+module.exports = { scanTranscript, runningAgents, runningAgentsOrNull, agentCountProof, WIDE_TAIL_BYTES, extractTexts, TERMINAL_NOTIFICATION_STATUS };

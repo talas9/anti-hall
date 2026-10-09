@@ -70,11 +70,15 @@ function homeFromEnv(env) {
 // fixture that never needs the file tier) is never forced through
 // homeFromEnv()'s real-home refusal under `node --test`. Only a lookup that
 // actually falls through to settings.json evaluates `opts.home`.
-function getWithEnv(section, key, dflt, env) {
+function envOpts(env) {
   const e = env || process.env;
   const opts = { env: e };
   Object.defineProperty(opts, 'home', { get: () => homeFromEnv(e), enumerable: true });
-  return get(section, key, dflt, opts);
+  return opts;
+}
+
+function getWithEnv(section, key, dflt, env) {
+  return get(section, key, dflt, envOpts(env));
 }
 
 // path(opts?) -> ~/.anti-hall/settings.json (home-injectable for tests).
@@ -168,6 +172,9 @@ function coerceValue(entry, raw) {
       // Math.min(max, v))`). An in-range-but-off value (env typo, a stale
       // settings.json) still resolves to something usable at this tier
       // instead of silently falling through to a lower one.
+      // rejectBelowMin: below min falls through (an env `-1` must not
+      // silently mean `0` = off for keys where 0 disables the feature).
+      if (entry.rejectBelowMin && Number.isFinite(entry.min) && n < entry.min) return undefined;
       if (Number.isFinite(entry.min) && n < entry.min) n = entry.min;
       if (Number.isFinite(entry.max) && n > entry.max) n = entry.max;
       return n;
@@ -192,7 +199,16 @@ function coerceValue(entry, raw) {
 function readEnvOverride(entry, opts) {
   if (!entry.env || entry.homeOnly) return undefined; // homeOnly: never from env
   const env = (opts && opts.env) || process.env;
-  return coerceValue(entry, env[entry.env]);
+  let v = coerceValue(entry, env[entry.env]);
+  // Deprecated aliases (schema envAliases): consulted only when the canonical
+  // name yields nothing, so the canonical ANTIHALL_* name always wins.
+  if (v === undefined && Array.isArray(entry.envAliases)) {
+    for (const alias of entry.envAliases) {
+      v = coerceValue(entry, env[alias]);
+      if (v !== undefined) break;
+    }
+  }
+  return v;
 }
 
 // pluginManifestDefault(entry, opts) -> plugin.json userConfig[key].default,
@@ -257,8 +273,8 @@ function readStoredPluginOptions(opts) {
 // that actually DIFFERS from the manifest default counts as a real /config
 // choice.
 //
-// pluginOptionLegacy entries (advanced settings dropped from the manifest, so
-// there is no manifest default): the SCHEMA default stands in for it. A stale
+// Every non-headline pluginOption entry (all flagged pluginOptionLegacy: no
+// manifest row, so no manifest default): the SCHEMA default stands in for it. A stale
 // stored option that equals the default is therefore still "unset", exactly as
 // it was while the row existed.
 function readPluginOption(entry, opts) {
@@ -268,9 +284,9 @@ function readPluginOption(entry, opts) {
   // A null/undefined schema default (the Jev budget USD fields) means "no
   // default": every stored value is a real choice, as it was with a row that
   // declared no manifest default.
-  const manifestDefault = entry.pluginOptionLegacy
-    ? (entry.default === null ? undefined : entry.default)
-    : pluginManifestDefault(entry, opts);
+  const manifestDefault = entry.headline
+    ? pluginManifestDefault(entry, opts)
+    : (entry.default == null ? undefined : entry.default);
   const isManifestDefault = (raw) => manifestDefault !== undefined && String(raw) === String(manifestDefault);
 
   if (env[envName] !== undefined) {
@@ -645,4 +661,4 @@ function source(section, key, opts) {
   return 'default';
 }
 
-module.exports = { load, get, readStoredPluginOptions, getWithEnv, enabled, set, reset, source, path: settingsPath, validate, lookup, safetyWarning };
+module.exports = { load, get, readStoredPluginOptions, getWithEnv, envOpts, enabled, set, reset, source, path: settingsPath, validate, lookup, safetyWarning };

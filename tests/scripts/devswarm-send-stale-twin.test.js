@@ -7,6 +7,7 @@
 // Coherent + strict routing liveness); with no such proof it delivers to the
 // exact id as before (never drop). All fixtures live under an isolated HOME.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

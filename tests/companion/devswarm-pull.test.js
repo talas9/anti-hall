@@ -5,6 +5,7 @@
 // append, the per-id lock, and the crash-window ordering. Every hivecontrol spawn is
 // injected via io.run; io.fs is injected to prove a thrown append surfaces ok:false.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

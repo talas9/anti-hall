@@ -1,9 +1,13 @@
 ---
 name: anti-hall-install-statusline
-description: Explain and install anti-hall statusline support where available. Use when the user asks for the anti-hall statusline in Codex or wants OMC/anti-hall status visibility.
+description: Install anti-hall statusline support where available. Use for "install the statusline" or OMC/anti-hall status.
 ---
 
 # anti-hall statusline for Codex
+
+## When to use
+
+Explain and install anti-hall statusline support where available. Use when the user asks for the anti-hall statusline in Codex or wants OMC/anti-hall status visibility.
 
 ## Resolve the plugin root
 
@@ -17,7 +21,7 @@ root from that path before running anything below:
 ```bash
 # SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 The existing anti-hall statusline installer (`statusline/install-statusline.js`) targets

@@ -14,6 +14,7 @@
 //   - a real-git subprocess dry-run proving the FULL install-path ordering:
 //     reap BEFORE the new per-project unit is written
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -5,6 +5,7 @@
 // rewrites loop-state, and a genuinely live child still blocks up to the cap.
 // Isolated HOME (mkdtemp), real spawned hook, temp repo + child worktree.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

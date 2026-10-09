@@ -19,6 +19,7 @@
 //      marker claiming an identity it does not have is worse than one claiming
 //      none. It now records `null`.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

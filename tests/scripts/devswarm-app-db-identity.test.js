@@ -13,6 +13,7 @@
 //   (5) a mapping with no corroborating transcript (missing, or cwd elsewhere)
 //       is informational only -> the fallback decides
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

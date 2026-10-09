@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Agent|Task|Workflow", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe.js\" PreToolUse", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Agent|Task|Workflow", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe.js\" PostToolUse", "timeout": 10 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe.js\" Stop", "timeout": 10 }] }
+    ],
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe.js\" SessionStart", "timeout": 10 }] }
+    ]
+  }
+}

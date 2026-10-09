@@ -43,6 +43,7 @@ const SWITCHES = {
   'verify-first.js': 'context.verifyFirstTurn',
   'verify-first-full.js': 'context.verifyFirstSession',
   'verify-first-orch.js': 'context.verifyFirstOrchestration',
+  'orch-on-spawn.js': 'context.verifyFirstOrchestration',
   'verify-first-subagent.js': 'context.verifyFirstSubagent',
   'task-tracker.js': 'context.taskTracker',
   'handover-resume.js': 'context.handoverResume',
@@ -60,6 +61,7 @@ const SWITCHES = {
   'task-guard.js': 'guards.taskGuard',
   'tasklist-guard.js': 'guards.tasklistGuard',
   'scan-throttle.js': 'guards.scanThrottle',
+  'coordinator-work-guard.js': 'guards.coordinatorWorkWindowMinutes', // 0 = off
   'devswarm-parent-gate.js': 'devswarm.parentGate',
   'devswarm-child-gate.js': 'devswarm.childGate',
   'devswarm-parent-inbox.js': 'devswarm.parentInbox',
@@ -74,6 +76,8 @@ const SWITCHES = {
   'failure-root-cause-nudge.js': 'guards.failureRootCauseNudge',
   'repo-self-drift.js': 'guards.repoSelfDrift',
   'merge-gate.js': 'guards.mergeGate',
+  'merge-side-pick.js': 'guards.mergeSidePickAdvisory',
+  'idle-agent-sweep.js': 'guards.idleAgentSweep',
   'ship-it-guard.js': 'guards.shipitGate',
   'codex-nudge.js': 'codexNudge.enabled',
   'version-alert.js': 'versionAlerts.antiHall',
@@ -111,6 +115,7 @@ const NEW_KEYS = [
 const LOCKED_KEYS = [
   'safety.gitGuard', 'safety.commandGuard', 'safety.editGuard', 'safety.swarmGuard',
   'guards.stashGuard', 'guards.editGuardAllow', 'guards.allowSubagentMailbox',
+  'guards.gitAliasResolve', 'guards.gitReusedMessageCheck',
   'devswarm.maintainerNotice.post',
 ];
 
@@ -130,6 +135,8 @@ const EXPECTED_WARNING = {
   'safety.editGuard': 'Turning off edit-guard means edits to protected files like plugin config and secrets will no longer be stopped. Ask the user to confirm, then re-run with --confirmed.',
   'safety.swarmGuard': 'Turning off swarm-guard means nothing will stop runaway agent spawning that can overload the machine. Ask the user to confirm, then re-run with --confirmed.',
   'guards.stashGuard': 'Turning off stash-guard means git stash commands that can silently drop uncommitted work will no longer be blocked. Ask the user to confirm, then re-run with --confirmed.',
+  'guards.gitAliasResolve': 'Turning off git-alias-resolve means a git alias (or a shell alias) that runs a force push or an AI-credited commit will no longer be seen through. Ask the user to confirm, then re-run with --confirmed.',
+  'guards.gitReusedMessageCheck': 'Turning off git-reused-message-check means a commit that reuses an AI-credited message (-C/-c <rev>, --amend, a commit template) will no longer be blocked before it runs. Ask the user to confirm, then re-run with --confirmed.',
   'guards.editGuardAllow': 'Adding foo to edit-guard\'s allow list means those files can be edited without edit-guard\'s protection. Ask the user to confirm, then re-run with --confirmed.',
   'guards.allowSubagentMailbox': 'Turning on allow-subagent-mailbox means subagents can read/ack the Primary\'s mailbox, which is normally blocked. Ask the user to confirm, then re-run with --confirmed.',
   'devswarm.maintainerNotice.post': 'Turning on maintainer-notice.post means this checkout would be allowed to post a maintainer notice that every project\'s Primary sees — the checkout-name check is a mistake guard, not authentication, so only turn this on in the anti-hall dev checkout. Ask the user to confirm, then re-run with --confirmed.',
@@ -218,6 +225,27 @@ test('DEFAULTS: pre-existing env kill switches still work through the schema', (
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('DEFAULTS: canonical ANTIHALL_* names for scanThrottle / sessionEndReaper, old ANTI_HALL_* names stay deprecated aliases, canonical wins', () => {
+  const home = tmpHome();
+  try {
+    const cases = [
+      ['guards', 'scanThrottle', 'ANTIHALL_SCAN_THROTTLE', 'ANTI_HALL_SCAN_THROTTLE'],
+      ['maintenance', 'sessionEndReaper', 'ANTIHALL_SESSION_END_REAPER', 'ANTI_HALL_SESSION_END_REAPER'],
+    ];
+    for (const [sec, key, canon, alias] of cases) {
+      const e = schema.findSetting(sec, key);
+      assert.strictEqual(e.env, canon);
+      assert.deepStrictEqual(e.envAliases, [alias]);
+      const on = (env) => settings.enabled(sec, key, { home, env });
+      assert.strictEqual(on({}), true, key + ' default');
+      assert.strictEqual(on({ [canon]: '0' }), false, canon);
+      assert.strictEqual(on({ [alias]: '0' }), false, alias + ' (deprecated alias)');
+      assert.strictEqual(on({ [canon]: '1', [alias]: '0' }), true, 'canonical on beats alias off');
+      assert.strictEqual(on({ [canon]: '0', [alias]: '1' }), false, 'canonical off beats alias on');
+    }
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 // ------------------------------------------------------------ (3) behaviour
 // Each case: the fixture fires with default settings (on) and is silent with
 // the switch off in settings.json. `fired(r, ctx)` decides "it did its job".
@@ -299,7 +327,7 @@ const CASES = [
   {
     hook: 'scan-throttle.js', key: 'guards.scanThrottle', env: { ANTI_HALL_THROTTLE_PATTERNS: 'reindex-repo' },
     payload: () => bashPayload('reindex-repo --full'),
-    fired: (r) => !!(r.json && r.json.hookSpecificOutput && /SCAN-THROTTLE/.test(r.json.hookSpecificOutput.additionalContext || '')),
+    fired: (r) => !!(r.json && r.json.hookSpecificOutput && /scan-throttle/.test(r.json.hookSpecificOutput.additionalContext || '')),
     platforms: ['darwin', 'linux'],
   },
   {
@@ -410,7 +438,9 @@ test('SAFETY: every locked key is exactly the expected set; non-advanced ones ar
     const [sec, key] = split(k);
     const e = schema.findSetting(sec, key);
     // Non-advanced keys are /config rows; advanced ones (pluginOptionLegacy) live in /anti-hall:settings only.
+    // An advanced key added after the /config trim never had a plugin option at all.
     if (e.pluginOptionLegacy) assert.ok(e.pluginOption && !uc[e.pluginOption], k + ' is advanced: no /config row, legacy read source only');
+    else if (e.advanced && !e.pluginOption) assert.ok(true);
     else assert.ok(e.pluginOption && uc[e.pluginOption], k + ' must be a /config row so the human can change it natively');
     assert.ok(e.env, k + ' must keep an env override (Codex has no /config)');
   }

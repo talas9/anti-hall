@@ -64,6 +64,7 @@
 // live file on disk is NEVER written — verified with a before/after
 // `assertLiveUntouched` + this file's own shasum check in the task report.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -11,6 +11,7 @@
 // re-probed each sweep. All isolated: HOME is a mkdtemp dir, the native spawn is a
 // fake, nothing under the real ~/.anti-hall is read or written.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

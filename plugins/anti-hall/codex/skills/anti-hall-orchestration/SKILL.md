@@ -1,9 +1,13 @@
 ---
 name: anti-hall-orchestration
-description: Codex-native orchestration discipline for multi-step or parallel work. Use when the task has several independent subtasks, needs review/verification, or risks bloating the main context.
+description: Codex-native orchestration for multi-step or parallel work. Use for several independent subtasks, review/verification, or context bloat.
 ---
 
 # anti-hall orchestration for Codex
+
+## When to use
+
+Codex-native orchestration discipline for multi-step or parallel work. Use when the task has several independent subtasks, needs review/verification, or risks bloating the main context.
 
 Keep the main agent as coordinator:
 

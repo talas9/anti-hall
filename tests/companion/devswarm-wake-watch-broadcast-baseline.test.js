@@ -12,6 +12,7 @@
 // own first live read (a migration) instead of comparing against it, while a
 // GENUINE new broadcast after that point must still wake normally.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

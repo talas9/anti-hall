@@ -53,7 +53,7 @@ function burst(hook, n, { env, seed }, matchers) {
 }
 
 test('limit-conserve: 4 queued prompts -> 1 LIMIT CONSERVATION block; emitted again after delivery', () => {
-  const r = burst('limit-conserve-inject.js', 4, { env: { ANTIHALL_LIMIT_CONSERVE: 'on' } }, [(c) => c.includes('LIMIT CONSERVATION ACTIVE')]);
+  const r = burst('limit-conserve-inject.js', 4, { env: { ANTIHALL_LIMIT_CONSERVE: 'on' } }, [(c) => c.includes('limit conservation is active')]);
   assert.deepStrictEqual(r.counts, [1]);
   // keepalive key (guards.injectionRepeatEvery=10): consumed + unchanged -> quiet on the next delivered turn by design.
   assert.deepStrictEqual(r.after, [0]);
@@ -61,28 +61,37 @@ test('limit-conserve: 4 queued prompts -> 1 LIMIT CONSERVATION block; emitted ag
 
 test('task-tracker as DevSwarm PRIMARY: 4 queued prompts -> 1 TASK-LIST and 1 DISPATCH TIER; again after delivery', () => {
   const r = burst('task-tracker.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x' } },
-    [(c) => c.includes('TASK-LIST'), (c) => c.includes('DEVSWARM PRIMARY — DISPATCH TIER')]);
+    [(c) => c.includes('task-tracker: capture'), (c) => c.includes('task-tracker: Primary dispatch tier')]);
   assert.deepStrictEqual(r.counts, [1, 1]);
-  // TASK-LIST is burst-collapse only (re-emitted after delivery); the PRIMARY block is a keepalive key (quiet).
+  // B5: the SHORT TASK-LIST line is now a keepalive key too: shown once on first sight after the FULL primer
+  // (this [1]), then quiet until the keepalive (see the dedicated suppression test in task-tracker.test.js);
+  // the PRIMARY block is a keepalive key (quiet).
   assert.deepStrictEqual(r.after, [1, 0]);
+});
+
+test('task-tracker as DevSwarm PRIMARY: injectionRepeatEvery=0 -> burst collapse only, TASK-LIST re-emitted after delivery', () => {
+  const r = burst('task-tracker.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_INJECTION_REPEAT_EVERY: '0' } },
+    [(c) => c.includes('task-tracker: capture'), (c) => c.includes('task-tracker: Primary dispatch tier')]);
+  assert.deepStrictEqual(r.counts, [1, 1]);
+  assert.deepStrictEqual(r.after, [1, 1]);
 });
 
 test('devswarm-parent-inbox: 4 queued prompts -> 1 COMMS OVERRIDE; again after delivery', () => {
   const r = burst('devswarm-parent-inbox.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x' } },
-    [(c) => c.includes('DEVSWARM COMMS OVERRIDE')]);
+    [(c) => c.includes('devswarm-comms')]);
   assert.deepStrictEqual(r.counts, [1]);
   assert.deepStrictEqual(r.after, [0]);
 });
 
 test('devswarm-parent-inbox: injectionRepeatEvery=0 -> burst collapse only, COMMS OVERRIDE re-emitted after delivery', () => {
   const r = burst('devswarm-parent-inbox.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_INJECTION_REPEAT_EVERY: '0' } },
-    [(c) => c.includes('DEVSWARM COMMS OVERRIDE')]);
+    [(c) => c.includes('devswarm-comms')]);
   assert.deepStrictEqual(r.counts, [1]);
   assert.deepStrictEqual(r.after, [1]);
 });
 
 test('vacuity: emit-dedupe off -> every queued prompt repeats the COMMS OVERRIDE', () => {
   const r = burst('devswarm-parent-inbox.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_EMIT_DEDUPE: '0' } },
-    [(c) => c.includes('DEVSWARM COMMS OVERRIDE')]);
+    [(c) => c.includes('devswarm-comms')]);
   assert.deepStrictEqual(r.counts, [4]);
 });

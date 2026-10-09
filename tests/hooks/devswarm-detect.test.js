@@ -3,6 +3,7 @@
 // table over env — reads only its argument, so no spawn/fs. Mirrors omc-detect's
 // dormant-unless-feature-present contract. Workaround for claude-code#39755.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');

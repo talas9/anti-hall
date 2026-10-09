@@ -17,6 +17,7 @@ owner-approved prune and message retention. Per-component detail is in the
 ## Contents
 - [What it is, and why it exists](#what-it-is-and-why-it-exists)
 - [What it blocks, and how to turn it off](#what-it-blocks-and-how-to-turn-it-off)
+- [Limits and escape hatches](#limits-and-escape-hatches)
 - [Network and data](#network-and-data)
 - [Install, verify and uninstall](#install-verify-and-uninstall)
 - [Requirements](#requirements)
@@ -60,7 +61,7 @@ and [Codex / cross-tool](#codex--cross-tool) for the Codex/OMX detail.
 
 ## What it blocks, and how to turn it off
 
-The main guards. Every one can be switched off with its setting (`/anti-hall:settings`, the `/config` panel, or `node plugins/anti-hall/scripts/settings.js set <key> false`). The four `safety.*` keys are locked: changing them needs `--confirmed`. Separately, you can tell the assistant to skip a guard for a short time; it records that in `~/.anti-hall/skip.json` (per guard name, expires after 15 minutes by default; `"all"` never covers `git-guard`, which must be named).
+The main guards. Every one can be switched off with its setting (`/anti-hall:settings` or `node plugins/anti-hall/scripts/settings.js set <key> false`); the `/config` panel only has the four `safety.*` switches among them. The four `safety.*` keys are locked: changing them needs `--confirmed`. Separately, you can tell the assistant to skip a guard for a short time; it records that in `~/.anti-hall/skip.json` (per guard name, expires after 15 minutes by default; `"all"` never covers `git-guard`, which must be named).
 
 | Guard | What it stops | Why | Turn off |
 |---|---|---|---|
@@ -75,6 +76,54 @@ The main guards. Every one can be switched off with its setting (`/anti-hall:set
 
 Everything else, with the exact behaviour of each hook: the
 [Features table](#hook-reference--plugin-features-table-detailed-per-hook).
+
+## Limits and escape hatches
+
+Guards are pattern- and rule-based. They can block or nag when they should not, and they can miss things. This section lists the switches, the known gaps and the costs.
+
+### Escape hatches
+
+| To do this | Use |
+|---|---|
+| Skip one guard for a short time | Tell the assistant to skip it. It writes `~/.anti-hall/skip.json` (per guard name, 15 minutes by default). `"all"` covers the noisy guards but never `git-guard`; name `git-guard` to skip it. See [User-override escape hatch](#user-override-escape-hatch-skip-guard). |
+| Turn a safety guard off | `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`. Changing them needs `--confirmed`. |
+| Turn another guard off or down | `guards.*`, for example `guards.apiGuard`, `guards.speculationGuard`, `guards.modelRouting` = `advisory` or `off`. |
+| Silence an advisory message | `guards.failureRootCauseNudge`, `guards.silentAgentNudge`, `guards.scanThrottle`, `codexNudge.enabled`, `autoHandover.nag`, `limitConserve.mode` = `off`. |
+| Acknowledge a confirmed false positive | `guards.stopAck` lets a session ack it for `silent-agent-nudge` and `tasklist-guard`. |
+| Get the full protocol text | `context.protocolLevel` = `full` (env `ANTIHALL_PROTOCOL_LEVEL=full`). |
+
+The full key list is in [Settings](#settings-anti-hallsettings).
+
+### Protocol text size
+
+The injected protocol text is compact by default. The session-start core keeps every load-bearing clause and points at the generated `plugins/anti-hall/PROTOCOL.md` for the full wording. `context.protocolLevel` = `full` restores the previous text byte for byte. Sizes are in the [CHANGELOG](../CHANGELOG.md) (a synthetic size measure, not a per-run saving).
+
+### Remaining limits
+
+False positives that were fixed are listed in the [CHANGELOG](../CHANGELOG.md). What is still true:
+
+- **Shell commands are parsed, not executed.** `git-guard` resolves git and shell aliases, but it reads the command text; it does not run it.
+- **Heredocs and indirect runs in `git-guard`.** A heredoc written to a prose/data file (`.md`, `.txt`, ...) or used as a commit, tag or PR body is treated as data and not scanned as commands, provided every git/gh beside it uses only a short flag allowlist. Commands run through `xargs`, `parallel`, `find -exec`, `flock` and wrappers such as `stdbuf` or `setsid` get the same checks as a direct run. Still not covered: a subcommand that comes only from stdin (`cat f | xargs git`) cannot be seen, and `git reset --hard` has no rule. A script written by a heredoc is still scanned, even when it is never run.
+- **Commit messages.** A message taken from an existing commit (`-C`, `--amend --no-edit`, a template) is checked before the commit. A message written in an editor, or changed by a `commit-msg` hook, does not exist yet at that point; it is audited after the commit, so the commit is not blocked.
+- **Shell writes.** Writes made through the shell (`cat >`, `tee`, `sed -i` and similar) reach `edit-guard`, `api-guard` and `ship-it-guard`. Some forms still fail open: a variable or glob as the target, `dd`, `install` and `rsync`, and scripts that write when they run.
+- **`speculation-guard` is lexical.** It catches hedge words. It does not catch a confident claim with no hedge word. Two opt-in checks target that gap; see the next subsection. Both are off by default.
+- **Prompt text alone does not reduce fabrication.** The verify-first eval found no net fabrication reduction from the prompt alone in four runs ([eval/README.md](../eval/README.md)). The guards' blocking is covered by unit tests, not by that eval.
+- **Advisory noise.** Replaying 5,828 real root-cause nudges from 30 days of transcripts, 3,438 still fire after the filter. `output-verify-guard` fires at most once per turn for the same signals. Both can still be wrong; use the switches above.
+- **Codex.** `edit-guard`, `api-guard` and `ship-it-guard` cover `apply_patch` edits and shell writes on Codex 0.134 or later. The fail-open shell forms above apply there too. See the [Codex port notes](../plugins/anti-hall/codex/README.md).
+
+### Opt-in checks for confident claims
+
+| Check | Setting | Precision, synthetic corpus | Precision, real replies | Cost | Default |
+|---|---|---|---|---|---|
+| Inference check | `guards.inferenceCheck` | 1.00 (recall 0.95) | 0.45 or lower (estimate from a 40-flag sample) | none (no model call) | off |
+| Judge, keyless backend | `jev.semanticJudge` on, `jev.judgeBackend` = `cli` | 0.78 to 0.81 (recall 1.0) | not measured | 5 to 6 s per turn end, measured | off |
+| Judge, API backend | `jev.semanticJudge` on, `jev.judgeBackend` = `api` | not measured | not measured | about 1 to 3 s and $0.0001 to $0.001 per turn end, estimated | off |
+
+The synthetic corpus is 84 labelled cases (`eval/inference-bench.js`), written by the same author as the detector, so read it as a regression floor. Both checks stay off because of these numbers: the inference check was wrong more often than right on real replies, and the judge adds a visible delay to every turn end. Details: [speculation-judge](#speculation-judge-tier-3-opt-in).
+
+### Hook latency
+
+Hooks are small per call but not free. On a quiet machine a bare `node -e 0` costs about 16 to 18 ms of CPU and most hooks cost 22 to 35 ms. Claude Code runs a matcher's hooks in parallel, so a tool call costs about its slowest hook, while CPU adds up across hooks. The DevSwarm hooks exit before loading their libraries in a session that is not a DevSwarm Primary or child, which saves about 20 ms of CPU per Stop and about 25 ms per prompt. The measured tables, method and caveats are in [HOOK-LATENCY](HOOK-LATENCY.md).
 
 ## Network and data
 
@@ -151,7 +200,10 @@ Code silently skips every anti-hall hook — verify with `node --version`. No np
 install, no native deps, no other config. There is intentionally no shell-based
 preflight. Install Node from <https://nodejs.org>.
 
-**`/config` rows need Claude Code ≥ 2.1.269; older versions still work via the skill.**
+**Supported systems:** macOS and Linux (both CI-tested), including WSL on Windows,
+which runs the Linux build. Native Windows is not supported yet.
+
+**The `/config` rows (14 options) need Claude Code ≥ 2.1.269; older versions still work via the skill.**
 The plugin's `userConfig` never declares `options` (a public plugin can't require v2.1.271+
 just for its settings UI — per the Claude Code plugin docs, an `options` picker would break
 loading on older versions), so every version can load the plugin; enum settings just render
@@ -171,7 +223,7 @@ Terms used below: **DevSwarm** is a multi-workspace orchestration app with a `hi
 | **Jev classifier** | Optional LLM-backed speculation classifier ([`KB-jev-classifier.md`](KB-jev-classifier.md)) — per-integration on/shadow/off modes, metrics + `jev report` KEEP/REVIEW/REMOVE calls. |
 | **Statusline** | Live two-line statusline: git/model/context/cost on line 1, live orchestration/context gauge on line 2. Installable globally or per-repo, consolidates with an existing statusline (e.g. OMC HUD). |
 | **doctor / update** | `doctor` runs live behavioral self-tests on every guard and repairs safe drift; `update` pulls the latest release and shows the changelog delta. Repairs also run by themselves after a plugin reload or on a new version. |
-| **Settings** | One place for every setting — `~/.anti-hall/settings.json`, every non-advanced setting is an arrow-key row in Claude Code's native `/config` panel (anti-hall rows, section-prefixed titles); or tell `/anti-hall:settings` "set X to Y". See [Settings](#settings-anti-hallsettings). |
+| **Settings** | One place for every setting — `~/.anti-hall/settings.json`, grouped by category and reachable through `/anti-hall:settings` (Claude Code's `/config` panel has only the headline switches, the safety guards and the keys); or tell `/anti-hall:settings` "set X to Y". See [Settings](#settings-anti-hallsettings). |
 
 ## What's inside and updating
 
@@ -189,8 +241,10 @@ Moved from plugins/anti-hall/README.md "How it works" (v0.107.0 doc sweep).
 
 ### Verify-first protocol (the core)
 
-- **SessionStart full protocol** — `verify-first-full.js` injects the FULL
-  verify-first + root-cause protocol in the Superpowers **Iron Law +
+- **SessionStart protocol** — by default (`context.protocolLevel=compact`) `verify-first-full.js`
+  injects a compact core that keeps every load-bearing clause inline and points at the generated
+  `PROTOCOL.md`; `context.protocolLevel=full` injects the FULL
+  verify-first + root-cause protocol described next, byte for byte, in the Superpowers **Iron Law +
   rationalization-table** form. It names the specific bypass excuses ("probably",
   "should work", "seems to", "I'll just assume", "looks done", "tests pass on first
   run") and includes a skill primer listing the core 4 skills (root-cause, orchestration,
@@ -201,9 +255,9 @@ Moved from plugins/anti-hall/README.md "How it works" (v0.107.0 doc sweep).
   not decoration), and avoid renderer-dropped syntax. Styling organizes, never pads.
   SessionStart is the primacy slot. Its companion `verify-first-orch.js` (also
   SessionStart) carries the always-on orchestration ruleset (rules A–N + the
-  DevSwarm-Primary workspace-tier rule W) — split out in 0.60.0 so both halves
+  DevSwarm-Primary workspace-tier rule W; by default inline at SessionStart, see `context.orchFullOn`) — split out in 0.60.0 so both halves
   clear the ~10k per-hook injection cap and land 100% inline instead of one
-  spilling to a file past ~2k chars.
+  spilling to a file (Claude Code leaves a 2,000-char preview inline and does not ask Claude to read the rest).
 - **Surviving compaction** — SessionStart re-fires after a compaction with
   `source="compact"`. The no-matcher SessionStart registration therefore re-injects
   the protocol across the compaction boundary, exactly when context is largest and
@@ -242,15 +296,34 @@ flags (`git push "--force"`), bundled `-f`, `+refspec` pushes, and a trailing
 `sh -c` / `zsh -c` / `dash -c` / `ksh -c` / `ash -c` shell wrappers and re-inspects
 the payload, so `bash -c "git push --force"` and `bash -c '...Co-Authored-By:
 Claude...'` cannot smuggle either block past it that way.
-**Known limitation:** text inside a heredoc is scanned as if it were shell, even
-when the consumer is python, node or `cat` and the text is only data. A script or
-note that merely MENTIONS `git push` with backticks or `$(...)` can therefore be
-blocked as "argument produced by a command substitution". This is deliberate
-(a static scanner cannot tell prose from a shell-exec string inside an
-interpreter body, and several exemptions were bypassed in review); the
-workaround is to write the content with the Write tool, then run or reference
-the file. `tests/hooks/git-guard-heredoc-bypass.test.js` pins the forms that
-must stay blocked.
+**Heredoc bodies that are data** (`guards.gitGuardHeredocData`, default on): a
+heredoc whose consumer is not a shell is not scanned as commands, so a note,
+commit message or PR body that mentions `git push --force` is not blocked:
+`cat <<EOF > notes.md`, `tee notes.txt <<EOF`, `git commit -F - <<EOF`,
+`git commit -m "$(cat <<EOF ... EOF)"`, `gh pr create --body-file - <<EOF`. The
+rule is all-or-nothing and fails closed: it applies only when every heredoc in
+the command ends in a prose/data file (`.md`, `.txt`, `.rst`, `.log`, ...)
+through cat/tee or in a git commit/tag/notes/merge or gh pr/issue/release
+message; every other command in the line is on a short allowlist (cat, tee,
+git, gh, echo, printf, cd, mkdir, wc, head, tail, ls, ...); a git there is
+limited to commit/tag/notes/merge, status/log/diff/show/add and rev-parse, each
+with its own flag allowlist (no fetch, push, pull, clone, remote, submodule or
+config, no `-c`/`--git-dir`; any other flag, an abbreviation like
+`--upload-p` included, keeps the bodies scanned), and a gh to pr/issue/release
+create/edit/comment with listed flags and no `--` passthrough; no write target is a
+script, an extensionless file, a dotfile, a git hook name or a `.git`,
+`.husky`, `.githooks`, `hooks`, `.ssh`, `.config`, `.claude`, `.codex` or
+`.anti-hall/bin` path; an unquoted-delimiter body has no `$(` or backtick; and
+the parse has no open quote, line continuation or process substitution around
+the opener. Everything else still scans every body as shell: a heredoc fed to
+bash/sh/zsh/eval/source/`.`/xargs/python/node/..., piped into a shell, teed into
+`>( )`, or written to a file that the same command line then runs (`bash
+f.md`, `. f.md`, `git -c core.pager='sh f.md' log`). Commit and PR credit
+trailers and `key = value` git-config lines in a body are checked whatever the
+consumer. A script written by a heredoc (`cat > x.sh <<EOF`) is still scanned,
+because it may be run later; write it with the Write tool.
+`tests/hooks/git-guard-heredoc-bypass.test.js` pins the forms that must stay
+blocked, `tests/hooks/git-guard-heredoc-data.test.js` the ones that are data.
 It scans commit messages both INLINE (`-m` / `--message` / `--trailer`) and via
 `-F -` / `--file=-` / `-F /dev/stdin` fed by a heredoc on the same command
 line, or via `-F <path>` naming a real, readable file (a relative path
@@ -265,9 +338,73 @@ after any commit-creating command and tells the agent to reword one that
 carries a trailer added OFF the command line (a repo `commit-msg` /
 `prepare-commit-msg` hook, a template, an editor, a cherry-pick). **Documented
 fail-open scope:** the audit is advisory (PostToolUse cannot un-run a commit),
-a commit made inside a script file is not seen by the command-text scan, and `xargs` /
-an aliased `g push` can still bypass the force-push block. These are
+a commit made inside a script file is not seen by the command-text scan, and
+a shell alias or function defined in your shell profile (not in the command)
+is not seen through (see **Aliases** below). `xargs` is covered:
+`... | xargs [options] git ...` gets the same git checks as a direct run (any
+xargs-run `git push` is blocked, since stdin can append `--force`), with
+xargs' GNU and BSD options parsed the way getopt does (`-I {}`, `-I{}`,
+`-i`/`-l`/`-e` with attached values only, `-n1`, `-0n1`, `-d '\n'`, `-J %`,
+`--max-args 1`), and an xargs-run `sh -c`/`eval`/nested `xargs` is re-scanned
+(its `"$@"` is scanned with a `--force` standing in for the stdin words).
+`find ... -exec|-execdir|-ok|-okdir CMD ... \;` (or `+`) gets the same checks
+for CMD, and a `find -exec git push ... {}` is blocked (a file name can be a
+`+ref` force refspec). Wrapper commands are unwrapped with their own option
+grammars, directly and under xargs/find: env, command, exec, sudo, doas, nice,
+nohup, time, timeout, stdbuf, caffeinate, ionice, flock (`-c`/`--command`
+before or after FILE is scanned as `sh -c`), setsid, chrt and taskset. GNU
+`parallel` is a runner like xargs: the command before `:::`/`::::` gets the
+same checks with the `:::` words appended (a parallel-run `git push` is
+blocked), and `parallel ::: 'cmd'` scans each input as a command. When a
+replacement string (`xargs -I`/`-i`/`-J`, find's `{}`, parallel's `{}`/`-I`) is
+the command word, the git subcommand or an argument before it, the command is
+unknown and is blocked if a force or remote-delete flag is visible
+(`xargs -I{} git {} --force`). Custom placeholders (`-I{x}`, parallel's
+`{1}`/`{.}`/`{/}`/`{#}`) are ordinary words: `{` is a group brace only as
+a standalone word (blanks on both sides, so `function f { ...; }` and
+`coproc NAME { ...; }` bodies are scanned) and `}` only after `;`, `&` or
+a newline. When
+xargs or parallel runs `git` with no subcommand word, the subcommand comes
+from stdin, so it is blocked if a force or remote-delete token appears
+anywhere on the same command line, also after quote removal
+(`echo 'push --force o m' | xargs git`, `echo push '-'f o m | xargs git`).
+When the script comes from stdin (`xargs -I{} sh -c '{}'`, `| parallel`
+with no command, `| sh`, `| bash -s`), the quoted strings and echo/printf
+words on the line are scanned as commands. A `sh -c` / `bash -c` script
+that forwards its positional args (`sh -c '$0 "$@"' git ...`, `bash -c '"$@"' _
+git ...`) is scanned with those args spliced in. These are
 documented boundaries, not silent gaps.
+
+**Aliases** (`guards.gitAliasResolve`, safety, default on). `git <name>` where
+`<name>` is not a git builtin is resolved through the git config of the repo the
+command runs in (one `git config --get-regexp ^alias\.` per repo per call;
+builtins never spawn git, since git ignores an alias that shadows one). Alias
+chains are followed (a loop resolves to nothing, as git refuses to run it), and
+the expansion is scanned as the command it really is: `git <body> <args>`, or the
+shell text of a `!` alias. The PostToolUse audit follows aliases too. Defining
+an alias whose body is a blocked git command is itself blocked:
+`git config alias.x '<body>'`, `git -c alias.x=<body>`,
+`GIT_CONFIG_VALUE_<n>=<body>`, and a shell `alias x='<body>'` (shell function
+bodies are ordinary command segments and were already scanned). A call to a
+shell alias or function defined in the same command is scanned as what it
+forwards: `g(){ git "$@"; }; g push --force` expands `"$@"`/`$*`/`$1`… to the
+call's arguments, wrappers calling wrappers included (depth-bounded). Not
+covered: a shell alias or function defined in your shell profile rather than in
+the command (the hook only sees the command text).
+
+**Reused commit messages** (`guards.gitReusedMessageCheck`, safety, default
+on). A `git commit` with no `-m`/`-F` takes its message from somewhere the
+command line does not show. Before it runs, git-guard reads that message:
+`git log -1 --format=%B <rev>` for `-C`/`-c`/`--reuse-message`/`--reedit-message`,
+HEAD for `--amend`, the `-t` file or `commit.template`. If it carries an AI
+self-credit trailer the commit is blocked when the message would be reused
+verbatim (`-C`, `--no-edit`, or a no-op editor such as `GIT_EDITOR=true`), and
+also on the editor path when the command sets no real editor of its own. A
+command that sets a real editor (`GIT_EDITOR=…`, `core.editor`) is left to the
+PostToolUse audit, since that editor may be the cleanup. Why both layers: the
+PreToolUse check can only see a message that already exists (a commit, a file);
+what an editor or a `commit-msg` hook writes exists only after the commit, so
+the audit reads the new HEAD and tells the agent to amend.
 
 ### Task discipline
 
@@ -355,11 +492,39 @@ Iron Law at the output boundary — after the model has already produced a reply
 5. **Fail-open:** any parse/read/write error exits 0 without blocking or writing to
    stderr. A bug here never wedges a session.
 
-**Known limit — confident inference without hedge words.** The guard is lexical: it
-catches hedged speculation (`probably`, `likely`, `I suspect`, etc.) but cannot catch a
-confidently-stated inference-as-fact that uses no hedge word at all ("the cause is the
-old build" with zero hedging). That class requires semantic judgment — covered by the
-opt-in **Tier 3 semantic judge** described below.
+**Unsupported confident inferences (opt-in).** The hedge-word scan cannot see a
+confidently-stated inference that uses no hedge word ("The crash is caused by the cache
+race."). Two opt-in components cover it, both off by default because neither reached 0.9
+precision when measured:
+
+- `guards.inferenceCheck` (deterministic, free, ~ms): finds causal or attributive sentences
+  ("caused by", "the root cause is", "because", "is due to", "stems from", "this means",
+  "the culprit is", "that's why", "comes down to", "Root cause: X", "X is what crashes Y",
+  "the <symptom> is the ...") and blocks once when nothing in
+  the transcript window mentions the stated cause. Evidence is tool results, the inputs of
+  observation tools (a command, a path, a search pattern), fenced blocks the user pasted and
+  task notifications, across the last 1 MB of the transcript (not only this turn). The
+  assistant's own prose and anything it authored (Write/Edit/apply_patch input) never count.
+  Skipped: questions, conditionals, modal hedges, first-person rationale ("I used X because
+  Y"), plan/next-step lines, quoted or code text, and replies that say the claim is
+  unverified. Works on Claude transcripts and Codex rollouts. Not covered: a claim with no
+  causal wording ("The cache race crashes the worker."), "since" (too often temporal), and a
+  tool call that merely echoes the claim's words (it counts as evidence).
+- The semantic judge (Tier 3 below), which now also sees the user's request and the tool
+  evidence, and can run on the local `claude` CLI without an API key.
+
+Measured (`node eval/inference-bench.js`, 84 synthetic labelled cases, 42 positive / 42
+negative, written before the detector):
+
+| Component | Precision | Recall | Notes |
+|---|---|---|---|
+| `guards.inferenceCheck` | 1.00 | 0.95 | Synthetic corpus, same for Claude and Codex transcript shapes and end to end through the hook (`--hook`). First untuned run: 0.975 / 0.929. |
+| `guards.inferenceCheck`, real replies | ≤ 0.45 (estimate) | not measured | Replay over 3,276 real final replies from local sessions: 3.8% flagged (125). In a random sample of 40 of the 76 unique flagged sentences, at most 18 were causal claims about project state at all; the rest were design rationale ("X because Y"), scheduling notes, test-result reports, hedged lines or general knowledge. |
+| Semantic judge, `cli`, Haiku | 0.78–0.81 | 1.00 | Two runs; different false positives each run. The judge demands proof of the causal link that the corpus labels accept. |
+| Semantic judge, `cli`, Sonnet | 0.81 | 1.00 | One run; several of its "false positives" are defensible (the claim goes beyond the evidence). |
+
+The corpus is synthetic and written by the same author as the detector, so treat the
+synthetic numbers as a regression floor, not a field estimate.
 
 ### Three tiers of anti-speculation enforcement
 
@@ -367,7 +532,8 @@ opt-in **Tier 3 semantic judge** described below.
 |---|---|---|---|---|
 | 1 | `verify-first-full.js` + `verify-first-orch.js` + `verify-first.js` | Always-on | Protocol injection (SessionStart + per-turn nudge): names every rationalization bypass including confident inference-as-fact and hedge-word speculation. | Zero (no API call; text injection only). |
 | 2 | `speculation-guard.js` | On by default | Lexical Stop hook: scans for 15 hedge-word markers, suppresses when acknowledgment present. Catches hedged speculation. Cannot catch confident inference-as-fact with no hedge word. | Zero (pure Node, no API call). |
-| 3 | `speculation-judge.js` | OPT-IN (off by default) | Semantic Stop hook: calls an LLM judge via the Anthropic API to assess whether the last message asserts an unverified fact with no hedge word and no acknowledgment. Catches the gap Tier 2 misses. | ~$0.0001-0.001 per turn + ~1-3 s latency. Requires `ANTHROPIC_API_KEY`. |
+| 2b | `speculation-guard.js` with `guards.inferenceCheck` | OPT-IN (off by default) | Deterministic: a causal claim whose stated cause no tool evidence in the transcript window mentions. | Zero (pure Node, no API call). |
+| 3 | `speculation-judge.js` | OPT-IN (off by default) | Semantic Stop hook: an LLM judge, given the reply, the user's request and the session's tool evidence, decides whether the reply asserts an unverified fact with no hedge word and no acknowledgment. Catches the gap Tier 2 misses. | `api` backend: ~$0.0001-0.001 per turn + ~1-3 s (estimate), needs `anthropic_api_key`. `cli` backend: no key, your Claude login's usage, ~5-6 s (measured). |
 
 ### speculation-judge (Tier 3, OPT-IN)
 
@@ -375,6 +541,8 @@ opt-in **Tier 3 semantic judge** described below.
 enabled: off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL_SEMANTIC_JUDGE=1`
 (the env var wins when set to an on/off value). When off, it has zero cost, zero latency, and
 zero network activity — it is as if it were not registered at all.
+
+**Quick switch:** `node scripts/settings.js judge on|off|status` (or ask `/anti-hall:settings`) sets `jev.semanticJudge`, reports whether a key is visible to that process (never the key), and prints the cost (api backend: about $0.0001–0.001 and 1–3 s per turn end, estimated; cli backend: no API bill, about 5–6 s, measured) and the measured precision (0.78–0.81, recall 1.0, on `eval/inference-bench.js`). It also names the active backend: when `jev.enabled` is on and the `speculation` integration is `on`, speculation-guard already asks Jev (a remote classifier, not a local one) and this API judge exits early. `doctor` prints an info line with the backend, or this command while the judge is off.
 
 **To enable:** either set `jev.semanticJudge` to `true` (`/anti-hall:settings`), or:
 
@@ -384,7 +552,14 @@ export ANTIHALL_SEMANTIC_JUDGE=1
 ```
 
 Then store the key in the plugin's options screen (anti-hall -> `anthropic_api_key`, kept in the OS
-credential store; the judge is fail-open if it is absent). anti-hall no longer reads
+credential store; the judge is fail-open if it is absent), **or** use your own Claude login
+instead of a key: `node scripts/settings.js set jev.judgeBackend cli` (`auto` = the key when one
+is visible, else the CLI). The `cli` backend runs `claude -p` with no tools, no MCP servers, no
+settings files and every hook disabled (`--settings '{"disableAllHooks":true}'`), so the judge call
+cannot run anti-hall's hooks or recurse; it also sets `ANTIHALL_JUDGE_CHILD=1`, which makes the
+judge exit at once if it ever runs inside that child. Measured about 5–6 s per turn end
+(claude 2.1.288, Haiku). If `claude` is not on the hook's `PATH`, or is not logged in, the judge
+does nothing. anti-hall no longer reads
 `ANTHROPIC_API_KEY` from your environment unless you enable `guards.allowAnthropicEnvKey` in
 `~/.anti-hall/settings.json` (the Codex port, which has no plugin options, needs that setting).
 
@@ -392,7 +567,9 @@ credential store; the judge is fail-open if it is absent). anti-hall no longer r
 
 **What it catches:** confidently-stated inference-as-fact with no hedge word — e.g.,
 "The cause is the old build artifact." with no tool verification and no uncertainty
-acknowledgment. The judge prompt instructs the model to ALLOW honest hedging, quoted
+acknowledgment. The judge sees the latest user request and up to ~6 KB of the newest tool
+evidence from the transcript (secret-scrubbed), so a claim the session's tool output shows is
+allowed. The judge prompt instructs the model to ALLOW honest hedging, quoted
 text, hypotheticals, plans, and general software knowledge; it only blocks definitive
 unverified factual claims.
 
@@ -421,7 +598,9 @@ frequent in your workflow, turn the semantic judge off (`jev.semanticJudge` fals
 (env-overridable via `ANTIHALL_JUDGE_MODEL`; the one hardcoded model id in this codebase,
 since it's a direct Anthropic API call with no alias-resolution support).
 At current Haiku pricing this is roughly $0.0001-0.001 per turn; latency is roughly
-1-3 s added to each Stop. For projects where confident inference-as-fact is the primary
+1-3 s added to each Stop (an estimate: the API backend has not been timed or
+evaluated). The keyless `cli` backend is measured: precision 0.78-0.81, recall 1.0 on
+`eval/inference-bench.js`, about 5-6 s per Stop. For projects where confident inference-as-fact is the primary
 failure mode and the cost/latency is acceptable, Tier 3 closes the gap Tier 2 leaves open.
 
 ### Jev classifier (opt-in, backs Tier 2)
@@ -793,11 +972,20 @@ clamped 1–60) is the SIGTERM→SIGKILL grace window. **Windows is not supporte
 ### Codex / cross-tool
 
 `AGENTS.md` is a prose mirror of the verify-first Iron Law + commit hygiene + task
-discipline, so Codex agents inherit the same discipline (Codex `PreToolUse` cannot
-inject context the way Claude's hooks do). It lives at the **marketplace repo root**,
+discipline, so Codex agents inherit the same discipline. It lives at the **marketplace repo root**,
 NOT inside `plugins/anti-hall/`, so it ships only to people who clone this repo — a
 `/plugin install` does not bundle it. Installed users who also run Codex must copy it
 into their own repo root manually.
+
+On Codex 0.134 or later, `edit-guard`, `api-guard` and `ship-it-guard`'s existence gate
+run on `apply_patch` edits. Shell writes reach the same checks through `Bash` on both
+hosts: command-guard applies edit-guard's verdict (`guards.bashEditParity`), and
+api-guard and ship-it-guard run on `Bash` too (`guards.shellWriteChecks`); see the
+[Codex parity notes](../plugins/anti-hall/codex/README.md). Main thread vs subagent
+is detected from the Codex payload itself (`turn_id` + `model`, no `agent_id`), so
+`command-guard`'s main-thread heavy-command gate also applies on the Codex main
+thread. A Codex started from inside a Claude Code session inherits
+`CLAUDE_CODE_ENTRYPOINT` and is treated as a worker.
 
 ## Hook reference — plugin "Features" table (detailed, per-hook)
 
@@ -808,15 +996,17 @@ Moved from plugins/anti-hall/README.md "Features" (v0.107.0 doc sweep).
 | Component | Event | Purpose |
 |---|---|---|
 | `verify-first-full.js` | SessionStart | The verify-first FOUNDATION: full Iron-Law + rationalization-table protocol, the always-on **scope & fidelity** discipline (simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish what was asked / drop nothing), and the always-vs-conditional skill/disciplines index; survives compaction. |
-| `verify-first-orch.js` | SessionStart | The companion to `verify-first-full.js` carrying the always-on **orchestration discipline** ruleset (rules A–N + the DevSwarm-Primary workspace-tier rule W). SPLIT from `verify-first-full.js` in 0.60.0 because the combined ~15.3k-char payload exceeded the ~10k per-hook injection cap — over which Claude Code spills the overflow to a file instead of delivering it inline, so only ~2k chars landed and rules A–N + rule W reached no session inline. Each half is now under the cap; zero content dropped. Survives compaction. |
-| `verify-first-subagent.js` | SubagentStart | Re-injects the Iron Law + rationalization table + positive rules + scope-fidelity into each spawned subagent. Deliberately omits the orchestration/delegate block (subagents are workers; re-injecting it would recreate deep nesting). Shared core extracted to `verify-first-core.js`. |
-| `verify-first-core.js` | Shared module (not a hook) | Single source of truth for the Iron Law content shared by `verify-first-full.js` and `verify-first-subagent.js` — prevents drift between the two hooks. |
+| `verify-first-orch.js` | SessionStart | (Default: the full rules inline here. Experimental `context.orchFullOn=spawn` sends `ORCH_COMPACT` plus a per-session marker so `orch-on-spawn.js` delivers the full rules on the first spawn instead. The compact core of `verify-first-full.js` points at `PROTOCOL.md`, the generated full text.) The companion to `verify-first-full.js` carrying the always-on **orchestration discipline** ruleset (rules A–N + the DevSwarm-Primary workspace-tier rule W). SPLIT from `verify-first-full.js` in 0.60.0 because the combined ~15.3k-char payload exceeded the ~10k per-hook injection cap — over which Claude Code spills the overflow to a file instead of delivering it inline, so only ~2k chars landed and rules A–N + rule W reached no session inline. Each half is now under the cap; zero content dropped. Survives compaction. |
+| `verify-first-subagent.js` | SubagentStart | Re-injects the compact core (Iron Law, rationalization table, rules, scope-fidelity) plus a short `WORKER` block into each spawned subagent; `context.protocolLevel=full` restores today's text (core + DISCIPLINES + teammate note). Deliberately omits the orchestration/delegate block (subagents are workers; re-injecting it would recreate deep nesting). Shared core extracted to `verify-first-core.js`. |
+| `verify-first-core.js` | Shared module (not a hook) | Single source of truth for every protocol text: today's full text (`CORE_FULL`, `ORCH_FULL`, the subagent block), the compact forms (`CORE_COMPACT_BODY` / `coreCompactSession()`, `orchCompact()`, `WORKER`) and the generator input for `PROTOCOL.md`. Shared by `verify-first-full.js`, `verify-first-orch.js`, `verify-first-subagent.js`, `orch-on-spawn.js` and `tools/gen-protocol.js`. |
+| `orch-on-spawn.js` | PreToolUse (Agent\|Task\|Workflow on Claude; `spawn_agent` on Codex) | **Experimental, opt-in (`context.orchFullOn=spawn`); silent by default.** Sends the full orchestration rules (A-N) once per context epoch on the coordinator's first spawn, when `verify-first-orch.js` sent only the compact lines and left a `pending` marker (`~/.anti-hall/orch-full/`). One sender per epoch (O_EXCL claim), a retry slot after a 2-minute lease if no delivered copy shows in the transcript; silent for subagents. Codex: opt-in via `context.codexOrchFullOn=spawn` (experimental, matcher `spawn_agent`, sends the Codex wording); otherwise Codex gets the full text at SessionStart. Unverified live (landing point, transcript shape, Workflow spawns). Obeys `context.verifyFirstOrchestration` and the `orch-on-spawn` skip name. |
 | `verify-first.js` | UserPromptSubmit | Short, varying one-line nudge each turn (anti-habituation). |
 | `git-guard.js` | PreToolUse (Bash) | Blocks AI self-credit attribution — in `git commit` trailers AND in `gh pr/issue/release create\|edit\|comment` `--body`/`--title` (the 🤖 footer, Co-Authored-By, claude.com/claude-code link) — plus `git push --force` and remote branch/tag deletion (`--delete`, `-d`, `:ref`, `--prune`). Inline values only (`--body-file` is fail-open). |
-| `api-guard.js` | PreToolUse (Write/Edit/MultiEdit) | Blocks code that references a **non-existent** stdlib/builtin API — resolves `module.attr` in the code-to-be-written against the installed `python3`/`node` and refuses the write when the attribute is fabricated. The mechanical answer to API hallucination. Default = stdlib/builtins (import-safe); opt-in `ANTIHALL_API_GUARD_THIRDPARTY=1` also checks installed 3rd-party packages (off by default — verifying a package imports it, running its code at edit time). 0 FP + full in-scope catch on `eval/api-guard-bench.js`; never probes local/relative modules; fail-open; skip-hatch. |
+| `api-guard.js` | PreToolUse (Write/Edit/MultiEdit, and Bash) | Blocks code that references a **non-existent** stdlib/builtin API — resolves `module.attr` in the code-to-be-written against the installed `python3`/`node` and refuses the write when the attribute is fabricated. The mechanical answer to API hallucination. Default = stdlib/builtins (import-safe); opt-in `ANTIHALL_API_GUARD_THIRDPARTY=1` also checks installed 3rd-party packages (off by default — verifying a package imports it, running its code at edit time). 0 FP + full in-scope catch on `eval/api-guard-bench.js`; never probes local/relative modules; fail-open; skip-hatch. On Bash (`guards.shellWriteChecks`) it checks the text a shell write puts in a .py/.js/.ts file when the command shows it (heredoc into `cat`/`tee`, `echo`/`printf`); `cp`, `sed -i` or `python -c` writes carry no visible text and are not checked. A write to `/tmp` or the scratchpad is checked the same way as the Write tool: api-guard judges the code's text wherever it lands (only ship-it-guard's path gate excludes scratch targets), which is intended. Commands over 64 KB are scanned by their heredoc header and body rather than skipped. |
 | `command-guard.js` | PreToolUse (Bash) | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload, per-segment (quote-aware). **v0.76.0:** all four DevSwarm destructive-verb blocks now also match the `devswarm` alias, not just `hivecontrol` — `hivecontrol` is a thin shim that execs `devswarm` (the primary command name, equally on PATH), so running `devswarm workspace monitor`/`read-messages`/`message-child`/`message-parent` directly used to bypass every block; fixed with a shared verb set and a `(?:hivecontrol|devswarm)` alternation (latent since the blocks were added, not a new regression; shared file, so both ports are covered). Under a DevSwarm-active session it also redirects destructive native inbox reads (all contexts, own skip `devswarm-read-guard`): `hivecontrol workspace monitor` blocks unconditionally, `read-messages` blocks only with durable-inbox evidence (`ANTIHALL_DEVSWARM_INBOX_CMD` or a workspace descriptor `inboxPath`); quoted DATA mentions are not false-positives. **Per-project command allowlist (owner-approved 2026-09-26):** a repo declares its own sanctioned exact commands in `<repo-toplevel>/.anti-hall/command-allow.json` (`{"patterns":["^anchored regex$", ...]}`) — e.g. its own deploy script, which the project's rule says must never be delegated. Runs inline in the MAIN THREAD ONLY (subagents never reach this carve-out — already past the coordinator-only gate). The file applies only after the user TRUSTS its exact content — `node scripts/settings.js trust-command-allow [<repo>] --confirmed` records the sha256 of the file bytes in `~/.anti-hall/trusted-command-allow.json` (outside every repo, keyed by the repo's real path); any edit makes it untrusted until re-trusted, and a symlinked file or `.anti-hall` dir is refused — so a cloned repo cannot authorize itself. Every pattern must start with `^` followed by a literal command word and end with `$`, with no unbounded wildcard (`.*`, `.+`, `[^x]*`, `[\s\S]+`) and no top-level `|`; anything else is ignored (not just non-matching) and reported by doctor with its reason. The WHOLE command must be exactly one unbroken segment (no `;`/`&&`/`||`/`|`/`&`, no subshell/group, no backtick or `$( )` command substitution — reuses the guard's own `splitSegmentsDetailed`) and carry no unquoted `<`/`>` redirect and no `$`, backtick, backslash or `<(`/`>(` anywhere (quoted or not), or it never qualifies regardless of the pattern. A qualifying match writes ONE audit line to `~/.anti-hall/logs/command-allow.ndjson` (`{ts, cwd, repo, pattern, command}`). Default config is empty (no repo behavior change until it opts in). Kill-switch: `guards.projectCommandAllow` (default true). **Allow plain push (owner-approved 2026-09-26):** in the MAIN THREAD ONLY, `git add`/`git commit`/a plain `git push [-u|--set-upstream] [remote] [ref]` (`-u`/`--set-upstream` is the only added flag and needs BOTH an explicit remote and an explicit ref; remote omitted or a configured remote NAME from `git remote` — a path/URL destination never qualifies, fail-closed; ref omitted, `HEAD`, or the current branch only — resolved fresh via `git symbolic-ref --short HEAD`, fail-closed if unresolvable), plus `&&`/`;` chains made up only of those three, run inline instead of being delegated. `--force`/`-f`/`--force-with-lease`/`--force-if-includes`/`--mirror`/`--delete`/`-d`/`--all`/`--tags`/`+refspec`/`src:dst` to another branch, any other chained segment, and pipes/redirects/subshells stay exactly as blocked as before — except three shapes: a `HEAD:<current>` / `HEAD:refs/heads/<current>` refspec (same destination as the bare form), a trailing `2>&1`, and ONE final `| tail [-n] N` / `| head [-n] N` output filter. `git-guard.js`'s own independent force-push/AI-credit checks are untouched. Kill-switch: `guards.allowPlainPush` (default true). |
 | `output-verify-guard.js` | PostToolUse (Bash, advisory) | **v0.69.0, Harness Phase-1.** Scans a completed Bash call's own stdout/stderr for common test/build-runner signatures (jest/vitest/pytest/go test/npm run build/tsc) and flags when BOTH a passing signal ("8 passed", "PASS", "ok") and a failing signal ("2 failed", "FAIL", a confirmed non-zero exit) appear in the SAME run — the shape of a partial-pass summary easy to mis-report as a clean "tests pass". Fail-open on any shape surprise (the exact PostToolUse Bash `tool_response` field shape is undocumented); never blocks. |
-| `failure-root-cause-nudge.js` | PostToolUseFailure (Bash, advisory) | **v0.69.0, Harness Phase-1.** Fires when a Bash tool call fails (non-zero exit/tool-level error); injects one short reminder pointing at `/anti-hall:root-cause` — deliberately terse since OMC already injects its own root-cause reminders in this harness. Fail-open always; off-switch `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE=off`; skip-guard hatch `failure-root-cause-nudge`. |
+| `failure-root-cause-nudge.js` | PostToolUseFailure (Bash, advisory) | **v0.69.0, Harness Phase-1.** Fires when a Bash tool call fails (non-zero exit/tool-level error); injects one short reminder pointing at `/anti-hall:root-cause` — deliberately terse since OMC already injects its own root-cause reminders in this harness. Stays silent on expected exit-1 predicates (grep no-match, `test`, `diff`, `git diff --quiet`, `command -v`), on harness refusals, and after the first nudge in a turn (`guards.failureNudgeFilter`). Fail-open always; off-switch `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE=off`; skip-guard hatch `failure-root-cause-nudge`. |
+| `coordinator-work-guard.js` | PreToolUse (Bash), PostToolUse (Bash) | **Main thread only, Claude host only.** Counts successful WORK Bash calls over `guards.coordinatorWorkWindowMinutes` (default 10). One advisory `COORDINATOR DRIFT` note when the count reaches `guards.coordinatorWorkNudgeAt` (4), and a block for the `guards.coordinatorWorkBlockAt`th call (7). The block is the enforcement; the PostToolUse note was live-observed delivering on Claude Code CLI 2.1.238 and is not doc-confirmed; re-verify after a CLI upgrade; blocks are the enforcement. Skip key `coordinator-work-guard`; also off when `safety.commandGuard` is off or command-guard is skipped. Fail-open. See "Coordinator work window" below. |
 | `edit-guard.js` | PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | Blocks a COORDINATOR from editing files directly — requires delegating the edit to a subagent (always allowed; DevSwarm-aware block wording when the liveness supervisor is active, topology-aware: "primary/main orchestrator" vs "sub-orchestrator"). Root-anchored allowlist (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, `.claude/**`, `.omc/**`, `.anti-hall/**`, root `PLAN.md`/`plan.md`/`STATE.json`/`CONTINUE-HERE.md`, `*.continue-here.md`, the out-of-cwd `.claude/projects/**/memory/**` store), extensible via `ANTIHALL_EDIT_GUARD_ALLOW`. Skip-guard hatch: `edit-guard` (not in the destructive set). Fail-open. **v0.64.0:** also exempts PLAN MODE for non-source targets, narrowed by an `isLikelySource` classifier so undelegated source-file writes stay blocked even in plan mode. |
 | `coordinator-detect.js` | Shared module (not a hook) | The single coordinator-vs-subagent discriminator, extracted from `command-guard.js` so `edit-guard.js` reuses the exact same detection logic instead of duplicating it. |
 | `ask-guard.js` | PreToolUse (AskUserQuestion) | OPTIONAL, default off (`guards.noBlockingQuestions`). Enforces the "do not hold work on a question" rule: advise adds a reminder, block refuses the call unless the first question starts with `DESTRUCTIVE:` or `CREDENTIAL:`. Never infers what the user wants from the transcript; fail-open; Claude only (Codex has no ask tool). Also adds the agents-in-flight note (`guards.questionAgentsNote`, default on, independent of the mode). |
@@ -867,11 +1057,13 @@ Moved from plugins/anti-hall/README.md "Features" (v0.107.0 doc sweep).
 | `codex-nudge.js` | Stop (advisory) | Nudges once/session for an independent Codex second-opinion review when substantial code shipped with no Codex review; off-switch ANTIHALL_CODEX_NUDGE=off. |
 | `silent-agent-nudge.js` | Stop (advisory) | **New in 0.109.0.** Orchestration rule I already tells the coordinator to poll for a stuck background subagent and `TaskStop`+re-dispatch it after ~20 min of silence — nothing mechanically reminded it to. PRIMARY signal (the harness always produces it): scans a bounded tail of the main transcript (`hooks/lib/transcript-tail.js`, capped 1.5MB) for background-Agent launches (`"Async agent launched successfully"` tool_results carrying `agentId:`/`output_file:`) with no LATER terminal `<task-notification>` (`<status>completed\|failed\|stopped</status>`) — "silent" = that agent's `output_file` mtime (or its launch time, if the file is missing — missing counts as dead too) is older than `guards.silentAgentNudgeMin` (default 20 min). SECONDARY signal (additive, kept): the `~/.anti-hall/agents/<id>.json` self-reported heartbeat convention. Nudges once, naming the agent's launch description (or id) and how long it's been silent. Never kills/stops anything itself — advisory text only, capped one nudge per stale snapshot (output_file mtime, or heartbeat ts) — a later change or a new staleness period can nudge again. Off-switch `ANTIHALL_SILENT_AGENT_NUDGE=off`; skip-guard hatch `silent-agent-nudge`. **New (Unreleased):** honors a per-signature session ack (`hooks/lib/stop-ack.js`, see below) and downgrades to advisory when a newer build is already registered but not yet loaded (`hooks/lib/stop-version-gate.js`, see below). Shared verbatim with the Codex port. |
 | `stale-agent-stop-note.js` | PreToolUse `TaskStop` (advisory) | Adds one line when the agent being stopped was sent a message (named teammate inbox) or resumed (background agent) after its last report and has not reported since: it may be working. A teammate's end-of-turn report is written to the coordinator's transcript only when the coordinator's turn yields, so the first report after a message can predate it. Never blocks. `guards.staleAgentStopNote`. The same state makes such a teammate count as running (`pendingMessage`) for task-guard / dispatch-demand until 20 min pass with no sign of life. |
+| `idle-agent-sweep.js` | UserPromptSubmit (advisory) | Once per user prompt, lists agents that finished but were never stopped, with the exact call to end them. Claude: a named teammate whose newest event is an `idle_notification` with `idleReason` `available` or `failed`, with no later SendMessage to it and no TaskStop (an idle with no `idleReason` means it is waiting on its own work and is not listed; background agents are not listed, their `completed` notification already ended them). Codex: a `multi_agent_v1` agent whose `wait_agent` result is `completed`/`errored` and that was never closed (`close_agent`) or re-tasked (`send_input`/`resume_agent`); an open agent holds a thread slot. The newer Codex `collaboration` tool set has no close tool, so nothing is listed there. Fires when `guards.idleAgentSweepCount` (3) are idle or one has been idle `guards.idleAgentSweepMin` (15) minutes; up to 10 names, oldest first. A `<task-notification>` turn is skipped; a queued burst gets one copy. Never blocks, never stops anything. |
+| `merge-side-pick.js` | PostToolUse + PreToolUse (Bash), advisory | Records a wholesale side-pick conflict resolution and test runs per session; on a push with a side-pick not followed by a test run, adds one advisory (`guards.mergeSidePickAdvisory`, default on). Claude and Codex. Never blocks. On Codex the advisory is shown only by Codex builds that support PreToolUse additionalContext (rust-v0.129.0 and later, docs/KB-claude-codex.md section 5.2); older builds ignore it and the recorder stays harmless. |
 | `compact-advice-guard.js` | Stop (blocks once) | **New in 0.116.0.** Field defect: the model declared "✅ SAFE TO COMPACT NOW" and repeated a `/compact focus: …` line a few turns after a manual /compact, at low context, on the sole basis that no background agents were running. Blocks once per declaration when the turn's final message recommends compacting (`SAFE TO COMPACT`, `good point to /compact`, `/compact` offered as an instruction — quoted, negated and retracted text excluded) AND context % (statusline → Codex rollout → transcript estimate, `hooks/lib/context-pct.js`) is below `autoHandover.pct` − `guards.compactAdviceMarginPct`, OR a compact boundary (Claude `{"type":"system","subtype":"compact_boundary"}`; Codex `compacted` / `context_compacted`) is within `guards.compactAdviceRecentTurns` turns. Unknown context % → only the recent-compact rule. Allowed: the threshold-fired auto-handover path (latch fired, no compact since, context not low). Honors `stop_hook_active`. Shared with the Codex port. **0.117.0:** the shared matcher (`hooks/lib/compact-advice.js`) no longer fires on a single-quoted or backtick-quoted MENTION of the phrase, a question sentence, or a negated/conditional sentence (`far from`, `not yet`, `once … it will be … ; first …`); the bare `safe to compact/clear` wording now also requires a line/sentence start or the unambiguous ALL-CAPS form. |
 | `compact-declaration-guard.js` | PreToolUse (Agent/Task/Write/Edit/MultiEdit/NotebookEdit/Bash) | **New in 0.116.0 (opt-in, default OFF); re-enabled by default in 0.117.0.** Once the current turn (since the last real user message; `<task-notification>`s do not reset it) holds a SAFE TO COMPACT declaration, blocks Agent/Task spawns, file edits and state-changing Bash (`hooks/lib/work-detect.js` + `git push`/`git tag`/`gh pr merge`). Read-only tools pass. Cleared by the next user message or an explicit `RETRACT SAFE TO COMPACT` line. Codex: registered for Bash only (the port registers PreToolUse for shell guards only). Shares the tightened matcher above (**0.117.0**). Toggle via `guards.compactDeclarationGuard`. |
-| `ship-it-guard.js` | PreToolUse (Write/Edit/MultiEdit) | **OPT-IN, default OFF** — the only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root). Also does a conformance advisory (never blocks) for edits outside a PLAN.md's declared `files:` list. Enforces artifact existence only (not plan quality), conservative, fail-open. No effect when unset. |
+| `ship-it-guard.js` | PreToolUse (Write/Edit/MultiEdit, and Bash) | **OPT-IN, default OFF** — the only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root). Also does a conformance advisory (never blocks) for edits outside a PLAN.md's declared `files:` list. Enforces artifact existence only (not plan quality), conservative, fail-open. No effect when unset. On Bash (`guards.shellWriteChecks`) the existence gate also covers shell-write targets (`>`/`>>`, heredocs, `tee`, `sed -i`, `perl -i`, `cp`/`mv`, `python -c` open-for-write), except writes into the session scratchpad or a tmp root outside a repo. |
 | `merge-gate.js` | PreToolUse (Bash) | **OPT-IN, default OFF** — a backstop, not a guarantee. With `ANTIHALL_MERGE_GATE` ∈ {1,true,yes,on}, blocks an auto-merge (`gh pr merge` incl. `--auto`, `gh pr review --approve`, `git merge --no-ff/--ff` into main/master/develop, and `hivecontrol workspace merge-into-source`/`merge-from-source`) when the agent's own recent output carries an UNRESOLVED self-hedge ("pending review" / "first-pass" / "needs your eyes" / …) not signed off by the user (only a real typed user prompt after the hedge containing "owner approved"/"owner signed off"/"sign-off received"/"fidelity verified"/"verified against"/"resolved:" clears it — the assistant can never clear its own hedge, and peer/cross-session/hook-injected records do not count; hedges inside quotes/code are ignored). Keyword-heuristic, bypassable, fail-open, cannot hard-loop; no effect when unset. |
-| `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `system-briefing`, `update`, `flutter-debug`, `activate`, `simplify`, `debt`, `devswarm`, `handover`, `defects`) | Skills | Slash commands (see [Skills](#skills)). |
+| `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `system-briefing`, `update`, `activate`, `simplify`, `debt`, `devswarm`, `handover`, `defects`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
 | `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died); also, separately (`guards.reaperCodexBroker`, default on), **detects and lists (REPORT-ONLY, never killed)** abandoned-looking openai-codex plugin `app-server-broker.mjs` helper processes in the log — spawned detached on purpose, so PPID 1 is normal for a LIVE one; listed only when its `--cwd` is gone or no live claude/codex process (excluding the broker's own descendants) has a realpath'd cwd equal to/an ancestor of/a descendant of its realpath'd `--cwd`, and it is past `guards.reaperCodexBrokerMinAgeS` (30min default). A 2026-09-25 safety review found automatic killing of this class unsafe (unquoted-space `--cwd` paths, `/tmp` vs `/private/tmp` symlink mismatches, the broker's own child always looking like an owner) — it stays report-only regardless of detection confidence. Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`plugins/anti-hall/companion/README.md`](../plugins/anti-hall/companion/README.md). |
 | `companion/devswarm-supervisor.js` (+ `install-devswarm-supervisor.js`) | Interval companion (not a hook) | **OPT-IN and OPTIONAL** — dormant with zero effect unless DevSwarm is in use (feature-gated via `devswarm-detect.js`, same optionality model as the OMC/OMX integration). Detects a wedged/idle DevSwarm workspace agent from outbound activity (session transcript + git/worktree) and pokes it (an optional descriptor `nudgeCommand`) or escalates (log + optional `escalateCommand`) — **never kills**. Install via `node companion/install-devswarm-supervisor.js` (`--uninstall` to remove); macOS + Linux full, Windows detection-only. Workaround for claude-code#39755. **v0.66.0:** a cooldown-gated reconcile sweep now also runs on this existing supervisor, so stranded mesh messages self-recover instead of sitting until an update or a manual repair happens to invoke `reconcile` — it uses the same single-consumer lock as the drains, so it cannot race a live one. **v0.93.0:** hivecontrol 2.5.1's `workspace list all` carries no archive field, so the sweep now caches the ACTIVE set (`hivecontrol-active.json`) on every successful list call; a registry row absent from that cache by both id and worktree path, older than the snapshot by a 10-minute grace, reads as app-archived while the cache stays fresh (within 2x the reconcile cooldown) — liveness axis only, a genuine unread question still gates regardless. |
@@ -891,6 +1083,51 @@ catches `ack`/`partial`/`regressed`), `show <fp>`, `rule <fp> --status ack\|fixe
 | `companion/lib/migrations.js` | Migration registry (not a hook) | **OPTIONAL** — the ONE registry of the all-store DevSwarm forward-migrations (fold-all-stores, heal-orphan-partitions, fold-archived-rows, fold-archived-family-descriptors) and their per-version completion marker (`~/.anti-hall/update-sweep-state.json`), shared by `doctor --repair`, `update` and the supervisor. A marked entry is skipped with one marker read; an unmarked one gets one live scan and is stamped only on a clean finish. Deletion-class repairs are `optIn` and never run from it. |
 | `companion/devswarm-migrate.js` (+ `devswarm-ingest.js`) | Substrate lib / daemon (not a hook) | **OPTIONAL** — `migrate` dual-reads existing on-disk state (JSON registry + legacy NDJSON inboxes) into the store: **idempotent** (dedupe hash), **non-destructive** (reads sources only — legacy files stay byte-for-byte, rollback always possible), single-consumer-locked, and count-verified before it reports success. `devswarm-ingest.js` = the one supervised daemon wrapping the native `monitor` → store; refuses to start if another monitor consumer is running (lockfile), enforcing the single-native-consumer invariant. |
 | `companion/install-devswarm-ingest.js` | Installer (not a hook) | **OPTIONAL — new in 0.54.1.** Installs/refreshes `devswarm-ingest.js` as a CONTINUOUS supervised daemon (unlike the periodic supervisor sweep): macOS LaunchAgent with `KeepAlive` (re-exec on exit), Linux `systemd --user` `.service` with `Restart=always` (cron fallback — every minute, restart-if-dead — when `systemctl` is absent; up to ~60 s revive gap on a cron-only Linux host after a crash). Distinct label (`com.anti-hall.devswarm-ingest`) and log (`~/.anti-hall/devswarm-ingest.log`) from the supervisor. Idempotent; safe to install redundantly (the daemon's own single-consumer lock means only one instance ever runs). Windows: documented no-op (no pure-Node long-running user scheduler). **Autonomous refresh:** the `update` skill runs this installer's `how` command automatically (no offer, no ask) whenever an update happens inside an active DevSwarm session, same posture as the supervisor installer — closing the gap where the ingest daemon existed in code but nothing started it. **Cwd caveat:** the daemon drains the workspace of the git worktree it is INSTALLED FROM (`hivecontrol` resolves a workspace by cwd, not env) — the installer bakes that install-time worktree as the unit's `WorkingDirectory` and refuses to install if run from a non-git-worktree cwd. **v0.65.0:** root-caused an ENOENT storm — the daemon spawned `hivecontrol` by bare name while the service manager supplied only a minimal `PATH`, so every monitor cycle failed invisibly. The installer now discovers the binary once at install time and bakes it into the generated launchd/systemd/cron unit (never a hardcoded path); the daemon resolves it from an explicit option, `ANTIHALL_DEVSWARM_HIVECONTROL`, or `PATH`. Permanent faults (ENOENT/EACCES/ENOTDIR) now escalate through a capped backoff instead of storming the log, sliced so the heartbeat keeps writing. Orphaned ingest locks are swept on daemon start with positive-confirmation-only removal (a recycled pid or zombie holder no longer blocks restart forever; unknown holder states block by default). **v0.66.0:** a monitor batch that arrives but fails to parse is now logged and quarantined to disk instead of vanishing via the consume-on-read native queue (a well-formed empty result is still normal, not an error); the singleton supervisor unit now carries the same resolved `hivecontrol` path as the per-project units. **v0.86.0:** the v0.65.0/v0.66.0 fixes above were INCOMPLETE — baking the `hivecontrol` path fixed finding the CLI, but the emitted unit `PATH` never contained the directory of the ABSOLUTE node binary the unit bakes as its own interpreter, and `hivecontrol` is a SCRIPT whose shebang re-resolves `node` THROUGH `PATH`. The daemon started fine (absolute argv[0]) while every grandchild spawn died `env: node: No such file or directory`, exit 127 — 23,928 occurrences over 1,757 supervisor sweeps across three repoKeys, `healed:0` on all of them. `unitEnvFor` now prepends `dirname(execPath)` and requires `execPath`, so a unit's `PATH` cannot disagree with the interpreter baked into it; install refuses if that binary is not a real file. |
+
+### Coordinator work window
+
+The main thread should delegate state-changing work. `coordinator-work-guard.js` counts it. A Bash call is WORK when any of its segments (including commands inside `sh -c`, `eval` and `$( )`) is one of these:
+
+- **State-changing git:** commit, am, revert, merge, rebase, cherry-pick, reset, push, pull, restore, rm, mv, stash (except `list`/`show`), clean (except `-n`), apply (except `--check`/`--stat`/`--numstat`/`--summary`), `switch -c`, `checkout -b`/`--`, `branch -D`/`-f`, and tag create or delete.
+- **A gh mutation.** A `gh api graphql` call counts unless it is proven to be a read.
+- **A Bash write into a repo file that is not a notes file** (the same verdict edit-guard gives an Edit tool call).
+- **A script-file run** (`bash x.sh`, `python3 x.py`, `./x.sh`). Steps run in this order and the first match wins:
+  1. an unresolvable `$VAR` path counts;
+  2. an anti-hall CLI, or a script inside an anti-hall plugin root, does not count;
+  3. a direct-exec binary (ELF or Mach-O) does not count;
+  4. the session scratchpad, a tmp dir that is not inside a git work tree, or `.anti-hall/**` counts;
+  5. a package-manager or system location does not count, whatever its mtime. That covers `/bin`, `/sbin`, `/Applications`, `/usr` and `/opt` outside the repo, `node_modules/.bin`, `.venv/bin`, and the nvm, pyenv, rbenv, cargo, volta, asdf, go, dotnet and bun dirs;
+  6. inside the repo, a tracked and clean script does not count. An untracked, modified or ignored one counts. An old script that the coordinator could not edit itself does not count;
+  7. outside the repo, scripts in `~/.local/bin`, `~/Library` and `~/.claude/plugins` count only if they were written or changed since the session started. Any other outside script counts.
+  
+  In a non-git project the current directory acts as the root, and only a fresh or coordinator-writable script counts: an old `./configure` does not, a fresh `./x.sh` does.
+- **Inline code:** `python -c`, `perl|ruby|node -e`. The body is read, never run. It counts when a literal git/gh command or file write is found next to an exec call. A precise match (a state-changing git/gh command, or a literal write into a repo file) is blockable. A loose match (a computed write target, or a quoted redirect) is counted only.
+
+**Never blocked, still counted:** recovery commands (`git am|rebase|cherry-pick|revert --abort|--quit`, `git merge --abort`, `git stash pop|apply`) and loose inline code. Patch application is for integration agents; the coordinator has no `git am` exemption.
+
+**Observe-only mode:** with the window above 0 and both `nudgeAt` and `blockAt` at 0, the guard only records state. Window 0 turns the guard off.
+
+**Bash edit parity:** Bash writes are judged like the Edit tool: a repo file the Edit tool may not write (including gitignored outputs like build/ or .env) is blocked; write under .anti-hall/ or the scratchpad, or delegate.
+
+**Known gaps:**
+
+- Obfuscated or computed inline bodies are not detected, and loose inline matches are count-only.
+- A binary compiled during the session (`go build -o /tmp/p`) is never counted.
+- Running a tracked script that you modified this session counts. That is by design: the verify loop belongs to the subagent.
+- Freshly generated, gitignored build launchers (`./build/install/app/bin/app` after a build) count.
+- A fresh script inside a git submodule counts, because `git status` from the parent fails on that path.
+- Deliberate mtime back-dating (`touch -t`, `touch -d`, `cp -p`) hides a fresh script.
+- A fresh script dropped into a package-manager or system location is not counted. Neither is one in a fake managed directory made outside the repo, such as `~/x/node_modules/.bin/p.sh`.
+- An untracked, old, non-coordinator-writable script inside a repo is not counted.
+- Text scripts under `~/Library` or `~/.claude/plugins` count if they are updated mid-session (an SDK install, a plugin update).
+- `just` and `task` runs, `git stash pop|apply` landing edits, and `cd "$X" && ...` with an unknown cwd are not counted. `npm`, `npx`, `pnpm`, `yarn`, `bun` and `make` are heavy commands and stay blocked.
+- A trusted `./gen.sh > docs/api.md` stays blocked by Bash edit parity.
+- Nudge delivery: PostToolUse `additionalContext` was live-observed delivering on Claude Code CLI 2.1.238 and is not doc-confirmed (`docs/KB-claude-codex.md` §1.4); re-verify after a CLI upgrade; blocks are the enforcement. Codex coordinator detection is unverified.
+- Scripts fed on stdin are not counted: `python3 - <<EOF`, `node <<EOF`, `sh <<EOF`, `echo … | sh`, `bash -s <<<`.
+- Wrapper forms hide the git/gh verb: `time -p git`, `env -C d git`, `gh -R o/r pr merge`, `gh api -XDELETE`.
+- Writes via `>|`, a clustered `cp -rt` (the wrong target is read), `install`, `dd of=`, `truncate`, `ln -sf` and `rm` are not judged as repo writes.
+- `git checkout .` and `git checkout <file>` are not counted.
+- With a plugin path containing `'`, the printed skip command itself counts as WORK.
 
 ## Statusline, configuration/tuning, troubleshooting, and local testing (plugin)
 
@@ -959,29 +1196,30 @@ from it (never `os.homedir()`), so a test's isolated HOME is always honored —
 `tests/hygiene/settings-home-injection.test.js` proves this mechanically for every
 wired resolver.
 
-- **`/config` (arrow keys, no model involved)** — every non-advanced setting is a row in
-  Claude Code's native `/config` panel (v2.1.269+). `userConfig` never declares `options`
-  (a public plugin can't require v2.1.271+ just for its settings UI — declaring `options`
-  on any field breaks plugin loading before v2.1.271, per the Claude Code plugin manifest
-  docs), so enum settings render as a plain string field whose description lists the
-  allowed values, not a picker; older Claude Code versions still work via the skill. There
-  is no grouping field, so each row's title is prefixed with its section
-  ("Auto Handover · Threshold %"). `plugin.json` `userConfig` is hand-kept and
-  `tests/hooks/settings-schema.test.js` fails if it drifts from the schema's non-advanced
-  set (key, type, default, min/max, title prefix) or if any field declares `options`.
-  Advanced/tuning knobs have no `/config` row; they live in `/anti-hall:settings` (the CLI below)
-  only, including the two safety advanced knobs (`guards.editGuardAllow`,
-  `guards.allowSubagentMailbox`; any change still needs `--confirmed`). The 25 advanced
-  settings that used to have a row keep their old option name as a read-only legacy source, so
-  a value already stored under Claude Code's `pluginConfigs` still applies, and
-  `migrateSettingsFromLegacy` (update / `doctor --repair`) copies a non-default one into
-  `~/.anti-hall/settings.json` without touching or deleting the Claude Code file. The copy now covers every plugin-option setting except the 10 headline switches, the safety/home-only keys and the credential options, and only when that stored value is already the effective one (it never changes what resolves). Both `pluginConfigs` key forms (`anti-hall@anti-hall`, `anti-hall`) are read. `/anti-hall:settings` is the place to see and change every setting.
+- **`/config` (arrow keys, no model involved)** — Claude Code's native `/config` panel
+  (v2.1.269+) shows only the headline switches (auto-handover on and threshold, Jev on,
+  DevSwarm supervisor mode, model routing, limit conservation), the four safety guards
+  and the API keys: 14 `userConfig` options in `plugin.json`. Every other setting has a
+  key in `~/.anti-hall/settings.json`, reachable through `/anti-hall:settings` and grouped by category.
+  `userConfig` never declares `options` (a public plugin can't require v2.1.271+
+  just for its settings UI — declaring `options` on any field breaks plugin loading before
+  v2.1.271, per the Claude Code plugin manifest docs), so enum switches render as a plain
+  string field whose description lists the allowed values; older Claude Code versions
+  still work via the skill. `tests/hooks/settings-schema.test.js` pins the manifest to exactly the 10
+  `headline: true` schema entries plus the 4 sensitive keys, and fails if any field declares `options`.
+  Every other setting that used to have a row keeps its old option name as a read-only
+  legacy source (`pluginOptionLegacy`), so a value already stored under Claude Code's
+  `pluginConfigs` (or still exported as `CLAUDE_PLUGIN_OPTION_*`) still applies, and
+  `migrateLegacyPluginOptions` (the update / `doctor --repair` run of the first release that runs it) copies each
+  non-default one into `~/.anti-hall/settings.json` without touching or deleting the Claude Code file
+  (only when that stored value is already the effective one; never for the 10 headline switches, the home-only keys and the credentials; the locked safety keys are copied as human-confirmed values, the same write as `settings.js set <key> <value> --confirmed`, because a stored option can only be the person's own `/config` choice). Both `pluginConfigs` key forms
+  (`anti-hall@anti-hall`, `anti-hall`) are read. Downgrade is safe: the settings-file value outranks the stored option, so an older plugin version resolves the same effective values.
 - **Ask for it** — say "turn off the merge gate" or "set auto-handover to 80%" and the
   `settings` skill applies it with one `set` (no table dump); "show my anti-hall settings"
   prints the tables only when you ask.
 - **CLI directly**:
   ```bash
-  node plugins/anti-hall/scripts/settings.js show                      # every section, headline settings
+  node plugins/anti-hall/scripts/settings.js show                      # every category (one table each), non-advanced settings
   node plugins/anti-hall/scripts/settings.js show --section jev --all  # one section, including advanced/tuning knobs
   node plugins/anti-hall/scripts/settings.js get autoHandover.pct
   node plugins/anti-hall/scripts/settings.js set limitConserve.threshold 90
@@ -990,13 +1228,13 @@ wired resolver.
   Every subcommand takes `--json` for scripting.
 - **Precedence** (highest to lowest): an `ANTIHALL_*` env var override → a value in
   `~/.anti-hall/settings.json` → a value set via Claude Code's native `/config` panel
-  (every non-advanced setting is declared in
-  `plugin.json`'s `userConfig` so it shows up there; advanced settings only read a value stored there by an older version; shown as Source `/config`) → a legacy per-feature config file
+  (only the 10 headline switches are declared in
+  `plugin.json`'s `userConfig`; every other setting only reads a value stored there by an older version; shown as Source `plugin-option`) → a legacy per-feature config file
   (e.g. `~/.anti-hall/jev.json`) → the schema default. (Transitional exception, `settings.js` `resolveBelowFile`: until the one-time legacy forward-migration is stamped for the installed plugin version, a legacy `jev.json` value ranks ABOVE a `/config` value, so a pre-existing `jev.json` is not masked by `/config`'s own manifest default; after the stamp the order is as written.) `show`'s Source column tells you
   which tier answered a given row. Safety keys read through this SAME chain — there is
   no special-cased ignore rule for them (see below).
 - **Known limitation (`/config`):** a `/config` value that equals the manifest default
-  (`plugin.json` `userConfig` default; the schema default for a retired advanced row) is indistinguishable from "never set", so it counts as
+  (`plugin.json` `userConfig` default for a headline row; the schema default for every other setting) is indistinguishable from "never set", so it counts as
   unset and a lower tier (a legacy file, the schema default) answers. To pin a value that
   equals the default, set it in `settings.json` (`/anti-hall:settings`) instead.
 - **Safety guards need a confirmed change, not a hard refusal ("safety" in the table
@@ -1052,13 +1290,18 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.mergeGate` | `false` | `ANTIHALL_MERGE_GATE` | Enable merge-readiness gate checks before merging. |
 | `guards.shipitGate` | `false` | `ANTIHALL_SHIPIT_GATE` | Enable the ship-it workflow gate. |
 | `guards.outputVerifyGuard` | `true` | `ANTIHALL_OUTPUT_VERIFY_GUARD` | Output-verification guard (blocks unverified completion claims). |
+| `guards.outputVerifyOncePerTurn` | `true` | `ANTIHALL_OUTPUT_VERIFY_ONCE_PER_TURN` | Show the output-verify advisory once per turn per distinct pass/fail signal set instead of after every identical test re-run. false = every mixed result. |
 | `guards.failureRootCauseNudge` | `true` | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE` | Nudge toward root-cause analysis after a failure. |
+| `guards.failureNudgeFilter` | `true` | `ANTIHALL_FAILURE_NUDGE_FILTER` | Cut root-cause-nudge noise: stay silent on expected exit-1 predicates (grep no-match, test, diff, git diff --quiet), on harness refusals, and after the first nudge in a turn. false = nudge on every failure again. |
 | `guards.repoSelfDrift` | `true` | `ANTIHALL_REPO_SELF_DRIFT` | anti-hall's own repo-drift self-check hook. |
 | `guards.stashGuard` safety | `false` | `ANTIHALL_STASH_GUARD` | SAFETY (confirm to change — see settings.js set/reset). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). |
 | `guards.handoverCommitGuard` | `true` | `ANTIHALL_HANDOVER_COMMIT_GUARD` | git-guard: block a `git commit` whose paths include a session handover (`.anti-hall/handovers/**` at any depth, or `HANDOVER*.md`, `CONTINUE-HERE.md`, `*.continue-here.md` at the repo root). Handovers are local session state and are never committed; `git add` is never blocked, but `git add ... && git commit` in one command is checked (an ignored `.anti-hall/` is not a hit); removing a tracked handover and concluding a merge/cherry-pick/rebase are allowed; fails open if git cannot be queried, and says so when a command has too many commits to check. |
+| `guards.gitGuardHeredocData` adv | `true` | `ANTIHALL_GIT_GUARD_HEREDOC_DATA` | git-guard: a heredoc whose consumer is not a shell is data, so its body is not scanned as commands - `cat <<EOF > notes.md`, `tee notes.txt <<EOF`, `git commit -F - <<EOF`, `git commit -m "$(cat <<EOF ...)"`, `gh pr create --body-file - <<EOF`. Applies only when every heredoc ends in a prose/data file (`.md`, `.txt`, `.rst`, `.log`, ...) or a git/gh message, every other command in the line is on a short allowlist (cat, tee, git, gh, echo, printf, cd, mkdir, wc, ...), and no write target is a script, extensionless file, dotfile, git hook or `.git`/`.husky`/`.ssh`/`.config` path. A body fed to bash/sh/eval/source/xargs/python/..., piped into a shell, or written to a file the same line runs stays scanned. A git beside it may use only commit/tag/notes/merge, status/log/diff/show/add or rev-parse with listed flags (no fetch/push/pull/clone/remote/submodule/config), and a gh only pr/issue/release create/edit/comment with listed flags and no `--`; any other flag keeps the bodies scanned. Credit trailers are checked either way. `false` = scan every body as shell. |
 | `guards.gitignoreHint` | `true` | `ANTIHALL_GITIGNORE_HINT` | One-time (per project, every 7 days) SessionStart reminder to git-ignore `.anti-hall/` when it exists in a git repo and is not ignored; doctor always reports it. |
 | `guards.allowAnthropicEnvKey` adv safety | `false` | — | SAFETY, home-settings only (no env or project override). Opt-in: let the speculation judge and Jev triage read `ANTHROPIC_API_KEY` from the environment. Default off: only the `anthropic_api_key` plugin option is used. |
 | `guards.emitDedupe` | `true` | `ANTIHALL_EMIT_DEDUPE` | Deduplicate repeated hook-emit output. |
+| `guards.gitAliasResolve` adv safety | `true` | `ANTIHALL_GIT_ALIAS_RESOLVE` | SAFETY (confirm to change — see settings.js set/reset). git-guard: resolve `git <alias>` through the repo/global git config (alias chains and `!shell` aliases included; loops resolve to nothing, as in git) and scan the command it really runs; block defining a git alias (`git config alias.x`, `-c alias.x=`, `GIT_CONFIG_VALUE_<n>`) or a shell `alias x=` whose body is a blocked git command; scan a call to a shell alias or function defined in the same command as the git command it forwards to. Builtin subcommands never spawn git. |
+| `guards.gitReusedMessageCheck` adv safety | `true` | `ANTIHALL_GIT_REUSED_MESSAGE_CHECK` | SAFETY (confirm to change — see settings.js set/reset). git-guard: for a `git commit` with no `-m`/`-F`, read the message it would reuse (`-C`/`-c`/`--reuse-message`/`--reedit-message <rev>`, HEAD for `--amend`, `-t`/`commit.template`) and block it when it carries an AI self-credit trailer. A message reused verbatim (`-C`, `--no-edit`, a no-op editor such as `true`) always blocks; an editor-path commit blocks only when the command sets no real editor of its own. What an editor or commit hook writes is caught afterwards by the PostToolUse `--audit`. |
 | `guards.editGuardAllow` adv safety | — | `ANTIHALL_EDIT_GUARD_ALLOW` | SAFETY (confirm to change — see settings.js set/reset). Extra allowed file globs for edit-guard (comma/colon separated). |
 | `guards.allowSubagentMailbox` adv safety | `false` | `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` | SAFETY (confirm to change — see settings.js set/reset). One-off allow for the subagent-mailbox command pattern. |
 | `guards.reaperMatch` adv | — | `ANTIHALL_REAPER_MATCH` | Extra process-name pattern for the MCP session-end reaper. |
@@ -1071,19 +1314,26 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.apiGuardThirdparty` adv | `false` | `ANTIHALL_API_GUARD_THIRDPARTY` | Also verify installed 3rd-party package APIs, not just stdlib/builtins. |
 | `guards.modelRouting` | `strict` (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` | model-routing-guard (PreToolUse Agent/Task): strict blocks a mis-tiered spawn, advisory only warns, off disables the hook. |
 | `guards.updateInSession` | `true` | `ANTIHALL_UPDATE_IN_SESSION` | model-routing-guard blocks a subagent spawn that runs anti-hall's own update (`skills/update/scripts/update.js` or `run /anti-hall:update`): `update.js` runs migrations, so `/anti-hall:update` runs it in the main session and command-guard allows that exact invocation. off allows delegating it. |
-| `guards.noBlockingQuestions` adv | `off` (off/advise/block) | `ANTIHALL_NO_BLOCKING_QUESTIONS` | ask-guard (PreToolUse AskUserQuestion, Claude only): `advise` allows the question and adds the standing rule "take the recommended option, say which, continue; list destructive items as a non-blocking 'needs your OK' line"; `block` refuses the call unless the FIRST question's `header` or `question` text starts with `DESTRUCTIVE:` or `CREDENTIAL:` (case-sensitive; each marked call is logged to `~/.anti-hall/logs/ask-guard.ndjson`). In a DevSwarm child workspace it also says to send the question to the parent. Skip name `ask-guard`. Skills that deliberately ask the user (`settings`, `deadly-loop`, `deadly-loop-multi`, `ship-it`, `flutter-debug`, `devswarm`) are not rewritten: in block mode those flows must use the `DESTRUCTIVE:`/`CREDENTIAL:` marker, or turn the setting off for them. |
+| `guards.noBlockingQuestions` adv | `off` (off/advise/block) | `ANTIHALL_NO_BLOCKING_QUESTIONS` | ask-guard (PreToolUse AskUserQuestion, Claude only): `advise` allows the question and adds the standing rule "take the recommended option, say which, continue; list destructive items as a non-blocking 'needs your OK' line"; `block` refuses the call unless the FIRST question's `header` or `question` text starts with `DESTRUCTIVE:` or `CREDENTIAL:` (case-sensitive; each marked call is logged to `~/.anti-hall/logs/ask-guard.ndjson`). In a DevSwarm child workspace it also says to send the question to the parent. Skip name `ask-guard`. Skills that deliberately ask the user (`settings`, `deadly-loop`, `deadly-loop-multi`, `ship-it`, `devswarm`) are not rewritten: in block mode those flows must use the `DESTRUCTIVE:`/`CREDENTIAL:` marker, or turn the setting off for them. |
 | `guards.questionAgentsNote` adv | `true` | `ANTIHALL_QUESTION_AGENTS_NOTE` | ask-guard (PreToolUse AskUserQuestion, Claude only): when a question is asked while one or more background agents are provably in flight (agent-scan reads the transcript), add one advisory line naming how many and their short descriptions, saying they may act on an option before the answer arrives (pause them or tell them to wait). Silent when no agent is running or the count cannot be proven (unreadable or too-long transcript). Never blocks; independent of `guards.noBlockingQuestions`, so it works with that set to `off`. Skip name `ask-guard`. |
 | `guards.sharedTreeAgentNote` adv | `true` | `ANTIHALL_SHARED_TREE_AGENT_NOTE` | swarm-guard (PreToolUse Agent/Task): advisory when a write-capable spawn without `isolation:"worktree"` starts while another write-capable agent is still running in the same working tree (they can commit each other's uncommitted changes). Silent for read-only types, isolated spawns, unknown state. Never blocks. |
+| `guards.mergeSidePickAdvisory` adv | `true` | `ANTIHALL_MERGE_SIDE_PICK_ADVISORY` | merge-side-pick (PostToolUse + PreToolUse Bash, Claude + Codex): advisory on a push when a conflict was resolved by taking one side wholesale (`--ours`/`--theirs`, `-X ours|theirs`, `-s ours`) and no test run (npm test, node --test, pytest, go/cargo test, ...) followed in this session. Never blocks. |
 | `guards.modelRoutingDeployFloor` | `sonnet` (sonnet/opus/off) | `ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR` | model-routing-guard floor for deploy/migration/rollback/production/secret/credential-shaped spawns: at or above the floor the spawn is never blocked; below it (or with no explicit model) it gets an advisory to use at least the floor. off restores the plain routing table. |
 | `guards.apiGuard` | `true` | — | api-guard (PreToolUse Write/Edit): block fabricated stdlib/builtin APIs in written code. |
 | `guards.speculationGuard` | `true` | — | speculation-guard (Stop): block a turn that ends on unverified hedged claims. |
+| `guards.inferenceCheck` adv | `false` | `ANTIHALL_INFERENCE_CHECK` | speculation-guard (Stop): also block, once per reply, a confident causal claim with no hedge word ("caused by", "the root cause is", "because", "is due to", "stems from", "this means", "the culprit is", "that's why") when no tool output, observation-tool input (a command, a path, a search pattern), pasted fenced block or task notification in the last 1 MB of the transcript mentions the stated cause. Default off: 100% precision / 95% recall on the 84-case synthetic corpus (`eval/inference-bench.js`), but on 3,276 real final replies it flagged 3.8%, mostly design rationale ("X because Y"), so field precision is far below 0.9. See "Unsupported confident inferences" below. |
 | `guards.claimLedger` | `true` | — | claim-ledger (Stop, never blocks): record claims in the last reply that nothing in the session backs. |
 | `guards.taskGuard` | `true` | — | task-guard (Stop): block stopping while tracked tasks are still open. |
 | `guards.tasklistGuard` | `true` | — | tasklist-guard (Stop): require a task list / progress file for multi-step work. |
-| `guards.scanThrottle` | `true` | `ANTI_HALL_SCAN_THROTTLE` | scan-throttle (PreToolUse Bash): advise running heavy repo-wide scans at background priority (nice/taskpolicy); never rewrites the command. |
+| `guards.tasklistNoTaskTools` adv | `reduced` (`reduced`/`full`/`skip`) | `ANTIHALL_TASKLIST_NO_TASK_TOOLS` | tasklist-guard nag form for a session positively known to lack task tools (today: a Codex session with no task-tool evidence in its transcript). `reduced` = no TaskCreate demand, list the tasks in the reply, one block per session; `full` = today's demand; `skip` = no nag. A Claude session with no evidence keeps the full demand: under `claude -p` the task tools are listed but deferred, so the tool list proves nothing. Evidence is structural (a TaskCreate/TaskUpdate/TodoWrite tool_use, a `deferred_tools*` attachment naming TaskCreate, or a `task_reminder` attachment), never a substring. Unset + `context.protocolLevel=full` = `full`. |
+| `guards.stopNagBudgetPerPrompt` adv | `0` | `ANTIHALL_STOP_NAG_BUDGET` | Per-prompt cap on Stop blocks from task-guard and tasklist-guard (each counted separately), inside their session caps (5 and 3). `0` = off = today's behaviour. Keyed by the Stop payload `prompt_id`, else the last user entry uuid; no key = not applied. |
+| `guards.scanThrottle` | `true` | `ANTIHALL_SCAN_THROTTLE` (deprecated alias `ANTI_HALL_SCAN_THROTTLE`; canonical wins) | scan-throttle (PreToolUse Bash): advise running heavy repo-wide scans at background priority (nice/taskpolicy); never rewrites the command. |
 | `guards.silentAgentNudge` | `true` | `ANTIHALL_SILENT_AGENT_NUDGE` | silent-agent-nudge (Stop): nudge once, advisory-only, when a background Agent launch has no terminal notification and a stale/missing output_file past `silentAgentNudgeMin`. Never kills anything. |
 | `guards.silentAgentNudgeMin` adv | `20` | `ANTIHALL_SILENT_AGENT_NUDGE_MIN` | Minutes of silence before silent-agent-nudge fires. |
 | `guards.staleAgentStopNote` adv | `true` | `ANTIHALL_STALE_AGENT_STOP_NOTE` | stale-agent-stop-note (PreToolUse TaskStop, never blocks): one advisory line when TaskStop names an agent that was sent a message, or resumed, after its last report and has not reported since. Settings file + env only. |
+| `guards.idleAgentSweep` | `true` | `ANTIHALL_IDLE_AGENT_SWEEP` | idle-agent-sweep (UserPromptSubmit, Claude + Codex, never blocks): once per user prompt, lists agents that finished but were never stopped (Claude: named teammates whose last report is an idle_notification with idleReason available/failed and no later SendMessage or TaskStop; Codex: multi_agent_v1 agents whose wait_agent result is completed/errored and that were never closed) and gives the exact TaskStop / close_agent call. Fires when guards.idleAgentSweepCount are idle or one has been idle guards.idleAgentSweepMin minutes. |
+| `guards.idleAgentSweepCount` adv | `3` | `ANTIHALL_IDLE_AGENT_SWEEP_COUNT` | idle-agent-sweep fires when at least this many finished agents are idle and not stopped. |
+| `guards.idleAgentSweepMin` adv | `15` | `ANTIHALL_IDLE_AGENT_SWEEP_MIN` | idle-agent-sweep also fires when any one finished agent has been idle at least this many minutes. |
 | `guards.compactAdviceGuard` | `true` | — | compact-advice-guard (Stop): block once when a reply recommends /compact at low context or within `compactAdviceRecentTurns` turns of a compact. |
 | `guards.compactAdviceRecentTurns` | `10` | — | Turns after a compact boundary during which a /compact recommendation is blocked; 0 = off. |
 | `guards.compactAdviceMarginPct` adv | `10` | — | Points below `autoHandover.pct` that count as low context for compact-advice-guard. |
@@ -1098,17 +1348,28 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.projectEditAllow` | `true` | `ANTIHALL_PROJECT_EDIT_ALLOW` | edit-guard per-project doc-edit allowlist: `<repo-toplevel>/.anti-hall/edit-allow.json` (`{"paths":["docs/**","PLAN.md"]}`) lists repo-relative globs the MAIN THREAD may Edit/Write directly. Applies only after `settings.js trust-edit-allow <repo> --confirmed` records the sha256 of the file in `~/.anti-hall/trusted-edit-allow.json`; any edit revokes trust; a symlinked file is refused. Never matches outside the repo, `.git`, `.anti-hall`, `.claude`, `.codex`, hook config or `~/.claude`; absolute, `..` and match-everything globs are ignored. Doctor reports untrusted/changed files. |
 | `guards.allowPlainPush` | `true` | `ANTIHALL_ALLOW_PLAIN_PUSH` | command-guard "allow plain push": in the MAIN THREAD ONLY, lets `git add`/`git commit`/a plain `git push [-u|--set-upstream] [remote] [ref]` (`-u`/`--set-upstream` is the only added flag and needs BOTH an explicit remote and an explicit ref; remote omitted or a configured remote NAME from `git remote` — a path/URL destination never qualifies, fail-closed; ref omitted, `HEAD`, or the current branch only — resolved fresh via `git symbolic-ref --short HEAD`, fail-closed if unresolvable), and `&&`/`;` chains made up only of those three, run inline instead of being delegated. `--force`/`-f`/`--force-with-lease`/`--force-if-includes`/`--mirror`/`--delete`/`-d`/`--all`/`--tags`/`+refspec`/`src:dst` to another branch, any other chained segment, and pipes/redirects/subshells stay exactly as blocked as before — except three shapes: a `HEAD:<current>` / `HEAD:refs/heads/<current>` refspec (same destination as the bare form), a trailing `2>&1`, and ONE final `| tail [-n] N` / `| head [-n] N` output filter. `git-guard.js` keeps its own independent force-push/AI-credit checks, untouched by this carve-out. |
 | `guards.allowGcloudReads` | `true` | `ANTIHALL_ALLOW_GCLOUD_READS` | command-guard narrow read-only Google Cloud access: in the MAIN THREAD ONLY, lets the cloud CLI token-printing command, read-style verbs (describe, list, get-iam-policy, read) with JSON, YAML or value output into a bounded sink or jq, and a token-authorized silent HTTP GET with an optional Bearer header to an https URL on googleapis.com or a subdomain run inline. Mutating verbs, other HTTP methods, request bodies, uploads, output-to-file flags, redirects, proxies, IP literals, @file arguments and chained commands stay blocked. |
-| `guards.allowBackgroundScratchScripts` | `true` | `ANTIHALL_ALLOW_BACKGROUND_SCRATCH_SCRIPTS` | command-guard background scratch scripts: in the MAIN THREAD ONLY, a Bash call with `run_in_background: true` may run ONE segment `<interpreter> <script file> [args…]` (python3, node, sh or bash) when the file is an existing regular file inside the session scratchpad or a tmp root (`os.tmpdir()`, `/tmp`, `/private/tmp`; realpath-checked, so a symlink out is refused). No interpreter option before the file (`-c`/`-e`/…), no env prefix or wrapper, no chaining/pipes, no `$`/backtick/backslash/process substitution, no stdin redirect, no write redirect outside the scratchpad/tmp. Foreground runs keep the normal rules; Monitor is unchanged. |
+| `guards.allowBackgroundScratchScripts` | `true` | `ANTIHALL_ALLOW_BACKGROUND_SCRATCH_SCRIPTS` | command-guard background scratch scripts: in the MAIN THREAD ONLY, a Bash call with `run_in_background: true` may run ONE segment `<interpreter> <script file> [args…]` (python3, node, sh or bash) when the file is an existing regular file inside the session scratchpad or a tmp root (`os.tmpdir()`, `/tmp`, `/private/tmp`; realpath-checked, so a symlink out is refused). No interpreter option before the file (`-c`/`-e`/…), no env prefix or wrapper, no chaining/pipes, no `$`/backtick/backslash/process substitution, no stdin redirect, no write redirect outside the scratchpad/tmp. Foreground runs keep the normal rules; Monitor is unchanged. Each such run counts toward the main-thread work window (`guards.coordinatorWorkWindowMinutes`). |
+| `guards.coordinatorWorkWindowMinutes` adv | `10` [0..] | `ANTIHALL_COORDINATOR_WORK_WINDOW_MINUTES` | Main thread only: successful state-changing Bash calls (WORK: state-changing git, gh mutations, Bash writes into non-notes repo files, scratch/tmp/.anti-hall script runs, other text-script runs except tracked-and-clean project scripts, package-manager/system tools and old `~/.local/bin`, `~/Library` or `~/.claude/plugins` tools, inline `-c`/`-e` code that writes files or runs state-changing git/gh) are counted over this many minutes. In a non-git project only coordinator-writable or fresh scripts count; an old script there is not WORK. Set nudgeAt and blockAt to 0 to record only. 0 = feature off. |
+| `guards.coordinatorWorkNudgeAt` adv | `4` [0..] | `ANTIHALL_COORDINATOR_WORK_NUDGE_AT` | One advisory note each time the window's WORK count reaches this. 0 = no nudge. |
+| `guards.coordinatorWorkBlockAt` adv | `7` [0..] | `ANTIHALL_COORDINATOR_WORK_BLOCK_AT` | The Nth WORK Bash call within the window is blocked. Recovery commands (git am/rebase/cherry-pick/revert `--abort`\|`--quit`, merge `--abort`, stash pop/apply) and loosely matched inline code are counted but never blocked. Skip key `coordinator-work-guard`. 0 = no block. |
+| `guards.coordinatorWorkMaxEntries` adv | `50` [1..] | `ANTIHALL_COORDINATOR_WORK_MAX_ENTRIES` | Safety cap on stored window timestamps per session. |
+| `guards.bashEditParity` adv | `true` | `ANTIHALL_BASH_EDIT_PARITY` | command-guard applies edit-guard's verdict to Bash writes (`sed -i`, `perl -i`, `tee`, `cp`, `mv`, `>`/`>>` redirects, literal `python -c`/`node -e` open-for-write paths) into repo files in the main thread. git verbs and trusted (redirect-free) project command-allow matches are never blocked by it. Also off when `safety.editGuard` is off or edit-guard is skipped. Both hosts (tested with Claude and Codex payload shapes). |
+| `guards.shellWriteChecks` adv | `true` | `ANTIHALL_SHELL_WRITE_CHECKS` | api-guard and ship-it-guard also run on Bash (both hosts): shell-write targets go through ship-it-guard's existence gate (scratchpad/tmp-outside-a-repo writes excluded), and the visible text of a heredoc/`echo`/`printf` write into a .py/.js/.ts file through api-guard. Unparseable forms are allowed. `guards.apiGuard` / `guards.shipitGate` still switch each guard. |
 | `guards.dispatchDemand` adv | `true` | `ANTIHALL_DISPATCH_DEMAND` | Per-turn `DISPATCH NOW in parallel: #id "subject", …` demand (task-tracker) and task-guard IDLE NEGLECT count in-flight agents PER TASK from this session's transcript (an agent whose description names `#id` covers it). `false` removes the per-turn line and restores task-guard's legacy blanket heartbeat rule. Metrics: `scripts/dispatch-report.js`. |
 | `guards.taskGuardOwnerBlockedMarker` adv | `true` | `ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER` | task-guard IDLE NEGLECT: honor an explicit owner-blocked marker (`metadata.blockedOn`/`blockedOn` === `owner`\|`user`\|`human`\|`external`, or an "OWNER:"/"OWNER DECISION" subject prefix) as non-dispatchable, instead of requiring a fake `blockedBy` dependency to silence the nag. `false` reverts to pre-marker behavior (only a real `blockedBy` id suppresses idle-neglect). |
 | `guards.idleNeglectMinPriority` adv | `p1` (p0/p1/p2/p3) | `ANTIHALL_IDLE_NEGLECT_MIN_PRIORITY` | task-guard IDLE NEGLECT urgency floor: a pending/unowned/unblocked task nags only when its priority is at or above (numerically ≤) this rank; anything below (e.g. P2/P3 when the floor is P1) is non-nagging backlog. Missing/unrecognized priority is always treated as P1. |
 | `guards.maxParallelDispatch` adv | `0` [0..] | `ANTIHALL_MAX_PARALLEL_DISPATCH` | Hard cap on concurrently-running background agents the DISPATCH NOW line / task-guard IDLE NEGLECT will demand up to. `0` (default) = the existing dynamic cap (min(16, cores-2)). |
+| `guards.idleNeglectProvenOnly` adv | `true` | `ANTIHALL_IDLE_NEGLECT_PROVEN_ONLY` | task-guard IDLE NEGLECT blocks only when a dispatchable task is uncovered under every placement of the running agents that name no task (dispatchable > unmapped agents). The per-turn DISPATCH NOW line is unchanged. false = also block on the in_progress-first estimate. |
+| `guards.idleNeglectAgentMaxAgeMin` adv | `30` | `ANTIHALL_IDLE_NEGLECT_AGENT_MAX_AGE_MIN` | task-guard IDLE NEGLECT, proven count only: a running agent that names no task stops counting as cover once its newest sign of life (launch, SendMessage resume, pending teammate message, output-file write) is older than this many minutes, or when it was launched before the earliest uncovered task was created / last set pending or in_progress (it cannot be working on a task that did not exist). Unknown age or unknown task time = the agent still counts. 0 = never age out. |
 | `safety.gitGuard` safety | `true` | `ANTIHALL_GIT_GUARD` | git-guard: block force-push and AI self-credit in commits and gh pr/issue/release bodies. |
 | `safety.commandGuard` safety | `true` | `ANTIHALL_COMMAND_GUARD` | command-guard core: make the coordinator delegate heavy commands (build/test/deploy/push). Its data-safety sub-guards (DevSwarm read/send/mailbox, armed stash guard) stay on. |
 | `safety.editGuard` safety | `true` | `ANTIHALL_EDIT_GUARD` | edit-guard core: make the coordinator delegate file edits outside its own plan/state/handover files. |
 | `safety.swarmGuard` safety | `true` | `ANTIHALL_SWARM_GUARD` | swarm-guard: block agent spawns past the spawn-rate cap or under critical memory pressure. |
 | `context.verifyFirstSession` | `true` | — | verify-first-full (SessionStart): inject the full verify-first protocol (also re-injected after compaction). |
 | `context.verifyFirstOrchestration` | `true` | — | verify-first-orch (SessionStart): inject the orchestration discipline for the main thread. |
+| `context.protocolLevel` | `compact` (`compact`/`full`) | `ANTIHALL_PROTOCOL_LEVEL` | Size of the injected verify-first and orchestration text. `compact` (default): a short core with every load-bearing clause inline, pointing at `PROTOCOL.md`; `full`: today's complete text on every channel, byte for byte (the one-key rollback). |
+| `context.codexOrchFullOn` | `session` (`session`/`spawn`) | `ANTIHALL_CODEX_ORCH_FULL_ON` | **Experimental, Codex only (>= 0.129, hooks trusted).** `session` (default) = full orchestration rules at SessionStart, as today. `spawn` = SessionStart sends the compact core + compact orchestration lines and the full rules arrive once per context epoch on the first `spawn_agent` call (PreToolUse additionalContext, surfaced to the model by Codex 0.160). Needs positive Codex evidence, otherwise `session`; ignored under `protocolLevel=full`; a DevSwarm Primary always gets the full text at SessionStart. The spawn tool's PreToolUse `tool_name` is `collaborationspawn_agent` on Codex 0.160 (live probe, `.anti-hall/plans/codex-pretooluse-context-probe.md` "Spawn probe"); the hook fires and the context reaches the parent as a developer message. Settings/env only. |
+| `context.orchFullOn` | `auto` (`auto`/`spawn`/`session`/`off`) | `ANTIHALL_ORCH_FULL_ON` | When the full orchestration rules A-N are sent under `compact`: `auto` (default) = `session` = inline at SessionStart next to the compact core; `spawn` = **experimental, opt-in**: compact lines at SessionStart and the full text once on the first Agent/Task/Workflow spawn of each context epoch, only with positive Claude evidence (`--host=claude` in the Claude hooks.json), otherwise coerced to `session`; spawn delivery is not yet verified live, so it is not the default; `off` = compact lines only. Ignored under `full`; a DevSwarm Primary always gets the full text at SessionStart. Settings/env only (no `/config` row). |
 | `context.verifyFirstTurn` | `true` | — | verify-first (UserPromptSubmit): the short per-turn verify-first nudge. |
 | `context.verifyFirstSubagent` | `true` | — | verify-first-subagent (SubagentStart): inject the protocol into every subagent. |
 | `context.taskTracker` | `true` | — | task-tracker (UserPromptSubmit): the task-list discipline directive and per-turn reminder. |
@@ -1119,7 +1380,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `maintenance.progressPrune` | `true` | — | progress-prune (SessionStart): archive stale per-session progress files into the history ledger. |
 | `maintenance.precompactSnapshot` | `true` | — | precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction. |
 | `maintenance.taskLifecycleLog` | `true` | — | task-lifecycle-log (TaskCreated/TaskCompleted): append task events to the per-session history ledger. |
-| `maintenance.sessionEndReaper` | `true` | `ANTI_HALL_SESSION_END_REAPER` | session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind. |
+| `maintenance.sessionEndReaper` | `true` | `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`; canonical wins) | session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind. |
 | `versionAlerts.antiHall` | `true` | `ANTIHALL_VERSION_ALERT` | Alert when a newer anti-hall version is available. |
 | `versionAlerts.claudeCli` | `true` | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT` | Alert when a newer Claude CLI version is available. |
 | `versionAlerts.devswarm` | `true` | `ANTIHALL_DEVSWARM_VERSION_ALERT` | Alert when a newer DevSwarm/hivecontrol version is available. |
@@ -1133,8 +1394,9 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `limitConserve.accountCheck` adv | `true` | `ANTIHALL_LIMIT_ACCOUNT_CHECK` | Guard against stale usage-cache readings after an account switch. |
 | `jev.enabled` | `false` | `ANTIHALL_JEV` | Enable Jev (ANTIHALL_JEV=0 always force-disables regardless of this). |
 | `jev.transport` | `vercel` (vercel/typesafe) | — | Vercel AI Gateway passthrough (default) or a direct TypeSafe API call. |
-| `jev.fallbackTransport` | `none` (none/vercel/typesafe) | — | Automatic backup vendor: when the primary transport times out, has a network error, returns 5xx (incl. 529), 402 or 429 (or a 400/403 naming insufficient balance), ONE retry goes to this transport inside the same time budget; 401/403 and other 4xx never fall back (a bad primary key must surface). Equal to `jev.transport` = off. Needs its OWN vendor-bound key (plugin option `jev_vercel_api_key` / `jev_typesafe_api_key`, or that vendor's key file with `jev.allowLegacyKeyRead`; keys are never sent to another vendor) and a per-vendor circuit breaker skips a vendor for 5 min after 3 consecutive eligible failures (both open = Jev skipped, no double timeouts). NOT full redundancy: both routes very likely reach the same TypeSafe model (inferred from the model ids and identical answers on a 40-item test, unconfirmed), so it covers the direct account's balance/quota or an endpoint outage, probably not a model outage; the guards then use their built-in rules as when Jev is off. With a fallback on, decision text can reach the second vendor. Decision rows record `transport` and `fellBack`. Set with `jev-setup.js enable --fallback <vercel\|typesafe\|none>` (plugin option `jev_fallback_transport`). |
+| `jev.fallbackTransport` | `none` (none/vercel/typesafe) | — | Automatic backup vendor: when the primary transport times out, has a network error, returns 5xx (incl. 529), 402 or 429 (or a 400/403 naming insufficient balance), ONE retry goes to this transport inside the same time budget; 401/403 and other 4xx never fall back (a bad primary key must surface). Equal to `jev.transport` = off. Needs its OWN vendor-bound key (plugin option `jev_vercel_api_key` / `jev_typesafe_api_key`, or that vendor's key file with `jev.allowLegacyKeyRead`; keys are never sent to another vendor) and a per-vendor circuit breaker skips a vendor for 5 min after 3 consecutive eligible failures (both open = Jev skipped, no double timeouts). NOT full redundancy: both routes very likely reach the same TypeSafe model (inferred from the model ids and identical answers on a 40-item test, unconfirmed), so it covers the direct account's balance/quota or an endpoint outage, probably not a model outage; the guards then use their built-in rules as when Jev is off. With a fallback on, decision text can reach the second vendor. Decision rows record `transport` and `fellBack`. Set with `jev-setup.js enable --fallback <vercel\|typesafe\|none>` or `settings.js set jev.fallbackTransport <value>`. |
 | `jev.judgeModel` | `claude-haiku-4-5` | `ANTIHALL_JUDGE_MODEL` | Model used for speculation-judge / jev-triage LLM calls. |
+| `jev.judgeBackend` adv | `api` (api/cli/auto) | `ANTIHALL_JUDGE_BACKEND` | How speculation-judge reaches the model. `api` = Anthropic API with the `anthropic_api_key` plugin option; `cli` = the local `claude -p` CLI on your own Claude login, no API key (no tools, no MCP servers, no settings files, all hooks disabled; about 5–6 s per turn end, measured); `auto` = `api` when a key is visible, else `cli`. Fail-open in every mode. |
 | `jev.semanticJudge` | `false` | `ANTIHALL_SEMANTIC_JUDGE` | Enable the semantic speculation-judge hook (off = hook no-ops). |
 | `jev.allowLegacyKeyRead` adv safety | `false` | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env or project override). Opt-in: read the Jev key from `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` env vars and the key file. Default off: only the `jev_api_key` plugin option is used. Needed for background tools and Codex (see "Where a stored key is visible"). |
 | `jev.genericKeyVendor` adv safety | `vercel` (vercel/typesafe) | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env, `/config` or legacy-file route). The ONE vendor the legacy generic `jev_api_key` plugin option and `jev.keyFile` are bound to: they carry no vendor name, so they are never sent to any other vendor, whatever `jev.transport` / `jev.fallbackTransport` say (`jev.transport` does NOT decide this, because `enable --transport` rewrites it). Vendor-named keys (`jev_vercel_api_key`, `jev_typesafe_api_key`) need no binding. Change only with `jev-setup.js bind-generic-key --vendor <v>` (a deliberate human command). An existing install with a typesafe transport and a generic key is never auto-bound: it stays on `vercel`, so the generic key is refused for typesafe, and a one-time notice says how to bind or to enter a typesafe key. |
@@ -1179,6 +1441,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.dispatchTierDetectNoWorkspaces` adv | `true` | `ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES` | Also treat a repo as no-workspace when its CLAUDE.md/AGENTS.md says "no workspaces for real work". |
 | `jev.reviewAfterDays` | `7` [1..365] | `ANTIHALL_JEV_REVIEW_AFTER_DAYS` | Minimum days an integration must have sat in shadow mode before its shadow numbers are due for owner review (also the re-review cadence once reviewed). |
 | `jev.reviewMinDecisions` | `30` [0..] | `ANTIHALL_JEV_REVIEW_MIN_DECISIONS` | Minimum decisions logged for a shadow integration before its review is due — avoids nagging about a barely-used integration with too little data to judge. |
+| `jev.recommendNoticeHeadless` adv | `false` | `ANTIHALL_JEV_NOTICE_HEADLESS` | Allow the "Recommended: enable Jev" notice in non-interactive runs (`claude -p`/SDK, detected by `CLAUDE_CODE_ENTRYPOINT=sdk-*`; `sdk-cli` verified live). Default `false`: a headless run neither shows it nor uses up its once-per-30-days slot. JEV REVIEW DUE is unaffected; Codex unchanged. Unset + `context.protocolLevel=full` = `true`. |
 | `jev.recommendNotice` | `true` | `ANTIHALL_JEV_RECOMMEND_NOTICE` | Bold "Recommended: enable Jev" SessionStart/doctor notice, shown only while Jev is NOT enabled (once on first install, then at most every 30 days). Set false to silence it. |
 | `jev.reviewReminder` | `true` | `ANTIHALL_JEV_REVIEW_REMINDER` | Durable "time to review the Jev shadow numbers" SessionStart/doctor nudge (on by default — owner opt-out only). |
 | `devswarm.hivecontrol` | — | `ANTIHALL_DEVSWARM_HIVECONTROL` | Explicit path to the hivecontrol CLI binary (default: PATH lookup — no single default value; empty means "look it up"). |
@@ -1281,8 +1544,8 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 
 ## Configuration / tuning
 
-- **Verify-first wording** — edit `hooks/verify-first-full.js` (the full SessionStart
-  protocol) and the `NUDGES` array in `hooks/verify-first.js` (the per-turn one-liners).
+- **Verify-first wording** — edit `hooks/verify-first-core.js` (the single source of every protocol text;
+  then run `node tools/gen-protocol.js` to regenerate `PROTOCOL.md`, `protocol-md.test.js` fails on drift) and the `NUDGES` array in `hooks/verify-first.js` (the per-turn one-liners).
 - **Hard gates / force patterns** — `hooks/git-guard.js` holds the commit-trailer and
   force-push logic; `command-guard.js` and the other always-on guards cover deploy CLIs,
   payment commands, and bulk deletes at command dispatch. `ship-it` relies on these
@@ -1299,7 +1562,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 - **Statusline didn't apply?** It is opt-in — run the installer above. If it reports
   "not found", run `/plugin install` first, then re-run, or locate the dir via `/plugin`.
 - **git-guard let a force-push through?** Check the documented fail-open scope above
-  (`xargs` / aliases / interactive-editor commits with no `-m`/`-F` are out of scope
+  (aliases / interactive-editor commits with no `-m`/`-F` are out of scope
   by design; `bash -c`/`sh -c`
   wrappers are unwrapped and inspected, not a bypass).
 - **Guard blocking something legitimate?** Most guards fail open and have a skip hatch

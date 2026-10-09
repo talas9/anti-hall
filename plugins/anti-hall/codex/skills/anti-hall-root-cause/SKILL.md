@@ -5,6 +5,10 @@ description: Codex-native root-cause debugging discipline. Use when investigatin
 
 # anti-hall root cause for Codex
 
+## When to use
+
+Codex-native root-cause debugging discipline. Use when investigating a bug, failing test, broken config, or runtime behavior before proposing or applying a fix.
+
 Apply the Iron Law:
 
 > No claim without evidence; no fix without a proven root cause.

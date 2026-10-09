@@ -4,7 +4,7 @@
 //     straying warning gains "· +N extra(s)" / "· STRAYING: <signals>"; a plan
 //     row with neither renders exactly the P1 label, and rows without a plan
 //     keep their old cell;
-//   - devswarm-parent-gate: one advisory DEVSWARM STRAYING line per warning
+//   - devswarm-parent-gate: one advisory devswarm-straying line per warning
 //     per Primary session (never a block); no stray state -> no line;
 //   - devswarm-child-turn: a child with a plan is told to `scope add` extra
 //     work a user asks for.
@@ -26,7 +26,7 @@ const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', 
 
 function ctxOf(r) { return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || ''; }
 function tableRow(c, id) {
-  const seg = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+  const seg = c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-workspaces')) || '';
   return seg.split('\n').find((l) => l.startsWith('| ' + id + ' ')) || '';
 }
 function writeSummary(home, workspaces) {
@@ -118,31 +118,31 @@ function seedIdleWorkspace(home, id) {
 }
 const gate = (home, sid) => testHookRaw('devswarm-parent-gate.js', JSON.stringify({ hook_event_name: 'Stop', session_id: sid, cwd: REPO_CWD }), { home, env: PRIMARY_ENV });
 
-test('parent-gate: one advisory DEVSWARM STRAYING line per warning per session; never a block', () => {
+test('parent-gate: one advisory devswarm-straying line per warning per session; never a block', () => {
   const h = makeHome();
   try {
     seedIdleWorkspace(h.home, 'child-s');
     const none = gate(h.home, 'g0');
-    assert.ok(!/DEVSWARM STRAYING/.test(none.stderr), 'no stray state -> no line: ' + none.stderr);
+    assert.ok(!/devswarm-straying/.test(none.stderr), 'no stray state -> no line: ' + none.stderr);
 
     seedStray(h.home, 'child-s', [stallEntry]);
     const a = gate(h.home, 'g1');
     assert.strictEqual(a.status, 0);
     assert.ok(!(a.json && a.json.decision === 'block'), 'advisory only: ' + a.stdout);
-    assert.match(a.stderr, /DEVSWARM STRAYING: child-s: step 2 no step progress 40m/);
+    assert.match(a.stderr, /devswarm-straying: child-s: step 2 no step progress 40m/);
     const b = gate(h.home, 'g1');
-    assert.ok(!/DEVSWARM STRAYING/.test(b.stderr), 'shown once per session: ' + b.stderr);
+    assert.ok(!/devswarm-straying/.test(b.stderr), 'shown once per session: ' + b.stderr);
     const other = gate(h.home, 'g2');
-    assert.match(other.stderr, /DEVSWARM STRAYING/, 'a new Primary session sees it once');
+    assert.match(other.stderr, /devswarm-straying/, 'a new Primary session sees it once');
     // Jev's recommendation arriving later re-shows the warning once, with the note.
     seedStray(h.home, 'child-s', [Object.assign({}, stallEntry, { jev: [{ integration: 'devswarmWaitKind', verdict: 'waiting on CI/owner/peer, not stuck', confidence: 0.92, supports: false }] })]);
     const withJev = gate(h.home, 'g1');
     assert.match(withJev.stderr, /no step progress 40m \(Jev: waiting on CI\/owner\/peer, not stuck 0\.92\)/, withJev.stderr);
-    assert.ok(!/DEVSWARM STRAYING/.test(gate(h.home, 'g1').stderr), 'and only once');
+    assert.ok(!/devswarm-straying/.test(gate(h.home, 'g1').stderr), 'and only once');
     // planTracking off -> nothing.
     const off = testHookRaw('devswarm-parent-gate.js', JSON.stringify({ hook_event_name: 'Stop', session_id: 'g3', cwd: REPO_CWD }),
       { home: h.home, env: Object.assign({ ANTIHALL_DEVSWARM_PLAN_TRACKING: '0' }, PRIMARY_ENV) });
-    assert.ok(!/DEVSWARM STRAYING/.test(off.stderr));
+    assert.ok(!/devswarm-straying/.test(off.stderr));
   } finally { h.cleanup(); }
 });
 

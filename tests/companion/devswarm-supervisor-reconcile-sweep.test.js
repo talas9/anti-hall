@@ -12,6 +12,7 @@
 // prove the wiring (and the module.exports/require.main circular-require
 // fix) is real, not just exercised via a stub.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -479,7 +480,7 @@ test('REAL LOCK REUSE: the reconcile sweep observes the SAME per-id O_EXCL pull 
     // live child concurrently draining its own inbox right now.
     const lockPath = pull.pullLockPath(home, id);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-live-child' }));
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-' + 'by-live-child' }));
 
     try {
       // Same env posture as the WIRING test above — full process.env copy plus

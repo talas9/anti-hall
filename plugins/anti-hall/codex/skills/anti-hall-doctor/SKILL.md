@@ -1,9 +1,13 @@
 ---
 name: anti-hall-doctor
-description: Check anti-hall's Codex installation and runtime posture. Use when the user asks whether anti-hall is active in Codex, whether hooks are installed, or why a guard did or did not fire.
+description: Check anti-hall in Codex, including installed hooks and runtime posture. Use for "is anti-hall active" or "why did a guard not fire".
 ---
 
 # anti-hall doctor for Codex
+
+## When to use
+
+Check anti-hall's Codex installation and runtime posture. Use when the user asks whether anti-hall is active in Codex, whether hooks are installed, or why a guard did or did not fire.
 
 ## Resolve the plugin root
 
@@ -17,7 +21,7 @@ root from that path before running anything below:
 ```bash
 # SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 Run the existing doctor first. `doctor.js` is the SHARED script (Codex wires the same
@@ -105,7 +109,7 @@ Interpretation:
 
 - `SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `Stop` anti-hall entries in `.codex/hooks.json` mean the Codex hook subset is installed.
 - `[features].hooks = true` in Codex config means the current Codex runtime should load hooks.
-- Missing edit-time `api-guard` / `ship-it-guard` hard blocks are expected in Codex; current Codex hook runtime does not provide Claude-equivalent `PreToolUse` for edits.
+- `edit-guard`, `api-guard` and `ship-it-guard` run on Codex `apply_patch` edits only (Codex 0.134+); writes made through the shell never reach them, so a missing block on a shell write is expected.
 - Missing subagent lifecycle hooks are expected; Codex has no direct `SubagentStart` / `TaskCreated` / `TaskCompleted` equivalents.
 
 If hooks are missing, install them:

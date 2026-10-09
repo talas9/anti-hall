@@ -13,6 +13,7 @@
 //       touches descriptors, dry-run writes nothing, second run is a no-op
 //   (d) the parent-inbox hook never nags about an app-archived row or its twin
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -156,11 +157,11 @@ test('(d) parent-inbox never nags about an app-archived row or its twin; a live 
       { home: f.home, env: Object.assign({ DEVSWARM_REPO_ID: 'repo-1' }, f.env), expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
-    const nag = c.split('\n\n').filter((s) => /^DEVSWARM (URGENT|PARENT) INBOX/.test(s)).join('\n');
+    const nag = c.split('\n\n').filter((s) => /^\S+ anti-hall \u00B7 devswarm-(urgent|parent)-inbox/.test(s)).join('\n');
     assert.ok(nag.includes('b-active'), 'the live row still nags: ' + c);
     assert.ok(!nag.includes('b-archived'), 'app-archived row never nags: ' + nag);
     assert.ok(!nag.includes('primary-twin'), 'its twin on the archived worktree never nags: ' + nag);
-    const archSeg = c.split('\n\n').find((s) => s.startsWith('DEVSWARM ARCHIVE-READY')) || '';
+    const archSeg = c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-archive-ready')) || '';
     assert.ok(!archSeg.includes('b-archived'), 'no archive-ready nudge for an already-archived workspace: ' + archSeg);
   } finally { rm(f.base); }
 });

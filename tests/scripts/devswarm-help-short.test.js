@@ -8,6 +8,7 @@
 // HOME isolation: every test uses a fresh mkdtemp'd home passed as ctx.home;
 // nothing here ever touches the real ~/.anti-hall (repo rule).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

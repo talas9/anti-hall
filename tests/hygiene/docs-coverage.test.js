@@ -143,8 +143,12 @@ test('(6) the system-briefing operator guide (Claude + Codex) lists every settin
 });
 
 test('the SessionStart foundation points agents at the operator guide by name', () => {
-  const src = read('plugins', 'anti-hall', 'hooks', 'verify-first-full.js');
+  // The full discipline index lives in verify-first-core.js (shared with PROTOCOL.md); the compact
+  // session core (the default) carries the same pointer in its SKILLS line.
+  const src = read('plugins', 'anti-hall', 'hooks', 'verify-first-core.js');
   assert.match(src, /\/anti-hall:system-briefing \(Codex: anti-hall-system-briefing\)/);
+  const core = require(path.join(PLUGIN, 'hooks', 'verify-first-core.js'));
+  assert.match(core.coreCompactSession('/x'), /system-briefing \(operator guide; Codex: anti-hall-system-briefing\)/);
 });
 
 test('(7) AGENTS.md carries the generated component catalog, current, and fits the Codex 32 KiB cap', () => {

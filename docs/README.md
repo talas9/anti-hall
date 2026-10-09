@@ -27,6 +27,7 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 | Doc | What it covers |
 |---|---|
 | [`KB-jev-classifier.md`](./KB-jev-classifier.md) | Jev (TypeSafe System One) opt-in classifier: [Enable Jev](./KB-jev-classifier.md#enable-jev) (full text and the measured result), every wired integration, metrics, cost and budget watch. |
+| [`HOOK-LATENCY.md`](./HOOK-LATENCY.md) | Measured hook latency: wall p50/p95 and CPU per hook, and the per-tool-call total for each event. |
 | [`KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) | DevSwarm & the `hivecontrol` CLI — multi-workspace orchestration. |
 | [`KB-devswarm-app-db.md`](./KB-devswarm-app-db.md) | The DevSwarm desktop app's database: what anti-hall reads (read-only), field evidence, sync, screenshot sync, 2.5.3 notes. |
 
@@ -40,7 +41,8 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Project layout, running the tests, adding a guard. |
 | [`../SECURITY.md`](../SECURITY.md) | Report a vulnerability privately, not in a public issue. |
 | [`../CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Expected behaviour and how to report a conduct problem. |
-| [`../RELEASING.md`](../RELEASING.md) | The release checklist. |
+| [`../RELEASING.md`](../RELEASING.md) | The release checklist and the `dev` → `main` branch flow. |
+| [`CONTRACT-1.0.md`](./CONTRACT-1.0.md) | What semver freezes at 1.0: settings keys, CLI verbs, hooks, state paths, Codex parity. |
 | [`../AGENTS.md`](../AGENTS.md) | The protocol for Codex and cross-tool agents. |
 | [`../plugins/anti-hall/README.md`](../plugins/anti-hall/README.md) | The plugin directory page (ships inside the plugin). |
 | [`../plugins/anti-hall/codex/README.md`](../plugins/anti-hall/codex/README.md) | The Codex port: hook parity, install, skills. |
@@ -52,6 +54,7 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 |---|---|
 | [`KB.md`](./KB.md) | Canonical knowledge-base index: current-plugin ground truth, topic → doc map, staleness ledger. Read this first. |
 | [`GUIDE.md`](./GUIDE.md) | Extended guide: hook reference, skills reference, statusline/config/troubleshooting, contributing. |
+| [`BENCHMARK-METHOD.md`](./BENCHMARK-METHOD.md) | Pre-registered with/without benchmark protocol: hypotheses, metrics, analysis, decision rule; suite in `evals/anti-hall/`. |
 | [`E2E-TESTING.md`](./E2E-TESTING.md) | How the zero-dependency `node:test` hook suite works; per-event I/O contract. |
 | [`TASK-WORK.md`](./TASK-WORK.md) | Task discipline design (`TaskCreate`/`TaskUpdate` vs legacy `TodoWrite`); basis for tasklist-guard. |
 | [`TASKLIST-GUARD.md`](./TASKLIST-GUARD.md) | Usage guide for the `tasklist-guard` Stop hook: progress/history file convention, env knobs, escape hatch. |
@@ -72,7 +75,6 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `doctor` | "is anti-hall working?" | live self-tests on every guard; `--repair` for safe auto-fixes |
 | `system-briefing` | "brief me on anti-hall", "what does X mean" | operator guide (terms, rules, verbs, settings) + live inventory of every hook/skill shipped |
 | `update` | "update anti-hall" | pulls latest, shows changelog delta, prompts `/reload-plugins` (restart only if a hook or skill path still shows the old version) |
-| `flutter-debug` | debugging a running Flutter app | agent-driven hot-reload + visual-verification debug loop |
 | `activate` | first-time setup | one-shot idempotent install of statusline + model-routing state (statusline, model routing, sentinel) |
 | `simplify` | "simplify this" / "deslop" | behavior-preserving simplification with a measured `net: -N lines` score |
 | `debt` | tracking deliberate shortcuts | register + audit `// anti-hall: <ceiling>,<when>` debt markers for rot risk |
@@ -107,7 +109,6 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | [`KB-overengineering.md`](./KB-overengineering.md) | Overengineering causes and measurement; anti-hall's scope-fidelity implications. |
 | [`KB-session-handover.md`](./KB-session-handover.md) | AI-agent session handover design; backs the `handover` skill. |
 | [`KB-handover-research.md`](./KB-handover-research.md) | 2026-09-24 sourced handover research: compaction loss, context rot, trigger points, Claude Code + Codex compaction/hook facts, receiver read-back; the gap review behind the 0.108 handover changes. |
-| [`KB-flutter-claude-debug.md`](./KB-flutter-claude-debug.md) | Research backing the `flutter-debug` skill. |
 | [`CONTEXT-PRESERVATION-KB.md`](./CONTEXT-PRESERVATION-KB.md) | Slowing main-agent context growth — caching, sub-agent isolation, compaction, JIT retrieval. |
 | [`CODEX-KB-MIGRATION-MAP.md`](./CODEX-KB-MIGRATION-MAP.md) | Cross-reference between Claude-side and Codex-side KB docs. |
 
@@ -138,7 +139,6 @@ Historical working documents live in [`archive/`](./archive/README.md); they may
 | [`archive/ULTRAPLAN.md`](./archive/ULTRAPLAN.md) | Single consolidated reconciliation plan, `v0.3.0`-era. Superseded; executed. |
 | [`archive/2026-06-06-context-opt-test-design.md`](./archive/2026-06-06-context-opt-test-design.md) | Dated context-optimization test-harness design. |
 | [`archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md`](./archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md) | Dated v0.32.0 design plan (Fable 5 support, model-routing guard). |
-| [`2026-06-10-v0.34.0-flutter-debug-plan.md`](./2026-06-10-v0.34.0-flutter-debug-plan.md) | Dated v0.34.0 design plan (flutter-debug agent + skill). Kept here: `tests/hooks/flutter-debug.test.js` reads it by path. |
 | [`archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md`](./archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md) | Approved design — DevSwarm-aware workspace-tier orchestration. |
 | [`archive/superpowers/plans/2026-07-06-devswarm-orchestration.md`](./archive/superpowers/plans/2026-07-06-devswarm-orchestration.md) | Implementation plan for the design above. |
 | [`archive/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md`](./archive/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md) | Design — DevSwarm liveness supervisor (wedged-session recovery). |

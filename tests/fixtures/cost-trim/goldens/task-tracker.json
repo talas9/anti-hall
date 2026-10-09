@@ -1,0 +1,15 @@
+{
+  "scenario": "task-tracker",
+  "outputs": [
+    {
+      "label": "first-prompt",
+      "status": 0,
+      "text": "💡 anti-hall · task-tracker: capture EVERY user request as a task (TaskCreate) before starting work, so no request is lost.\nDo instead: give each task a priority (metadata.priority: P0/P1/P2) and keep the list sorted highest first; keep statuses current (in_progress when starting, completed when done, deferred if explicitly deprioritized); keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; report progress; never finish a turn with a silently dropped request."
+    },
+    {
+      "label": "second-prompt",
+      "status": 0,
+      "text": "💡 anti-hall · task-tracker: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing."
+    }
+  ]
+}

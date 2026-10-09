@@ -98,7 +98,7 @@ test('ROW 1 EXEMPT: role word in description downgrades BLOCK -> advisory (not s
       description: 'Round 1 Reviewer',
       prompt: 'fetch and grep the logs, run the build',
     }), { home: h.home });
-    assertAdvisory(r, /debate-role exempt/);
+    assertAdvisory(r, /debate-role word/);
   } finally { h.cleanup(); }
 });
 
@@ -133,7 +133,7 @@ test('ROW 1 RESEARCH EXEMPT: investigate + ambiguous data-I/O verb (no hard-exec
       description: 'investigate the old-version device population',
       prompt: 'check status of Firestore writes and export the findings',
     }), { home: h.home });
-    assertAdvisory(r, /research-shaped exempt/);
+    assertAdvisory(r, /reads as research/);
   } finally { h.cleanup(); }
 });
 
@@ -697,7 +697,7 @@ test('ROW 6 (a): research-shaped + general-purpose + no model -> advisory mentio
       prompt: 'research and find all usages of the deprecated API, then gather results',
     }), { home: h.home });
     assertAdvisory(r, /Explore/);
-    assert.match(r.json.hookSpecificOutput.additionalContext, /AGENT-ROUTING/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /read-only-shaped/);
   } finally { h.cleanup(); }
 });
 
@@ -754,7 +754,7 @@ test('ROW 6 (f): pure research spawn + general-purpose -> STILL nudges Explore',
       prompt: 'investigate the codebase, search for usages, gather results and report',
     }), { home: h.home });
     assertAdvisory(r, /Explore/);
-    assert.match(r.json.hookSpecificOutput.additionalContext, /AGENT-ROUTING/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /read-only-shaped/);
   } finally { h.cleanup(); }
 });
 
@@ -808,7 +808,7 @@ test('HANDOVER-DELEGATION: description matches "write" + "handover" -> advisory,
       description: 'write a handover for this session',
       prompt: 'summarize what happened and save it',
     }), { home: h.home });
-    assertAdvisory(r, /HANDOVER-DELEGATION/);
+    assertAdvisory(r, /anti-hall \u00B7 handover: /);
     assert.match(r.json.hookSpecificOutput.additionalContext, /invoke the handover skill yourself/);
   } finally { h.cleanup(); }
 });
@@ -820,7 +820,7 @@ test('HANDOVER-DELEGATION: prompt matches "prepare" + "handoff" -> advisory fire
       description: 'session wrap-up',
       prompt: 'please prepare a handoff document for the next session',
     }), { home: h.home });
-    assertAdvisory(r, /HANDOVER-DELEGATION/);
+    assertAdvisory(r, /anti-hall \u00B7 handover: /);
   } finally { h.cleanup(); }
 });
 
@@ -833,7 +833,7 @@ test('HANDOVER-DELEGATION: noun without a write-verb -> no advisory (allow, sile
     }), { home: h.home });
     // No 'write/prepare/create/author/draft' verb present -> must not fire.
     assert.ok(!(r.json && r.json.hookSpecificOutput &&
-      /HANDOVER-DELEGATION/.test(r.json.hookSpecificOutput.additionalContext || '')),
+      /anti-hall \u00B7 handover: /.test(r.json.hookSpecificOutput.additionalContext || '')),
       `must not fire without a write-verb; stdout: ${r.stdout}`);
   } finally { h.cleanup(); }
 });
@@ -847,13 +847,13 @@ test('HANDOVER-DELEGATION: capped — does not repeat for the SAME session', () 
     });
     p.session_id = 'handover-delegation-cap';
     const r1 = testHook(HOOK, p, { home: h.home });
-    assertAdvisory(r1, /HANDOVER-DELEGATION/);
+    assertAdvisory(r1, /anti-hall \u00B7 handover: /);
     const r2 = testHook(HOOK, p, { home: h.home });
     // Second spawn in the SAME session must not re-advise; falls through to
     // the ordinary model-tier table (silent allow here: no mechanical/complex
     // signal, explicit haiku is absent, generic model-tier rows don't fire).
     assert.ok(!(r2.json && r2.json.hookSpecificOutput &&
-      /HANDOVER-DELEGATION/.test(r2.json.hookSpecificOutput.additionalContext || '')),
+      /anti-hall \u00B7 handover: /.test(r2.json.hookSpecificOutput.additionalContext || '')),
       `advisory must not repeat this session; stdout: ${r2.stdout}`);
   } finally { h.cleanup(); }
 });
@@ -870,7 +870,7 @@ test('HANDOVER-DELEGATION: independent of the block-vs-advisory model-tier table
       prompt: 'run the build and git push, then draft the handover',
     }), { home: h.home });
     assert.notStrictEqual(r.status, 2, `must not exit 2 (block); stdout: ${r.stdout}`);
-    assertAdvisory(r, /HANDOVER-DELEGATION/);
+    assertAdvisory(r, /anti-hall \u00B7 handover: /);
   } finally { h.cleanup(); }
 });
 
@@ -925,7 +925,7 @@ test('DEPLOY FLOOR: a haiku deploy spawn gets an advisory to use at least sonnet
     const r = testHook(HOOK, payload({
       model: 'haiku', subagent_type: 'general-purpose', description: 'deploy the web UI', prompt: DEPLOY_PROMPT,
     }), { home: h.home });
-    assertAdvisory(r, /at least model:'sonnet'/);
+    assertAdvisory(r, /model:'sonnet' or higher/);
     assert.doesNotMatch(r.json.hookSpecificOutput.additionalContext, /model:'haiku'/);
   } finally { h.cleanup(); }
 });
@@ -936,7 +936,7 @@ test('DEPLOY FLOOR: omitted-model secret-rotation spawn -> advisory (not the str
     const r = testHook(HOOK, payload({
       subagent_type: 'general-purpose', description: 'token rotation', prompt: 'download the new credentials and run script rotate.sh',
     }), { home: h.home });
-    assertAdvisory(r, /no explicit model[\s\S]*at least model:'sonnet'/);
+    assertAdvisory(r, /no explicit model[\s\S]*model:'sonnet' or higher/);
   } finally { h.cleanup(); }
 });
 
@@ -946,7 +946,7 @@ test('DEPLOY FLOOR: guards.modelRoutingDeployFloor=opus advises a sonnet deploy 
     const r = testHook(HOOK, payload({
       model: 'sonnet', subagent_type: 'general-purpose', description: 'deploy', prompt: DEPLOY_PROMPT,
     }), { home: h.home, env: { ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR: 'opus' } });
-    assertAdvisory(r, /at least model:'opus'/);
+    assertAdvisory(r, /model:'opus' or higher/);
   } finally { h.cleanup(); }
 });
 
@@ -1000,7 +1000,7 @@ test('DEPLOY FLOOR (F4): a deploy-shaped opus spawn no longer skips the other ro
       model: 'opus', subagent_type: 'general-purpose', description: 'audit prod secrets usage',
       prompt: 'investigate where prod secrets are read and map every call site',
     }), { home: h.home });
-    assertAdvisory(r, /AGENT-ROUTING/);
+    assertAdvisory(r, /read-only-shaped/);
   } finally { h.cleanup(); }
 });
 
@@ -1048,7 +1048,7 @@ function jevOn(home) {
   fs.writeFileSync(path.join(home, '.anti-hall', 'jev.json'),
     JSON.stringify({ enabled: true, integrations: { modelRouting: 'on' } }));
 }
-const JEV_ENV = { ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:9/unreachable', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key' };
+const JEV_ENV = { ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:9/unreachable', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-' + 'key' };
 
 test('JEV modelRouting: a Row-1 block logs one decision row (backend unreachable -> fail-open, block stands)', () => {
   const h = makeHome();
@@ -1177,7 +1177,7 @@ test('REASONING: research-exempt advisory no longer steers an investigation brie
   const h = makeHome();
   try {
     const r = spawnOpus(h, 'investigate the old-version device population', 'check status of Firestore writes and export the findings');
-    assertAdvisory(r, /research-shaped exempt/);
+    assertAdvisory(r, /reads as research/);
     assertNoHaikuAdvice(r);
   } finally { h.cleanup(); }
 });

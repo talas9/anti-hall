@@ -6,6 +6,7 @@
 // path — see tests/hooks/doctor-repair-r13-sweeps-wired.test.js for the
 // "exported but unwired is not shipped" lesson this follows).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

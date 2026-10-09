@@ -4,7 +4,7 @@
 // DEFECT: computeSummary's orphans[] counted an ARCHIVED workspace's own undrained
 // partition as "unread nobody is reading". healOrphanPartitions classifies exactly
 // that shape as `unhealable / archived-no-family` and writes NOTHING, so the unread
-// can never drain and parent-inbox's "⚠ DEVSWARM ORPHANED MESH" warning re-fired
+// can never drain and parent-inbox's "⚠ devswarm-orphaned-mesh" warning re-fired
 // every turn, forever, with no possible remediation.
 //
 // FIX: those ids move into a QUIET `archivedStranded[]` field. They are NOT dropped
@@ -12,6 +12,7 @@
 // that still has a live identity family, a live-workspace orphan, and the broadcast
 // partition are all unaffected.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

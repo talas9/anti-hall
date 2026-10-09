@@ -76,7 +76,7 @@
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
+const io = require('./lib/guard-io.js');
 const path = require('path');
 
 const { isDevswarmActive, hasOnDiskDevswarmState } = require('./lib/devswarm-detect.js');
@@ -404,26 +404,21 @@ function parseSendResponse(text) {
   return found;
 }
 
-function main() {
+function main(payload, env) {
   // Settings switch devswarm.parentReplyTracker (0.108.4): off -> no-op. Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('devswarm', 'parentReplyTracker')) return; } catch (_) { /* run */ }
-  let raw = '';
-  try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { return; }
-
+  try { if (!require('./lib/settings.js').enabled('devswarm', 'parentReplyTracker', require('./lib/settings.js').envOpts(env))) return; } catch (_) { /* run */ }
   // Child guard runs FIRST, unconditionally, and is NEVER weakened by the
   // on-disk-evidence fallback added below: a child workspace must never
   // write the PARENT's reply state no matter how activation is decided.
   // Cheap: DEVSWARM_SOURCE_BRANCH is an env read, no fs/git.
-  if (isChildWorkspace(process.env)) return;
+  if (isChildWorkspace(env)) return;
 
   // Fast path: the existing explicit env-based activation signal. Kept
   // FIRST and unconditional-of-parsing so the overwhelming majority of Bash
   // calls in a non-DevSwarm-env session (still the common case for anyone
   // with the var set) short-circuit here with zero fs/git work below.
-  const envActive = isDevswarmActive(process.env);
+  const envActive = isDevswarmActive(env);
 
-  let payload = null;
-  try { payload = JSON.parse(raw); } catch (_) { return; }
   if (!payload || typeof payload !== 'object') return;
 
   // Defensive (per task): even though the hooks.json matcher restricts this
@@ -440,7 +435,7 @@ function main() {
   const command = (payload.tool_input && payload.tool_input.command) || '';
   if (!looksLikeDevswarmSend(command)) return;
 
-  const home = os.homedir();
+  const home = io.homeOf(env);
   const text = extractResponseText(payload.tool_response);
   // NOTE: the empty-stdout early return that used to live here has moved BELOW
   // the receipt sweep. A send whose stdout is empty (redirected/swallowed) is
@@ -505,7 +500,7 @@ function main() {
   // unreadable directory) falls through to the pre-existing parse, unchanged.
   const nowTs = Number.isFinite(payload.timestamp) ? payload.timestamp : Date.now();
   let receiptCredits = 0;
-  try { receiptCredits = creditRepliesFromReceipts(home, repoKey, nowTs, process.env); } catch (_) { receiptCredits = 0; }
+  try { receiptCredits = creditRepliesFromReceipts(home, repoKey, nowTs, env); } catch (_) { receiptCredits = 0; }
   if (receiptCredits > 0) return;
 
   // Fallback path only from here on — it needs parseable stdout.
@@ -580,9 +575,12 @@ function main() {
   try { recordReply(repoKey, home, resp.toId, ts); } catch (_) {}
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: a bug here must never block or hard-loop the session.
+// This hook is side-effect-only (it records a reply; it never writes to the streams).
+function evaluate(payload, env) {
+  try { main(payload, env || process.env); } catch (_) { /* Fail-open: a bug here must never block or hard-loop the session. */ }
+  return io.decision(0);
 }
-process.exit(0);
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

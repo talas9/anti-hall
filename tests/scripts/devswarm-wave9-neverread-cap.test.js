@@ -25,6 +25,7 @@
 // and emit `neverReadCapHint` naming the exact command that reads the rest.
 // LOSS-FREE either way: a tail-capped partition's cursor is never advanced.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

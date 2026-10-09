@@ -15,6 +15,7 @@
 // (journal always; sqlite when node:sqlite is present). Mirrors
 // devswarm-retire-duplicate.test.js.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -235,7 +236,7 @@ for (const B of backends) {
 
       const line = cli.healthcheckHumanLine(h.result);
       assert.match(line, /deadSplits=1/, 'human line carries the deadSplits count');
-      assert.match(line, /WARNING/, 'human line surfaces the dangerous kind distinctly (not blended into splits=)');
+      assert.match(line, /warning/, 'human line surfaces the dangerous kind distinctly (not blended into splits=)');
     } finally {
       rm(main); rm(home);
     }

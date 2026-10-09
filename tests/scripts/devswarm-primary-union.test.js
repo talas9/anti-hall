@@ -10,6 +10,7 @@
 // deterministic, ack advances the RIGHT cursor per channel, and a message
 // present in both channels is delivered exactly once.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

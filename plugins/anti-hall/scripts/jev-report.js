@@ -270,12 +270,12 @@ function readAuditSnippet(home, hash) {
 // ahead of a report run is harmless).
 function cmdLabel(hash, label, home) {
   if (!hash) {
-    console.error('label: usage is `jev-report label <hash> [tp|fp]`');
+    console.error('❌ anti-hall · jev-report: label: usage is `jev-report label <hash> [tp|fp]`');
     process.exitCode = 1;
     return;
   }
   if (label !== undefined && label !== 'tp' && label !== 'fp') {
-    console.error('label: usage is `jev-report label <hash> tp|fp`');
+    console.error('❌ anti-hall · jev-report: label: usage is `jev-report label <hash> tp|fp`');
     process.exitCode = 1;
     return;
   }
@@ -290,7 +290,7 @@ function cmdLabel(hash, label, home) {
       fs.appendFileSync(p, JSON.stringify({ ts: new Date().toISOString(), h: hash, label, source: 'human' }) + '\n', 'utf8');
       console.log(`labeled ${hash} as ${label}`);
     } catch (err) {
-      console.error(`label: failed to write ${p}: ${err && err.message}`);
+      console.error(`❌ anti-hall · jev-report: label: failed to write ${p}: ${err && err.message}`);
       process.exitCode = 1;
       return;
     }
@@ -306,7 +306,7 @@ function cmdLabel(hash, label, home) {
 // command.
 function cmdPruneAudit(days, home) {
   if (!Number.isFinite(days) || days <= 0) {
-    console.error('prune-audit: usage is `jev-report prune-audit --days N` (N > 0)');
+    console.error('❌ anti-hall · jev-report: prune-audit: usage is `jev-report prune-audit --days N` (N > 0)');
     process.exitCode = 1;
     return;
   }
@@ -342,7 +342,7 @@ function cmdPruneAudit(days, home) {
     }
     fs.rmSync(p + '.1', { force: true });
   } catch (err) {
-    console.error(`prune-audit: failed: ${err && err.message}`);
+    console.error(`❌ anti-hall · jev-report: prune-audit: failed: ${err && err.message}`);
     process.exitCode = 1;
     return;
   }
@@ -842,7 +842,7 @@ function buildReport(rows, opts = {}) {
     if (!row.id) continue;
     if (!byId.has(row.id)) {
       byId.set(row.id, {
-        id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0,
+        id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0, derivedCalls: 0,
         excludedNoCompare: 0,
         // changedHashByFresh: hash -> direction, populated ONLY from
         // non-cached rows. A decision (content hash) is counted ONCE
@@ -886,6 +886,10 @@ function buildReport(rows, opts = {}) {
       });
     }
     const bucket = byId.get(row.id);
+    // A row tagged derivedFrom (e.g. 'triage': supervisorBlockerLabel / parentGateQuestion
+    // re-read the triage cache label) is NOT an independent Jev decision -- keep it out of
+    // calls / jev% / cache totals and report it separately as derivedCalls.
+    if (typeof row.derivedFrom === 'string' && row.derivedFrom) { bucket.derivedCalls++; continue; }
     bucket.calls++;
     if (row.backend === 'jev' || row.backend === 'cache') bucket.jevAnswered++;
     if (row.backend === 'cache') bucket.cacheHits++;
@@ -948,7 +952,11 @@ function buildReport(rows, opts = {}) {
     // (`typeof row.jev === 'string'` -- a `choice` classifier with no boolean
     // baseline) is excluded from changedRate entirely, regardless of mode.
     const isLabelOnly = typeof row.jev === 'string';
+    // Acted-on metrics read ONLY `changed` for an 'on' row. An 'on' row may
+    // also carry `wouldChange` (recordDisagreement: Jev disagreed but did not
+    // act); that feeds labelability (labelDirection) and never changedRate.
     const rawDirection = row.mode === 'on' ? row.changed : row.wouldChange;
+    const labelDirection = row.mode === 'on' ? (row.changed || row.wouldChange) : row.wouldChange;
     const effectiveDirection = isLabelOnly ? null : rawDirection;
     if (row.h && effectiveDirection && row.backend !== 'cache') {
       bucket.changedHashByFresh.set(row.h, effectiveDirection);
@@ -958,7 +966,7 @@ function buildReport(rows, opts = {}) {
     // the owner can tp/fp-label -- collect its hash separately so the
     // precision/labelled-sample loops below can join it the same way a
     // boolean integration's changed decision would be.
-    if (isLabelOnly && row.h && rawDirection && row.backend !== 'cache') {
+    if (row.h && labelDirection && !effectiveDirection && row.backend !== 'cache') {
       bucket.labelWouldChangeHashesFresh.add(row.h);
     }
     if (Number.isFinite(row.ms)) bucket.latencies.push(row.ms);
@@ -1141,6 +1149,7 @@ function buildReport(rows, opts = {}) {
       cachedCalls: bucket.cacheHits,
       jevAnsweredPct: bucket.calls > 0 ? bucket.jevAnswered / bucket.calls : 0,
       cacheHits: bucket.cacheHits,
+      derivedCalls: bucket.derivedCalls,
       agreementPct,
       // agreeTotal: the denominator behind agreementPct above -- DISTINCT
       // fresh decisions with a compare signal, never a raw row count. Always

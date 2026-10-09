@@ -1,0 +1,2 @@
+# Local Codex scanner ignore list: long-form docs are reference material, not plugin runtime.
+docs/

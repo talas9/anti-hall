@@ -82,11 +82,11 @@ function pathsFor(home) {
 // a snapshot this old means any window it describes has definitely reset.
 const MAX_STALE_MS = 6 * 60 * 60 * 1000;
 
-// Compute THRESHOLD at load time via the unified settings store (v0.108.0):
-// env override > ~/.anti-hall/settings.json > default 85. Same effective
-// value as the old bare `parseInt(process.env.ANTIHALL_LIMIT_THRESHOLD, 10)
-// || 85` when nothing but env/default is in play; settings.json now also
-// takes effect, which the old code could never see.
+// THRESHOLD: load-time snapshot kept ONLY as an exported value for tests/callers
+// that read it. isConserving() does NOT use it: it resolves the threshold at
+// call time through the unified settings store (env override >
+// ~/.anti-hall/settings.json > default 85), so a setting or HOME change after
+// require() takes effect.
 const THRESHOLD = settings.get('limitConserve', 'threshold');
 
 // readCurrentUserID(): bounded read of ~/.claude.json's top-level `userID`
@@ -202,7 +202,7 @@ function isConserving(opts) {
     const home = opts && opts.home;
     const p = pathsFor(home);
     const sopts = home ? { home } : undefined;
-    const threshold = home ? settings.get('limitConserve', 'threshold', undefined, sopts) : THRESHOLD;
+    const threshold = settings.get('limitConserve', 'threshold', undefined, sopts);
     // Layer 1 & 2: explicit override — env > settings.json > default 'auto'
     // (v0.108.0 unified settings; see hooks/lib/settings.js). `source` still
     // reports 'env' only when the value actually came from the env var, so

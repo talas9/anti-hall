@@ -5,6 +5,7 @@
 // real dispatcher, core never requires the dispatcher, the size cap, and the
 // ONE home of the module-level heartbeat temp counter.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -25,7 +25,7 @@ const ENVS = [
   { DEVSWARM_REPO_ID: 'r' },
   { DEVSWARM_REPO_ID: 'r' },
 ];
-const FIRST_LINE = 'To run or re-check it yourself: write the command to a scratchpad script and run `<interpreter> <script>` with run_in_background (then read its output).';
+const FIRST_LINE = 'Do instead: delegate to ';
 
 // Each row: [command, statuses] ordered env0-fg, env0-bg, env1-fg, env1-bg, ...
 const ROWS = [
@@ -118,9 +118,10 @@ test('every blocked variant leads with the working path, before the rule text', 
     for (const c of [REPORTED, 'npm run build']) {
       const r = run(c, env, false);
       assert.strictEqual(r.status, 2, `${c} env ${env}`);
-      assert.ok(r.json.reason.startsWith(FIRST_LINE), `env ${env}: ${r.json.reason.slice(0, 200)}`);
-      assert.ok(r.json.reason.indexOf('COMMAND-DELEGATION RULE') > FIRST_LINE.length, `env ${env}`);
-      assert.match(r.json.reason, /Inline-allowed ONLY/);
+      const lines = r.json.reason.split('\n');
+      assert.ok(lines[2].startsWith(FIRST_LINE) || /^Do instead: .*delegate to /.test(lines[2]), `env ${env}: ${r.json.reason.slice(0, 300)}`);
+      assert.match(lines[3], /^Allowed here: .*scratchpad script/, `env ${env}`);
+      assert.match(r.json.reason, /piped to tail\/head\/wc\/grep -c/);
     }
   }
 });

@@ -26,6 +26,8 @@
 
 Needs **Node.js 22+** on your `PATH` (`node --version`).
 
+**Supported systems:** macOS and Linux, including WSL on Windows (it runs the Linux build). Native Windows is not supported yet.
+
 **Claude Code:**
 
 ```bash
@@ -77,11 +79,17 @@ These are the notable things it runs and writes outside the project. Hook state 
 
 **[Documentation start page](docs/README.md)**: install and uninstall, what each guard blocks and how to turn it off, settings, Jev, DevSwarm, troubleshooting, contributing, security and the changelog.
 
+Escape hatches, remaining limits and hook latency: [Limits and escape hatches](docs/GUIDE.md#limits-and-escape-hatches).
+
 ## Links
 
 - [Documentation](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
 - [Support](https://github.com/talas9/anti-hall/issues)
 - [Privacy](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md)
+
+## Roadmap
+
+**Later: native Windows support** — anti-hall currently supports macOS and Linux (including WSL). Native Windows support is planned for a future release, once the Rust engine has a Windows process-control layer and a non-shell hook wrapper.
 
 ## License
 

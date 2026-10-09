@@ -117,6 +117,11 @@
 // Pure Node built-ins. Cross-platform. Fail-open on EVERY error.
 
 'use strict';
+require('./lib/judge-child-exit');
+
+// Cheap no-op exit for a session this hook cannot act on (non-DevSwarm, child,
+// setting off, user skip) BEFORE the heavy requires below — see the lib header.
+require('./lib/devswarm-primary-gate.js').exitIfInert(module, { setting: 'parentGate', guard: 'devswarm-parent-gate' });
 
 const fs = require('fs');
 const path = require('path');
@@ -811,7 +816,7 @@ function emitStrayingAdvisory(home, sessionId, repoKeyOf, selfKey) {
   const fresh = entries.filter((e) => !seen[e.seenKey]);
   if (!fresh.length) return;
   const sup = require('../companion/lib/devswarm-supervision.js');
-  fs.writeSync(2, 'anti-hall: ' + sup.strayingLine(fresh, (id) => devswarmNames.readName(home, id)) + '\n');
+  fs.writeSync(2, sup.strayingLine(fresh, (id) => devswarmNames.readName(home, id)) + '\n');
   const now = Date.now();
   for (const e of fresh) seen[e.seenKey] = now;
   const keys = Object.keys(seen);
@@ -942,7 +947,7 @@ function main() {
       const result = jevAssist.finalize({
         id: 'parentGateQuestion', home: p.h, hash: p.hash, mode: p.mode,
         trust: 'add-block', baseline: false, judge: () => true, threshold: p.threshold,
-        r: { ok: true, answer: true, confidence: 1, ms: 0 }, cachedFlag: true, state: 'question-needs-answer',
+        r: { ok: true, answer: true, confidence: 1, ms: 0 }, cachedFlag: true, state: 'question-needs-answer', derivedFrom: 'triage',
         sessionId: payload && payload.session_id ? String(payload.session_id) : undefined,
       });
       if (result.final === true) {
@@ -1614,7 +1619,7 @@ function main() {
 
     if (ownNoInboxPath && !ownStoreCounted && !unreadUnknown) {
       // fail-open (never a block), but visible
-      try { fs.writeSync(2, 'anti-hall: workspace ' + d.id + ' (this Primary) unread count could not be determined (no resolvable project key) — not blocking\n'); } catch (_) {}
+      try { fs.writeSync(2, '⚠️ anti-hall · devswarm-parent-gate: workspace ' + d.id + ' (this Primary) unread count could not be determined (no resolvable project key); not blocking\n'); } catch (_) {}
     }
 
     const verdict = foreignProject ? null : readVerdict(d.id, home);
@@ -2050,8 +2055,8 @@ function main() {
       if (!corroborated) {
         try {
           const advisoryId = (fam && fam.survivor && fam.survivor.id != null) ? String(fam.survivor.id) : (members[0] && members[0].id);
-          fs.writeSync(2, 'anti-hall: workspace ' + advisoryId + ' verdict is \'' + status
-            + '\' but uncorroborated (no pending unread, no unanswered question) — not blocking\n');
+          fs.writeSync(2, '⚠️ anti-hall · devswarm-parent-gate: workspace ' + advisoryId + ' verdict is \'' + status
+            + '\' but uncorroborated (no pending unread, no unanswered question); not blocking\n');
         } catch (_) {}
         staleOrEscalated = false;
         status = '';
@@ -2085,7 +2090,7 @@ function main() {
         if (ageKnown && familyOldestUnreadAgeMs <= busyMaxAgeMs) {
           try {
             const ageTxt = ' (oldest ' + Math.max(1, Math.round(familyOldestUnreadAgeMs / 60000)) + 'm)';
-            fs.writeSync(2, 'anti-hall: ' + survivorIdForBusyCheck + ': busy, ' + unionUnread + ' queued' + ageTxt + '\n');
+            fs.writeSync(2, '⚠️ anti-hall · devswarm-parent-gate: ' + survivorIdForBusyCheck + ': busy, ' + unionUnread + ' queued' + ageTxt + '\n');
           } catch (_) {}
           busyAdvisoryHeld = true;
           continue; // advisory only — provably busy, mail recent
@@ -2111,7 +2116,7 @@ function main() {
         if (!familyHadStoreOnlyRealRows && ageKnown && familyOldestUnreadAgeMs <= neglectGraceMs) {
           try {
             const ageSec = Math.max(1, Math.round(familyOldestUnreadAgeMs / 1000));
-            fs.writeSync(2, 'anti-hall: ' + survivorIdForBusyCheck + ': ' + unionUnread
+            fs.writeSync(2, '⚠️ anti-hall · devswarm-parent-gate: ' + survivorIdForBusyCheck + ': ' + unionUnread
               + ' unread — awaiting child pickup (' + ageSec + 's)\n');
           } catch (_) {}
           busyAdvisoryHeld = true;
@@ -2162,7 +2167,7 @@ function main() {
   }
 
   if (archivedUnreadFamilies > 0) {
-    try { fs.writeSync(2, 'anti-hall: ' + archivedUnreadFamilies + ' archived workspace(s) still have unread mail (ignored)\n'); } catch (_) {}
+    try { fs.writeSync(2, '💡 anti-hall · devswarm-parent-gate: ' + archivedUnreadFamilies + ' archived workspace(s) still have unread mail (ignored)\n'); } catch (_) {}
   }
 
   // MEESEEKS P2 — DEVSWARM STRAYING (advisory, never a block). The supervisor
@@ -2426,7 +2431,8 @@ function main() {
     } catch (_) { /* fail-open: best-effort persist, notice still fires this pass */ }
     try {
       const reason = buildReason(blocking, own.id, unanswered, null, truncated, null, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache, own.ownSource || null);
-      fs.writeSync(2, 'anti-hall: ' + reason.split('\n')[0]
+      const firstLine = reason.split('\n')[0];
+      fs.writeSync(2, (/ anti-hall \u00B7 /.test(firstLine) ? '' : '\u26A0\uFE0F anti-hall \u00B7 devswarm-parent-gate: ') + firstLine
         + ' — not blocking (in-flight drain marker fresh for this session)\n');
     } catch (_) {}
     return;
@@ -2461,7 +2467,7 @@ function main() {
           && require('./limit-conserve.js').isConserving().active === true;
       } catch (_) { limitQuiet = false; }
       if (limitQuiet) {
-        try { fs.writeSync(2, 'anti-hall: own-inbox escalation held — limit conservation active\n'); } catch (_) {}
+        try { fs.writeSync(2, '💡 anti-hall · devswarm-parent-gate: own-inbox escalation held; limit conservation active\n'); } catch (_) {}
         return;
       }
       escalateTimes = nextBlocks;
@@ -2508,8 +2514,14 @@ function main() {
 
   const base = (blocking.length || unanswered.length || truncated)
     ? buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache, own.ownSource || null)
-    : 'anti-hall: DevSwarm Stop gate.';
-  const reason = base + (parkedSegment ? '\n\n' + parkedSegment : '') + wakeLine;
+    : 'DevSwarm Stop gate.';
+  const reason = require('./lib/block-message.js').frame({
+    guard: 'devswarm-parent-gate',
+    headline: 'Primary turn held: DevSwarm workspaces or messages need attention first.',
+    why: 'Unanswered questions or unread mail would be dropped if this turn ended now.',
+    override: require('./lib/skip-cmd.js').skipCommand('devswarm-parent-gate') + ' (15-min TTL)',
+    body: base + (parkedSegment ? '\n\n' + parkedSegment : '') + wakeLine,
+  });
 
   // IN-FLIGHT DRAIN MARKER: evaluated ABOVE now (before this persist), not
   // here — see the "R11 Auditor A2 fix" comment at that earlier call site for
@@ -2764,7 +2776,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     const who = unanswered.slice(0, 5).map((q) => (q && q.from != null ? String(q.from) : 'unknown sender')).join('; ');
     const moreQ = unanswered.length > 5 ? ' (and ' + (unanswered.length - 5) + ' more)' : '';
     return (
-      'DEVSWARM ESCALATION: ' + (truncated ? 'a truncated set of unanswered questions' : 'unanswered question(s) from ' + who + moreQ) +
+      'Escalation: ' + (truncated ? 'a truncated set of unanswered questions' : 'unanswered question(s) from ' + who + moreQ) +
       ' has forced-blocked this Stop ' + qEscalateTimes + ' times with no reply sent — ' +
       'a human should look. This will not repeat automatically after this message ' +
       '(the question itself is still tracked and unresolved). ' +
@@ -2793,7 +2805,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     // signature `escalateTimes` times with no observed change is itself the
     // signal, distinct from "here is what to go read/ack".
     body +=
-      'DEVSWARM ESCALATION: this neglect signature (' + stableShown + more + ') has been ' +
+      'Escalation: this neglect signature (' + stableShown + more + ') has been ' +
       'forced-acknowledged ' + escalateTimes + ' times with no observed resolution' +
       (hasIntent ? ' (a stated intent was on file for this exact condition, but the absolute backstop was still reached)' : '') +
       ' — a human should look. This will not repeat automatically after this message. ' +
@@ -2816,7 +2828,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
   // ." sentence with nothing after the colon.
   if (blocking.length > 0) {
     body +=
-      'DEVSWARM NEGLECT: ' + blocking.length + ' workspace(s) still need attention ' +
+      'Neglect: ' + blocking.length + ' workspace(s) still need attention ' +
       'before this Primary turn ends: ' + shown + more + '. ';
   }
   // ATTRIBUTION (re-scoped fix — a family total that is a SUM over >1

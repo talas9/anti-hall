@@ -32,6 +32,7 @@
 // discipline — NOT a guarantee.
 
 const fs = require('fs');
+const io = require('./lib/guard-io.js');
 
 // Bounded transcript tail-scan budget (mirror task-tracker's capped readTail).
 // Small enough to stay well under the 10s hook timeout; the recent hedge we care
@@ -41,9 +42,9 @@ const SCAN_WINDOW = 128 * 1024;
 // ON only when explicitly enabled — env var (highest precedence) or
 // ~/.anti-hall/settings.json guards.mergeGate (v0.108.0 unified settings; see
 // hooks/lib/settings.js). Fail-open to disabled on any error.
-function gateEnabled() {
+function gateEnabled(env) {
   try {
-    return require('./lib/settings.js').get('guards', 'mergeGate') === true;
+    return require('./lib/settings.js').get('guards', 'mergeGate', undefined, require('./lib/settings.js').envOpts(env)) === true;
   } catch (_) {
     return false;
   }
@@ -300,38 +301,34 @@ function isAutoMerge(cmd) {
   return false;
 }
 
-function main() {
-  // 1. Read stdin first; on any read failure fail-open.
-  let raw = '';
-  try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { process.exit(0); }
+function decide(payload, env) {
+  // 1. Unreadable / unparseable stdin (payload undefined) fails open.
+  if (payload === undefined) return io.decision(0);
 
   // 2. Skip-hatch: an explicit user opt-out disables this guard (TTL'd).
   let isSkipped;
   try { ({ isSkipped } = require('./skip-guard.js')); } catch (_) { isSkipped = () => false; }
-  try { if (isSkipped('merge-gate')) process.exit(0); } catch (_) { /* fail-open */ }
+  try { if (isSkipped('merge-gate', env)) return io.decision(0); } catch (_) { /* fail-open */ }
 
   // 3. DEFAULT OFF — no-op unless explicitly enabled.
-  if (!gateEnabled()) process.exit(0);
-
-  let payload;
-  try { payload = JSON.parse(raw); } catch (_) { process.exit(0); }
+  if (!gateEnabled(env)) return io.decision(0);
 
   const ti = payload && payload.tool_input;
   const cmd = ti && typeof ti.command === 'string' ? ti.command : '';
-  if (!cmd) process.exit(0);
+  if (!cmd) return io.decision(0);
 
   // 4. Only consider AUTO-MERGE commands.
-  if (!isAutoMerge(cmd)) process.exit(0);
+  if (!isAutoMerge(cmd)) return io.decision(0);
 
   // 5. Scan the recent assistant output for an UNRESOLVED hedge.
   const tp = payload && payload.transcript_path;
-  if (!tp || typeof tp !== 'string') process.exit(0); // no transcript -> fail-open allow
+  if (!tp || typeof tp !== 'string') return io.decision(0); // no transcript -> fail-open allow
   const records = readRecords(tp);
   const text = records.filter((r) => r.kind === 'assistant').map((r) => r.text).join('\n');
-  if (!text) process.exit(0);
+  if (!text) return io.decision(0);
 
   const hedge = firstHedge(text);
-  if (!hedge) process.exit(0);           // no hedge -> allow
+  if (!hedge) return io.decision(0);           // no hedge -> allow
   const unresolved = isHedgeUnresolved(records);
 
   // JEV SHADOW (mergeGateHedge, default mode "shadow"): only on merge
@@ -349,6 +346,7 @@ function main() {
     const jevAssist = require('./lib/jev-assist.js');
     jevAssist.askDetached({
       id: 'mergeGateHedge',
+      env,
       question: {
         type: 'noul',
         instructions: 'Does the recent reply text below contain an UNRESOLVED ' +
@@ -364,19 +362,26 @@ function main() {
     });
   } catch (_) { /* best-effort — never affects the gate's own decision */ }
 
-  if (!unresolved) process.exit(0); // hedge present but resolved (or resolution came after) -> allow
+  if (!unresolved) return io.decision(0); // hedge present but resolved (or resolution came after) -> allow
 
   // 6. Unresolved hedge + auto-merge -> BLOCK.
   // Report the LAST hedge that actually triggered the block (order-sensitive).
   const blockingHedge = lastHedgePhrase(text) || hedge;
-  const reason =
-    'merge-gate: your recent output flagged a deliverable as pending/unverified ("' +
-    blockingHedge + '") — a self-issued hedge blocks auto-merge (false-done backstop). ' +
-    'Verify it against its agreed criterion or get owner sign-off, then merge; or ' +
-    'skip via ANTIHALL_MERGE_GATE off / isSkipped(\'merge-gate\').';
+  const reason = require('./lib/block-message.js').blockMessage({
+    guard: 'merge-gate',
+    what: 'auto-merge blocked: your recent output flagged a deliverable as pending/unverified ("' + blockingHedge + '").',
+    why: 'A self-issued hedge blocks auto-merge (false-done backstop).',
+    instead: 'verify it against its agreed criterion or get owner sign-off, then merge.',
+    override: 'set ANTIHALL_MERGE_GATE=off, or skip merge-gate',
+  });
 
-  process.stderr.write(reason + '\n');
-  process.exit(2);
+  return io.decision(2, '', reason + '\n');
 }
 
-try { main(); } catch (_) { process.exit(0); } // fail-open on anything unexpected
+function evaluate(payload, env) {
+  try { return decide(payload, env || process.env); } catch (_) { return io.decision(0); } // fail-open on anything unexpected
+}
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

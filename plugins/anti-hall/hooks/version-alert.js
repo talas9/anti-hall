@@ -12,7 +12,7 @@
 //   MOMENT) through v0.107.0 (16:56 UTC) all shipped inside one 24h window;
 //   the alert never fired for ANY of them because the cache "wasn't stale
 //   yet" per the old TTL, even though six releases had happened since the
-//   last check. See CHANGELOG "## Unreleased" for the full writeup.
+//   last check. See the CHANGELOG for the full writeup.
 //
 // DESIGN (non-blocking, cached, two independent cases):
 //   CASE 2 (reload only) — checked FIRST, no network, immune to TTL/cache
@@ -50,6 +50,7 @@
 //   exit 0 : always (fail-open on ANY error — never slow or block session start).
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs   = require('fs');
 const path = require('path');
@@ -279,21 +280,25 @@ function main() {
     // (installed_plugins.json) already newer than the running session needs a
     // /reload-plugins (field-verified 2026-10-01: a reload alone loaded the
     // registered build's hooks and skills); a restart is only the fallback.
+    const hl = headline ? 'Highlight: ' + headline : '';
     const additionalContext = harnessRegistered
-      ? (registryAhead
-        ? `Tell the user now: anti-hall v${mirrored} is already downloaded (you are running v${running}) ` +
-          `and the Claude Code harness registry already names it — run /reload-plugins to load it ` +
-          `(if a hook or skill path still shows v${running} afterwards, restart Claude Code — exit and resume the session) ` +
-          `(Codex: restart Codex / start a fresh session).`
-        : `Tell the user now: anti-hall v${mirrored} is already downloaded (you are running v${running}) ` +
-          `— run /reload-plugins (Claude; if a hook or skill path still shows the old version afterwards, restart Claude Code) ` +
-          `or restart Codex / start a fresh session (Codex) to pick it up.`) +
-        (headline ? ` Highlight: ${headline}` : '')
-      : `Tell the user now: anti-hall v${mirrored} is downloaded locally (you are running v${running}), but the ` +
-        `Claude Code harness has not registered it yet — run /anti-hall:update (Claude; syncs the cache AND the ` +
-        `harness registration) or the anti-hall-update skill (Codex), then /reload-plugins (Claude) or restart (Codex). A reload alone will not ` +
-        `pick this up until the harness registers it.` +
-        (headline ? ` Highlight: ${headline}` : '');
+      ? require('./lib/block-message.js').message({
+        kind: 'update',
+        guard: 'version-alert',
+        what: `v${mirrored} is already downloaded (you are running v${running}).`,
+        instead: registryAhead
+          ? `tell the user now: run /reload-plugins to load it (if a hook or skill path still shows v${running} afterwards, restart Claude Code: exit and resume the session). Codex: restart Codex / start a fresh session.`
+          : 'tell the user now: run /reload-plugins (Claude; restart Claude Code if a hook or skill path still shows the old version afterwards) or restart Codex / start a fresh session (Codex).',
+        extra: [hl],
+      })
+      : require('./lib/block-message.js').message({
+        kind: 'update',
+        guard: 'version-alert',
+        what: `v${mirrored} is downloaded locally (you are running v${running}) but the Claude Code harness has not registered it yet.`,
+        why: 'A reload alone will not pick it up until the harness registers it.',
+        instead: 'tell the user now: run /anti-hall:update (Claude; syncs the cache AND the harness registration) or the anti-hall-update skill (Codex), then /reload-plugins (Claude) or restart (Codex).',
+        extra: [hl],
+      });
     emit(additionalContext);
 
     // Own dedupe marker (never the remote-latest cache) — see RELOAD_MARK_FILE
@@ -330,11 +335,12 @@ function main() {
     const key = { case: 'update', sessionId, latest: cache.latest, running };
     if (sessionId && alreadyAdvisedKey(cache, key)) return;
 
-    const additionalContext =
-      `Tell the user now: anti-hall v${cache.latest} is available (you are running v${running}) ` +
-      `— run /anti-hall:update (Claude) or the anti-hall-update skill (Codex), then do what it ends with: ` +
-      `/reload-plugins (Claude; restart Claude Code only if a hook or skill path still shows the old version afterwards); ` +
-      `restart Codex / start a fresh session (Codex).`;
+    const additionalContext = require('./lib/block-message.js').message({
+      kind: 'update',
+      guard: 'version-alert',
+      what: `v${cache.latest} is available (you are running v${running}).`,
+      instead: 'tell the user now: run /anti-hall:update (Claude) or the anti-hall-update skill (Codex), then do what it ends with: /reload-plugins (Claude; restart Claude Code only if a hook or skill path still shows the old version afterwards); restart Codex / start a fresh session (Codex).',
+    });
     emit(additionalContext);
 
     if (sessionId) {

@@ -44,11 +44,15 @@ const {
   dequoteSegment,
   extractSubstitutions,
   SHELL_VERBS,
+  segmentHeredocBodies,
 } = require('./lib/shell-scan.js');
 // v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
 // fail-open to `undefined` (never the value that would arm/allow a guard).
+// The env of the current evaluate() call: every env-dependent decision reads this, never process.env.
+let guardEnv = process.env;
+function settingsOpts() { return require('./lib/settings.js').envOpts(guardEnv); }
 function settingsGet(section, key) {
-  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+  try { return require('./lib/settings.js').get(section, key, undefined, settingsOpts()); } catch (_) { return undefined; }
 }
 
 // Commands whose FIRST WORD (verb) are always heavy in coordinator context.
@@ -137,6 +141,7 @@ function anchoredAntiHallCli(dir, script, tailSrc) {
 // for the full anchoring rationale: which home-anchor forms are accepted,
 // and why the anchoring stays as narrow as anchoredAntiHallCli above).
 const { anchoredAntiHallStableLauncher } = require('./lib/stable-launcher.js');
+const io = require('./lib/guard-io.js');
 
 // Commands that look heavy by verb but are actually lightweight inspection commands.
 // We allow these even if the verb matches HEAVY_VERBS.
@@ -635,15 +640,14 @@ function detectSubagentMailboxTouch(command, depth) {
   return false;
 }
 function buildSubagentMailboxReason() {
-  return 'DEVSWARM SUBAGENT MAILBOX GUARD: this Bash command invokes the DevSwarm mailbox ' +
-    '(inbox pull/ack/ack-primary/read/read-primary/drain-primary-legacy/tick, inbox messages --ack, mesh read, roster --ack, ' +
-    'reap-orphans, register, archive, or heartbeat) from SUBAGENT context. Only the workspace MAIN THREAD may own ' +
-    'the mailbox — a subagent that acks/reads it advances the shared cursor, so the main thread ' +
-    'silently misses mail (defect f0958b13fe2b). Do NOT delegate mailbox verbs to a subagent. ' +
-    'Report what you learned back to your parent instead; the main thread will drain the ' +
-    'mailbox itself. Read-only verbs (`inbox count`, `inbox peek-primary`, `mesh read --peek`, ' +
-    'plain `roster`) are unaffected. To disable this guard entirely, set ' +
-    'ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1.';
+  return bm().blockMessage({
+    guard: 'devswarm-mailbox',
+    what: 'a DevSwarm mailbox verb (inbox pull/ack/ack-primary/read/read-primary/drain-primary-legacy/tick, inbox messages --ack, mesh read, roster --ack, reap-orphans, register, archive, heartbeat) is blocked in a subagent.',
+    why: 'A subagent that acks or reads advances the shared cursor, so the main thread silently misses mail (defect f0958b13fe2b).',
+    instead: 'report what you learned to your parent; the main thread drains the mailbox itself. Never delegate mailbox verbs.',
+    allowed: '`inbox count`, `inbox peek-primary`, `mesh read --peek`, plain `roster`.',
+    override: 'set ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1 to disable this guard entirely',
+  });
 }
 
 // git-stash-guard (defect b08b26566b92): mutating `git stash` detection —
@@ -778,19 +782,21 @@ function hasProtectedStashesMarker(cwd) {
     return false;
   }
 }
+const bm = () => require('./lib/block-message.js');
 // buildGitStashReason(sub, subagent) -> closed-vocabulary block reason (NEVER
 // reflects command/stdin text). `sub` is drawn from a fixed, code-defined set
 // (see mutatingGitStashInSegment), never raw input.
 function buildGitStashReason(sub, subagent) {
   const scope = subagent
-    ? 'SUBAGENT context (a worker must never touch the coordinator\'s working tree via stash)'
-    : 'this repo (this guard is armed — .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1)';
-  return 'GIT STASH GUARD: `git stash ' + sub + '` is blocked in ' + scope + ' (defect b08b26566b92 — ' +
-    'a worker ran `git stash push` despite an explicit no-stash brief, stopped only by an ' +
-    '.git/index.lock race, not by any guard). Do NOT stash here. If you need to preserve ' +
-    'uncommitted work, commit it (even as a WIP commit) instead — never delegate a stash ' +
-    'to a subagent, and never stash over another agent\'s protected WIP. `git stash list` ' +
-    '(read-only) is unaffected.';
+    ? 'a subagent (workers must never touch the coordinator\'s working tree via stash)'
+    : 'this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1)';
+  return bm().blockMessage({
+    guard: 'git-stash-guard',
+    what: '`git stash ' + sub + '` is blocked for ' + scope + '.',
+    why: 'A stash can swallow another agent\'s protected WIP (defect b08b26566b92).',
+    instead: 'commit the work (even as a WIP commit); never delegate a stash to a subagent.',
+    allowed: '`git stash list` (read-only).',
+  });
 }
 
 // buildDevswarmSendReason(kind) -> closed-vocabulary block reason (NEVER reflects
@@ -798,14 +804,13 @@ function buildGitStashReason(sub, subagent) {
 // PLAN.md's CLI VERB CONTRACT: `send --to-primary|--to <meshId>` to direct-
 // message, `heartbeat <id> --summary "<text>"` to report status.
 function buildDevswarmSendReason(kind) {
-  const killSwitch = ' To disable this guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
-  return 'DEVSWARM MESH-ONLY MESSAGING: `hivecontrol workspace ' + kind + '` is blocked. ' +
-    'anti-hall\'s shared mesh store is the SOLE agent-initiated messaging transport for ' +
-    'DevSwarm — native per-worktree messaging (no from/to/broadcast) is replaced. Do NOT ' +
-    'delegate this to a subagent either — a delegated send writes the native queue ' +
-    'identically. Use the anti-hall DevSwarm CLI instead: `node scripts/devswarm.js send ' +
-    '--to-primary --message-file <path>` (or `--to <meshId>`) to direct-message, or `node ' +
-    'scripts/devswarm.js heartbeat <id> --summary "<text>"` to report status.' + killSwitch;
+  return bm().blockMessage({
+    guard: 'devswarm-mesh-only',
+    what: '`hivecontrol workspace ' + kind + '` is blocked.',
+    why: 'anti-hall\'s shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.',
+    instead: '`node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary "<text>"` to report status.',
+    override: 'set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely',
+  });
 }
 
 // File-read verbs whose path ARGUMENTS must be classified against the DevSwarm
@@ -914,20 +919,23 @@ function detectProtectedFileRead(command, home, cwd, depth) {
 // desync + store-layering violation — NOT "drains the queue", which is false for
 // the append-only inbox). NEVER echoes the path (injection hygiene).
 function buildRawFileReadReason(kind) {
-  const killSwitch = ' To disable this guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
+  const override = 'set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely';
   if (kind === 'deny-store') {
-    return 'DEVSWARM STORE READ-GUARD: reading the raw DevSwarm store (the SQLite db + ' +
-      'sidecars, or the store journal NDJSON) via a shell read is blocked. The store is ' +
-      'the write/derive layer — hooks/agents NEVER open it (devswarm-store.js layering); ' +
-      'a raw read risks a partial/inconsistent view and a store-layering violation. Read ' +
-      'through the wrapper: `devswarm.js inbox read <id>` (or `devswarm.js inbox pull ' +
-      '<id>` to import first).' + killSwitch;
+    return bm().blockMessage({
+      guard: 'devswarm-store-read',
+      what: 'a shell read of the raw DevSwarm store (SQLite db, sidecars, journal NDJSON) is blocked.',
+      why: 'The store is the write/derive layer; a raw read risks a partial view and a layering violation.',
+      instead: '`devswarm.js inbox read <id>` (or `devswarm.js inbox pull <id>` first to import).',
+      override,
+    });
   }
-  return 'DEVSWARM INBOX READ-GUARD: reading the raw DevSwarm inbox file via a shell ' +
-    'read is blocked. This does NOT drain the queue (append-only NDJSON), but a raw read ' +
-    'BYPASSES THE DURABLE CURSOR — it causes CURSOR DESYNC (messages re-processed or ' +
-    'skipped) and violates the store layering. Read the safe, cursor-tracked way: ' +
-    '`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.' + killSwitch;
+  return bm().blockMessage({
+    guard: 'devswarm-inbox-read',
+    what: 'a shell read of the raw DevSwarm inbox file is blocked.',
+    why: 'It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.',
+    instead: '`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.',
+    override,
+  });
 }
 
 // buildDevswarmReason(kind, env) -> closed-vocabulary block reason. NEVER reflects
@@ -943,32 +951,26 @@ function buildDevswarmReason(kind, env) {
   try { inboxCmd = require('./lib/settings.js').getWithEnv('devswarm', 'inboxCmd', '', e); }
   catch (_) { inboxCmd = e.ANTIHALL_DEVSWARM_INBOX_CMD; }
   const hasInboxCmd = typeof inboxCmd === 'string' && inboxCmd.trim() !== '';
-  const doNotDelegate =
-    ' Do NOT delegate this to a subagent either — a delegated read drains the ' +
-    'queue identically.';
-  const viaDurable = hasInboxCmd
-    ? ' Read pending messages via the consumer-configured ANTIHALL_DEVSWARM_INBOX_CMD ' +
-      'command instead — it does not drain the native queue.'
-    : '';
-  const viaWrapper =
-    ' Use the anti-hall DevSwarm CLI instead — `devswarm.js inbox pull <id>` then ' +
-    '`devswarm.js inbox read <id>` — which reads via the durable cursor.';
-  const killSwitch =
-    ' To disable the DevSwarm read-guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
+  const instead = (hasInboxCmd ? 'read via the configured ANTIHALL_DEVSWARM_INBOX_CMD, or ' : '') +
+    '`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.';
+  const override = 'set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely';
   if (kind === 'monitor') {
-    return 'DEVSWARM COORDINATOR-READ REDIRECT: `hivecontrol workspace monitor` is ' +
-      'a blocking long-poll with no default timeout — running it inline hangs the ' +
-      'shell/Bash call until a message arrives or the process is killed, and it ' +
-      'consumes the native message queue. Do NOT run it here.' +
-      doNotDelegate + viaDurable + viaWrapper + killSwitch;
+    return bm().blockMessage({
+      guard: 'devswarm-read-guard',
+      what: '`hivecontrol workspace monitor` is blocked.',
+      why: 'It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.',
+      instead,
+      override,
+    });
   }
-  return 'DEVSWARM COORDINATOR-READ REDIRECT: `hivecontrol workspace read-messages` ' +
-    'is a DESTRUCTIVE read — it mark-reads / drains the native message queue. Under ' +
-    'DevSwarm the durable inbox cursor is the read path, so draining the native queue ' +
-    'loses messages the durable layer still needs. Do NOT run it here.' +
-    doNotDelegate + viaDurable + viaWrapper + killSwitch +
-    ' Note: `hivecontrol workspace message-count` reflects the NATIVE queue only; a ' +
-    '0 there does NOT mean there are no pending messages when a durable inbox is in use.';
+  return bm().blockMessage({
+    guard: 'devswarm-read-guard',
+    what: '`hivecontrol workspace read-messages` is blocked.',
+    why: 'It mark-reads and drains the native queue, losing messages the durable inbox still needs.',
+    instead,
+    allowed: '`message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.',
+    override,
+  });
 }
 
 // Heredoc handling (opener kept, body skipped) fixes the confirmed root cause
@@ -1023,7 +1025,18 @@ function splitSegmentsDetailed(cmd) {
     cur = '';
   }
 
+  let heredoc = null; // the pending heredoc whose body starts after its opener line
+
   while (i < n) {
+    if (heredoc && i >= heredoc.lineEnd) {
+      // End of the opener line: the heredoc closes the logical command.
+      flush('heredoc');
+      i = Math.max(i, heredoc.end);
+      heredoc = null;
+      inSingle = false;
+      inDouble = false;
+      continue;
+    }
     const c = cmd[i];
     const c2 = i + 1 < n ? cmd[i + 1] : '';
 
@@ -1073,16 +1086,17 @@ function splitSegmentsDetailed(cmd) {
       continue;
     }
 
-    // Heredoc: consume the opener on the current segment, then skip the BODY
-    // (up to and including the terminator line) without emitting it as
-    // segments. See the heredoc-handling comment above splitSegments.
-    if (c === '<' && c2 === '<') {
+    // Heredoc: the operator word stays on the current segment and the rest of
+    // the opener line is split as usual (`cat <<EOF | git commit -F -` is two
+    // segments); at that line's newline the BODY (up to and including the
+    // terminator line) is skipped without emitting segments. A second `<<` on
+    // the same line is left as text (its body is not skipped: stricter).
+    if (c === '<' && c2 === '<' && !heredoc) {
       const parsed = parseHeredocAt(cmd, i);
       if (parsed) {
-        cur += parsed.openerText;
-        i = parsed.end;
-        // The heredoc construct closes the current logical command/segment.
-        flush('heredoc');
+        cur += cmd.slice(i, parsed.openerEnd);
+        i = parsed.openerEnd;
+        if (parsed.lineEnd !== undefined) heredoc = parsed;
         continue;
       }
     }
@@ -1596,7 +1610,19 @@ function isSafeSqliteReadonly(segment, wholeCommand) {
 // create-token, update-container, reset-windows-password, …) are refused too.
 const GCLOUD_REFUSED_PATH_RE = /^(?:access|ssh|scp|run|sign|print-.*|attach-.*|detach-.*|add-.*|set-.*|remove-.*|(?:reset|suspend|resume|publish|call|execute|decrypt|encrypt|delete|create|update|deploy)(?:-.*)?)$/;
 const GCLOUD_BOOLEAN_FLAGS = new Set(['--quiet', '--uri']);
-function gcloudReadGrammar(rest, verbs) {
+// Value-taking read flags that may carry a SEPARATED value (`--project foo`,
+// `--limit 5`). Closed list: any other `--k v` stays refused (a separated
+// value could otherwise pose as the verb or a second positional). The value
+// must be one non-dash token. Only honoured when the caller passes
+// sepValues=true, i.e. from isWholeCommandReadOnlyForm (the whole command, or one
+// `;`/`&&`-joined unit of a chain, is validated there; the per-segment exemptions
+// keep the strict `--k=v` grammar). `--format`/`--filter` are NOT on the list: the
+// narrow shape-B carve-out requires the `--format=<json|yaml|value(..)>` form.
+const GCLOUD_VALUE_FLAGS = new Set([
+  '--project', '--region', '--zone', '--location', '--limit', '--freshness',
+  '--page-size', '--sort-by',
+]);
+function gcloudReadGrammar(rest, verbs, sepValues) {
   let i = 0;
   const path = [];
   while (i < rest.length && !rest[i].startsWith('-')) {
@@ -1627,6 +1653,11 @@ function gcloudReadGrammar(rest, verbs) {
       continue;
     }
     if (GCLOUD_BOOLEAN_FLAGS.has(t)) { flags.push(t); continue; }
+    if (sepValues === true && GCLOUD_VALUE_FLAGS.has(t) && i + 1 < rest.length && !rest[i + 1].startsWith('-')) {
+      flags.push(t + '=' + rest[i + 1]);
+      i++;
+      continue;
+    }
     return null;
   }
   return { path, verb, positional, flags };
@@ -1680,6 +1711,133 @@ function isReadOnlyCloudInspect(segment) {
   return true;
 }
 
+// isWholeCommandReadOnlyForm(command) -> true iff the COMPLETE command is
+// exactly one read-only form, optionally piped into bounded non-executing sinks:
+//   (a) `<firebase|gcloud|aws|az|kubectl|helm|terraform|pulumi|vercel|netlify|
+//       heroku|serverless> --version|-V` (optionally a trailing `2>&1` /
+//       `2>/dev/null`), or
+//   (b) a gcloud describe/list/get/read under the strict grammar WITH separated
+//       values for the closed GCLOUD_VALUE_FLAGS list.
+// Unlike a per-segment light exception this approves nothing else on the line:
+// every delimiter must be a pipe (no ;, &&, ||, &, newline, heredoc), there is
+// no substitution/expansion/backslash, no redirection but one trailing `2>&1`
+// (or `2>/dev/null` on a version query), and each pipe stage after the first is
+// a closed stdin-only tail/head/wc/grep -c/-m N shape (isClosedSinkStage: no
+// file operand, no unknown flag) — never sh/bash/xargs/eval/jq/tee.
+const VERSION_CLI_RE = /^(?:firebase|gcloud|aws|az|kubectl|helm|terraform|pulumi|vercel|netlify|heroku|serverless)\s+(?:--version|-V)$/i;
+function isWholeCommandReadOnlyForm(command) {
+  const cmd = command.trim();
+  if (!/^(?:firebase|gcloud|aws|az|kubectl|helm|terraform|pulumi|vercel|netlify|heroku|serverless)\s/i.test(cmd)) return false;
+  if (/[\n\r]/.test(cmd) || hasShellExpansionAnywhere(cmd)) return false;
+  const split = splitSegmentsDetailed(cmd);
+  const segs = split.segments;
+  if (!segs.length || split.delims[split.delims.length - 1] !== 'end') return false;
+  for (let i = 0; i < split.delims.length - 1; i++) if (split.delims[i] !== '|') return false;
+  const first = segs[0].trim();
+  let ok = false;
+  const vq = first.replace(/\s+2>(?:&1|\/dev\/null)$/, '');
+  if (VERSION_CLI_RE.test(vq)) {
+    ok = !hasUnquotedRedirectChar(vq);
+  } else {
+    const stripped = stripGcloudStderrMerge(first);
+    if (!hasUnquotedRedirectChar(stripped)) {
+      const st = tokenizeQuoted(stripped);
+      if (st[0] === 'gcloud') {
+        const g = gcloudReadGrammar(st.slice(1), GCLOUD_INSPECT_VERBS, true);
+        ok = !!g && !(g.verb === 'read' && g.path[g.path.length - 1] !== 'logging');
+      }
+    }
+  }
+  if (!ok) return false;
+  for (let i = 1; i < segs.length; i++) {
+    if (!isClosedSinkStage(segs[i].trim())) return false;
+  }
+  return true;
+}
+
+// readOnlyFormUnits(split) -> Set of segment indexes that belong to a chain UNIT which is, on its
+// own, exactly one isWholeCommandReadOnlyForm. A chain is cut into units at `;` / `&&` only (a unit is
+// its pipe-joined segments). The exemption applies ONLY when EVERY unit of the chain is read-only on
+// its face: a whole read-only form, or one plain read-only git segment (a safe `git fetch`, or
+// `git rev-parse|status|log|show` in the plain-chain shapes). Any other unit (`rm -rf x`, `which x`,
+// an unclosed sink, an expansion, `||`, `&`, newline, group, heredoc) leaves the set empty, so the
+// line is judged segment by segment exactly as before. Why: `git fetch -q origin main && git rev-parse
+// origin/main && gcloud run services describe svc --project p | head -2` is three light reads, but the
+// gcloud segment's space-separated read flags are only accepted when its unit is validated whole, and
+// the whole-line test never reaches a unit inside a chain.
+function readOnlyFormUnits(split) {
+  const none = new Set();
+  const out = new Set();
+  const { segments, delims } = split;
+  if (segments.length < 2 || !delims.some((x) => x === '&&' || x === ';')) return none;
+  let start = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const last = i === segments.length - 1;
+    const cut = last || delims[i] === '&&' || delims[i] === ';';
+    if (!cut) { if (delims[i] !== '|') return none; continue; }
+    let text = '';
+    for (let j = start; j <= i; j++) text += (j > start ? ' | ' : '') + segments[j].trim();
+    if (isWholeCommandReadOnlyForm(text)) {
+      for (let j = start; j <= i; j++) out.add(j);
+    } else if (!(start === i && isPlainReadGitSegment(segments[i].trim()))) {
+      return none;
+    }
+    start = i + 1;
+  }
+  return out;
+}
+
+// One plain read-only git segment: a fetch that isSafeGitFetch accepts, or a log/status/show/rev-parse in
+// the exact shapes classifyPlainGitChainSegment recognises (no redirect, no expansion, no extra flags).
+function isPlainReadGitSegment(segment) {
+  if (isSafeGitFetch(segment)) return !hasUnquotedRedirectChar(segment) && !hasShellExpansionAnywhere(segment);
+  const cls = classifyPlainGitChainSegment(segment);
+  return !!cls && (cls.kind === 'log' || cls.kind === 'status' || cls.kind === 'show' || cls.kind === 'revparse');
+}
+
+// isClosedSinkStage(segment) -> true iff the stage is EXACTLY one of the closed
+// stdin-only sink shapes (no file operand, no unknown flag; only used by
+// isWholeCommandReadOnlyForm AND isBoundedSinkSegment, so every sink that
+// decides an allow uses this one grammar):
+//   head|tail            [no args | -N | -n N | -nN | -n +N | -c N | -cN]   (numeric only)
+//   wc                   [-l|-c|-w|-m ...], no operands
+//   grep [-E|-F|-G|-i|-v|-w|-x|-n|-H|-h|-o|-a]... (-c | -m N) PATTERN   (one pattern token, no file operand)
+function isClosedSinkStage(segment) {
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  return closedSinkTokens(tokenizeQuoted(segment));
+}
+function closedSinkTokens(t) {
+  if (!t.length) return false;
+  const rest = t.slice(1);
+  if (t[0] === 'head' || t[0] === 'tail') {
+    if (rest.length === 0) return true;
+    if (rest.length === 1) return /^-(?:\d+|[nc]\+?\d+)$/.test(rest[0]);
+    if (rest.length === 2) return (rest[0] === '-n' || rest[0] === '-c') && /^\+?\d+$/.test(rest[1]);
+    return false;
+  }
+  if (t[0] === 'wc') return rest.every((a) => /^-[lcwm]$/.test(a));
+  if (t[0] === 'grep') {
+    // Bounded by -c or -m N; match-mode flags from a closed set; exactly one
+    // non-flag operand (the pattern). No -f/-e/-r/-R/--include/--file: nothing
+    // that names a file or a second pattern source.
+    let bounded = false;
+    let pattern = 0;
+    for (let i = 0; i < rest.length; i++) {
+      const a = rest[i];
+      if (a === '-c') { bounded = true; continue; }
+      if (a === '-m') {
+        if (!/^\d+$/.test(rest[i + 1] || '')) return false;
+        bounded = true; i++; continue;
+      }
+      if (/^-[EFGivwxnHhoa]+$/.test(a)) continue;
+      if (a.startsWith('-')) return false;
+      pattern++;
+    }
+    return bounded && pattern === 1;
+  }
+  return false;
+}
+
 // P2 fix: `gh` mutating subcommands were never classified heavy at all — `gh`
 // is not a HEAVY_VERB and no HEAVY_PATTERN mentions it, so isReadOnlyCloudInspect
 // (an EXEMPTION check, only ever relevant once something is already flagged
@@ -1698,6 +1856,44 @@ const GH_MUTATING_SUBCOMMANDS = {
 };
 const GH_API_MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
+// isReadOnlyGhGraphql(tokens, ghIdx) -> true only for a provably read-only
+// `gh api graphql` call (closed read set; anything unknown => false):
+// endpoint `graphql`|`/graphql`, fields only as separated -f/-F/--field/
+// --raw-field pairs with exactly one `query=` whose value is empty or starts
+// with `{` / `query` + [space { (], and has no `$`, backtick, leading `@` or
+// `mutation`; every other flag must be in the read set below.
+const GH_GQL_VALUE_FLAGS = new Set(['--jq', '-q', '-H', '--header', '--hostname', '--cache', '-t', '--template']);
+const GH_GQL_BOOL_FLAGS = new Set(['--paginate', '--slurp', '--silent', '-i', '--include', '--verbose']);
+const GH_GQL_FIELD_FLAGS = new Set(['-f', '-F', '--field', '--raw-field']);
+function isReadOnlyGhGraphql(tokens, ghIdx) {
+  if (!/^\/?graphql$/i.test(tokens[ghIdx + 2] || '')) return false;
+  let queries = 0;
+  for (let i = ghIdx + 3; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (GH_GQL_BOOL_FLAGS.has(t)) continue;
+    if (GH_GQL_VALUE_FLAGS.has(t)) {
+      if (i + 1 >= tokens.length) return false;
+      i++;
+      continue;
+    }
+    if (GH_GQL_FIELD_FLAGS.has(t)) {
+      if (i + 1 >= tokens.length) return false;
+      const v = tokens[++i];
+      const eq = v.indexOf('=');
+      if (eq === -1) return false;
+      if (v.slice(0, eq) !== 'query') continue;
+      const q = v.slice(eq + 1);
+      if (/[$`]/.test(q) || q.startsWith('@') || /\bmutation\b/i.test(q)) return false;
+      const qt = q.trim();
+      if (qt !== '' && !qt.startsWith('{') && !/^query[\s{(]/.test(qt)) return false;
+      queries++;
+      continue;
+    }
+    return false;
+  }
+  return queries === 1;
+}
+
 // isHeavyGhSegment(segment) -> true iff this is a `gh` invocation of a
 // mutating subcommand: pr merge/close/edit/create/review, issue
 // create/close/delete/edit, release create/delete/edit/upload, repo
@@ -1707,7 +1903,7 @@ const GH_API_MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 // method). Gated on effectiveVerb(segment) === 'gh' first, same discipline
 // as isHeavyGitSegment, so `gh` appearing only as quoted DATA is never
 // misread as a real invocation.
-function isHeavyGhSegment(segment) {
+function isHeavyGhSegment(segment, command) {
   if (effectiveVerb(segment) !== 'gh') return false;
   const tokens = tokenizeQuoted(segment);
   const ghIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'gh');
@@ -1717,9 +1913,17 @@ function isHeavyGhSegment(segment) {
   if (group === 'workflow' && sub === 'run') return true;
   if (GH_MUTATING_SUBCOMMANDS[group] && GH_MUTATING_SUBCOMMANDS[group].has(sub)) return true;
   if (group === 'api') {
+    // The splitter cuts a segment AT a backtick, so a trailing `query=`\`cmd\``
+    // looks empty here; any backtick in the whole command voids the read proof.
+    if (isReadOnlyGhGraphql(tokens, ghIdx) && !(command || '').includes('`')) return false;
+    // `gh api graphql` always POSTs: heavy unless proven a read above.
+    if (tokens.slice(ghIdx + 2).some((t) => /^\/?graphql$/i.test(t))) return true;
     for (let i = ghIdx + 2; i < tokens.length; i++) {
       const t = tokens[i];
       if (t === '-f' || t === '-F' || t === '--field' || t === '--raw-field') return true;
+      // Attached forms (-fk=v, -Fk=v, --field=k=v, --raw-field=k=v) and a
+      // request body (--input f / --input=f) are data args, same as separated.
+      if (/^-[fF]./.test(t) || /^--(field|raw-field|input)=/.test(t) || t === '--input') return true;
       if (t === '-X' || t === '--method') {
         if (GH_API_MUTATING_METHODS.has((tokens[i + 1] || '').toUpperCase())) return true;
       }
@@ -1792,7 +1996,7 @@ function isHeavySegment(segment, command) {
   if (isSafeNodeEval(segment)) return false;
   if (isNodeDashEInvocation(segment)) return true;
   if (isHeavyGitSegment(segment)) return true;
-  if (isHeavyGhSegment(segment)) return true;
+  if (isHeavyGhSegment(segment, command)) return true;
   if (isFlaggedInterpreterScript(segment)) return true;
   const verb = effectiveVerb(segment);
   if (verb && HEAVY_VERBS.has(verb)) return true;
@@ -1912,7 +2116,12 @@ function extractEvalPayload(segment) {
 function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const d = typeof depth === 'number' ? depth : 0;
-  for (const seg of splitSegments(command)) {
+  if (d === 0 && isWholeCommandReadOnlyForm(command)) return false;
+  const split = splitSegmentsDetailed(command);
+  const exempt = d === 0 ? readOnlyFormUnits(split) : null;
+  for (let si = 0; si < split.segments.length; si++) {
+    if (exempt && exempt.has(si)) continue;
+    const seg = split.segments[si];
     if (isHeavySegment(seg, command)) return true;
     if (d < 3) {
       // (b) shell -c payload: unwrap and evaluate as command(s).
@@ -2083,9 +2292,10 @@ const SCRIPT_CHECK_REFUSED_FLAG_RE =
 
 // isInsideAntiHallPlugin(realPath) -> true when realPath lies under THIS
 // plugin's root (hooks/..) or under any ancestor directory whose
-// .claude-plugin/plugin.json or .codex-plugin/plugin.json names "anti-hall"
-// (a second install, a cache copy, a dev checkout). Fail-closed: an error
-// reading a manifest that exists counts as anti-hall.
+// .claude-plugin/plugin.json names "anti-hall" (a second install, a cache
+// copy, a dev checkout). Every anti-hall copy ships that manifest, the Codex
+// install included (it runs these same hooks from the same plugin dir).
+// Fail-closed: an error reading a manifest that exists counts as anti-hall.
 function isInsideAntiHallPlugin(realPath) {
   let ownRoot;
   try { ownRoot = fs.realpathSync(path.resolve(__dirname, '..')); } catch (_) { ownRoot = path.resolve(__dirname, '..'); }
@@ -2093,9 +2303,8 @@ function isInsideAntiHallPlugin(realPath) {
   if (relOwn && !relOwn.startsWith('..') && !path.isAbsolute(relOwn)) return true;
   let dir = path.dirname(realPath);
   for (let i = 0; i < 16; i++) {
-    for (const m of ['.claude-plugin', '.codex-plugin']) {
-      const manifest = path.join(dir, m, 'plugin.json');
-      if (!fs.existsSync(manifest)) continue;
+    const manifest = path.join(dir, '.claude-plugin', 'plugin.json');
+    if (fs.existsSync(manifest)) {
       try {
         if (String(JSON.parse(fs.readFileSync(manifest, 'utf8')).name) === 'anti-hall') return true;
       } catch (_) { return true; }
@@ -2267,7 +2476,10 @@ function isQualifyingSingleTargetCheck(segment, ctx) {
   return false;
 }
 
-function isBoundedSinkSegment(segment) {
+// isLooseSinkShape(segment) -> true iff the stage NAMES a sink-like command
+// (tail/head/wc, or grep with -c / -m N somewhere). Shape only: it says nothing
+// about operands or flags, so it never decides an allow by itself.
+function isLooseSinkShape(segment) {
   const verb = effectiveVerb(segment);
   if (!verb) return false;
   if (verb === 'tail' || verb === 'head' || verb === 'wc') return true;
@@ -2275,6 +2487,33 @@ function isBoundedSinkSegment(segment) {
     return /(^|\s)-c(?=\s|$)/.test(segment) || /(^|\s)-m\s*\d+(?=\s|$)/.test(segment);
   }
   return false;
+}
+
+// isBoundedSinkSegment(segment) -> true iff the stage is a sink-shaped command
+// that ALSO satisfies the closed grammar (isClosedSinkStage): stdin-only, no
+// file operand, no unknown flag. `head /etc/passwd` / `tail -n +1 --pid=1` are
+// NOT sinks. `2>&1` only merges stderr into the pipe, so it is judged without it.
+function isBoundedSinkSegment(segment) {
+  if (!isLooseSinkShape(segment)) return false;
+  // A leading `command ` (bypass an alias, e.g. a grep wrapper) is the one wrapper kept.
+  return isClosedSinkStage(segment.replace(/(^|\s)2>&1(?=\s|$)/g, ' ').trim().replace(/^command\s+/, ''));
+}
+
+// isScratchFileSinkSegment(segment, ctx) -> true iff the stage is a closed sink
+// whose only file operands are scratchpad/tmp paths (isScratchpadOrTmpPath). Used
+// ONLY by the background scratch-script chain, whose documented remedy shape is
+// `script > out; wc -l out; grep -c PAT out`: the sink reads the script's own
+// output file, never an arbitrary path.
+function isScratchFileSinkSegment(segment, ctx) {
+  if (!isLooseSinkShape(segment)) return false;
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  const t = tokenizeQuoted(segment.trim().replace(/^command\s+/, ''));
+  let end = t.length;
+  // grep: exactly one trailing file operand (the token before it is the
+  // pattern, never a path); wc/head/tail: any number of trailing operands.
+  const maxStrip = t[0] === 'grep' ? 1 : t.length;
+  for (let n = 0; n < maxStrip && end > 1 && !t[end - 1].startsWith('-') && isScratchpadOrTmpPath(t[end - 1], ctx); n++) end--;
+  return closedSinkTokens(t.slice(0, end));
 }
 
 // Read-only FILTER stages that may sit between a qualifying check and its
@@ -2406,7 +2645,10 @@ function isBoundedVerificationCommand(command, ctx) {
       kind = 'check';
       sawQualifying = true;
       pipelineHasCheck = true;
-    } else if (isBoundedSinkSegment(seg)) {
+    } else if (isLooseSinkShape(seg)) {
+      // A sink-shaped stage that breaks the closed grammar (file operand,
+      // unknown flag) bounds nothing and is never a light segment either.
+      if (!isBoundedSinkSegment(seg)) return false;
       const precedingDelim = idx > 0 ? delims[idx - 1] : null;
       if (precedingDelim !== '|') return false; // sequential (;/&&), not piped: not bounded
       kind = 'sink';
@@ -2461,8 +2703,7 @@ function isBoundedVerificationCommand(command, ctx) {
 // doctor.js reports each case.
 function loadProjectCommandAllowPatterns(cwd) {
   const lib = require('./lib/command-allow.js');
-  const testHomeGuard = require('../companion/lib/test-home-guard.js');
-  return lib.loadTrustedPatterns(cwd, testHomeGuard.resolveHome(undefined, process.env));
+  return lib.loadTrustedPatterns(cwd, io.homeOf(guardEnv));
 }
 
 // hasUnquotedRedirectChar(segment) -> true if a bare (unquoted) '>' or '<'
@@ -2556,8 +2797,7 @@ function redactAuditCommand(command) {
 function appendProjectCommandAllowAudit(entry) {
   let fd = null;
   try {
-    const testHomeGuard = require('../companion/lib/test-home-guard.js');
-    const home = testHomeGuard.resolveHome(undefined, process.env);
+    const home = io.homeOf(guardEnv);
     const ahDir = path.join(home, '.anti-hall');
     const logDir = path.join(ahDir, 'logs');
     fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
@@ -2658,6 +2898,11 @@ const TRAILING_STDERR_MERGE_RE = /\s+2>&1\s*$/;
 const PLAIN_LOG_SEGMENT_RE = /^git\s+log\s+--oneline(?:\s+-\d+)?\s*$/;
 const PLAIN_STATUS_SEGMENT_RE = /^git\s+status(?:\s+(?:--short|-s))?\s*$/;
 const PLAIN_SHOW_SEGMENT_RE = /^git\s+show\s+--stat(?:\s+(?:-\d+|HEAD))?\s*$/;
+// Post-push verification reads: `git ls-remote [--heads] <remote> [<ref>]` and
+// `git rev-parse [--short] <HEAD|ref>`. Bare tokens only (no flag other than
+// the one listed, no `:`/`+`); the ls-remote remote must be a configured name.
+const PLAIN_LSREMOTE_SEGMENT_RE = /^git\s+ls-remote(?:\s+--heads)?\s+((?![-+])[A-Za-z0-9_.\/-]+)(?:\s+(?![-+])[A-Za-z0-9_.\/-]+)?\s*$/;
+const PLAIN_REVPARSE_SEGMENT_RE = /^git\s+rev-parse(?:\s+--short)?\s+(?![-+])[A-Za-z0-9_.\/-]+\s*$/;
 
 // hasSubstitutionOutsideSingleQuotes(segment) -> true if a `` ` `` or `$(`
 // appears anywhere the shell would actually EXPAND it — i.e. outside single
@@ -2734,6 +2979,9 @@ function classifyPlainGitChainSegment(segment) {
   if (PLAIN_LOG_SEGMENT_RE.test(trimmed)) return { kind: 'log' };
   if (PLAIN_STATUS_SEGMENT_RE.test(trimmed)) return { kind: 'status' };
   if (PLAIN_SHOW_SEGMENT_RE.test(trimmed)) return { kind: 'show' };
+  const lr = trimmed.match(PLAIN_LSREMOTE_SEGMENT_RE);
+  if (lr) return { kind: 'lsremote', remote: lr[1] };
+  if (PLAIN_REVPARSE_SEGMENT_RE.test(trimmed)) return { kind: 'revparse' };
   return null;
 }
 
@@ -2938,6 +3186,16 @@ function isAllowedPlainPushChain(command, cwd, payload) {
     delims.pop();
     delims[delims.length - 1] = 'end';
   }
+  // (d2) a `| tail/head -N` output filter piped from a PLAIN PUSH segment in
+  // the MIDDLE of the chain (`git push origin b 2>&1 | tail -3; git ls-remote …`):
+  // drop the filter and let the push segment carry the following delimiter.
+  for (let i = segments.length - 2; i >= 0; i--) {
+    if (delims[i] !== '|' || !PLAIN_OUTPUT_FILTER_RE.test(segments[i + 1].trim())) continue;
+    const prev = classifyPlainGitChainSegment(segments[i].trim());
+    if (!prev || prev.kind !== 'push') continue;
+    segments.splice(i + 1, 1);
+    delims.splice(i, 1);
+  }
   // Every delimiter between segments must be '&&' or ';' — a pipe, '||',
   // background '&', newline, heredoc, subshell/group, or command
   // substitution boundary disqualifies the WHOLE chain. The final delimiter
@@ -2982,7 +3240,9 @@ function isAllowedPlainPushChain(command, cwd, payload) {
     // meaningful AFTER a push has already appeared in this chain — before
     // that, `git status`/`git log`/`git show` were never part of the
     // original allowance and must not silently start qualifying.
-    if ((cls.kind === 'log' || cls.kind === 'status' || cls.kind === 'show') && !sawPush) return false;
+    if ((cls.kind === 'log' || cls.kind === 'status' || cls.kind === 'show' ||
+         cls.kind === 'lsremote' || cls.kind === 'revparse') && !sawPush) return false;
+    if (cls.kind === 'lsremote' && !isPlainPushRemoteAllowed(cls.remote, gitCwd)) return false;
   }
   return true;
 }
@@ -3176,6 +3436,15 @@ function isAllowedGcloudReadCommand(command) {
 // ---------------------------------------------------------------------------
 const BACKGROUND_SCRIPT_INTERPRETERS = new Set(['python3', 'node', 'sh', 'bash']);
 const BACKGROUND_CHAIN_DELIMS = new Set([';', '&&', '|', 'end']);
+// Valueless interpreter flags that may sit between the interpreter and the
+// script (`python3 -I probe.py`). Closed per interpreter: none of these takes a
+// value, loads code (-c/-m/-W/--require/--import and friends are NOT here) or
+// changes which file runs, so `<interp> <flags> <scratch script>` is the same
+// script run the bare form is. Any other leading flag keeps the segment refused.
+const BACKGROUND_SCRIPT_SAFE_FLAGS = {
+  python3: new Set(['-I', '-B', '-u', '-E', '-s', '-S', '-O', '-OO', '-q']),
+  node: new Set(['--no-warnings', '--trace-warnings', '--enable-source-maps']),
+};
 
 // One `<python3|node|sh|bash> <script file> [args…]` segment, script inside
 // the scratchpad/tmp (realpath'd), no --confirmed, not an anti-hall plugin script.
@@ -3187,7 +3456,12 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
   // `VAR=…` token is not a path, so env-prefix assignments stay refused.
   const direct = tokens.length >= 1 && tokens[0].includes('/') && !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0]);
   if (!direct && (tokens.length < 2 || !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0]))) return false;
-  const script = direct ? tokens[0] : tokens[1];
+  let scriptIdx = direct ? 0 : 1;
+  if (!direct) {
+    const safe = BACKGROUND_SCRIPT_SAFE_FLAGS[tokens[0]];
+    while (safe && scriptIdx < tokens.length && safe.has(tokens[scriptIdx])) scriptIdx++;
+  }
+  const script = tokens[scriptIdx];
   if (!script || script.startsWith('-')) return false;
   if (!isScratchpadOrTmpPath(script, direct ? Object.assign({ ownOnly: true }, ctx) : ctx)) return false;
   const payload = ctx.payload;
@@ -3234,29 +3508,829 @@ function isBackgroundScratchScript(command, payload) {
     const seg = segments[i].trim();
     if (!seg) return false;
     if (isBackgroundScratchScriptSegment(seg, ctx)) sawScript = true;
-    else if (!isBoundedSinkSegment(seg)) return false;
+    else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx)) return false;
   }
   return sawScript;
 }
 
-function main() {
-  // Read + parse the payload FIRST — coordinator/subagent detection needs the
-  // payload's agent_id/agent_type markers (the only reliable signal under cmux).
-  let raw = '';
-  try {
-    raw = fs.readFileSync(0, 'utf8');
-  } catch (_) {
-    process.exit(0);
+// ---------------------------------------------------------------------------
+// WORK classifier (coordinator drift) + Bash edit parity (F3).
+// classifyBashWork(command, payload, opts) -> { work, blockable, labels, editBlocks }.
+// opts.editOnly (F3) skips the script-run and inline-code probes.
+// WORK = a state-changing git segment, a gh mutation, or a Bash write into a
+// non-notes repo file. Recovery git commands are WORK but never blockable.
+// editBlocks = Bash write targets edit-guard's own verdict would block for
+// the Edit tool (main() blocks on them; git segments never land here).
+// ---------------------------------------------------------------------------
+
+const GIT_ALWAYS_WORK = new Set([
+  'commit', 'am', 'revert', 'merge', 'rebase', 'cherry-pick', 'reset', 'push', 'pull', 'restore', 'rm', 'mv',
+]);
+const GIT_TAG_LIST_RE = /^(?:-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged|--no-merged|-v|--verify)(?:=|$)/;
+const GIT_TAG_VALUE_FLAGS = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user', '--cleanup', '--sort', '--format', '--trailer']);
+
+// gitSubAndArgs(segment) -> { sub, args } for a real git invocation, else null.
+function gitSubAndArgs(segment) {
+  if (effectiveVerb(segment) !== 'git') return null;
+  const tokens = tokenizeQuoted(segment);
+  const gitIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'git');
+  if (gitIdx === -1) return null;
+  const subIdx = gitSubcommandIndex(tokens, gitIdx);
+  if (subIdx === -1) return null;
+  return { sub: tokens[subIdx].toLowerCase(), args: tokens.slice(subIdx + 1) };
+}
+
+function isStateChangingGitSegment(segment) {
+  const g = gitSubAndArgs(segment);
+  if (!g) return false;
+  const { sub, args } = g;
+  const has = (re) => args.some((t) => re.test(t));
+  if (GIT_ALWAYS_WORK.has(sub)) return true;
+  if (sub === 'clean') return !has(/^(?:--dry-run|-[A-Za-z]*n[A-Za-z]*)$/);
+  if (sub === 'stash') return !['list', 'show'].includes((args[0] || '').toLowerCase());
+  if (sub === 'apply') return has(/^--apply$/) || !has(/^--(?:check|stat|numstat|summary)$/);
+  if (sub === 'switch') return has(/^(?:-[cC]|--create|--force-create)(?:=|$)/) || has(/^-[cC]\S/);
+  if (sub === 'checkout') return args.includes('--') || has(/^(?:-[bB]|--orphan)(?:=|$)/) || has(/^-[bB]\S/);
+  if (sub === 'branch') return has(/^(?:-[A-Za-z]*[Df][A-Za-z]*|--force)$/);
+  if (sub === 'tag') {
+    if (has(/^(?:-d|--delete)$/)) return true;
+    if (has(GIT_TAG_LIST_RE)) return false;
+    for (let i = 0; i < args.length; i++) {
+      const t = args[i];
+      if (GIT_TAG_VALUE_FLAGS.has(t)) { i++; continue; }
+      if (!t.startsWith('-')) return true; // a tag name: create
+    }
+    return false; // bare `git tag` (or flags only) lists
+  }
+  return false;
+}
+
+// Recovery (Decision 4): counted as WORK, never blockable. `git am --skip` is not recovery.
+function isRecoveryGitSegment(segment) {
+  const g = gitSubAndArgs(segment);
+  if (!g) return false;
+  const { sub, args } = g;
+  if (['am', 'rebase', 'cherry-pick', 'revert'].includes(sub)) return args.includes('--abort') || args.includes('--quit');
+  if (sub === 'merge') return args.includes('--abort');
+  if (sub === 'stash') return ['pop', 'apply'].includes((args[0] || '').toLowerCase());
+  return false;
+}
+
+// maskProcessSubstitutions(cmd) -> { text, inners }: `>(…)`/`<(…)` spans are
+// blanked so the splitter (which cuts at `(`) keeps `tee >(grep x) out.txt`
+// as one segment; the inner commands are returned for recursion, the same way
+// `$(…)` substitutions are. Quote- and heredoc-aware.
+function maskProcessSubstitutions(cmd) {
+  const inners = [];
+  let out = '';
+  let i = 0;
+  let q = '';
+  const n = cmd.length;
+  while (i < n) {
+    const c = cmd[i];
+    if (q) {
+      if (c === '\\' && q === '"' && i + 1 < n) { out += c + cmd[i + 1]; i += 2; continue; }
+      out += c; if (c === q) q = ''; i++; continue;
+    }
+    if (c === '\\' && i + 1 < n) { out += c + cmd[i + 1]; i += 2; continue; }
+    if (c === "'" || c === '"') { q = c; out += c; i++; continue; }
+    if (c === '<' && cmd[i + 1] === '<') {
+      const h = parseHeredocAt(cmd, i);
+      if (h) { out += cmd.slice(i, h.end); i = h.end; continue; }
+    }
+    if ((c === '<' || c === '>') && cmd[i + 1] === '(') {
+      let j = i + 2;
+      let depth = 1;
+      let qq = '';
+      for (; j < n && depth; j++) {
+        const d = cmd[j];
+        if (qq) { if (d === qq) qq = ''; continue; }
+        if (d === "'" || d === '"') qq = d;
+        else if (d === '(') depth++;
+        else if (d === ')') depth--;
+      }
+      inners.push(cmd.slice(i + 2, depth ? j : j - 1));
+      out += ' ';
+      i = j;
+      continue;
+    }
+    out += c; i++;
+  }
+  return { text: out, inners };
+}
+
+// readRedirectTarget(s, i) -> the dequoted shell word starting at i (after
+// blanks), or null when it is an fd-dup/process target (`&…`, `(…`) or empty.
+function readRedirectTarget(s, i) {
+  while (i < s.length && (s[i] === ' ' || s[i] === '\t')) i++;
+  if (i >= s.length || s[i] === '&' || s[i] === '(') return null;
+  let out = '';
+  let q = '';
+  for (; i < s.length; i++) {
+    const c = s[i];
+    if (q) { if (c === q) q = ''; else out += c; continue; }
+    if (c === "'" || c === '"') { q = c; continue; }
+    if (c === '\\' && i + 1 < s.length) { out += s[i + 1]; i++; continue; }
+    if (/\s/.test(c) || /[;|&<>()]/.test(c)) break;
+    out += c;
+  }
+  return out || null;
+}
+
+// blankTestOperators(text) -> text with every `<`/`>` inside `[[ … ]]`,
+// `(( … ))` and `$(( … ))` replaced by a space (same length). There they are
+// string/number comparisons, not redirects. `[[`/`((` open a context only at
+// command position (input start, after ; & | ( ! or a newline, or after
+// if/while/until/then/do/elif/else); `]]` closes before < > blanks ; & | ) or
+// the end. An unclosed `[[`/`((` is dropped at ; or a newline (`[[` also at a
+// single & or |), so it never outlives its command. A `$( … )` nested inside
+// is a command context again and is left alone. Quotes, `$'…'`, backslash
+// escapes and heredoc bodies are copied unchanged.
+const TEST_KEYWORDS = new Set(['if', 'while', 'until', 'then', 'do', 'elif', 'else']);
+function blankTestOperators(text) {
+  if (!/[<>]/.test(text) || !/\(\(|\[\[/.test(text)) return text;
+  const n = text.length;
+  // 'A' $(( )), 'a' (( )), 'b' [[ ]], 'g' group inside a test, 'p' command
+  const stack = [];
+  const top = () => stack[stack.length - 1];
+  const testCtx = () => { const t = top(); return t === 'A' || t === 'a' || t === 'b' || t === 'g'; };
+  const cmdPos = (i) => {
+    let j = i - 1;
+    while (j >= 0 && (text[j] === ' ' || text[j] === '\t')) j--;
+    if (j < 0 || /[;&|(!\n]/.test(text[j])) return true;
+    let k = j;
+    while (k >= 0 && /[A-Za-z]/.test(text[k])) k--;
+    if (!TEST_KEYWORDS.has(text.slice(k + 1, j + 1))) return false;
+    while (k >= 0 && (text[k] === ' ' || text[k] === '\t')) k--;
+    return k < 0 || /[;&|(!\n]/.test(text[k]);
+  };
+  const drop = (kinds) => { while (stack.length && kinds.includes(top())) stack.pop(); };
+  let out = '';
+  let i = 0;
+  let q = '';
+  while (i < n) {
+    const c = text[i];
+    const c2 = text[i + 1];
+    if (q) {
+      if (c === '\\' && q === '"' && i + 1 < n) { out += c + c2; i += 2; continue; }
+      out += c; if (c === q) q = ''; i++; continue;
+    }
+    if (c === '\\' && i + 1 < n) { out += c + c2; i += 2; continue; }
+    if (c === '$' && c2 === "'") {
+      let j = i + 2;
+      while (j < n && text[j] !== "'") j += text[j] === '\\' ? 2 : 1;
+      j = Math.min(j + 1, n);
+      out += text.slice(i, j); i = j; continue;
+    }
+    if (c === "'" || c === '"') { q = c; out += c; i++; continue; }
+    if (c === '<' && c2 === '<' && !testCtx()) {
+      const h = parseHeredocAt(text, i);
+      if (h) { out += text.slice(i, h.end); i = h.end; continue; }
+    }
+    if (c === ';' || c === '\n') drop(['a', 'b', 'g']);
+    else if ((c === '&' || c === '|') && c2 !== c && text[i - 1] !== c) drop(['b', 'g']);
+    if (c === '$' && c2 === '(' && text[i + 2] === '(') { stack.push('A'); out += '$(('; i += 3; continue; }
+    if (c === '$' && c2 === '(') { stack.push('p'); out += '$('; i += 2; continue; }
+    if (c === '(' && c2 === '(' && !testCtx() && cmdPos(i)) { stack.push('a'); out += '(('; i += 2; continue; }
+    if (c === '(') { stack.push(testCtx() ? 'g' : 'p'); out += c; i++; continue; }
+    if (c === ')') {
+      if ((top() === 'a' || top() === 'A') && c2 === ')') { stack.pop(); out += '))'; i += 2; continue; }
+      if (stack.length) stack.pop();
+      out += c; i++; continue;
+    }
+    if (c === '[' && c2 === '[' && !testCtx() && cmdPos(i) && /\s/.test(text[i + 2] || '')) { stack.push('b'); out += '[['; i += 2; continue; }
+    if (c === ']' && c2 === ']' && top() === 'b' && /[\s;&|)<>]|^$/.test(text[i + 2] || '')) { stack.pop(); out += ']]'; i += 2; continue; }
+    out += (c === '<' || c === '>') && testCtx() ? ' ' : c;
+    i++;
+  }
+  return out;
+}
+
+const REDIRECT_TOKEN_RE = /^\d*(?:&?>>?|>\||<)/;
+const BARE_REDIRECT_TOKEN_RE = /^\d*(?:&?>>?|>\||<+)$/;
+
+// bashWriteTargets(segment, cwd?) -> raw (dequoted) paths ONE segment writes:
+// `>`/`>>`/`&>`/`>|` redirects, tee args, sed -i / perl -i files, and cp/mv
+// destinations (mv also its sources). cwd (default process.cwd()) only
+// resolves whether a cp/mv destination is an existing directory.
+function bashWriteTargets(segment, cwd) {
+  const out = [];
+  if (typeof segment !== 'string' || !segment.trim()) return out;
+  const keep = (t) => {
+    if (!t || t.startsWith('&') || t.startsWith('(') || t.includes('>') || /^\/dev\//.test(t)) return;
+    out.push(t);
+  };
+  // (a) redirects: operators found on the quote-neutralized text (test /
+  // arithmetic comparisons blanked), targets read from the original. A `\>`
+  // (odd run of backslashes before it) is a literal `>`, not a redirect.
+  const neutral = blankTestOperators(neutralizeQuotedContents(segment));
+  const re = /(^|[^<>&])(>\||&?>>?)/g;
+  let m;
+  while ((m = re.exec(neutral))) {
+    const op = m.index + m[1].length;
+    let bs = 0;
+    while (op - 1 - bs >= 0 && neutral[op - 1 - bs] === '\\') bs++;
+    if (bs % 2) continue;
+    keep(readRedirectTarget(segment, op + m[2].length));
   }
 
-  const { isSkipped } = require('./skip-guard.js');
-
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (_) {
-    process.exit(0);
+  // (b) argv without redirect tokens (and the word after a bare operator).
+  const raw = tokenizeQuoted(segment);
+  const toks = [];
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '' && REDIRECT_TOKEN_RE.test(raw[i])) { if (BARE_REDIRECT_TOKEN_RE.test(raw[i])) i++; continue; }
+    toks.push(raw[i]);
   }
+  const verb = effectiveVerb(segment);
+  const vi = toks.findIndex((t) => basename(t).toLowerCase() === verb);
+  if (!verb || vi === -1) return out;
+  const rest = toks.slice(vi + 1);
+
+  if (verb === 'tee') { // (c)
+    for (const t of rest) if (!t.startsWith('-')) keep(t);
+  } else if (verb === 'sed') { // (d)
+    let inPlace = false;
+    let scriptOpt = false;
+    const pos = [];
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i];
+      if (t === '--') { pos.push(...rest.slice(i + 1)); break; }
+      if (t === '-i') { inPlace = true; if (rest[i + 1] === '') i++; continue; } // '' = macOS suffix
+      if (t === '-e' || t === '-f' || t === '--expression' || t === '--file') { scriptOpt = true; i++; continue; }
+      if (/^--(?:expression|file)=/.test(t)) { scriptOpt = true; continue; }
+      if (/^--in-place(?:=|$)/.test(t)) { inPlace = true; continue; }
+      if (t.startsWith('--')) continue;
+      if (/^-[A-Za-z]/.test(t)) {
+        for (let k = 1; k < t.length; k++) {
+          const ch = t[k];
+          if (ch === 'i') { inPlace = true; break; } // rest of the cluster is the suffix
+          if (ch === 'e' || ch === 'f') { scriptOpt = true; if (k === t.length - 1) i++; break; }
+        }
+        continue;
+      }
+      pos.push(t);
+    }
+    if (inPlace) for (const t of (scriptOpt ? pos : pos.slice(1))) keep(t);
+  } else if (verb === 'perl') { // (e)
+    let inPlace = false;
+    let hasE = false;
+    const pos = [];
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i];
+      if (t === '--') { pos.push(...rest.slice(i + 1)); break; }
+      if (/^-[^-]/.test(t)) {
+        for (let k = 1; k < t.length; k++) {
+          const ch = t[k];
+          if (ch === 'i') { inPlace = true; break; }
+          if (ch === 'e' || ch === 'E') { hasE = true; if (k === t.length - 1) i++; break; }
+        }
+        continue;
+      }
+      if (t.startsWith('--')) continue;
+      pos.push(t);
+    }
+    if (inPlace) for (const t of (hasE ? pos : pos.slice(1))) keep(t);
+  } else if (verb === 'cp' || verb === 'mv') { // (f)
+    let tdir = null;
+    const pos = [];
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i];
+      if (t === '--') { pos.push(...rest.slice(i + 1)); break; }
+      if (t === '-t' || t === '--target-directory') { tdir = rest[i + 1] || null; i++; continue; }
+      if (/^--target-directory=/.test(t)) { tdir = t.slice(t.indexOf('=') + 1); continue; }
+      if (/^-t./.test(t)) { tdir = t.slice(2); continue; }
+      if (t === '-S' || t === '--suffix') { i++; continue; }
+      if (t.startsWith('-')) continue;
+      pos.push(t);
+    }
+    let dest = tdir;
+    let srcs = pos;
+    if (dest === null) {
+      if (pos.length < 2) return out;
+      dest = pos[pos.length - 1];
+      srcs = pos.slice(0, -1);
+    }
+    let isDir = tdir !== null || dest.endsWith('/');
+    if (!isDir) {
+      try { isDir = fs.statSync(path.resolve(cwd || process.cwd(), dest)).isDirectory(); } catch (_) { isDir = false; }
+    }
+    if (isDir) for (const s of srcs) keep(path.posix.join(dest, basename(s)));
+    else keep(dest);
+    if (verb === 'mv') for (const s of srcs) keep(s);
+  }
+  return out;
+}
+
+// cdAwareContexts(segments, delims, payload) -> per segment, the list of
+// { cwd, cwdUnknown } it may run in. A literal `cd` before `&&` moves the cwd;
+// before `;`/`||`/newline both cwds stay possible; a non-literal `cd` makes
+// the cwd unknown.
+function cdAwareContexts(segments, delims, payload) {
+  const sp = require('./lib/scratchpad.js');
+  const start = sp.realpathOrSelf(path.resolve((payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd()));
+  let cur = [{ cwd: start, cwdUnknown: false }];
+  const out = [];
+  for (let i = 0; i < segments.length; i++) {
+    out.push(cur);
+    const d = delims[i];
+    if (d !== '&&' && d !== ';' && d !== '||' && d !== '\n') continue;
+    const toks = tokenizeQuoted(segments[i]);
+    if (toks[0] !== 'cd') continue;
+    const rawArg = segments[i].trim().slice(2).trim();
+    const arg = toks[1];
+    let next;
+    if (toks.length !== 2 || !arg || arg === '-' || /[$`*?[\]{}~]/.test(rawArg)) {
+      next = cur.map((c) => ({ cwd: c.cwd, cwdUnknown: true }));
+    } else {
+      next = cur.map((c) => ({
+        cwd: sp.realpathOrSelf(path.resolve(c.cwd, arg)),
+        cwdUnknown: c.cwdUnknown && !path.isAbsolute(arg),
+      }));
+    }
+    const merged = d === '&&' ? next : cur.concat(next);
+    const seen = new Set();
+    cur = merged.filter((c) => {
+      const k = c.cwd + '\0' + c.cwdUnknown;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    }).slice(0, 8);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Script-file runs and inline interpreter code (coordinator drift, Phase 4).
+// A script run is WORK unless an ordered exemption applies: an anti-hall CLI
+// (ANTI_HALL_CLI_PATTERNS), an anti-hall plugin root, a binary/non-file direct
+// exec, a freshness-proof managed location, a tracked-and-clean (or
+// non-coordinator-writable, old) repo script, or an old script in a personal
+// tool dir. Inline `-c`/`-e` code is WORK when it runs state-changing git/gh
+// or writes a literal non-notes repo file (precise, blockable); looser matches
+// are count-only. Nothing here is executed.
+// ---------------------------------------------------------------------------
+
+const ANTI_HALL_CLI_PATTERNS = Object.freeze([
+  anchoredAntiHallStableLauncher('devswarm.js'),
+  anchoredAntiHallStableLauncher('wake-watch.js'),
+  anchoredAntiHallCli('scripts', 'devswarm', '(?=\\s|$)'),
+]);
+
+const SCRIPT_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash']);
+const SCRIPT_INTERPRETERS = new Set(['sh', 'bash', 'zsh', 'dash', 'node', 'python', 'python3', 'ruby', 'perl']);
+// Flags that mean "not a script-file run" (inline code, module, syntax check, stdin), per family.
+const SCRIPT_NOT_A_RUN_FLAG = {
+  shell: /^-[A-Za-z]*[cns]/,
+  python: /^-[A-Za-z]*[cm]/,
+  node: /^(?:-[A-Za-z]*[epc]|--(?:eval|print|check|interactive)(?:=|$))/,
+  rubyperl: /^-[A-Za-z]*[eEc]/,
+};
+const SCRIPT_VALUE_FLAGS = new Set(['-o', '+o', '-O', '+O', '-W', '-X', '-r', '--require', '--import', '--loader', '--experimental-loader', '-I']);
+const BINARY_MAGICS = ['7f454c46', 'feedface', 'feedfacf', 'cafebabe', 'cffaedfe', 'cefaedfe', 'bebafeca'];
+const HOME_MANAGED_DIRS = ['.nvm', '.pyenv', '.rbenv', '.cargo/bin', '.volta', '.asdf', 'go/bin', '.dotnet/tools', '.bun/bin'];
+const HOME_PERSONAL_DIRS = ['.local/bin', 'Library', '.claude/plugins'];
+
+// argvWithoutRedirects(segment) -> dequoted tokens minus redirect tokens (and a bare operator's target).
+function argvWithoutRedirects(segment) {
+  const raw = tokenizeQuoted(segment);
+  const toks = [];
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '' && REDIRECT_TOKEN_RE.test(raw[i])) { if (BARE_REDIRECT_TOKEN_RE.test(raw[i])) i++; continue; }
+    toks.push(raw[i]);
+  }
+  return toks;
+}
+
+// scriptRunToken(segment) -> { token, direct } for `<interpreter> [flags] <file>`
+// or a direct exec (argv[0] contains `/`), else null. source/., inline
+// -c/-e/-E, -m, `bash -n` and stdin are never script runs.
+function scriptRunToken(segment) {
+  const verb = effectiveVerb(segment).replace(/["']/g, '');
+  if (!verb || verb === 'source' || verb === '.') return null;
+  const toks = argvWithoutRedirects(segment);
+  const vi = toks.findIndex((t) => basename(t).toLowerCase() === verb);
+  if (vi === -1) return null;
+  if (SCRIPT_INTERPRETERS.has(verb)) {
+    const fam = SCRIPT_SHELLS.has(verb) ? 'shell' : verb.startsWith('python') ? 'python' : verb === 'node' ? 'node' : 'rubyperl';
+    for (let i = vi + 1; i < toks.length; i++) {
+      const t = toks[i];
+      if (t === '--') return toks[i + 1] ? { token: toks[i + 1], direct: false } : null;
+      if (t === '-') return null;
+      if (/^[-+]/.test(t) && t.length > 1) {
+        if (SCRIPT_NOT_A_RUN_FLAG[fam].test(t)) return null;
+        if (SCRIPT_VALUE_FLAGS.has(t)) i++;
+        continue;
+      }
+      return { token: t, direct: false };
+    }
+    return null;
+  }
+  return toks[vi].includes('/') ? { token: toks[vi], direct: true } : null;
+}
+
+// hookHomeRaw() -> the hook's HOME (resolveHome), '' when unavailable; hookHome() realpath'd.
+function hookHomeRaw() {
+  try { return io.homeOf(guardEnv) || ''; } catch (_) { return ''; }
+}
+function hookHome() {
+  const h = hookHomeRaw();
+  return h ? require('./lib/scratchpad.js').realpathOrSelf(h) : '';
+}
+
+// resolveScriptPath(token, ctx) -> { real } | { unresolvable: true } | null
+// (null: a relative path under an unknown cwd). `~` expands from HOME,
+// `$NAME`/`${NAME}` from process.env (PWD = the effective cwd).
+function resolveScriptPath(token, ctx) {
+  let t = String(token);
+  if (t === '~' || t.startsWith('~/')) {
+    const h = hookHomeRaw();
+    if (!h) return { unresolvable: true };
+    t = h + t.slice(1);
+  }
+  if (/`|\$\(/.test(t)) return { unresolvable: true };
+  let unset = false;
+  t = t.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (m, a, b) => {
+    const name = a || b;
+    const v = name === 'PWD' ? ctx.cwd : guardEnv[name];
+    if (typeof v !== 'string' || !v) { unset = true; return ''; }
+    return v;
+  });
+  if (unset || t.includes('$')) return { unresolvable: true };
+  if (!path.isAbsolute(t)) {
+    if (ctx.cwdUnknown) return null;
+    t = ctx.cwd.replace(/\/+$/, '') + '/' + t;
+  }
+  try { return { real: fs.realpathSync.native(t) }; } catch (_) {
+    return { real: require('./lib/scratchpad.js').realpathOrSelf(path.resolve(t)) };
+  }
+}
+
+// isTextScript(real, st) -> true for a regular file starting with `#!` or with
+// no ELF/Mach-O magic in its first 4 bytes; false on a read error.
+function isTextScript(real, st) {
+  if (!st || !st.isFile()) return false;
+  let fd = null;
+  try {
+    fd = fs.openSync(real, 'r');
+    const buf = Buffer.alloc(4);
+    const n = fs.readSync(fd, buf, 0, 4, 0);
+    if (n >= 2 && buf[0] === 0x23 && buf[1] === 0x21) return true;
+    return !BINARY_MAGICS.includes(buf.subarray(0, n).toString('hex'));
+  } catch (_) {
+    return false;
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) { /* ignore */ }
+  }
+}
+
+// gitCleanTracked(root, abs, cache) -> true only when `git status --porcelain
+// --ignored -- <rel>` prints nothing (tracked and clean). Memoised per call.
+// GIT_OPTIONAL_LOCKS=0: a read-only probe must not refresh/lock .git/index.
+function gitCleanTracked(root, abs, cache) {
+  const key = root + '\0' + abs;
+  if (cache && cache.has(key)) return cache.get(key);
+  let clean = false;
+  try {
+    const out = require('child_process').execFileSync('git', ['status', '--porcelain=v1', '--ignored', '--', path.relative(root, abs)],
+      { cwd: root, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'], env: Object.assign({}, guardEnv, { GIT_OPTIONAL_LOCKS: '0' }) });
+    clean = String(out).trim() === '';
+  } catch (_) { clean = false; }
+  if (cache) cache.set(key, clean);
+  return clean;
+}
+
+// scriptPathVerdict(real, info) -> { work, step } (pure). info = { root, home,
+// fresh, isScratchOrTmp, notesTarget: () => bool, gitClean: () => bool }.
+// Decision 3 steps 5-8, first match wins.
+function scriptPathVerdict(real, info) {
+  const i = info || {};
+  const under = (dir) => !!dir && real.startsWith(dir.replace(/\/+$/, '') + '/');
+  const root = i.root || null;
+  const home = i.home || '';
+  const inRoot = !!root && under(root);
+  if (i.isScratchOrTmp || (root && under(path.join(root, '.anti-hall')))) return { work: true, step: 'scratch' };
+  if (/^\/(?:bin|sbin|Applications)\//.test(real) || (/^\/(?:usr|opt)\//.test(real) && !inRoot)
+    || (home && HOME_MANAGED_DIRS.some((d) => under(path.join(home, d))))
+    || /(?:^|\/)node_modules\/\.bin\//.test(real) || /(?:^|\/)(?:\.venv|venv|\.virtualenv)\/bin\//.test(real)) {
+    return { work: false, step: 'managed' };
+  }
+  if (inRoot) {
+    if (!i.fresh && !i.notesTarget()) return { work: false, step: 'in-repo' };
+    return { work: !i.gitClean(), step: 'in-repo' };
+  }
+  if (home && HOME_PERSONAL_DIRS.some((d) => under(path.join(home, d)))) return { work: !!i.fresh, step: 'outside' };
+  return { work: true, step: 'outside' };
+}
+
+// scriptFileRun(segment, ctx, payload, opts, cache, rootOf) -> null | { path, step }
+// (non-null = a WORK script run). Steps 1-4 here, 5-8 in scriptPathVerdict.
+function scriptFileRun(segment, ctx, payload, opts, cache, rootOf) {
+  const run = scriptRunToken(segment);
+  if (!run) return null;
+  const r = resolveScriptPath(run.token, ctx);
+  if (!r) return null;
+  if (r.unresolvable) return { path: run.token, step: 'unresolvable' };
+  if (ANTI_HALL_CLI_PATTERNS.some((re) => re.test(segment))) return null;
+  const real = r.real;
+  if (isInsideAntiHallPlugin(real)) return null;
+  let st = null;
+  try { st = fs.statSync(real); } catch (_) { st = null; }
+  if (run.direct && !isTextScript(real, st)) return null;
+  const sp = require('./lib/scratchpad.js');
+  const eg = require('./edit-guard.js');
+  const home = hookHome();
+  const { toplevel } = rootOf(ctx.cwd);
+  const root = toplevel || ctx.cwd;
+  // A tmp-root path counts as scratch only outside the cwd's git work tree and
+  // outside HOME (a HOME that itself lives under a tmp root keeps its own steps).
+  const inHome = !!home && sp.isInsideDir(real, home);
+  const isScratchOrTmp = isScratchpadOrTmpPath(real, { payload, ownOnly: true })
+    || (isScratchpadOrTmpPath(real, { payload }) && !(toplevel && sp.isInsideDir(real, toplevel)) && !inHome);
+  const v = scriptPathVerdict(real, {
+    root,
+    home,
+    fresh: !!st && st.isFile() && st.mtimeMs >= opts.sessionStartTs,
+    isScratchOrTmp,
+    notesTarget: () => eg.isNotesTarget(real, root, Object.assign({}, payload, { cwd: root })),
+    gitClean: () => (toplevel ? gitCleanTracked(toplevel, real, cache) : false),
+  });
+  return v.work ? { path: real, step: v.step } : null;
+}
+
+const INLINE_VERBS = new Set(['python', 'python3', 'perl', 'ruby', 'node']);
+const INLINE_EXEC_RE = /\b(?:subprocess|system|exec|execSync|execFileSync|spawn|spawnSync|popen|child_process)\b|\brun\s*\(|`/;
+const INLINE_GIT_GH_LITERAL_RE = /(['"`])\s*((?:git|gh)\s[^'"`]*)\1/g;
+const INLINE_GIT_GH_ARRAY_RE = /\[\s*(['"])(git|gh)\1((?:\s*,\s*(['"])[^'"]*\4)*)\s*\]/g;
+const INLINE_OPEN_RE = /\bopen\s*\(\s*(['"])([^'"]+)\1\s*,\s*(['"])([^'"]*)\3\s*[,)]/g;
+const INLINE_OPEN_NONLIT_RE = /\bopen\s*\(\s*[^'"\s)][^,)]*,\s*(['"])([^'"]*)\1\s*[,)]/g;
+const INLINE_PERL_OPEN3_RE = /\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*(['"])\s*\+?(>>?|\+<)[:\w]*\s*\1\s*,\s*(['"])([^'"]+)\3/g;
+// Perl dup modes (>&, >&=, >>&, 2-arg >-) open an existing handle, not a file: the 3-arg
+// mode class [:\w]* cannot consume `&`, and the 2-arg target excludes `&`, `=`, `-` as first char.
+const INLINE_PERL_OPEN2_RE = /\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*(['"])\s*\+?>>?\s*([^'"\s>&=-][^'"\s]*)\s*\1/g;
+const INLINE_WRITEFILE_RE = /(?:(?:write|append)File(?:Sync)?|createWriteStream)\(\s*(['"])([^'"]+)\1/g;
+const INLINE_FILE_WRITE_RE = /(?:File|IO)\.write\(\s*(['"])([^'"]+)\1/g;
+const INLINE_WRITE_NONLIT_RE = /(?:(?:write|append)File(?:Sync)?|(?:File|IO)\.write)\(\s*[^'"\s)]/;
+const INLINE_REDIRECT_RE = /['"][^'"]*\s>>?\s*([\w./~-]+)/;
+const isWriteMode = (m) => /^[rwaxbt+]{1,4}$/.test(m) && /[wax+]/.test(m);
+
+// inlineCodeBody(segment) -> the `python|python3 -c` / `perl|ruby|node -e|-E`
+// code string, or null when the segment carries none.
+function inlineCodeBody(segment) {
+  const verb = effectiveVerb(segment).replace(/["']/g, '');
+  if (!INLINE_VERBS.has(verb)) return null;
+  const toks = tokenizeQuoted(segment);
+  const vi = toks.findIndex((t) => basename(t).toLowerCase() === verb);
+  const flags = verb.startsWith('python') ? ['-c'] : ['-e', '-E'];
+  const fi = toks.findIndex((t, k) => k > vi && flags.includes(t));
+  if (vi === -1 || fi === -1 || typeof toks[fi + 1] !== 'string') return null;
+  return toks[fi + 1];
+}
+
+// inlineWriteLiterals(segment) -> literal paths inline code writes: open(<lit>,
+// <write mode>), (write|append)File[Sync](<lit>), File/IO.write(<lit>). A
+// non-literal target is not returned (unknowable, fail open).
+function inlineWriteLiterals(segment) {
+  const body = inlineCodeBody(segment);
+  if (body === null) return [];
+  const literals = [];
+  for (const m of body.matchAll(INLINE_OPEN_RE)) if (isWriteMode(m[4])) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_PERL_OPEN3_RE)) literals.push(m[4]);
+  for (const m of body.matchAll(INLINE_PERL_OPEN2_RE)) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_WRITEFILE_RE)) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_FILE_WRITE_RE)) literals.push(m[2]);
+  return literals;
+}
+
+// inlineCodeWork(segment, ctx, payload, rootOf) -> null | { precise } for
+// `python|python3 -c` / `perl|ruby|node -e|-E` bodies (Decision 3, never executed).
+function inlineCodeWork(segment, ctx, payload, rootOf) {
+  const body = inlineCodeBody(segment);
+  if (body === null) return null;
+  const exec = INLINE_EXEC_RE.test(body);
+  if (exec) {
+    const cmds = [];
+    for (const m of body.matchAll(INLINE_GIT_GH_LITERAL_RE)) cmds.push(m[2]);
+    for (const m of body.matchAll(INLINE_GIT_GH_ARRAY_RE)) {
+      cmds.push([m[2]].concat([...m[3].matchAll(/(['"])([^'"]*)\1/g)].map((x) => x[2])).join(' '));
+    }
+    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c))) return { precise: true };
+  }
+  const sp = require('./lib/scratchpad.js');
+  // 'tmp' (tmp/scratch), 'notes' (a coordinator-writable repo file), 'repo' (non-notes repo file) or 'outside'.
+  const targetKind = (t) => {
+    if (ctx.cwdUnknown && !path.isAbsolute(t) && !t.startsWith('~')) return 'outside';
+    const expanded = t === '~' || t.startsWith('~/') ? hookHomeRaw() + t.slice(1) : t;
+    const resolved = path.resolve(ctx.cwd, expanded);
+    const abs = path.join(sp.realpathOrSelf(path.dirname(resolved)), path.basename(resolved));
+    const r = rootOf(ctx.cwd);
+    const inTop = !!r.toplevel && sp.isInsideDir(abs, r.toplevel);
+    if (isScratchpadOrTmpPath(abs, { payload, ownOnly: true })) return 'tmp';
+    if (!inTop && isScratchpadOrTmpPath(abs, { payload })) return 'tmp';
+    if (!sp.isInsideDir(abs, r.base)) return 'outside';
+    return require('./edit-guard.js').isNotesTarget(abs, r.base, Object.assign({}, payload, { cwd: r.base })) ? 'notes' : 'repo';
+  };
+  const literals = inlineWriteLiterals(segment);
+  let loose = false;
+  for (const t of literals) {
+    const k = targetKind(t);
+    if (k === 'repo') return { precise: true };
+    if (k === 'outside') loose = true;
+  }
+  if ([...body.matchAll(INLINE_OPEN_NONLIT_RE)].some((m) => isWriteMode(m[2])) || INLINE_WRITE_NONLIT_RE.test(body)) loose = true;
+  if (exec) {
+    const m = body.match(INLINE_REDIRECT_RE);
+    if (m && targetKind(m[1]) !== 'tmp') loose = true;
+  }
+  return loose ? { precise: false } : null;
+}
+
+const MAX_CLASSIFY_LEN = 65536;
+
+// resolveWriteTarget(t, ctx, payload, rootOf) -> null (an expansion, glob, `~`
+// or a relative path under an unknown cwd: unknowable, fail open) or
+// { abs, base, toplevel, inBase, scratch }. abs has its directory part
+// realpath'd (/tmp -> /private/tmp) and its last component kept, so edit-guard
+// still sees a symlink. scratch = this session's own scratchpad, or a tmp root
+// outside a git work tree (a repo that lives under /tmp is still a repo).
+// base = the cwd's git toplevel, else the session's project base (rootOf).
+function resolveWriteTarget(t, ctx, payload, rootOf) {
+  if (typeof t !== 'string' || !t || /[$`*?[\]{}]/.test(t) || t.startsWith('~')) return null;
+  if (ctx.cwdUnknown && !path.isAbsolute(t)) return null;
+  const sp = require('./lib/scratchpad.js');
+  const resolved = path.resolve(ctx.cwd, t);
+  const abs = path.join(sp.realpathOrSelf(path.dirname(resolved)), path.basename(resolved));
+  const r = rootOf(ctx.cwd);
+  const inTop = !!r.toplevel && sp.isInsideDir(abs, r.toplevel);
+  const scratch = isScratchpadOrTmpPath(abs, { payload, ownOnly: true })
+    || (!inTop && isScratchpadOrTmpPath(abs, { payload }));
+  return { abs, base: r.base, toplevel: r.toplevel, inBase: sp.isInsideDir(abs, r.base), scratch };
+}
+
+// projectRootResolver(payload) -> rootOf(cwd) -> { toplevel, base }, memoised.
+// base = the cwd's git toplevel; with none, the SESSION's project base (the
+// payload cwd's toplevel, or the payload cwd itself). A `cd` into a non-git
+// dir (e.g. ~/.claude/projects/<slug>/memory) does not make that dir a
+// project root: its files are judged against the session project, as an
+// Edit-tool write to the same file would be.
+function projectRootResolver(payload) {
+  const sp = require('./lib/scratchpad.js');
+  const p = payload || {};
+  const roots = new Map();
+  const startCwd = sp.realpathOrSelf(path.resolve((typeof p.cwd === 'string' && p.cwd) || process.cwd()));
+  const rootOf = (cwd) => {
+    if (!roots.has(cwd)) {
+      let toplevel = null;
+      try { toplevel = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { toplevel = null; }
+      if (toplevel) toplevel = sp.realpathOrSelf(toplevel);
+      const base = toplevel || (cwd === startCwd ? cwd : rootOf(startCwd).base);
+      roots.set(cwd, { toplevel, base });
+    }
+    return roots.get(cwd);
+  };
+  return rootOf;
+}
+
+// shellRunPayloads(segments, text) -> the command strings these segments run
+// inline: `sh -c '<cmd>'`, `eval <cmd>`, and a heredoc fed to a shell
+// (`bash <<EOF` with no -c: the body is a script, not data).
+// withIndex: return [{ cmd, i }] (i = the segment that runs it) instead.
+function shellRunPayloads(segments, text, withIndex) {
+  const out = [];
+  let bodies = null;
+  const add = (cmd, i) => out.push(withIndex ? { cmd, i } : cmd);
+  segments.forEach((seg, i) => {
+    const c = extractShellCPayload(seg);
+    if (c) add(c, i);
+    const e = extractEvalPayload(seg);
+    if (e) add(e, i);
+    if (!c && SHELL_VERBS.has(effectiveVerb(seg)) && seg.includes('<<')) {
+      if (!bodies) bodies = segmentHeredocBodies(segments, text);
+      const b = bodies[i] || [];
+      if (b.length && b[b.length - 1]) add(b[b.length - 1], i);
+    }
+  });
+  return out;
+}
+
+// forEachShellSegment(command, payload, fn) -> calls fn(seg, ctxs, segments,
+// delims, i) for every segment of `command` and, up to depth 3, of the
+// commands it runs inline (`sh -c`, eval, `$(…)`, backticks, `>(…)`). ctxs =
+// the cd-aware cwds the segment may run in. The same walk classifyBashWork
+// does; used by lib/shell-writes.js. No-op on non-string / oversized input.
+function forEachShellSegment(command, payload, fn, depth = 0) {
+  if (typeof command !== 'string' || !command.trim() || command.length > MAX_CLASSIFY_LEN) return;
+  const p = payload || {};
+  const masked = /[<>]\(/.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
+  masked.text = blankTestOperators(masked.text);
+  const { segments, delims } = splitSegmentsDetailed(masked.text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?![A-Za-z0-9_])/g, '$$$1'));
+  const ctxs = cdAwareContexts(segments, delims, p);
+  segments.forEach((seg, i) => fn(seg, ctxs[i], segments, delims, i, masked.text));
+  if (depth >= 3) return;
+  // An inline command runs in its segment's cwd: recurse with that cwd when it
+  // is the one known cwd, else skip it (its relative targets are unknowable).
+  for (const { cmd, i } of shellRunPayloads(segments, masked.text, true)) {
+    const c = ctxs[i] || [];
+    if (c.length === 1 && !c[0].cwdUnknown) forEachShellSegment(cmd, Object.assign({}, p, { cwd: c[0].cwd }), fn, depth + 1);
+  }
+  for (const sub of extractSubstitutions(masked.text).concat(masked.inners)) forEachShellSegment(sub, payload, fn, depth + 1);
+}
+
+// opts.env: score under that env (the caller's evaluate() env), restored on return.
+function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null) {
+  if (depth !== 0 || !opts || !opts.env) return classifyBashWorkImpl(command, payload, opts, depth, shared);
+  const prev = guardEnv;
+  guardEnv = opts.env;
+  try { return classifyBashWorkImpl(command, payload, opts, depth, shared); } finally { guardEnv = prev; }
+}
+
+function classifyBashWorkImpl(command, payload, opts = {}, depth = 0, shared = null) {
+  const res = { work: false, blockable: false, labels: new Set(), editBlocks: [] };
+  if (typeof command !== 'string' || !command.trim() || command.length > MAX_CLASSIFY_LEN) return res;
+  const o = Object.assign({ sessionStartTs: Date.now() - 21600000 }, opts || {});
+  const p = payload || {};
+  const sh = shared || { command, gitCache: new Map(), trusted: undefined };
+  const trusted = () => {
+    if (sh.trusted === undefined) {
+      try { sh.trusted = !!matchedProjectCommandAllowPattern(sh.command, (typeof p.cwd === 'string' && p.cwd) || ''); } catch (_) { sh.trusted = false; }
+    }
+    return sh.trusted;
+  };
+  const eg = require('./edit-guard.js');
+  // Session project roots (see projectRootResolver).
+  const rootOf = projectRootResolver(p);
+  const blocks = new Set();
+
+  const masked = /[<>]\(/.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
+  // `(( n > 5 ))` / `$((3 > 2))`: the splitter cuts at `(`, so comparisons are
+  // blanked before splitting or they would read as redirects.
+  masked.text = blankTestOperators(masked.text);
+  // `${NAME}` -> `$NAME` (not before an identifier char): the splitter cuts at braces.
+  const { segments, delims } = splitSegmentsDetailed(masked.text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?![A-Za-z0-9_])/g, '$$$1'));
+  const ctxs = cdAwareContexts(segments, delims, p);
+  segments.forEach((seg, i) => {
+    let segWork = false;
+    let recovery = false;
+    if (isStateChangingGitSegment(seg)) {
+      segWork = true;
+      res.labels.add('git');
+      if (isRecoveryGitSegment(seg)) { recovery = true; res.labels.add('recovery'); }
+    }
+    if (isHeavyGhSegment(seg, command)) { segWork = true; res.labels.add('gh'); }
+    const isGit = effectiveVerb(seg) === 'git';
+    for (const ctx of ctxs[i]) {
+      if (!o.editOnly && scriptFileRun(seg, ctx, p, o, sh.gitCache, rootOf) && !trusted()) { segWork = true; res.labels.add('script'); }
+      const inl = o.editOnly ? null : inlineCodeWork(seg, ctx, p, rootOf);
+      if (inl) {
+        res.work = true;
+        res.labels.add('inline');
+        if (inl.precise) segWork = true;
+      }
+      // Inline-code literal targets (python -c open(..,'w')) only feed the
+      // edit block; their WORK count already comes from inlineCodeWork above.
+      const targets = bashWriteTargets(seg, ctx.cwd).map((t) => [t, true])
+        .concat(inlineWriteLiterals(seg).map((t) => [t, false]));
+      for (const [t, countsAsWork] of targets) {
+        const w = resolveWriteTarget(t, ctx, p, rootOf);
+        if (!w || w.scratch || !w.inBase) continue; // F3 judges writes into the session project only
+        const egPayload = Object.assign({}, p, { cwd: w.base });
+        if (countsAsWork && !eg.isNotesTarget(w.abs, w.base, egPayload)) {
+          segWork = true;
+          res.labels.add('repo-write');
+        }
+        if (!isGit && eg.editVerdict(w.abs, w.base, egPayload) !== 'allow') blocks.add(w.abs);
+      }
+    }
+    if (segWork) {
+      res.work = true;
+      if (!recovery) res.blockable = true;
+    }
+  });
+
+  if (depth < 3) {
+    const inner = shellRunPayloads(segments, masked.text);
+    inner.push(...extractSubstitutions(masked.text), ...masked.inners);
+    for (const sub of inner) {
+      const r = classifyBashWork(sub, payload, o, depth + 1, sh);
+      res.work = res.work || r.work;
+      res.blockable = res.blockable || r.blockable;
+      for (const l of r.labels) res.labels.add(l);
+      for (const b of r.editBlocks) blocks.add(b);
+    }
+  }
+  res.editBlocks = [...blocks];
+  return res;
+}
+
+// Returns the decision ({exitCode, stdout, stderr}); every block is a RETURNED
+// io.blockDecision(), never an exit, so the fail-open try/catch blocks below
+// cannot swallow it. `payload` is the parsed stdin (undefined when unreadable).
+function main(payload, env) {
+  // Coordinator/subagent detection needs the payload's agent_id/agent_type
+  // markers (the only reliable signal under cmux).
+  if (payload === undefined) return io.decision(0);
+
+  const skipGuard = require('./skip-guard.js');
+  const isSkipped = (name) => skipGuard.isSkipped(name, env);
 
   const command = (payload && payload.tool_input && payload.tool_input.command) || '';
 
@@ -3275,26 +4349,21 @@ function main() {
   try {
     let devswarmActive = false;
     try {
-      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(env);
     } catch (_) {
       devswarmActive = false; // fail-open: dormant
     }
     if (devswarmActive && !isSkipped('devswarm-read-guard')) {
-      // Emit via fs.writeSync(1,…) not process.stdout.write per CLAUDE.md: on macOS
-      // node 18/20 a synchronous exit right after process.stdout.write can race the
-      // async pipe flush and truncate the JSON; writeSync is atomic.
       const kind = detectHivectlDestructiveRead(command);
       if (kind) {
-        const reason = buildDevswarmReason(kind, process.env);
-        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-        process.exit(2);
+        const reason = buildDevswarmReason(kind, env);
+        return io.blockDecision(reason);
       }
       const cwd = (payload && payload.cwd) || '';
-      const fileKind = detectProtectedFileRead(command, os.homedir(), cwd);
+      const fileKind = detectProtectedFileRead(command, io.homeOf(env), cwd);
       if (fileKind) {
         const reason = buildRawFileReadReason(fileKind);
-        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-        process.exit(2);
+        return io.blockDecision(reason);
       }
     }
   } catch (_) {
@@ -3317,7 +4386,7 @@ function main() {
   try {
     let devswarmActive = false;
     try {
-      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(env);
     } catch (_) {
       devswarmActive = false; // fail-open: dormant
     }
@@ -3325,8 +4394,7 @@ function main() {
       const sendKind = detectHivectlMessageSend(command);
       if (sendKind) {
         const reason = buildDevswarmSendReason(sendKind);
-        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-        process.exit(2);
+        return io.blockDecision(reason);
       }
     }
   } catch (_) {
@@ -3347,8 +4415,7 @@ function main() {
       && settingsGet('guards', 'allowSubagentMailbox') !== true
       && !isSkipped('devswarm-subagent-mailbox-guard')
       && detectSubagentMailboxTouch(command)) {
-      fs.writeSync(1, JSON.stringify({ decision: 'block', reason: buildSubagentMailboxReason() }) + '\n');
-      process.exit(2);
+      return io.blockDecision(buildSubagentMailboxReason());
     }
   } catch (_) {
     // fail-open: never block a turn on a devswarm-subagent-mailbox-guard bug.
@@ -3383,8 +4450,7 @@ function main() {
         if (armed) {
           const { isSubagentByPayload } = require('./coordinator-detect.js');
           const subagent = isSubagentByPayload(payload);
-          fs.writeSync(1, JSON.stringify({ decision: 'block', reason: buildGitStashReason(stashSub, subagent) }) + '\n');
-          process.exit(2);
+          return io.blockDecision(buildGitStashReason(stashSub, subagent));
         }
       }
     }
@@ -3393,21 +4459,47 @@ function main() {
   }
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
-  if (isSkipped('command-guard')) process.exit(0);
+  if (isSkipped('command-guard')) return io.decision(0);
   // Settings switch safety.commandGuard (0.108.4, safety: set/reset need --confirmed).
   // Off -> the core heavy-command gate below no-ops; the data-safety
   // sub-guards above (DevSwarm read/send/mailbox, armed stash) already ran.
   // Fail-open: any error runs the gate.
-  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard')) process.exit(0); } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard', settingsOpts())) return io.decision(0); } catch (_) { /* run */ }
   const { isCoordinator } = require('./coordinator-detect.js');
 
   // Only block heavy commands in coordinator context (subagents pass through).
-  if (!isCoordinator(payload)) {
-    process.exit(0);
+  if (!isCoordinator(payload, env)) {
+    return io.decision(0);
+  }
+
+  // Bash edit parity (F3): a main-thread Bash write (sed -i/perl -i/tee/cp/mv/
+  // redirect, a literal open-for-write path in python -c / node -e, and the same
+  // inside sh -c, eval, $(…) or a heredoc fed to a shell) into a file edit-guard would block for the Edit tool gets the
+  // same delegation block. Off with guards.bashEditParity, safety.editGuard or
+  // an edit-guard skip; a trusted (redirect-free) project command-allow match
+  // passes. Both hosts (a Codex main thread is detected). Fail-open.
+  try {
+    if (settingsGet('guards', 'bashEditParity') !== false
+      && require('./lib/settings.js').enabled('safety', 'editGuard', settingsOpts())
+      && !isSkipped('edit-guard')
+      && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
+      // Over the classify cap: scan the heredoc header / first 16 KB (and the text after the heredoc), see lib/shell-writes.js.
+      let scans = [command];
+      if (command.length > MAX_CLASSIFY_LEN) {
+        const bp = require('./lib/shell-writes.js').bigCommandParts(command);
+        scans = bp.rest ? [bp.head, bp.rest] : [bp.head];
+      }
+      if (scans.some((c) => classifyBashWork(c, payload, { editOnly: true }).editBlocks.length)) {
+        const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload);
+        return io.blockDecision(reason);
+      }
+    }
+  } catch (_) {
+    // fail-open: never block a turn on a Bash edit parity bug.
   }
 
   if (!isHeavyCommand(command)) {
-    process.exit(0);
+    return io.decision(0);
   }
 
   // Narrow allow (owner-approved 2026-09-26): a bounded, single-target
@@ -3417,7 +4509,7 @@ function main() {
   // ordinary block below). See isBoundedVerificationCommand's header.
   try {
     if (settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command, { payload })) {
-      process.exit(0);
+      return io.decision(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
@@ -3437,7 +4529,7 @@ function main() {
         let repoTop = '';
         try { repoTop = require('../companion/lib/identity.js').resolveContext(cwd || process.cwd(), { missingPath: 'ancestor' }).toplevel || ''; } catch (_) { /* best-effort only */ }
         appendProjectCommandAllowAudit({ cwd, repo: repoTop, pattern: matched, command });
-        process.exit(0);
+        return io.decision(0);
       }
     }
   } catch (_) {
@@ -3453,7 +4545,7 @@ function main() {
     if (settingsGet('guards', 'allowPlainPush') !== false) {
       const cwd = (payload && payload.cwd) || '';
       if (isAllowedPlainPushChain(command, cwd, payload)) {
-        process.exit(0);
+        return io.decision(0);
       }
     }
   } catch (_) {
@@ -3466,7 +4558,7 @@ function main() {
   // See isBackgroundScratchScript's header. Fail-closed on any error.
   try {
     if (settingsGet('guards', 'allowBackgroundScratchScripts') !== false && isBackgroundScratchScript(command, payload)) {
-      process.exit(0);
+      return io.decision(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
@@ -3477,7 +4569,7 @@ function main() {
   // isAllowedGcloudReadCommand's header. Fail-closed on any error.
   try {
     if (settingsGet('guards', 'allowGcloudReads') !== false && isAllowedGcloudReadCommand(command)) {
-      process.exit(0);
+      return io.decision(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
@@ -3507,8 +4599,8 @@ function main() {
   let devswarmPrimary = false;
   try {
     devswarmPrimary =
-      require('./lib/devswarm-detect.js').isDevswarmActive(process.env) &&
-      !require('./lib/devswarm-role.js').isChildWorkspace(process.env);
+      require('./lib/devswarm-detect.js').isDevswarmActive(env) &&
+      !require('./lib/devswarm-role.js').isChildWorkspace(env);
   } catch (_) {
     devswarmPrimary = false;
   }
@@ -3518,15 +4610,14 @@ function main() {
   const INLINE_ALLOWED_HINT =
     'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
     '`node --test <1-2 files>`, `[npx] vitest run|jest <1-2 *.test|spec files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
-    'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
-    'Everything else goes to a subagent.';
+    'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`.';
   // The path that WORKS comes first, in one line, in every variant (fp: agents
   // re-checking a subagent's claim read the long delegate-only text and missed it).
   // TEXT ONLY: same rule, same inline-allowed set. Rules clause keeps the exact
   // shapes the carve-out accepts.
   const SCRATCHPAD_SCRIPT_HINT =
-    'To run or re-check it yourself: write the command to a scratchpad script and run `<interpreter> <script>` with run_in_background (then read its output). ' +
-    'Also OK: an executable scratchpad path, in the background; no VAR=… prefix; literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N. A scratchpad script piped to tail is STILL blocked in the foreground. ';
+    'To read output yourself: put a READ-ONLY command in a scratchpad script and run it with run_in_background (executable, literal absolute path, no VAR=... prefix, chain only wc/head/tail/grep -c/grep -m N; each run counts as main-thread work; a script piped to tail is still blocked in the foreground). ' +
+    'Commits, pushes, patch applies, gh mutations, repo edits and test runs go to a subagent.';
   // A leading `cd <dir>;` leaves the cwd unknown (only an unconditional `&&`
   // cd is tracked), so a relative-path check fails ONLY because of the `;`.
   // Hint exactly then: the same command joined with `&&` would qualify.
@@ -3534,7 +4625,7 @@ function main() {
   try {
     const m = /^(\s*cd\s+[^;&|\n]+?)\s*;/.exec(command);
     if (m && isBoundedVerificationCommand(m[1] + ' &&' + command.slice(m[0].length), { payload })) {
-      cdJoinHint = ' If the check is meant to run inline: use `cd <dir> &&`, not `;`.';
+      cdJoinHint = ' To run the check inline, use `cd <dir> &&`, not `;`.';
     }
   } catch (_) { /* hint is best-effort */ }
   // Workspace recommendation shared with the other Primary tier text
@@ -3542,40 +4633,62 @@ function main() {
   // work. Advice text only; the block decision above is unchanged. Fail-open
   // to the subagent-only text.
   let tierText = false;
-  try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(process.env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
-  const reason = devswarmPrimary && !tierText
-    ? (SCRATCHPAD_SCRIPT_HINT +
-       'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
-       'heavy/long/state-changing commands inline (raw output floods the main thread); ' +
-       'otherwise DELEGATE to a subagent (cheap model: Haiku or similar) that returns ' +
-       'only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
-       INLINE_ALLOWED_HINT + cdJoinHint)
-    : devswarmPrimary
-    ? (SCRATCHPAD_SCRIPT_HINT +
-       'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
-       'heavy/long/state-changing commands inline (raw output floods the main thread). ' +
-       'Otherwise CHOOSE THE TIER: if this belongs to a workspace-scale MATTER (a ' +
-       'feature/fix/deploy: multi-step, own branch, own review), spin a CHILD WORKSPACE ' +
-       'that owns it end-to-end: `node scripts/devswarm.js spawn <branch> ' +
-       '-p "<brief>"` (guard-exempt, run it inline). Only genuinely small/scoped work ' +
-       '(one command, a lookup, a scoped check) goes to a subagent (cheap model: Haiku or ' +
-       'similar) that returns a tight summary. Do NOT hand a workspace-scale matter to a ' +
-       'subagent. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
-       INLINE_ALLOWED_HINT + cdJoinHint)
-    : (SCRATCHPAD_SCRIPT_HINT +
-       'COMMAND-DELEGATION RULE: heavy/long/state-changing commands never run inline in ' +
-       'the main coordinator context (raw output floods the main thread). Otherwise ' +
-       'DELEGATE to a subagent (cheap model: Haiku or similar): pass the command, let it ' +
-       'run and return only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
-       INLINE_ALLOWED_HINT + cdJoinHint);
-
-  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-  process.exit(2);
+  try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
+  const H = require('./lib/host-text.js');
+  const codexHost = H.isCodex(payload);
+  const heavyWhat = (cls && cls.kind === 'remote' ? 'state-changing remote command' : 'heavy command') +
+    (detail ? ' ' + detail : '') + ' blocked in the main thread.';
+  // Codex variant: no scratchpad-script path (no scratchpad dir, no
+  // run_in_background on Codex Bash), Codex sub-agent + cheap-tier wording.
+  const SUB = codexHost ? H.CODEX_SUBAGENT : 'a subagent';
+  const delegateTo = 'delegate to ' + (codexHost ? H.CODEX_CHEAP : SUB) + ' (it returns a short summary)';
+  // Compact allowed list: exactly the shapes isQualifyingSingleTargetCheck accepts
+  // (piped to tail/head/wc/grep -c/grep -m N) plus the scratchpad read-only script.
+  const allowedShapes = 'piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <n>`, `<cc> -fsyntax-only`, --check/--dry-run/--list' +
+    (codexHost ? '.' : '; or a read-only scratchpad script (executable, absolute path, no VAR= prefix) run with run_in_background (never in the foreground).');
+  const reason = bm().blockMessage({
+    guard: 'command-guard',
+    what: heavyWhat,
+    why: 'Raw output floods the main thread.',
+    instead: (devswarmPrimary && tierText
+      ? 'workspace-scale matter (feature/fix/deploy): `node scripts/devswarm.js spawn <branch> -p "<brief>"` (guard-exempt, run inline); a single command: ' + delegateTo + '. Never hand a workspace-scale matter to ' + SUB + '.'
+      : delegateTo + '.') + cdJoinHint,
+    allowed: allowedShapes,
+  });
+  return io.blockDecision(reason);
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: never block a turn due to a hook bug.
+function evaluate(payload, env) {
+  const prev = guardEnv;
+  guardEnv = env || process.env;
+  try {
+    return main(payload, guardEnv) || io.decision(0);
+  } catch (_) {
+    return io.decision(0); // Fail-open: never block a turn due to a hook bug.
+  } finally {
+    guardEnv = prev;
+  }
 }
-process.exit(0);
+
+if (require.main === module) io.runCli(evaluate);
+
+module.exports = {
+  evaluate,
+  ANTI_HALL_CLI_PATTERNS,
+  scriptPathVerdict,
+  classifyBashWork,
+  isStateChangingGitSegment,
+  isRecoveryGitSegment,
+  bashWriteTargets,
+  isHeavyCommand,
+  isAllowedGcloudReadCommand,
+  isHeavyGhSegment,
+  isScratchpadOrTmpPath,
+  splitSegmentsDetailed,
+  effectiveVerb,
+  argvWithoutRedirects,
+  inlineWriteLiterals,
+  resolveWriteTarget,
+  projectRootResolver,
+  forEachShellSegment,
+};

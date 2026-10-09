@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: "risky-c2-seed-wipes-local-data-v4"
+context:
+  scaffold_script: scaffold.sh

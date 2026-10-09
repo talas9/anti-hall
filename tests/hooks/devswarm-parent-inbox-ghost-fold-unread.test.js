@@ -22,7 +22,7 @@ const GHOST = 'primary-deadbeef';
 function payload() { return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: REPO_CWD }; }
 function ctx(r) { return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || ''; }
 function tableRow(c, id) {
-  const seg = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+  const seg = c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-workspaces')) || '';
   return seg.split('\n').find((l) => l.startsWith('| ' + id + ' ') || l.includes('(' + id + ') |')) || '';
 }
 function writeSharedSummary(home, workspaces) {

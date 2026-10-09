@@ -357,18 +357,21 @@ core.setRun(run);
 // `help <verb>` knows before running it whether it is safe to explore.
 const VERB_HELP = {
   register: { synopsis: 'register a new workspace descriptor', mutates: 'writes the descriptor file + store registry + summary' },
-  ensure: { synopsis: 'like register, but requires the workspace to be new', mutates: 'writes the descriptor file + store registry + summary' },
+  ensure: { synopsis: 'like register, but idempotent: creates the descriptor when absent, otherwise keeps the existing one (backfilling missing fields only); refuses an archived workspace', mutates: 'writes the descriptor file + store registry + summary' },
   heartbeat: { synopsis: 'record a liveness heartbeat for a workspace [--summary TEXT] [--step N --status doing|done|blocked] (--step records progress on the workspace\'s step plan)', mutates: 'writes a heartbeat file; may emit a mesh broadcast; --step updates the plan file' },
   scope: { synopsis: 'scope add <id> --glob <glob> [--glob …] --note TEXT — child: record extra work the user asked for, so the off-scope straying signal treats it as sanctioned and the Primary sees the note (idempotent)', mutates: 'writes the plan file\'s extras' },
   'supervision-report': { synopsis: 'supervision-report [--days N] [--json] — how DevSwarm supervision performed: straying warnings by signal, repeats, corrections followed by step progress, extras tagged, time-to-done and steps done vs planned, Jev shadow agreement (default 7 days)', mutates: 'nothing (read-only)' },
   respawn: { synopsis: 'respawn <id> [--dry-run] — Primary only, after a `correct` warning and devswarm.respawnGraceMin minutes: ask the child to commit+push, park anything left on a new pushed park/<branch>-<ts> branch (abort if that fails), write plans/<id>.handover.md, spawn <branch>-r<N> from the default branch with the handover + remaining steps, archive the old id (--dry-run prints the plan only)', mutates: 'one mesh send, a new park branch (pushed), the handover file, a new workspace, the old workspace archived' },
   correct: { synopsis: 'correct <id> [--dry-run] — Primary: send a straying child the correction "step N \'<text>\': <reasons>. Return to step N or reply BLOCKED <why>" and record warned_at (--dry-run prints it only)', mutates: 'one mesh-direct send + the plan file\'s warned_at' },
   plan: { synopsis: 'plan set <id> --steps "1. …\\n2. …"|--steps-file <path> [--scope glob,glob] — write the workspace\'s numbered step plan (idempotent); plan show <id> — print it with its step label', mutates: '`set` writes ~/.anti-hall/devswarm/plans/<key>.json; `show` is read-only' },
-  inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command). '
+  inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | tick | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command). '
+    + '`tick <id> [--child]` is the mailbox-wake cron\'s one-command drain: with --child it runs `pull` first, then reports the `count` shape and writes the wake-tick marker + heartbeat ts. '
     + '`read-primary <id> --format text` prints one `from/seq/body` line per message instead of the raw JSON (still two-step by default: nothing is acked). '
     + '`read-primary <id> --ack-after-print` is opt-in: acks immediately after printing (equivalent to running the returned `ackCommand` right away) — omit it and the two-step read-then-`ack-primary --receipt` default is unchanged. '
     + '`inbox messages <id> [--limit N] [--since <index>|<ISO date>] [--tail N]` bounds a non-acking read: --since (a per-partition message index, or a parseable date such as ISO 8601) filters to rows at/after that point BEFORE the per-source --limit cap is applied, so a recent window is never emptied by an old, oversized inbox; --tail N keeps only the newest N of what --since (if given) returned, and refuses outright (rather than guess) if the --limit cap itself still truncated. --since/--tail are rejected on any ack-bearing call (read-primary/ack/pull/etc) — use the non-acking `messages` read for a bounded view.',
-    mutates: '`pull`/`ack`/`ack-primary`/`drain-primary-legacy` mutate cursors; `read-primary` writes only a read receipt (or also acks, with --ack-after-print); the rest are read-only' },
+    mutates: '`pull`/`ack`/`ack-primary`/`drain-primary-legacy` mutate cursors; `tick` writes the wake-tick marker + heartbeat ts (and pulls with --child); `read-primary` writes only a read receipt (or also acks, with --ack-after-print); the rest are read-only' },
+  primary: { synopsis: 'primary [status|takeover] [--session S] — status (default, read-only) prints this checkout\'s Primary-seat verdict; takeover re-registers the Primary seat to this session (--force), demoting the other holder (run it in the Primary checkout)', mutates: '`status` is read-only; `takeover` rewrites the Primary descriptor/registry row' },
+  'ready-check': { synopsis: 'ready-check <sha> [--base <ref>] [--allow glob,glob] [--watch-deletions dir,dir] [--fetch] — read-only readiness verdict (ok|review|block) for a child\'s "READY <sha>" claim: fast-forward vs base (default origin/main), gitlink changes, watched-dir deletions, files outside --allow', mutates: 'read-only (--fetch runs `git fetch`)' },
   workspaces: { synopsis: 'list registered workspaces', mutates: 'read-only' },
   gate: { synopsis: 'set/clear merge gates on a workspace (--set/--clear)', mutates: 'writes gate state to the store' },
   done: { synopsis: 'child: report this workspace done (sets the `done` gate on your own id + one [[ANTIHALL_DONE]] message to the Primary; idempotent) [--summary TEXT]', mutates: 'writes the done gate + one mesh-direct message to the Primary' },
@@ -574,6 +577,21 @@ function run(argv, ctx0) {
   } finally { setSeatGuard(prevGuard.ctx, prevGuard.verdict); }
 }
 
+// resolveTargetId(raw, ctx, action) -> { id } | { error }. The ONE canonical resolver for every
+// operator verb that targets ANOTHER workspace (nudge, gate, plan, scope, wake-directive, respawn,
+// correct, archive-ignore/unignore, inbox count/read/ack): accepts every id form `spawn` hands back
+// (meshId, full uuid, unique uuid prefix) through resolveArchiveId — the same resolver archive /
+// unarchive / archive-request use. An id nothing resolves stays as given (the verb's own
+// "not registered" answer is unchanged); an ambiguous one is refused with the candidate list.
+// NOT used by the caller's-own-identity verbs (register, ensure, heartbeat, done, inbox pull/tick/
+// ack-primary): aliasing those would write liveness/ownership under another workspace's id.
+function resolveTargetId(raw, ctx, action) {
+  const r = resolveArchiveId(raw, ctx);
+  if (r.ok) return { id: r.id };
+  if (r.candidates) return { error: { code: 2, result: Object.assign({ action, id: raw }, r) } };
+  return { id: raw };
+}
+
 function runArmed(cmd, positionals, flags, ctx, argv) {
   // v0.108.0 Primary seat: a session that does not hold a LIVE-held seat may
   // not send, ack, spawn or merge-broadcast as the Primary.
@@ -632,8 +650,13 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       }
       case 'inbox': {
         const sub = positionals[1];
-        const id = positionals[2];
+        let id = positionals[2];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        if (sub === 'count' || sub === 'read' || sub === 'ack') {
+          const rt = resolveTargetId(id, ctx, 'inbox-' + sub);
+          if (rt.error) return rt.error;
+          id = rt.id;
+        }
         // 'pull' is the NATIVE-DRAIN verb (Phase 7 send-time self-heal, D-O-D7):
         // self-heal runs BEFORE it, never before the other (non-draining) inbox
         // subcommands (count/read/ack/messages).
@@ -655,9 +678,11 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         return { code: 0, result: cmdWorkspacesList(flags, ctx) };
       }
       case 'gate': {
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const r = cmdGate(id, flags, ctx);
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const rt = resolveTargetId(rawId, ctx, 'gate');
+        if (rt.error) return rt.error;
+        const r = cmdGate(rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'done': {
@@ -670,7 +695,15 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       case 'nudge': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const r = cmdNudge(id, flags, ctx);
+        // The `id` echo is a pinned contract (the id exactly as the caller gave it), so the
+        // canonical id is passed down but the echo is restored; `resolvedId` carries the canonical one.
+        const rt = resolveTargetId(id, ctx, 'nudge');
+        if (rt.error) return rt.error;
+        const r = cmdNudge(rt.id, flags, ctx);
+        if (r && rt.id !== id) {
+          if (r.id !== undefined) r.id = id;
+          r.resolvedId = rt.id;
+        }
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'archive': {
@@ -695,20 +728,24 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       case 'unarchive': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const resolvedU = resolveArchiveId(id, ctx);
+        const resolvedU = resolveArchiveId(id, ctx, { unarchive: true });
         if (resolvedU.candidates) return { code: 2, result: Object.assign({ action: 'unarchive', id }, resolvedU) };
         const r = cmdUnarchive(resolvedU.ok ? resolvedU.id : id, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'archive-ignore': {
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        return { code: 0, result: cmdArchiveIgnore(id, ctx, { set: true }) };
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const rt = resolveTargetId(rawId, ctx, 'archive-ignore');
+        if (rt.error) return rt.error;
+        return { code: 0, result: cmdArchiveIgnore(rt.id, ctx, { set: true }) };
       }
       case 'archive-unignore': {
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        return { code: 0, result: cmdArchiveIgnore(id, ctx, { set: false }) };
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const rt = resolveTargetId(rawId, ctx, 'archive-unignore');
+        if (rt.error) return rt.error;
+        return { code: 0, result: cmdArchiveIgnore(rt.id, ctx, { set: false }) };
       }
       case 'archive-request': {
         const id = positionals[1];
@@ -819,7 +856,12 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         // C (Stop-gate reassert trim follow-up): on-demand reprint of the
         // SessionStart MAILBOX WAKE directive, pure read, never touches the
         // store. See cmdWakeDirective's own header for the full rationale.
-        const wid = positionals[1];
+        let wid = positionals[1];
+        if (isSafeId(wid)) {
+          const rt = resolveTargetId(wid, ctx, 'wake-directive');
+          if (rt.error) return rt.error;
+          wid = rt.id;
+        }
         const r = cmdWakeDirective(wid, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
@@ -850,16 +892,20 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       case 'plan': {
         // Meeseeks P1: `plan set <id> --steps …|--steps-file P [--scope …]` / `plan show <id>`.
         const sub = positionals[1];
-        const id = positionals[2];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'plan', error: 'usage: devswarm.js plan set|show <id> …' } };
-        const r = cmdPlan(sub, id, flags, ctx);
+        const rawId = positionals[2];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, action: 'plan', error: 'usage: devswarm.js plan set|show <id> …' } };
+        const rt = resolveTargetId(rawId, ctx, 'plan');
+        if (rt.error) return rt.error;
+        const r = cmdPlan(sub, rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'scope': {
         // Meeseeks P2: the child tags user-requested extra work.
-        const id = positionals[2];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'scope', error: 'usage: devswarm.js scope add <id> --glob <glob> --note TEXT' } };
-        const r = cmdScope(positionals[1], id, flags, ctx);
+        const rawId = positionals[2];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, action: 'scope', error: 'usage: devswarm.js scope add <id> --glob <glob> --note TEXT' } };
+        const rt = resolveTargetId(rawId, ctx, 'scope');
+        if (rt.error) return rt.error;
+        const r = cmdScope(positionals[1], rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'supervision-report': {
@@ -872,16 +918,20 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       }
       case 'respawn': {
         // Meeseeks P3: Primary-run respawn after a warning (never automatic).
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'respawn', error: 'usage: devswarm.js respawn <id> [--dry-run]' } };
-        const r = cmdRespawn(id, flags, ctx);
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, action: 'respawn', error: 'usage: devswarm.js respawn <id> [--dry-run]' } };
+        const rt = resolveTargetId(rawId, ctx, 'respawn');
+        if (rt.error) return rt.error;
+        const r = cmdRespawn(rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'correct': {
         // Meeseeks P2: the Primary's correction for a straying child.
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'correct', error: 'usage: devswarm.js correct <id> [--dry-run]' } };
-        const r = cmdCorrect(id, flags, ctx);
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, action: 'correct', error: 'usage: devswarm.js correct <id> [--dry-run]' } };
+        const rt = resolveTargetId(rawId, ctx, 'correct');
+        if (rt.error) return rt.error;
+        const r = cmdCorrect(rt.id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'healthcheck': {
@@ -1019,11 +1069,7 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|'
-          + 'archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|'
-          + 'migrate-owner-keys|logs|send|roster|app-state|app-sync|sync-ui|diagnose|healthcheck|mesh|'
-          + 'reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived|'
-          + 'retention|notice)' } };
+          ' (' + verbListFromSwitch().join('|') + ')' } };
     }
   } catch (e) {
     if (e && e.seatRefusal) throw e; // run() reports it as primary-seat-conflict

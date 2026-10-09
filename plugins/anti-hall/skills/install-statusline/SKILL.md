@@ -1,9 +1,13 @@
 ---
 name: install-statusline
-description: Install or enable the anti-hall statusline (rich line-1 statusline + phase bar) in the current repo or globally. Use when the user asks to "install the statusline", "add the bar", "enable the phase bar here", "set up the statusline in this project", or "show the statusline everywhere". Writes the statusLine entry into the correct settings file (user scope by default, project-local on request) and reminds the user to restart.
+description: Install the anti-hall statusline and phase bar. Use for "install the statusline", "statusline missing".
 ---
 
 # Install Statusline
+
+## When to use
+
+Install or enable the anti-hall statusline (rich line-1 statusline + phase bar) in the current repo or globally. Use when the user asks to "install the statusline", "add the bar", "enable the phase bar here", "set up the statusline in this project", or "show the statusline everywhere". Writes the statusLine entry into the correct settings file (user scope by default, project-local on request) and reminds the user to restart.
 
 Sets up the anti-hall two-line statusline:
 - **Line 1** — a rich generic statusline (project name, git branch/worktree/stash/staged-modified-untracked, ahead/behind, model, effort, subagent count, session duration, context-window %, cost). Rendered by the plugin's own `statusline-rich.js` — works in any repo.

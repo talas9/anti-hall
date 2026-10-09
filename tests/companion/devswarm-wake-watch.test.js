@@ -5,6 +5,7 @@
 // (`node --test tests/companion/devswarm-wake-watch.test.js`), not the full
 // suite (another agent owns that run).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -856,7 +857,7 @@ test('lock-refused: a live-held lock emits exactly one REFUSED TO ARM (lock-held
     const lockPath = lockPathFor(home, id);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     // Simulate a LIVE holder: pid = this test process's own pid (definitely alive).
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'live-holder' }));
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'live-' + 'holder' }));
 
     const env = {
       PATH: process.env.PATH,

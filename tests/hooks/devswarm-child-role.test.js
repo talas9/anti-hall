@@ -1,10 +1,11 @@
 'use strict';
 // devswarm-child-role (SessionStart hook). v0.58 "mesh-only messaging": injects
-// the FULL DEVSWARM COMMUNICATION OVERRIDE directive for BOTH DevSwarm roles
+// the FULL devswarm-comms directive for BOTH DevSwarm roles
 // (Primary AND child workspace) whenever the liveness supervisor is active
 // (devswarm-detect). A child additionally gets an idle-self-report nudge. Only a
 // non-DevSwarm session or malformed stdin is a silent no-op (fail-open, exit 0).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -16,7 +17,7 @@ const { WAKE_CRON_DEFAULT } = require('../../plugins/anti-hall/hooks/lib/devswar
 const HOOK = 'devswarm-child-role.js';
 // Stable substring surviving the v0.58 hook-text sweep (the OLD marker,
 // 'message-parent', is now a BLOCKED native verb and must never appear).
-const REMINDER_PHRASE = 'COMMUNICATION OVERRIDE';
+const REMINDER_PHRASE = 'devswarm-comms';
 
 function sessionPayload() {
   return { hook_event_name: 'SessionStart', source: 'startup', session_id: 't' };
@@ -209,7 +210,7 @@ test('WAKE: Claude Primary -> CronCreate directive using the read-primary drain 
     // `unregistered-workspace`).
     assert.ok(!/inbox read-primary <DEVSWARM_BUILDER_ID>/.test(c), `must not use the raw placeholder id; ctx=${c}`);
     assert.match(c, /inbox read-primary primary-[0-9a-f]{8}/, `Primary must drain with read-primary using a resolved primary-<hash> id; ctx=${c}`);
-    assert.match(c, /DEVSWARM PRIMARY SEAT: registered Primary primary-[0-9a-f]{8} for this worktree \(first run/, `a never-before-registered Primary checkout must be REGISTERED by SessionStart, not left as an unregistered id; ctx=${c}`);
+    assert.match(c, /devswarm-primary-seat: registered Primary primary-[0-9a-f]{8} for this worktree \(first run/, `a never-before-registered Primary checkout must be REGISTERED by SessionStart, not left as an unregistered id; ctx=${c}`);
   } finally {
     h.cleanup();
   }
@@ -275,7 +276,7 @@ test('WAKE: Claude Primary -> CronCreate directive using the read-primary drain 
 
       const c = sessionStartAt(f, 'sess-Z');
       assert.ok(c.includes('inbox tick ' + f.id), `directive must name the resolved id ${f.id}, not a placeholder/session id; ctx=${c}`);
-      assert.match(c, /DEVSWARM PRIMARY SEAT: registered Primary /, `SessionStart must register a never-registered seat, not silently leave it unregistered; ctx=${c}`);
+      assert.match(c, /devswarm-primary-seat: registered Primary /, `SessionStart must register a never-registered seat, not silently leave it unregistered; ctx=${c}`);
 
       const postTick = cli.run(['inbox', 'tick', f.id], { home: f.home, env: CLAUDE_PRIMARY, cwd: f.repo });
       assert.notEqual(postTick.result.reason, 'unregistered-workspace', `the directive's id must be workable AFTER SessionStart's own registration; got ${JSON.stringify(postTick.result)}`);

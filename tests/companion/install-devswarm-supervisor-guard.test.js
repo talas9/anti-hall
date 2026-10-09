@@ -8,6 +8,7 @@
 // Belt and braces: every spawn here runs with PATH pointing at an empty dir,
 // so even a broken guard could not reach launchctl/systemctl/crontab by name.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

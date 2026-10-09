@@ -45,7 +45,8 @@ Mapping to hooks:
 | `task-guard`           | Stop               | open tasks block; all-complete / none allows; skip hatch |
 | `task-tracker`         | UserPromptSubmit   | first turn FULL directive, then SHORT; future/garbage timestamp self-heals to FULL |
 | `verify-first`         | UserPromptSubmit   | `additionalContext` starts `VERIFY-FIRST:`; deterministic for a given envelope |
-| `verify-first-full`    | SessionStart       | full protocol contains the IRON LAW, the scannability rule, and USER OVERRIDE |
+| `verify-first-full`    | SessionStart       | `protocolLevel=full`: full protocol contains the IRON LAW, the scannability rule, and USER OVERRIDE; default `compact`: the compact core keeps the load-bearing clauses and points at PROTOCOL.md (`tests/hooks/verify-first-compact.test.js`) |
+| `orch-on-spawn`        | PreToolUse (Agent) | one ORCH_FULL per epoch (O_EXCL claim), silent for subagents and for a missing/`none` marker; fail-open on bad stdin |
 | `swarm-guard`          | PreToolUse (Task)  | a normal spawn is allowed; fail-open on bad stdin |
 
 Every hook additionally has **fail-open** tests: empty stdin (`''`) and malformed
@@ -121,15 +122,16 @@ Node, not a discovery root.)
 ## CI matrix
 
 `.github/workflows/test.yml` runs the suite on pull requests, on pushes to `main`
-and on `rc-v*` candidate tags; a `v*` release tag does not trigger it. The `rc-v*`
-run is the release gate and uses the full matrix; `main` and pull requests use a
-reduced one:
+(which arrive only by merging a pull request from `dev`) and on `rc-v*` candidate
+tags; pushes to `dev` and `v*` release tags do not trigger it, so run `node --test`
+locally before pushing `dev`. An `rc-v*` tag on a `dev` commit runs the full matrix;
+`main` and pull requests use a reduced one:
 
 - **OS:** `ubuntu-latest`, `macos-latest` (Windows is not supported)
 - **Node:** `22.x`, `24.x` (Node 22 is the minimum)
 - **rc-v\* tags:** ubuntu x Node 22/24 and macOS x Node 22/24, each cell split with
   `node --test --test-shard=i/n` (3 shards per ubuntu cell, 2 per macOS cell).
-- **main and pull requests:** ubuntu x Node 22/24 plus macOS x Node 24 only, sharded
+- **main and pull requests (the `dev` → `main` pull request is the merge gate):** ubuntu x Node 22/24 plus macOS x Node 24 only, sharded
   the same way.
 
 with `fail-fast: false` so one shard's failure does not mask the others. Each shard

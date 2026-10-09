@@ -66,7 +66,7 @@ test('BLOCK: SendMessage to a workspace-backed peer session -> exit 2, decision 
     });
     assert.strictEqual(r.status, 2, `expected block exit 2; stdout: ${r.stdout}`);
     assert.ok(r.json && r.json.decision === 'block', `expected decision block; json: ${JSON.stringify(r.json)}`);
-    assert.match(r.json.reason, /WORKSPACE-BACKED PEER SESSION/);
+    assert.match(r.json.reason, /workspace-backed peer session/);
     assert.match(r.json.reason, /devswarm\.js send --to <meshId>/);
   } finally {
     h.cleanup();
@@ -342,6 +342,7 @@ function buildMutant(anchor, replacement) {
   fs.mkdirSync(path.join(dir, 'lib'), { recursive: true });
   fs.copyFileSync(path.join(HOOK_DIR, 'skip-guard.js'), path.join(dir, 'skip-guard.js'));
   fs.copyFileSync(path.join(HOOK_DIR, 'lib', 'devswarm-detect.js'), path.join(dir, 'lib', 'devswarm-detect.js'));
+  fs.copyFileSync(path.join(HOOK_DIR, 'lib', 'block-message.js'), path.join(dir, 'lib', 'block-message.js'));
   const mutantPath = path.join(dir, 'devswarm-comms-guard.js');
   fs.writeFileSync(mutantPath, mutated, 'utf8');
   return mutantPath;

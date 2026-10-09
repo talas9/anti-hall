@@ -1,9 +1,13 @@
 ---
 name: settings
-description: Show or change any anti-hall setting. Use when the user says "anti-hall settings", "show anti-hall settings", "change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", "what are my anti-hall settings", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
+description: Show or change anti-hall settings. Use for "anti-hall settings", "turn off X", "set auto-handover to 80%".
 ---
 
 # Settings
+
+## When to use
+
+Show or change any anti-hall setting. Use when the user says "anti-hall settings", "show anti-hall settings", "change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", "what are my anti-hall settings", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
 
 anti-hall keeps every user-facing setting in ONE place: `~/.anti-hall/settings.json`,
 organized into sections (autoHandover, guards, safety, context, maintenance, jev,
@@ -14,21 +18,24 @@ switch on purpose, and why. `jevIntegrations` (v0.108.4) is a dedicated section 
 every per-integration Jev trust mode as its own row/setting — see the `jev` skill's
 "Per-integration modes" for the full table.
 
-## Default: point the user at `/config`
+## Default: grouped `show`, then the section
 
-Every non-advanced setting is a row in Claude Code's native **`/config`** panel
-(declared in `plugin.json`'s `userConfig`). Titles carry the section as a prefix
-("Auto Handover · Threshold %", "Guards · Merge-readiness gate"); enum settings are
-text fields whose description lists the allowed values; no model involved. When the user just
-says "anti-hall settings" / "change my settings", tell them that in one or two lines:
+`/config` (the plugin's options screen) has only the headline switches (auto-handover on/threshold,
+Jev on, DevSwarm supervisor mode, model routing, limit conservation), the four safety guards and
+the API keys. Every other setting lives in `~/.anti-hall/settings.json`, grouped by category
+(section). When the user says "anti-hall settings" / "change my settings":
 
-> Change settings in `/config` (the anti-hall rows) — arrow keys, no model; or tell me
-> "set X to Y".
+1. Run the grouped overview, one table per category, and tell them which categories exist:
+   `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show`
+2. Then show only the category they care about:
+   `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section <category> [--all]`
+3. Change with `set <section.key> <value>`, undo with `reset <section.key>` (below).
 
-Values you set in Claude Code's plugin options (`/config`) are copied into `~/.anti-hall/settings.json` on update (only when that value is already the one in effect, and never for the safety guards, which keep reading the plugin option); `/anti-hall:settings` is the place to see and change every setting.
-
-Do not run `show` or print tables for this. Advanced/tuning knobs (including the two safety
-allow-lists) are NOT in `/config`; they live in `/anti-hall:settings` only. For those, use a direct change below (`show --section <key> --all` lists them if asked).
+A non-default value set in Claude Code's plugin options in earlier versions is copied into
+`~/.anti-hall/settings.json` by the update or `doctor --repair` run of the first release that
+runs the migration (safety keys are copied as human-confirmed values), and still resolves
+until then (a stored plugin option stays a read-only source below the settings file);
+`/anti-hall:settings` is the place to see and change every setting.
 
 ## Direct named changes: one `set`, no table
 
@@ -44,11 +51,11 @@ comes back as `{ok:false, error}` on `--json` or an `error:` line otherwise — 
 and ask for a valid value; never silently coerce or guess one. A safety key (see below)
 needs the extra `--confirmed` step instead of a plain `set`.
 
-A value set this way is stored in settings.json and WINS over `/config` from then on
-(env > file > `/config` > legacy > default); `reset <section.key>` removes the override
-so the `/config` row takes over again. Known limitation: a `/config` value equal to the
-manifest default counts as unset (a lower tier answers); to pin a default-valued
-setting, `set` it here.
+A value set this way is stored in settings.json and WINS over any stored plugin option
+(env > file > plugin option > legacy > default); `reset <section.key>` removes the override
+so the stored plugin option (any setting that has one, row or not), the legacy source or the default takes over again.
+Known limitation: a plugin-option value equal to the default counts as unset (a lower tier
+answers); to pin a default-valued setting, `set` it here.
 
 ## Safety guards: a human direct command, or a confirmed warning — never inferred
 
@@ -76,7 +83,7 @@ factual, human-readable line (`{ok:false, needsConfirmation:true, warning}` on
   initiative to get past the warning — that is exactly the case this gate exists for.
 
 A value in `~/.anti-hall/settings.json` counts for these keys like any other (normal
-precedence: env > settings.json > `/config` > default). Nothing mechanically stops an
+precedence: env > settings.json > plugin option > default). Nothing mechanically stops an
 agent from writing that file directly; the owner chose consent over an extra guard, so
 the rule is the same as above — never hand-edit a safety key in settings.json to get
 around the confirmation.
@@ -125,11 +132,28 @@ it. A symlinked file is refused. Absolute paths, `..` and match-everything globs
 all), `.claude`, `.codex`, hook config, or `~/.claude`. Subagents are unaffected.
 Kill-switch: `guards.projectEditAllow=false`.
 
+## Semantic judge: `judge on|off|status`
+
+The opt-in speculation-judge (`jev.semanticJudge`, off by default) has a one-line switch:
+
+```bash
+node <plugin-root>/scripts/settings.js judge on|off|status
+```
+
+`on` sets the flag, then says whether an Anthropic key is visible to the CLI (never the key
+itself; a key stored as a plugin option is visible to hooks only, so "not visible" means
+unverified from the CLI) and how to add one, and prints the cost: about $0.0001–0.001 and
+1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on
+`eval/inference-bench.js` (84 synthetic cases). With `jev.judgeBackend` `cli` it uses the local
+`claude -p` CLI on the user's Claude login instead of a key (about 5–6 s per turn end, measured). `status` shows on/off, key
+visibility and the model (`jev.judgeModel`). Relay that output; do not add claims about accuracy.
+
 ## Turning a hook off
 
 "Turn off the task-list nudge", "stop the per-turn verify-first line", "disable the
 parent gate" and the like are one `set <section.key> false`. The switch keys:
 `context.*` (verify-first injections, task tracker, handover resume, defect nudge;
+`context.protocolLevel` (`compact` default / `full` = today's complete text everywhere, the one-key rollback) and `context.orchFullOn` (`auto` default / `spawn` / `session` / `off`: when the full orchestration rules arrive under compact);
 `context.dedupeWindowMin` — fallback per-session suppression window (minutes) for
 repeated UserPromptSubmit blocks (LIMIT CONSERVATION, TASK-LIST, DEVSWARM COMMS
 OVERRIDE, DEVSWARM WORKSPACES) when a burst of queued prompts lands in one turn,
@@ -144,18 +168,26 @@ task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off
 agents are in flight, independent of that mode;
 `guards.sharedTreeAgentNote` (default on) adds one advisory sentence when a write-capable agent is
 spawned without `isolation:"worktree"` while another write-capable agent runs in the same working tree;
+`guards.mergeSidePickAdvisory` (default on) adds one advisory to a push when a conflict was resolved by
+taking one side wholesale (`--ours`/`--theirs`, `-X ours|theirs`) and no test run followed;
+`guards.idleAgentSweep` (default on) lists, once per prompt, agents that finished but were never stopped
+(teammates: TaskStop; Codex: close_agent), when `guards.idleAgentSweepCount` (3) are idle or one has been
+idle `guards.idleAgentSweepMin` (15) minutes;
 `guards.injectionRepeatEvery` — turns between full re-injections of a static
 per-turn reminder block (VERIFY-FIRST, the DevSwarm PRIMARY dispatch-tier/
 top-fan-out-tier suffixes) once its first-turn/post-compact copy is consumed,
 default 10, 0 = every turn; `guards.codexQuotaDetect` — record a Codex
 quota/rate-limit exhaustion seen in a `codex:codex-rescue` result so other
-sessions stop rediscovering it independently, default on),
+sessions stop rediscovering it independently, default on;
+`guards.coordinatorWorkWindowMinutes` (default 10, 0 = off; main-thread state-changing Bash calls counted over that many minutes — in a non-git project only coordinator-writable or fresh scripts count),
+`guards.coordinatorWorkNudgeAt` (default 4, 0 = no nudge), `guards.coordinatorWorkBlockAt` (default 7, 0 = no block; recovery commands and loosely matched inline code are never blocked),
+`guards.coordinatorWorkMaxEntries` (default 50, min 1), `guards.bashEditParity` (default on — command-guard applies edit-guard's verdict to Bash writes into repo files in the main thread), `guards.shellWriteChecks` (default on — api-guard and ship-it-guard also check Bash file writes) and `guards.gitGuardHeredocData` (default on — git-guard does not scan a heredoc body that only feeds a prose file, a commit message or a PR body; off = scan every body as shell)),
 and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
 parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin;
 `dispatchTierText` turns the Primary dispatch-tier text off everywhere, `inlineWorkNudge` (independent of it) the once-per-session
 nudge to spin a child workspace after `inlineWorkNudgeThreshold` inline edits; `tickRosterEvery` N>0 appends the
 roster to every Nth `inbox tick --quiet`, default 0 = off). The new question/dispatch/nudge/roster keys have no
-/config row (settings file or env only).
+/config row (settings file or env only, like every non-headline setting).
 Settings are read when each hook runs, so a change applies from the next hook call.
 
 ## `show` only when asked
@@ -166,7 +198,7 @@ are my settings"), run:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show            # or: show --section <key> [--all]
 ```
 and present the output as-is (per-section markdown tables; the Source column says
-which tier answered — `/config`, `file`, `env`, `legacy`, `default`).
+which tier answered — `plugin-option` (a stored plugin option), `file`, `env`, `legacy`, `default`).
 A question about ONE value ("what's the auto-handover threshold") is a single
 `get <section.key>`, not a `show`.
 
@@ -239,7 +271,7 @@ next to the handovers (it never blocks compaction).
 ## Resetting a setting
 
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" reset <section.key>` removes the
-settings.json override for that one key, so `/config` (if the key has a
+settings.json override for that one key, so the stored plugin option (if the key has a
 `pluginOption`), the legacy source, or the schema default takes over again.
 
 ## Scripting / non-interactive use

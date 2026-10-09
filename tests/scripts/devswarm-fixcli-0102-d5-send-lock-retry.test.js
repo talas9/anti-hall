@@ -26,6 +26,7 @@
 // tests/helpers/fixcli-0102-hold-lock.js holds the lock in a SEPARATE spawned
 // process.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

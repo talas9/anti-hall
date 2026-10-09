@@ -4,6 +4,7 @@
 // read. Temp HOME, real temp git repo + child worktree, fixture lock file and
 // wake-tick marker.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

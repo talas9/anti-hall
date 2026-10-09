@@ -43,10 +43,11 @@
 // FAIL-OPEN everywhere. Pure Node built-ins.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 
 function emit(reason) {
   try { if (reason) fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) { /* fail-open */ }
@@ -130,12 +131,12 @@ function main() {
     const n = turn.turnsSinceCompact;
     why.push(n === 0 ? 'a compact happened earlier in this turn' : 'a compact happened ' + n + ' turn' + (n === 1 ? '' : 's') + ' ago');
   }
-  emit(
-    'anti-hall compact-advice-guard: your reply recommends compacting ("' + found[found.length - 1].phrase + '"), but ' +
-    why.join(', and ') + ' — don\'t recommend compacting now. "No background agents running" is necessary, not sufficient. ' +
-    'Retract it in one line, e.g. "RETRACT SAFE TO COMPACT — context is ' + (pct !== null ? Math.round(pct) + '%' : 'low') +
-    '; no need to compact", then continue or end the turn. Only the auto-handover threshold directive (or genuinely high context) justifies a SAFE TO COMPACT line.'
-  );
+  emit(require('./lib/block-message.js').blockMessage({
+    guard: 'compact-advice-guard',
+    what: 'your reply recommends compacting ("' + found[found.length - 1].phrase + '") but ' + why.join(', and ') + '.',
+    why: '"No background agents running" is necessary, not sufficient; only the auto-handover threshold directive (or genuinely high context) justifies a SAFE TO COMPACT line.',
+    instead: 'retract it in one line, e.g. "RETRACT SAFE TO COMPACT: context is ' + (pct !== null ? Math.round(pct) + '%' : 'low') + '; no need to compact", then continue or end the turn.',
+  }))
 }
 
 try { main(); } catch (_) { /* fail-open */ }

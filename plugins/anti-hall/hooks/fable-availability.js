@@ -5,6 +5,7 @@
 // a Fable model is available for workflow routing. No probing, no network.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
@@ -12,11 +13,12 @@ const os = require('os');
 
 const CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
 const STATE_FILE = path.join(os.homedir(), '.anti-hall', 'fable-availability.json');
-const CONTEXT =
-  "Fable is available this session (per ~/.claude.json). Fable routing is RE-ENABLED per " +
-  "MODEL-POLICY.md (2026-07-12) -- pass args.fableAvailable=true into ship-it/deadly-loop " +
-  "Workflow invocations so the Reviewer seat tries Fable first, falling back to Sonnet then " +
-  "Opus. Revisit if Fable's track record regresses.";
+const CONTEXT = require('./lib/block-message.js').message({
+  kind: 'tip', guard: 'fable-availability',
+  what: 'Fable is available this session (per ~/.claude.json).',
+  why: "Fable routing is re-enabled per MODEL-POLICY.md (2026-07-12); revisit if Fable's track record regresses.",
+  instead: 'pass args.fableAvailable=true into ship-it/deadly-loop Workflow invocations so the Reviewer seat tries Fable first, falling back to Sonnet then Opus.',
+});
 
 function hasFable(value) {
   return typeof value === 'string' && value.toLowerCase().includes('fable');

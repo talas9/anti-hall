@@ -2,6 +2,7 @@
 // anti-hall :: defect channel tests — hooks/lib/defect-store.js,
 // scripts/defect.js (CLI), hooks/defect-nudge.js (SessionStart nudge).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -412,7 +413,7 @@ test('nudge hook: maintainer branch emits a fixed-format line with ZERO reporter
     assert.equal(res.status, 0);
     const out = JSON.parse(res.stdout);
     const ctx = out.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /^anti-hall: \d+ unfinished defect reports \(\d+ regressed\), oldest \d+d — \/anti-hall:defects$/,
+    assert.match(ctx, /^\S+ anti-hall \u00B7 defect-nudge: \d+ unfinished defect reports \(\d+ regressed\), oldest \d+d\.\nDo instead: run \/anti-hall:defects\.$/,
       'output matches the fixed closed-vocabulary format exactly, including the regressed count');
     assert.ok(!ctx.includes(injected), 'zero reporter-supplied substrings in the emitted line');
     assert.ok(!ctx.toLowerCase().includes('ignore'), 'no injected text leaked through');
@@ -807,7 +808,7 @@ test('nudge maintainer line includes a nonzero regressed count when a defect is 
     assert.equal(res.status, 0);
     const out = JSON.parse(res.stdout);
     const ctx = out.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /^anti-hall: 1 unfinished defect reports \(1 regressed\), oldest \d+d — \/anti-hall:defects$/,
+    assert.match(ctx, /^\S+ anti-hall \u00B7 defect-nudge: 1 unfinished defect reports \(1 regressed\), oldest \d+d\.\nDo instead: run \/anti-hall:defects\.$/,
       'the regressed defect is counted in both the total and the explicit regressed count');
   } finally { rm(home); rm(repoCwd); }
 });
@@ -1076,7 +1077,7 @@ test('maintainer nudge line now counts partial/ack as unfinished too (not just o
     const out = JSON.parse(res.stdout);
     const ctx = out.hookSpecificOutput.additionalContext;
     assert.notEqual(ctx, '', 'the nudge must NOT be silent — a partial-only defect is unfinished');
-    assert.match(ctx, /^anti-hall: 1 unfinished defect reports \(0 regressed\), oldest \d+d — \/anti-hall:defects$/);
+    assert.match(ctx, /^\S+ anti-hall \u00B7 defect-nudge: 1 unfinished defect reports \(0 regressed\), oldest \d+d\.\nDo instead: run \/anti-hall:defects\.$/);
   } finally { rm(home); rm(repoCwd); }
 });
 

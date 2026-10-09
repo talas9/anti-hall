@@ -6,6 +6,7 @@
 // moved, from where to where, how many rows were actually delivered to justify
 // it, which process/instance did it, under which verb and gate.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

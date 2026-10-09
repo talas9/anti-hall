@@ -32,7 +32,7 @@ function isBlock(r) {
 }
 
 function isIdleNeglect(r) {
-  return isBlock(r) && /IDLE NEGLECT/.test(r.json.reason || '');
+  return isBlock(r) && /have no in-flight agent/.test(r.json.reason || '');
 }
 
 // Write a FRESH agent heartbeat under <home>/.anti-hall/agents/<id>.json so the
@@ -119,8 +119,8 @@ test('IDLE NEGLECT: actionable-now pending + no agents -> idle-neglect block nam
     const r = testHook(HOOK, stopPayload(tp), { home: h.home });
     assert.ok(isIdleNeglect(r), `expected idle-neglect block; stdout: ${r.stdout}`);
     assert.match(r.json.reason, /refactor the parser/, 'names the actionable task');
-    assert.match(r.json.reason, /PARALLEL/, 'demands parallel dispatch');
-    assert.match(r.json.reason, /blockedBy.*addBlockedBy.*instead of dispatching/, 'includes in-flight task blocker guidance');
+    assert.match(r.json.reason, /in parallel/, 'demands parallel dispatch');
+    assert.match(r.json.reason, /blockedBy.*addBlockedBy/, 'includes in-flight task blocker guidance');
   } finally {
     h.cleanup();
   }
@@ -1033,7 +1033,7 @@ test('IDLE NEGLECT: a LIVE devswarm child workspace exists -> the reason names t
     ]);
     const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: f.env });
     assert.ok(isIdleNeglect(r), `expected idle-neglect; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /delegated to a DevSwarm workspace/);
+    assert.match(r.json.reason, /Delegated to a DevSwarm workspace/);
     assert.match(r.json.reason, /TaskUpdate owner/);
   } finally {
     h.cleanup();
@@ -1099,7 +1099,7 @@ test('IDLE NEGLECT: no devswarm app DB at all -> the delegate-to-workspace hint 
     ]);
     const r = testHook(HOOK, stopPayload(tp), { home: h.home });
     assert.ok(isIdleNeglect(r), `expected idle-neglect; stdout: ${r.stdout}`);
-    assert.doesNotMatch(r.json.reason, /delegated to a DevSwarm workspace/);
+    assert.doesNotMatch(r.json.reason, /Delegated to a DevSwarm workspace/);
   } finally {
     h.cleanup();
   }

@@ -73,7 +73,7 @@ for (const rel of HANDOVER_PATHS) {
       assert.match(r.stderr, BLOCKED);
       assert.match(r.stderr, /never committed/);
       assert.match(r.stderr, /git restore --staged/);
-      assert.match(r.stderr, /skip\.json/);
+      assert.match(r.stderr, /skip git-guard/);
     } finally { rm(dir); }
   });
 }

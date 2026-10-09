@@ -11,6 +11,7 @@
 //   node scripts/settings.js get <section.key> [--json]
 //   node scripts/settings.js set <section.key> <value> [--confirmed] [--json]
 //   node scripts/settings.js reset <section.key> [--confirmed] [--json]
+//   node scripts/settings.js judge on|off|status
 //   node scripts/settings.js trust-command-allow [<repo>] [--confirmed] [--json]
 //   node scripts/settings.js trust-edit-allow [<repo>] [--confirmed] [--json]
 //
@@ -140,7 +141,7 @@ function effectiveIntegrations(opts) {
 function cmdShow(args, opts) {
   const target = args.section ? schema.SECTIONS.filter((s) => s.key === args.section) : schema.SECTIONS;
   if (args.section && target.length === 0) {
-    process.stderr.write('unknown section: ' + args.section + '\n');
+    process.stderr.write('\u274C anti-hall \u00B7 settings: unknown section: ' + args.section + '\n');
     process.exitCode = 1;
     return;
   }
@@ -213,7 +214,7 @@ function cmdGet(args, opts) {
   const [section, key] = splitKey(args._[0]);
   const entry = section && schema.findSetting(section, key);
   if (!entry) {
-    process.stderr.write('unknown setting: ' + args._[0] + ' (expected section.key)\n');
+    process.stderr.write('\u274C anti-hall \u00B7 settings: unknown setting: ' + args._[0] + ' (expected section.key)\n');
     process.exitCode = 1;
     return;
   }
@@ -231,12 +232,12 @@ function cmdSet(args, opts) {
   const rawValue = args._[1];
   const entry = section && schema.findSetting(section, key);
   if (!entry) {
-    process.stderr.write('unknown setting: ' + args._[0] + ' (expected section.key)\n');
+    process.stderr.write('\u274C anti-hall \u00B7 settings: unknown setting: ' + args._[0] + ' (expected section.key)\n');
     process.exitCode = 1;
     return;
   }
   if (rawValue === undefined) {
-    process.stderr.write('usage: settings.js set <section.key> <value>\n');
+    process.stderr.write('\uD83D\uDCA1 anti-hall \u00B7 settings: usage: settings.js set <section.key> <value>\n');
     process.exitCode = 1;
     return;
   }
@@ -248,7 +249,7 @@ function cmdSet(args, opts) {
     } else if (args.json) {
       process.stdout.write(JSON.stringify({ ok: false, error: result.error }) + '\n');
     } else {
-      process.stderr.write('error: ' + result.error + '\n');
+      process.stderr.write('\u274C anti-hall \u00B7 settings: ' + result.error + '\n');
     }
     process.exitCode = 1;
     return;
@@ -262,7 +263,7 @@ function cmdReset(args, opts) {
   const [section, key] = splitKey(args._[0]);
   const entry = section && schema.findSetting(section, key);
   if (!entry) {
-    process.stderr.write('unknown setting: ' + args._[0] + ' (expected section.key)\n');
+    process.stderr.write('\u274C anti-hall \u00B7 settings: unknown setting: ' + args._[0] + ' (expected section.key)\n');
     process.exitCode = 1;
     return;
   }
@@ -274,7 +275,7 @@ function cmdReset(args, opts) {
     } else if (args.json) {
       process.stdout.write(JSON.stringify({ ok: false, error: result.error }) + '\n');
     } else {
-      process.stderr.write('error: ' + result.error + '\n');
+      process.stderr.write('\u274C anti-hall \u00B7 settings: ' + result.error + '\n');
     }
     process.exitCode = 1;
     return;
@@ -297,7 +298,7 @@ function cmdTrustAllow(kind, args, opts) {
   const top = allowLib.repoToplevel(target);
   const fail = (error) => {
     if (args.json) process.stdout.write(JSON.stringify({ ok: false, error }) + '\n');
-    else process.stderr.write('error: ' + error + '\n');
+    else process.stderr.write('\u274C anti-hall \u00B7 settings: ' + error + '\n');
     process.exitCode = 1;
   };
   if (!top) return fail('not inside a git repository: ' + target);
@@ -340,6 +341,54 @@ function cmdTrustAllow(kind, args, opts) {
   }
 }
 
+const JUDGE_COST = 'about $0.0001\u20130.001 and 1\u20133 s per turn end, estimated, not measured; precision 0.78\u20130.81 and recall 1.0 measured on eval/inference-bench.js (84 synthetic cases)';
+const JUDGE_COST_CLI = 'no API bill (your Claude login\'s usage) and about 5\u20136 s per turn end, measured; precision 0.78\u20130.81 and recall 1.0 measured on eval/inference-bench.js (84 synthetic cases)';
+
+// judge on|off|status — the opt-in semantic speculation-judge (jev.semanticJudge).
+// The key is only RESOLVED here (never printed). A key stored as a Claude Code
+// plugin option is exported to hook processes only, so this CLI cannot see it:
+// "not visible" means "unverified from here", not "absent".
+function cmdJudge(args, opts) {
+  const verb = args._[0];
+  if (verb !== 'on' && verb !== 'off' && verb !== 'status') {
+    process.stderr.write('\uD83D\uDCA1 anti-hall \u00B7 settings: usage: settings.js judge on|off|status\n');
+    process.exitCode = 1;
+    return;
+  }
+  if (verb !== 'status') {
+    const r = settings.set('jev', 'semanticJudge', verb === 'on' ? 'true' : 'false', opts);
+    if (!r.ok) {
+      process.stderr.write('\u274C anti-hall \u00B7 settings: ' + r.error + '\n');
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const on = settings.get('jev', 'semanticJudge', false, opts) === true;
+  let hasKey = false;
+  try { hasKey = !!require('../hooks/lib/credentials.js').resolveKey('anthropic', { env: process.env }).key; } catch (_) { /* unverifiable */ }
+  const be = require('../hooks/lib/jev-assist.js').speculationBackend().backend;
+  const model = settings.get('jev', 'judgeModel', 'haiku', opts);
+  const out = [];
+  out.push('judge: ' + (on ? 'on' : 'off') + (verb === 'off' && on ? ' (still on via env ANTIHALL_SEMANTIC_JUDGE)' : ''));
+  const jb = settings.get('jev', 'judgeBackend', 'api', opts);
+  const viaCli = jb === 'cli' || (jb === 'auto' && !hasKey);
+  out.push('backend: ' + be + (be === 'jev' ? ' (speculation-guard asks Jev; the paid API judge exits early' + (on ? ', API judge skipped)' : ')') : be === 'api' ? (viaCli ? ' (speculation-judge calls the local claude CLI, jev.judgeBackend=' + jb + ')' : ' (speculation-judge calls the Anthropic API)') : ' (lexical speculation-guard only)'));
+  if (verb === 'on' || verb === 'status') {
+    out.push('key: ' + (hasKey ? 'found (value not shown)' : 'not visible to this process'));
+    if (verb === 'status') out.push('model: ' + model);
+  }
+  if (verb === 'on') {
+    if (!hasKey && !viaCli) {
+      out.push('No key visible here. Add one so the judge can call the Anthropic API:');
+      out.push('  Claude Code: plugin options screen, anti-hall -> anthropic_api_key (visible to hooks only, so this CLI cannot confirm it).');
+      out.push('  Codex: set guards.allowAnthropicEnvKey to true in ~/.anti-hall/settings.json and export ANTHROPIC_API_KEY.');
+      out.push('Without a key the judge is fail-open (does nothing). Or use your Claude login instead of a key: settings.js set jev.judgeBackend cli');
+    }
+    out.push('Cost: ' + (viaCli ? JUDGE_COST_CLI : JUDGE_COST) + '.');
+  }
+  process.stdout.write(out.join('\n') + '\n');
+}
+
 function cmdTrustCommandAllow(args, opts) { return cmdTrustAllow('command', args, opts); }
 function cmdTrustEditAllow(args, opts) { return cmdTrustAllow('edit', args, opts); }
 
@@ -354,14 +403,15 @@ function main() {
     case 'get': return cmdGet(args, opts);
     case 'set': return cmdSet(args, opts);
     case 'reset': return cmdReset(args, opts);
+    case 'judge': return cmdJudge(args, opts);
     case 'trust-command-allow': return cmdTrustCommandAllow(args, opts);
     case 'trust-edit-allow': return cmdTrustEditAllow(args, opts);
     default:
-      process.stderr.write('usage: settings.js <show|get|set|reset|trust-command-allow|trust-edit-allow> [args] [--json]\n');
+      process.stderr.write('\uD83D\uDCA1 anti-hall \u00B7 settings: usage: settings.js <show|get|set|reset|judge|trust-command-allow|trust-edit-allow> [args] [--json]\n');
       process.exitCode = 1;
   }
 }
 
 if (require.main === module) main();
 
-module.exports = { parseArgs, splitKey, effectiveIntegrations, cmdShow, cmdGet, cmdSet, cmdReset, cmdTrustCommandAllow, cmdTrustEditAllow };
+module.exports = { parseArgs, splitKey, effectiveIntegrations, cmdShow, cmdGet, cmdSet, cmdReset, cmdJudge, cmdTrustCommandAllow, cmdTrustEditAllow };

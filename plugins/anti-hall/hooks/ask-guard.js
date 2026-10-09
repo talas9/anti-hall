@@ -38,9 +38,20 @@ const path = require('path');
 
 const MARKER_RE = /^(DESTRUCTIVE|CREDENTIAL):/;
 
-const ADVISE_TEXT = "Standing rule: do not hold work on a question. Take the recommended option, say which you took, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line.";
-const BLOCK_TEXT = "Blocked by guards.noBlockingQuestions: decide the recommended option yourself, state it in your reply, and continue. List anything destructive or irreversible as a non-blocking 'needs your OK' line. If this question really is about a destructive or irreversible action, re-issue it with the question header starting with DESTRUCTIVE: — or CREDENTIAL: if it needs a secret only the user can supply.";
-const CHILD_TEXT = " You are a DevSwarm child workspace: send the question to your parent with `devswarm.js send --to-primary --question \"...\"` instead of asking the user directly.";
+const ADVISE_TEXT = require('./lib/block-message.js').message({
+  kind: 'tip',
+  guard: 'ask-guard',
+  what: 'do not hold work on a question.',
+  instead: "take the recommended option, say which you took, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line.",
+});
+const BLOCK_TEXT = require('./lib/block-message.js').blockMessage({
+  guard: 'ask-guard',
+  what: 'AskUserQuestion blocked by guards.noBlockingQuestions.',
+  why: 'Work should not wait on a question.',
+  instead: "decide the recommended option yourself, state it in your reply, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line.",
+  allowed: 'a question about a destructive or irreversible action, with the question header starting DESTRUCTIVE: (or CREDENTIAL: for a secret only the user can supply).',
+});
+const CHILD_TEXT = '\nChild workspace: send the question to your parent with `devswarm.js send --to-primary --question "..."` instead of asking the user directly.';
 
 function emit(obj, code) {
   try { fs.writeSync(1, JSON.stringify(obj) + '\n'); } catch (_) {}
@@ -121,7 +132,7 @@ function main() {
   if (mode === 'advise') parts.push(ADVISE_TEXT + suffix);
   const note = agentsNote(payload);
   if (note) parts.push(note);
-  if (parts.length) emit({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: parts.join(' ') } }, 0);
+  if (parts.length) emit({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: parts.join('\n') } }, 0);
 }
 
 try { main(); } catch (_) { /* fail-open */ }

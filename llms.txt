@@ -45,6 +45,11 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [plugins/anti-hall/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/README.md): the plugin directory page (what it does, install, data sent).
 - [plugins/anti-hall/codex/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/codex/README.md): the Codex port, hook subset, skills, OMX mapping.
 - [docs/README.md](https://github.com/talas9/anti-hall/blob/main/docs/README.md): the documentation start page, a grouped index of every doc.
+- [docs/CONTRACT-1.0.md](https://github.com/talas9/anti-hall/blob/main/docs/CONTRACT-1.0.md): the 1.0 compatibility contract (stable CLIs, hooks, settings, paths).
+- [docs/HOOK-LATENCY.md](https://github.com/talas9/anti-hall/blob/main/docs/HOOK-LATENCY.md): measured hook latency (wall p50/p95, CPU).
+- [docs/E2E-TESTING.md](https://github.com/talas9/anti-hall/blob/main/docs/E2E-TESTING.md): end-to-end testing guide.
+- [docs/TASK-WORK.md](https://github.com/talas9/anti-hall/blob/main/docs/TASK-WORK.md): the task dedup/relate ladder.
+- [docs/TASKLIST-GUARD.md](https://github.com/talas9/anti-hall/blob/main/docs/TASKLIST-GUARD.md): the tasklist guard and per-session progress files.
 - [docs/KB.md](https://github.com/talas9/anti-hall/blob/main/docs/KB.md): knowledge-base ground truth.
 - [docs/GUIDE.md](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md): extended guide and per-hook reference.
 - [docs/KB-devswarm-hivecontrol.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md): DevSwarm hivecontrol CLI and the mesh.
@@ -54,7 +59,7 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [docs/KB-jev-classifier.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md): the Jev classifier (opt-in), integrations, metrics.
 - [docs/KB-claude-code-hooks.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-claude-code-hooks.md): Claude Code hooks reference.
 - [docs/KB-codex-platform-hooks-plugins.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md): Codex platform hooks and plugins.
-- [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): release checklist.
+- [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): release checklist and branch flow (work on `dev`, pull request `dev` → `main`).
 - [AGENTS.md](https://github.com/talas9/anti-hall/blob/main/AGENTS.md): the protocol for Codex and cross-tool agents.
 - [CHANGELOG.md](https://github.com/talas9/anti-hall/blob/main/CHANGELOG.md): version history.
 - [CONTRIBUTING.md](https://github.com/talas9/anti-hall/blob/main/CONTRIBUTING.md): how to contribute and run the tests.
@@ -73,7 +78,8 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | Event (matcher) | Hook | What it does | Codex | Switch |
 |---|---|---|---|---|
 | SessionStart | verify-first-full.js | Injects the verify-first foundation: Iron Law, rationalization table, positive rules, scope & fidelity, output-presentation rule K. | ✓ | context.verifyFirstSession |
-| SessionStart | verify-first-orch.js | Injects the orchestration ruleset (rules A–N, DevSwarm-Primary rule W); split out for the ~10k injection cap. | ✓ | context.verifyFirstOrchestration |
+| SessionStart | verify-first-orch.js | Injects the orchestration ruleset (rules A–N, DevSwarm-Primary rule W) inline by default; experimental `context.orchFullOn=spawn` sends compact lines plus a per-session marker instead and orch-on-spawn.js delivers the full text on the first spawn. | ✓ | context.verifyFirstOrchestration |
+| PreToolUse (Agent\|Task\|Workflow) | orch-on-spawn.js | Experimental, opt-in (`context.orchFullOn=spawn`, unverified live): sends the full orchestration rules once per context epoch on the coordinator's first spawn (Claude Code only); silent by default. | — | context.verifyFirstOrchestration |
 | SessionStart | version-alert.js | Tells the user when anti-hall is behind: remote newer → update then reload; plugin-cache mirror newer → reload only. Once per session; 2 h detached refresh. | ✓ | `ANTIHALL_VERSION_ALERT=off` |
 | SessionStart | claude-cli-version.js | Flags Claude Code CLI drift from the version anti-hall's harness KB was verified against. | ✓ | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT=off` |
 | SessionStart | devswarm-version.js | Flags DevSwarm/hivecontrol version drift (DevSwarm only). | ✓ | `ANTIHALL_DEVSWARM_VERSION_ALERT=off` |
@@ -90,21 +96,24 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | SessionStart + UserPromptSubmit | repair-on-reload.js | When any repair migration isn't stamped for the running version, spawns one detached `doctor.js --repair --migrations-only --quiet` (data migrations only; never writes user config — the legacy migration copies into the project's `.anti-hall/history/legacy/` and never deletes or moves a repo file — the GSD `.planning/` fold is explicit-only, copy-only `migrate-state.js --planning`; lock-guarded; at most once an hour; newest 5 logs kept). | ✓ | maintenance.repairOnReload (`ANTIHALL_REPAIR_ON_RELOAD=off`) |
 | UserPromptSubmit | verify-first.js | Short rotating one-line verify-first nudge. | ✓ | context.verifyFirstTurn |
 | UserPromptSubmit | task-tracker.js | Task-list discipline directive plus a freshness note when tasks are open/stale. | ✓ | context.taskTracker |
+| UserPromptSubmit | idle-agent-sweep.js | Advisory (never blocks), once per user prompt: lists agents that finished but were never stopped (Claude named teammates whose last report has idleReason available/failed, with no later SendMessage or TaskStop; Codex multi_agent_v1 agents completed/errored in wait_agent and never closed), oldest first, up to 10 names, with the exact `TaskStop` / `close_agent` call. Fires at ≥ 3 idle or any idle ≥ 15 min. | ✓ | guards.idleAgentSweep, guards.idleAgentSweepCount (3), guards.idleAgentSweepMin (15) |
 | UserPromptSubmit | limit-conserve-inject.js | Token-conservation nudge at the usage threshold (auto mode reads the OMC usage cache). | ✓ | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |
 | UserPromptSubmit | auto-handover.js | At 85% context (known window) or 170k tokens: write a handover unasked, tell the user, urge `/compact`/`/clear`; milestone nags every +5 points; unknown window → one soft advisory only. | ✓ | `ANTIHALL_AUTO_HANDOVER_PCT` (`0` = off) |
 | UserPromptSubmit | devswarm-parent-inbox.js | DevSwarm Primary: per-turn workspace table (app titles, sidebar order, finish/PR state, unread, `stale anti-hall <v>`) and neglect nags (after a 120 s grace for fresh unread). | ✓ | devswarm.parentInbox |
 | UserPromptSubmit | devswarm-child-turn.js | DevSwarm child: turn-authored heartbeat, keep-parent-updated reminder, unread-inbox surfacing. | ✓ | devswarm.childTurn |
 | TaskCreated, TaskCompleted | task-lifecycle-log.js | Appends task events to `.anti-hall/history/<date>/<session>.md`. | — | maintenance.taskLifecycleLog |
 | SubagentStart | verify-first-subagent.js | Re-injects the Iron Law and scope rules into every subagent (no orchestration block). | — | context.verifyFirstSubagent |
-| PreToolUse (Bash) | git-guard.js | Blocks AI self-credit in commits (inline, `-F`, whole-command scan for commit-creating verbs) and `gh` PR/issue/release/merge bodies; PostToolUse `--audit` flags recent commits whose trailer came from a git hook/template/editor; blocks force-push (`--force`, `-f`, `--force-with-lease`, `+refspec`) and remote branch/tag deletion (`--delete`, `-d`, `:ref`, `--prune`); blocks a `git commit` whose paths include a session handover (`guards.handoverCommitGuard`). | ✓ | safety.gitGuard (safety: --confirmed) + named skip only |
+| PreToolUse (Bash) | git-guard.js | Blocks AI self-credit in commits (inline, `-F`, whole-command scan for commit-creating verbs) and `gh` PR/issue/release/merge bodies; PostToolUse `--audit` flags recent commits whose trailer came from a git hook/template/editor; resolves git aliases (config, chains, `!shell`) and blocks defining a git/shell alias whose body is a blocked op (`guards.gitAliasResolve`); for a commit with no -m/-F, checks the message it would reuse (-C/-c rev, --amend HEAD, template) before it runs (`guards.gitReusedMessageCheck`); blocks force-push (`--force`, `-f`, `--force-with-lease`, `+refspec`) and remote branch/tag deletion (`--delete`, `-d`, `:ref`, `--prune`); blocks a `git commit` whose paths include a session handover (`guards.handoverCommitGuard`). | ✓ | safety.gitGuard (safety: --confirmed) + named skip only |
 | PreToolUse (Bash) | command-guard.js | Coordinator must delegate heavy commands; blocks DevSwarm destructive verbs and native hivecontrol messaging. | ✓ | safety.commandGuard (safety: --confirmed) |
+| PreToolUse + PostToolUse (Bash) | coordinator-work-guard.js | Main thread: counts successful state-changing Bash calls (git/gh mutations, repo-file writes, script runs, inline code) in a time window; one advisory note at the nudge count, blocks the Nth (recovery commands and loosely matched inline code are counted but never blocked). Claude only. | — | guards.coordinatorWorkWindowMinutes (`0` = off), guards.coordinatorWorkNudgeAt, guards.coordinatorWorkBlockAt |
+| PreToolUse + PostToolUse (Bash) | merge-side-pick.js | Advisory (never blocks): after a conflict is resolved by taking one side wholesale (`--ours`/`--theirs`, `-X ours|theirs`, `-s ours`), a push with no test run since gets one note (run the tests, review the discarded side). Claude and Codex. | ✓ | guards.mergeSidePickAdvisory (default true) |
 | PreToolUse (Bash) | merge-gate.js | Opt-in: blocks auto-merge without a recorded review. | ✓ | `ANTIHALL_MERGE_GATE=on` |
-| PreToolUse (Agent/Task/Write/Edit/MultiEdit/NotebookEdit/Bash) | compact-declaration-guard.js | Opt-in (default OFF): after a SAFE TO COMPACT declaration in the current turn, blocks new work (spawns, edits, state-changing shell) until the next user message or an explicit `RETRACT SAFE TO COMPACT` line; read-only tools pass. | ✓ (Bash only) | guards.compactDeclarationGuard (default false) |
+| PreToolUse (Agent/Task/Write/Edit/MultiEdit/NotebookEdit/Bash) | compact-declaration-guard.js | After a SAFE TO COMPACT declaration in the current turn, blocks new work (spawns, edits, state-changing shell) until the next user message or an explicit `RETRACT SAFE TO COMPACT` line; read-only tools pass. On by default since 0.117.0. | ✓ (Bash only) | guards.compactDeclarationGuard (default true; `false` is the kill switch) |
 | PreToolUse (Bash) | scan-throttle.js | Advises (never rewrites) running user-listed heavy scan commands under `taskpolicy`/`nice` (no built-in patterns). | — | guards.scanThrottle; `ANTI_HALL_THROTTLE_PATTERNS` |
 | PreToolUse (TaskStop) | stale-agent-stop-note.js | Advisory line (never blocks) when the agent being stopped was sent a message or resumed after its last report and has not reported since. | — | guards.staleAgentStopNote; `ANTIHALL_STALE_AGENT_STOP_NOTE=off` |
-| PreToolUse (Write/Edit/MultiEdit) | api-guard.js | Blocks writing a `module.attr` the installed runtime doesn't have (stdlib/builtins by default). | — | guards.apiGuard; `ANTIHALL_API_GUARD_THIRDPARTY=1` |
-| PreToolUse (Write/Edit/MultiEdit) | ship-it-guard.js | Opt-in: blocks hard-risk code edits with no `PLAN.md`. | — | `ANTIHALL_SHIPIT_GATE=on` |
-| PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | — | safety.editGuard (safety: --confirmed); `ANTIHALL_EDIT_GUARD_ALLOW` |
+| PreToolUse (Write/Edit/MultiEdit) | api-guard.js | Blocks writing a `module.attr` the installed runtime doesn't have (stdlib/builtins by default). | ✓ (apply_patch) | guards.apiGuard; `ANTIHALL_API_GUARD_THIRDPARTY=1` |
+| PreToolUse (Write/Edit/MultiEdit) | ship-it-guard.js | Opt-in: blocks hard-risk code edits with no `PLAN.md`. | ✓ (apply_patch) | `ANTIHALL_SHIPIT_GATE=on` |
+| PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | ✓ (apply_patch) | safety.editGuard (safety: --confirmed); `ANTIHALL_EDIT_GUARD_ALLOW` |
 | PreToolUse (Read) | inbox-read-guard.js | Blocks a direct Read of a raw DevSwarm inbox file (use the CLI). | — | devswarm.inboxReadGuard |
 | PreToolUse (AskUserQuestion) | ask-guard.js | Optional, off by default: advises or blocks a question call that would hold work waiting for an answer; a first question starting `DESTRUCTIVE:` or `CREDENTIAL:` is allowed. Also adds a note when background agents are in flight. Claude only. | — | guards.noBlockingQuestions (off/advise/block), guards.questionAgentsNote |
 | PreToolUse (SendMessage) | devswarm-comms-guard.js | Blocks `SendMessage` to a peer session that is a registered DevSwarm workspace (mesh only); never blocks subagent steering. | — | devswarm.commsGuard |
@@ -119,9 +128,9 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | PostToolUseFailure (Bash) | failure-root-cause-nudge.js | One-line pointer to `/anti-hall:root-cause` after a failed command. | — | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE=off` |
 | Stop | task-guard.js | Blocks once when ending with genuinely open tasks. | ✓ | guards.taskGuard |
 | Stop | tasklist-guard.js | Requires a live task list + fresh progress file for non-trivial work. | ✓ | guards.tasklistGuard; `ANTIHALL_TASKLIST_WORK_THRESHOLD` |
-| Stop | speculation-guard.js | Tier 2: flags hedge-word speculation (optionally Jev-backed). | ✓ | guards.speculationGuard |
+| Stop | speculation-guard.js | Tier 2: flags hedge-word speculation (optionally Jev-backed); opt-in `guards.inferenceCheck` also flags a confident causal claim no tool evidence mentions. | ✓ | guards.speculationGuard |
 | Stop | claim-ledger.js | Tier 2.5, ledger-only (never blocks): records confident claims with no supporting evidence in the turn. | ✓ | guards.claimLedger |
-| Stop | speculation-judge.js | Tier 3, opt-in: LLM judge for confident unverified assertions. | ✓ | `jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1` |
+| Stop | speculation-judge.js | Tier 3, opt-in: LLM judge for confident unverified assertions; sees the user request and tool evidence; Anthropic API or local `claude -p` (`jev.judgeBackend`). | ✓ | `jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1` |
 | Stop | codex-nudge.js | Once per session: suggests an independent Codex review of substantial code. | — | `ANTIHALL_CODEX_NUDGE=off` |
 | Stop | silent-agent-nudge.js | Scans the transcript for a background Agent launch with no terminal notification and a stale/missing `output_file` (plus the `~/.anti-hall/agents` heartbeat as an extra signal); nudges once per stale snapshot past the threshold (default 20 min); never kills anything. | ✓ | guards.silentAgentNudge; guards.silentAgentNudgeMin (`ANTIHALL_SILENT_AGENT_NUDGE=off`) |
 | Stop | compact-advice-guard.js | Blocks once when the final reply recommends /compact ("SAFE TO COMPACT", "good point to /compact") while context is below the auto-handover threshold minus a margin, or within N turns of a compact boundary; the threshold-fired handover path stays allowed. | ✓ | guards.compactAdviceGuard; guards.compactAdviceRecentTurns; guards.compactAdviceMarginPct |
@@ -129,7 +138,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | Stop | devswarm-parent-gate.js | DevSwarm Primary: blocks ending the turn with child unread/stale/escalated or own unread (capped). | ✓ | devswarm.parentGate |
 | Stop | devswarm-child-gate.js | DevSwarm child: must heartbeat/self-report before idling (capped). | ✓ | devswarm.childGate |
 | PreCompact | precompact-snapshot.js | Before every compaction writes a mechanical `PRECOMPACT-<n>.md` (git state, task list, last 10 user messages, newest handover pointer); never blocks. | ✓ | maintenance.precompactSnapshot |
-| SessionEnd | session-end-mcp-reaper.js | On clean exit, reaps MCP servers orphaned by earlier crashed sessions (audit-logged). | — | maintenance.sessionEndReaper (`ANTI_HALL_SESSION_END_REAPER=0`) |
+| SessionEnd | session-end-mcp-reaper.js | On clean exit, reaps MCP servers orphaned by earlier crashed sessions (audit-logged). | — | maintenance.sessionEndReaper (`ANTIHALL_SESSION_END_REAPER=0`) |
 
 Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `skip-guard.js`,
 `omc-detect.js`, `limit-conserve.js`; `hooks/lib/`: `settings.js` + `settings-schema.js`
@@ -159,7 +168,6 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | devswarm | DevSwarm integration: mesh CLI, recovery, auto-archive/prune, retention, app DB, screenshot sync. |
 | jev | Jev classifier activation, modes per integration, report. |
 | defects | File/list/show/rule on anti-hall defect reports. |
-| flutter-debug | Agent-driven Flutter run/hot-reload/drive/screenshot debug loop (plus the `flutter-debug` agent). |
 
 `skills/MODEL-POLICY.md` is the shared model roster (Claude + Codex tables).
 
@@ -174,7 +182,6 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | anti-hall-defects | defects |
 | anti-hall-devswarm | devswarm |
 | anti-hall-doctor | doctor |
-| anti-hall-flutter-debug | flutter-debug |
 | anti-hall-handover | handover |
 | anti-hall-install-statusline | install-statusline (explains what applies on Codex) |
 | anti-hall-jev | jev |
@@ -216,13 +223,16 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 
 ## Settings (user-facing; `/anti-hall:settings`, `scripts/settings.js show --all` for advanced)
 
-Store: `~/.anti-hall/settings.json`. Precedence: env > settings.json > `/config`
-(plugin.json userConfig) > legacy file (e.g. `jev.json`) > default; legacy outranks `/config`
-until the one-time migration is stamped. Numbers clamp to schema bounds. Every non-advanced
-setting is a `/config` row (advanced settings are not: they live in `/anti-hall:settings` only; a value set in Claude Code's plugin options is copied into ~/.anti-hall/settings.json on update, and /anti-hall:settings is the place to see and change every setting) (section-prefixed title; enum fields are a string type whose
-description lists the allowed values, since `/config` requires Claude Code ≥ 2.1.269 for
-those rows — older versions still work via the skill); a drift test keeps userConfig ==
-the schema's non-advanced set plus the sensitive credential keys. Codex: no `/config`, use the skill.
+Store: `~/.anti-hall/settings.json`. Precedence: env > settings.json > stored plugin option
+(plugin.json userConfig, headline rows only) > legacy file (e.g. `jev.json`) > default; legacy outranks the plugin option
+until the one-time migration is stamped.
+Numbers clamp to schema bounds. Every feature has a settings key in ~/.anti-hall/settings.json, reachable through
+/anti-hall:settings and grouped by category; Claude Code's plugin options (`/config`) show only the 10 headline
+switches, the safety guards and the 4 keys (14 userConfig options; a drift test pins them). Older stored plugin
+options keep resolving as a read-only source and are copied into settings.json by the first update / doctor --repair
+that runs the migration (locked safety keys as human-confirmed values). Enum switches are a string
+type whose description lists the allowed values, since `/config` requires Claude Code ≥ 2.1.269 for those rows.
+Codex: no `/config`, use the skill.
 
 | Setting | Default | Env |
 |---|---|---|
@@ -231,15 +241,21 @@ the schema's non-advanced set plus the sensitive credential keys. Codex: no `/co
 | guards.outputVerifyGuard / failureRootCauseNudge / repoSelfDrift / emitDedupe | true | `ANTIHALL_OUTPUT_VERIFY_GUARD`, … |
 | guards.stashGuard (safety: --confirmed) | false | `ANTIHALL_STASH_GUARD` |
 | guards.handoverCommitGuard | true | `ANTIHALL_HANDOVER_COMMIT_GUARD` |
+| guards.gitGuardHeredocData | true | `ANTIHALL_GIT_GUARD_HEREDOC_DATA` |
 | guards.modelRouting | strict (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` |
 | guards.noBlockingQuestions | off (off/advise/block) | `ANTIHALL_NO_BLOCKING_QUESTIONS` |
 | guards.questionAgentsNote | true | `ANTIHALL_QUESTION_AGENTS_NOTE` |
 | guards.sharedTreeAgentNote | true | `ANTIHALL_SHARED_TREE_AGENT_NOTE` |
-| guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTI_HALL_SCAN_THROTTLE` (scanThrottle) |
+| guards.mergeSidePickAdvisory | true | `ANTIHALL_MERGE_SIDE_PICK_ADVISORY` |
+| guards.idleAgentSweep / idleAgentSweepCount / idleAgentSweepMin | true / 3 / 15 | `ANTIHALL_IDLE_AGENT_SWEEP`, `ANTIHALL_IDLE_AGENT_SWEEP_COUNT`, `ANTIHALL_IDLE_AGENT_SWEEP_MIN` |
+| guards.tasklistNoTaskTools | reduced | `ANTIHALL_TASKLIST_NO_TASK_TOOLS` |
+| guards.stopNagBudgetPerPrompt | 0 | `ANTIHALL_STOP_NAG_BUDGET` |
+| guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTIHALL_SCAN_THROTTLE` (scanThrottle; deprecated alias `ANTI_HALL_SCAN_THROTTLE`) |
 | safety.gitGuard / commandGuard / editGuard / swarmGuard (safety: risky `set`/`reset` need `--confirmed`; normal precedence applies, settings.json values count) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
+| guards.gitAliasResolve / gitReusedMessageCheck (advanced, safety: --confirmed) | true / true | `ANTIHALL_GIT_ALIAS_RESOLVE`, `ANTIHALL_GIT_REUSED_MESSAGE_CHECK` |
 | guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
 | context.verifyFirstSession / verifyFirstOrchestration / verifyFirstTurn / verifyFirstSubagent / taskTracker / handoverResume / defectNudge | true | — |
-| maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTI_HALL_SESSION_END_REAPER` |
+| maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`) |
 | versionAlerts.antiHall / claudeCli / devswarm | true | `ANTIHALL_VERSION_ALERT`, `ANTIHALL_CLAUDE_CLI_VERSION_ALERT`, `ANTIHALL_DEVSWARM_VERSION_ALERT` |
 | updates.quiet | false | `ANTIHALL_UPDATE_QUIET` |
 | limitConserve.mode / threshold | auto / 85 | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |
@@ -248,6 +264,7 @@ the schema's non-advanced set plus the sensitive credential keys. Codex: no `/co
 | jev.audit.snippets, jev.prices (advanced) | false, — | `ANTIHALL_JEV_AUDIT_SNIPPETS` |
 | jev.logRotatedFiles / rollupRetentionDays (advanced) | 10 / 0 (keep all) | — |
 | jev.weeklyNotice | true | — |
+| jev.recommendNoticeHeadless | false | `ANTIHALL_JEV_NOTICE_HEADLESS` |
 | jev.recommendNotice | true | `ANTIHALL_JEV_RECOMMEND_NOTICE` |
 | jevIntegrations.speculation / triage / newRequest / claimLedger / outputVerifyGuard / gitGuardSelfCredit / modelRouting / tasklistTrivial / codexNudgeSubstantial / mergeGateHedge / parentGateQuestion / supervisorBlockerLabel / findingDedup / postHandoverGate (one row each; legacy jev.json / jev["integrations.<id>"] auto-migrate) | on (speculation, triage, findingDedup) / off (postHandoverGate) / shadow (rest) | `ANTIHALL_JEV_<ID>=0` forces an integration off |
 | devswarm.planTracking / planRequired / stepStallMin / strayWarnMax / burnTokensWarn / burnCacheReadPct / respawnGraceMin / respawnWipWaitSec; jevIntegrations.devswarmOnBrief / devswarmExtraSanctioned / devswarmWaitKind / devswarmLoop / devswarmStepMap | Meeseeks supervision (0.117.0): step plans, advisory straying warnings (stall, off-scope, idle, token burn), `devswarm.js correct` / `scope add` / `supervision-report`, and the Primary-run `respawn <id>` (after a warning and a grace period: WIP pushed or parked on a new pushed branch, handover, new workspace from the default branch, old one archived); the five Jev integrations are recommendations to the Primary (default on), never a suppression, block or kill. |
@@ -275,10 +292,15 @@ sub-guards.
 | jev.json | legacy Jev config (still read as a fallback; never deleted) |
 | update-sweep-state.json | per-migration repair markers (update, doctor, repair-on-reload) |
 | version-check.json, version-alert-reload.json | version-alert cache and reload-nudge dedupe |
+| orch-full/ | orch-full-<session>.json marker and per-epoch claim files for the once-per-epoch full orchestration delivery (pruned after 7 days) |
 | auto-handover/<session>.json, context-pct/<session>.json | auto-handover latch; statusline context window |
 | codex-availability.json, phase-state.json, agents/ | availability cache; statusline phase; spawn heartbeats |
 | claim-ledger/, approvals/, defects/ | claim ledger; merge approvals; defect channel |
 | logs/ | hook/companion logs (jev-assist, jev-audit, devswarm-retention, devswarm-prune, repair-on-reload-*) |
+| coordinator-work-session-<session>.json | coordinator-work-guard per-session WORK window and counters (folded into the metrics after 7 days) |
+| coordinator-work-metrics.json | coordinator-work nudges, blocks and per-version folded session counts (dispatch-report, doctor) |
+| coordinator-work-trips.log | coordinator-work nudge/block/skip events (JSONL, rotated at 1 MiB) |
+| .coordinator-work-fold-stamp.json | last coordinator-work fold (at most once per 6 h) |
 | devswarm/ | mesh stores, summaries, heartbeats, capabilities.json, app-state.json, archive/ (retention) |
 
 Per-project: `.anti-hall/progress/`, `.anti-hall/history/`, `.anti-hall/handovers/`.
@@ -307,5 +329,5 @@ message bodies to gzip, then prunes them. Full reference:
 - [plugins/anti-hall/.codex-plugin/plugin.json](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/.codex-plugin/plugin.json): the Codex manifest, bumped together with the Claude one.
 - [.claude-plugin/marketplace.json](https://github.com/talas9/anti-hall/blob/main/.claude-plugin/marketplace.json): the marketplace entry (carries no version).
 - [tests/](https://github.com/talas9/anti-hall/tree/main/tests/): zero-dependency `node --test`; v0.108.0 end-to-end scenarios in `tests/e2e/v0108/`.
-- [.github/workflows/test.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/test.yml): CI: full sharded matrix (ubuntu + macOS x Node 22/24) on `rc-v*` tags, a reduced matrix on `main` and pull requests; `v*` tags do not trigger it.
-- [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): bump both manifests + CHANGELOG, commit, tag, GitHub Release.
+- [.github/workflows/test.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/test.yml): CI: full sharded matrix (ubuntu + macOS x Node 22/24) on `rc-v*` tags, a reduced matrix on pull requests (the `dev` → `main` pull request is the merge gate) and on `main`; pushes to `dev` and `v*` tags do not trigger it.
+- [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): bump both manifests + CHANGELOG on `dev`, pull request `dev` → `main`, tag, GitHub Release.

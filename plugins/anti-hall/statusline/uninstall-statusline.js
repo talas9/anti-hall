@@ -56,7 +56,7 @@ const BACKUP_PATH  = SETTINGS_PATH + '.bak-antihall';
 // Test guard (0.108.0 launchd/config leak): under a test (NODE_TEST_CONTEXT or
 // ANTIHALL_TEST_ISOLATION) never write user config outside a temp dir.
 if (require('../companion/lib/test-home-guard.js').userConfigWriteRefused(SETTINGS_PATH)) {
-  process.stderr.write('anti-hall: uninstall-statusline.js refused under a test: ' + SETTINGS_PATH + ' is outside a temp dir (isolate HOME/cwd)\n');
+  process.stderr.write('⛔ anti-hall · uninstall-statusline: refused under a test: ' + SETTINGS_PATH + ' is outside a temp dir.\nDo instead: isolate HOME/cwd.\n');
   process.exit(0);
 }
 const BASE_CFG_DIR = path.join(os.homedir(), '.anti-hall');
@@ -83,7 +83,7 @@ function ensureBackup() {
     console.log('       to: ' + BACKUP_PATH);
     console.log('');
   } catch (e) {
-    console.error('WARNING: Could not create backup: ' + e.message);
+    console.error('⚠️ anti-hall · uninstall-statusline: Could not create backup: ' + e.message);
   }
 }
 
@@ -106,7 +106,7 @@ function purgeBaseIfRequested() {
 
 // Settings file must exist.
 if (!fs.existsSync(SETTINGS_PATH)) {
-  console.error('ERROR: ' + SETTINGS_PATH + ' not found.');
+  console.error('❌ anti-hall · uninstall-statusline: ' + SETTINGS_PATH + ' not found.');
   process.exit(1);
 }
 
@@ -119,7 +119,7 @@ if (fs.existsSync(BASE_CFG)) {
   try {
     baseObj = JSON.parse(fs.readFileSync(BASE_CFG, 'utf8'));
   } catch (e) {
-    console.error('ERROR: Could not parse ' + BASE_CFG + ': ' + e.message);
+    console.error('❌ anti-hall · uninstall-statusline: Could not parse ' + BASE_CFG + ': ' + e.message);
     console.error('Falling through to backup / key-removal strategy.');
     baseObj = null;
   }
@@ -129,7 +129,7 @@ if (fs.existsSync(BASE_CFG)) {
     try {
       settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
     } catch (e) {
-      console.error('ERROR: Could not parse ' + SETTINGS_PATH + ': ' + e.message);
+      console.error('❌ anti-hall · uninstall-statusline: Could not parse ' + SETTINGS_PATH + ': ' + e.message);
       process.exit(1);
     }
 
@@ -153,7 +153,7 @@ if (fs.existsSync(BASE_CFG)) {
       try {
         fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n', 'utf8');
       } catch (e) {
-        console.error('ERROR: Could not write ' + SETTINGS_PATH + ': ' + e.message);
+        console.error('❌ anti-hall · uninstall-statusline: Could not write ' + SETTINGS_PATH + ': ' + e.message);
         process.exit(1);
       }
 
@@ -190,7 +190,7 @@ if (fs.existsSync(BACKUP_PATH)) {
   try {
     backupSettings = JSON.parse(fs.readFileSync(BACKUP_PATH, 'utf8'));
   } catch (e) {
-    console.error('ERROR: Could not parse backup ' + BACKUP_PATH + ': ' + e.message);
+    console.error('❌ anti-hall · uninstall-statusline: Could not parse backup ' + BACKUP_PATH + ': ' + e.message);
     console.error('Falling through to key-removal strategy.');
     backupSettings = null;
   }
@@ -199,7 +199,7 @@ if (fs.existsSync(BACKUP_PATH)) {
     try {
       fs.writeFileSync(SETTINGS_PATH, JSON.stringify(backupSettings, null, 2) + '\n', 'utf8');
     } catch (e) {
-      console.error('ERROR: Could not restore ' + SETTINGS_PATH + ': ' + e.message);
+      console.error('❌ anti-hall · uninstall-statusline: Could not restore ' + SETTINGS_PATH + ': ' + e.message);
       process.exit(1);
     }
 
@@ -226,7 +226,7 @@ let settings;
 try {
   settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
 } catch (e) {
-  console.error('ERROR: Could not parse ' + SETTINGS_PATH + ': ' + e.message);
+  console.error('❌ anti-hall · uninstall-statusline: Could not parse ' + SETTINGS_PATH + ': ' + e.message);
   process.exit(1);
 }
 
@@ -242,7 +242,7 @@ delete settings.statusLine;
 try {
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n', 'utf8');
 } catch (e) {
-  console.error('ERROR: Could not write ' + SETTINGS_PATH + ': ' + e.message);
+  console.error('❌ anti-hall · uninstall-statusline: Could not write ' + SETTINGS_PATH + ': ' + e.message);
   process.exit(1);
 }
 

@@ -1,9 +1,13 @@
 ---
 name: update
-description: Update anti-hall to the latest released version and show the changelog delta. Use when the user says "update anti-hall", "/anti-hall:update", "upgrade the plugin", "is anti-hall up to date", or "check for an anti-hall update". Fast-forward-pulls the marketplace clone, mirrors the new version into the plugin cache, prints what changed, then has the user reload in-session via /reload-plugins (rarely, a harness build may require a restart — the skill says so when relevant).
+description: Update anti-hall and show the changelog. Use for "update anti-hall" or "is anti-hall up to date".
 ---
 
 # Update
+
+## When to use
+
+Update anti-hall to the latest released version and show the changelog delta. Use when the user says "update anti-hall", "/anti-hall:update", "upgrade the plugin", "is anti-hall up to date", or "check for an anti-hall update". Fast-forward-pulls the marketplace clone, mirrors the new version into the plugin cache, prints what changed, then has the user reload in-session via /reload-plugins (rarely, a harness build may require a restart — the skill says so when relevant).
 
 > **UPGRADE NOTE — user on 0.107.x or earlier:** tell them to run
 > `claude plugin update anti-hall@anti-hall` once, then restart Claude Code. The 0.107.x

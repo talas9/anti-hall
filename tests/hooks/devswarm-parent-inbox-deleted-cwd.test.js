@@ -16,6 +16,7 @@
 // `repoKey` is the real, correctly-keyed value — the nudge reads the SAME
 // modern summaries/<repoKey>.json file a normal (non-deleted) cwd would.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -40,10 +41,10 @@ function ctx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 function segment(c, banner) {
-  return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
+  return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || '';
 }
 function ownSegment(c) {
-  return segment(c, 'DEVSWARM OWN INBOX') || segment(c, 'QUESTIONS AWAITING YOUR REPLY');
+  return segment(c, 'devswarm-own-inbox') || segment(c, 'QUESTIONS AWAITING YOUR REPLY');
 }
 
 function writeSharedSummary(home, repoKey, ownId, unread) {

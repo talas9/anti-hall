@@ -5,6 +5,7 @@
 // Verdicts come from the jev-assist cache (seeded here), so no test touches
 // the network except the PostToolUse one, which uses a local mock server.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

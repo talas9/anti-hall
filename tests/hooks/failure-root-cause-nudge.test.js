@@ -35,7 +35,7 @@ test('Bash failure -> short root-cause nudge, does not block', () => {
     assert.strictEqual(r.status, 0, 'must exit 0 (advisory, never blocks)');
     assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'PostToolUseFailure');
     const c = ctx(r);
-    assert.ok(c.includes('root-cause nudge'), 'reason must self-identify');
+    assert.ok(c.includes('anti-hall · root-cause:'), 'reason must self-identify');
     assert.ok(c.includes('/anti-hall:root-cause'), 'reason must point at the root-cause skill');
     assert.ok(c.includes('npm test'), 'reason should include the failed command');
     assert.ok(!r.json.decision, 'must never set a blocking decision field');
@@ -58,7 +58,7 @@ test('missing tool_input.command -> still nudges, without a command fragment', (
   try {
     const r = testHook(HOOK, failurePayload({}), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.ok(ctx(r).includes('root-cause nudge'), 'must still nudge even with no command text available');
+    assert.ok(ctx(r).includes('anti-hall · root-cause:'), 'must still nudge even with no command text available');
   } finally { h.cleanup(); }
 });
 

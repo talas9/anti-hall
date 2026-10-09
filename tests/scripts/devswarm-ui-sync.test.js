@@ -10,6 +10,7 @@
 //   parent-inbox: the ask appears once per session per set, only on conflict /
 //   unreadable app DB
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -194,18 +195,18 @@ function conflictAskFixture() {
 test('parent-inbox asks for a screenshot once per session per set, only on a SAME-repo child conflict while the app DB is unreadable', { skip }, () => {
   const { f, ds, run, childWt, foreignRepo } = conflictAskFixture();
   try {
-    assert.ok(!/DEVSWARM SYNC/.test(run('s1')), 'no conflict -> no ask');
+    assert.ok(!/devswarm-sync/.test(run('s1')), 'no conflict -> no ask');
     fs.writeFileSync(path.join(ds, 'app-state.json'), JSON.stringify({ v: 1, at: Date.now(), ok: true, openButMarkedArchived: [
       { id: 'b-a', label: 'Alpha task', repositoryId: 'repo-1', worktreePath: childWt },
       { id: 'other-a', label: 'Some other repo workspace', repositoryId: 'other-repo', worktreePath: foreignRepo },
     ] }));
-    assert.ok(!/DEVSWARM SYNC/.test(run('s0')), 'v0.108.3: a readable app DB settles the conflict itself -> never a screenshot ask');
+    assert.ok(!/devswarm-sync/.test(run('s0')), 'v0.108.3: a readable app DB settles the conflict itself -> never a screenshot ask');
     fs.writeFileSync(f.dbFile, 'not a sqlite database'); // app DB file present but unreadable
     const first = run('s1');
-    assert.ok(/DEVSWARM SYNC: The DevSwarm app shows 'Alpha task' as open, but anti-hall has it archived/.test(first), first);
+    assert.ok(/devswarm-sync: The DevSwarm app shows 'Alpha task' as open, but anti-hall has it archived/.test(first), first);
     assert.ok(!/Some other repo workspace/.test(first), 'the foreign-repo entry stays hidden: ' + first);
-    assert.ok(!/DEVSWARM SYNC/.test(run('s1')), 'once per session per set');
-    assert.ok(/DEVSWARM SYNC/.test(run('s2')), 'a new session asks again');
+    assert.ok(!/devswarm-sync/.test(run('s1')), 'once per session per set');
+    assert.ok(/devswarm-sync/.test(run('s2')), 'a new session asks again');
   } finally { rmFixture(f); appDb.resetCache(); }
 });
 

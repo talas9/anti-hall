@@ -205,6 +205,44 @@ function nextCacheSeq(cache) {
   return max + 1;
 }
 
+// In-flight claims (JT-1): two processes triaging the same uncached message at
+// once (a Primary turn plus a sibling child, or an arrival enqueue plus a render)
+// both read "uncached" and both paid for a Jev call + log row. A claim is an
+// O_EXCL file per hash; a loser skips the item (the winner's label lands in the
+// shared cache). A claim older than CLAIM_STALE_MS belongs to a dead process.
+const CLAIM_STALE_MS = 15000;
+
+function claimDir(home) {
+  return path.join(homeDir(home), '.anti-hall', 'cache', 'jev-triage.claims');
+}
+
+const lockLib = () => require('../../companion/lib/lock.js');
+const heldClaims = new Map(); // home + hash -> lock handle (this process)
+
+function claimHash(home, hash) {
+  try {
+    const dir = claimDir(home);
+    fs.mkdirSync(dir, { recursive: true });
+    // Age-only staleness (a claim older than CLAIM_STALE_MS is a dead process's),
+    // exactly as before: the same bound applies to a live-looking holder.
+    const h = lockLib().acquire(path.join(dir, hash), {
+      staleMs: CLAIM_STALE_MS, liveStaleMs: CLAIM_STALE_MS, maxTries: 2,
+    });
+    if (!h) return false; // held (or an fs error: the old code also returned false)
+    heldClaims.set(home + '\u0000' + hash, h);
+    return true;
+  } catch (_) {
+    return true; // claims are best-effort: an unusable dir must not disable triage
+  }
+}
+
+function releaseClaim(home, hash) {
+  const k = home + '\u0000' + hash;
+  const h = heldClaims.get(k);
+  heldClaims.delete(k);
+  try { if (h) lockLib().release(h); } catch (_) { /* best-effort */ }
+}
+
 // triageMessagesSync(items, opts) -> Map<key, {urgency?, kind?}>
 //   items: [{key, text}] — `key` is the caller's own identity for the message
 //     (e.g. a seq/hash it already has); `text` is the message body used ONLY
@@ -239,6 +277,8 @@ function triageMessagesSync(items, opts) {
   }
   if (!cfg.enabled) return results; // BYTE-IDENTICAL fast path: the default.
 
+  try { require('./state-prune.js').pruneJevTriage(home); } catch (_) { /* best-effort */ }
+
   let cache;
   try {
     cache = readCache(home);
@@ -264,10 +304,42 @@ function triageMessagesSync(items, opts) {
 
   if (uncached.length === 0) return results;
 
+  // Claim each uncached hash; re-read the cache AFTER claiming so a label a
+  // concurrent process just wrote (and released its claim for) is not paid for
+  // twice. Items another process holds are skipped (their label lands in the
+  // shared cache; they are labelled on a later call at no extra cost).
+  const claimed = [];
+  const freshCache = readCache(home);
+  const mine = new Set();
+  for (const it of uncached) {
+    if (mine.has(it.hash)) { claimed.push(it); continue; } // same text twice in ONE call: one Jev call, both keys labelled
+    if (!claimHash(home, it.hash)) continue;
+    const c = freshCache[it.hash];
+    if (c) {
+      releaseClaim(home, it.hash);
+      if (c.urgency || c.kind) results.set(it.key, { urgency: c.urgency, kind: c.kind });
+      continue;
+    }
+    mine.add(it.hash);
+    claimed.push(it);
+  }
+  uncached.length = 0;
+  for (const it of claimed) uncached.push(it);
+  if (uncached.length === 0) return results;
+
+  try {
+    return runWorkerAndCache(home, cfg, cache, uncached, results);
+  } finally {
+    for (const it of uncached) releaseClaim(home, it.hash);
+  }
+}
+
+function runWorkerAndCache(home, cfg, cache, uncached, results) {
   let workerOut = null;
   try {
     const input = JSON.stringify({
-      items: uncached.map((it) => ({ hash: it.hash, text: it.text })),
+      items: uncached.filter((it, i) => uncached.findIndex((o) => o.hash === it.hash) === i)
+        .map((it) => ({ hash: it.hash, text: it.text })),
       timeoutMs: cfg.budgetMs,
       urgentThreshold: cfg.urgentThreshold,
     });
@@ -306,18 +378,202 @@ function triageMessagesSync(items, opts) {
           ...((label.transport === 'vercel' || label.transport === 'typesafe') ? { transport: label.transport } : {}),
           ...(label.fellBack === true ? { fellBack: true } : {}),
         });
-      } else {
-        // no confident label from either backend -> cache the "no label"
-        // verdict too, so this message isn't re-sent to Jev/Haiku every turn.
-        newCacheEntries[it.hash] = { _seq: seq++ };
+      } else if (Object.prototype.hasOwnProperty.call(workerOut, it.hash)) {
+        // attempted, no confident label from either backend -> cache the "no
+        // label" verdict too, so this message isn't re-sent to Jev/Haiku every
+        // turn. An item ABSENT from workerOut was never attempted (the worker's
+        // budget ran out first, or its call threw): caching it would store a
+        // permanent no-label verdict it never earned (and, in bulk, evict every
+        // real label), so it is left uncached and retried on a later call.
+        // `nl` marks it a REAL verdict: before 0.200.0 budget-skipped items were
+        // cached as a bare {_seq}, and migrateJevTriageCache removes those
+        // (no label, no `nl`) so they are re-triaged.
+        newCacheEntries[it.hash] = { _seq: seq++, nl: true };
       }
     }
     if (Object.keys(newCacheEntries).length) {
-      writeCache(home, Object.assign({}, cache, newCacheEntries));
+      // Re-read right before writing: a concurrent process may have written
+      // entries since `cache` was read, and whole-file last-write-wins would
+      // drop them. Fresh `_seq`s are re-based on the re-read max.
+      const latest = readCache(home);
+      let seq2 = nextCacheSeq(latest);
+      for (const k of Object.keys(newCacheEntries)) newCacheEntries[k]._seq = seq2++;
+      writeCache(home, Object.assign({}, latest, newCacheEntries));
     }
   }
 
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// LABEL AT ARRIVAL — ONE bounded worker per HOME.
+//
+// enqueueArrival() never spawns per message. It appends {h, t} to a small
+// capped queue file, then tries an O_EXCL lock; ONLY the winner spawns the
+// single detached drain worker (jev-triage-arrival.js -> runArrivalWorker),
+// every other caller returns immediately (no spawn, nothing awaited). The
+// worker drains the queue in small batches through the SAME triageMessagesSync
+// (same worker/budget/claims/cache/log), then releases the lock. Fail-open at
+// every step; Jev disabled or an already-cached message never reaches the queue.
+// ---------------------------------------------------------------------------
+const ARRIVAL_QUEUE_MAX_BYTES = 256 * 1024;   // bounded: over this, new arrivals are dropped (labelled at render instead)
+const ARRIVAL_TEXT_MAX_CHARS = 16000;         // longer bodies are not queued (hash needs the full text)
+const ARRIVAL_LOCK_STALE_MS = 30000;          // worker touches the lock every batch
+const ARRIVAL_BATCH_SIZE = 3;                 // keeps a batch inside the 2 s triage budget
+const ARRIVAL_MAX_BATCHES = 60;               // total cap per worker run
+const ARRIVAL_MAX_WALL_MS = 120000;
+const ARRIVAL_MAX_ATTEMPTS = 3;               // a budget/claim-skipped message is retried this many times
+
+function arrivalQueuePath(home) { return path.join(homeDir(home), '.anti-hall', 'cache', 'jev-triage-arrival.queue'); }
+function arrivalLockPath(home) { return path.join(homeDir(home), '.anti-hall', 'cache', 'jev-triage-arrival.lock'); }
+
+function arrivalTrace(line) {
+  const p = process.env.ANTIHALL_TRIAGE_ARRIVAL_TRACE; // test observability only
+  if (!p) return;
+  try { fs.appendFileSync(p, line + ' ' + Date.now() + '\n'); } catch (_) { /* ignore */ }
+}
+
+function appendArrival(home, text) {
+  try {
+    if (text.length > ARRIVAL_TEXT_MAX_CHARS) return false;
+    const p = arrivalQueuePath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    try { if (fs.statSync(p).size > ARRIVAL_QUEUE_MAX_BYTES) return false; } catch (_) { /* no queue yet */ }
+    fs.appendFileSync(p, JSON.stringify({ h: hashMessage(text), t: text }) + '\n', 'utf8');
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+// The drain lock lives in companion/lib/lock.js. The spawning hook acquires it
+// and hands the token to the detached worker (env), which adopts it; the worker
+// re-points the record's pid at itself and refreshes it every batch. A lock not
+// refreshed for ARRIVAL_LOCK_STALE_MS belongs to a dead worker: reclaimed.
+let arrivalHandle = null;
+function tryArrivalLock(home) {
+  try {
+    const p = arrivalLockPath(home);
+    arrivalHandle = lockLib().acquire(p, { staleMs: ARRIVAL_LOCK_STALE_MS, liveStaleMs: ARRIVAL_LOCK_STALE_MS, maxTries: 2 });
+    return !!arrivalHandle;
+  } catch (_) { arrivalHandle = null; return false; }
+}
+// Detached worker: take over the lock the spawning hook acquired.
+function adoptArrivalLock(home, token) {
+  try {
+    arrivalHandle = lockLib().adopt(arrivalLockPath(home), token);
+    if (arrivalHandle) arrivalHandle.refresh({ pid: process.pid });
+    return !!arrivalHandle;
+  } catch (_) { arrivalHandle = null; return false; }
+}
+function touchArrivalLock() { try { if (arrivalHandle) arrivalHandle.refresh(); } catch (_) { /* best-effort */ } }
+function releaseArrivalLock() {
+  const h = arrivalHandle;
+  arrivalHandle = null;
+  try { if (h) lockLib().release(h); } catch (_) { /* best-effort */ }
+}
+
+// takeQueue(home) -> [{h,t}] — atomically claims the whole queue (rename), so a
+// concurrent append starts a fresh file and nothing is read twice or lost.
+function takeQueue(home) {
+  const q = arrivalQueuePath(home);
+  const work = q + '.work.' + process.pid;
+  try { fs.renameSync(q, work); } catch (_) { return []; }
+  const out = [];
+  try {
+    for (const line of fs.readFileSync(work, 'utf8').split('\n')) {
+      if (!line) continue;
+      try { const e = JSON.parse(line); if (e && typeof e.t === 'string' && e.t.trim()) out.push(e); } catch (_) { /* skip torn line */ }
+    }
+  } catch (_) { /* unreadable: nothing to do */ }
+  try { fs.unlinkSync(work); } catch (_) { /* best-effort */ }
+  return out;
+}
+
+function queueNonEmpty(home) {
+  try { return fs.statSync(arrivalQueuePath(home)).size > 0; } catch (_) { return false; }
+}
+
+// runArrivalWorker(home) — called by the detached child that already owns the lock.
+function runArrivalWorker(home, token) {
+  // fail closed: a token we cannot adopt means the lock was stolen/reclaimed, so a new
+  // owner may be draining; touching the queue now would race it.
+  if (token && !adoptArrivalLock(home, token)) return;
+  arrivalTrace('start ' + process.pid);
+  const t0 = Date.now();
+  let batches = 0;
+  const attempts = new Map(); // hash -> tries
+  let pending = [];
+  try {
+    for (;;) {
+      for (const e of takeQueue(home)) pending.push(e);
+      // dedupe by hash, drop what is already cached
+      const seen = new Set();
+      const cache = readCache(home);
+      pending = pending.filter((e) => {
+        if (seen.has(e.h) || cache[e.h]) return false;
+        seen.add(e.h);
+        return true;
+      });
+      if (pending.length === 0) {
+        releaseArrivalLock();
+        // an arrival that landed between the last drain and the release has a
+        // lock-less queue: re-take the lock and keep going instead of stranding it.
+        if (queueNonEmpty(home) && tryArrivalLock(home)) continue;
+        return;
+      }
+      if (batches >= ARRIVAL_MAX_BATCHES || Date.now() - t0 > ARRIVAL_MAX_WALL_MS) {
+        releaseArrivalLock();
+        return; // total cap: leftovers are labelled at render time as before
+      }
+      touchArrivalLock();
+      const batch = pending.splice(0, ARRIVAL_BATCH_SIZE);
+      batches++;
+      try {
+        triageMessagesSync(batch.map((e, i) => ({ key: i, text: e.t })), { home });
+      } catch (_) { /* fail-open */ }
+      const after = readCache(home);
+      for (const e of batch) {
+        if (after[e.h]) continue;
+        const n = (attempts.get(e.h) || 0) + 1;
+        attempts.set(e.h, n);
+        if (n < ARRIVAL_MAX_ATTEMPTS) pending.push(e); // budget/claim-skipped: retry
+      }
+    }
+  } catch (_) {
+    releaseArrivalLock();
+  } finally {
+    arrivalTrace('end ' + process.pid);
+  }
+}
+
+// enqueueArrival({home, text}) -> true when queued. Never waits on Jev or the
+// worker, never throws. Disabled / already-cached -> false with zero fs writes.
+function enqueueArrival({ home, text } = {}) {
+  try {
+    if (typeof home !== 'string' || !home || typeof text !== 'string' || !text.trim()) return false;
+    const cfg = loadTriageConfig(home);
+    if (!cfg.enabled) return false;
+    if (readCache(home)[hashMessage(text)]) return false; // already classified
+    if (!appendArrival(home, text)) return false;
+    if (!tryArrivalLock(home)) return true; // a live worker will drain it: NO spawn
+    const { spawn } = require('child_process');
+    const lockToken = arrivalHandle && arrivalHandle.token;
+    let child;
+    try {
+      child = spawn(process.execPath, [path.join(__dirname, 'jev-triage-arrival.js')], {
+        detached: true,
+        stdio: 'ignore',
+        env: Object.assign({}, process.env, { ANTIHALL_TRIAGE_ARRIVAL_HOME: home, ANTIHALL_TRIAGE_ARRIVAL_TOKEN: lockToken, HOME: home, USERPROFILE: home }),
+      });
+    } catch (_) { releaseArrivalLock(); return true; }
+    child.on('error', () => { releaseArrivalLock(); });
+    arrivalTrace('spawn');
+    child.unref();
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 // pendingPath(home) — one small JSON map of (recipient, sender) pairs
@@ -411,6 +667,12 @@ module.exports = {
   loadTriageConfig,
   hashMessage,
   triageMessagesSync,
+  enqueueArrival,
+  runArrivalWorker,
+  arrivalQueuePath,
+  arrivalLockPath,
+  ARRIVAL_QUEUE_MAX_BYTES,
+  ARRIVAL_LOCK_STALE_MS,
   noteLabeledInbound,
   recordAnswered,
   readPending,

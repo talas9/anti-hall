@@ -23,6 +23,7 @@
 // below RED — the injected fake's received `deadline` would be LATER than
 // the given past `postPullDeadline`, not capped by it.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

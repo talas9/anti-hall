@@ -1295,7 +1295,8 @@ function runRepairs(opts) {
   // migrateAutoArchivedState for BOTH the dry-run detect and the apply.
   migrationFix('migrate-auto-archived-state', 'migrate-auto-archived-state', () => {
     const r = require(MIGRATE_STATE).migrateAutoArchivedState({ dryRun: true, home });
-    return { pending: !!(r && r.pending > 0), detail: (r && r.pending || 0) + ' auto-archive record(s)' };
+    const n = (r && r.pending || 0) + (r && r.normalized || 0);
+    return { pending: n > 0, detail: n + ' auto-archive record(s)' };
   }, () => require(MIGRATE_STATE).migrateAutoArchivedState({ home }));
 
   // v0.108.1 P3: acquireLock's write-then-link publish (and its P1 stale-
@@ -1369,6 +1370,16 @@ function runRepairs(opts) {
     } catch (e) {
       push('migrate-settings-from-legacy', 'migrate-settings-from-legacy', 'failed', 'settings migration raised: ' + errMsg(e));
     }
+  }
+
+  // Drop poisoned no-label jev-triage cache entries (pre-0.200.0 budget-skipped
+  // messages cached as a permanent verdict). Disposable cache, idempotent,
+  // honours --dry-run itself.
+  try {
+    const r = require(MIGRATIONS_LIB).migrateJevTriageCache(home, { dryRun });
+    push(r.id, r.action, r.status, r.msg);
+  } catch (e) {
+    push('repair-jev-triage-cache', 'repair-jev-triage-cache', 'failed', 'jev-triage cache repair raised: ' + errMsg(e));
   }
 
   // P1-8: backfill the new `ownerKey` descriptor field on every descriptor

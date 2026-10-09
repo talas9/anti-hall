@@ -5,6 +5,10 @@ description: Behavior-preserving simplification workflow for Codex. Use when the
 
 # anti-hall simplify for Codex
 
+## When to use
+
+Behavior-preserving simplification workflow for Codex. Use when the user asks to simplify, deslop, trim fat, or reduce over-engineering.
+
 Scope the simplification to the named files or current diff. Do not sweep the whole repo unless explicitly asked.
 
 Workflow:

@@ -35,7 +35,7 @@ test('POSITIVE: a quota message in an Agent result for codex:codex-rescue is rec
 
     assert.strictEqual(r.status, 0);
     assert.ok(r.json, `expected JSON context, got: ${r.stdout}`);
-    assert.match(r.json.hookSpecificOutput.additionalContext, /CODEX QUOTA/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /codex-quota/);
     assert.match(r.json.hookSpecificOutput.additionalContext, /route correctness review to Sonnet/);
 
     const state = readState(h.home);

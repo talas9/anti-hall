@@ -217,6 +217,48 @@ test('verify-allow (script): a script inside ANOTHER anti-hall checkout (found b
   });
 });
 
+test('verify-allow (script): a checkout shipping BOTH plugin manifests (Claude + Codex) is still anti-hall', () => {
+  withScripts((repo) => {
+    const other = path.join(repo, 'vendor', 'ah2');
+    for (const m of ['.claude-plugin', '.codex-plugin']) {
+      fs.mkdirSync(path.join(other, m), { recursive: true });
+      fs.writeFileSync(path.join(other, m, 'plugin.json'), JSON.stringify({ name: 'anti-hall' }));
+    }
+    fs.mkdirSync(path.join(other, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(other, 'scripts', 'tool.js'), 'x\n');
+    const r = run('node vendor/ah2/scripts/tool.js --check | tail -5', { cwd: repo });
+    assert.strictEqual(r.status, 2, r.stdout);
+  });
+});
+
+test('verify-allow (script): a script under the hook\'s OWN plugin root never qualifies, even with no manifest there', () => {
+  // Copy hooks/ + companion/ into a root with no plugin manifest at all, so
+  // only the own-root (hooks/..) check can recognise the script.
+  const src = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cgsec-ownroot-')));
+  const h = makeHome();
+  try {
+    for (const d of ['hooks', 'companion']) fs.cpSync(path.join(src, d), path.join(root, d), { recursive: true });
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'scripts', 'tool.js'), 'x\n');
+    withScripts((repo) => {
+      const spawnGuard = (command) => cp.spawnSync(process.execPath, [path.join(root, 'hooks', HOOK)], {
+        input: JSON.stringify(payload(command, repo)),
+        env: { PATH: process.env.PATH, HOME: h.home, USERPROFILE: h.home, CLAUDE_CODE_ENTRYPOINT: 'cli' },
+        encoding: 'utf8',
+      });
+      const r = spawnGuard('node ' + path.join(root, 'scripts', 'tool.js') + ' --check | tail -5');
+      assert.strictEqual(r.status, 2, r.stdout + r.stderr);
+      // control: the same copied hook still allows a repo script
+      const c = spawnGuard('node tools/gen.js --check | tail -5');
+      assert.strictEqual(c.status, 0, c.stdout + c.stderr);
+    });
+  } finally {
+    h.cleanup();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('verify-allow (script): guards.allowReadOnlyVerifyScripts=false turns the script form off', () => {
   withScripts((repo) => {
     const h = makeHome();

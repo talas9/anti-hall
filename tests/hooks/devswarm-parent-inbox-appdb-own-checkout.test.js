@@ -43,8 +43,8 @@ try { require('node:sqlite'); } catch (_) { HAS_SQLITE = false; }
 
 function payload() { return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: REPO_CWD }; }
 function ctx(r) { return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || ''; }
-function segment(c, banner) { return c.split('\n\n').find((s) => s.startsWith(banner)) || ''; }
-function tableSeg(c) { return segment(c, 'DEVSWARM WORKSPACES'); }
+function segment(c, banner) { return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || ''; }
+function tableSeg(c) { return segment(c, 'devswarm-workspaces'); }
 // With an app DB the row is titled from the app label: `| <label> (<id>) |`.
 function tableRow(c, id) { return tableSeg(c).split('\n').find((l) => l.startsWith('| ' + id + ' ') || l.includes('(' + id + ') |')) || ''; }
 
@@ -95,7 +95,7 @@ function runInbox(home, envOverride) {
       const c = ctx(r);
       assert.strictEqual(tableRow(c, '76cf862f'), '', 'the app-primary row must NEVER appear as a standalone child table row');
       assert.ok(!/SkyCrew \(76cf862f\)/.test(c), 'must never render the false child-shaped nag: ' + c);
-      assert.match(c, /DEVSWARM OWN INBOX/, 'its unread must instead surface via the own-unread path');
+      assert.match(c, /devswarm-own-inbox/, 'its unread must instead surface via the own-unread path');
       assert.match(c, /2 unread/);
     } finally { h.cleanup(); }
   }

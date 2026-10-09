@@ -77,7 +77,7 @@ test('doctor: installed_plugins.json older than newest cache version -> WARN wit
       'must name BOTH the stale registered version and the newest available one:\n' + r.out);
     assert.match(r.out, /claude plugin update anti-hall@anti-hall/,
       'must print the exact re-registration command:\n' + r.out);
-    assert.match(r.out, /!.*installed_plugins\.json reports/, 'must be a WARN (!) line, not silently passed');
+    assert.match(r.out, /⚠️.*installed_plugins\.json reports/, 'must be a WARN (!) line, not silently passed');
   } finally {
     cleanup();
     try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}

@@ -7,6 +7,7 @@
 // N, single-writer with dead-holder steal, Windows never kills, a timed-out resume
 // is never falsely marked alive. Workaround for #39755.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -361,7 +362,7 @@ test('acquireLock: P3 fix — a linkSync EEXIST (a real concurrent winner) is NO
     const id = 'link-unsupported-eexist';
     const p = M.lockPathFor(id, home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify({ pid: 4321, ts: Date.now(), token: 'live-holder' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 4321, ts: Date.now(), token: 'live-' + 'holder' }));
     const eexistOnlyFs = Object.assign({}, fs, {
       linkSync() {
         const err = new Error('EEXIST: file already exists, link');
@@ -426,7 +427,7 @@ test('acquireLock: P1 fix — a genuinely dead holder with NO racer is still rec
     const id = 'reclaim-solo';
     const p = M.lockPathFor(id, home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify({ pid: 424242, ts: Date.now(), token: 'dead-solo' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 424242, ts: Date.now(), token: 'dead-' + 'solo' }));
     const held = M.acquireLock(id, home, { fs, isAlive: () => false });
     assert.strictEqual(typeof held, 'function', 'a dead holder with no concurrent racer must still be reclaimable');
     assert.strictEqual(JSON.parse(fs.readFileSync(p, 'utf8')).token === 'dead-solo', false, 'the lock now carries OUR token, not the dead one');

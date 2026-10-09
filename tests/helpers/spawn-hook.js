@@ -82,6 +82,7 @@ function isolatedEnv(home) {
 //   - opts.home: HOME for the child (fake home). Defaults to a disposable
 //     per-process mkdtemp dir (defaultHome()) — NEVER the real machine home.
 //   - opts.env: extra env vars merged onto the controlled base.
+//   - opts.args: extra argv after the script path (e.g. ['--host=claude']).
 //   - opts.expectJson: when true, RE-SPAWN (up to 4 attempts) on the macOS
 //     spawnSync empty-stdout flake until stdout parses as JSON (see spawnHook).
 //     Only set this for hooks that MUST emit JSON and have no per-run side
@@ -128,8 +129,9 @@ const MAX_SPAWN_ATTEMPTS = 5;
 // fails an unrelated assertion. A passing hook exits long before this.
 const SPAWN_TIMEOUT_MS = 60000;
 
-function spawnHook(hookAbs, input, env, expectJson) {
-  let res = spawnSync(process.execPath, [hookAbs], {
+function spawnHook(hookAbs, input, env, expectJson, args) {
+  const argv = [hookAbs, ...(args || [])];
+  let res = spawnSync(process.execPath, argv, {
     input, encoding: 'utf8', env, timeout: SPAWN_TIMEOUT_MS,
   });
   let json = null;
@@ -146,7 +148,7 @@ function spawnHook(hookAbs, input, env, expectJson) {
     attempts < MAX_SPAWN_ATTEMPTS
   ) {
     attempts += 1;
-    const next = spawnSync(process.execPath, [hookAbs], {
+    const next = spawnSync(process.execPath, argv, {
       input, encoding: 'utf8', env, timeout: SPAWN_TIMEOUT_MS,
     });
     let nextJson = null;
@@ -167,7 +169,7 @@ function testHook(hookRelPathOrAbs, payloadObj, opts = {}) {
     ...(opts.env || {}),
   };
 
-  return spawnHook(hookAbs, JSON.stringify(payloadObj), env, opts.expectJson === true);
+  return spawnHook(hookAbs, JSON.stringify(payloadObj), env, opts.expectJson === true, opts.args);
 }
 
 // testHookRaw(hookRelPathOrAbs, rawStdin, opts={}): like testHook but pipes a
@@ -180,7 +182,7 @@ function testHookRaw(hookRelPathOrAbs, rawStdin, opts = {}) {
     ...isolatedEnv(opts.home || defaultHome()),
     ...(opts.env || {}),
   };
-  return spawnHook(hookAbs, rawStdin, env, opts.expectJson === true);
+  return spawnHook(hookAbs, rawStdin, env, opts.expectJson === true, opts.args);
 }
 
 // Build a PreToolUse Bash payload. When agentId is supplied it lands in the

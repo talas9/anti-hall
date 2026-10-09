@@ -219,7 +219,7 @@ function parseHeredocRaw(cmd, i) {
   const lineEnd = cmd.indexOf('\n', openerEnd);
   if (lineEnd === -1) {
     // Opener runs to EOF: no body at all.
-    return { end: n, openerText: cmd.slice(i, n), word, quoted, dashStrip, body: '', terminated: false };
+    return { end: n, openerText: cmd.slice(i, n), openerEnd, word, quoted, dashStrip, body: '', terminated: false };
   }
   const openerText = cmd.slice(i, lineEnd);
   let idx = lineEnd + 1;
@@ -238,7 +238,7 @@ function parseHeredocRaw(cmd, i) {
     if (nextNl === -1) { idx = n; break; }
     idx = nextNl + 1;
   }
-  return { end: idx, openerText, word, quoted, dashStrip, body: bodyLines.join('\n'), terminated };
+  return { end: idx, openerText, openerEnd, lineEnd, word, quoted, dashStrip, body: bodyLines.join('\n'), terminated };
 }
 
 // Tokenize a segment respecting single/double quotes, STRIPPING the quote
@@ -331,6 +331,50 @@ function extractSubstitutions(s) {
   return found;
 }
 
+// heredocBodiesIn(text) -> the body of every heredoc opener in text, in order
+// (quote-aware: a `<<` inside quotes is data; `<<<` is a here-string). An
+// opener with no body line (a body-less segment) yields ''.
+function heredocBodiesIn(text) {
+  const out = [];
+  let q = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '\\' && q === '"') { i++; continue; }
+      if (c === q) q = '';
+      continue;
+    }
+    if (c === '\\') { i++; continue; }
+    if (c === "'" || c === '"') { q = c; continue; }
+    if (c === '<' && text[i + 1] === '<') {
+      const h = parseHeredocAt(text, i);
+      if (h) {
+        out.push(h.body);
+        i = Math.max(i, (h.lineEnd !== undefined ? h.end : h.openerEnd) - 1);
+      } else if (text[i + 2] === '<') {
+        i += 2;
+      }
+    }
+  }
+  return out;
+}
+
+// segmentHeredocBodies(segments, text) -> per segment, the heredoc bodies its
+// openers read. Segments come from a splitter that drops bodies (command-guard's
+// splitSegmentsDetailed); text is the command they were split from. Bodies are
+// handed out in opener order.
+function segmentHeredocBodies(segments, text) {
+  const all = heredocBodiesIn(String(text || ''));
+  const per = [];
+  let k = 0;
+  for (const s of segments) {
+    const n = heredocBodiesIn(String(s || '')).length;
+    per.push(all.slice(k, k + n));
+    k += n;
+  }
+  return per;
+}
+
 module.exports = {
   HEREDOC_RE,
   basename,
@@ -339,4 +383,5 @@ module.exports = {
   tokenizeQuoted,
   dequoteSegment,
   extractSubstitutions,
+  segmentHeredocBodies,
 };

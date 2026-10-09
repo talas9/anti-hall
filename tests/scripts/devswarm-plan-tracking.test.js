@@ -5,6 +5,7 @@
 // ADDITIVE contract — a workspace without a plan renders exactly as before
 // (roster row shape, table normalizer, child-turn output). Isolated HOME.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -168,13 +169,14 @@ test('spawn: a numbered -p writes the plan keyed by the new worktree; a brief wi
 
 test('no-plan rows are byte-identical: table normalizer and doneStateLabel unchanged, plan label ages normalized', () => {
   const noPlan = [
-    'DEVSWARM WORKSPACES (re-sent on change, else every 10 turns):',
+    '💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):',
     '| workspace | status | finish | unread | last |',
     '|---|---|---|---|---|',
     '| wsA | active | working (40%) | 0 | 3m |',
     '| wsB | stale | done, merge unverified | 2 | 1h |',
   ].join('\n');
-  const legacy = (t) => String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l) ? l.replace(/\|[^|]*\|\s*$/, '| |') : l)).join('\n');
+  // legacy = the age-only blanking plus the B5 unread-cell blanking (unread-only changes no longer re-send the table)
+  const legacy = (t) => String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l) ? l.replace(/\|[^|]*\|\s*$/, '| |').replace(/\|\s*\d+\s*\|\s*\|\s*$/, '| | |') : l)).join('\n');
   assert.strictEqual(inbox.normalizeTableAges(noPlan), legacy(noPlan));
   const a = '| wsP | active | 3/7 done · doing #4 · 42m · progress 18m ago | 0 | 3m |';
   const b = '| wsP | active | 3/7 done · doing #4 · 43m · progress 19m ago | 0 | 4m |';

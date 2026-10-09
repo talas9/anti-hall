@@ -45,7 +45,7 @@ function trackerCtx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 function isBlock(r) { return r.status === 0 && r.json && r.json.decision === 'block'; }
-function isIdleNeglect(r) { return isBlock(r) && /IDLE NEGLECT/.test(r.json.reason || ''); }
+function isIdleNeglect(r) { return isBlock(r) && /have no in-flight agent/.test(r.json.reason || ''); }
 
 // Plant a REAL fresh heartbeat at <home>/.anti-hall/agents/<id>.json (ts=now) —
 // the exact path + format both hooks' agentsRunning() reads (numeric `ts` epoch ms).
@@ -110,7 +110,7 @@ test('E2E step 2 — same state: task-guard BLOCKS with idle-neglect reason nami
     assert.strictEqual(r.status, 0);
     assert.ok(isIdleNeglect(r), `expected idle-neglect Stop block; stdout: ${r.stdout}`);
     assert.match(r.json.reason, /refactor the parser/, 'idle-neglect reason names the actionable task');
-    assert.match(r.json.reason, /PARALLEL/, 'demands parallel dispatch');
+    assert.match(r.json.reason, /in parallel/, 'demands parallel dispatch');
     // Idle-neglect must not name the blocked/owned ones.
     assert.doesNotMatch(r.json.reason, /wire the cache layer/, r.json.reason);
     assert.doesNotMatch(r.json.reason, /ship the docs/, r.json.reason);

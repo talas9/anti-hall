@@ -6,6 +6,229 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.203.0 (2026-10-09)
+
+### Highlights
+
+- **Leaner injected context.** The SubagentStart worker core, the task-tracker reminder and the DevSwarm workspace table all re-send less (measured per-turn and per-spawn reductions below).
+- **Accurate limit advisory.** The limit-conservation text no longer claims a Claude model has its own weekly bucket.
+- **Language-agnostic.** The Flutter-specific `flutter-debug` skill and agent are removed.
+- **Alias-based model routing.** The Jev judge and all plugin code route by model alias, never a pinned model version.
+- **Guard and DevSwarm fixes.** git-guard heredoc handling and self-credit messages, command-guard read-only chains, one canonical DevSwarm workspace-id resolver, spawn-time submodule fetch, and auto-archive records that no longer stay pending.
+
+### Changed
+
+- git-guard: a data heredoc is no longer vetoed by read-only neighbouring commands or a literal `$VAR` target, and the self-credit block names the command that carries the credit.
+- command-guard: a `gcloud` read inside a read-only chain and `python3 -I` scratch scripts are no longer treated as heavy.
+- edit-guard: a handover written outside the project gets a specific redirect to the project path.
+- Jev judge and plugin code route models by alias (haiku/sonnet/opus), with a guard test against pinned slugs.
+- DevSwarm: one canonical workspace-id resolver (meshId/uuid/prefix) across unarchive, send, gate and the other id-taking verbs; spawn fetches a missing pinned submodule commit before create and surfaces every submodule failure in warnings; an auto-archive record without `doneHead` no longer stays pending forever (already-written entries are repaired).
+- limit-conserve: reset time renders at minute precision so emit-dedupe matches across jitter; turn-gate pruning uses the correct `tg` family; jev-report keeps triage-derived rows out of Jev totals; eval trace extraction counts assistant usage once per message id.
+
+- Fixed the limit-conservation advisory (`limit-conserve-inject.js`, Codex `anti-hall-context-conserve` skill) claiming Sonnet draws on a "SEPARATE weekly bucket" or that a downshift preserves a "flagship weekly bucket". Per-model weekly buckets are not documented, and the usage screen shows only "All models" and "Fable only". The text now says only that Codex has its own limit and that cheaper models or fewer agents use less of the shared Claude pool, and makes no claim about Fable's relation to "All models". A test fails if the advisory ever again calls Sonnet, Opus or Haiku a separate bucket.
+- Removed the Flutter-specific `flutter-debug` skill and agent; anti-hall is language-agnostic. The removed code remains in git history.
+- The DevSwarm workspace table (parent inbox) is no longer re-sent when only a row's unread count changes; unread already arrives per turn in the inbox segments. Status/finish/risk changes still re-send it, and the keepalive now follows `guards.injectionRepeatEvery` instead of a fixed 10. Measured on a 3-workspace fixture over 16 delivered turns: 286 -> 198 injected chars per turn on average (the COMMS OVERRIDE line was already once-per-session plus keepalive).
+- SubagentStart (`verify-first-subagent.js`, default `context.protocolLevel=compact`) now emits a worker-only short core: iron law, stop-and-verify triggers, done/scope/autonomy/skip rules, the PROTOCOL.md pointer and WORKER. Measured per spawn: 3,564 -> 2,518 chars compact (7,701 under `protocolLevel=full`, unchanged). Main sessions keep the existing session core. The subagent size caps in `verify-first-subagent-compact.test.js` dropped to 2,800/3,100 to pin it.
+- The task-tracker SHORT reminder line is no longer injected on every prompt: it follows `guards.injectionRepeatEvery` (first turn after the FULL primer or a compaction, then every N delivered turns; 0 = every turn). The per-turn open-tasks / DISPATCH NOW note is unchanged, and the hook no longer emits an empty context block when nothing applies. Measured over 12 delivered turns with no open tasks: 1,896 -> 546 chars (158 -> 45 per prompt).
+
+## 0.202.0 (2026-10-04)
+
+### Highlights
+
+- **Bash guards return decisions** instead of exiting (no `process.exit`; CLI output byte-identical).
+- **Guards honour the `evaluate()` env argument**, and guard output writes retry `EAGAIN`.
+- **`docs/HOOK-LATENCY.md` hook counts corrected** and `scripts/hook-latency.js --grouped` added.
+- **Codex skill descriptions trimmed.**
+
+### Changed
+
+- **A guard's `evaluate(payload, env)` decision depends only on its `env` argument.** The settings readers, the skip marker (`skip-guard.js` `isSkipped(name, env)`), the home directory, the coordinator entrypoint check and the Jev consult now take the env given to `evaluate()` instead of reading `process.env`; the CLI passes `process.env`, so command-line behaviour is unchanged. Guard output writes (`guard-io` `writeAll`) now retry `EAGAIN` for at most 3 seconds of real elapsed time (measured with a monotonic clock, so an oversleeping host cannot stretch it) instead of silently truncating.
+- **The 15 Bash pre/post guard invocations return decisions instead of exiting.** compact-declaration-guard, git-guard (pre and `--audit`), command-guard, coordinator-work-guard (pre and `--post`), merge-side-pick (pre and `--post`), merge-gate, scan-throttle, api-guard, ship-it-guard, output-verify-guard, devswarm-parent-reply-tracker and devswarm-child-drain each export `evaluate(payload, env, { argv })` returning `{ exitCode, stdout, stderr }` and never call `process.exit`; a thin `require.main === module` wrapper (`hooks/lib/guard-io.js`) reads stdin, writes both streams and exits with the code. A block can no longer turn into an allow when guards run in one process inside fail-open try/catch blocks. CLI behaviour is byte-identical. `tests/hooks/guard-evaluate-parity.test.js` runs every guard through the spawned CLI and in-process and compares exit code, stdout and stderr.
+- **`docs/HOOK-LATENCY.md` per-event hook counts are corrected** (Bash 9 PreToolUse and 6 PostToolUse on 0.201.0, plus the Codex port's counts), and `scripts/hook-latency.js --grouped` starts each event's whole hook set in parallel and reports group wall time and summed CPU.
+- **Six Codex skill descriptions are shorter** (`anti-hall-doctor`, `-install-statusline`, `-omc`, `-omx`, `-orchestration`, `-update`).
+
+## 0.201.0 (2026-10-04)
+
+### Highlights
+
+- **Tradeoff fixes A-F.** git-guard skips heredoc bodies that are data and checks `xargs`, resolves git aliases and reused commit messages, and holds git/gh beside a data heredoc to a flag allowlist; api-guard, ship-it-guard and Bash edit parity see shell writes (no 64 KB skip); an opt-in unsupported-inference check and a keyless CLI judge backend; noisy advisories (root-cause nudge, output-verify) cut at the source; DevSwarm hooks exit early where they cannot act.
+- **README tradeoffs list moved** into GUIDE "Limits and escape hatches".
+- **Replay false-positive fixes** from 5,828 real PostToolUse events.
+- **Benchmark harness** (`evals/anti-hall/`) runs in the container sandbox, with `--reps`, a per-run cost reserve and `--cases-dir`.
+- **New opt-in/advisory features:** merge-side-pick advisory, Codex spawn-time orchestration rules, reduced tasklist nag, per-prompt Stop-nag budget.
+
+### Added
+
+- **Idle-agent sweep (`hooks/idle-agent-sweep.js`, UserPromptSubmit, advisory; `guards.idleAgentSweep` default on, `guards.idleAgentSweepCount` 3, `guards.idleAgentSweepMin` 15; Claude and Codex).** Field case: 34 named teammates had sent their final report and sat idle for up to ~1.5 h because nothing reminded the coordinator to stop them. Once per user prompt, the hook lists agents that finished but were never stopped, oldest first (up to 10 names, then "and N more"), with the exact call to end them. Claude: a named teammate whose newest event is an `idle_notification` with `idleReason` `available` or `failed`, with no later SendMessage to it and no TaskStop (by name or `<name>@<team>`); an idle with no `idleReason` (waiting on its own work) and background agents (already ended by their `completed` notification) are not listed. Codex: a `multi_agent_v1` agent whose `wait_agent` result is `completed`/`errored` and that was never closed (`close_agent`) or re-tasked (`send_input`/`resume_agent`); the newer `collaboration` tool set has no close tool, so nothing is listed there. Fires when 3 are idle or one has been idle 15 minutes; a `<task-notification>` turn is skipped and a queued burst gets one copy. Replayed on the field session it fires at the first user prompt after the teammates finished (20 names, oldest idle 44 min) and at every prompt until the stop (34 names, the same 34 the coordinator stopped). Detection lives in `hooks/lib/agent-scan.js` (`finishedTeammates`) and `hooks/lib/idle-agents.js`.
+- **api-guard and ship-it-guard see shell writes (`guards.shellWriteChecks`, default on; Claude and Codex).** Both are now registered on `Bash` as well as Write/Edit/MultiEdit (Claude) and `apply_patch` (Codex). `hooks/lib/shell-writes.js` lists the files a command writes (`>`/`>>`/`>|`/`&>` incl. `> f` truncation, heredoc into `cat`/`tee`, `echo`/`printf`, `tee [-a]`, `sed -i`, `perl -i`/`-pi`, `cp`/`mv`, literal `python -c`/`node -e` open-for-write paths; also inside `sh -c`, `eval`, `$(…)`) using command-guard's own parsers. ship-it-guard's existence gate runs on those targets (scratchpad and tmp-outside-a-repo writes excluded); api-guard checks the text a heredoc/`echo`/`printf` puts in a .py/.js/.ts file. A target the parser cannot know (a variable, a glob, `dd`/`install`/`rsync`, a script run) is allowed. Cost: two more hook processes per Bash call (api-guard exits before parsing unless the command names a .py/.js/.ts file; ship-it-guard is off by default).
+- **Shell-write checks no longer skip commands over 64 KB, and cover more inline writes.** The classify cap (a guard against catastrophic regex cost) made a ~96 KB `cat > src/auth/big.py <<'EOF'` invisible to api-guard, ship-it-guard and Bash edit parity. Those now scan the heredoc header (target and redirect) with an empty body, take the real body as the content, and parse text after the heredoc unless the header line has a `cd`; a big command with no leading heredoc is judged on its first 16 KB. 1 MB command: 34-60 ms per hook, wall time with node startup. api-guard still skips a body over its own 600 KB chunk cap, same as the Write tool. Inline-code literals now include perl 2- and 3-arg `open` with a write mode and node `createWriteStream` (ruby `File.open(...,'w')`/`File.write` and node `writeFileSync`/`appendFileSync` were already covered).
+- **Bash edit parity covers inline code (`guards.bashEditParity`).** A literal `python -c "open('src/x.py','w')…"` (or `node -e` writeFileSync, `ruby -e` File.write) into a repo file now gets edit-guard's delegation block on the main thread, like `sed -i` and redirects already did.
+- **git-guard sees through git aliases** (`guards.gitAliasResolve`, safety, default on; Claude and Codex). `git <name>` for a non-builtin name is resolved through the repo/global git config at hook time (one `git config --get-regexp ^alias\.` per repo per call; builtins never spawn git), following alias chains (loops resolve to nothing) and `!shell` aliases, and the expansion is scanned as the command it really runs. Before, `git pf` with `alias.pf = push --force`, or `git ci -m "...Co-Authored-By: <AI>..."` with `alias.ci = commit`, was allowed. Defining an alias whose body is a blocked git command is blocked too: `git config alias.x`, `git -c alias.x=`, `GIT_CONFIG_VALUE_<n>=`, and a shell `alias x=` (an AI-credited commit body used to pass; a force-push body was already blocked). A call to a shell alias or function defined in the same command is scanned as the git command it forwards to (`g(){ git "$@"; }; g push --force` used to pass). The PostToolUse audit follows aliases as well. Logic lives in `hooks/lib/git-alias-scan.js`.
+- **git-guard checks reused commit messages before the commit runs** (`guards.gitReusedMessageCheck`, safety, default on; Claude and Codex). For a `git commit` with no `-m`/`-F`, the message it would take from `-C`/`-c`/`--reuse-message`/`--reedit-message <rev>`, from HEAD (`--amend`) or from `-t`/`commit.template` is read and blocked when it carries an AI self-credit trailer: always when reused verbatim (`-C`, `--no-edit`, a no-op editor such as `GIT_EDITOR=true`), and on the editor path when the command sets no real editor. A real editor override and anything a `commit-msg` hook writes are left to the existing PostToolUse audit, which tells the agent to amend.
+- **Unsupported confident inferences (opt-in).** `guards.inferenceCheck` (default off) makes
+  speculation-guard also block, once per reply, a causal claim with no hedge word ("The crash is
+  caused by the cache race.") when no tool output, observation-tool input, pasted fenced block or
+  task notification in the last 1 MB of the transcript mentions the stated cause (new
+  `hooks/lib/inference-check.js`; Claude transcripts and Codex rollouts). Off by default because
+  field precision is low: 1.00 precision / 0.95 recall on the new 84-case synthetic corpus
+  (`eval/inference-bench.js`), but it flagged 3.8% of 3,276 real final replies and at most 18 of a
+  40-flag sample were causal claims about project state (precision ≤ 0.45).
+- **Semantic judge without an API key.** `jev.judgeBackend` (`api` default, `cli`, `auto`): `cli`
+  runs the judge on the local `claude -p` CLI with your own Claude login, isolated (no tools, no MCP
+  servers, no settings files, `disableAllHooks`) and marked `ANTIHALL_JUDGE_CHILD=1` so it cannot
+  recurse; measured about 5–6 s per turn end. Fail-open when the CLI is missing or not logged in.
+- `eval/inference-bench.js` + `eval/inference-cases.json`: offline precision/recall for both
+  components (`--hook`, `--codex`, live `--judge-cli`).
+- **merge-side-pick advisory** (`hooks/merge-side-pick.js`, PostToolUse + PreToolUse Bash, Claude and Codex): after a conflict is resolved by taking one side wholesale (`git checkout|restore --ours|--theirs`, `git merge|pull|rebase -X ours|theirs`, `git merge -s ours`), a push with no test run since (npm/pnpm/yarn test, `node --test`, pytest, go/cargo/flutter/dart test, mvn/gradle test, make test, ...) gets one advisory line in the shared message shape. Never blocks; per-session state in `~/.anti-hall/merge-side-pick-<session>.json`, pruned after 7 days. Setting `guards.mergeSidePickAdvisory` (default on, env `ANTIHALL_MERGE_SIDE_PICK_ADVISORY`). On Codex the advisory is shown only by Codex builds that support PreToolUse additionalContext (rust-v0.129.0 and later, docs/KB-claude-codex.md section 5.2); older builds ignore it and the recorder stays harmless. Designed from the owner-decisions description; the original report text was not found.
+- **Experimental, opt-in: Codex spawn-time delivery of the orchestration rules** (`context.codexOrchFullOn=spawn`, env `ANTIHALL_CODEX_ORCH_FULL_ON`; default `session` = today, byte for byte). Needs Codex >= 0.129 with hooks trusted. On a positively identified Codex session SessionStart sends the compact core plus the compact orchestration lines, and the full Codex-worded rules arrive once per context epoch on the first `spawn_agent` call through `orch-on-spawn.js` (same marker + O_EXCL claim as Claude; the retry scan also recognises Codex rollout developer messages). `orch-on-spawn.js` is now registered in the Codex port on the `^(?:collaboration)?spawn_agent$` matcher only (silent unless the marker is pending). Codex 0.160 surfaces PreToolUse `additionalContext` to the model (live probe 2026-10-04: tool_name `collaborationspawn_agent`, hook fires, context reaches the parent). Codex SessionStart chars in spawn mode are measured with `evals/anti-hall/injection-profile.js`.
+
+### Performance
+
+- **Hook latency: DevSwarm hooks exit before loading their libraries in a session they cannot act on.** `devswarm-parent-gate`, `devswarm-parent-inbox`, `devswarm-child-turn`, `devswarm-child-gate` and `devswarm-child-drain` each load a dozen companion libs at module scope (70 to 187 KB of source) and only then reach the check that returns early for a non-DevSwarm session or the other role. New `hooks/lib/devswarm-primary-gate.js` repeats those same payload-independent checks (the hook's own settings switch, the user skip marker, DevSwarm active, Primary vs child) before the heavy requires, drains stdin and exits 0. A session the hook can act on goes through the full hook unchanged. Measured, paired and interleaved against the previous build, DevSwarm env stripped: `devswarm-parent-gate` (Stop) 36.8 to 21.3 ms CPU p50, `devswarm-parent-inbox` (UserPromptSubmit) 38.2 to 21.5 ms, a bare `node -e 0` being about 16.5 ms. One side effect, not a decision: `devswarm-parent-gate` and `devswarm-child-gate` (Stop) and `devswarm-child-drain` (PostToolUse) no longer rewrite the stable launcher under `~/.anti-hall/bin/` in a session they cannot act on. The launcher is still refreshed at SessionStart by `devswarm-child-role.js` and on every real DevSwarm Stop.
+- **`crypto` and `child_process` load on first use in the hooks that rarely need them** (`hooks/lib/lazy-node.js`; task-guard, tasklist-guard, speculation-guard/judge, claim-ledger, codex-nudge, compact-advice-guard, task-tracker, verify-first, phase-tracker, devswarm-child-turn and the shared libs `jev-assist`, `emit-dedupe`, `command-allow`, `stop-ack`, `identity`, ...). Call sites are unchanged. Measured gain is 0 to 4 ms CPU per hook, within noise on several, so treat it as small.
+- Measurement and the numbers that were checked and not changed are in `docs/HOOK-LATENCY.md` (addendum 2026-10-04, second).
+
+### Fixed
+
+- **api-guard** no longer treats the result of a chained require (`const src = require('fs').readFileSync(f)`) as the module itself, and no longer flags a property assignment on a module (`fs.x = 1`) as a fabricated API read.
+- **git-guard** shell-function wrapper expansion no longer splices call arguments into a `name="$1"` / `local name="$1"` assignment when the variable is only echoed or passed as data (test harnesses piping a command to a hook). It still blocks when the variable, or one derived from it, is later run (`$c`, `eval "$c"`, `bash -c`, piped or here-string to a shell, `source <(...)`).
+- **Judge hardening.** The secret scrub now also covers `sk_live_`/`sk_test_`/`rk_live_`, `glpat-`, `npm_`, `Authorization: Basic|Bearer` values and quoted multi-word `SECRET_KEY = "a b c"` values, and the judge input is scrubbed before it is cut to length (a cut could leave a token fragment below every pattern). The `claude -p` judge child runs in a private empty temp dir (removed afterwards) instead of the shared temp dir. Every Stop, SessionStart and UserPromptSubmit hook exits 0 silently when `ANTIHALL_JUDGE_CHILD=1` (new `hooks/lib/judge-child-exit.js`), as a second stop against recursion.
+- **Benchmark harness (`evals/anti-hall/`, tooling only).** Bash failed in every container run: the runtime's masked `/proc` subpaths make the kernel refuse bwrap's `/proc` mount (`bwrap: Can't mount proc on /newroot/proc`), so models could not run `git`/tests. `run-in-container.sh` now unmounts the masks as root with CAP_SYS_ADMIN and drops to `node` with no capabilities (`EVAL_KEEP_PROC_MASKS=1` opts out). Also: `--reps` now reaches a single-arm run as `--runs`; new `--run-reserve-usd` per-run cost pre-check; `--cases-dir` reads cases from outside the repo with a generated manifest; `-- --keep-temp` copies each run's temp dir into `<results>/kept/` with a relative `tracePath`, so traces outlive a `--rm` container.
+- **git-guard: heredoc bodies that are data are no longer scanned as commands** (setting `guards.gitGuardHeredocData`, default on, env `ANTIHALL_GIT_GUARD_HEREDOC_DATA`; Claude and Codex run the same hook). A note, commit message or PR body that mentions `git push --force` is no longer blocked when its heredoc feeds a prose/data file or a message: `cat <<EOF > notes.md`, `tee notes.txt <<EOF`, `git commit -F - <<EOF`, `git commit -m "$(cat <<EOF ...)"`, `gh pr create --body-file - <<EOF`. All-or-nothing and fail-closed: every other command in the line must be on a short allowlist (no shell, interpreter, xargs, eval, source, or path/variable used as a command anywhere), targets must be literal prose/data files outside `.git`/`.husky`/`hooks`/`.ssh`/`.config`/`.claude`/`.codex`/`.anti-hall/bin` (no script, extensionless file, dotfile, git hook name or existing symlink), and the opener parse must be exact. A body fed to bash/sh/eval/source/xargs/python/..., piped into a shell, teed into `>( )`, or written to a file the same line runs is still scanned, and so is a script written by a heredoc. Credit trailers and git-config lines in a body are checked whatever the consumer. The pinned bypass suite (`git-guard-heredoc-bypass.test.js`) stays blocked; five tests that pinned prose into `.md`/`.txt` (and a handover file) as BLOCK now pin ALLOW.
+- **git-guard: `xargs` runs get the checks a direct run gets.** xargs options are parsed like getopt (GNU and BSD): GNU `-i`/`-l`/`-e`/`--replace`/`--eof`/`--max-lines` no longer swallow the command word, a required option value is taken even when quoted or dash-led (`-d '\n'`), clusters (`-0n1`), abbreviated long options and BSD `-J`/`-R`/`-S` are handled, and a bare `{}` is a literal word (`xargs -I{} git ...` is no longer split at the braces). An xargs-run `sh -c`, `eval` or nested `xargs` is re-scanned as a command. Before this, `xargs -i git push --force ...`, `xargs -l`, `xargs -d '\n'`, `xargs -J %` and `xargs sh -c '<force push>'` were allowed.
+- **task-guard IDLE NEGLECT no longer blocks while unmapped agents could be on the listed tasks.** A running agent whose description names no `#<id>` was assumed to be on an in_progress task first, so the pending task it was actually on (or tasks waiting on its result) were reported as having "no in-flight agent". The Stop block now fires only when more dispatchable tasks remain than running unmapped agents, so at least one is uncovered however those agents are placed. The per-turn DISPATCH NOW line is unchanged. Replay of the 164 IDLE NEGLECT block entries in 14 days of transcripts: 58 had a live agent of the same session; of those, 34 no longer block and 24 still do. The 80 with no live agent are unaffected. Setting: `guards.idleNeglectProvenOnly` (default on).
+- **task-guard IDLE NEGLECT: a hung or unrelated agent no longer hides a pending task.** In the proven count, a running agent that names no `#<id>` stops counting as cover when its newest sign of life (launch, SendMessage resume, pending teammate message, output-file write) is older than `guards.idleNeglectAgentMaxAgeMin` (default 30; 0 = never), or when it was launched before the earliest uncovered task was created or last set pending/in_progress. Unknown age or task time = the agent still counts. The per-turn DISPATCH NOW line is unchanged.
+- **Noisy advisories: root-cause nudge and output-verify cut at the source.** Replayed 5,828 real `PostToolUseFailure` nudges from 30 days of transcripts through the hook: before, all 5,828 fired; after, 3,438 fire. The 2,390 removed were 362 expected exit-1 predicates (`grep` no match, `test`, `diff`, `git diff --quiet`, `command -v`, `pgrep`; only when the final statement or every `&&` link is a predicate and the exit code is exactly 1), 87 harness refusals (the command never ran), and 1,941 repeats inside one human turn (the text never changes between calls). New `lib/expected-failure.js` and `lib/turn-gate.js`; setting `guards.failureNudgeFilter` (default on, env `ANTIHALL_FAILURE_NUDGE_FILTER`, off = nudge on every failure again). `output-verify-guard` gets the same once-per-turn gate per distinct signal set (`guards.outputVerifyOncePerTurn`, default on): 3,183 historical advisories, 69 still fire on the staged hook (the zero-count and runner-detection fixes already removed 3,114), 57 with the gate. No blocking guard changed. Claude-only hooks (the Codex port has neither `PostToolUseFailure` nor this `PostToolUse` shape), so no Codex mirror.
+- **git-guard: git and gh beside a data heredoc are held to a per-subcommand flag allowlist.** A masked body written to `a.md` could be run on the same line by `git fetch --upload-pack='sh a.md' .` (also `--upload-p`, `--up`, `-u`), `gh repo clone o/r -- --upload-pack=...` or `git commit -F - --upload-pack=...`. Beside a data heredoc, git may now use only commit/tag/notes/merge (message and common flags), status/log/diff/show/add (read-only flags) and rev-parse, plus `--no-pager` and `-C <literal dir>`; fetch, push, pull, clone, remote, submodule and config are no longer allowed there, and `-c`/`--git-dir` are not either. gh may use only pr/issue/release create/edit/comment with listed flags and no `--` passthrough. Any other flag (abbreviations included) keeps every body scanned. A `git push` on the same command as a data heredoc now gets the body scanned again.
+- **git-guard: wrappers, positional-arg forwarding and `find -exec`.** `stdbuf`, `caffeinate`, `ionice`, `flock` (`flock FILE -c 'cmd'` is scanned as `sh -c`), `setsid`, `chrt`, `taskset` and `doas` are unwrapped with their own option grammars, directly and under xargs. A `sh -c`/`bash -c` script that forwards its positional args (`sh -c '$0 "$@"' git ...`, `bash -c '"$@"' _ git ...`) is scanned with the args spliced in (unquoted references word-split), and under xargs with a `--force` standing in for the stdin words. `find -exec`/`-execdir`/`-ok`/`-okdir` commands (`\;` or `+`) get the direct-run checks, including `-exec sh -c '...'`; a `find -exec git push ... {}` is blocked because a file name can be a `+ref` refspec. All of these forms were allowed before.
+- **git-guard: replacement strings, `flock -c` anywhere, GNU `parallel`, and git's real value grammar beside a data heredoc.** When an xargs `-I`/`-i`/`-J`/`--replace` string, find's `{}` or a parallel placeholder is the command word, the git subcommand or an argument before it (`xargs -I{} git {} --force`, `xargs -I{} sh -c 'git {} --force'`, `find . -exec git {} --force \;`), the command is unknown and is blocked when a force or remote-delete flag is visible; `xargs -I{} git push origin {}` is now blocked like any xargs-run push. `flock -c`/`--command[=]` before FILE (or `--command=` after it) is scanned as `sh -c`. GNU `parallel` gets the xargs checks (the command before `:::`/`::::` with the inputs appended, the joined line scanned as a shell line, `parallel ::: 'cmd'` inputs scanned as commands). Beside a data heredoc, `--format`/`--pretty`/`--unified`/`--abbrev`/`-U` take only an attached value (as in git), so `git log --abbrev --output=x` or `git diff --unified --ext-diff` no longer hides the unlisted flag; `-U<n>` is accepted on log, and tag's `--sort`/`--points-at`/`--format` take the next word. All of these forms were allowed before.
+- **git-guard: custom placeholders, stdin-fed subcommands and short-option clusters.** `{` splits a command only as a standalone word (blanks on both sides) and `}` only after `;`, `&` or a newline, so `parallel git {1} --force ::: push`, `xargs -I{x} git {x} --force` and parallel's `{.}`/`{/}`/`{#}` are no longer cut apart before the runner checks; `{ ...; }` groups, `function f { ...; }`, `coproc [NAME] { ...; }` and `time -p { ...; }` bodies still split. When xargs or parallel runs `git` with no subcommand word (redirections ignored), the subcommand comes from stdin: it is blocked if a force or remote-delete token (`--force`, `-f`, `+ref`, `--delete`, `:ref`) appears anywhere on the line, quoted text included and after quote removal (`echo 'push --force o m' | xargs git`, `echo push '-'f o m | xargs git`). When the script comes from stdin (`xargs -I{} sh -c '{}'`, `xargs sh -c '$0 "$@"'`, `| parallel` with no command, `| sh`, `| bash -s`), the line's quoted strings and echo/printf words are scanned as commands. Beside a data heredoc, log/diff/show accept only modelled short options (a lone listed letter, `-n N`, `-nN`, `-N`, `-M`/`-C`/`-U` with a number); clusters such as `-pn` or `-wn 3`, which git rejects only after `--output=FILE` has truncated FILE, keep the bodies scanned. A `$HOME/` write target is treated like `~/`. `git branch --merged | xargs git branch -d`, `ls | xargs git add`, `xargs -I{} git add {}`, `find . -exec git add {} +` and `parallel gzip ::: *.log` stay allowed.
+- Jev triage: the per-hash claim and the arrival drain lock now use the single lock primitive (`companion/lib/lock.js`) instead of hand-rolled O_EXCL markers; the lock gained `adopt(path, token)` so the detached drain worker takes over the lock its spawning hook acquired. Behaviour unchanged; the hygiene allowlist entry is gone.
+
+### Changed
+
+- Manifest: `plugin.json` now sets `termsOfServiceUrl` (the MIT LICENSE), so the plugin directory listing shows a terms link next to support and privacy. The Codex manifest already had it.
+
+- speculation-judge now sends the judge the latest user request (up to 2000 characters) and the
+  newest tool evidence from the transcript (up to about 6000 characters, secret-scrubbed) besides the
+  reply, so "verified with a tool" is visible to it; the prompt says what counts as supported. Its
+  block reason now uses the shared message shape. Measured precision 0.78–0.81, recall 1.0 (Haiku ×2,
+  Sonnet ×1), so it stays opt-in. PRIVACY.md and the plugin README privacy table list the added text.
+- **tasklist-guard reduced nag (`guards.tasklistNoTaskTools`, default `reduced`).** A session that is positively known to lack task tools (today: a Codex session whose transcript shows no task-tool evidence) gets a short nag (no TaskCreate demand: list the tasks in the reply, with the progress and history paths) that blocks at most once per session. A Claude session with no evidence keeps today's full TaskCreate demand: under `claude -p` the task tools are listed but deferred, so the tool list proves nothing. Evidence is read structurally from the transcript (a TaskCreate/TaskUpdate/TodoWrite tool_use, a `deferred_tools*` attachment naming TaskCreate, or a `task_reminder` attachment), never by substring, so the guard's own text cannot confirm itself. Values `full` (today's nag) and `skip`. Unset, `context.protocolLevel=full` makes the default `full`.
+- **Per-prompt Stop-nag budget (`guards.stopNagBudgetPerPrompt`, default 0 = off = today's behaviour).** task-guard and tasklist-guard consult `hooks/lib/stop-policy.js` just before they block; with N > 0 each blocks at most N times per user prompt (key: Stop payload `prompt_id`, else the last user entry uuid; no key = not applied), inside their existing session caps. Other Stop hooks and the PreToolUse guards are unchanged.
+- **Jev recommend notice is not sent in non-interactive runs (`jev.recommendNoticeHeadless`, default `false`).** `claude -p` exports `CLAUDE_CODE_ENTRYPOINT=sdk-cli` (verified live; interactive is `cli`); the notice is skipped for `sdk-*` entrypoints and the 30-day dedupe stamp is not written, so a headless run does not use up the interactive user's slot. JEV REVIEW DUE and the doctor line are unchanged; Codex is unchanged. Unset, `context.protocolLevel=full` makes the default `true`.
+
+## 0.200.0 (2026-10-04)
+
+### Highlights
+
+- **Less injected text.** In the deterministic injection profile (synthetic payloads, chars not tokens, not a per-run saving) the Claude main-session text per context epoch goes from 26,370 to 13,068 chars (49.6%), SessionStart hooks (Claude and Codex) from 16,562 to 10,740 (64.8%), and the SubagentStart text from 7,701 to 3,371 chars in a normal spawn (43.8%). One setting rolls it back byte for byte: `context.protocolLevel=full`.
+- **DevSwarm child workspaces** no longer get the COMMS OVERRIDE / SELF_CONTINUE / REMINDER block on every turn (keepalive re-send on change, after compaction and every N turns).
+- **Coordinator drift guard** (`coordinator-work-guard`) and **Bash edit parity**: the main thread is nudged, then blocked, when it keeps doing state-changing work inline; Bash writes are judged like the Edit tool.
+- **Codex guard parity:** edit-guard, api-guard and ship-it-guard run on `apply_patch`; command-guard's heavy-command gate and its block paths work on the Codex main thread (stderr reason).
+- **Codex wording:** Codex sessions get Codex vocabulary in task-tracker, verify-first (orchestration rules and model routing: spawn_agent plus gpt-5.6 frontier/workhorse/fast tiers) and codex-availability instead of `TaskCreate`, `run_in_background` and Haiku/Sonnet/Opus; Claude text is byte-identical. The compact core now says "re-sent at session start and after compaction"; `codex/README.md` documents the `context.protocolLevel=full` rollback.
+- **Jev fixes:** `speculationFramed` is switchable, `modelRouting` records disagreements, triage no longer poisons its cache, arrival labelling.
+- **Fewer false blocks:** tasklist-guard, command-guard (read-only forms, pipe sinks), git-guard-adjacent push forms, AGENT-ROUTING and the shared-tree note.
+- **Friendlier messages:** block messages lead with the path that works and give an absolute, shell-quoted skip command.
+- **Settings:** the plugin options screen is down to 14 options; everything else lives in `/anti-hall:settings`, existing values migrate.
+- **Benchmark tooling:** injection profile with goldens, strength-study harness, `scripts/hook-latency.js`.
+
+### Fixed
+
+- **Jev triage cache repair + prune.** Entries cached before this release as a permanent no-label verdict (bare `{_seq}`, no label) are dropped by `update` and `doctor --repair` (`repair-jev-triage-cache`; real no-label verdicts now carry `nl:true` and are kept) so those messages are re-triaged. Stale triage claim files, a dead arrival worker's lock and an abandoned arrival queue are pruned (throttled, nothing else touched).
+- Guard block messages are readable: one shared shape (`hooks/lib/block-message.js`: a leading icon, `anti-hall · <guard>: <what>`, then `Why:` / `Do instead:` / `Allowed here:` / `Override (only if the user explicitly asked):`) replaces the ALL-CAPS walls of text in edit-guard, command-guard, git-guard, coordinator-work-guard, model-routing-guard, tasklist-guard, task-guard, speculation-guard, silent-agent-nudge, inbox-read-guard and the DevSwarm parent/child gates. Every fact the model needs (override command, TTL, exempt paths, guard name) is kept; Codex still gets exit 2 + stderr and no Claude-only tool names. Fixed icon set: ⛔ blocked, ⚠️ warning, 💡 tip, ✅ done, ⬆️ update, ❌ error.
+- The rest of the messages use the same shape: installer and CLI error lines (install-codex, statusline installers, ingest/reaper/supervisor forced-dry-run notices, jev-setup, defect, auto-handover-config, devswarm warnings), the handover-resume, fable- and codex-availability notes, and every DevSwarm injection segment (`DEVSWARM <KIND>:` banners are now `<icon> anti-hall · devswarm-<kind>:`). One icon, no ALL-CAPS banners; every fact, command and override variable is kept. Statusline rendering is unchanged (it emits no warnings).
+- Codex: command-guard and edit-guard block text no longer tells the model Claude-only things (a scratchpad script, `run_in_background`, a Haiku subagent). A Codex payload now gets `spawn_agent` / `gpt-5.6-luna` wording and no scratchpad advice; Claude text is byte-identical (golden test). Exit 2 + stderr is unchanged (#94).
+- DevSwarm child workspaces no longer get the COMMS OVERRIDE / SELF_CONTINUE / REMINDER block on every delivered turn: `devswarm-child-turn.js` now uses the `guards.injectionRepeatEvery` keepalive (re-sent on change, after compaction, and every N turns), matching the parent hook. The Codex port runs the same hook.
+
+### Added
+
+- **Coordinator work window (`coordinator-work-guard`).** The main thread keeps doing state-changing work inline instead of delegating it. A new hook counts successful state-changing Bash calls (WORK) over a 10-minute window. It adds one advisory note when the count reaches 4, and blocks the 7th WORK call in the window. Nudge delivery: PostToolUse `additionalContext` was live-observed delivering on Claude Code CLI 2.1.238 and is not doc-confirmed (`docs/KB-claude-codex.md` §1.4); re-verify after a CLI upgrade; blocks are the enforcement.
+  - WORK is: state-changing git, a gh mutation, a Bash write into a repo file that is not a notes file, a script-file run, and inline `-c`/`-e` code that writes files or runs state-changing git/gh.
+  - Recovery commands (`git am|rebase|cherry-pick|revert --abort|--quit`, `git merge --abort`, `git stash pop|apply`) and loosely matched inline code are counted but never blocked. Precise inline git/gh/repo-write code is blockable.
+  - Script runs: scripts in the session scratchpad, a tmp dir outside any git work tree, or `.anti-hall` always count. A script written or modified this session counts, unless it sits in a package-manager or system location. A tracked, clean project script never counts. In a non-git project only a fresh or coordinator-writable script counts; an old one does not.
+  - Observe-only mode: set `guards.coordinatorWorkNudgeAt` and `guards.coordinatorWorkBlockAt` to 0 and the guard only records state. `guards.coordinatorWorkWindowMinutes` 0 turns it off. Four new settings: `guards.coordinatorWorkWindowMinutes`, `guards.coordinatorWorkNudgeAt`, `guards.coordinatorWorkBlockAt`, `guards.coordinatorWorkMaxEntries`.
+  - Skip key `coordinator-work-guard` (covered by the `all` skip). The guard is also off when `safety.commandGuard` is off or command-guard is skipped. Claude host only: Codex PostToolUse behaviour and Codex coordinator detection are unverified, so the hook is not registered on Codex.
+  - Metrics: per plugin version, the posted share `work / calls` and the attempted share `(work + blocks) / (calls + blocks)`, blocks, and a separate skipped-would-block counter. Counts survive pruning of old session files through a locked fold. `dispatch-report` and `doctor` show them.
+  - `scripts/coordinator-work-baseline.js <transcript.jsonl> [--from-line N] [--cwd DIR] [--json]` replays a session transcript through the classifier and window, to get a "before" number.
+  - Known gaps, all documented in `docs/GUIDE.md`:
+    - obfuscated or computed inline bodies are not detected, and loose inline matches are count-only;
+    - a binary compiled during the session (`go build -o /tmp/p`) is never counted;
+    - a script run counts when it is a tracked script you modified this session. That is by design;
+    - freshly generated, gitignored build launchers (`./build/install/app/bin/app`) count;
+    - a fresh script inside a git submodule counts, because `git status` from the parent fails on that path;
+    - deliberate mtime back-dating (`touch -t`, `touch -d`, `cp -p`) hides a fresh script;
+    - a fresh script dropped into a package-manager or system location is not counted, and neither is one in a fake managed directory made outside the repo (for example `~/x/node_modules/.bin/p.sh`);
+    - an old, untracked, non-coordinator-writable script inside a repo is not counted;
+    - text scripts under `~/Library` or `~/.claude/plugins` count if they are updated mid-session (an SDK install or plugin update);
+    - `just` and `task` runs, `git stash pop|apply` landing edits, and `cd "$X" && ...` with an unknown cwd are not counted;
+    - a trusted `./gen.sh > docs/api.md` stays blocked by the Bash edit parity check;
+    - the baseline resolves `$VAR` paths from its own environment, cannot classify direct-exec scripts that no longer exist, and judges freshness against current mtimes;
+    - scripts fed on stdin are not counted: `python3 - <<EOF`, `node <<EOF`, `sh <<EOF`, `echo … | sh`, `bash -s <<<`;
+    - wrapper forms hide the git/gh verb: `time -p git`, `env -C d git`, `gh -R o/r pr merge`, `gh api -XDELETE`;
+    - writes via `>|`, a clustered `cp -rt` (wrong target read), `install`, `dd of=`, `truncate`, `ln -sf` and `rm` are not judged as repo writes;
+    - `git checkout .` and `git checkout <file>` are not counted;
+    - with a plugin path containing `'`, the printed skip command itself counts as WORK.
+- **Bash edit parity (`guards.bashEditParity`, default on).** In the main thread, command-guard applies edit-guard's verdict to Bash writes (`sed -i`, `perl -i`, `tee`, `cp`, `mv`, `>`/`>>` redirects) into repo files. Notes files the coordinator may edit stay allowed. Bash writes are judged like the Edit tool: a repo file the Edit tool may not write (including gitignored outputs like build/ or .env) is blocked; write under .anti-hall/ or the scratchpad, or delegate. Claude host only: Codex coordinator detection is unverified.
+- **Codex: edit-guard, api-guard and ship-it-guard run on `apply_patch` edits** (Codex 0.134 or later). Codex reports a file edit as `tool_name: "apply_patch"` with the raw patch in `tool_input.command`; the new `hooks/lib/codex-apply-patch.js` ports Codex's own patch parser (it agreed with the real `apply_patch` binary on 74 of 74 valid and malformed fixtures) and the guards check every added, updated, deleted and moved-to path. On Codex the main thread is a payload without `agent_id`/`agent_type` (confirmed from captured codex-cli 0.160.0 payloads); a Codex process started from inside a Claude Code session is treated as a worker. edit-guard blocks a patch it cannot parse on the main thread; api-guard and ship-it-guard let it through. A Codex block also writes the reason to stderr: Codex reads stdout JSON only on exit 0 and ignores an exit 2 with empty stderr, which a live `codex exec` run showed (the stdout-only block let the edit through; with the stderr reason it was refused, and a subagent's edit still went through). ship-it-guard's plan-conformance advisory stays Claude-only. Shell writes (`cat >`, `tee`, `sed -i`) still bypass all three on Codex. Claude behavior is unchanged: 353 Claude-shaped test spawns of the three guards gave byte-identical exit code, stdout and stderr before and after.
+- Docs: `docs/KB-claude-codex.md` no longer says Codex PreToolUse rejects `additionalContext` (supported since rust-v0.129.0).
+- `settings.js judge on|off|status` (and the `/anti-hall:settings` skills on both platforms): one verb to switch the opt-in semantic speculation-judge (`jev.semanticJudge`) on or off. `on` checks whether an Anthropic key is visible to the CLI process (never prints it; a key stored as a Claude Code plugin option is visible to hooks only, so the CLI says "not visible", not "absent") and prints how to add one plus the cost estimate (about $0.0001–0.001 and 1–3 s per turn end, estimated, not measured; no precision eval yet). `status` and `on` also report which backend is the semantic judge right now: Jev (when `jev.enabled` and the `speculation` integration is `on`, speculation-guard already asks Jev and the paid API judge exits early, as before), the Anthropic API judge, or lexical-only. `doctor` prints one info line with the active backend, or the enable command while the judge is off. No new userConfig option and no default changed.
+- `scripts/hook-latency.js`: a pure-Node hook-latency benchmark. It runs every command in `hooks.json` the way Claude Code does with a realistic payload per scenario, and reports wall p50/p95, CPU (`process.resourceUsage()` via a probe) and the per-tool-call total per event (`--json` or a markdown table). First measured numbers are in `docs/HOOK-LATENCY.md`, and the README no longer says latency is unmeasured.
+- Docs: a GitHub Pages site built from `README.md` and `docs/*.md` by the dependency-free `tools/build-site.js`; `.github/workflows/pages.yml` deploys it on pushes to `main` only (needs Settings → Pages → Source: GitHub Actions once). The site root also serves `llms.txt`, `sitemap.xml` and `robots.txt`.
+- **Benchmark tooling (`evals/anti-hall/`).** `injection-profile.js` is a deterministic injection-size profile (synthetic payloads, fixed root) that compares two plugin trees per channel (session start, skill listing, subagent start, Stop nags) and gates the cost-trim ratios; frozen normalised hook-output goldens (`tests/fixtures/cost-trim/goldens/`) with a privacy gate for the fixtures. A strength-study harness (arms, interleaving, global spend cap, trace metrics, study analysis, compaction ladder, probes) for the B0-B4 studies. Tooling only; nothing ships in the hook path.
+
+
+### Changed
+
+- **The SessionStart verify-first core is now compact by default** (`context.protocolLevel=compact`). It keeps every load-bearing clause inline (Iron Law, rationalization table, the seven rules incl. the done/hedge/merge block, scope and autonomy, the skip-guard clause) and points at the new generated `PROTOCOL.md` for the full wording. The orchestration rules A-N still arrive in full at SessionStart. Method and figures (deterministic injection profile, `evals/anti-hall/injection-profile.js`, synthetic payloads, 64-char root; a size measure, not a per-run saving): the SessionStart hooks (Claude and Codex alike) send 10,740 chars instead of 16,562 (64.8%); the core hook alone goes from 8,947 to 3,125 chars. The skill-listing trim (previous entry) adds to the per-epoch total. The SubagentStart text is compact too: the same core (subagent header, `SKILLS: root-cause, deadly-loop`) plus a short `WORKER` block (no re-delegation, the assignment is the authorization, tight summary, SendMessage before finishing) instead of the DISCIPLINES block and teammate note: 7,701 to 3,371 chars in a normal spawn (43.8%), 7,947 to 3,617 in a DevSwarm child workspace (child mailbox note unchanged). Same method as above (a size measure, not a per-run saving). `context.protocolLevel=full` restores today's subagent text byte for byte. Codex has no SubagentStart hook and is unaffected.
+- **Experimental, opt-in: spawn-time delivery of the orchestration rules** (`context.orchFullOn=spawn`, env `ANTIHALL_ORCH_FULL_ON`; values `auto` (default, = `session`), `spawn`, `session`, `off`). With `spawn`, `verify-first-orch.js` sends `ORCH_COMPACT` and a per-session marker (`~/.anti-hall/orch-full/`) and the new `orch-on-spawn.js` (PreToolUse `Agent|Task|Workflow`) is meant to send the full text once per context epoch (O_EXCL claim, silent for subagents, re-armed by compaction/clear/resume; needs positive Claude evidence: `--host=claude` in the Claude `hooks.json` command, a `session_id`, a transcript canonically inside `<config>/projects/`). It is NOT the default because it is unverified live: that a PreToolUse context reaches the coordinator, the real transcript line shape and Workflow-spawn behaviour have not been probed. Codex, unconfirmed platforms and a DevSwarm Primary always get the full text at SessionStart.
+- **One-key rollback:** `context.protocolLevel=full` (env `ANTIHALL_PROTOCOL_LEVEL=full`) restores today's text on every channel byte for byte (pinned by the frozen goldens in `tests/fixtures/cost-trim/goldens/`). `docs/CONTRACT-1.0.md`'s "never silently shortened" sentence now names this deliberate exception. The legacy `eval/run.js` harness is frozen on `full`.
+- Tests: `hooks.json` command parsers in `manifest-drift`, `codex-jev-hooks-parity` and `node-hook-flags` accept trailing args (a non-match is now a failure, not a skip); `node-hook-flags` takes a per-script arg allowlist (`--audit`, and `--host=claude` only for `verify-first-orch.js` in the Claude `hooks.json`).
+
+- Third-party plugin-scanner (plugin-scanner 3.18.0) readiness: test fixtures no longer look like hardcoded secrets or dynamic code execution, the companion's ingest-daemon marker constant is renamed `REAPER_DAEMON_MARKER` (same value), and a comment no longer trips the eval heuristic. Added `plugins/anti-hall/SECURITY.md`, `plugins/anti-hall/.codexignore`, `.github/dependabot.yml` (github-actions, weekly) and a root `package-lock.json`.
+- Codex manifest: `interface.composerIcon` and `interface.logo` now point at `assets/icon.png` (the AH icon), and `interface.screenshots` lists two real captures (`assets/screenshot-claude-code-session.png`, `assets/screenshot-git-guard-blocks.png`), so plugin-scanner 3.18.0 scores the repo 100/100. The Claude manifest still has no `icon` key.
+- command-guard's anti-hall-plugin check reads only `.claude-plugin/plugin.json` when it walks up from a script (every anti-hall copy, the Codex install included, ships that manifest), and the Codex skills check the plugin root with `test -d .codex-plugin` instead of naming the manifest file. No hook or script names the Codex manifest file any more, so the image paths in it are not reachable from the hooks.
+
+- Background scratch-script runs allowed by `guards.allowBackgroundScratchScripts`, scripts written during the session, modified tracked scripts, other text-script runs outside package-manager/system locations, and inline -c/-e code that writes files or runs state-changing git/gh now count toward the main-thread work window. Running a tracked script you modified this session counts by design (the verify loop belongs to the subagent). The scratch hint now reserves scripts for read-only output capture. Patch application is for integration agents: the coordinator gets no exemption for `git am` or `git apply`, apart from the recovery commands above.
+- Contributing: day-to-day work lands on dev; main changes only through a pull request from dev.
+- Docs: `docs/CONTRACT-1.0.md` drafts the 1.0 contract, the settings, CLI verbs, hooks and state paths that semver will freeze.
+- **The plugin options screen is down to 14 options:** the manifest `userConfig` goes from 129 to 14: the 10 headline switches (the four `safety.*` guards, auto-handover on and threshold, `jev.enabled`, `devswarm.supervisorMode`, `guards.modelRouting`, `limitConserve.mode`) and the four API keys. Every other setting is reached through `/anti-hall:settings`, grouped by category (`settings.js show`, then `show --section <category>`).
+- **Values you already set keep working:** a non-default stored value is copied into `~/.anti-hall/settings.json` by the update or `doctor --repair` run of the first release that runs the migration (this one, for an install coming from 0.121.x), and every removed option stays a read-only source below the settings file (a stored plugin option or a still-exported `CLAUDE_PLUGIN_OPTION_*` resolves exactly as before; a value equal to the schema default counts as unset). Defaults are unchanged. An older plugin version resolves the same values, because the settings-file value wins.
+- **Safety options you set in `/config` survive their row leaving it:** the four locked options that lose their row (`guards.stashGuard`, `guards.editGuardAllow`, `guards.allowSubagentMailbox`, `devswarm.maintainerNotice.post`) are now copied too, as human-confirmed values (the same write `settings.js set <key> <value> --confirmed` makes), because a value stored in Claude Code's plugin options can only have come from the person's own `/config` choice. Before, they were skipped and stayed readable only from Claude Code's stored options, so an armed stash guard would have fallen back to off if those were ever dropped. The copy still happens only when the stored value is the current effective one, so no guard changes behaviour.
+- The settings skills, the system-briefing skills, the guide, `llms.txt`, `AGENTS.md`, `CONTRIBUTING.md` and the Codex README describe the grouped `show` flow and say that `/config` only has the headline switches, the safety guards and the keys.
+- Tests: 320 test files that read home-dir state (settings, caches, registry) without their own HOME now require `tests/helpers/isolate-home.js`, which points HOME/USERPROFILE at an empty temp dir, so they can no longer read the real `~/.anti-hall` or `~/.claude`.
+- **Skill descriptions are trigger-first and at most 200 characters** on Claude and Codex; the long text moved into a `When to use` section of each skill. Skill-listing injection in the profile: 9,808 to 2,328 chars (synthetic fixture; a size measure, not a per-run saving).
+- **Settings added this cycle:** `context.protocolLevel` (`compact` default, `full` = rollback), `context.orchFullOn` (`auto` default = `session`), `guards.coordinatorWorkWindowMinutes`, `guards.coordinatorWorkNudgeAt`, `guards.coordinatorWorkBlockAt`, `guards.coordinatorWorkMaxEntries`, `guards.bashEditParity`, `guards.sharedTreeAgentNote`. New hook: `orch-on-spawn.js` (PreToolUse `Agent|Task|Workflow`, inert unless `context.orchFullOn=spawn`). New generated file: `PROTOCOL.md` (from `tools/gen-protocol.js`).
+
+### Fixed
+
+- `coordinator-work-guard` no longer loads the 237 KB `command-guard.js` for plain read-only Bash commands (`git status`, `ls`, `cat | head`, ...): a closed-vocabulary pre-filter (`provablyNotWork` in `lib/coordinator-work.js`, differentially tested against `classifyBashWork`) answers "not work" first. PreToolUse CPU p50 for that hook dropped from 53.4 to 45.0 ms in an interleaved before/after run (load 220); other commands classify exactly as before. The Node compile cache was measured (0 to 6 percent CPU change) and not adopted; see `docs/HOOK-LATENCY.md`.
+- Jev audit snippets for `outputVerifyGuard` now keep the first 200 + last 400 characters (joined with ` … `, redacted as a whole, total <= 700) so the test-runner pass/fail summary at the end of the output is judgeable; other integrations' snippets are unchanged.
+
+- Jev: `speculationFramed` is now registered in `jev-setup.js` `KNOWN_INTEGRATIONS`, so `jev status` / `jev mode` can see and switch it (a registry test derives every call-site id and asserts it is in `KNOWN_INTEGRATIONS` and the settings schema). `modelRouting` decisions now record `wouldChange` plus an audit snippet whenever Jev's tier differs from the rule-based verdict (also in `on` mode, regardless of confidence), so `jev report` can count and label them.
+- command-guard: a pipe sink that decides an allow (the gcloud read carve-out and the bounded verification pipeline) now has to match the closed stdin-only grammar. `... | head /etc/passwd` and `... | tail -n +1 --pid=123` no longer pass as bounded sinks; `head|tail -c N` and `grep -m N -E PAT` stay accepted.
+
+- **A read-only `gh api graphql` call is no longer treated as a mutation.** A graphql call is heavy unless it is proven to be a read: one `query=` field with no `$`, backtick, leading `@` or `mutation`, and only read flags. The attached forms (`-fquery=...`, `--raw-field=query=...`, `-F<x>`, `--field=`) and `--input` now count as body flags on every endpoint; before, `-fquery=...`, `--raw-field=query=...` and `--input b.json` were not blocked.
+- **Block messages give an absolute, shell-quoted skip command.** The skip hint in edit-guard and the new guard is built from the plugin path, single-quoted, so a path with a space or `$` works. A relative path broke when the cwd was not the plugin root.
+- **Codex: command-guard's heavy-command gate now runs on the Codex main thread.** Coordinator detection keyed on `CLAUDE_CODE_ENTRYPOINT`, which Codex does not set, so on Codex the heavy-command gate never fired (a live main-thread `npm test` ran). `hooks/coordinator-detect.js` now recognises any Codex payload (a non-empty `turn_id` plus a non-empty `model`, or an `apply_patch` call) and treats it as the main thread unless it carries `agent_id`/`agent_type` (a spawned subagent) or the process inherited `CLAUDE_CODE_ENTRYPOINT` (Codex started from Claude Code as a worker). Partial or mistyped payloads fail open. Verified live with codex-cli 0.160.0: a main-thread `npm test` is refused and does not run, and a subagent's `npm test` runs. Claude Code behaviour is unchanged: 2,140 command-guard/edit-guard spawns from the existing tests gave identical exit codes, stdout and stderr before and after.
+- **Codex: command-guard and compact-declaration-guard now actually block.** On exit 2 Codex takes the block reason from stderr and ignores stdout JSON; with stderr empty it records a failed hook and runs the tool call (`codex-rs/hooks/src/events/pre_tool_use.rs`, rust-v0.160.0). Both guards blocked with stdout JSON only, so on Codex they blocked nothing: a live `codex exec` main thread ran an armed `git stash push`. Their block paths now go through the new `hooks/lib/emit-block.js`, which writes the same reason to stderr; the same run is now refused. A hygiene test fails on any exit-2 path in a Codex-registered hook that leaves stderr empty. Claude shows the JSON reason when there is one (Claude Code hooks reference, "Exit code 2"), and the stderr text is identical, so Claude output is unchanged.
+- Docs: `docs/CONTRACT-1.0.md` and the Codex parity notes no longer say Codex has no `SubagentStart` event. A captured codex-cli 0.160.0 payload has `hook_event_name: "SubagentStart"` with `agent_id`/`agent_type`. `verify-first-subagent` is still not registered on Codex.
+- **The root `package.json` / `package-lock.json` no longer read as `0.0.0`.** In the marketplace clone the root test-harness package was the first version file an agent found, so peers reported the installed plugin as "0.0.0 local dev build". Both files now carry the plugin version and a description pointing at `plugins/anti-hall/.claude-plugin/plugin.json`; `tests/hygiene/manifest-drift.test.js` pins `package.json`, both `package-lock.json` version fields and both plugin manifests to one version, and `RELEASING.md` lists them in the bump step. Nothing in the plugin reads the root `package.json`.
+- **The Codex installer now registers the PostToolUse `git-guard.js --audit` hook.** `install-codex.js` omitted it while the shipped `codex/hooks/hooks.json` template had it since the self-credit audit landed, so project/global installs never ran the audit; `tests/codex/codex-hook-parity.test.js` missed it because it compared hook basenames only, and now compares full normalized commands (flags and arguments kept) per event.
+- tasklist-guard no longer says "NO background agent is live" while agents run: it now reads running agents from the session transcript (as task-guard does) instead of the global 20-minute heartbeat, and an unknown count is treated as not stale.
+- **speculation-guard: lock adversarial regression corpus.** `tests/hooks/speculation-guard-regression.test.js` pins 67 adversarial and 19 evasion diagnoses (labelled, bounded, plan-worded, requirement-prefixed) plus 20 plain ones as must-block; test-only, no behaviour change.
+- command-guard false blocks on read-only forms (approved only when the WHOLE command is the read form, optionally piped into tail/head/wc/grep -c/-m; no substitution, `;`/`&&`/`||`/newline or other redirection): `firebase --version`/`-V` (and the same bare version flag on the other deploy/infra CLIs) passes; gcloud `describe`/`list`/`get`/`read` passes with a separated value for `--project/--region/--zone/--location/--limit/--freshness/--page-size/--sort-by` (any other separated flag value, `--format json` included, stays blocked); a plain push chain may end with `git ls-remote <configured-remote> [ref]` or `git rev-parse <ref>`, and a plain push may be piped through `| tail/head -N` mid-chain. Deploy/delete/push-of-anything-else verdicts are unchanged.
+- **AGENT-ROUTING no longer suggests Explore for prompts that tell the agent to write or mutate.** The `model-routing-guard` write-signal list missed instruction forms such as `save ... to <path>`, `clone <repo> into <path>`, `git format-patch`, `create new files` and `run the generator/tests/build`, while its ambiguous words (`build`, `release`, `tag`, `patch`, `fix`, `install`) also suppressed read-only prompts that only mention them as nouns. Those words now count only in instruction position, an explicit read-only statement ("report only", "do not edit", "read-only", "no edits") overrides the bare stems, and the instruction forms above always suppress.
+- **SHARED-TREE note no longer fires for spawns that work in a scratch dir.** `guards.sharedTreeAgentNote` now stays silent when the new spawn, or the running agent, establishes a scratch work location ("work in a scratch clone", or work in / cd into / cwd = a `/tmp`, `/private/tmp`, `/var/folders` or `scratchpad` path), since those spawns share no git tree. A bare mention of a scratch directory or tmp path, an in-place edit statement ("in the repo", "in place", "working copy", "checked-out files", "on main") or a negation ("not a scratch clone") still warns.
+- **The per-prompt task line no longer counts owner/external-blocked tasks.** `task-tracker` now reuses the Stop task-guard's `isOwnerBlocked` predicate: `open tasks: 2 (+1 blocked: external)`, and when only blocked tasks remain the "update or close them" instruction is dropped. Codex shares the same hook.
+- **"Running-agent count unknown" no longer fires for agents that launched and finished in the same session.** Root cause: an empty running list on a transcript larger than the 1.5MB tail was always treated as unprovable. `agent-scan` now makes one widened (12MB) read to prove the count, and when it still cannot, the line names the agent ids seen and the window it could check.
+- Canonical `ANTIHALL_SCAN_THROTTLE` and `ANTIHALL_SESSION_END_REAPER` env names (old `ANTI_HALL_*` names still read as deprecated aliases via schema `envAliases`; canonical wins); `devswarm.js help` now covers `inbox tick`, `primary`, `ready-check` and describes `ensure` as idempotent; settings-schema wording for `reset` confirmation and `fable-availability`/`codex-availability`; `KB-claude-code-hooks.md` and GUIDE now match the official hooks doc (over-cap hook output spills to a file with a 2,000-char preview, it is not truncated).
+- **A failed unread-summary refresh after an ack is now recorded.** `applyReadAckOps` swallowed a `summaries/<hash>.json` refresh failure; it stays fail-open but now logs `op: 'summary-refresh'` with the path and error to the bounded `cursor-log`.
+- **limit-conserve threshold now resolves at call time.** `isConserving()` read the module-load value when called without `home`, so a settings.json or env change after `require()` was ignored; it now always reads the unified settings store (the Codex status script shares this module).
+- **update/doctor no longer tell an idle Primary to arm a wake watcher that would exit at once.** `update.js` (`wakeMonitorPostUpdate`) and doctor's wake-monitor check advised "NOT live — arm it" while the watcher itself idle-skipped (no live non-held/non-ignored child), so the agent armed it, it exited, and every `inbox tick` kept saying `idle-skip`. All three now use one shared decision (`idleSkipApplies` in `companion/lib/devswarm-live-children.js`): when it applies they report "wake watcher not needed now (no live child workspaces; the mailbox tick covers you)" and add `idleSkip: true` to the status (existing fields unchanged); unknown liveness or `devswarm.wakeWatchIdleSkip` off keeps the arm advice.
+- Jev: triage no longer caches budget-skipped messages as a permanent no-label verdict (a bulk read used to fill the 500-entry cache with empty entries and evict real labels; attempted items are now an explicit cacheable null, unattempted ones retry). Concurrent triage of one message no longer calls Jev twice (per-hash O_EXCL claim, post-claim cache re-check, merge-on-write).
+- Jev: a direct message is now labelled at arrival, so the parent gate's cache-only question lookup finds a label while the message is still unread. Arrivals go through one bounded drain worker per HOME (capped queue file, O_EXCL lock stale after 30 s); a burst of 50 sends spawns one worker, not 50.
+
 ## 0.122.2 (2026-10-03)
 
 ### Fixed
@@ -17,6 +240,7 @@ the update.
 ### Added
 
 - **Shared-tree agent note:** the new setting `guards.sharedTreeAgentNote` (default on; env `ANTIHALL_SHARED_TREE_AGENT_NOTE`; settings file and env only) makes `swarm-guard` add one advisory sentence when a write-capable subagent is spawned without `isolation: "worktree"` while another write-capable agent is still running in the same working tree (two such agents can commit each other's uncommitted changes). Read-only agent types, isolated spawns and unknown agent state stay silent. Never blocks.
+
 
 ### Changed
 
@@ -46,6 +270,7 @@ the update.
 - **Pending child questions are harder to miss:** when a Primary has unanswered child questions, the per-prompt "own inbox" notice now starts with one line, `QUESTIONS AWAITING YOUR REPLY: N (oldest Xm) — <workspace title>: <first 80 characters of the question>`. The preview is cleaned of control characters and has secrets redacted; it is left out when the stored summary has no question text yet.
 - **`devswarm.js spawn` note:** when `--source` names a branch other than the default branch and the DevSwarm app already has a workspace (active or archived) on it, the result carries one line in `warnings` saying the app may show the new workspace nested under it. Output only; nothing else changes, and a failed lookup stays silent.
 - **Stale-agent stop note:** the new hook `stale-agent-stop-note` (PreToolUse `TaskStop`, advisory, never blocks) adds one line when TaskStop names an agent that was messaged or resumed after its last report and has not reported since. Setting `guards.staleAgentStopNote` (default on; env `ANTIHALL_STALE_AGENT_STOP_NOTE`; settings file and env only, no plugin option).
+
 
 ### Changed
 
@@ -100,6 +325,7 @@ the update.
 
 ## 0.121.7 (2026-10-03)
 
+
 ### Changed
 
 - `devswarm.js roster` prints a compact table of live workspaces with a "+N archived" line; `--all` lists archived ones and `--json` gives the full data as before.
@@ -130,6 +356,7 @@ the update.
 - **Handovers are never committed:** git-guard blocks a commit that includes a handover (setting `guards.handoverCommitGuard`, on by default). Doctor lists tracked or out-of-format handovers, and the archived-workspace message names the exact handover path.
 - The manifest declares the plugin icon. A code-owners file.
 
+
 ### Changed
 
 - New files named `CONTINUE-HERE.md` are blocked (existing ones stay editable). The deadly-loop state record moves under `.anti-hall/`.
@@ -144,6 +371,7 @@ the update.
 - **speculation-judge reads the reply being stopped:** the opt-in judge now sends the Stop payload's `last_assistant_message` to the model, not the previous transcript message. The transcript is only the fallback.
 - **claim-ledger judges the right message:** when the transcript is one message behind the Stop payload, the payload text is the reply, the transcript's last message counts as evidence, and `tools_this_turn` is the running tool count for this turn. The last message of a session is now judged too. When the transcript is up to date the record and its hash are unchanged.
 - **Jev turn pointer:** `speculation-guard` and `claim-ledger` no longer log a `turnRef` when the judged text came from the Stop payload, because the transcript's last line may be the previous turn. Nothing reads `turnRef` programmatically.
+
 
 ### Changed
 
@@ -160,6 +388,7 @@ the update.
 - **Speculation check:** it now judges the reply actually being sent rather than the previous message. That mix-up caused false blocks and let the real reply go unchecked. If the helper that reads the reply cannot load, the check falls back to reading the transcript instead of allowing silently.
 - **Mailbox watcher handoff line:** the "handed off to <version>" line now says when that version is only cached and not yet registered.
 
+
 ### Changed
 
 - **Plugin icon:** it is now 512x512 (under 256 KiB), so every shipped file is under the 256 KiB per-file limit.
@@ -173,6 +402,7 @@ the update.
 - **Stop-time open-task message:** it now names tasks that were created long before, which previously showed as "(subject unknown)". The name is recovered only from a real, paired task-creation record; otherwise it still shows "(subject unknown)".
 
 ## 0.121.2 (2026-10-02)
+
 
 ### Changed
 
@@ -191,6 +421,7 @@ the update.
 - **jev-setup `enable --fallback`.**
 - **Jev reporting:** every decision records the vendor that served it, and whether the backup was used. The report and the weekly scorecard break down per vendor. The Vercel per-request cost is read.
 
+
 ### Changed
 
 - **Jev keys are vendor-bound:** `jev_vercel_api_key` and `jev_typesafe_api_key`. The legacy `jev_api_key` is bound to the vendor in the home-only setting `jev.genericKeyVendor` (default vercel), which is changed with `jev-setup bind-generic-key`. A key is never sent to a vendor it was not entered for. **Behaviour change:** a generic key used with the typesafe transport is no longer sent until it is bound, or re-entered as the vendor key.
@@ -202,6 +433,7 @@ the update.
 - **Silent-agent warning:** agents launched far back in a long transcript are now seen. A queued follow-up message no longer counts as the agent having finished. A resumed agent is tracked from the time of the resume.
 
 ## 0.121.0 (2026-10-02)
+
 
 ### Changed
 
@@ -228,6 +460,7 @@ the update.
 - **git-guard.** No verdict changes. 181 heredoc-scanning bypass forms are pinned as must-stay-blocked. The substitution block message now explains that heredoc bodies are scanned as shell, and suggests the Write tool. The GUIDE documents the limitation.
 
 ## 0.120.14 (2026-10-02)
+
 
 ### Changed
 
@@ -279,6 +512,7 @@ the update.
 - Plugin icon (`plugins/anti-hall/.claude-plugin/icon.png`), also referenced from the Codex manifest interface (`composerIcon`, `logo`).
 - Short manifest description plus keywords in both manifests.
 - CONTRIBUTING, SECURITY and issue templates.
+
 
 ### Changed
 
@@ -342,6 +576,7 @@ the update.
 - `mesh history` re-reads consumed broadcasts without moving cursors.
 - `inbox messages --with-broadcasts`.
 
+
 ### Changed
 
 - After an update, `/reload-plugins` is the step to take. It was verified on 2026-10-01 to load new hooks and skills; restart only if a path still shows the old version.
@@ -356,6 +591,7 @@ the update.
 - command-guard allows a background direct-exec of an executable script in the session's own scratchpad, and names the allowed shapes. `git pull` and mutating fetches are labelled as state-changing remote operations.
 
 ## 0.120.7 (2026-10-01)
+
 
 ### Changed
 
@@ -612,6 +848,7 @@ against a reproducing test before the fix.
   commit -F - <<<'m'; ` repeated 20000 times) still paid an O(cmd.length) join +
   regex scan per segment. Both are now memoized per distinct command string
   alongside the literal array.
+
 
 ### Changed
 
@@ -895,6 +1132,7 @@ Jev logging:
 
 ## 0.115.0 (2026-09-26)
 
+
 ### Changed
 
 - **`doctor --prune-cache` warns that a cron or Monitor job naming a
@@ -1088,6 +1326,7 @@ Jev logging:
 - **command-guard gcloud token curl: canonical ASCII host only.** The raw URL host must be
   plain ASCII and equal to the parsed host, with no curl URL globbing (`{…}`, `[…]`).
   This refuses percent-encoded and full-width lookalike hosts.
+
 
 ### Changed
 
@@ -1346,6 +1585,7 @@ case blocks again (or more strictly than 0.110.0).
   `git-guard.js` keeps its own independent force-push/AI-credit checks, untouched. New
   setting `guards.allowPlainPush` (default on).
 
+
 ### Changed
 
 - **Roster wording: "no upstream" no longer reads as an error.** A workspace `spawn`
@@ -1591,6 +1831,7 @@ case blocks again (or more strictly than 0.110.0).
   `similar` step runs on the main thread. `backfill` writes history records and stays
   gated.
 
+
 ### Changed
 
 - **One row-eligibility projection (`companion/lib/row-eligibility.js`).** Every workspace row is now judged once for archived (anti-hall marker, DevSwarm app DB, active-list absence, with `archivedBy` provenance), held (`devswarm.heldPartitions`), ignored (archive-ignore marker) and live/busy/waiting-on-user. It has a memoized per-invocation context and a batch API. The parent Stop gate, the per-turn parent-inbox table (plus its archive-ready nudge and stale-registry filter), and the CLI's routing, `roster` and `diagnose` read it instead of combining the predicates one axis at a time. There is no behavior change.
@@ -1816,6 +2057,7 @@ case blocks again (or more strictly than 0.110.0).
   is kept as an additional secondary signal.
 - **New settings:** `guards.silentAgentNudge` (boolean, default `true`) and
   `guards.silentAgentNudgeMin` (minutes, default `20`), both also in `/config`.
+
 
 ### Changed
 
@@ -2182,6 +2424,7 @@ restore.
   `devswarm diagnose`/`devswarm healthcheck` as owner-held. `reap-orphans` refuses them
   even under `--apply` as an extra belt; the reaper already never auto-deletes anything
   (dry-run default, human-only, `--apply --max N` required).
+
 
 ### Changed
 

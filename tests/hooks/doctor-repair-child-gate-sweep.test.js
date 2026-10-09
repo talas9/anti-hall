@@ -9,6 +9,7 @@
 // ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS (default 14 days), wired into
 // `doctor --repair`'s runRepairs sweep list.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

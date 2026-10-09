@@ -93,3 +93,23 @@ jobs:
       - run: node --test --test-shard=${{ matrix.shard }}/${{ matrix.total }}
         env:
           ANTIHALL_REQUIRE_NX: '1'
+
+  # The ruleset on main requires this single check, so the shard layout can
+  # change without editing the ruleset.
+  tests-passed:
+    name: tests-passed
+    needs: [plan, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: require plan and every test shard to succeed
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          echo "plan: $PLAN_RESULT"
+          echo "test: $TEST_RESULT"
+          if [ "$PLAN_RESULT" != "success" ] || [ "$TEST_RESULT" != "success" ]; then
+            exit 1
+          fi

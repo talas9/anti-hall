@@ -312,16 +312,16 @@ test('Stop-side fire: over threshold and never fired -> fire directive once, lat
   try {
     const tp = writeUsage(h, 90);
     const r1 = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, env: KNOWN_WINDOW, expectJson: true });
-    assert.match(decision(r1) || '', /AUTO-HANDOVER REQUIRED/);
+    assert.match(decision(r1) || '', /write a handover now/);
     const latch = JSON.parse(fs.readFileSync(path.join(h.home, '.anti-hall', 'auto-handover', 's1.json'), 'utf8'));
     assert.strictEqual(latch.fired, true);
     assert.strictEqual(latch.firedVia, 'stop-pct');
     const r2 = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, env: KNOWN_WINDOW, expectJson: true });
-    assert.doesNotMatch(decision(r2) || '', /AUTO-HANDOVER REQUIRED/, 'fires once per arm');
+    assert.doesNotMatch(decision(r2) || '', /write a handover now/, 'fires once per arm');
     const r3 = testHook('auto-handover.js', { hook_event_name: 'UserPromptSubmit', session_id: SESSION, prompt: 'hi', cwd: process.cwd(), transcript_path: tp },
       { home: h.home, env: Object.assign({ ANTIHALL_EMIT_DEDUPE: '0' }, KNOWN_WINDOW), expectJson: true });
     const ctx = (r3.json && r3.json.hookSpecificOutput && r3.json.hookSpecificOutput.additionalContext) || '';
-    assert.doesNotMatch(ctx, /AUTO-HANDOVER REQUIRED/, 'UserPromptSubmit must not fire a second time');
+    assert.doesNotMatch(ctx, /write a handover now/, 'UserPromptSubmit must not fire a second time');
   } finally {
     h.cleanup();
   }
@@ -346,7 +346,7 @@ test('Stop-side fire: never below threshold, never for a subagent, fires even wi
     const tp = writeUsage(h, 90);
     assert.strictEqual(decision(testHook(HOOK, payload({ transcript_path: tp, agent_id: 'a1', agent_type: 'x' }), { home: h.home, env: KNOWN_WINDOW, expectJson: true })), null);
     settings.set('autoHandover', 'nag', false, { home: h.home });
-    assert.match(decision(testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, env: KNOWN_WINDOW, expectJson: true })) || '', /AUTO-HANDOVER REQUIRED/);
+    assert.match(decision(testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, env: KNOWN_WINDOW, expectJson: true })) || '', /write a handover now/);
   } finally {
     h.cleanup();
   }

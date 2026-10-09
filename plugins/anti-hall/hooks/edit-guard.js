@@ -49,8 +49,11 @@
 //   primitive: `ln -s hooks/command-guard.js CONTINUE-HERE.md` turns an allowed
 //   name into a write-through to any file on disk.
 //
-// Contract (Claude Code PreToolUse hook):
+// Contract (Claude Code PreToolUse hook; also Codex PreToolUse matcher apply_patch):
 //   stdin  : JSON { tool_name, tool_input: { file_path | notebook_path, ... } }
+//            Codex: { tool_name: "apply_patch", tool_input: { command: <patch> } } —
+//            every patch target is checked (lib/codex-apply-patch.js); an
+//            unparseable patch is BLOCKED on the main thread (fail closed).
 //   stdout : JSON { decision: "block", reason: "..." } | nothing
 //   exit 2 : to block (decision field); exit 0: allow
 //   Fail-open on ANY error (exit 0).
@@ -65,6 +68,8 @@ const path = require('path');
 const { ownScratchpadDirs, realpathOrSelf } = require('./lib/scratchpad.js');
 
 // Tools this guard applies to. Anything else passes through untouched.
+const { skipCommand } = require('./lib/skip-cmd.js');
+
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 // Default allow-globs: paths the coordinator is documented/expected to touch
@@ -652,118 +657,43 @@ function isPlanMode(payload) {
   return typeof m === 'string' && m.toLowerCase() === 'plan';
 }
 
-function main() {
-  // Settings switch safety.editGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('safety', 'editGuard')) return; } catch (_) { /* run */ }
-  // Read stdin first (fail-open on any read error).
-  let raw = '';
-  try {
-    raw = fs.readFileSync(0, 'utf8');
-  } catch (_) {
-    process.exit(0);
-  }
-
-  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
-  const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('edit-guard')) process.exit(0);
-
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (_) {
-    process.exit(0);
-  }
-
-  const toolName = payload && payload.tool_name;
-  if (!EDIT_TOOLS.has(toolName)) process.exit(0);
-
-  const toolInput = (payload && payload.tool_input) || {};
-  const filePath = toolName === 'NotebookEdit'
-    ? (toolInput.notebook_path || '')
-    : (toolInput.file_path || '');
-  const cwd = (payload && payload.cwd) || '';
-
-  // LAUNCHER DIR DENY — applies in BOTH coordinator AND subagent context
-  // (unlike everything else below, which is coordinator-only), because
-  // ~/.anti-hall/bin holds installed launcher scripts anti-hall manages
-  // itself (update / doctor --repair); overwriting one runs arbitrary code
-  // under a trusted name on the next invocation. Checked before the
-  // isCoordinator gate on purpose (R3A1-3).
-  if (resolvesIntoLauncherBinDir(filePath, cwd)) {
-    fs.writeSync(1, JSON.stringify({
-      decision: 'block',
-      reason:
-        'anti-hall edit-guard: BLOCKED. This ' + toolName + ' targets ' +
-        '~/.anti-hall/bin/, the stable launcher directory anti-hall installs ' +
-        'and manages itself (update / doctor --repair). Overwriting a launcher ' +
-        'file here would run arbitrary code under a trusted name on the next ' +
-        'invocation. Leave that directory alone; the rest of .anti-hall/** ' +
-        '(handovers, progress, history, state) stays writable as usual.',
-    }) + '\n');
-    process.exit(2);
-  }
-
-  // Only block in coordinator context (subagents pass through) past this point.
-  const { isCoordinator } = require('./coordinator-detect.js');
-  if (!isCoordinator(payload)) process.exit(0);
-
-  // Advisory inline-work nudge (devswarm.inlineWorkNudge, Primary only, once per
-  // session). Emitted only on an ALLOWED call (exit 0): a blocked call already
-  // carries its own redirect and must not print two JSON documents. Never blocks.
-  try {
-    const nudge = require('./lib/inline-work-nudge.js').evaluate(payload, process.env);
-    if (nudge) {
-      process.on('exit', (code) => {
-        if (code !== 0) return;
-        try {
-          fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: nudge.text } }) + '\n');
-          nudge.commit();
-        } catch (_) { /* fail-open */ }
-      });
-    }
-  } catch (_) { /* fail-open */ }
-
+// Verdict for ONE Edit-family target, coordinator context assumed (main() does
+// the launcher-dir deny and the isCoordinator gate first). Returns
+//   'allow' | 'block-self-edit' | 'block-handover' | 'block-handover-outside' | 'block'
+// so other hooks (command-guard's Bash edit parity) reuse the exact same rules.
+// The honesty checks (allowlistIsHonest) live in here; plan mode comes from payload.
+function editVerdict(filePath, cwd, payload) {
   // An allowlist match is honored ONLY when the path is honest (not a symlink /
   // reparse point, and not reached through one) — see allowlistIsHonest().
   // The project doc-edit allowlist file itself is never edited in the main
   // thread (it must not be able to authorize itself — and DEFAULT_ALLOW's
   // '.anti-hall/**' would otherwise let it through). Only while the feature is on.
   const projectEditAllow = projectEditAllowOn();
-  if (projectEditAllow && isEditAllowFileTarget(filePath, cwd)) {
-    fs.writeSync(1, JSON.stringify({
-      decision: 'block',
-      reason:
-        'EDIT-ALLOW SELF-EDIT: .anti-hall/edit-allow.json decides which files the main thread ' +
-        'may edit directly, so the main thread never edits it. Ask the user to change it (or ' +
-        'delegate the change to a subagent), then the user re-trusts it with `node ' +
-        '<plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`. (tool: ' + toolName + ')',
-    }) + '\n');
-    process.exit(2);
-  }
+  if (projectEditAllow && isEditAllowFileTarget(filePath, cwd)) return 'block-self-edit';
 
-  if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+  if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return 'allow';
   // Same check against the PROJECT ROOT when the payload cwd is not the root
   // (a subdirectory the shell cd'd into, a submodule, or a symlinked spelling
   // such as /tmp vs /private/tmp): '.anti-hall/**' etc. are root-relative, but
   // the cwd-relative path above reads '../.anti-hall/...' and misses them.
   // Additive only — never narrows the check above.
   const canon = canonicalUnderProjectRoot(filePath, cwd);
-  if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) process.exit(0);
+  if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) return 'allow';
 
   // Per-project doc-edit allowlist (trusted .anti-hall/edit-allow.json).
-  if (projectEditAllow && isProjectEditAllowed(filePath, cwd)) process.exit(0);
+  if (projectEditAllow && isProjectEditAllowed(filePath, cwd)) return 'allow';
 
   // HARNESS PLAN FILE (~/.claude/plans/*.md) — see isHarnessPlanFile() above.
   // Unconditional (not gated on permission_mode): the reported false positive
   // was the coordinator blocked revising this file OUTSIDE plan mode, which
   // the PLAN-MODE-NARROWED exemption further below does not reach.
-  if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+  if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return 'allow';
 
   // OWN-SESSION SCRATCHPAD EXEMPTION — see isOwnScratchpadPath()/
   // ownScratchpadDirs() above for the full rationale and anti-bypass scoping
   // (session-id + cwd + real uid computed path only, honesty-checked).
   if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) {
-    process.exit(0);
+    return 'allow';
   }
 
   // COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION — see isHandoverDoc()
@@ -794,7 +724,7 @@ function main() {
   // editable (never strand a user's file), a NEW one is redirected.
   if ((isHandoverDoc(filePath) || isLegacyContinueHere(filePath, cwd)) && isWithinCwd(filePath, cwd) && allowlistIsHonest(filePath, cwd)) {
     if (!cwd) {
-      process.exit(0); // ambiguous cwd -> old broad-allow behavior, unchanged
+      return 'allow'; // ambiguous cwd -> old broad-allow behavior, unchanged
     }
     let alreadyExists = false;
     try {
@@ -803,21 +733,18 @@ function main() {
       alreadyExists = true; // can't check -> ambiguous -> fail-open (old broad-allow behavior)
     }
     if (alreadyExists) {
-      process.exit(0); // legacy file at its existing location -> unaffected
+      return 'allow'; // legacy file at its existing location -> unaffected
     }
-    fs.writeSync(1, JSON.stringify({
-      decision: 'block',
-      reason:
-        'HANDOVER-LOCATION RULE: a NEW session-handover doc belongs under ' +
-        '.anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (see the `handover` skill, ' +
-        'which computes <date>/<session-id> for you) — not at this path. Write ' +
-        'handovers under .anti-hall/handovers/** (exempt); copy elsewhere afterwards ' +
-        'if the project wants one. If this is an intentional exception, honor it via ' +
-        "the existing skip mechanism — run 'node scripts/devswarm.js skip edit-guard' " +
-        '(~/.anti-hall/skip.json, 15-min TTL), then retry. Never skip on your own ' +
-        'initiative. (tool: ' + toolName + ')',
-    }) + '\n');
-    process.exit(2);
+    return 'block-handover';
+  }
+
+  // HANDOVER OUTSIDE THE PROJECT (owner-reported 2026-10-08): a handover-shaped
+  // .md that resolves OUTSIDE cwd (e.g. ~/.anti-hall/handovers/... under HOME)
+  // is never allowed (containment stays), but the generic delegation block sent
+  // the agent to a subagent/override. Return a specific redirect that names the
+  // exact project path instead (see handoverRedirectPath()).
+  if (isHandoverDoc(filePath) && cwd && !isWithinCwd(filePath, cwd) && !isPlanMode(payload)) {
+    return 'block-handover-outside';
   }
 
   // PLAN MODE (NARROWED): a plan-mode session is doing read-only planning, so
@@ -836,9 +763,42 @@ function main() {
   // guards against. permission_mode is harness-set (see isPlanMode), so it cannot
   // be spoofed via tool_input.
   if (isPlanMode(payload) && !isLikelySource(filePath) && allowlistIsHonest(filePath, cwd)) {
-    process.exit(0);
+    return 'allow';
   }
 
+  return 'block';
+}
+
+// True when filePath is a "notes" target the coordinator may write directly:
+// an allowlisted path, the project-root-canonical variant, its own scratchpad,
+// or the harness plan file (all honesty-checked). Used by command-guard's Bash
+// edit parity; unlike editVerdict it ignores plan mode, handover and edit-allow.
+function isNotesTarget(filePath, cwd, payload) {
+  if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return true;
+  const canon = canonicalUnderProjectRoot(filePath, cwd);
+  if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) return true;
+  if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) return true;
+  if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return true;
+  return false;
+}
+
+// handoverRedirectPath(cwd, payload) -> the canonical absolute handover path:
+// <project root>/.anti-hall/handovers/<YYYY-MM-DD>/<session_id>/HANDOVER.md.
+function handoverRedirectPath(cwd, payload) {
+  let root = cwd;
+  try { root = require('./lib/handover-find.js').sessionProjectRoot(cwd) || cwd; } catch (_) { root = cwd; }
+  const sid = String((payload && payload.session_id) || '<session-id>').replace(/[^A-Za-z0-9._-]/g, '_');
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const date = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  return path.join(root, '.anti-hall', 'handovers', date, sid, 'HANDOVER.md');
+}
+
+// The coordinator delegation block text for `toolLabel` (e.g. 'Edit', 'Write').
+const bm0 = () => require('./lib/block-message.js');
+function delegationReason(toolLabel, cwd, payload) {
+  const codexHost = require('./lib/host-text.js').isCodex(payload);
+  const SUB = codexHost ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent';
   // DevSwarm-aware wording switch (lazy-require, mirrors this file's pattern).
   let devswarmActive = false;
   try {
@@ -847,80 +807,199 @@ function main() {
     devswarmActive = false; // fail-open: treat as standalone/dormant
   }
 
-  // SKIP-GUARD OVERRIDE HINT (papercut fix): the block message never told the
-  // agent the sanctioned override exists, and the reason title's "DEVSWARM
-  // EDIT-DELEGATION RULE" mismatched the real skip key ("edit-guard"), which
-  // misled agents into writing a useless "devswarm-edit-delegation" key instead.
-  // Appended verbatim to ALL THREE reason branches below — the skip key is
-  // ALWAYS "edit-guard" regardless of DevSwarm role/activity.
-  const SKIP_HINT = ' If the user EXPLICITLY instructed you to make THIS edit ' +
-    "yourself, that is the documented override — run 'node scripts/devswarm.js " +
-    "skip edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min " +
-    'TTL), then retry. Never skip on your own initiative.';
-
-  // Points at the exempt locations so a coordinator's own notes/reports need no
-  // delegation; repo docs still need a subagent or a trusted edit-allow.json.
-  const NOTES_HINT = ' Session notes/reports can go in .anti-hall/history/** or the ' +
-    'scratchpad (exempt); repo docs need a subagent or a trusted .anti-hall/edit-allow.json.';
-
+  // Shared shape (lib/block-message.js). The skip key is ALWAYS "edit-guard"
+  // regardless of DevSwarm role/activity. Exempt locations are named so a
+  // coordinator's own notes/reports need no delegation. Codex wording: only the
+  // delegate noun and the (absent) scratchpad exemption differ.
+  const bm = require('./lib/block-message.js');
+  const override = skipCommand('edit-guard') + ' (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry';
+  const NOTES = codexHost
+    ? 'session notes/reports in .anti-hall/history/**; repo docs need ' + SUB + ' or a trusted .anti-hall/edit-allow.json'
+    : 'session notes/reports in .anti-hall/history/** or the scratchpad; repo docs need a subagent or a trusted .anti-hall/edit-allow.json';
+  const what = toolLabel + ' blocked: the ' + (devswarmActive ? 'orchestrator' : 'coordinator') + ' does not touch files directly.';
   let reason;
   if (devswarmActive) {
-    // Topology-aware noun: a child workspace is a sub-orchestrator, but the root
-    // session is the primary/main orchestrator — the old wording hardcoded
-    // "sub-orchestrator" even for the Primary. Fail-open: if devswarm-role
-    // require/throws, default to the current (sub-orchestrator) wording. This only
-    // changes the noun; the block decision is identical for both roles.
-    let childWorkspace = true; // default to current wording on any failure
+    // Topology-aware noun (child workspace = sub-orchestrator, root = primary);
+    // fail-open to the generic wording. The block decision is identical for both.
+    let childWorkspace = true;
     try {
       childWorkspace = require('./lib/devswarm-role.js').isChildWorkspace(process.env);
     } catch (_) {
-      childWorkspace = true; // fall back to current generic (sub-orchestrator) wording
+      childWorkspace = true;
     }
-    // PRIMARY redirect names the RIGHT primitive first. The Primary's top fan-out
-    // tier is a CHILD WORKSPACE (docs/KB-devswarm-hivecontrol.md §8.1-8.2); naming
-    // "spawn a subagent" as the only exit at the exact point the Primary is blocked
-    // from working is what drove Primaries to decompose feature-scale work into
-    // subagents instead of workspaces. No mechanical scale classifier is used (a
-    // false positive would break legitimate subagent use) — the reason states the
-    // CHOICE and lets the model classify. The CHILD wording is unchanged, and the
-    // BLOCK DECISION is identical for both roles (only the redirect text differs).
-    // The workspace recommendation is shared with the other Primary tier text
-    // (lib/primary-tier.js): a repo that forbids workspaces for real work (or
-    // devswarm.dispatchTierText off) gets the subagent-only advice. Fail-open
-    // to the subagent-only text. Advice text only; the block is unchanged.
+    // PRIMARY redirect names the RIGHT primitive first: the Primary's top fan-out
+    // tier is a CHILD WORKSPACE (docs/KB-devswarm-hivecontrol.md 8.1-8.2). No
+    // mechanical scale classifier (a false positive would break legitimate
+    // subagent use) - the text states the CHOICE. Fail-open to subagent-only text.
     let tierText = false;
     try { tierText = !childWorkspace && require('./lib/primary-tier.js').primaryTierTextOn(process.env, cwd); } catch (_) { tierText = false; }
-    reason = childWorkspace
-      ? ('DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
-         'directly in its workspace — spawn a subagent to make this edit and have it ' +
-         'report a tight summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')')
-      : !tierText
-      ? ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
-         'files directly — spawn a subagent to make this edit and have it report a tight ' +
-         'summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')')
-      : ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
-         'files directly. CHOOSE THE TIER: if this edit belongs to a workspace-scale ' +
-         'MATTER (a feature/fix/deploy — multi-step, own branch, own review), spin a ' +
-         'CHILD WORKSPACE and let it own the work: `node scripts/devswarm.js spawn ' +
-         '<branch> -p "<brief>"` (guard-exempt, run it inline). ALTERNATIVE, only for ' +
-         'genuinely small/scoped work (a one-file tweak, a mechanical transform): spawn ' +
-         'a subagent to make this edit and have it report a tight summary. Do NOT hand a ' +
-         'workspace-scale matter to a subagent.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')');
+    reason = bm.blockMessage({
+      guard: 'edit-guard',
+      what,
+      why: 'Raw edits in the main thread flood it; a worker returns a tight summary instead.',
+      instead: tierText
+        ? 'workspace-scale matter (feature/fix/deploy, own branch + review): `node scripts/devswarm.js spawn <branch> -p "<brief>"` (guard-exempt, run inline). Small scoped edit: spawn ' + SUB + ' and have it report a tight summary. Never hand a workspace-scale matter to ' + SUB + '.'
+        : 'spawn ' + SUB + ' to make this edit and have it report a tight summary.',
+      allowed: NOTES,
+      override,
+    });
   } else {
-    reason =
-      'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
-      'a subagent to make this edit and have it report a tight summary. The ' +
-      'coordinator synthesizes the summary; raw edits never happen in the main ' +
-      'thread.' + SKIP_HINT + ' (tool: ' + toolName + ')';
+    reason = bm.blockMessage({
+      guard: 'edit-guard',
+      what,
+      why: 'Raw edits never happen in the main thread; the coordinator synthesizes a summary.',
+      instead: 'spawn ' + SUB + ' to make this edit and have it report a tight summary.',
+      override,
+    });
   }
 
-  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-  process.exit(2);
+  return reason;
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: never block a turn due to a hook bug.
+function main() {
+  // Settings switch safety.editGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('safety', 'editGuard')) return; } catch (_) { /* run */ }
+  // Read stdin first (fail-open on any read error).
+  let raw = '';
+  try {
+    raw = fs.readFileSync(0, 'utf8');
+  } catch (_) {
+    process.exit(0);
+  }
+
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  const { isSkipped } = require('./skip-guard.js');
+  if (isSkipped('edit-guard')) process.exit(0);
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (_) {
+    process.exit(0);
+  }
+
+  const toolName = payload && payload.tool_name;
+  // Codex file edits arrive as tool_name "apply_patch" with the raw patch text in
+  // tool_input.command (see lib/codex-apply-patch.js). Claude never sends it.
+  const codexPatch = toolName === 'apply_patch';
+  if (!EDIT_TOOLS.has(toolName) && !codexPatch) process.exit(0);
+  // Codex honors exit 2 only with the reason on STDERR; it reads stdout JSON on
+  // exit 0 only (codex-rs/hooks/src/events/pre_tool_use.rs, rust-v0.160.0), so a
+  // stdout-only block is ignored there. Claude output is unchanged.
+  const block = (reason) => {
+    fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+    if (codexPatch) fs.writeSync(2, reason + '\n');
+    process.exit(2);
+  };
+
+  const toolInput = (payload && payload.tool_input) || {};
+  const cwd = (payload && payload.cwd) || '';
+  // One target for Claude tools; every Add/Update/Delete path and Move-to
+  // destination for a Codex patch, resolved against cwd the way Codex does.
+  let filePaths;
+  let patchError = null;
+  if (codexPatch) {
+    const { parseApplyPatch, patchTargetPaths } = require('./lib/codex-apply-patch.js');
+    const parsed = parseApplyPatch(toolInput.command);
+    filePaths = parsed.ok ? patchTargetPaths(parsed.files, cwd) : [];
+    if (!parsed.ok) patchError = parsed.error;
+  } else {
+    filePaths = [toolName === 'NotebookEdit'
+      ? (toolInput.notebook_path || '')
+      : (toolInput.file_path || '')];
+  }
+
+  // LAUNCHER DIR DENY — applies in BOTH coordinator AND subagent context
+  // (unlike everything else below, which is coordinator-only), because
+  // ~/.anti-hall/bin holds installed launcher scripts anti-hall manages
+  // itself (update / doctor --repair); overwriting one runs arbitrary code
+  // under a trusted name on the next invocation. Checked before the
+  // isCoordinator gate on purpose (R3A1-3).
+  if (filePaths.some((p) => resolvesIntoLauncherBinDir(p, cwd))) {
+    block(bm0().blockMessage({
+      guard: 'edit-guard',
+      what: toolName + ' into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.',
+      why: 'anti-hall installs and refreshes those files itself; overwriting one would run arbitrary code under a trusted name.',
+      instead: 'leave that directory alone.',
+      allowed: 'the rest of .anti-hall/** (handovers, progress, history, state).',
+    }));
+  }
+
+  // Only block in coordinator context (subagents pass through) past this point.
+  const { isCoordinator } = require('./coordinator-detect.js');
+  if (!isCoordinator(payload)) process.exit(0);
+
+  // A Codex patch this parser rejects fails CLOSED on the main thread: its
+  // targets cannot be checked, and Codex's own parser (which this one ports)
+  // rejects the same text, so the block costs nothing.
+  if (patchError !== null) {
+    block(bm0().blockMessage({
+      guard: 'edit-guard',
+      what: 'this apply_patch could not be parsed (' + patchError + '), so its targets cannot be checked.',
+      why: 'Edits in the main thread must be checked against the delegation rule.',
+      instead: 'send a well-formed patch (*** Begin Patch ... *** End Patch), or delegate the edit to ' + (require('./lib/host-text.js').isCodex(payload) ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent') + '.',
+    }));
+  }
+
+  // Advisory inline-work nudge (devswarm.inlineWorkNudge, Primary only, once per
+  // session). Emitted only on an ALLOWED call (exit 0): a blocked call already
+  // carries its own redirect and must not print two JSON documents. Never blocks.
+  try {
+    const nudge = require('./lib/inline-work-nudge.js').evaluate(payload, process.env);
+    if (nudge) {
+      process.on('exit', (code) => {
+        if (code !== 0) return;
+        try {
+          fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: nudge.text } }) + '\n');
+          nudge.commit();
+        } catch (_) { /* fail-open */ }
+      });
+    }
+  } catch (_) { /* fail-open */ }
+
+  for (const filePath of filePaths) {
+    const verdict = editVerdict(filePath, cwd, payload);
+    if (verdict === 'allow') continue;
+    if (verdict === 'block-self-edit') {
+      block(bm0().blockMessage({
+        guard: 'edit-guard',
+        what: toolName + ' of .anti-hall/edit-allow.json is blocked.',
+        why: 'That file decides which files the main thread may edit directly, so the main thread never edits it.',
+        instead: 'ask the user to change it (or delegate the change to ' + (require('./lib/host-text.js').isCodex(payload) ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent') + '), then the user re-trusts it with `node <plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`.',
+      }));
+    }
+    if (verdict === 'block-handover-outside') {
+      const right = handoverRedirectPath(cwd, payload);
+      block(bm0().blockMessage({
+        guard: 'edit-guard',
+        what: toolName + ' of a session-handover doc outside the project is blocked.',
+        why: 'Handovers live inside the project, where handover-resume finds them; this path is outside it.',
+        instead: 'write it yourself (the main thread may; no subagent, no override needed) at ' + right + '.',
+        allowed: right,
+      }));
+    }
+    if (verdict === 'block-handover') {
+      block(bm0().blockMessage({
+        guard: 'edit-guard',
+        what: toolName + ' of a new session-handover doc at this path is blocked.',
+        why: 'New handovers belong under .anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (the `handover` skill computes <date>/<session-id>).',
+        instead: 'write it under .anti-hall/handovers/** and copy elsewhere afterwards if the project wants one.',
+        allowed: '.anti-hall/handovers/**.',
+        override: skipCommand('edit-guard') + ' (~/.anti-hall/skip.json, 15-min TTL), then retry',
+      }));
+    }
+    block(delegationReason(toolName, cwd, payload));
+  }
+  process.exit(0);
 }
-process.exit(0);
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (_) {
+    // Fail-open: never block a turn due to a hook bug.
+  }
+  process.exit(0);
+}
+
+module.exports = { editVerdict, isNotesTarget, isAllowed, delegationReason, DEFAULT_ALLOW };

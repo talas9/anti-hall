@@ -284,7 +284,7 @@ function resolveCredential(cfg, role) {
   });
   if (r.rejected && !keyFileRejectionReported) {
     keyFileRejectionReported = true; // one line per process, never the content
-    try { process.stderr.write('anti-hall: ' + cred.rejectedNotice(r.rejected) + '\n'); } catch (_) { /* best-effort */ }
+    try { process.stderr.write('\u26A0\uFE0F anti-hall \u00B7 jev: ' + cred.rejectedNotice(r.rejected) + '\n'); } catch (_) { /* best-effort */ }
   }
   if (!r.key && r.diagnostic && !diagnosticsReported.has(r.diagnostic)) {
     diagnosticsReported.add(r.diagnostic);

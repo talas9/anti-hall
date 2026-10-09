@@ -27,6 +27,7 @@
 // scripts/devswarm.js (devswarm-mutant-kit.js) — the live file is proven
 // byte-identical before/after via assertLiveUntouched.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

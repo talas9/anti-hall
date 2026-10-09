@@ -56,10 +56,10 @@ function inboxCtx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 function segment(c, banner) {
-  return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
+  return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || '';
 }
 function tableRow(c, id) {
-  const t = segment(c, 'DEVSWARM WORKSPACES');
+  const t = segment(c, 'devswarm-workspaces');
   return t.split('\n').find((l) => l.startsWith('| ' + id + ' ')) || '';
 }
 
@@ -155,7 +155,7 @@ test('2. an urgent DIRECT renders the imperative STOP wording', () => {
   try {
     writeSharedSummary(h.home, { wsUrgent: { total: 1, cursor: 0, unread: 1, directUnread: 1, urgencyMax: 'urgent' } });
     const c = inboxCtx(testHook(PARENT_INBOX, inboxPayload(), { home: h.home, env: PRIMARY_ENV, expectJson: true }));
-    assert.match(segment(c, 'DEVSWARM URGENT INBOX'), /STOP and poke/);
+    assert.match(segment(c, 'devswarm-urgent-inbox'), /STOP and poke/);
   } finally { h.cleanup(); }
 });
 
@@ -173,10 +173,10 @@ test('7. four visibility cases: irrelevant broadcast / relevant broadcast / dire
     });
     const c = inboxCtx(testHook(PARENT_INBOX, inboxPayload(), { home: h.home, env: PRIMARY_ENV, expectJson: true }));
     // direct: standard tier (urgencyMax 'normal').
-    assert.ok(segment(c, 'DEVSWARM PARENT INBOX').includes('wsDirect'), `direct case; ctx=${c}`);
+    assert.ok(segment(c, 'devswarm-parent-inbox').includes('wsDirect'), `direct case; ctx=${c}`);
     // irrelevant + relevant broadcasts: both render via the SAME advisory
     // segment (no mechanical relevance classifier, D27) — the model judges.
-    const bc = segment(c, 'DEVSWARM BROADCAST');
+    const bc = segment(c, 'devswarm-broadcast');
     assert.ok(bc.includes('peer-irrelevant') && bc.includes('peer-relevant'), `both broadcasts surfaced advisory-only; bc=${bc}`);
     // urgent-broadcast: tagged loud, still inside the SAME advisory segment.
     assert.ok(bc.includes('[URGENT] peer-urgent'), `urgent broadcast tagged loud; bc=${bc}`);
@@ -209,7 +209,7 @@ test('3/4/5. broadcasts (plain, heartbeat-shaped, urgent) NEVER Stop-gate — th
     // Sanity: the inbox hook DOES surface these (advisory) — proves the data
     // was seeded correctly and is visible to the mesh projection.
     const inboxCtxOut = inboxCtx(testHook(PARENT_INBOX, inboxPayload(), { home: h.home, env: PRIMARY_ENV, expectJson: true }));
-    assert.ok(segment(inboxCtxOut, 'DEVSWARM BROADCAST'), `precondition: broadcasts must be visible to parent-inbox; ctx=${inboxCtxOut}`);
+    assert.ok(segment(inboxCtxOut, 'devswarm-broadcast'), `precondition: broadcasts must be visible to parent-inbox; ctx=${inboxCtxOut}`);
 
     // The gate, given the IDENTICAL home/repo state, must stay silent — no
     // descriptors, no own-unread, and broadcasts are structurally invisible
@@ -238,7 +238,7 @@ test('8a. corrupt summary.json fails open to "no data" in BOTH parent-gate and p
     // re-assertion (unconditional) — "fails open to no data" means no OTHER
     // segment appears, not that stdout is empty. See devswarm-parent-inbox.test.js.
     const irCtx = (ir.json && ir.json.hookSpecificOutput && ir.json.hookSpecificOutput.additionalContext) || '';
-    assert.ok(!/DEVSWARM PARENT INBOX|DEVSWARM WORKSPACES|DEVSWARM ARCHIVE-READY/.test(irCtx),
+    assert.ok(!/devswarm-parent-inbox|devswarm-workspaces|devswarm-archive-ready/.test(irCtx),
       `parent-inbox must fail open on a corrupt summary (override only); ctx=${irCtx}`);
 
     const gr = testHookRaw(PARENT_GATE, JSON.stringify(gatePayload()), { home: h.home, env: PRIMARY_ENV });

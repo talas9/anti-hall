@@ -16,6 +16,7 @@
 // Pure Node built-ins.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const os = require('os');

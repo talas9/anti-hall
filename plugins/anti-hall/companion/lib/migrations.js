@@ -485,9 +485,17 @@ function migrateJevIntegrationsSection(home) {
 // check runs again under the settings lock, together with "still unset".
 //
 // Scope: every pluginOption setting except the 10 headline keys (they keep their
-// rows), `locked` keys and `homeOnly` keys (safety/credential switches stay on
-// the legacy read tier, never copied), and the sensitive credential options
-// (not in the schema; never read from settings.json). A value equal to the
+// rows), `homeOnly` keys (credential switches, never read from /config at all),
+// and the sensitive credential options (not in the schema; never read from
+// settings.json). `locked` (safety) keys ARE copied, written with
+// `confirmed: true` — the same settings.set() call `settings.js set <key>
+// <value> --confirmed` makes; the lock persists no marker, it only gates the
+// write. A value stored in pluginConfigs can only have been set by the person
+// in /config, so it already IS a human-confirmed choice, and the guard below
+// still only copies it when it is the current effective value: the copy keeps
+// that choice alive after its row leaves the manifest (otherwise e.g. an armed
+// guards.stashGuard would fall back to its default `false`), and never changes
+// what any guard does today. A value equal to the
 // schema default is skipped (it is Claude Code's seeded default, not a choice);
 // a null schema default (jev.budget.usdPerDay/usdPerWeek/minCreditUsd) has no
 // default to equal, so any valid stored value counts as non-default.
@@ -503,7 +511,7 @@ function migrateLegacyPluginOptions(home, opts) {
   if (!opt) return { migrated, skipped, errors };
   try {
     for (const entry of schemaLib.allSettings()) {
-      if (!entry.pluginOption || entry.headline || entry.locked || entry.homeOnly) continue;
+      if (!entry.pluginOption || entry.headline || entry.homeOnly) continue;
       if (!Object.prototype.hasOwnProperty.call(opt, entry.pluginOption)) continue;
       try {
         const stored = opt[entry.pluginOption];
@@ -512,7 +520,7 @@ function migrateLegacyPluginOptions(home, opts) {
         if (!v.ok) continue;
         const guard = (store) => settingsLib.lookup(store[entry.section], entry.key) === undefined
           && settingsLib.get(entry.section, entry.key, undefined, o) === v.value;
-        const r = settingsLib.set(entry.section, entry.key, v.value, Object.assign({}, o, { guard }));
+        const r = settingsLib.set(entry.section, entry.key, v.value, Object.assign({}, o, { guard }, entry.locked ? { confirmed: true } : null));
         if (!r.ok) errors++; else if (r.skipped) skipped++; else migrated++;
       } catch (_) { errors++; }
     }
@@ -660,6 +668,43 @@ function runLegacyKeyOptInMigration(home, opts) {
   return Object.assign(base, { status: r.status, msg: r.msg });
 }
 
+// ---- jev-triage cache: drop poisoned no-label entries ---------------------
+// Before 0.200.0 the triage worker's budget-skipped messages were cached as a
+// bare {_seq} (no urgency/kind) -- a permanent "no label" verdict they never
+// earned, which also evicted real labels from the 500-entry ring. A REAL
+// no-label verdict is now written {_seq, nl:true}. So any entry with neither a
+// label nor `nl` is a poisoned old-shape entry: remove it (the cache is
+// disposable and re-derivable) so the message is re-triaged. Idempotent,
+// fail-open, never touches labelled or `nl` entries or any other file.
+// -> { id, action, status: 'fixed'|'skipped'|'failed', msg }
+function migrateJevTriageCache(home, opts) {
+  const base = { id: 'repair-jev-triage-cache', action: 'repair-jev-triage-cache' };
+  try {
+    const file = require('../../hooks/lib/jev-triage.js').cachePath(home);
+    let cache;
+    try { cache = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {
+      return Object.assign(base, { status: 'skipped', msg: 'no readable jev-triage cache — nothing to repair' });
+    }
+    if (!cache || typeof cache !== 'object' || Array.isArray(cache)) {
+      return Object.assign(base, { status: 'skipped', msg: 'jev-triage cache is not an object — left alone' });
+    }
+    const keep = {};
+    let poisoned = 0;
+    for (const [k, v] of Object.entries(cache)) {
+      const ok = v && typeof v === 'object' && (v.urgency || v.kind || v.nl === true);
+      if (ok) keep[k] = v; else poisoned++;
+    }
+    if (!poisoned) return Object.assign(base, { status: 'skipped', msg: 'nothing to repair' });
+    if (opts && opts.dryRun) return Object.assign(base, { status: 'skipped', msg: '[dry-run] would drop ' + poisoned + ' poisoned no-label cache entries' });
+    const tmp = file + '.tmp.' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(keep), 'utf8');
+    fs.renameSync(tmp, file);
+    return Object.assign(base, { status: 'fixed', msg: 'dropped ' + poisoned + ' poisoned no-label jev-triage cache entries (re-triaged on next read); kept ' + Object.keys(keep).length });
+  } catch (e) {
+    return Object.assign(base, { status: 'failed', msg: 'raised: ' + ((e && e.message) || String(e)) });
+  }
+}
+
 // runMigrations({ home, cwd, env, version, dryRun, devswarm, deadline, now }) -> [{id, action, status, msg}]
 // BUDGET: one run is bounded by runBudgetMs(env) (or an explicit `deadline`).
 // An entry that would START past the deadline is deferred whole (reported,
@@ -743,5 +788,5 @@ module.exports = {
   isRunComplete, incompleteReasons, recordRun, TERMINAL_LEFT_REASONS, runBudgetMs, DEFAULT_RUN_BUDGET_MS,
   markerPath, readMarkers, writeMarkers, isApplied, markApplied, pluginVersion,
   migrateSettingsFromLegacy, runSettingsMigration, migrateJevIntegrationsSection, migrateLegacyPluginOptions,
-  migrateLegacyKeyOptIn, runLegacyKeyOptInMigration,
+  migrateLegacyKeyOptIn, runLegacyKeyOptInMigration, migrateJevTriageCache,
 };

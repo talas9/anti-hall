@@ -1,7 +1,6 @@
 'use strict';
 // anti-hall :: doctor-devswarm — the DevSwarm liveness section of doctor.js as a
-// pure, testable check function (mirrors skills/flutter-debug/scripts/preflight.js
-// -> doctor.js §6b). Workaround for claude-code#39755.
+// pure, testable check function (called from doctor.js). Workaround for claude-code#39755.
 //
 // runChecks({home, env, fsi}) -> { active, results: [{status, message}] }.
 // Silent (active:false, no results) unless the supervisor is in play — either the
@@ -251,6 +250,13 @@ function wakeMonitorLiveCheck(watcherMod, watcherPath, home, env, cwd) {
   if (alive) {
     return { status: PASS, message: 'wake-monitor: LIVE for ' + identity.role + ' ' + identity.id + ' (pid ' + pid + ')' };
   }
+  if (identity.role === 'primary') {
+    let idleSkip = false;
+    try { idleSkip = require('./devswarm-live-children.js').idleSkipApplies(home, identity.cwd || cwd, { env }); } catch (_) { idleSkip = false; }
+    if (idleSkip) {
+      return { status: PASS, idleSkip: true, message: 'wake-monitor: wake watcher not needed now (no live child workspaces; the mailbox tick covers you) for ' + identity.role + ' ' + identity.id };
+    }
+  }
   return { status: WARN, message: 'wake-monitor: shipped but NOT live for ' + identity.role + ' ' + identity.id + ' — arm it: ' + armCmd + '.' };
 }
 
@@ -313,7 +319,7 @@ function resolveMarketplaceDir(env, home) {
 // marketplace clone, and would otherwise flag as "diverged" on every machine
 // with anti-hall active, since a running pid never matches across roots. The
 // real plugin tree otherwise has neither .git nor node_modules under it
-// (verified: plugins/anti-hall/ contains only .claude-plugin, .codex-plugin,
+// (verified: plugins/anti-hall/ contains only the two plugin manifest dirs,
 // .in_use (installed side only), agents, codex, companion, hooks, monitors,
 // README.md, scripts, skills, statusline) — those two are a defensive
 // exclusion for any install/clone that happens to carry one, not an expected

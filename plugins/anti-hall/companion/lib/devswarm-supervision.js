@@ -203,7 +203,7 @@ function jevText(notes) {
   return ' (Jev: ' + notes.map((n) => n.verdict + ' ' + Number(n.confidence).toFixed(2)).join('; ') + ')';
 }
 
-// strayingLine(entries, nameOf) -> 'DEVSWARM STRAYING: <title>: <reason>; …' (capped).
+// strayingLine(entries, nameOf) -> '⚠️ anti-hall · devswarm-straying: <title>: <reason>; …' (capped).
 const LINE_MAX_ENTRIES = 3;
 function strayingLine(entries, nameOf) {
   const parts = entries.slice(0, LINE_MAX_ENTRIES).map((e) => {
@@ -211,7 +211,7 @@ function strayingLine(entries, nameOf) {
     return title + ': step ' + e.step + ' ' + e.reason + jevText(e.jev);
   });
   const more = entries.length > LINE_MAX_ENTRIES ? ' (+' + (entries.length - LINE_MAX_ENTRIES) + ' more)' : '';
-  return 'DEVSWARM STRAYING: ' + parts.join('; ') + more
+  return '⚠️ anti-hall · devswarm-straying: ' + parts.join('; ') + more
     + ' — advisory (Jev notes are recommendations; your call); `devswarm.js correct <id>` sends the correction.';
 }
 

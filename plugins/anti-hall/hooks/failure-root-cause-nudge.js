@@ -2,8 +2,9 @@
 // anti-hall :: failure-root-cause-nudge (PostToolUseFailure, matcher Bash, ADVISORY ONLY)
 //
 // Fires when a Bash tool call fails (non-zero exit / tool-level error). The
-// event itself IS the "command exited non-zero" signal — no extra detection
-// logic is needed beyond confirming this fired for the Bash tool. Injects a
+// event is the "command exited non-zero" signal; the filter below only removes
+// the cases where non-zero is not a failure (expected predicate exits, harness
+// refusals) and repeats within one turn. Injects a
 // SHORT reminder pointing at the /anti-hall:root-cause skill: trace the
 // actual cause before patching, rather than guessing a fix from the symptom.
 //
@@ -14,6 +15,9 @@
 //
 // CONFIG (env):
 //   ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE=off  -> disable (fail-open exit 0)
+//   ANTIHALL_FAILURE_NUDGE_FILTER=off      -> nudge on EVERY non-zero exit again
+//     (default on: skip harness refusals + expected exit-1 predicates, and show
+//     the reminder once per turn — see lib/expected-failure.js, lib/turn-gate.js)
 // Escape hatch: ~/.anti-hall/skip.json {"failure-root-cause-nudge": <future-ts>}.
 //
 // FAIL-OPEN: any error -> exit 0, no block, no stderr noise, ever.
@@ -68,16 +72,38 @@ function main() {
   }
   if (!payload || payload.tool_name !== 'Bash') process.exit(0);
 
+  // v0.201 noise filter (guards.failureNudgeFilter, default on): stay silent when
+  // the "failure" is not one — a harness refusal (command never ran), or an
+  // expected exit 1 from a predicate (grep no-match, test, diff, ...) — and show
+  // the reminder at most once per turn (the text never changes between calls).
+  const errorText = typeof payload.error === 'string' ? payload.error : '';
+  if (settingsGet('guards', 'failureNudgeFilter') !== false) {
+    try {
+      const ef = require('./lib/expected-failure.js');
+      const cmdText = payload.tool_input && typeof payload.tool_input.command === 'string' ? payload.tool_input.command : '';
+      if (payload.is_interrupt === true) process.exit(0);
+      if (ef.isHarnessRefusal(errorText) || ef.isExpectedNonzero(cmdText, errorText)) process.exit(0);
+      if (!require('./lib/turn-gate.js').firstThisTurn({
+        sessionId: payload.session_id,
+        agentId: typeof payload.agent_id === 'string' ? payload.agent_id : '',
+        transcriptPath: payload.transcript_path,
+        key: 'failure-root-cause-nudge',
+      })) process.exit(0);
+    } catch (_) { /* fail-open: fall through and nudge */ }
+  }
+
   const cmd = payload.tool_input && typeof payload.tool_input.command === 'string'
     ? payload.tool_input.command
     : '';
   const shown = truncateCommand(cmd);
   const cmdPart = shown ? ' (`' + shown + '`)' : '';
 
-  const reason =
-    'anti-hall root-cause nudge: this command failed' + cmdPart + '. Before retrying ' +
-    'or patching, trace WHY it failed — see /anti-hall:root-cause — rather than ' +
-    'guessing a fix from the symptom.';
+  const reason = require('./lib/block-message.js').message({
+    kind: 'tip',
+    guard: 'root-cause',
+    what: 'this command failed' + cmdPart + '.',
+    instead: 'before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) rather than guessing a fix from the symptom.',
+  });
 
   const out = {
     hookSpecificOutput: {

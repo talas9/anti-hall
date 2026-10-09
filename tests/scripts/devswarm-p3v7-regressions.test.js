@@ -11,6 +11,7 @@
 // HERMETIC: every fixture HOME is a tmp dir; HOME/USERPROFILE are isolated; hook
 // subprocesses get HOME=<tmp> from spawn-hook.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -115,7 +116,7 @@ test('P1b the Primary\'s per-turn injection names a parked escalation and the re
     });
     assert.strictEqual(r.status, 0, r.stderr);
     const ctx = String(r.stdout);
-    assert.match(ctx, /ESCALATIONS NOT DELIVERED/, 'stdout=' + ctx.slice(0, 400));
+    assert.match(ctx, /devswarm-escalations: not delivered/, 'stdout=' + ctx.slice(0, 400));
     assert.match(ctx, /child-parked-inbox/);
     assert.match(ctx, /register-primary/);
   } finally { rm(home); }

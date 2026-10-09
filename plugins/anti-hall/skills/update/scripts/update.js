@@ -2297,8 +2297,11 @@ function settingsMigratePostUpdate(opts) {
     // appended so an ENABLED notice is printed on the settings-migrate line.
     let keyRow = null;
     try { keyRow = typeof lib.runLegacyKeyOptInMigration === 'function' ? lib.runLegacyKeyOptInMigration(home, {}) : null; } catch (_) { keyRow = null; }
+    let triageRow = null;
+    try { triageRow = typeof lib.migrateJevTriageCache === 'function' ? lib.migrateJevTriageCache(home, {}) : null; } catch (_) { triageRow = null; }
+    const triageNote = triageRow && triageRow.status !== 'skipped' ? ' | ' + triageRow.id + ' ' + triageRow.status + ': ' + triageRow.msg : '';
     const keyNote = keyRow && keyRow.status !== 'skipped' ? ' | legacy-key-opt-in ' + keyRow.status + ': ' + keyRow.msg : '';
-    return { attempted: true, status: r.status, detail: r.msg + keyNote };
+    return { attempted: true, status: r.status, detail: r.msg + keyNote + triageNote };
   } catch (e) {
     return { attempted: false, error: (e && e.message) || String(e), detail: 'settings migrate raised: ' + ((e && e.message) || String(e)) };
   }
@@ -2781,6 +2784,21 @@ function wakeMonitorPostUpdate(opts) {
         attempted: true, shipped: true, live: true, stateDirEnsured,
         detail: 'wake-monitor shipped + LIVE — a watcher already holds the lock for ' + identity.role + ' ' + identity.id + ' (pid ' + pid + ')',
       };
+    }
+    // Same idle-skip decision the watcher itself applies (one shared helper):
+    // arming would exit at once, so do not advise it. `live` keeps its meaning.
+    if (identity.role === 'primary') {
+      let idleSkip = false;
+      try {
+        idleSkip = require(path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-live-children.js'))
+          .idleSkipApplies(home, identity.cwd || cwd, { env, ...(o.liveChildOpts || {}) });
+      } catch (_) { idleSkip = false; }
+      if (idleSkip) {
+        return {
+          attempted: true, shipped: true, live: false, idleSkip: true, stateDirEnsured,
+          detail: 'wake-monitor shipped; wake watcher not needed now (no live child workspaces; the mailbox tick covers you) for ' + identity.role + ' ' + identity.id,
+        };
+      }
     }
     return {
       attempted: true, shipped: true, live: false, stateDirEnsured,
@@ -3567,7 +3585,9 @@ function main() {
 /** renderHuman(status, changelog) → readable summary block. */
 function renderHuman(status, changelog) {
   const lines = [];
-  lines.push('anti-hall update');
+  const failed = /\bSTOP\b|dirty|diverged|failed|error/i.test(String(status.action || ''));
+  lines.push((failed ? '\u274C' : status.updated ? '\u2B06\uFE0F' : '\u2705') + ' anti-hall \u00B7 update: ' +
+    (failed ? 'not updated' : status.updated ? 'updated to v' + (status.latest || '?') : 'already up to date'));
   lines.push('  installed: ' + (status.installed || '(unknown)'));
   lines.push('  latest:    ' + (status.latest || '(unknown)'));
   lines.push('  updated:   ' + status.updated + (status.cacheSynced ? ' (cache synced)' : ''));

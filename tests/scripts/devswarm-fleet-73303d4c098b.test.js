@@ -14,6 +14,7 @@
 //   DEVSWARM_MODULE=<path>/devswarm.orig.js            node --test 73303d4c098b.test.js
 //   DEVSWARM_MODULE=<path>/devswarm.73303d4c098b.js    node --test 73303d4c098b.test.js
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

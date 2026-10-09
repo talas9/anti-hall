@@ -166,7 +166,7 @@ test('BLOCK: no tasklist (4 edits, no task activity, no progress file)', () => {
     const tp = h.writeTranscript(edits(4));
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /tracked\s+NO\s+tasks/i);
+    assert.match(r.json.reason, /NO tasks tracked/);
   } finally { h.cleanup(); }
 });
 
@@ -263,7 +263,7 @@ test('BLOCK wording: a TaskGet "Task not found" result explains a reset task sto
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
     assert.match(r.json.reason, /task store was reset \(session restore\)/i);
     assert.match(r.json.reason, /recreate the open tasks with TaskCreate/i);
-    assert.ok(!/tracked\s+NO\s+tasks\./i.test(r.json.reason), `must not ALSO emit the generic wording; reason: ${r.json.reason}`);
+    assert.ok(!/NO tasks tracked\./.test(r.json.reason), `must not ALSO emit the generic wording; reason: ${r.json.reason}`);
   } finally { h.cleanup(); }
 });
 
@@ -279,7 +279,7 @@ test('quoted-text audit: a TaskGet result that merely QUOTES "Task not found" mi
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
     assert.ok(!/task store was reset/i.test(r.json.reason), `quoted phrase must not claim a reset; reason: ${r.json.reason}`);
-    assert.match(r.json.reason, /tracked\s+NO\s+tasks\./i);
+    assert.match(r.json.reason, /NO tasks tracked\./);
   } finally { h.cleanup(); }
 });
 
@@ -289,7 +289,7 @@ test('BLOCK wording: unchanged (generic "tracked NO tasks") when there is no res
     const tp = h.writeTranscript(edits(4));
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /tracked\s+NO\s+tasks\./i);
+    assert.match(r.json.reason, /NO tasks tracked\./);
     assert.ok(!/task store was reset/i.test(r.json.reason), `must not claim a reset with no evidence; reason: ${r.json.reason}`);
   } finally { h.cleanup(); }
 });
@@ -583,7 +583,7 @@ test('BLOCK: MULTIPLE in_progress + NO live agent (2 in_progress, fresh progress
       taskUpdate(1, 'in_progress'),
       taskUpdate(2, 'in_progress'),
     ]);
-    // No ~/.anti-hall/agents heartbeat => agentsRunning() false => the 2 in_progress
+    // No agent launched in the transcript => the 2 in_progress
     // are genuinely STALLED, so the block fires (new FIX-3 text, not the old serialize text).
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block (no live agent); stdout: ${r.stdout}`);
@@ -592,24 +592,77 @@ test('BLOCK: MULTIPLE in_progress + NO live agent (2 in_progress, fresh progress
   } finally { h.cleanup(); }
 });
 
-test('ALLOW: MULTIPLE in_progress WITH a live agent heartbeat — FIX 3 (parallel work is OK)', () => {
+// A background Agent launch in THIS transcript (real launch-result text) and its completion.
+function agentLaunchLines(tuid, agentId, description) {
+  const text = 'Async agent launched successfully. (This tool result is internal metadata.)\n' +
+    'agentId: ' + agentId + " (internal ID - do not mention to user. Use SendMessage with to: '" + agentId + "')\n" +
+    'The agent is working in the background. You will be notified automatically when it completes.\n' +
+    'output_file: /tmp/none/' + agentId + '.output\n';
+  return [
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: tuid, name: 'Agent', input: { description, prompt: 'do it', run_in_background: true } }] } },
+    { type: 'user', message: { role: 'user', content: [{ tool_use_id: tuid, type: 'tool_result', content: [{ type: 'text', text }] }] } },
+  ];
+}
+function agentDoneLine(agentId) {
+  return { type: 'queue-operation', operation: 'enqueue', content: '<task-notification>\n<task-id>' + agentId + '</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>' };
+}
+function twoInProgress() {
+  return [
+    ...edits(4),
+    ...taskCreate(1, 'task one', 'pending'),
+    ...taskCreate(2, 'task two', 'pending'),
+    taskUpdate(1, 'in_progress'),
+    taskUpdate(2, 'in_progress'),
+  ];
+}
+
+test('ALLOW: MULTIPLE in_progress WITH a running agent in the transcript — FIX 3 (parallel work is OK)', () => {
   const h = makeHome();
   try {
     writeProgress(h.home);
-    // Simulate a live background agent: a FRESH heartbeat under ~/.anti-hall/agents/.
+    const tp = h.writeTranscript([...agentLaunchLines('toolu_ag1', 'abcdef0123456789a', 'Audit one lane'), ...twoInProgress()]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r), `parallel work with a running agent must NOT block; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('ALLOW: running agent in the transcript while the global heartbeat is STALE (>20 min) — no "NO background agent is live"', () => {
+  const h = makeHome();
+  try {
+    writeProgress(h.home);
+    const agentsDir = path.join(h.antiHall, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'a1.json'), JSON.stringify({ ts: Date.now() - 3 * 60 * 60 * 1000 }), 'utf8');
+    const tp = h.writeTranscript([...agentLaunchLines('toolu_ag2', 'fedcba9876543210b', 'Long audit lane'), ...twoInProgress()]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r), `a running agent must not read as "no agent live"; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('BLOCK: the only agent has FINISHED (fresh global heartbeat from another session must not mask it)', () => {
+  const h = makeHome();
+  try {
+    writeProgress(h.home);
     const agentsDir = path.join(h.antiHall, 'agents');
     fs.mkdirSync(agentsDir, { recursive: true });
     fs.writeFileSync(path.join(agentsDir, 'a1.json'), JSON.stringify({ ts: Date.now() }), 'utf8');
-    const tp = h.writeTranscript([
-      ...edits(4),
-      ...taskCreate(1, 'task one', 'pending'),
-      ...taskCreate(2, 'task two', 'pending'),
-      taskUpdate(1, 'in_progress'),
-      taskUpdate(2, 'in_progress'),
-    ]);
+    const tp = h.writeTranscript([...agentLaunchLines('toolu_ag3', '0123456789abcdef0', 'Finished lane'), agentDoneLine('0123456789abcdef0'), ...twoInProgress()]);
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
-    // 2 in_progress is LEGITIMATE parallel work while an agent is live => no multi-in_progress block.
-    assert.ok(!isBlock(r), `parallel work with a live agent must NOT block; stdout: ${r.stdout}`);
+    assert.ok(isBlock(r), `genuinely stalled in_progress must still block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /in_progress but NO background agent is live|STALLED/i);
+  } finally { h.cleanup(); }
+});
+
+test('CODEX: Codex-shaped payload (turn_id) + Codex SubagentStart row + 2 in_progress -> no "NO background agent" block; Claude payload unchanged', () => {
+  const h = makeHome();
+  try {
+    writeProgress(h.home);
+    const codexRow = { type: 'event_msg', payload: { type: 'SubagentStart', agent_id: 'sub-synthetic-1' } };
+    const tp = h.writeTranscript([codexRow, ...twoInProgress()]);
+    const rc = testHook(HOOK, Object.assign(stopPayload(tp, h.home), { turn_id: 'turn-synthetic-1' }), { home: h.home });
+    assert.ok(!isBlock(rc), `Codex payload must fail open (unknown agent count); stdout: ${rc.stdout}`);
+    const rl = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(rl), `Claude payload with no scanned agent must still block; stdout: ${rl.stdout}`);
   } finally { h.cleanup(); }
 });
 
@@ -915,7 +968,7 @@ test('THREAD 5 ADVISORY: blocking session + no handover dir -> advisory appended
     const tp = h.writeTranscript(edits(4));
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /significant work this session and no handover exists/);
+    assert.match(r.json.reason, /no handover exists yet after significant work/);
     assert.match(r.json.reason, /consider \/anti-hall:handover before ending/);
   } finally { h.cleanup(); }
 });
@@ -987,7 +1040,7 @@ test('THREAD 7b STALENESS: handover older than the transcript -> stale advisory 
     const tp = h.writeTranscript(edits(4)); // written now -> newer than the handover
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /handover is STALE/);
+    assert.match(r.json.reason, /the saved handover is stale/);
     assert.match(r.json.reason, /refresh it before the user compacts/);
   } finally { h.cleanup(); }
 });
@@ -1003,7 +1056,7 @@ test('THREAD 7b STALENESS: handover newer than the transcript -> NOT stale, no a
     fs.writeFileSync(path.join(hdir, 'HANDOVER.md'), '# handover\n', 'utf8'); // written after -> newer
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.doesNotMatch(r.json.reason, /handover is STALE/);
+    assert.doesNotMatch(r.json.reason, /the saved handover is stale/);
   } finally { h.cleanup(); }
 });
 
@@ -1030,7 +1083,7 @@ test('THREAD 7b STALENESS: transcript entries WITHOUT timestamps -> silent (neve
     const tp = h.writeTranscript(noTs);
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.doesNotMatch(r.json.reason, /handover is STALE/);
+    assert.doesNotMatch(r.json.reason, /the saved handover is stale/);
   } finally { h.cleanup(); }
 });
 
@@ -1049,12 +1102,12 @@ test('THREAD 7b STALENESS: capped — does not repeat once already warned this s
     const tp1 = h.writeTranscript(edits(4));
     const r1 = testHook(HOOK, stopPayload(tp1, h.home, session), { home: h.home });
     assert.ok(isBlock(r1), `first block expected; stdout: ${r1.stdout}`);
-    assert.match(r1.json.reason, /handover is STALE/);
+    assert.match(r1.json.reason, /the saved handover is stale/);
 
     const tp2 = h.writeTranscript(edits(7)); // different workBucket (floor(n/3)) -> new dedup signal // new signal -> re-blocks
     const r2 = testHook(HOOK, stopPayload(tp2, h.home, session), { home: h.home });
     assert.ok(isBlock(r2), `second block expected on a new signal; stdout: ${r2.stdout}`);
-    assert.doesNotMatch(r2.json.reason, /handover is STALE/,
+    assert.doesNotMatch(r2.json.reason, /the saved handover is stale/,
       'staleness advisory must not repeat once already warned this session');
   } finally { h.cleanup(); }
 });
@@ -1501,7 +1554,7 @@ test('SIGNATURE-ACK: acking the exact hash signature silences it even when re-de
 
     const r1 = testHook(HOOK, p, { home: h.home });
     assert.ok(isBlock(r1), `1st should block; stdout: ${r1.stdout}`);
-    assert.match(r1.json.reason, /ack it for the rest of this session/, 'reason must carry the ack hint');
+    assert.match(r1.json.reason, /Override \(only if the user explicitly confirmed/, 'reason must carry the ack hint');
 
     const stateFile = path.join(h.home, '.anti-hall', 'tasklist-guard-state-t.json');
     const hash = JSON.parse(fs.readFileSync(stateFile, 'utf8')).hash;
@@ -1653,7 +1706,7 @@ test('BLOCK text: history ledger is append-only via Edit or >>, never Write, exa
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
     assert.ok(r.json.reason.includes(historyPath(h.home)), 'names the exact history file');
-    assert.match(r.json.reason, /APPEND with the Edit tool or a one-line `>>`, NEVER the Write tool/);
+    assert.match(r.json.reason, /append with the Edit tool or a one-line `>>`, never the Write tool/);
   } finally { h.cleanup(); }
 });
 
@@ -1694,5 +1747,19 @@ test('STABLE header: a just-updated progress file passes (no header demand)', ()
     writeProgress(h.home, Date.now() + 5000, session);
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(!isBlock(r), `fresh progress must allow; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('BLOCK (bypass probe): a STALE heartbeat file and no agent in the transcript still read as "no agent live"', () => {
+  const h = makeHome();
+  try {
+    writeProgress(h.home);
+    const agentsDir = path.join(h.antiHall, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'a1.json'), JSON.stringify({ ts: Date.now() - 3 * 60 * 60 * 1000 }), 'utf8');
+    const tp = h.writeTranscript([...twoInProgress()]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `no live agent must still block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason || '', /NO background agent is live/);
   } finally { h.cleanup(); }
 });

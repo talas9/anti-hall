@@ -85,7 +85,7 @@ test('doctor: a statusline spawn killed by contention timeout (SIGTERM/status=nu
     // The overall verdict must not be dragged down to FAIL by this one
     // contention-timeout WARN — that is the actual bug this fix closes.
     assert.strictEqual(r.code, 0, 'a contention-timed-out statusline spawn must not fail the whole doctor run:\n' + r.out);
-    assert.match(r.out, /anti-hall ACTIVE/, r.out);
+    assert.match(r.out, /doctor: active/, r.out);
   } finally {
     cleanup();
     try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}

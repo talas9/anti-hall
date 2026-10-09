@@ -9,6 +9,7 @@
 // anti-hall's own `archive` verb is never auto-restored. Fixture app DB in
 // tmpdir, isolated HOME; the real DB/store is never touched.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

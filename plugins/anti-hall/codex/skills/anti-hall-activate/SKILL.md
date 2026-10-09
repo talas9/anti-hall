@@ -5,6 +5,10 @@ description: Idempotent Codex setup for anti-hall. Use when the user asks to act
 
 # anti-hall activate for Codex
 
+## When to use
+
+Idempotent Codex setup for anti-hall. Use when the user asks to activate anti-hall, set it up for Codex, or install the Codex hooks.
+
 Activation for Codex installs the supported Codex hook subset and writes an advisory sentinel. It does not touch Claude Code settings.
 
 ## Resolve the plugin root
@@ -19,7 +23,7 @@ root from that path before running anything below:
 ```bash
 # SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 1. Install project-local Codex hooks:
@@ -52,7 +56,7 @@ Codex limitations after activation:
 
 - shell guards are hard hooks
 - session/prompt/stop nudges are hooks
-- edit-time `api-guard` and `ship-it-guard` are not hard hooks in Codex today
+- edit-time `edit-guard`, `api-guard` and `ship-it-guard` (existence gate) are hard hooks on `apply_patch` edits (Codex 0.134+) and on shell writes whose target is literal in the command; a target in a variable, a glob or a script is not seen
 - subagent lifecycle hooks are not available in Codex today
 
 Use `anti-hall-doctor` to inspect the active state.

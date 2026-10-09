@@ -42,6 +42,7 @@ const EXPOSED_HOOKS = {
   'dispatch-tier.js': 'readTail, 1.5 MB',
   'limit-conserve-inject.js': 'emit-dedupe shouldEmit, up to a 4 MB tail',
   'edit-guard.js': 'inline-work-nudge readTail, 1.5 MB (DevSwarm Primary past its edit threshold)',
+  'orch-on-spawn.js': 'seen-scan of the transcript, 256 KB tail widened to 4 MB (first spawn per epoch)',
   'precompact-snapshot.js': 'readTail, 1.5 MB',
   'silent-agent-nudge.js': 'agent-scan over a 64 MB window',
   'stale-agent-stop-note.js': 'agent-scan over a 64 MB window',

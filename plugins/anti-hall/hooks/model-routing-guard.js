@@ -78,7 +78,25 @@ const RESEARCH_RE =
 // bounded corpus (same RESEARCH_RE approach: raw, case-insensitive, \b-anchored).
 // Prefix stems (modif, migrat, refactor, implement) match common inflections.
 const WRITE_RE =
-  /\b(write|edit|modif|commit|push|tag|release|bump|changelog|create\s+(?:a\s+|the\s+)?file|apply|patch|build|deploy|install|migrat|refactor|implement|fix)\b/i;
+  /\b(write|edit|modif|commit|push|changelog|create\s+(?:an?\s+|the\s+|new\s+)?files?|migrat|refactor|implement)\b/i;
+
+// Ambiguous stems (also nouns: "the build", "release tag", "patch notes", "fixes") count
+// as write signals only in INSTRUCTION position: at the start of a line/sentence or
+// after then/and/also/please/to ("Fix the bug", "...then build it", "and install deps").
+const WRITE_IMPERATIVE_RE =
+  /(?:^|[.;:!?]\s+|\b(?:then|and|also|please|to)\s+)(?:tag|release|bump|apply|patch|build|deploy|install|fix)\b/im;
+
+// Imperative/object forms a bare word would over-match ("find where save is handled",
+// "the clone logic", "places that run the generator" are read-only): save ... to <path>,
+// clone <repo> into/to <path>, git clone / git format-patch, or run the generator/
+// tests/build as an instruction (sentence start, "then", "and").
+const WRITE_PHRASE_RE =
+  /\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch)\b|(?:^|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b/im;
+
+// Explicit read-only statements. They override the ambiguous/bare WRITE_RE and
+// imperative stems, but NOT WRITE_PHRASE_RE (saving a report file is still a write).
+const READONLY_OVERRIDE_RE =
+  /\b(?:report\s+only|read[- ]?only|(?:do\s+not|don'?t|never)\s+(?:edit|modify|write|change|commit)|no\s+(?:edits|changes|writes))\b/i;
 
 // Mechanical signals -> haiku (execution-only). Multi-word phrases are checked as
 // adjacent tokens after tokenization (see hasToken / hasPhrase).
@@ -289,12 +307,13 @@ function handoverDelegationAdvisory(payload, corpus) {
   } catch (_) {
     return; // can't persist the cap -> fail-open, don't advise uncapped
   }
-  advise(
-    'HANDOVER-DELEGATION (advisory): this spawn looks like it is being asked to write/prepare ' +
-    'a session handover. The handover must be authored by the session holding the memory — ' +
-    'invoke the handover skill yourself, do not delegate the writing. A subagent never lived ' +
-    'this session, so its reconstruction loses decision/trial fidelity.'
-  );
+  advise(bmsg.message({
+    kind: 'tip',
+    guard: 'handover',
+    what: 'this spawn looks like it writes a session handover.',
+    why: 'A subagent never lived this session, so its reconstruction loses decision/trial fidelity.',
+    instead: 'invoke the handover skill yourself in the session that holds the memory.',
+  }));
 }
 
 // JEV (opt-in, default mode SHADOW — see lib/jev-assist.js). Consulted ONLY on
@@ -333,6 +352,7 @@ function consultModelRoutingJev(corpus, payload) {
       trust: 'relax-block',
       baseline: true,
       judge: (answer) => answer === 'mechanical',
+      recordDisagreement: true, // log would-change (+ audit snippet) whenever Jev's tier differs from the rule-based verdict
       budgetMs: 1200,
       sessionId: payload && payload.session_id != null ? String(payload.session_id) : undefined,
     });
@@ -344,6 +364,10 @@ function consultModelRoutingJev(corpus, payload) {
 
 // Advisory: nested hookSpecificOutput schema (KB §1.4, verify-first.js pattern).
 // fs.writeSync(1, …) is synchronous so exit cannot race an async pipe flush.
+const bmsg = require('./lib/block-message.js');
+// tip(what, instead, why) -> advisory text in the shared shape.
+const tip = (what, instead, why) => bmsg.message({ kind: 'warn', guard: 'model-routing', what, why, instead });
+
 function advise(additionalContext) {
   const out = {
     hookSpecificOutput: {
@@ -398,8 +422,12 @@ function main() {
   // A brief that merely mentions updating something else does not match.
   try {
     if (require('./lib/settings.js').enabled('guards', 'updateInSession') && runsAntiHallUpdate(corpus)) {
-      block('anti-hall update must run in the main session (it runs migrations; the main session judges the result): ' +
-        'run `node <path>/update.js …` directly, not via a subagent.');
+      block(bmsg.blockMessage({
+        guard: 'model-routing-guard',
+        what: 'a subagent spawn that runs the anti-hall update is blocked.',
+        why: 'update.js runs migrations and the main session must judge the result.',
+        instead: 'run `node <path>/update.js ...` directly in the main session.',
+      }));
     }
   } catch (_) { /* fail-open */ }
 
@@ -461,22 +489,22 @@ function main() {
   if (deployFloor !== 'off' && isDeployShaped(corpus)) {
     const floor = MODEL_RANK[deployFloor] ? deployFloor : 'sonnet';
     if (modelOmitted) {
-      advise(
-        'MODEL-ROUTING (advisory, deploy/migration/secret-shaped): this spawn sets no ' +
-        "explicit model. Deploys, migrations and secret/credential work need at least " +
-        "model:'" + floor + "' — never haiku (auth/secret edge cases get mishandled)."
-      );
+      advise(tip(
+        'deploy/migration/secret-shaped spawn sets no explicit model.',
+        "set model:'" + floor + "' or higher, never haiku.",
+        'Auth/secret edge cases get mishandled by a cheap model.'
+      ));
     }
     if (MODEL_RANK[model] && MODEL_RANK[model] < MODEL_RANK[floor]) {
-      advise(
-        "MODEL-ROUTING (advisory, deploy/migration/secret-shaped): this spawn runs on '" +
-        model + "'. Deploys, migrations and secret/credential work need at least " +
-        "model:'" + floor + "' (auth/secret edge cases get mishandled by a cheap model)." +
-        // Keep Row 4's planning-shaped note when it would also have fired.
-        (model === 'haiku' && !readOnlyMechanical(corpus) && PLANNING_INTENT_RE.test(stripCodeSpans(corpus))
-          ? ' It also looks planning-shaped (architecture/design/plan/brainstorm/deep review) — consider opus or fable for deeper reasoning.'
-          : '')
-      );
+      advise(tip(
+        "deploy/migration/secret-shaped spawn runs on '" + model + "'.",
+        "use model:'" + floor + "' or higher." +
+          // Keep Row 4's planning-shaped note when it would also have fired.
+          (model === 'haiku' && !readOnlyMechanical(corpus) && PLANNING_INTENT_RE.test(stripCodeSpans(corpus))
+            ? ' It also looks planning-shaped; consider opus or fable for deeper reasoning.'
+            : ''),
+        'Auth/secret edge cases get mishandled by a cheap model.'
+      ));
     }
     suppressHaikuRows = true; // at/above the floor (or an unknown tier): rows 1 and 3 never fire
   }
@@ -486,34 +514,28 @@ function main() {
   // Row 1: mechanical-only ∧ explicit flagship ∧ generic agent => BLOCK
   //        (exemption modifier may downgrade to advisory).
   if (!suppressHaikuRows && isMechanicalOnly && !modelOmitted && isFlagship && isGenericAgent) {
-    const blockReason =
-      'anti-hall model-routing-guard: execution-shaped task on a flagship model ' +
-      "(model: '" + model + "'). Respawn with model:'haiku' (or 'sonnet' if it " +
-      'authors code). This hook cannot see the parent model; an explicit cheap ' +
-      'model is required for execution-only work.';
+    const blockReason = bmsg.blockMessage({
+      guard: 'model-routing-guard',
+      what: "execution-shaped task on a flagship model (model: '" + model + "') is blocked.",
+      why: 'This hook cannot see the parent model; execution-only work needs an explicit cheap model.',
+      instead: "respawn with model:'haiku' (or 'sonnet' if it authors code).",
+    });
     if (exempt) {
-      advise(
-        'MODEL-ROUTING (advisory, debate-role exempt): this spawn looks ' +
-        "execution-shaped on a flagship model ('" + model + "'), but a debate-role " +
-        'word in its description exempts it from blocking. If this is genuinely ' +
-        "mechanical work, prefer model:'haiku'."
-      );
+      advise(tip(
+        "execution-shaped spawn on a flagship model ('" + model + "'), exempt because a debate-role word is in its description.",
+        "if it is genuinely mechanical work, prefer model:'haiku'."
+      ));
     }
     if (researchExempt) {
-      advise(
-        'MODEL-ROUTING (advisory, research-shaped exempt): this spawn looks ' +
-        "execution-shaped on a flagship model ('" + model + "'), but it also reads " +
-        'as research/investigation work with no unambiguous execution verb present, ' +
-        'so it is exempt from blocking.'
-      );
+      advise(tip(
+        "execution-shaped spawn on a flagship model ('" + model + "'), exempt from blocking because it reads as research with no unambiguous execution verb."
+      ));
     }
     if (consultModelRoutingJev(corpus, payload)) {
-      advise(
-        'MODEL-ROUTING (advisory, Jev-relaxed): this spawn looks execution-shaped ' +
-        "on a flagship model ('" + model + "') by keyword, but Jev classified it as " +
-        'non-mechanical with high confidence, so the block is downgraded to this ' +
-        "advisory. If this is genuinely mechanical work, prefer model:'haiku'."
-      );
+      advise(tip(
+        "execution-shaped spawn on a flagship model ('" + model + "'); Jev judged it non-mechanical, so the block is downgraded.",
+        "if it is genuinely mechanical work, prefer model:'haiku'."
+      ));
     }
     block(blockReason);
   }
@@ -525,38 +547,33 @@ function main() {
   if (isMechanicalOnly && modelOmitted && isGenericAgent) {
     if (strict) {
       if (consultModelRoutingJev(corpus, payload)) {
-        advise(
-          'MODEL-ROUTING (advisory, Jev-relaxed): this omitted-model spawn looks ' +
-          'execution-shaped by keyword, but Jev classified it as non-mechanical ' +
-          "with high confidence, so the strict block is downgraded to this " +
-          "advisory. If this is genuinely mechanical work, prefer model:'haiku'."
-        );
+        advise(tip(
+          'omitted-model spawn looks execution-shaped; Jev judged it non-mechanical, so the strict block is downgraded.',
+          "if it is genuinely mechanical work, prefer model:'haiku'."
+        ));
       }
-      block(
-        'anti-hall model-routing-guard (strict, default): execution-shaped spawn ' +
-        "with no explicit model. Set model:'haiku' (or 'sonnet' for code). Strict " +
-        'is the default because an omitted model inherits the orchestrator\'s model ' +
-        'and cannot be verified here — an omitted model on a flagship orchestrator ' +
-        'silently produces an all-flagship swarm. Remedies: set an explicit cheap ' +
-        "model on the spawn, or set ANTIHALL_MODEL_ROUTING=advisory to opt out of " +
-        'blocking.'
-      );
+      block(bmsg.blockMessage({
+        guard: 'model-routing-guard',
+        what: 'execution-shaped spawn with no explicit model is blocked (strict default).',
+        why: "An omitted model inherits the orchestrator's and cannot be verified here; on a flagship orchestrator that silently makes an all-flagship swarm.",
+        instead: "set model:'haiku' (or 'sonnet' for code) on the spawn.",
+        override: 'set ANTIHALL_MODEL_ROUTING=advisory to downgrade this block to an advisory',
+      }));
     }
-    advise(
-      'MODEL-ROUTING (advisory): this execution-shaped spawn sets no explicit ' +
-      "model — an omitted model inherits the orchestrator's. Set model:'haiku' " +
-      "(or 'sonnet' if it authors code) so mechanical work doesn't run on a flagship."
-    );
+    advise(tip(
+      'execution-shaped spawn sets no explicit model.',
+      "set model:'haiku' (or 'sonnet' if it authors code).",
+      "An omitted model inherits the orchestrator's, so mechanical work may run on a flagship."
+    ));
   }
 
   // Row 3: mechanical-only ∧ explicit flagship ∧ NAMED custom subagent_type =>
   //        advisory (custom defs may pin models).
   if (!suppressHaikuRows && isMechanicalOnly && !modelOmitted && isFlagship && isCustomAgent) {
-    advise(
-      "MODEL-ROUTING (advisory): execution-shaped task on a flagship model ('" +
-      model + "') via a custom subagent_type ('" + subagentType + "'). If that " +
-      "agent isn't pinned to a flagship for a reason, prefer model:'haiku'."
-    );
+    advise(tip(
+      "execution-shaped task on a flagship model ('" + model + "') via custom subagent_type '" + subagentType + "'.",
+      "unless that agent is pinned to a flagship on purpose, prefer model:'haiku'."
+    ));
   }
 
   // Row 4: genuine planning-intent phrase ∧ explicit haiku => advisory
@@ -567,11 +584,10 @@ function main() {
   if (model === 'haiku' &&
       !readOnlyMechanical(corpus) &&
       PLANNING_INTENT_RE.test(stripCodeSpans(corpus))) {
-    advise(
-      'MODEL-ROUTING (advisory): this looks planning-shaped (architecture/design/' +
-      'plan/brainstorm/deep review) but runs on haiku — consider opus or fable for ' +
-      'deeper reasoning.'
-    );
+    advise(tip(
+      'planning-shaped task (architecture/design/plan/brainstorm/deep review) runs on haiku.',
+      'consider opus or fable for deeper reasoning.'
+    ));
   }
 
   // Row 6: research/read-only-shaped ∧ generic agent => advisory (suggest Explore).
@@ -588,15 +604,14 @@ function main() {
   // nudging them toward Explore would recommend the wrong agent type (false-positive
   // guard added v0.37.x after a release agent was wrongly nudged due to "audit/find"
   // in its description).
-  if (isGenericAgent && RESEARCH_RE.test(corpus) && !WRITE_RE.test(corpus)) {
-    advise(
-      'AGENT-ROUTING (advisory): this spawn looks research/read-only-shaped but uses ' +
-      "subagent_type:'general-purpose', which carries the Agent tool and can recurse " +
-      '(general-purpose → general-purpose chains waste ~7x tokens by depth 5). ' +
-      "Consider re-dispatching as subagent_type:'Explore' — it has WebSearch/WebFetch " +
-      'but NO Agent tool, so it structurally cannot recurse. Only keep general-purpose ' +
-      'if the task genuinely needs to write files or spawn sub-agents.'
-    );
+  const writeShaped = WRITE_PHRASE_RE.test(corpus) ||
+    (!READONLY_OVERRIDE_RE.test(corpus) && (WRITE_RE.test(corpus) || WRITE_IMPERATIVE_RE.test(corpus)));
+  if (isGenericAgent && RESEARCH_RE.test(corpus) && !writeShaped) {
+    advise(tip(
+      "research/read-only-shaped spawn uses subagent_type:'general-purpose'.",
+      "re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent tool, so it cannot recurse). Keep general-purpose only if it must write files or spawn sub-agents.",
+      'general-purpose carries the Agent tool and can recurse; chains waste ~7x tokens by depth 5.'
+    ));
   }
 
   // Row 5: everything else (mixed signals, no signals, unknown model, explicit

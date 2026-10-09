@@ -327,7 +327,7 @@ test('INJECTOR: active cache (weekly 90%) -> additionalContext contains "LIMIT C
     const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0, 'exit 0');
     const ctx = additionalContext(r);
-    assert.ok(ctx.includes('LIMIT CONSERVATION ACTIVE'), `directive missing; got: ${ctx}`);
+    assert.ok(ctx.includes('limit conservation is active'), `directive missing; got: ${ctx}`);
     assert.ok(/weekly/i.test(ctx), 'reason (weekly) in directive');
   } finally { h.cleanup(); }
 });
@@ -352,7 +352,7 @@ test('INJECTOR: env=on (no cache) -> directive emitted with reason=manual-on', (
     });
     assert.strictEqual(r.status, 0);
     const ctx = additionalContext(r);
-    assert.ok(ctx.includes('LIMIT CONSERVATION ACTIVE'), `directive missing; got: ${ctx}`);
+    assert.ok(ctx.includes('limit conservation is active'), `directive missing; got: ${ctx}`);
     assert.ok(ctx.includes('manual-on'), 'manual-on reason in directive');
   } finally { h.cleanup(); }
 });
@@ -397,7 +397,7 @@ test('INJECTOR emit-dedupe: identical directive repeated immediately -> suppress
     const r1 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r1.status, 0);
     const ctx1 = additionalContext(r1);
-    assert.ok(ctx1.includes('LIMIT CONSERVATION ACTIVE'), `first call must emit; got: ${ctx1}`);
+    assert.ok(ctx1.includes('limit conservation is active'), `first call must emit; got: ${ctx1}`);
 
     const r2 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r2.status, 0);
@@ -407,8 +407,25 @@ test('INJECTOR emit-dedupe: identical directive repeated immediately -> suppress
     const r3 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r3.status, 0);
     const ctx3 = additionalContext(r3);
-    assert.ok(ctx3.includes('LIMIT CONSERVATION ACTIVE'), `changed reason must still emit; got: ${ctx3}`);
+    assert.ok(ctx3.includes('limit conservation is active'), `changed reason must still emit; got: ${ctx3}`);
     assert.ok(/5h|five.?hour/i.test(ctx3), `expected the changed (5h) reason; got: ${ctx3}`);
+  } finally { h.cleanup(); }
+});
+
+test('INJECTOR emit-dedupe: reset time differing only in milliseconds does not defeat the dedupe', () => {
+  const h = makeHome();
+  try {
+    const base = Date.now() + 7 * 24 * 3600000;
+    const a = new Date(Math.ceil(base / 60000) * 60000 - 43).toISOString(); // ...:59.957Z
+    const b = new Date(Math.ceil(base / 60000) * 60000 + 295).toISOString(); // ...:00.295Z
+    writeCacheFile(h.home, makeCache({ weekly: 90, weeklyResetsAt: a }));
+    const r1 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    const ctx1 = additionalContext(r1);
+    assert.ok(ctx1.includes('limit conservation is active'), 'first call must emit');
+    assert.ok(!/\d{2}:\d{2}:\d{2}\.\d{3}Z/.test(ctx1), `reset time must not carry seconds/ms; got: ${ctx1}`);
+    writeCacheFile(h.home, makeCache({ weekly: 90, weeklyResetsAt: b }));
+    const r2 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(additionalContext(r2), '', 'ms-only reset jitter must be suppressed by the dedupe');
   } finally { h.cleanup(); }
 });
 
@@ -417,10 +434,10 @@ test('INJECTOR emit-dedupe: different session_id is not suppressed by another se
   try {
     writeCacheFile(h.home, makeCache({ weekly: 90 }));
     const r1 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
-    assert.ok(additionalContext(r1).includes('LIMIT CONSERVATION ACTIVE'));
+    assert.ok(additionalContext(r1).includes('limit conservation is active'));
 
     const r2 = testHook(INJECT_HOOK, { ...promptPayload(), session_id: 'other' }, { home: h.home, expectJson: true });
-    assert.ok(additionalContext(r2).includes('LIMIT CONSERVATION ACTIVE'), 'a different session must still see the directive');
+    assert.ok(additionalContext(r2).includes('limit conservation is active'), 'a different session must still see the directive');
   } finally { h.cleanup(); }
 });
 
@@ -433,7 +450,7 @@ test('INJECTOR DOWNSHIFT: conserving -> directive contains MAIN-MODEL DOWNSHIFT'
     const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
     const ctx = additionalContext(r);
-    assert.ok(ctx.includes('MAIN-MODEL DOWNSHIFT'), `downshift directive missing; got: ${ctx}`);
+    assert.ok(ctx.includes('Main-model downshift'), `downshift directive missing; got: ${ctx}`);
   } finally { h.cleanup(); }
 });
 
@@ -446,6 +463,19 @@ test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet and the workhorse
     const ctx = additionalContext(r);
     assert.ok(ctx.includes('Sonnet'), `Sonnet missing from downshift directive; got: ${ctx}`);
     assert.ok(ctx.includes('workhorse'), `workhorse category missing from downshift directive; got: ${ctx}`);
+  } finally { h.cleanup(); }
+});
+
+test('INJECTOR: advisory never calls a Claude model a separate weekly bucket', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ fiveHour: 90 }));
+    const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    const ctx = additionalContext(r);
+    assert.ok(ctx.length > 0, 'advisory should be emitted');
+    assert.ok(!/(sonnet|opus|haiku)[^.;]{0,40}(separate|own|different)[^.;]{0,20}(weekly )?(bucket|pool|limit)/i.test(ctx),
+      `advisory must not call a Claude model a separate bucket; got: ${ctx}`);
+    assert.ok(!/separate weekly bucket|flagship weekly bucket/i.test(ctx), `stale bucket claim; got: ${ctx}`);
   } finally { h.cleanup(); }
 });
 
@@ -599,5 +629,36 @@ test('INJECTOR ACCOUNT GUARD: account switched + stale cache -> additionalContex
     const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
     assert.strictEqual(additionalContext(r), '', 'no directive: cache is stale for the new account');
+  } finally { h.cleanup(); }
+});
+
+// ── threshold resolves at call time, not module load ─────────────────────────
+// The module is required ONCE with threshold 85 and weekly usage 80% (inactive);
+// the setting is then changed (env, then ~/.anti-hall/settings.json) WITHOUT
+// re-requiring. A module-load THRESHOLD would keep returning inactive.
+test('threshold change after require() takes effect (env and settings.json)', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ weekly: 80 }));
+    const script = `
+      const fs = require('fs'), path = require('path');
+      const { isConserving } = require(${JSON.stringify(path.join(HOOKS_DIR, 'limit-conserve.js'))});
+      const out = {};
+      out.base = isConserving().active;
+      process.env.ANTIHALL_LIMIT_THRESHOLD = '70';
+      out.env = isConserving().active;
+      delete process.env.ANTIHALL_LIMIT_THRESHOLD;
+      out.reset = isConserving().active;
+      fs.mkdirSync(path.join(process.env.HOME, '.anti-hall'), { recursive: true });
+      fs.writeFileSync(path.join(process.env.HOME, '.anti-hall', 'settings.json'),
+        JSON.stringify({ limitConserve: { threshold: 70 } }));
+      out.file = isConserving().active;
+      fs.writeSync(1, JSON.stringify(out));
+    `;
+    const res = spawnSync(process.execPath, ['-e', script], {
+      encoding: 'utf8', env: isolatedEnv(h.home), timeout: 60000,
+    });
+    const o = JSON.parse(res.stdout);
+    assert.deepStrictEqual(o, { base: false, env: true, reset: false, file: true });
   } finally { h.cleanup(); }
 });

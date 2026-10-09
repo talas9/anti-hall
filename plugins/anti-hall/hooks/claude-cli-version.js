@@ -32,6 +32,7 @@
 //   exit 0 : always (fail-open on ANY error).
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const path = require('path');
 // v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
@@ -86,11 +87,13 @@ function main() {
   const key = { installed: cache.installed, baseline: BASELINE };
   if (alreadyAdvisedKey(cache, key)) return;
 
-  const additionalContext = drift.reason === 'older'
-    ? `Claude Code CLI ${cache.installed} installed; anti-hall's harness KB is audited against ` +
-      `${BASELINE} (newer) — behavior may have drifted, see docs/KB-claude-code-harness-features.md`
-    : `Claude Code CLI ${cache.installed} installed; anti-hall's harness KB is audited against ` +
-      `${BASELINE} — behavior may have drifted, see docs/KB-claude-code-harness-features.md`;
+  const additionalContext = require('./lib/block-message.js').message({
+    kind: 'warn',
+    guard: 'claude-cli-version',
+    what: `Claude Code CLI ${cache.installed} is installed; anti-hall's harness KB is audited against ${BASELINE}${drift.reason === 'older' ? ' (newer)' : ''}.`,
+    why: 'Behavior may have drifted.',
+    instead: 'see docs/KB-claude-code-harness-features.md.',
+  });
 
   emitAdvisory(additionalContext);
   persistAdvisedKey(CACHE_FILE, cache, key);

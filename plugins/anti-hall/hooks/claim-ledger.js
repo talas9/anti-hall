@@ -55,11 +55,12 @@
 //   exit 0 : always
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 
 const EVIDENCE_WINDOW = 2 * 1024 * 1024;
 const CONTEXT_CHARS = 160;

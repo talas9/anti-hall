@@ -2,6 +2,7 @@
 // jev-report.js — pure-function aggregation tests against a fixture log
 // (in-process, no fs/network — buildReport() takes rows directly).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -1425,4 +1426,55 @@ test('CLI: trigger occurrences from jev-judge.ndjson and devswarm-supervision.nd
   } finally {
     h.cleanup();
   }
+});
+
+test('buildReport: on-mode choice row with only wouldChange (modelRouting recordDisagreement) is labelable', () => {
+  const rows = [
+    choiceRow({ id: 'modelRouting', h: 'm1', jev: 'authoring', base: true, changed: null, wouldChange: 'relaxed' }),
+    choiceRow({ id: 'modelRouting', h: 'm2', jev: 'mechanical', base: true, changed: null }),
+  ];
+  const r = buildReport(rows, {}).integrations.find((x) => x.id === 'modelRouting');
+  assert.strictEqual(r.labelWouldChangeUnique, 1, 'only the disagreeing decision joins the label-candidate set');
+});
+
+test('buildReport: non-choice on-mode row {changed:null, wouldChange:added} is NOT acted-on (changedUnique 0) but is labelable', () => {
+  const rows = [{ ts: new Date().toISOString(), id: 'x', h: 'b1', base: false, jev: true, conf: 0.4, ms: 5, backend: 'jev', final: false, changed: null, wouldChange: 'added', cached: false, mode: 'on' }];
+  const r = buildReport(rows, {}).integrations.find((x) => x.id === 'x');
+  assert.strictEqual(r.changedUnique, 0);
+  assert.strictEqual(r.changedRate, 0);
+  assert.strictEqual(r.labelWouldChangeUnique, 1);
+});
+
+// Rows derived from the triage label (supervisorBlockerLabel, parentGateQuestion)
+// are not independent Jev decisions: tagged derivedFrom 'triage', kept out of the totals.
+test('buildReport: derivedFrom rows are excluded from calls/jev%/cache totals and counted as derivedCalls', () => {
+  const rows = [
+    row({ id: 'parentGateQuestion', h: 'd1', backend: 'cache', cached: true, derivedFrom: 'triage' }),
+    row({ id: 'parentGateQuestion', h: 'd2', backend: 'cache', cached: true, derivedFrom: 'triage' }),
+    row({ id: 'speculation', h: 's1' }),
+  ];
+  const report = buildReport(rows, {});
+  const pg = report.integrations.find((r) => r.id === 'parentGateQuestion');
+  const sp = report.integrations.find((r) => r.id === 'speculation');
+  assert.strictEqual(pg.calls, 0);
+  assert.strictEqual(pg.cacheHits, 0);
+  assert.strictEqual(pg.jevAnsweredPct, 0);
+  assert.strictEqual(pg.derivedCalls, 2);
+  assert.strictEqual(sp.calls, 1);
+  assert.strictEqual(sp.derivedCalls, 0);
+});
+
+test('jev-assist finalize: derivedFrom is written on the decision row (isolated HOME)', () => {
+  const { makeHome } = require('../helpers/fixtures.js');
+  const h = makeHome();
+  try {
+    const ja = require('../../plugins/anti-hall/hooks/lib/jev-assist.js');
+    ja.finalize({
+      id: 'parentGateQuestion', home: h.home, hash: 'x1', mode: 'shadow', trust: 'add-block', baseline: false,
+      judge: () => true, threshold: 0.5, r: { ok: true, answer: true, confidence: 1, ms: 0 },
+      cachedFlag: true, state: 'question-needs-answer', derivedFrom: 'triage',
+    });
+    const log = fs.readFileSync(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.strictEqual(log[log.length - 1].derivedFrom, 'triage');
+  } finally { h.cleanup(); }
 });

@@ -5,6 +5,7 @@
 // release. Fixtures are the harness mesh fixture (isolated HOME, journal
 // backend, ANTIHALL_INGEST_DRY_RUN=1).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 

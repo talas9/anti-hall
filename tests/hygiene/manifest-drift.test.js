@@ -49,8 +49,10 @@ function hookFilesByEvent(hooksObj) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
         const command = (h && h.command) || '';
-        const m = command.match(/([A-Za-z0-9_.-]+\.js)"?\s*$/);
-        if (m) files.add(m[1]);
+        // First unanchored script token (as hooks/doctor.js): trailing args such as `--host=claude` are allowed.
+        const m = command.match(/([\w.-]+\.js)/);
+        assert.ok(m, 'hooks.json command names no .js script: ' + command);
+        files.add(m[1]);
       }
     }
     out[event] = files;
@@ -67,13 +69,12 @@ const CLAUDE_ONLY_ALLOWLIST = [
   // PostToolUse TaskCreate|TaskUpdate: Jev dispatchTier classifies Claude Code
   // Task-tool tasks; Codex has no TaskCreate/TaskUpdate tools to match.
   { event: 'PostToolUse', file: 'dispatch-tier.js', reason: 'classifies Claude Code TaskCreate/TaskUpdate tasks; Codex has no Task tools to match' },
-  // Task-tool / subagent lifecycle events. Codex's harness has no
-  // TaskCreated/TaskCompleted/SubagentStart event hooks at all (codex/hooks/
-  // hooks.json registers neither event) — these are Claude Code Task-tool
-  // concepts with no Codex equivalent today.
+  // Task-tool / subagent lifecycle events. Codex has no TaskCreated/TaskCompleted
+  // event. It does fire SubagentStart (captured codex-cli 0.160.0 payload), but
+  // verify-first-subagent is not registered there until its Codex payload is tested.
   { event: 'TaskCreated', file: 'task-lifecycle-log.js', reason: 'Claude Code Task-tool event; no Codex equivalent event exists' },
   { event: 'TaskCompleted', file: 'task-lifecycle-log.js', reason: 'Claude Code Task-tool event; no Codex equivalent event exists' },
-  { event: 'SubagentStart', file: 'verify-first-subagent.js', reason: 'Claude Code Task-tool event; no Codex equivalent event exists' },
+  { event: 'SubagentStart', file: 'verify-first-subagent.js', reason: 'Codex fires SubagentStart (codex-cli 0.160.0) but the hook has no Codex payload tests yet' },
   // SessionStart: Fable model-cache probe is Claude-specific by design.
   { event: 'SessionStart', file: 'fable-availability.js', reason: "probes Claude Code's own ~/.claude.json model cache; irrelevant to gpt-5.x Codex sessions (install-codex.js's own header)" },
   // Stop: codex-nudge tells a CLAUDE session to get a Codex second opinion —
@@ -85,12 +86,12 @@ const CLAUDE_ONLY_ALLOWLIST = [
   // PreToolUse TaskStop: the note reads Claude Code teammate / background-agent
   // transcript records and fires on the Claude TaskStop tool.
   { event: 'PreToolUse', file: 'stale-agent-stop-note.js', reason: 'TaskStop matcher over Claude Code teammate/background-agent transcript records; no Codex TaskStop tool or record shape is known' },
-  // PreToolUse edit-family matchers (Write/Edit/MultiEdit/NotebookEdit):
-  // install-codex.js's own header states the current Codex hook runtime does
-  // not hard-run PreToolUse for edit-family tools at all.
-  { event: 'PreToolUse', file: 'api-guard.js', reason: 'Write/Edit/MultiEdit matcher — Codex hook runtime does not hard-run PreToolUse for edits (install-codex.js header)' },
-  { event: 'PreToolUse', file: 'ship-it-guard.js', reason: 'Write/Edit/MultiEdit matcher — Codex hook runtime does not hard-run PreToolUse for edits (install-codex.js header)' },
-  { event: 'PreToolUse', file: 'edit-guard.js', reason: 'Write/Edit/MultiEdit/NotebookEdit matcher — Codex hook runtime does not hard-run PreToolUse for edits (install-codex.js header)' },
+  // coordinator-work-guard (F1 main-thread WORK window): Claude-only until the
+  // Codex PostToolUse payload contract and Codex coordinator detection are verified.
+  { event: 'PreToolUse', file: 'coordinator-work-guard.js', reason: 'Codex PostToolUse payload contract and Codex coordinator detection are unverified (codex/README.md Parity Notes)' },
+  { event: 'PostToolUse', file: 'coordinator-work-guard.js', reason: 'Codex PostToolUse payload contract and Codex coordinator detection are unverified (codex/README.md Parity Notes)' },
+  // (edit-guard / api-guard / ship-it-guard are no longer Claude-only: Codex
+  // runs them on its apply_patch matcher — see install-codex.js's header.)
   // PreToolUse Read: Read is a Claude Code tool name; Codex has no equivalent
   // matcher wired.
   { event: 'PreToolUse', file: 'ask-guard.js', reason: 'AskUserQuestion matcher — Codex has no ask tool, so there is no PreToolUse event to match' },
@@ -123,6 +124,16 @@ test('manifest-drift: Claude and Codex plugin.json versions match (CLAUDE.md ver
     `Codex plugin.json version (${codexVersion}) has drifted from Claude plugin.json (${claudeVersion}) — ` +
     'the Codex manifest froze for 10 releases once (CLAUDE.md "Codex manifest bump"); bump both together.'
   );
+});
+
+test('manifest-drift: root package.json and package-lock.json versions match plugin.json (agents misread 0.0.0 as the installed version)', () => {
+  const claudeVersion = readJson(CLAUDE_PLUGIN_JSON).version;
+  const pkg = readJson(path.join(REPO, 'package.json'));
+  const lock = readJson(path.join(REPO, 'package-lock.json'));
+  const where = 'bump package.json, package-lock.json (both version fields) and both plugin manifests together (RELEASING.md)';
+  assert.strictEqual(pkg.version, claudeVersion, `package.json version (${pkg.version}) != plugin.json (${claudeVersion}) — ${where}`);
+  assert.strictEqual(lock.version, claudeVersion, `package-lock.json version (${lock.version}) != plugin.json (${claudeVersion}) — ${where}`);
+  assert.strictEqual(lock.packages[''].version, claudeVersion, `package-lock.json packages[""].version (${lock.packages[''].version}) != plugin.json (${claudeVersion}) — ${where}`);
 });
 
 test('manifest-drift: every platform-neutral Claude hook has a Codex hooks.json entry (or a reasoned allowlist entry)', () => {
@@ -168,8 +179,8 @@ test('manifest-drift: every file referenced by either hooks.json exists on disk'
       for (const g of Array.isArray(groups) ? groups : []) {
         for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
           const command = (h && h.command) || '';
-          const m = command.match(/([A-Za-z0-9_.-]+\.js)"?\s*$/);
-          if (!m) continue;
+          const m = command.match(/([\w.-]+\.js)/);
+          assert.ok(m, 'hooks.json command names no .js script: ' + command);
           const file = m[1];
           const abs = path.join(hooksDir, file);
           if (!fs.existsSync(abs)) missing.push(`${path.relative(REPO, hooksJsonPath)} -> ${file}`);
@@ -190,8 +201,8 @@ test('manifest-drift: install-codex.js ANTI_HALL_HOOKS references only files tha
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
         const command = (h && h.command) || '';
-        const m = command.match(/([A-Za-z0-9_.-]+\.js)"?\s*$/);
-        if (!m) continue;
+        const m = command.match(/([\w.-]+\.js)/);
+        assert.ok(m, 'install-codex command names no .js script: ' + command);
         // install-codex.js's HOOK_ROOT is always plugins/anti-hall/hooks (the
         // shared Claude hook files) — see this file's CODEX_HOOKS_DIR comment.
         const abs = path.join(CLAUDE_HOOKS_DIR, m[1]);

@@ -6,6 +6,7 @@
 // The OLD key each store is seeded under comes from the FROZEN v0.103.0 resolver
 // (tests/helpers/legacy-repokey-0.103.0.js), i.e. exactly what legacy wrote.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

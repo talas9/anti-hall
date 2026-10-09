@@ -439,9 +439,10 @@ Each value is `"on"` (Jev may change the outcome per its trust rule), `"shadow"`
 still called and logged, but the outcome is always the baseline — use this to observe a
 new integration before trusting it), or `"off"`. An **existing** `{"enabled":true}`
 config with no `integrations` map keeps its CURRENT behavior with zero migration:
-`speculation` and `triage` (the two pre-existing integrations, §3-§9) default to `"on"`;
-every OTHER integration (e.g. `modelRouting`) defaults to `"shadow"` until an owner
-explicitly promotes it. The legacy `{"triage": false}` switch (§9) still works when
+Nine integrations default to `"on"` (speculation, triage, findingDedup, dispatchTier,
+and the five devswarm-supervision modes: devswarmOnBrief, devswarmExtraSanctioned,
+devswarmWaitKind, devswarmLoop, devswarmStepMap); the remaining 11 default to `"shadow"`;
+one (postHandoverGate) defaults to `"off"`. The legacy `{"triage": false}` switch (§9) still works when
 `integrations.triage` is absent. `ANTIHALL_JEV=0` still force-disables everything;
 `ANTIHALL_JEV_<ID>=0` (e.g. `ANTIHALL_JEV_MODEL_ROUTING=0`) force-disables one
 integration only.
@@ -619,7 +620,7 @@ Jev not being `enabled` at all is also silent.
 Codex port) also emits the "Recommended: enable Jev" notice from `hooks/lib/jev-recommend.js`: once on
 first install, then at most every 30 days (stamp `~/.anti-hall/state/jev-recommend-notice.json`), via the
 same `Tell the user now` additionalContext channel as `version-alert.js`; `doctor` prints the same
-recommendation. `jev.recommendNotice=false` silences it. The only measured figure it quotes is the
+recommendation. `jev.recommendNotice=false` silences it. In non-interactive runs (`claude -p`, `CLAUDE_CODE_ENTRYPOINT=sdk-*`) it is not sent unless `jev.recommendNoticeHeadless=true`. The only measured figure it quotes is the
 `findingDedup` benchmark in §7 (65/65 vs 45%), with its scope stated; there is no end-to-end accuracy
 figure for the other guards. `tests/hooks/jev-recommend.test.js` fails on superlatives ("massive",
 "dramatic", "guarantee", "100%") in the notice and README blocks.

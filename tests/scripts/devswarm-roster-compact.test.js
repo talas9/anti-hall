@@ -5,6 +5,7 @@
 // the full object unchanged; `--ack` and the programmatic cli.run() API are
 // untouched. The CLI is spawned with an isolated HOME (never the real one).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

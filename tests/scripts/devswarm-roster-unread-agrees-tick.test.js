@@ -3,6 +3,7 @@
 // unseen broadcasts show separately as "(+N bcast)" only when non-zero.
 // Isolated HOME throughout.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

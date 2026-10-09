@@ -53,7 +53,7 @@ test('(1)-(5) app DB title, PR finish signal, markers, focus suppression, rank t
     db.prepare('UPDATE builders SET lastSelectedAt = ? WHERE id = ?').run(new Date(Date.now() - 10e3).toISOString(), 'b-b');
     db.close();
     const c = run(f, Object.assign({}, f.env));
-    const table = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+    const table = c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-workspaces')) || '';
     const rowA = table.split('\n').find((l) => l.includes('(b-a)')) || '';
     const rowB = table.split('\n').find((l) => l.includes('(b-b)')) || '';
     assert.ok(rowA.includes('Alpha task with a long full title that is well past sixty characters in length'), 'full app label wins over the stale cache: ' + rowA);
@@ -61,7 +61,7 @@ test('(1)-(5) app DB title, PR finish signal, markers, focus suppression, rank t
     assert.ok(rowA.includes('[pinned]'), rowA);
     assert.ok(rowB.includes('on screen') && rowB.includes('⚠ brief not delivered'), rowB);
     assert.ok(table.indexOf('(b-b)') < table.indexOf('(b-a)'), 'sidebar rank 1 before rank 2 on a tie');
-    const nag = c.split('\n\n').filter((s) => /^DEVSWARM (URGENT|PARENT) INBOX/.test(s)).join('\n');
+    const nag = c.split('\n\n').filter((s) => /^\S+ anti-hall \u00B7 devswarm-(urgent|parent)-inbox/.test(s)).join('\n');
     assert.ok(nag.includes('b-a') || nag.includes('Alpha'), 'the off-screen workspace still nags: ' + nag);
     assert.ok(!nag.includes('Bravo') && !nag.includes('b-b'), 'the on-screen workspace is not nagged: ' + nag);
   } finally { rmFixture(f); }
@@ -74,7 +74,7 @@ test('(4b) focus suppression off (ANTIHALL_DEVSWARM_FOCUS_MS=0) -> the on-screen
     db.prepare('UPDATE builders SET lastSelectedAt = ? WHERE id = ?').run(new Date(Date.now() - 10e3).toISOString(), 'b-b');
     db.close();
     const c = run(f, Object.assign({ ANTIHALL_DEVSWARM_FOCUS_MS: '0' }, f.env));
-    const nag = c.split('\n\n').filter((s) => /^DEVSWARM (URGENT|PARENT) INBOX/.test(s)).join('\n');
+    const nag = c.split('\n\n').filter((s) => /^\S+ anti-hall \u00B7 devswarm-(urgent|parent)-inbox/.test(s)).join('\n');
     assert.ok(nag.includes('Bravo') || nag.includes('b-b'), nag);
   } finally { rmFixture(f); }
 });
@@ -83,7 +83,7 @@ test('(6) no app DB -> cached name, no PR signal, no markers', { skip }, () => {
   const f = buildAppDb();
   try {
     const c = run(f, { ANTIHALL_DEVSWARM_APP_DB: 'off' });
-    const table = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+    const table = c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-workspaces')) || '';
     assert.ok(table.includes('Alpha task with a long full… (b-a)'), table);
     assert.ok(!table.includes('PR #12') && !table.includes('[pinned') && !table.includes('brief'), table);
   } finally { rmFixture(f); }

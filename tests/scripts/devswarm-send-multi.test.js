@@ -5,6 +5,7 @@
 // In-process via cli.run with an isolated tmp HOME, the journal backend and a
 // real git repo + linked worktrees as the fixture.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

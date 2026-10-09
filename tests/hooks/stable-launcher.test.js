@@ -51,9 +51,9 @@ test('buildLauncherSource embeds segments/fallback as JSON (no unescaped injecti
   assert.match(src, /const SEGMENTS = \["scripts","devswarm\.js"\];/);
   assert.match(src, /const FALLBACK = "\/some path\/with spaces\/devswarm\.js";/);
   // Strip the leading shebang line — valid only as the first line of a real
-  // Node SCRIPT file, not inside a `new Function` body — before the syntax check.
+  // Node SCRIPT file, not inside a function body — before the syntax check.
   const body = src.replace(/^#!.*\n/, '');
-  assert.doesNotThrow(() => new Function(body)); // eslint-disable-line no-new-func
+  assert.doesNotThrow(() => require('node:vm').compileFunction(body)); // compile only, never executed
 });
 
 test('installLauncher resolves the REGISTERED install (installed_plugins.json wins over marketplace/fallback)', () => {

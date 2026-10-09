@@ -5,6 +5,10 @@ description: Codex-native equivalent of anti-hall deadly-loop. Use to harden ris
 
 # anti-hall deadly-loop for Codex
 
+## When to use
+
+Codex-native equivalent of anti-hall deadly-loop. Use to harden risky changes with repeated adversarial review and fix waves until no new P0/P1 blockers remain.
+
 ## Resolve the plugin root
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — resolve
@@ -13,7 +17,7 @@ it from the path Codex shows you for this SKILL.md (see
 
 ```bash
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 ## Overview

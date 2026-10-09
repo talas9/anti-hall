@@ -14,6 +14,7 @@
 //   - D24 store-caller re-key: `register`/`heartbeat` (the real CLI) write into
 //     the SAME store/<repoKey>/ the daemon drains into and `roster` reads
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

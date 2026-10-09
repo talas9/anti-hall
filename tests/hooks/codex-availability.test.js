@@ -129,3 +129,23 @@ test('QUOTA: an expired quota record is treated as available again — no prefix
     h.cleanup();
   }
 });
+
+test('Codex payload: availability context names no Claude models; Claude payload keeps the Opus/Sonnet fallback', () => {
+  const h = makeHome();
+  const pathDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-codexavail-host-'));
+  try {
+    const candidate = path.join(pathDir, CANDIDATE_NAME);
+    fs.writeFileSync(candidate, '#!/bin/sh\necho codex\n');
+    if (process.platform !== 'win32') fs.chmodSync(candidate, 0o755);
+    const env = { PATH: pathDir };
+    const cx = testHook(HOOK, { hook_event_name: 'SessionStart', turn_id: 't1', transcript_path: '/x/.codex/sessions/rollout-1.jsonl' }, { home: h.home, env, expectJson: true });
+    const ctx = cx.json.hookSpecificOutput.additionalContext;
+    assert.match(ctx, /Codex binary detected/);
+    assert.ok(!/Opus|Sonnet|Haiku|Workflow|codex:codex-rescue/.test(ctx), ctx);
+    const cl = testHook(HOOK, {}, { home: h.home, env, expectJson: true });
+    assert.match(cl.json.hookSpecificOutput.additionalContext, /Opus\/Sonnet fallback/);
+  } finally {
+    h.cleanup();
+    fs.rmSync(pathDir, { recursive: true, force: true });
+  }
+});

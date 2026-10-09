@@ -60,7 +60,7 @@ test('CASE 1 ALERT: fresh cache with newer version => directive additionalContex
     assert.strictEqual(r.status, 0, `exit 0; stderr: ${r.stderr}`);
     assert.ok(hasContext(r), `expected additionalContext; stdout: ${r.stdout}`);
     const ctx = r.json.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /Tell the user now/);
+    assert.match(ctx, /tell the user now/);
     assert.match(ctx, /available/i);
     assert.match(ctx, /999\.0\.0/);
     assert.match(ctx, /\/anti-hall:update/);
@@ -183,13 +183,13 @@ test('CASE 2 ALERT: mirrored newer version on disk => reload-only directive', ()
     assert.strictEqual(r.status, 0, `exit 0; stderr: ${r.stderr}`);
     assert.ok(hasContext(r), `expected additionalContext; stdout: ${r.stdout}`);
     const ctx = r.json.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /Tell the user now/);
+    assert.match(ctx, /tell the user now/);
     assert.match(ctx, /already downloaded/i);
     assert.match(ctx, /\/reload-plugins/);
     assert.match(ctx, /restart Codex/);
     assert.doesNotMatch(ctx, /\/anti-hall:update/); // reload-only, not an update nudge
     // Registry version unknown (no installed_plugins.json): try-reload-first, restart if not reflected.
-    assert.match(ctx, /if a hook or skill path still shows the old version afterwards, restart Claude Code/);
+    assert.match(ctx, /restart Claude Code if a hook or skill path still shows the old version afterwards/);
     assert.match(ctx, /Big new feature headline/); // cheap local changelog headline
   } finally { h.cleanup(); }
 });
@@ -335,7 +335,7 @@ test('CASE 2 HARNESS GAP: cache mirrored but installed_plugins.json still lags i
     assert.strictEqual(r.status, 0, `exit 0; stderr: ${r.stderr}`);
     assert.ok(hasContext(r), `expected additionalContext; stdout: ${r.stdout}`);
     const ctx = r.json.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /Tell the user now/);
+    assert.match(ctx, /tell the user now/);
     assert.match(ctx, /has not registered it yet/i);
     assert.match(ctx, /\/anti-hall:update/);
     assert.doesNotMatch(ctx, /already downloaded \(you are running/i,

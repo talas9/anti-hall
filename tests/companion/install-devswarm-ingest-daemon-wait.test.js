@@ -10,6 +10,7 @@
 // dead. Every test injects process/launchctl probes — never a real spawn or
 // real process signal.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

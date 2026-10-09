@@ -126,7 +126,7 @@ test('minor advance => exactly one advisory line naming both versions', () => {
     assert.match(ctx, new RegExp(newer.replace(/\./g, '\\.')));
     assert.match(ctx, new RegExp(BASELINE.replace(/\./g, '\\.')));
     assert.match(ctx, /docs\/KB-claude-code-harness-features\.md/);
-    assert.strictEqual(ctx.split('\n').length, 1, `expected a single line; got: ${JSON.stringify(ctx)}`);
+    assert.ok(ctx.split('\n').length <= 4, `expected a short shaped message; got: ${JSON.stringify(ctx)}`);
   } finally { h.cleanup(); }
 });
 
@@ -232,7 +232,7 @@ test('advisory text contains only version strings + a doc path, no arbitrary fil
     const ctx = r.json.hookSpecificOutput.additionalContext;
     assert.match(
       ctx,
-      /^Claude Code CLI [\w.]+ installed; anti-hall's harness KB is audited against [\w.]+(?: \(newer\))? — behavior may have drifted, see docs\/KB-claude-code-harness-features\.md$/
+      /^\S+ anti-hall \u00B7 claude-cli-version: Claude Code CLI [\w.]+ is installed; anti-hall's harness KB is audited against [\w.]+(?: \(newer\))?\.\nWhy: Behavior may have drifted\.\nDo instead: see docs\/KB-claude-code-harness-features\.md\.$/
     );
   } finally { h.cleanup(); }
 });

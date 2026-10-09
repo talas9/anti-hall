@@ -18,6 +18,7 @@
 // new hook registration: it rides jev-review-reminder.js.
 //
 // Gating: shown only while Jev is NOT enabled and jev.recommendNotice !== false.
+// Headless: suppressed in non-interactive (`-p`/SDK) runs unless jev.recommendNoticeHeadless (isHeadless below).
 // Dedupe: once on first run, then at most every REMIND_EVERY_MS. State:
 // ~/.anti-hall/state/jev-recommend-notice.json. Fail-open: any error -> no notice.
 
@@ -110,6 +111,29 @@ function applicable(o) {
   }
 }
 
+// isHeadless(env) -> true in a non-interactive Claude Code run. Verified live: `claude -p` exports
+// CLAUDE_CODE_ENTRYPOINT=sdk-cli (an interactive session exports `cli`, see coordinator-detect.js).
+// Other SDK entrypoints (sdk-ts, sdk-py) are matched by the same `sdk-` prefix: not probed, and a
+// wrong match only suppresses this one marketing notice.
+function isHeadless(env) {
+  try {
+    const ep = (env || process.env).CLAUDE_CODE_ENTRYPOINT;
+    return typeof ep === 'string' && ep.startsWith('sdk-');
+  } catch (_) { return false; }
+}
+
+// headlessAllowed(o) -> jev.recommendNoticeHeadless. Default false; when NOT set explicitly,
+// context.protocolLevel=full flips the default to true (the one-key rollback to today's behaviour).
+function headlessAllowed(o) {
+  try {
+    const s = require('./settings.js');
+    const v = s.get('jev', 'recommendNoticeHeadless', false, { home: o.home, env: o.env });
+    if (s.source('jev', 'recommendNoticeHeadless', { home: o.home, env: o.env }) === 'default' &&
+        s.get('context', 'protocolLevel', 'compact', { home: o.home, env: o.env }) === 'full') return true;
+    return v === true;
+  } catch (_) { return true; } // settings failure: today's behaviour (notice stays)
+}
+
 function statePath(home) {
   return path.join(home, '.anti-hall', 'state', 'jev-recommend-notice.json');
 }
@@ -121,6 +145,12 @@ function sessionNotice(o) {
   try {
     const opts = o || {};
     if (!opts.home || !applicable(opts)) return null;
+    // Non-interactive run (`-p`/SDK): nobody reads the notice. Return BEFORE the dedupe stamp is
+    // written so a headless run never burns the once-per-30-days slot of the interactive user.
+    // Codex payloads are unchanged (no headless signal has been probed on Codex).
+    let codex = false;
+    try { codex = require('./host-text.js').isCodex(opts.payload); } catch (_) { codex = false; }
+    if (!codex && isHeadless(opts.env) && !headlessAllowed(opts)) return null;
     const now = Number.isFinite(opts.now) ? opts.now : Date.now();
     const file = statePath(opts.home);
     let last = 0;
@@ -142,5 +172,5 @@ function sessionNotice(o) {
 
 module.exports = {
   REMIND_EVERY_MS, FINDING_DEDUP_EVIDENCE, ON_BY_DEFAULT_IDS, HEADLINE,
-  noticeText, shortNotice, doctorLines, SHORT, applicable, sessionNotice, statePath,
+  noticeText, shortNotice, doctorLines, SHORT, applicable, sessionNotice, statePath, isHeadless,
 };

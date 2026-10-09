@@ -9,6 +9,7 @@
 // `formatStaleVersionLine` prints the one line telling the session how to
 // re-arm.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

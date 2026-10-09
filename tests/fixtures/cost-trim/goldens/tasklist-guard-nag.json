@@ -1,0 +1,10 @@
+{
+  "scenario": "tasklist-guard-nag",
+  "outputs": [
+    {
+      "label": "tasklist-guard.js",
+      "status": 0,
+      "text": "⛔ anti-hall · tasklist-guard: stop blocked: 4 file-changing actions this session but NO tasks tracked.\nWhy: Work this size needs a task list and a progress file.\nDo instead: Capture the work as priority-sorted tasks via TaskCreate/TaskUpdate (TaskList first to dedup; link with addBlockedBy/addBlocks), set statuses, and update <CWD>/.anti-hall/progress/<DATE>/00000000-0000-0000-0000-000000000000.md (done/in-progress/next); a new file gets this header on top: <!-- session: 00000000-0000-0000-0000-000000000000 | started: <TS> -->. Gitignore it. Append each COMPLETED task to <CWD>/.anti-hall/history/<DATE>/00000000-0000-0000-0000-000000000000.md (append-only ledger, one entry per task: Cause / Fix / Verified; gitignore it too; it usually exists already, so append with the Edit tool or a one-line `>>`, never the Write tool). The progress file can be written freely. No Bash heredoc (git-guard scans its body as shell).\n💡 anti-hall · handover: no handover exists yet after significant work.\nDo instead: consider /anti-hall:handover before ending.\nOverride (only if the user explicitly confirmed this exact condition is fine): write {\"tasklist-guard:6623c450da2f75b4\": <EPOCH>} into <HOME>/.anti-hall/stop-ack/stop-ack-00000000-0000-0000-0000-000000000000.json (merge with existing keys); it then stays advisory for the rest of the session."
+    }
+  ]
+}

@@ -1,9 +1,13 @@
 ---
 name: anti-hall-ship-it
-description: Codex-native ship-it workflow. Use to plan, implement, verify, and harden a change with rigor scaled to blast radius. Replaces anti-hall-feature-launch (retired 2026-07-05, matching the Claude-side ship-it/feature-launch consolidation from v0.27.0).
+description: "Ship a change right, scaled S/M/L: plan, build, verify, harden. Use for \"build X\", \"implement Y\", \"fix Z\"."
 ---
 
 # anti-hall ship-it for Codex
+
+## When to use
+
+Codex-native ship-it workflow. Use to plan, implement, verify, and harden a change with rigor scaled to blast radius. Replaces anti-hall-feature-launch (retired 2026-07-05, matching the Claude-side ship-it/feature-launch consolidation from v0.27.0).
 
 This is the Codex-native equivalent of the Claude `ship-it` workflow. Do not run `ship-it.workflow.js`; Codex does not expose the Claude Workflow runtime.
 
@@ -108,7 +112,7 @@ before running the command below:
 ```bash
 # SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 `$ANTI_HALL_ROOT/scripts/migrate-state.js` is a pure-Node script with no Claude-specific dependencies — it works identically from a Codex session: `node "$ANTI_HALL_ROOT/scripts/migrate-state.js"`. Use it to fold legacy root `.anti-hall-progress.md`/`.anti-hall-history.md` files into the new dated `.anti-hall/` structure (copy-only). A `.planning/` tree is only copied by the explicit `--planning` flag, never moved.

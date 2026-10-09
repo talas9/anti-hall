@@ -1,9 +1,13 @@
 ---
 name: anti-hall-update
-description: Check or update anti-hall from the local marketplace clone. Use when the user asks to update anti-hall, check whether anti-hall is current, or refresh the Codex port files.
+description: Update anti-hall from the local marketplace clone. Use for "update anti-hall" or "is anti-hall current".
 ---
 
 # anti-hall update for Codex
+
+## When to use
+
+Check or update anti-hall from the local marketplace clone. Use when the user asks to update anti-hall, check whether anti-hall is current, or refresh the Codex port files.
 
 > **UPGRADE NOTE (Claude Code side only):** a user who also runs the Claude Code plugin on
 > 0.107.x or earlier must run `claude plugin update anti-hall@anti-hall` once, then restart
@@ -22,7 +26,7 @@ root from that path before running anything below:
 ```bash
 # SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 Use the existing pure-Node update helper:

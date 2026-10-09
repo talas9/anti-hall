@@ -20,6 +20,7 @@
 // already-fixed working tree without duplication. Defaults to the real repo
 // tree (the current, already-patched working copy).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -66,7 +67,7 @@ function isolatedEnv(home, extra) {
   }, extra || {});
 }
 
-test('an app-archived stale-registry row is suppressed from the STALE WORKSPACE(S) segment', () => {
+test('an app-archived stale-registry row is suppressed from the devswarm-stale-workspaces segment', () => {
   const home = tmpHome();
   const repo = makeGitRepo('a9ac2');
   try {
@@ -112,7 +113,7 @@ test('an app-archived stale-registry row is suppressed from the STALE WORKSPACE(
     let json = null;
     try { json = JSON.parse(res.stdout); } catch (_) { json = null; }
     const ctxText = (json && json.hookSpecificOutput && json.hookSpecificOutput.additionalContext) || '';
-    assert.ok(!/STALE WORKSPACE/.test(ctxText),
+    assert.ok(!/devswarm-stale-workspaces/.test(ctxText),
       'an app-archived row must never be named as a stale workspace; additionalContext=' + ctxText);
   } finally { rm(home); rm(repo); }
 });
@@ -152,7 +153,7 @@ test('a stale-registry row with NO app-archive evidence is still surfaced (no fa
     let json = null;
     try { json = JSON.parse(res.stdout); } catch (_) { json = null; }
     const ctxText = (json && json.hookSpecificOutput && json.hookSpecificOutput.additionalContext) || '';
-    assert.ok(/STALE WORKSPACE/.test(ctxText),
+    assert.ok(/devswarm-stale-workspaces/.test(ctxText),
       'without any app-archive evidence the row must still be surfaced; additionalContext=' + ctxText);
   } finally { rm(home); rm(repo); }
 });

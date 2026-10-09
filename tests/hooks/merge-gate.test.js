@@ -189,7 +189,7 @@ test('lib/quote-mask.js gives identical output to speculation-guard.js maskQuote
   const a = src.indexOf('function blank(s)');
   const bMarker = src.indexOf('function maskQuotedText');
   const end = src.indexOf('\n}\n', bMarker) + 3;
-  const specMask = new Function(src.slice(a, end) + '\nreturn maskQuotedText;')();
+  const specMask = require('node:vm').compileFunction(src.slice(a, end) + '\nreturn maskQuotedText;')();
   const { maskQuotedText } = require('../../plugins/anti-hall/hooks/lib/quote-mask.js');
   const samples = [
     'plain text', 'say "first-pass" here', 'odd " quote', '`code` and more', '```\nfenced\n```\nafter',

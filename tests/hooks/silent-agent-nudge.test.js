@@ -474,7 +474,8 @@ test('the SAME agent id showing up through BOTH the transcript AND heartbeat sou
     assert.ok(isBlock(r));
     const occurrences = (r.json.reason.match(new RegExp(sharedId, 'g')) || []).length;
     assert.strictEqual(occurrences, 1, 'the shared agent id must appear exactly once in the nudge text, not once per source: ' + r.json.reason);
-    assert.match(r.json.reason, /^anti-hall silent-agent-nudge: 1 /, 'the reported stale count must also be deduped to 1: ' + r.json.reason);
+    assert.match(r.json.reason, /silent-agent-nudge: 1 of your own/, 'the reported stale count must also be deduped to 1: ' + r.json.reason);
+    require('../helpers/block-shape.js').assertShape(r.json.reason, 'silent-agent-nudge', 'silent-agent-nudge', { requireWhy: true });
   } finally { h.cleanup(); }
 });
 
@@ -689,7 +690,7 @@ test('SIGNATURE-ACK: acking the exact stale-agent signature silences it; a diffe
 
     const before = testHook(HOOK, payload, { home: h.home });
     assert.ok(isBlock(before), 'first Stop must block on the genuinely stale agent: ' + JSON.stringify(before.json));
-    assert.match(before.json.reason, /ack it for the rest of this session/, 'reason must carry the ack hint');
+    assert.match(before.json.reason, /Override \(only if the user explicitly confirmed/, 'reason must carry the ack hint');
 
     const sig = stopAck.signatureFor(agentId);
     assert.ok(stopAck.recordAck(h.home, payload.session_id, 'silent-agent-nudge', sig), 'ack write must succeed');

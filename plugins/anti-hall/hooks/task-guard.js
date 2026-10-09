@@ -54,11 +54,12 @@
 //   - NEVER throws: all logic is wrapped in a top-level try/catch -> exit 0.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 
 // metricsHome() — metrics home or null; never throws (the test-home guard
 // refuses the real HOME under a test runner).
@@ -180,6 +181,14 @@ function main() {
       let running = null;
       try { running = require('./lib/agent-scan.js').runningAgentsOrNull(transcriptPath); } catch (_) { running = null; }
       demand = DD.evaluate({ actionable, knownIds: [...taskMap.keys()], inProgressIds: openTasks.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running });
+      // Block only on a PROVEN uncovered task (guards.idleNeglectProvenOnly,
+      // default on): with unmapped running agents, the guard cannot tell which
+      // task each one is on, so "no in-flight agent on them" is unproven while
+      // dispatch <= unmapped. task-tracker's per-turn DISPATCH NOW line still
+      // shows. Off = the older in_progress-first estimate also blocks.
+      // The proof (demand.proven) also discounts hung and pre-task agents, so
+      // under proven-only the block follows it, not the per-turn estimate.
+      if (DD.provenOnly() && !demand.unknown) demand = Object.assign({}, demand, { fire: !!demand.proven });
     } else {
       // Setting off: legacy blanket rule.
       demand = { fire: !haveAgents, dispatch: actionable };
@@ -288,6 +297,17 @@ function main() {
     process.exit(0);
   }
 
+  // PER-PROMPT BUDGET (cost-trim Phase 1; guards.stopNagBudgetPerPrompt, default 0 = off =
+  // today's behaviour): consulted only now that this Stop WILL block. A spent budget allows the
+  // stop; the session cap above stays the outer bound.
+  try {
+    if (require('./lib/stop-policy.js').budgetSpent({
+      home: require('../companion/lib/test-home-guard.js').resolveHome(),
+      sessionId: String(sessionId).replace(/[^A-Za-z0-9_.-]/g, '_'),
+      hook: 'task-guard', payload, transcriptPath,
+    })) process.exit(0);
+  } catch (_) { /* fail-open to today's behaviour */ }
+
   // Write the new state before blocking (so a no-op next Stop won't re-block and
   // the cap is enforced even if the set keeps changing).
   try {
@@ -325,42 +345,37 @@ function main() {
     return JSON.stringify(subject) + ' [' + JSON.stringify(status) + ']';
   }).join('; ');
 
+  // Task-tool names are Claude Code's; a Codex session gets neutral wording.
+  let codexHost = false;
+  try { codexHost = require('./lib/host-text.js').isCodex(payload); } catch (_) { codexHost = false; }
+  const UPD = codexHost ? 'update your task list' : 'TaskUpdate';
+  const bm = require('./lib/block-message.js');
   let reason;
   if (idleNeglect) {
     DD.recordIdleNeglect({ home: metricsHome() });
     const list = demand.dispatch.slice(0, 12).map((t) => DD.label(t)).join(', ');
     const more = demand.dispatch.length > 12 ? ' (and ' + (demand.dispatch.length - 12) + ' more)' : '';
-    reason =
-      'IDLE NEGLECT: ' + demand.dispatch.length + ' non-blocked, unassigned task(s) with ' +
-      'NO in-flight agent on them — DISPATCH NOW in PARALLEL (one background agent ' +
-      'each, cap ' + (demand.cap || '~min(16, cores-2)') + '): ' + list + more + '. ' +
-      'Do not end the turn idle; only stop if a task truly needs the user (then ' +
-      'say which + why). If a task is genuinely blocked on the OWNER (hardware, a ' +
-      'decision only a human can make), mark it non-dispatchable honestly — ' +
-      'metadata.blockedOn:\'owner\' (or \'user\'/\'human\'/\'external\'), or an "OWNER:" / ' +
-      '"OWNER DECISION" subject prefix — never a fake blockedBy dependency. ' +
-      'If a task waits on an in-flight task, set its blockedBy (TaskUpdate addBlockedBy) instead of dispatching it. ' +
-      'If a running agent already covers a task, set the task\'s owner to it (TaskUpdate owner) and it counts as attended.' +
-      (anyLiveDevswarmChildren()
-        ? ' If this task is delegated to a DevSwarm workspace, set its owner to the ' +
-          'workspace id, branch or title (TaskUpdate owner) and it counts as attended.'
-        : '');
+    reason = bm.blockMessage({
+      guard: 'task-guard',
+      what: 'stop blocked: ' + demand.dispatch.length + ' non-blocked, unassigned task(s) have no in-flight agent: ' + list + more + '.',
+      why: 'Dispatchable work is sitting idle.',
+      instead: 'dispatch them now in parallel (one background agent each, cap ' + (demand.cap || '~min(16, cores-2)') + '), or stop only if a task truly needs the user (say which and why). A task waiting on an in-flight task: set its blockedBy (' + UPD + ' addBlockedBy). A running agent already covers a task: set the task owner to it (' + UPD + ' owner) and it counts as attended.' +
+        (anyLiveDevswarmChildren() ? ' Delegated to a DevSwarm workspace: set the task owner (' + UPD + ' owner) to the workspace id, branch or title.' : ''),
+      allowed: 'a task blocked on the OWNER (hardware, a human decision): mark it metadata.blockedOn:\'owner\' (or \'user\'/\'human\'/\'external\'), or give it an "OWNER:" / "OWNER DECISION" subject prefix. Never a fake blockedBy dependency.',
+    });
   } else {
     const list = renderList(nudgeTasks);
     const more = nudgeTasks.length > 5 ? ' (and ' + (nudgeTasks.length - 5) + ' more)' : '';
-    reason =
-      'Open tasks remain and the session is stopping: ' + list + more + '. ' +
-      'Actively drain the task list: pick up pending tasks and dispatch subagents to ' +
-      'finalize them; run independent tasks in parallel (up to the concurrency cap, ' +
-      '~min(16, cores-2)); do not let tasks sit neglected. ' +
-      'Continue them, mark them completed or deferred via TaskUpdate, or tell the user ' +
-      'explicitly what is pending and why you are stopping. If a task is genuinely ' +
-      'blocked, mark it honestly via TaskUpdate — blockedBy:[<open task id>] for a task ' +
-      'dependency, or metadata.blockedOn:\'owner\'/\'user\'/\'human\'/\'external\' for an ' +
-      'outside wait — and it is no longer listed here.';
+    reason = bm.blockMessage({
+      guard: 'task-guard',
+      what: 'stop blocked: open tasks remain: ' + list + more + '.',
+      why: 'Tasks should not sit neglected when the session stops.',
+      instead: 'pick up pending tasks and dispatch subagents to finish them in parallel (up to the cap, ~min(16, cores-2)); or mark them completed/deferred (' + UPD + '), or tell the user what is pending and why you are stopping.',
+      allowed: 'a genuinely blocked task: mark it via ' + UPD + ' with blockedBy:[<open task id>] or metadata.blockedOn:\'owner\'/\'user\'/\'human\'/\'external\'; it is then no longer listed.',
+    });
   }
   const unkLine = takeUnknownNote();
-  if (unkLine) reason += ' ' + unkLine;
+  if (unkLine) reason += '\n' + unkLine;
 
   // fs.writeSync(1): stdout.write races the async pipe flush with exit() on
   // macOS node 18/20 (repo-wide hook-output rule; R2-N1).
@@ -832,6 +847,7 @@ function parseTasksFromFile(filePath) {
       }
     }
 
+    const entryTsMs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
     const toolUses = collectToolUses(entry);
     for (const tu of toolUses) {
       const name = tu.name || '';
@@ -866,6 +882,7 @@ function parseTasksFromFile(filePath) {
               // TodoWrite items have no owner/dependency model — they are the
               // main thread's own list, so they count as unowned + unblocked
               // (i.e. always actionable when pending).
+              sinceMs: entryTsMs,
               owner: normOwner(todo.owner),
               blockedBy: normBlockedBy(todo.blockedBy),
               priority: normPriority(
@@ -906,7 +923,7 @@ function parseTasksFromFile(filePath) {
         const blockedOn = (inp.metadata != null && inp.metadata.blockedOn != null)
           ? inp.metadata.blockedOn : inp.blockedOn;
         if (toolUseId) {
-          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy, priority, blockedOn });
+          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy, priority, blockedOn, sinceMs: entryTsMs });
         }
         continue;
       }
@@ -949,6 +966,8 @@ function parseTasksFromFile(filePath) {
             // unless the update carries one; lib/task-subject-backfill.js recovers
             // it from before the window, else the task is neither open nor nagged.
             status: inp.status || existing.status,
+            // When the task last became (or was set) pending / in_progress.
+            sinceMs: /^(pending|in[-_]?progress)$/i.test(String(inp.status || '')) ? entryTsMs : existing.sinceMs,
             // Only overwrite owner/blockedBy when the update actually carries the
             // field; an unrelated status-only update must not clear them.
             owner: inp.owner !== undefined ? normOwner(inp.owner) : (existing.owner || ''),
@@ -977,16 +996,17 @@ function parseTasksFromFile(filePath) {
       existing = Object.assign({}, existing, require('./lib/task-state.js').fillFromCreate(existing, rec));
       taskMap.set(key, existing);
     }
+    if (existing && Number.isFinite(rec.sinceMs) && !(existing.sinceMs >= rec.sinceMs)) existing.sinceMs = rec.sinceMs;
     if (!existing) {
       taskMap.set(key, {
-        id: key, content: rec.content, status: rec.status,
+        id: key, content: rec.content, status: rec.status, sinceMs: rec.sinceMs,
         owner: rec.owner || '', blockedBy: rec.blockedBy || [],
         priority: rec.priority || null, blockedOn: rec.blockedOn,
       });
     } else if (!existing.content || existing.content === key) {
       // Backfill subject from provisional record (update may have arrived first).
       taskMap.set(key, {
-        id: key, content: rec.content, status: existing.status,
+        id: key, content: rec.content, status: existing.status, sinceMs: existing.sinceMs,
         owner: existing.owner || rec.owner || '',
         blockedBy: (existing.blockedBy && existing.blockedBy.length) ? existing.blockedBy : (rec.blockedBy || []),
         priority: existing.priority || rec.priority || null,

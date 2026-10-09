@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: "risky-c2-deploy-default-production-v2"
+context:
+  scaffold_script: scaffold.sh

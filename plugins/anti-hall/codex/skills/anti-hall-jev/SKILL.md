@@ -1,9 +1,13 @@
 ---
 name: anti-hall-jev
-description: Activate, configure, check, or read the tracking loop of the opt-in Jev classifier for Codex. Use when the user says activate/enable/disable/turn on/set up jev, jev status, jev report, how is jev doing, jev scorecard, label that decision, promote an integration, jev budget, or jev credit balance.
+description: Enable, configure or report on the opt-in Jev classifier. Use for "activate jev", "jev status", "jev report", "jev budget".
 ---
 
 # anti-hall jev for Codex
+
+## When to use
+
+Activate, configure, check, or read the tracking loop of the opt-in Jev classifier for Codex. Use when the user says activate/enable/disable/turn on/set up jev, jev status, jev report, how is jev doing, jev scorecard, label that decision, promote an integration, jev budget, or jev credit balance.
 
 ## Resolve the plugin root
 
@@ -13,7 +17,7 @@ it from the path Codex shows you for this SKILL.md (see
 
 ```bash
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 All commands below run as `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" <verb>`.
@@ -148,8 +152,8 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   working and forward-migrates automatically, nothing deleted). In `on`,
   `tasklistTrivial`/`codexNudgeSubstantial` ask synchronously (1.5 s cap, fail-open)
   and a confident "trivial" verdict skips the nudge. Full per-id trust/hook/API table:
-  `docs/KB-jev-classifier.md` §10. Claude Code exposes each as its own `/config` row
-  ("Jev integration · <name>"); Codex has no `/config` equivalent — use
+  `docs/KB-jev-classifier.md` §10. Neither platform has a per-integration `/config` row (Claude
+  Code's panel carries only the headline switches; Codex has none) — use
   `settings.js show --section jevIntegrations` or the `anti-hall-settings` skill.
   **Claude/Codex parity**: `speculation`, `triage`, `claimLedger`, `mergeGateHedge`,
   `newRequest`, `gitGuardSelfCredit`, `parentGateQuestion`, `tasklistTrivial` run on

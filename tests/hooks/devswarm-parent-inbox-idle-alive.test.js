@@ -6,6 +6,7 @@
 // classification (`displayStatus`), which is what the Primary actually reads
 // each turn and what escalated a live session in the field.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

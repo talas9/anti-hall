@@ -39,7 +39,7 @@ test('ON + L-risk file (.github/workflows) + no PLAN.md -> BLOCK (exit 2) with r
     const risky = path.join(h.home, '.github', 'workflows', 'deploy.yml');
     const r = testHook(HOOK, writePayload(risky, h.home), { home: h.home, env: ON });
     assert.strictEqual(r.status, 2, `expected block; stdout: ${r.stdout} stderr: ${r.stderr}`);
-    assert.match(r.stderr, /ship-it gate/);
+    assert.match(r.stderr, /ship-it-guard: L-risk/);
     assert.match(r.stderr, /PLAN\.md/);
     assert.match(r.stderr, /ANTIHALL_SHIPIT_GATE/);
   } finally { h.cleanup(); }
@@ -214,7 +214,7 @@ test('CONFORMANCE: Write OUTSIDE every phase files: list -> ADVISORY (exit 0, ad
     assert.strictEqual(r.status, 0, `advisory must not block; stderr: ${r.stderr}`);
     assert.ok(r.json && r.json.hookSpecificOutput, `expected hookSpecificOutput advisory; json: ${JSON.stringify(r.json)}`);
     assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'PreToolUse');
-    assert.match(r.json.hookSpecificOutput.additionalContext, /PLAN-CONFORMANCE/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /does not appear in any phase/);
     assert.match(r.json.hookSpecificOutput.additionalContext, /does not/);
     assert.ok(!r.json.decision, 'advisory must never carry a block decision');
   } finally { h.cleanup(); }

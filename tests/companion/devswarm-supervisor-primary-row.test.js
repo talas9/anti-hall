@@ -14,6 +14,7 @@
 // listener-presence only, never as FAIL, clearing a stale verdict under
 // --repair.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

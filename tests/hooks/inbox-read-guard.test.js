@@ -6,6 +6,7 @@
 // the Read tool. Fail-open on every ambiguity. Store deny is self-healing: it only
 // arms when the Primary read-CLI (devswarm-store.js listMessages) is present.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
@@ -171,7 +172,7 @@ test('SPAWN reason: names `inbox pull` + kill-switch, and does NOT echo the path
   assert.strictEqual(r.status, 2);
   assert.ok(/inbox pull/.test(r.json.reason), 'reason redirects to `devswarm.js inbox pull`');
   assert.ok(/DISABLE_ANTIHALL_DEVSWARM=1/.test(r.json.reason), 'reason names the kill-switch');
-  assert.ok(/CURSOR DESYNC/.test(r.json.reason) && /does NOT drain the queue/.test(r.json.reason),
+  assert.ok(/bypasses the durable cursor/.test(r.json.reason) && /does not drain the queue/.test(r.json.reason),
     'reason uses the accurate cursor-desync harm model');
   assert.ok(!r.stdout.includes('x.ndjson'), 'reason must not echo the read path');
 });
@@ -183,7 +184,7 @@ test('SPAWN reason: names `inbox pull` + kill-switch, and does NOT echo the path
 test('SPAWN BLOCK: Read of the store db (read-CLI present -> store gate armed)', () => {
   const r = runRead(storeDbPath);
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-  assert.ok(/STORE READ-GUARD/.test(r.json.reason), 'store block reason expected');
+  assert.ok(/devswarm-store-read/.test(r.json.reason), 'store block reason expected');
   assert.ok(/inbox read/.test(r.json.reason) && /DISABLE_ANTIHALL_DEVSWARM=1/.test(r.json.reason),
     'store reason redirects to the wrapper + names the kill-switch');
 });

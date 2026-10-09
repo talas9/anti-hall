@@ -25,6 +25,7 @@
 //     to the pre-fix `inbox read ' + '<DEVSWARM_BUILDER_ID>'` — RED: same
 //     non-acking-verb defect, this time with zero paired ack step anywhere.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -223,7 +224,7 @@ test('Item 3 RED/GREEN (end-to-end): buildUnreadSegment must prescribe the ACKIN
     });
     assert.strictEqual(r.status, 0);
     const c = ctxText(r);
-    assert.ok(/DEVSWARM CHILD INBOX — PRIORITY/.test(c), `durable-inbox segment expected; ctx=${c}`);
+    assert.ok(/devswarm-child-inbox: priority/.test(c), `durable-inbox segment expected; ctx=${c}`);
     assert.ok(c.includes('inbox read-primary child-item3'), `THE FIX: must prescribe the acking read-primary verb; ctx=${c}`);
     assert.ok(!c.includes('inbox read child-item3'), `must NEVER prescribe the bare non-acking "inbox read <id>" form; ctx=${c}`);
   } finally { rm(h); }
@@ -245,13 +246,13 @@ test('Item 3 mutation check (buildUnreadSegment): reverting to the bare `inbox r
       });
       assert.strictEqual(r.status, 0);
       const c = ctxText(r);
-      // Scoped to the DEVSWARM CHILD INBOX — PRIORITY segment specifically:
+      // Scoped to the devswarm-child-inbox: priority segment specifically:
       // defect 735b179362e8's id-substitution fix means RECEIVE_NUDGE (a
       // SEPARATE, always-present paragraph, unrelated to this mutation)
       // now legitimately ALSO contains 'inbox read-primary child-item3m'
       // once the real id is substituted — a whole-context substring check
       // can no longer tell the two apart.
-      const priorityIdx = c.indexOf('DEVSWARM CHILD INBOX — PRIORITY');
+      const priorityIdx = c.indexOf('devswarm-child-inbox: priority');
       assert.ok(priorityIdx !== -1, `PRIORITY segment must be present; ctx=${c}`);
       const prioritySegment = c.slice(priorityIdx, priorityIdx + 400);
       assert.ok(prioritySegment.includes('inbox read child-item3m'), `BUGGY (pre-fix): must reproduce the bare non-acking form; segment=${prioritySegment}`);

@@ -56,7 +56,7 @@
 
 'use strict';
 
-const fs = require('fs');
+const io = require('./lib/guard-io.js');
 
 // Bound how much text we regex-scan so a pathological multi-MB tool output
 // can never make this hook slow or memory-heavy. Head+tail keeps both the
@@ -107,8 +107,8 @@ const PASS_PATTERNS = [
 const { basename } = require('./lib/shell-scan.js');
 // v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
 // fail-open to `undefined` (never the value that would disable a guard).
-function settingsGet(section, key) {
-  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+function settingsGet(section, key, env) {
+  try { return require('./lib/settings.js').get(section, key, undefined, require('./lib/settings.js').envOpts(env)); } catch (_) { return undefined; }
 }
 
 const RUNNER_VERBS = new Set(['pytest', 'jest', 'vitest', 'cargo']);
@@ -213,30 +213,18 @@ function extractExitCode(payload, blob) {
   return null;
 }
 
-function main() {
-  let raw = '';
-  try {
-    raw = fs.readFileSync(0, 'utf8');
-  } catch (_) {
-    raw = '';
-  }
-
-  if (settingsGet('guards', 'outputVerifyGuard') === false) {
-    process.exit(0);
+function main(payload, env) {
+  if (settingsGet('guards', 'outputVerifyGuard', env) === false) {
+    return io.decision(0);
   }
 
   // Escape hatch: shared user-consented skip. Outer main() try/catch fails
   // OPEN on any skip-guard error, matching codex-nudge/speculation-guard.
   const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('output-verify-guard')) process.exit(0);
+  if (isSkipped('output-verify-guard', env)) return io.decision(0);
 
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (_) {
-    process.exit(0);
-  }
-  if (!payload || payload.tool_name !== 'Bash') process.exit(0);
+  if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
+  if (!payload || payload.tool_name !== 'Bash') return io.decision(0);
 
   // DETERMINISTIC FIX: only evaluate output from an actual test-runner
   // invocation (command-position verb, not a substring of the command or
@@ -244,10 +232,10 @@ function main() {
   // run and must never trigger this advisory.
   const cmd = payload.tool_input && typeof payload.tool_input.command === 'string'
     ? payload.tool_input.command : '';
-  if (!isTestRunnerCommand(cmd)) process.exit(0);
+  if (!isTestRunnerCommand(cmd)) return io.decision(0);
 
   const blob = buildBlob(payload);
-  if (!blob) process.exit(0);
+  if (!blob) return io.decision(0);
 
   const failHit = firstMatch(FAIL_PATTERNS, blob);
   const passHit = firstMatch(PASS_PATTERNS, blob);
@@ -265,6 +253,7 @@ function main() {
   try {
     require('./lib/jev-assist.js').askDetached({
       id: 'outputVerifyGuard',
+      env,
       question: {
         type: 'noul',
         instructions: 'Does this test-runner output show a GENUINELY mixed ' +
@@ -279,18 +268,36 @@ function main() {
     });
   } catch (_) { /* best-effort — never affects the advisory below */ }
 
-  if (!mismatch) process.exit(0);
+  if (!mismatch) return io.decision(0);
 
   const bits = [];
   if (passHit) bits.push('a passing signal (' + JSON.stringify(passHit) + ')');
   if (failHit) bits.push('a failure signal (' + JSON.stringify(failHit) + ')');
   if (nonZeroExit) bits.push('a non-zero exit code (' + exitCode + ')');
 
-  const reason =
-    'anti-hall output-verify-guard (advisory, not a block): this Bash command\'s ' +
-    'output contains ' + bits.join(' AND ') + ' in the same run. Before reporting ' +
-    '"tests pass" / "build succeeded", re-read the full output and confirm the ' +
-    'actual pass/fail counts and exit code — a mixed summary is not a clean pass.';
+  // Once per turn per distinct signal set (guards.outputVerifyOncePerTurn, default
+  // on): re-running the same suite in one turn yields the identical advisory
+  // each time; the first copy already told the model to verify the counts.
+  if (settingsGet('guards', 'outputVerifyOncePerTurn', env) !== false) {
+    try {
+      if (!require('./lib/turn-gate.js').firstThisTurn({
+        home: env.HOME || env.USERPROFILE || undefined,
+        sessionId: payload.session_id,
+        agentId: typeof payload.agent_id === 'string' ? payload.agent_id : '',
+        transcriptPath: payload.transcript_path,
+        key: 'output-verify-guard',
+        sig: bits.join('|'),
+      })) return io.decision(0);
+    } catch (_) { /* fail-open: emit */ }
+  }
+
+  const reason = require('./lib/block-message.js').message({
+    kind: 'warn',
+    guard: 'output-verify-guard',
+    what: 'this Bash command\'s output contains ' + bits.join(' AND ') + ' in the same run (advisory, not a block).',
+    why: 'A mixed summary is not a clean pass.',
+    instead: 'before reporting "tests pass" / "build succeeded", re-read the full output and confirm the actual pass/fail counts and exit code.',
+  });
 
   const out = {
     hookSpecificOutput: {
@@ -299,15 +306,13 @@ function main() {
     },
   };
 
-  // fs.writeSync(1,...) not process.stdout.write: on macOS node 18/20 async
-  // pipe flush can race process.exit(0) and truncate the JSON; writeSync is
-  // atomic (same reasoning as verify-first-subagent.js / command-guard.js).
-  fs.writeSync(1, JSON.stringify(out) + '\n');
+  return io.decision(0, JSON.stringify(out) + '\n');
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: never block or wedge a PostToolUse turn.
+function evaluate(payload, env) {
+  try { return main(payload, env || process.env) || io.decision(0); } catch (_) { return io.decision(0); } // fail-open: never block or wedge a PostToolUse turn
 }
-process.exit(0);
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

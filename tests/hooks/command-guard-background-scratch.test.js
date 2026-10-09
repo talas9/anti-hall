@@ -65,6 +65,10 @@ test('background-scratch: a tmp/scratchpad script runs in the background', () =>
     'node probe.js',                              // relative to the payload cwd
     'bash ' + shFile,
     'python3 ' + pyFile + ' > ' + path.join(dir, 'out.log'),
+    // valueless interpreter flags before the script (field: python3 -I probe.py > probe.out 2>&1)
+    'python3 -I ' + pyFile + ' > ' + path.join(dir, 'probe.out') + ' 2>&1',
+    'python3 -I -B ' + pyFile,
+    'node --no-warnings ' + jsFile,
   ];
   const wrong = cmds.filter((c) => run(c).status === 2);
   assert.deepStrictEqual(wrong, []);
@@ -95,6 +99,12 @@ test('background-scratch: negatives stay blocked even with run_in_background', (
     'node ' + jsFile + ' > /nonexistent-anti-hall-dir/out.log',
     'node ' + jsFile + ' < /etc/hosts',
     'node ' + jsFile + ' # trailing',
+    // interpreter flags that load/run code or change which file runs stay refused
+    'python3 -c "print(1)" ' + pyFile,
+    'python3 -m http.server ' + pyFile,
+    'python3 -W error ' + pyFile,
+    'node --require ' + jsFile + ' ' + jsFile,
+    'node --import ' + jsFile + ' ' + jsFile,
     // 0.113 P3 (mirrors 0.112 F1): anti-hall scripts and --confirmed never qualify.
     'node ' + pluginScript + ' set safety.commandGuard false',
     'node ' + pluginLink,
@@ -123,6 +133,21 @@ test('background-scratch: script chained with bounded read sinks passes in the b
   assert.deepStrictEqual(wrong, []);
   // Foreground keeps its verdict.
   assert.strictEqual(run(cmds[0], { bg: false }).status, 2);
+});
+
+test('background-scratch: a sink with a file operand outside scratch or an unknown flag stays blocked', () => {
+  const out = path.join(dir, 'out.txt');
+  const cmds = [
+    'python3 ' + pyFile + '; head /etc/passwd',
+    'python3 ' + pyFile + '; tail -n +1 --pid=123',
+    'python3 ' + pyFile + '; wc -l /etc/passwd',
+    'python3 ' + pyFile + '; grep -c root /etc/passwd',
+    'python3 ' + pyFile + ' | head -q',
+    'python3 ' + pyFile + '; tail -f ' + out,
+    'python3 ' + pyFile + '; head -n 5 ' + out + ' /etc/passwd',
+  ];
+  const wrong = cmds.filter((c) => run(c).status !== 2);
+  assert.deepStrictEqual(wrong, []);
 });
 
 test('background-scratch: chains to anything but bounded sinks stay blocked', () => {
@@ -225,14 +250,14 @@ test('background-scratch direct exec: refused for non-exec, foreign scratchpad, 
 test('command-guard block text states the allowed background shapes and the no VAR= prefix rule', () => {
   const r = runOwn('node @SP@/modal-shot.mjs && VARIANTS="A B" @SP@/shoot.sh');
   assert.strictEqual(r.status, 2);
-  assert.match(r.json.reason, /run `<interpreter> <script>` with run_in_background.*an executable scratchpad path, in the background; no VAR=… prefix/);
+  assert.match(r.json.reason, /run with run_in_background/);
 });
 
 test('command-guard names git pull/fetch as state-changing remote operations (verdict unchanged: still blocked)', () => {
   for (const c of ['git pull origin main', 'git fetch --prune origin']) {
     const r = run(c, { bg: false });
     assert.strictEqual(r.status, 2, c);
-    assert.match(r.json.reason, /State-changing remote operation detected/, c);
+    assert.match(r.json.reason, /state-changing remote command/, c);
     assert.doesNotMatch(r.json.reason, /heavy-pattern/, c);
   }
 });

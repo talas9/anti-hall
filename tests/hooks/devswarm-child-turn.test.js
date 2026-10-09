@@ -5,6 +5,7 @@
 // and (2) injects a short report-progress/listen-to-parent reminder. Primary,
 // non-DevSwarm sessions, and malformed stdin are silent no-ops (no output, exit 0).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -537,7 +538,7 @@ test('ARCHIVE REQUEST: marker in an unread message -> a DISTINCT archive-request
       env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
     });
     const c = ctx(r);
-    assert.ok(/DEVSWARM ARCHIVE REQUEST/.test(c), `must surface a distinct archive-request segment; ctx=${c}`);
+    assert.ok(/devswarm-archive-request/.test(c), `must surface a distinct archive-request segment; ctx=${c}`);
     assert.ok(/archive child-1/.test(c), `must name the archive command with this workspace's id; ctx=${c}`);
     assert.ok(/Confirm with YOUR user/.test(c), 'must require the child\'s own user to confirm, never auto-archive');
     assert.ok(/NEVER\s+auto-archive/.test(c), 'must explicitly forbid auto-archiving');
@@ -556,7 +557,7 @@ test('ARCHIVE REQUEST ABSENT: unread messages with no marker -> no archive-reque
       env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
     });
     const c = ctx(r);
-    assert.ok(!/DEVSWARM ARCHIVE REQUEST/.test(c), 'no marker present -> no archive-request segment');
+    assert.ok(!/devswarm-archive-request/.test(c), 'no marker present -> no archive-request segment');
   } finally {
     h.cleanup();
   }
@@ -591,7 +592,7 @@ function writeDaemonLock(home, repoKey, pid) {
   fs.writeFileSync(p, JSON.stringify({ pid, ts: Date.now(), token: 'test' }));
 }
 function staleBanner(c) {
-  return c.split('\n\n').find((s) => s.includes('DEVSWARM STALE DATA')) || '';
+  return c.split('\n\n').find((s) => s.includes('devswarm-stale-data')) || '';
 }
 
 test('CHILD STALE: healthy daemon (fresh heartbeat + live lock) -> NO banner', () => {
@@ -614,7 +615,7 @@ test('CHILD STALE: missing heartbeat entirely -> banner surfaced FIRST, above th
     const banner = staleBanner(c);
     assert.ok(banner, `missing heartbeat must warn; ctx=${c}`);
     assert.ok(/ingest daemon last alive/.test(banner), `banner text; banner=${banner}`);
-    const iBanner = c.indexOf('DEVSWARM STALE DATA');
+    const iBanner = c.indexOf('devswarm-stale-data');
     const iReminder = c.indexOf(REMINDER_PHRASE);
     assert.ok(iBanner >= 0 && iReminder >= 0 && iBanner < iReminder, `banner must sit above the reminder; ctx=${c}`);
   } finally { h.cleanup(); }
@@ -666,7 +667,7 @@ function writeDaemonHeartbeatFull(home, repoKey, fields) {
   fs.writeFileSync(p, JSON.stringify(fields));
 }
 function monitorFaultBanner(c) {
-  return c.split('\n\n').find((s) => s.includes('DEVSWARM INGEST FAILING')) || '';
+  return c.split('\n\n').find((s) => s.includes('devswarm-ingest-failing')) || '';
 }
 
 test('CHILD MONITOR-FAULT: alive (fresh heartbeat + live lock) but monitor failing past threshold -> monitor-fault banner, NOT the stale banner', { skip: process.platform === 'win32' }, () => {
@@ -689,7 +690,7 @@ test('CHILD MONITOR-FAULT: alive (fresh heartbeat + live lock) but monitor faili
     assert.ok(/anti-hall:doctor/.test(banner), banner);
     assert.strictEqual(staleBanner(c), '', `must NOT also render the stale banner; ctx=${c}`);
     // exactly ONE banner segment, never two.
-    const bannerSegs = c.split('\n\n').filter((s) => s.includes('DEVSWARM STALE DATA') || s.includes('DEVSWARM INGEST FAILING'));
+    const bannerSegs = c.split('\n\n').filter((s) => s.includes('devswarm-stale-data') || s.includes('devswarm-ingest-failing'));
     assert.strictEqual(bannerSegs.length, 1, `exactly one banner must render; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -706,7 +707,7 @@ test('CHILD MONITOR-FAULT: timeout fault -> plain wording without a doctor call 
     writeDaemonLock(h.home, REPO_KEY, process.pid);
     timeoutBeat();
     const first = monitorFaultBanner(prompt());
-    assert.ok(/DEVSWARM INGEST FAILING/.test(first), first);
+    assert.ok(/devswarm-ingest-failing/.test(first), first);
     assert.ok(/healthy/.test(first) && /not answering/.test(first) && /mesh messages/.test(first) && /DevSwarm app/.test(first), first);
     assert.ok(!/Run \/anti-hall:doctor/.test(first), `timeout must not tell the user to run doctor: ${first}`);
     assert.strictEqual(monitorFaultBanner(prompt()), '', '2nd prompt in the same episode emits nothing');
@@ -767,7 +768,7 @@ function seedMeshDirect(home, id, count, urgency) {
   } finally { s.close(); }
 }
 function meshDirectSegment(c) {
-  return c.split('\n\n').find((s) => s.startsWith('DEVSWARM MESH DIRECT')) || '';
+  return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-mesh-direct')) || '';
 }
 
 test('D26 MESH DIRECT: this child\'s own directUnread>0 in the shared summary -> surfaced with the standard nudge', () => {
@@ -807,7 +808,7 @@ test('D26 MESH DIRECT URGENT: urgencyMax urgent/high -> the LOUD URGENT wording 
     seedMeshDirect(h.home, 'child-stale', 1, 'urgent');
     const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
     const seg = meshDirectSegment(ctx(r));
-    assert.match(seg, /DEVSWARM MESH DIRECT — URGENT/, `seg=${seg}`);
+    assert.match(seg, /devswarm-mesh-direct: urgent/, `seg=${seg}`);
     assert.match(seg, /STOP and read them FIRST/);
   } finally { h.cleanup(); }
 });
@@ -841,7 +842,7 @@ test('D26 MESH DIRECT: coexists with the OLD durable-inbox unread segment (both 
     });
     const c = ctx(r);
     assert.ok(meshDirectSegment(c), `mesh-direct segment present; ctx=${c}`);
-    assert.ok(/DEVSWARM CHILD INBOX — PRIORITY/.test(c), `durable-inbox segment also present; ctx=${c}`);
+    assert.ok(/devswarm-child-inbox: priority/.test(c), `durable-inbox segment also present; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -890,7 +891,7 @@ test('SELF-CONTINUE: per-turn directive to keep issuing tool calls across rounds
     });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    assert.ok(/AUTONOMY ACROSS ROUNDS/.test(c), `self-continue directive must be present; ctx=${c}`);
+    assert.ok(/devswarm-autonomy/.test(c), `self-continue directive must be present; ctx=${c}`);
     assert.ok(/do NOT end your turn to wait between rounds/.test(c), `must tell the child not to idle between rounds; ctx=${c}`);
     assert.ok(/proceed to the next round within the SAME turn/.test(c), `must tell the child to self-continue; ctx=${c}`);
     assert.ok(/genuine BLOCK needing a parent decision/.test(c), `must name the legitimate Stop conditions; ctx=${c}`);
@@ -908,7 +909,7 @@ test('OVERRIDE: terse per-turn COMMS OVERRIDE re-assertion is present, unconditi
       env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
     });
     assert.strictEqual(r.status, 0);
-    assert.ok(/DEVSWARM COMMS OVERRIDE/.test(ctx(r)), `override must be present; ctx=${ctx(r)}`);
+    assert.ok(/devswarm-comms/.test(ctx(r)), `override must be present; ctx=${ctx(r)}`);
   } finally {
     h.cleanup();
   }
@@ -964,7 +965,7 @@ test('ITEM 6: summary.archive_requested:true surfaces the archive-request segmen
     });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    assert.ok(/DEVSWARM ARCHIVE REQUEST/.test(c), `must surface the archive-request segment; ctx=${c}`);
+    assert.ok(/devswarm-archive-request/.test(c), `must surface the archive-request segment; ctx=${c}`);
     assert.ok(/archive child-ar/.test(c), `must name this workspace's archive command; ctx=${c}`);
   } finally {
     h.cleanup();
@@ -983,7 +984,7 @@ test('ITEM 6: summary.archive_requested absent/undefined -> no surface (defensiv
       env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
     });
     assert.strictEqual(r.status, 0);
-    assert.ok(!/DEVSWARM ARCHIVE REQUEST/.test(ctx(r)), `undefined field must not surface; ctx=${ctx(r)}`);
+    assert.ok(!/devswarm-archive-request/.test(ctx(r)), `undefined field must not surface; ctx=${ctx(r)}`);
   } finally {
     h.cleanup();
   }
@@ -1002,7 +1003,7 @@ test('ITEM 6: another workspace\'s archive_requested does not leak onto this chi
       env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
     });
     assert.strictEqual(r.status, 0);
-    assert.ok(!/DEVSWARM ARCHIVE REQUEST/.test(ctx(r)), `a DIFFERENT workspace's flag must not surface here; ctx=${ctx(r)}`);
+    assert.ok(!/devswarm-archive-request/.test(ctx(r)), `a DIFFERENT workspace's flag must not surface here; ctx=${ctx(r)}`);
   } finally {
     h.cleanup();
   }
@@ -1022,7 +1023,7 @@ test('ITEM 6: dedupe — NDJSON marker path and summary.archive_requested both t
     });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    const count = (c.match(/DEVSWARM ARCHIVE REQUEST/g) || []).length;
+    const count = (c.match(/devswarm-archive-request/g) || []).length;
     assert.strictEqual(count, 1, `segment must appear exactly once, not double-pushed; ctx=${c}`);
   } finally {
     h.cleanup();
@@ -1639,7 +1640,7 @@ function lockPath(home, id) {
 function plantLiveLock(home, id) {
   const p = lockPath(home, id);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-test' }));
+  fs.writeFileSync(p, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-' + 'by-test' }));
   return p;
 }
 // Async spawn of the hook with the SAME controlled env tests/helpers/spawn-hook.js
@@ -1828,7 +1829,7 @@ test('ARCHIVED CHILD: descriptor is never rewritten, and the ARCHIVED banner is 
     const beforeRaw = fs.readFileSync(descPath, 'utf8');
     const before = JSON.parse(beforeRaw);
     assert.strictEqual(before.worktreePath, path.resolve(REPO_CWD));
-    assert.ok(!ctx(r1).includes('DEVSWARM CHILD ARCHIVED'), 'not yet archived on turn 1 -> no banner');
+    assert.ok(!ctx(r1).includes('devswarm-child-archived'), 'not yet archived on turn 1 -> no banner');
 
     // Archive it: SAME worktreePath + SAME live sessionId (row-state.js does
     // not treat this as superseded — the still-running session continues).
@@ -1839,7 +1840,7 @@ test('ARCHIVED CHILD: descriptor is never rewritten, and the ARCHIVED banner is 
     assert.strictEqual(r2.status, 0);
     const afterRaw = fs.readFileSync(descPath, 'utf8');
     assert.strictEqual(afterRaw, beforeRaw, 'an archived child\'s descriptor must never be rewritten');
-    assert.ok(ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), `must surface the ARCHIVED banner; ctx=${ctx(r2)}`);
+    assert.ok(ctx(r2).includes('devswarm-child-archived'), `must surface the ARCHIVED banner; ctx=${ctx(r2)}`);
     assert.ok(ctx(r2).includes('/anti-hall:handover'), 'must direct the child to write a handover');
     assert.ok(ctx(r2).includes('stop'), 'must direct the child to stop');
     assert.ok(ctx(r2).includes('.anti-hall/handovers/<date>/<session_id>/HANDOVER.md, never a flat file'), 'must name the one handover format');
@@ -1881,7 +1882,7 @@ test('NON-ARCHIVED CHILD: unaffected — descriptor keeps refreshing turn over t
     assert.strictEqual(r2.status, 0);
     const second = JSON.parse(fs.readFileSync(descPath, 'utf8'));
     assert.strictEqual(second.sessionId, 'sess-plain-2', 'a non-archived child must keep refreshing its descriptor every turn');
-    assert.ok(!ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), 'no archive -> no banner');
+    assert.ok(!ctx(r2).includes('devswarm-child-archived'), 'no archive -> no banner');
   } finally { h.cleanup(); }
 });
 
@@ -1900,7 +1901,7 @@ test('SWITCH devswarm.archivedChildStop=false: an archived child reverts to the 
     switchOff(h.home, 'devswarm', 'archivedChildStop');
     const r2 = testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
     assert.strictEqual(r2.status, 0);
-    assert.ok(!ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), 'setting off -> no banner, pre-fix behaviour');
+    assert.ok(!ctx(r2).includes('devswarm-child-archived'), 'setting off -> no banner, pre-fix behaviour');
     const after = JSON.parse(fs.readFileSync(descPath, 'utf8'));
     assert.strictEqual(after.sessionId, sessId, 'setting off -> descriptor still refreshed (old behaviour)');
   } finally { h.cleanup(); }

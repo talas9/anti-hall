@@ -7,6 +7,7 @@
 // No real launchctl/systemctl/crontab calls and no real HOME is ever touched —
 // every fixture uses a temp dir passed explicitly via {home, cwd, root, platform}.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

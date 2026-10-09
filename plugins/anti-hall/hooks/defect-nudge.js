@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+require('./lib/judge-child-exit');
 // anti-hall :: defect-nudge (SessionStart)
 //
 // Non-blocking, once-per-24h nudge surfacing the file-based defect channel
@@ -105,7 +106,12 @@ function maintainerLine(store, home, now) {
   for (const d of active) {
     oldestDays = Math.max(oldestDays, daysAgo(d.firstSeen, now));
   }
-  return `anti-hall: ${active.length} unfinished defect reports (${regressed.length} regressed), oldest ${oldestDays}d — /anti-hall:defects`;
+  return require('./lib/block-message.js').message({
+    kind: 'tip',
+    guard: 'defect-nudge',
+    what: `${active.length} unfinished defect reports (${regressed.length} regressed), oldest ${oldestDays}d.`,
+    instead: 'run /anti-hall:defects.',
+  });
 }
 
 // reporterLine(store, home, cwd, now) -> the fixed-format ruling nudge, or ''
@@ -127,7 +133,12 @@ function reporterLine(store, home, cwd, now) {
     if (hasLaterRuling) count++;
   }
   if (count === 0) return '';
-  return `anti-hall: rulings on ${count} defects you reported — /anti-hall:defects mine`;
+  return require('./lib/block-message.js').message({
+    kind: 'tip',
+    guard: 'defect-nudge',
+    what: `rulings on ${count} defects you reported.`,
+    instead: 'run /anti-hall:defects mine.',
+  });
 }
 
 function main() {

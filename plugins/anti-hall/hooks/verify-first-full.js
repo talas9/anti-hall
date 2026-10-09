@@ -45,39 +45,27 @@
 //   exit 0 : always (never blocks). Fail-open on any error.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 
-// Core Iron Law + Rationalization + Positive Rules + Scope & Fidelity lives in
-// verify-first-core.js (shared with verify-first-subagent.js).
-const { CORE_LINES } = require('./verify-first-core');
+// Text lives in verify-first-core.js (shared with verify-first-subagent.js and the PROTOCOL.md
+// generator). `context.protocolLevel=full` emits today's text byte for byte (CORE_FULL +
+// DISCIPLINES_INDEX); the default `compact` emits CORE_COMPACT with a pointer to PROTOCOL.md.
+const core = require('./verify-first-core');
 
-// DISCIPLINES-vs-SKILLS index: the "what always applies + what to invoke" map.
-// The two ORCHESTRATION-flavored entries (orchestration, model-routing) summarize
-// disciplines whose FULL ruleset (rules A-N) is delivered by the companion
-// verify-first-orch.js injection — the pointer says "companion injection" rather
-// than "the block above" because that block is no longer in THIS hook's payload.
-const DISCIPLINES_INDEX = [
-  'DISCIPLINES vs SKILLS:',
-  'ALWAYS APPLY (enforced every session, not invoked):',
-  "  - root-cause: the IRON LAW + RATIONALIZATION TABLE + POSITIVE RULES above. No claim without evidence; no fix without a proven root cause; instrument, don't guess.",
-  '  - orchestration: command delegation is the top rule (never inline heavy commands, broad reads, or code-nav searches - bloated context induces hallucination). Non-blocking main thread; priority-sorted task list; drain tasks; bias toward delegating any tool/file/command/build/test/search work; parallel agents when independent; VERIFY delegated work - a subagent\'s "done/passing" is an unverified claim, re-check it against ground truth before marking complete. Full rules A-N in the companion ORCHESTRATION DISCIPLINE injection (verify-first-orch).',
-  '  - anti-sycophancy: do not agree just to agree. If the user or a premise is wrong, challenge it with evidence. User agreement is not correctness (Positive Rule 9).',
-  '  - scope-fidelity: the SCOPE & FIDELITY block. Simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish asked work and drop nothing.',
-  '  - autonomous-execution: once the user authorizes a scope ("do all"/"yes"/"go", a task list, or a named process like "run the review"), execute the WHOLE scope to done without re-confirming steps that authorization already covers - drive each item build->review->fix->deploy->verify and act on every background result as it lands (deploy what is reviewed (unless the deploy itself is irreversible - then confirm), fix what is flagged, re-verify). Do NOT stop for naming/wording, for running an already-requested process, for shipping already-reviewed work, or to choose between roughly-equivalent options - take the better one, note it, proceed. Check in ONLY for a genuine blocker: a credential/secret you cannot supply, a destructive/irreversible action (deletions still require explicit confirmation), or real ambiguity that changes the outcome. Report ONE consolidated end result, not a stream of confirmation requests. This lowers NO bar: DONE still means VERIFIED (Positive Rule 6), and EXPANDING scope past what was authorized still needs confirmation (SCOPE & FIDELITY).',
-  '  - model-routing: orchestration rules M+N. Shallow+wide over deep nesting; lift 3+ parallel/nested spawns into a deterministic Workflow; set model EXPLICITLY per seat (implementation->sonnet, correctness/verify review->Codex, planning/architecture->opus) - never an all-Opus fan-out (it inherits the flagship and burns the limit). Codex is the always-on second-opinion correctness reviewer (it does not consume the Claude limit); Opus keeps the architecture/design lens.',
-  'INVOKE WHEN IT MATCHES (conditional skills, not every turn):',
-  '  - /anti-hall:root-cause - full debugging playbook when investigating a specific bug/failure.',
-  '  - /anti-hall:orchestration - full swarm playbook when a task is large enough to plan a fan-out.',
-  '  - /anti-hall:deadly-loop - HARDEN risky changes BEFORE merge: cross-file/cross-PR coordination, security-sensitive changes, schema/production-data touches, shell scripts, CI/workflow YAML, LLM-prompt work. Iterative Reviewer+Critic debate + fix waves until zero NEW P0s.',
-  '  - /anti-hall:ship-it - ship any change correctly, S/M/L scaled to blast radius: brainstorm + plan IN PLAN MODE (ExitPlanMode is the gate), harden the plan with the deadly-loop BEFORE code, fan large work out as a Workflow swarm, verify each phase with fresh evidence + a vacuous-test guard until zero NEW P0s.',
-  '  - /anti-hall:system-briefing (Codex: anti-hall-system-briefing) - the anti-hall operator guide: every term, rule, skill, CLI verb and setting with its default. Read it before operating anti-hall or when a term/option is unclear.',
-];
+// Foundation payload: identical in every session (DevSwarm or not) — the DevSwarm-Primary-specific
+// rule W lives in verify-first-orch.js, so nothing here is env-gated.
+const FOUNDATION_FULL = [...core.CORE_FULL, ...core.DISCIPLINES_INDEX].join('\n');
+const FOUNDATION_FULL_CODEX = [...core.CORE_FULL, ...core.DISCIPLINES_INDEX_CODEX].join('\n');
 
-// Foundation payload: the core protocol + the discipline/skill index. Identical in
-// every session (DevSwarm or not) — the DevSwarm-Primary-specific rule W lives in
-// verify-first-orch.js, so nothing here is env-gated.
-const FOUNDATION = [...CORE_LINES, ...DISCIPLINES_INDEX].join('\n');
+// Compact core; when the orchestration hook is switched off, today's index would still have carried the
+// model-routing and delegation summary, so the M/N line rides here instead.
+function compactText(codex) {
+  let t = core.coreCompactSession();
+  try { if (!require('./lib/settings.js').enabled('context', 'verifyFirstOrchestration')) t += '\n' + (codex ? core.ORCH_MN_LINE_CODEX : core.ORCH_MN_LINE); } catch (_) { /* core only */ }
+  return t;
+}
 
 function main() {
   // Settings switch context.verifyFirstSession (0.108.4): off -> no-op. Fail-open: any error runs the hook.
@@ -94,8 +82,10 @@ function main() {
   // SessionStart, so SessionStart is both the expected and the safe default for
   // any unrecognized / missing value or parse failure.
   let event = 'SessionStart';
+  let codex = false;
   try {
     const payload = JSON.parse(raw);
+    try { codex = require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex'; } catch (_) { codex = false; }
     const name = payload && typeof payload.hook_event_name === 'string'
       ? payload.hook_event_name
       : '';
@@ -115,7 +105,7 @@ function main() {
   const out = {
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: FOUNDATION,
+      additionalContext: core.protocolLevel() === 'full' ? (codex ? FOUNDATION_FULL_CODEX : FOUNDATION_FULL) : compactText(codex),
     },
   };
 

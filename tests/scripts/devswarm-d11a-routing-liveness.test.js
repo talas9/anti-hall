@@ -15,6 +15,7 @@
 // composes isSiblingPartitionLive with a descriptor-existence fallback (a
 // just-registered row with no heartbeat file yet is not treated as dead).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

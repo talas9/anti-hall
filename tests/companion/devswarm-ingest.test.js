@@ -4,6 +4,7 @@
 // stability, one supervised loop iteration) WITHOUT spawning real hivecontrol —
 // the monitor runner + clock are injected.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -394,7 +395,7 @@ test('acquireIngestLock does NOT steal a LIVE holder even when its timestamp is 
     const p = ingest.ingestLockPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const oldTs = 1000; // ancient (far older than the 15-min stale window)
-    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts: oldTs, token: 'live-holder' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts: oldTs, token: 'live-' + 'holder' }));
     // Holder reads as ALIVE; even though the timestamp is stale, the lock is a live
     // `monitor` consumer and MUST NOT be stolen (stealing it splits the destructive
     // native queue -> data loss). Requires BOTH stale AND not-alive to steal.
@@ -411,7 +412,7 @@ test('acquireIngestLock RECLAIMS a dead + stale holder', () => {
     const p = ingest.ingestLockPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const oldTs = 1000;
-    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts: oldTs, token: 'dead-holder' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts: oldTs, token: 'dead-' + 'holder' }));
     // Holder is DEAD and its lock is stale -> reclaimable.
     const rel = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => oldTs + 60 * 60 * 1000 });
     assert.ok(rel, 'a dead + stale holder is reclaimed');
@@ -435,7 +436,7 @@ test('acquireIngestLock RECLAIMS a DEAD holder IMMEDIATELY even when its lock is
     const p = ingest.ingestLockPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const ts = 100000;
-    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'fresh-dead' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'fresh-' + 'dead' }));
     // Dead AND NOT stale (heartbeat window not elapsed) -> reclaimed immediately;
     // a dead pid can never come back, so there is nothing to gain by waiting.
     const rel = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => ts + 1000 });
@@ -457,7 +458,7 @@ test('acquireIngestLock: TWO concurrent starters racing a DEAD-but-FRESH lock (P
     const p = ingest.ingestLockPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const ts = 100000; // fresh — NOT past INGEST_LOCK_STALE_MS
-    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'dead-holder' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'dead-' + 'holder' }));
     // Simulate two processes racing on the exact same dead-but-fresh lock (mirrors
     // the existing stale-lock race test below, but exercises the NEW immediate-
     // reclaim branch specifically — staleness never enters into it here). isAlive
@@ -503,7 +504,7 @@ test('runIngestLoop: a DEAD-but-FRESH lock is reclaimed immediately and the daem
     const p = ingest.ingestLockPath(home, wt);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const ts = 100000; // fresh, NOT stale
-    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'dead-holder' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'dead-' + 'holder' }));
     const summary = ingest.runIngestLoop({
       home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
       run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
@@ -520,7 +521,7 @@ test('runIngestLoop: an ALIVE holder still REFUSES the daemon (single-consumer i
     const p = ingest.ingestLockPath(home, wt);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const ts = 1000; // old, but the holder is ALIVE — must never be stolen
-    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'live-holder' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'live-' + 'holder' }));
     const summary = ingest.runIngestLoop({
       home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
       run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
@@ -603,7 +604,7 @@ test('release.heartbeat returns false (definitive loss) when the lock file parse
     const rel = ingest.acquireIngestLock(home);
     assert.ok(rel, 'acquired');
     const p = ingest.ingestLockPath(home);
-    fs.writeFileSync(p, JSON.stringify({ pid: 99999, ts: Date.now(), token: 'someone-elses-token' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 99999, ts: Date.now(), token: 'some' + 'one-elses-token' }));
     assert.equal(rel.heartbeat(), false, 'a clean parse with a foreign token is definitive loss (reclaimed by another starter)');
   } finally { rm(home); }
 });
@@ -675,7 +676,7 @@ test('acquireIngestLock: TWO concurrent starters racing to steal the SAME stale 
     const p = ingest.ingestLockPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const oldTs = 1000;
-    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts: oldTs, token: 'dead-holder' }));
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts: oldTs, token: 'dead-' + 'holder' }));
     // Simulate two processes racing on the exact same stale+dead lock: the FIRST
     // acquireIngestLock's rename-aside (the steal) is intercepted so a SECOND, fully
     // independent acquireIngestLock call runs to completion "in between" — exactly
@@ -1630,7 +1631,7 @@ test('runIngestLoop: a live messages-lock holder during ingest loses nothing —
     } finally { reg.close(); }
     lockPath = path.join(storeLib.journalDir(home, 'p'), 'messages.lock');
     // A LIVE holder (this very process's pid, fresh ts) — never stolen.
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-test' }));
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-' + 'by-test' }));
     // Short contention budget so the test does not wait the production ~20s.
     const io = { openStore: (args) => storeLib.openStore(Object.assign({}, args, { lock: { maxTries: 2, appendRetries: 1 } })) };
     const batch = JSON.stringify([

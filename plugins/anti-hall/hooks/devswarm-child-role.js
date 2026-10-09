@@ -27,6 +27,7 @@
 //   exit 0 : always (fail-open on ANY error).
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
@@ -80,7 +81,7 @@ try {
 // instead) so this text itself never re-introduces the blocked native verbs
 // into emitted hook output (the hook-text-sweep acceptance criterion).
 const OVERRIDE_CORE =
-  'DEVSWARM COMMUNICATION OVERRIDE: anti-hall\'s shared mesh store is this workspace\'s ' +
+  '💡 anti-hall · devswarm-comms: anti-hall\'s shared mesh store is this workspace\'s ' +
   'ONLY messaging channel for DevSwarm coordination — native hivecontrol send commands ' +
   '(`workspace message-*`) are BLOCKED. Report status: `node ' + CLI + ' ' +
   'heartbeat <id> --summary "<text>"`. Direct-message: `node ' + CLI + ' send ' +

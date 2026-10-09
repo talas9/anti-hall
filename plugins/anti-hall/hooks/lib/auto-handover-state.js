@@ -29,7 +29,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const crypto = require('./lazy-node.js').crypto; // lazy: loaded on first use
 
 function sessionTag(payload) {
   if (payload && typeof payload.session_id === 'string' && payload.session_id.trim()) {

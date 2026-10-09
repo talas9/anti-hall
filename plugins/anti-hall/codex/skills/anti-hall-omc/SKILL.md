@@ -1,9 +1,13 @@
 ---
 name: anti-hall-omc
-description: Inspect or integrate optional oh-my-claudecode/OMC state with anti-hall in Codex. Use when the user asks whether OMC is installed for Codex or why anti-hall did not install OMC.
+description: Inspect optional oh-my-claudecode (OMC) state in Codex. Use to ask whether OMC is installed or why anti-hall did not install it.
 ---
 
 # anti-hall OMC integration for Codex
+
+## When to use
+
+Inspect or integrate optional oh-my-claudecode/OMC state with anti-hall in Codex. Use when the user asks whether OMC is installed for Codex or why anti-hall did not install OMC.
 
 ## Resolve the plugin root
 
@@ -17,7 +21,7 @@ root from that path before running anything below:
 ```bash
 # SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 OMC is a recommended optional companion, not an anti-hall dependency.

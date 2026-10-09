@@ -107,7 +107,7 @@ function warnIdentityTruncated(raw, label) {
   const s = String(raw == null ? '' : raw);
   if (s.length <= IDENTITY_CAP) return;
   process.stderr.write(
-    `warning: ${label} truncated to fit the identity cap: ${s.length} chars -> cap ${IDENTITY_CAP}\n`
+    `⚠️ anti-hall · defect: ${label} truncated to fit the identity cap: ${s.length} chars -> cap ${IDENTITY_CAP}\n`
   );
 }
 
@@ -206,7 +206,7 @@ function checkFlags(cmd, flags) {
 // list for `cmd` to stderr. Called BEFORE any store write, so nothing is
 // ever written when an unknown flag is present.
 function printFlagError(cmd, errors) {
-  for (const e of errors) process.stderr.write('error: ' + e + '\n');
+  for (const e of errors) process.stderr.write('\u274C anti-hall \u00B7 defect: ' + e + '\n');
   process.stderr.write(`valid flags for \`${cmd}\`: ${(VALID_FLAGS[cmd] || []).map((f) => '--' + f).join(', ')}\n`);
 }
 
@@ -243,7 +243,7 @@ function warnTruncated(result) {
     return `${k} (${info.originalLength} chars -> cap ${info.cap}${info.marked ? ', marker written' : ''})`;
   });
   process.stderr.write(
-    'warning: content was truncated to fit the defect schema: ' + parts.join(', ') + '\n'
+    '⚠️ anti-hall · defect: content was truncated to fit the defect schema: ' + parts.join(', ') + '\n'
   );
 }
 
@@ -308,7 +308,7 @@ function cmdList(args) {
 function cmdShow(args) {
   const fp = args._[0];
   if (!fp) {
-    process.stderr.write('usage: defect.js show <fp>\n');
+    process.stderr.write('💡 anti-hall · defect: usage: defect.js show <fp>\n');
     return 1;
   }
   const result = store.showDefect(fp);
@@ -324,7 +324,7 @@ function cmdRule(args) {
   const fp = args._[0];
   const f = args.flags;
   if (!fp) {
-    process.stderr.write('usage: defect.js rule <fp> --status ...\n');
+    process.stderr.write('💡 anti-hall · defect: usage: defect.js rule <fp> --status ...\n');
     return 1;
   }
   const input = {
@@ -363,7 +363,7 @@ function cmdBackfill(args) {
   try {
     res = history.backfill({ repo, dryRun: !!f['dry-run'] });
   } catch (e) {
-    process.stderr.write(`error: backfill could not read git history at ${repo}: ${String((e && e.message) || e).split('\n')[0]}\n`);
+    process.stderr.write(`\u274C anti-hall \u00B7 defect: backfill could not read git history at ${repo}: ${String((e && e.message) || e).split('\n')[0]}\n`);
     return 1;
   }
   const out = {
@@ -387,7 +387,7 @@ function cmdSimilar(args) {
   const f = args.flags;
   const text = args._.join(' ');
   if (!text && typeof f.component !== 'string') {
-    process.stderr.write('usage: defect.js similar <text...> [--component X] [--top N] [--json]\n');
+    process.stderr.write('💡 anti-hall · defect: usage: defect.js similar <text...> [--component X] [--top N] [--json]\n');
     return 1;
   }
   const list = history.similar(history.loadAllRecords(), text, {
@@ -421,7 +421,7 @@ function main() {
     case 'similar': code = cmdSimilar(args); break;
     default:
       process.stderr.write(
-        'usage: defect.js <report|list|show|rule|archive|backfill|recurring|similar> [...flags]\n'
+        '💡 anti-hall · defect: usage: defect.js <report|list|show|rule|archive|backfill|recurring|similar> [...flags]\n'
       );
       code = 1;
   }

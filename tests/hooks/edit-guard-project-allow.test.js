@@ -79,7 +79,7 @@ test('control: a path the allowlist does not match stays blocked', () => {
   withTrusted(DOCS, (repo, home) => {
     const r = edit(repo, home, 'src/x.js');
     assert.strictEqual(r.status, 2, r.stdout);
-    assert.match(r.stdout, /EDIT-DELEGATION RULE/);
+    assert.match(r.stdout, /does not touch files directly/);
   });
 });
 
@@ -103,7 +103,7 @@ test('self-edit: the main thread may never edit .anti-hall/edit-allow.json (any 
       for (const tool of ['Edit', 'Write']) {
         const r = edit(repo, home, p, { tool_name: tool });
         assert.strictEqual(r.status, 2, tool + ' ' + p + ': ' + r.stdout);
-        assert.match(r.stdout, /EDIT-ALLOW SELF-EDIT/);
+        assert.match(r.stdout, /edit-allow\.json is blocked/);
       }
     }
   });

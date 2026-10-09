@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MUTATING = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-const NOTE = 'DEVSWARM PRIMARY: you have made several direct file edits while actionable tasks are pending and no child workspace is live. Workspace-scale work (a feature/fix/deploy: multi-step, own branch, own review) belongs in a child workspace: `node scripts/devswarm.js spawn <branch> -p "<brief>"`. Keep inline edits to small, scoped changes.';
+const NOTE = '💡 anti-hall · devswarm-primary: you have made several direct file edits while actionable tasks are pending and no child workspace is live. Workspace-scale work (a feature/fix/deploy: multi-step, own branch, own review) belongs in a child workspace: `node scripts/devswarm.js spawn <branch> -p "<brief>"`. Keep inline edits to small, scoped changes.';
 
 function stateFile(home, sessionId) {
   const safe = String(sessionId).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 128);

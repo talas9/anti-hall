@@ -1,9 +1,13 @@
 ---
 name: anti-hall-context-conserve
-description: Codex-native context and usage conservation mode. Use when the user asks for context conservative mode, limit conservation, cheap-model routing, or reducing context/token burn while keeping work moving.
+description: Codex context and usage conservation mode. Use for context-conservative mode, limit conservation, cheap-model routing, or cutting context/token burn.
 ---
 
 # anti-hall context-conserve for Codex
+
+## When to use
+
+Codex-native context and usage conservation mode. Use when the user asks for context conservative mode, limit conservation, cheap-model routing, or reducing context/token burn while keeping work moving.
 
 This is the Codex port of anti-hall limit/context conservation. It combines hook nudges, model routing, and output hygiene; it does not depend on Claude Workflow JS.
 
@@ -19,7 +23,7 @@ root from that path before running anything below:
 ```bash
 # SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 ## Activation
@@ -50,7 +54,7 @@ node "$ANTI_HALL_ROOT/codex/scripts/limit-conserve-status.js"
 
 When conservation is active and the **main/coordinator** agent is on the
 **frontier** category, switch it to the **workhorse** category's
-1M-context variant to preserve the flagship weekly bucket — resolve both
+1M-context variant to use less of the shared pool — resolve both
 from the live catalog (`anti-hall-model-policy`), don't hardcode either slug.
 
 - **Target**: the **workhorse** category's 1M-context model — same context window, lower cost.

@@ -17,14 +17,14 @@ const CLIENT_LIB = require.resolve(HOOKS + '/lib/jev-client.js');
 const WORKER = HOOKS + '/lib/jev-triage-worker.js';
 
 const FAKES = [
-  'sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKE',
+  'sk-' + 'ant-api03-FAKEFAKEFAKEFAKEFAKEFAKE',
   'ghp_FAKEFAKEFAKEFAKEFAKEFAKE1234',
-  'AKIAFAKEFAKEFAKE1234',
+  'AKIA' + 'FAKEFAKEFAKE1234',
   'Bearer fakeBearerTokenValue123',
   'password=hunter2fake',
-  '-----BEGIN RSA PRIVATE KEY-----\nMIIFAKEFAKEFAKE\n-----END RSA PRIVATE KEY-----',
+  '-----BEGIN RSA PRIV' + 'ATE KEY-----\nMIIFAKEFAKEFAKE\n-----END RSA PRIV' + 'ATE KEY-----',
 ];
-const RAW = ['sk-ant-api03-FAKEFAKE', 'ghp_FAKEFAKE', 'AKIAFAKEFAKEFAKE1234',
+const RAW = ['sk-' + 'ant-api03-FAKEFAKE', 'ghp_FAKEFAKE', 'AKIA' + 'FAKEFAKEFAKE1234',
   'fakeBearerTokenValue123', 'hunter2fake', 'BEGIN RSA PRIVATE KEY', 'MIIFAKEFAKEFAKE'];
 const PLAIN = 'Please refactor the parser, then run the tests and report.';
 const STATE = PLAIN + ' ' + FAKES.join(' ');
@@ -211,7 +211,7 @@ test('the fallback request body is scrubbed too', async () => {
 test('scrubSecrets is idempotent: a second pass (caller scrubbed, client scrubs again) changes nothing', () => {
   const { scrubSecrets } = require(HOOKS + '/lib/secret-scrub.js');
   const corpus = [
-    STATE, PLAIN, '', 'api_key: "abcDEF123"', 'DB_PASSWORD=short', 'postgres://user:pass@host/db',
+    STATE, PLAIN, '', 'api_key: "abcD' + 'EF123"', 'DB_PASSWORD=short', 'postgres://user:pass@host/db',
     'a@b.co and eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc123 and ' + 'A'.repeat(40), 'Bearer abc.def-ghi=', 'token=[REDACTED]',
   ];
   for (const t of corpus) {

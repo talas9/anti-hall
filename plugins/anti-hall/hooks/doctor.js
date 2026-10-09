@@ -100,9 +100,9 @@ const C = process.stdout.isTTY
 
 let pass = 0, fail = 0, warn = 0;
 const lines = [];
-function ok(msg)   { pass++; lines.push(`  ${C.g}✓${C.x} ${msg}`); }
-function bad(msg)  { fail++; lines.push(`  ${C.r}✗${C.x} ${msg}`); }
-function warnl(msg){ warn++; lines.push(`  ${C.y}!${C.x} ${msg}`); }
+function ok(msg)   { pass++; lines.push(`  ✅ ${msg}`); }
+function bad(msg)  { fail++; lines.push(`  ❌ ${msg}`); }
+function warnl(msg){ warn++; lines.push(`  ⚠️ ${msg}`); }
 // infol: a neutral "not detected — skipped" note. Deliberately does NOT touch
 // pass/fail/warn — an absent optional integration is not a warning, it's the
 // expected state for most users, and must not make a healthy machine look
@@ -126,8 +126,8 @@ function head(t)   { lines.push(`\n${C.b}${t}${C.x}`); }
 // whatever sections actually ran before the exit.
 function emitVerdictAndExit() {
   const verdict = fail === 0
-    ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
-    : `${C.r}${C.b}anti-hall has ${fail} FAILURE(S)${C.x} — ${pass} passed, ${warn} warning(s)`;
+    ? `✅ anti-hall · doctor: active, ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
+    : `❌ anti-hall · doctor: ${fail} failure(s), ${pass} passed, ${warn} warning(s)`;
   if (!QUIET) {
     process.stdout.write(`${C.c}${C.b}anti-hall doctor${C.x} ${C.d}v${version}${C.x}\n`);
     process.stdout.write(lines.join('\n') + '\n\n');
@@ -560,7 +560,7 @@ function versionAlertTest() {
     fs.writeFileSync(cachePath, JSON.stringify({ latest: '999.0.0', checkedAt: Date.now() }));
     const stale = runHook('version-alert.js', { hook_event_name: 'SessionStart', session_id: 'doctor-va-stale-' + Date.now() }, fakeEnv);
     // v0.108.0 wording: "Tell the user now: anti-hall vX is available (you are running vY) ..."
-    const staleAlerted = /"additionalContext"\s*:\s*"[^"]*anti-hall v999\.0\.0 is available \(you are running v/.test(stale.out);
+    const staleAlerted = /"additionalContext"\s*:\s*"[^"]*version-alert: v999\.0\.0 is available \(you are running v/.test(stale.out);
 
     // Case 2: fresh cache, latest === running -> must stay silent (no stdout).
     fs.writeFileSync(cachePath, JSON.stringify({ latest: version, checkedAt: Date.now() }));
@@ -727,38 +727,6 @@ ok(`SessionStart (one-time): ${ssB} B ~${tok(ssB)} tok  (${ssParts.join(' + ')})
 ok(`Per-TURN (every UserPromptSubmit): ${perTurnB} B ~${tok(perTurnB)} tok  (verify-first ${vfB} B + task-tracker ${ttB} B; task-tracker throttles to a short line after the first turn)`);
 ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
 
-// --- 5b. flutter-debug (CONDITIONAL: Flutter cwd or skill/agent in use) -------
-// ONE implementation, two entry points: preflight.js EXPORTS its checks; doctor
-// require()s and CALLS them IN-PROCESS (not a subprocess spawn) as a read-only
-// section. Runs ONLY when a pubspec.yaml is in cwd or the flutter-debug skill/
-// agent is present — silent in a non-Flutter repo. skipRegistration:true keeps
-// it read-only (no MCP add, no marionette auto-provision).
-(function flutterDebugSection() {
-  const hasPubspec = (() => { try { return fs.statSync(path.join(cwd, 'pubspec.yaml')).isFile(); } catch (_) { return false; } })();
-  const skillPath = path.join(ROOT, 'skills', 'flutter-debug', 'scripts', 'preflight.js');
-  const skillPresent = fs.existsSync(skillPath);
-  // Condition: a Flutter project in cwd, OR the user explicitly invoked it.
-  const inUse = /flutter-debug/i.test((process.env.ANTIHALL_DOCTOR_CONTEXT || '') + ' ' + process.argv.join(' '));
-  if (!hasPubspec && !inUse) return; // not a Flutter context → stay silent
-  head('flutter-debug (Flutter project detected)');
-  if (!skillPresent) { warnl('flutter-debug preflight.js not found — skill not installed?'); return; }
-  let preflight;
-  try { preflight = require(skillPath); }
-  catch (e) { bad('flutter-debug preflight.js present but failed to load: ' + (e && e.message)); return; }
-  try {
-    const report = preflight.runAllChecks({ projectDir: cwd, skipRegistration: true });
-    for (const r of report.results) {
-      const msg = '[' + r.id + '] ' + String(r.message).split('\n')[0];
-      if (r.status === preflight.FAIL) bad(msg);
-      else if (r.status === preflight.WARN) warnl(msg);
-      else ok(msg);
-    }
-    ok('capability tier: ' + report.tier.tier + ' — ' + report.tier.summary);
-  } catch (e) {
-    warnl('flutter-debug checks raised (fail-open): ' + (e && e.message));
-  }
-})();
-
 // --- 5c. DevSwarm liveness supervisor (CONDITIONAL: active session or descriptors) ---
 // ONE implementation, two entry points: companion/lib/doctor-devswarm.js EXPORTS
 // runChecks; doctor requires it and CALLS it IN-PROCESS. Silent unless a DevSwarm
@@ -836,7 +804,7 @@ function devswarmHookSelfTests() {
     (function () {
       const home = path.join(base, 'child-turn'); fs.mkdirSync(home, { recursive: true });
       const r = runHook('devswarm-child-turn.js', { hook_event_name: 'UserPromptSubmit', session_id: 'ct', prompt: 'hi' }, CHILD_ENV(home));
-      const said = /CHILD WORKSPACE/.test(r.out);
+      const said = /devswarm-child-workspace/.test(r.out);
       let beat = false;
       try { beat = fs.readdirSync(path.join(home, '.anti-hall', 'devswarm', 'heartbeats')).some((f) => /\.json$/.test(f)); } catch (_) {}
       results.push({ ok: said && beat, msg: (said && beat)
@@ -887,7 +855,7 @@ function devswarmHookSelfTests() {
         results.push({ ok: true, skip: true, msg: 'devswarm-parent-inbox self-test SKIPPED: repoKey unresolvable for ' + process.cwd() + ' (not a git worktree?)' });
       } else {
         const r = runHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 'pi', prompt: 'hi', cwd: process.cwd() }, PRIMARY_ENV(home));
-        const said = /DEVSWARM PARENT INBOX/.test(r.out) && /3 unread/.test(r.out);
+        const said = /devswarm-parent-inbox/.test(r.out) && /3 unread/.test(r.out);
         results.push({ ok: said, msg: said
           ? 'devswarm-parent-inbox surfaces a workspace unread backlog to the Primary'
           : 'devswarm-parent-inbox did NOT surface unread backlog to the Primary' });
@@ -1820,6 +1788,16 @@ if (REPAIR_RESURRECTED) {
     infol('jev dispatchTier: verdicts ' + (t.verdicts.workspace + t.verdicts.workflow + t.verdicts.subagent) +
       ' · followed ' + t.followed + ' · overridden ' + t.overridden + ' (follow rate ' + fr + ')');
   } catch (_) { /* report-only */ }
+  try {
+    const c = require('./lib/coordinator-work.js').summary(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env));
+    let calls = 0;
+    let work = 0;
+    let blocks = 0;
+    for (const e of Object.values(c.versions)) { calls += e.calls; work += e.work; blocks += e.blocks; }
+    const sh = (n, d) => (d > 0 ? (Math.round((n / d) * 1000) / 10) + '%' : 'n/a');
+    infol('coordinator work: nudges ' + c.nudges + ' · blocks ' + c.blocks + ' · work share ' + sh(work, calls) +
+      ' (attempted ' + sh(work + blocks, calls + blocks) + ') · skipped would-be blocks ' + c.skippedWouldBlock);
+  } catch (_) { /* report-only */ }
 })();
 
 // --- 5p. jev shadow-review due (REPORT-ONLY, CONDITIONAL) -------------------
@@ -1898,6 +1876,20 @@ if (REPAIR_RESURRECTED) {
     if (!notices.length) return;
     head('api keys');
     for (const n of notices) warnl(n);
+  } catch (_) { /* report-only */ }
+})();
+
+// --- 5r. semantic judge hint (INFO ONLY) -------------------------------------
+// The opt-in speculation-judge is off by default; point at the one-line enable.
+(function judgeHintSection() {
+  try {
+    const sb = require('./lib/jev-assist.js').speculationBackend();
+    head('semantic judge');
+    if (sb.backend === 'jev') infol('semantic judge: Jev (speculation-guard) is active; the paid API judge is skipped.');
+    else if (sb.backend === 'api' && sb.judgeBackend === 'cli') infol('semantic judge: local claude CLI (jev.semanticJudge on, jev.judgeBackend=cli); no API key, about 5\u20136 s per turn end.');
+    else if (sb.backend === 'api' && sb.judgeBackend === 'auto') infol('semantic judge: Anthropic API when an anthropic_api_key is visible, else the local claude CLI (jev.judgeBackend=auto).');
+    else if (sb.backend === 'api') infol('semantic judge: Anthropic API (jev.semanticJudge on); needs an anthropic_api_key, or set jev.judgeBackend=cli to use the local claude CLI.');
+    else infol('speculation-judge is off (opt-in). Enable: node scripts/settings.js judge on (or /anti-hall:settings). API backend: about $0.0001\u20130.001 and 1\u20133 s per turn end, estimated; cli backend: no API key, about 5\u20136 s, measured.');
   } catch (_) { /* report-only */ }
 })();
 

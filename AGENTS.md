@@ -19,7 +19,7 @@ available or already installed, tell the user (update via the `anti-hall-update`
 then restart Codex). Repairs run by themselves after an update (`repair-on-reload.js`).
 Every setting lives in `~/.anti-hall/settings.json`; change it only through the
 `anti-hall-settings` skill / `scripts/settings.js`, never by hand (Codex has no
-`/config` settings UI; Claude Code shows non-advanced settings as `/config` rows, advanced ones live only in `/anti-hall:settings`; values set in Claude Code's plugin options are copied into `~/.anti-hall/settings.json` on update, and `/anti-hall:settings` is the place to see and change every setting).
+`/config` settings UI). Every feature has a settings key in ~/.anti-hall/settings.json, reachable through /anti-hall:settings and grouped by category. Claude Code's plugin options show only the headline switches and the safety guards.
 
 In the Claude Code plugin, the **root-cause** and **orchestration** disciplines below
 are enforced always-on via the hook layer (they fire every session/turn). **deadly-loop**
@@ -70,7 +70,9 @@ reproduce/validate/lint steps and run them before claiming success.
 - Do not delete data (files, branches, DB rows, remote state) without explicit
   confirmation.
 - Commit/push only when the human asks.
-- **Releases:** follow the [RELEASING.md](RELEASING.md) checklist for every shipped version.
+- **Branch flow:** day-to-day work is committed and pushed to `dev` (pushes to `dev` run no CI, so run the full `node --test` first). `main` changes only through a pull request from `dev`; direct pushes, force pushes and deletion of `main` are blocked by a ruleset, the required `dev-only` check fails for any other source branch, and the required `tests-passed` check fails unless every test shard passed. Merge with a merge commit or fast-forward, never squash.
+- **Releases:** follow the [RELEASING.md](RELEASING.md) checklist for every shipped version (bump on `dev`, pull request `dev` → `main`, then tag).
+- **Public surface:** [docs/CONTRACT-1.0.md](docs/CONTRACT-1.0.md) lists what semver freezes (settings keys, CLI verbs, hooks, state paths).
 
 ## Orchestration + task-list discipline (always apply)
 
@@ -110,7 +112,7 @@ reproduce/validate/lint steps and run them before claiming success.
 - DEDUP + RELATE before creating tasks: check TaskList FIRST so you never duplicate an
   existing open task — refine it instead, and link related tasks via addBlockedBy
   (prereq) / addBlocks (gates that); supersede a true duplicate rather than piling on.
-  Keep a fresh `.anti-hall-progress.md` (done/in-progress/next, gitignored) so freshness
+  Keep a fresh per-session progress file `.anti-hall/progress/<YYYY-MM-DD>/<session_id>.md` (done/in-progress/next, gitignored) so freshness
   survives compaction. See `docs/TASK-WORK.md` for the dedup/relate ladder.
 - USER OVERRIDE (escape hatch): if the user EXPLICITLY and CLEARLY asks to skip a guard or
   rule, honor it — record consent by writing `~/.anti-hall/skip.json` as
@@ -166,7 +168,7 @@ reproduce/validate/lint steps and run them before claiming success.
 
 The plugin enforces no-speculation discipline at three layers:
 
-**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full.js` (SessionStart),
+**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full.js` (SessionStart; a compact core pointing at the generated `PROTOCOL.md` by default, today's full text under `context.protocolLevel=full`),
 `verify-first-subagent.js` (SubagentStart — re-injects the Iron Law into every spawned
 subagent without the orchestration block, so workers don't recurse), and `verify-first.js` (per-turn) inject the Iron Law,
 banning both confident inference-as-fact and hedge-word speculation.
@@ -261,19 +263,20 @@ feature/KB touches this area:
 ## Component catalog (condensed; full detail in llms.txt)
 
 **Hooks** by event ([C]=also on Codex; purposes: llms.txt "Hooks" table):
-- UserPromptSubmit — verify-first [C], task-tracker [C], limit-conserve-inject [C], devswarm-parent-inbox [C], devswarm-child-turn [C], auto-handover [C]
+- UserPromptSubmit — verify-first [C], task-tracker [C], idle-agent-sweep [C], limit-conserve-inject [C], devswarm-parent-inbox [C], devswarm-child-turn [C], auto-handover [C]
 - UserPromptSubmit+SessionStart — repair-on-reload [C]
 - TaskCreated+TaskCompleted — task-lifecycle-log
 - SubagentStart — verify-first-subagent
 - SessionStart — verify-first-full [C], verify-first-orch [C], devswarm-child-role [C], version-alert [C], fable-availability, codex-availability [C], devswarm-version [C], claude-cli-version [C], repo-self-drift [C], progress-prune [C], handover-resume [C], jev-weekly-scorecard [C], jev-review-reminder [C], emit-dedupe-reset [C], defect-nudge [C]
 - Stop — task-guard [C], tasklist-guard [C], speculation-guard [C], speculation-judge [C], claim-ledger [C], codex-nudge, devswarm-parent-gate [C], devswarm-child-gate [C], auto-handover-pause-nag [C], silent-agent-nudge [C], compact-advice-guard [C]
 - PreToolUse(Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Bash) — compact-declaration-guard [C]
-- PreToolUse(Bash)+PostToolUse(Bash) — git-guard [C]
+- PreToolUse(Bash)+PostToolUse(Bash) — git-guard [C], coordinator-work-guard, merge-side-pick [C]
 - PreToolUse(Bash) — command-guard [C], merge-gate [C], scan-throttle
-- PreToolUse(Write|Edit|MultiEdit) — api-guard, ship-it-guard
-- PreToolUse(Write|Edit|MultiEdit|NotebookEdit) — edit-guard
+- PreToolUse(Write|Edit|MultiEdit|Bash) — api-guard [C], ship-it-guard [C]
+- PreToolUse(Write|Edit|MultiEdit|NotebookEdit) — edit-guard [C]
 - PreToolUse(Read) — inbox-read-guard
 - PreToolUse(Agent)+PreToolUse(Task) — model-routing-guard, swarm-guard, phase-tracker
+- PreToolUse(Agent|Task|Workflow) — orch-on-spawn [C]
 - PreToolUse(SendMessage) — devswarm-comms-guard
 - PreToolUse(AskUserQuestion) — ask-guard
 - PreToolUse(TaskStop) — stale-agent-stop-note
@@ -284,32 +287,32 @@ feature/KB touches this area:
 - PreCompact — precompact-snapshot [C]
 - SessionEnd — session-end-mcp-reaper
 
-**Skills** — Claude `/anti-hall:<name>`: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `defects`, `devswarm`, `doctor`, `flutter-debug`, `handover`, `install-statusline`, `jev`, `orchestration`, `root-cause`, `settings`, `ship-it`, `simplify`, `system-briefing`, `update`.
-Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects, devswarm, doctor, flutter-debug, handover, install-statusline, jev, model-policy, omc, omx, orchestration, root-cause, settings, ship-it, simplify, system-briefing, update.
+**Skills** — Claude `/anti-hall:<name>`: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `defects`, `devswarm`, `doctor`, `handover`, `install-statusline`, `jev`, `orchestration`, `root-cause`, `settings`, `ship-it`, `simplify`, `system-briefing`, `update`.
+Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects, devswarm, doctor, handover, install-statusline, jev, model-policy, omc, omx, orchestration, root-cause, settings, ship-it, simplify, system-briefing, update.
 
 **CLI verbs**:
 - `scripts/devswarm.js`: `primary`, `register`, `ensure`, `heartbeat`, `inbox`, `workspaces`, `gate`, `done`, `nudge`, `archive`, `reap-orphans`, `reconcile-registry`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `register-primary`, `migrate`, `logs`, `migrate-owner-keys`, `send`, `relay`, `roster`, `wake-directive`, `app-state`, `sync-ui`, `app-sync`, `diagnose`, `plan`, `scope`, `supervision-report`, `respawn`, `correct`, `healthcheck`, `ready-check`, `mesh`, `reconcile`, `reap-stale`, `reconcile-active`, `spawn`, `merge`, `skip`, `auto-archive`, `prune-archived`, `gate-intent`, `retention`, `notice` (`help <verb>`).
-- `scripts/settings.js`: `show`, `get`, `set`, `reset`, `trust-command-allow`, `trust-edit-allow`; `scripts/auto-handover-config.js`: `get`, `set`, `nag`, `nag-step`, `nag-quiet`, `max-tokens`.
+- `scripts/settings.js`: `show`, `get`, `set`, `reset`, `judge`, `trust-command-allow`, `trust-edit-allow`; `scripts/auto-handover-config.js`: `get`, `set`, `nag`, `nag-step`, `nag-quiet`, `max-tokens`.
 - `scripts/jev-setup.js`: `status`, `enable`, `disable`, `set-key`, `bind-generic-key`, `test`, `mode`, `review-due`, `reviewed`, `snooze`; `scripts/jev-report.js`: report (default), `label`, `prune-audit`; `scripts/defect.js`: `report`, `list`, `show`, `rule`, `archive`, `backfill`, `recurring`, `similar`.
 - `hooks/doctor.js [--repair]`; `skills/update/scripts/update.js [--check]`; `companion/devswarm-recover.js <id>` (the only kill path).
 
-**Settings** (`~/.anti-hall/settings.json`; env > file > /config > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):
+**Settings** (`~/.anti-hall/settings.json`; env > file > plugin option > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):
 - autoHandover: enabled, pct=85, maxTokens=0, nag, nagStepPct=5, nagQuietMin=15, gateNewWork, gateBudgetPct=5, decisivePrompt | gateHousekeepingMarkers
-- guards: mergeGate=false, shipitGate=false, outputVerifyGuard, failureRootCauseNudge, repoSelfDrift, stashGuard=false, handoverCommitGuard, gitignoreHint, emitDedupe, codexQuotaDetect, allowReadOnlyVerify, allowReadOnlyVerifyScripts, projectCommandAllow, projectEditAllow, allowPlainPush, allowGcloudReads, allowBackgroundScratchScripts, modelRouting=strict, updateInSession, modelRoutingDeployFloor=sonnet, apiGuard, speculationGuard, claimLedger, taskGuard, tasklistGuard, scanThrottle, silentAgentNudge, compactAdviceGuard, compactAdviceRecentTurns=10, compactDeclarationGuard | allowAnthropicEnvKey, injectionRepeatEvery, editGuardAllow, allowSubagentMailbox, reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS, tasklistWorkThreshold, pruneCompletedTasksAfter, progressFreshMs, apiGuardThirdparty, noBlockingQuestions, questionAgentsNote, sharedTreeAgentNote, taskGuardOwnerBlockedMarker, dispatchDemand, idleNeglectMinPriority, maxParallelDispatch, silentAgentNudgeMin, staleAgentStopNote, compactAdviceMarginPct, stopHookVersionDowngrade, stopAck
+- guards: mergeGate=false, shipitGate=false, outputVerifyGuard, outputVerifyOncePerTurn, failureRootCauseNudge, failureNudgeFilter, repoSelfDrift, stashGuard=false, handoverCommitGuard, gitignoreHint, emitDedupe, codexQuotaDetect, allowReadOnlyVerify, allowReadOnlyVerifyScripts, projectCommandAllow, projectEditAllow, allowPlainPush, allowGcloudReads, allowBackgroundScratchScripts, modelRouting=strict, updateInSession, modelRoutingDeployFloor=sonnet, apiGuard, speculationGuard, claimLedger, taskGuard, tasklistGuard, scanThrottle, silentAgentNudge, idleAgentSweep, compactAdviceGuard, compactAdviceRecentTurns=10, compactDeclarationGuard | gitAliasResolve, gitReusedMessageCheck, gitGuardHeredocData, allowAnthropicEnvKey, injectionRepeatEvery, editGuardAllow, allowSubagentMailbox, coordinatorWorkWindowMinutes, coordinatorWorkNudgeAt, coordinatorWorkBlockAt, coordinatorWorkMaxEntries, bashEditParity, shellWriteChecks, reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS, tasklistWorkThreshold, pruneCompletedTasksAfter, progressFreshMs, apiGuardThirdparty, noBlockingQuestions, questionAgentsNote, sharedTreeAgentNote, mergeSidePickAdvisory, inferenceCheck, taskGuardOwnerBlockedMarker, dispatchDemand, idleNeglectMinPriority, maxParallelDispatch, idleNeglectProvenOnly, idleNeglectAgentMaxAgeMin, tasklistNoTaskTools, stopNagBudgetPerPrompt, silentAgentNudgeMin, staleAgentStopNote, idleAgentSweepCount, idleAgentSweepMin, compactAdviceMarginPct, stopHookVersionDowngrade, stopAck
 - safety: gitGuard, commandGuard, editGuard, swarmGuard
-- context: verifyFirstSession, verifyFirstOrchestration, verifyFirstTurn, verifyFirstSubagent, taskTracker, handoverResume, defectNudge | dedupeWindowMin
+- context: verifyFirstSession, verifyFirstOrchestration, protocolLevel=compact, codexOrchFullOn=session, orchFullOn=auto, verifyFirstTurn, verifyFirstSubagent, taskTracker, handoverResume, defectNudge | dedupeWindowMin
 - maintenance: repairOnReload, progressPrune, precompactSnapshot, taskLifecycleLog, sessionEndReaper
 - versionAlerts: antiHall, claudeCli, devswarm
 - updates: quiet=false, allowCachePrune | reconcileBudgetMs, postpullBudgetMs, sweepBudgetMs
 - limitConserve: mode=auto, threshold=85 | accountCheck
-- jev: enabled=false, transport=vercel, fallbackTransport=none, judgeModel=claude-haiku-4-5, semanticJudge=false, budget.mode=unlimited, budget.usdPerDay=—, budget.usdPerWeek=—, weeklyNotice, budget.minCreditUsd=—, reviewAfterDays=7, reviewMinDecisions=30, reviewReminder, recommendNotice | allowLegacyKeyRead, genericKeyVendor, keyFile, timeoutMs, confidenceThreshold, triage, triageUrgentThreshold, audit.snippets, logRotatedFiles, rollupRetentionDays, prices, priceUsdPerMInput, priceUsdPerMOutput, dispatchTierNoWorkspaceRepos, dispatchTierDetectNoWorkspaces
+- jev: enabled=false, transport=vercel, fallbackTransport=none, judgeModel=haiku, semanticJudge=false, budget.mode=unlimited, budget.usdPerDay=—, budget.usdPerWeek=—, weeklyNotice, budget.minCreditUsd=—, reviewAfterDays=7, reviewMinDecisions=30, reviewReminder, recommendNotice | judgeBackend, allowLegacyKeyRead, genericKeyVendor, keyFile, timeoutMs, confidenceThreshold, triage, triageUrgentThreshold, audit.snippets, logRotatedFiles, rollupRetentionDays, prices, priceUsdPerMInput, priceUsdPerMOutput, dispatchTierNoWorkspaceRepos, dispatchTierDetectNoWorkspaces, recommendNoticeHeadless
 - jevIntegrations: on: speculation triage findingDedup dispatchTier devswarmOnBrief devswarmExtraSanctioned devswarmWaitKind devswarmLoop devswarmStepMap; shadow: newRequest claimLedger outputVerifyGuard gitGuardSelfCredit modelRouting tasklistTrivial codexNudgeSubstantial mergeGateHedge parentGateQuestion supervisorBlockerLabel speculationFramed; off: postHandoverGate
 - devswarm: hivecontrol=—, supervisorMode=auto, requiredGates=done,merged,tests_passed, inboxCmd=—, autoArchive.mode=on, parentGate, childGate, parentInbox, childTurn, childRole, childDrain, parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin, planTracking, planRequired=false, archivedChildStop, maintainerNotice.post=false, maintainerNotice.show, startupSampling | heldPartitions, childGateStrict, parentGateCap, parentGateNeglectMinUnread, parentGateBusyFreshMin, parentGateBusyMaxAgeMin, parentGateNeglectGraceMin, activeFloorPct, archivedCacheMaxAgeMs, archivedGraceMs, cooldownSec, idleSec, dormantMs, drainTtlMs, graceSec, maxRecoveries, intervalSec, migrateMarkRead, monitorTimeoutSec, monitorNoOkFailMin, nudgeCooldownSec, nudgeMaxAttempts, nudgeWindowSec, postSpawnGraceSec, reapedRetentionDays, receiptWindowMs, archiveRequestRenagHours, reconcileSweep, reconcileSweepSec, rowStaleMs, sendReceiptRetentionDays, summaryRetentionDays, wakeCron, rearmOnTickOnly, cronMissingWarnMin, wakeWatchPollMs, wakeWatchIdleSkip, dispatchTierText, inlineWorkNudge, inlineWorkNudgeThreshold, tickRosterEvery, childGateRetentionDays, housekeepingSweep, housekeepingSweepSec, supervisorLogRotateBytes, inboxGraceSec, stableLauncher, supervisorSweepBudgetMs, supervisorBlockerLabelReaskSec, autoArchive.idleMin, autoArchive.maxPerSweep, autoArchive.ignorePings, retention.days, retention.maxStoreMB, retention.keepPerPartition, retention.archive, retention.archiveMaxMB, spawnStrictFlagValues, sendMultiRecipient, spawnFetchTtlSec, spawnCreateTimeoutMs, stepStallMin, strayWarnMax, burnTokensWarn, burnCacheReadPct, respawnGraceMin, respawnWipWaitSec, pausedProbeMax
 - statusline: base=—, noEmail=false
 - codexNudge: enabled | min
 - defects: defaultProj=—
 
-**State** (`~/.anti-hall/`): settings.json; skip.json; jev.json; update-sweep-state.json; version-check.json, version-alert-reload.json; auto-handover/<session>.json, context-pct/<session>.json; codex-availability.json, phase-state.json, agents/; claim-ledger/, approvals/, defects/; logs/; devswarm/. Per project: `.anti-hall/progress/`, `history/`, `handovers/`.
+**State** (`~/.anti-hall/`): settings.json; skip.json; jev.json; update-sweep-state.json; version-check.json, version-alert-reload.json; orch-full/; auto-handover/<session>.json, context-pct/<session>.json; codex-availability.json, phase-state.json, agents/; claim-ledger/, approvals/, defects/; logs/; coordinator-work-session-<session>.json; coordinator-work-metrics.json; coordinator-work-trips.log; .coordinator-work-fold-stamp.json; devswarm/. Per project: `.anti-hall/progress/`, `history/`, `handovers/`.
 
 **Hard rules**: verify before claiming; no AI self-credit, no force-push; no data deletion without explicit user confirmation, never automated; DevSwarm via the mesh only; change settings via `/anti-hall:settings`; skips only on explicit user request.
 

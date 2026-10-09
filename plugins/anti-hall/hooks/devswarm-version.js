@@ -36,6 +36,7 @@
 //   exit 0 : always (fail-open on ANY error — never slow or block session start).
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs   = require('fs');
 const path = require('path');
@@ -198,11 +199,13 @@ function main() {
   // Dedupe: don't repeat the same advisory every session while the pair holds.
   if (alreadyAdvised(cache, cache.installed, BASELINE)) return;
 
-  const additionalContext = drift.reason === 'older'
-    ? `DevSwarm ${cache.installed} installed; anti-hall's integration is verified against ` +
-      `${BASELINE} (newer) — behavior may have drifted, see docs/KB-devswarm-hivecontrol.md`
-    : `DevSwarm ${cache.installed} installed; anti-hall's integration is verified against ` +
-      `${BASELINE} — behavior may have drifted, see docs/KB-devswarm-hivecontrol.md`;
+  const additionalContext = require('./lib/block-message.js').message({
+    kind: 'warn',
+    guard: 'devswarm-version',
+    what: `DevSwarm ${cache.installed} is installed; anti-hall's integration is verified against ${BASELINE}${drift.reason === 'older' ? ' (newer)' : ''}.`,
+    why: 'Behavior may have drifted.',
+    instead: 'see docs/KB-devswarm-hivecontrol.md.',
+  });
   const out = {
     hookSpecificOutput: {
       hookEventName: 'SessionStart',

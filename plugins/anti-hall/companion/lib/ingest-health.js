@@ -112,7 +112,7 @@ function buildStaleBanner(beatTs, now, opts) {
   let uid = '$(id -u)';
   try { if (typeof process.getuid === 'function') uid = String(process.getuid()); } catch (_) { /* keep shell form */ }
   return (
-    '⚠ DEVSWARM STALE DATA: ingest daemon last alive ' + formatRelative(beatTs, now)
+    '⚠️ anti-hall · devswarm-stale-data: ingest daemon last alive ' + formatRelative(beatTs, now)
     + ' ago — roster/app-state freshness may be stale (the daemon may have stopped or never started for '
     + 'this worktree). Mesh sends are written directly to the store and are NOT affected. '
     + (label
@@ -342,14 +342,14 @@ function buildMonitorFaultBanner(fault, nowMs) {
     // point at doctor. Mesh messages travel through the shared store, not the
     // native monitor queue, so they are unaffected.
     return (
-      '⚠ DEVSWARM INGEST FAILING: the ingest daemon is healthy (heartbeat ' + beat + ' ago) but the DevSwarm app\'s '
+      '⚠️ anti-hall · devswarm-ingest-failing: the ingest daemon is healthy (heartbeat ' + beat + ' ago) but the DevSwarm app\'s '
       + '`hivecontrol workspace monitor` is not answering (' + what + err + '). '
       + 'Native-queue ingestion is paused until it answers; anti-hall mesh messages sent through the shared store are not affected. '
       + '/anti-hall:doctor cannot repair this — check or restart the DevSwarm app.'
     );
   }
   return (
-    '⚠ DEVSWARM INGEST FAILING: the daemon is alive (heartbeat ' + beat + ' ago) but '
+    '⚠️ anti-hall · devswarm-ingest-failing: the daemon is alive (heartbeat ' + beat + ' ago) but '
     + what + ' (' + f.code + ')' + err
     + ' — ingesting NOTHING. Run /anti-hall:doctor to repair the ingest daemon.'
   );

@@ -81,10 +81,10 @@ function noteGuardTripped() {
   if (_guardNoted || EXPLICIT_DRYRUN || !DRYRUN) return;
   _guardNoted = true;
   try {
-    process.stderr.write('anti-hall: install-devswarm-supervisor.js forced dry-run ('
+    process.stderr.write('⚠️ anti-hall · install-devswarm-supervisor: forced dry-run ('
       + (NODE_TEST_CONTEXT_GUARD ? 'NODE_TEST_CONTEXT is set — running under `node --test`' : 'HOME ' + HOME + ' is under the system temp directory')
-      + ') to prevent registering a real supervisor for a test/scratch home. Set ANTIHALL_SUPERVISOR_ALLOW_TMP_HOME=1'
-      + ' for a deliberate temp-HOME install.\n');
+      + ').\nWhy: prevents registering a real supervisor for a test/scratch home.\n'
+      + 'Override (only if the user explicitly asked): set ANTIHALL_SUPERVISOR_ALLOW_TMP_HOME=1 for a deliberate temp-HOME install.\n');
   } catch (_) {}
 }
 

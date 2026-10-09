@@ -7,6 +7,7 @@
 //   fresh, exact plan, refuses an automated caller, re-verifies each row, logs,
 //   tombstones. The hivecontrol binary is ALWAYS a PATH-injected fake.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -616,6 +617,40 @@ test('MIGRATION: migrateAutoArchivedState seeds the durable file from a legacy l
 
   // The migrated state now actually enforces gate (h) for a pre-existing id.
   assert.deepStrictEqual(L.autoArchivedAt(home, ['ws-a'], 'h1'), { id: 'ws-a', doneHead: 'h1', ts: new Date(1000).toISOString() });
+});
+
+test('MIGRATION: an auto-archive record with no doneHead (undefined vs null) migrates once, then is NOT pending forever (seeded-bad-state test)', () => {
+  const home = mkdtemp('ah-lc-nohead-');
+  const logsDir = path.join(home, '.anti-hall', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  // Pre-0.108.3 shape: the field is ABSENT (undefined), not null.
+  fs.writeFileSync(path.join(logsDir, 'devswarm-auto-archive.ndjson'),
+    JSON.stringify({ ts: '2026-01-01T00:00:00.000Z', at: 1000, action: 'auto-archive', id: 'ws-nh', ok: true }) + '\n');
+  assert.strictEqual(L.migrateAutoArchivedState(home, { dryRun: false }).migrated, 1);
+  for (let i = 0; i < 2; i++) {
+    const again = L.migrateAutoArchivedState(home, { dryRun: false });
+    assert.strictEqual(again.pending, 0, 'must not stay pending: ' + JSON.stringify(again));
+    assert.strictEqual(again.migrated, 0);
+  }
+  assert.strictEqual(L.migrateAutoArchivedState(home, { dryRun: true }).pending, 0);
+  assert.deepStrictEqual(L.readAutoArchivedState(home)['ws-nh'], [{ doneHead: null, at: 1000 }], 'one entry, no duplicates');
+  // autoArchivedStateAppend treats undefined/null/'' as the same "no head".
+  L.autoArchivedStateAppend(home, 'ws-nh', undefined, 2000);
+  L.autoArchivedStateAppend(home, 'ws-nh', '', 3000);
+  assert.strictEqual(L.readAutoArchivedState(home)['ws-nh'].length, 1);
+});
+
+test('MIGRATION REPAIR: durable entries already written without doneHead are normalised to null, idempotently, never deleted', () => {
+  const home = mkdtemp('ah-lc-repair-');
+  const dir = path.join(home, '.anti-hall', 'devswarm');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'auto-archived.json'), JSON.stringify({ a: [{ at: 1 }, { doneHead: '', at: 2 }, { doneHead: 'h9', at: 3 }] }));
+  const dry = L.migrateAutoArchivedState(home, { dryRun: true });
+  assert.strictEqual(dry.normalized, 2);
+  assert.deepStrictEqual(L.readAutoArchivedState(home).a[0], { at: 1 }, 'dry-run writes nothing');
+  assert.strictEqual(L.migrateAutoArchivedState(home, {}).normalized, 2);
+  assert.deepStrictEqual(L.readAutoArchivedState(home).a, [{ doneHead: null, at: 1 }, { doneHead: null, at: 2 }, { doneHead: 'h9', at: 3 }]);
+  assert.strictEqual(L.migrateAutoArchivedState(home, {}).normalized, 0, 'idempotent');
 });
 
 test('mode off: nothing planned, nothing spawned', { skip }, () => {

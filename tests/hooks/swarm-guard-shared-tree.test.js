@@ -55,7 +55,7 @@ test('two running write agents + new write spawn without isolation -> note offer
 });
 
 test('one running write agent is enough', () => {
-  assert.match(run(launch('t1', A1, W1), NEW), /SHARED-TREE/);
+  assert.match(run(launch('t1', A1, W1), NEW), /shared-tree:/);
 });
 
 test('new spawn with isolation:"worktree" -> silent', () => {
@@ -89,7 +89,7 @@ test('setting off -> silent', () => {
 test('repo that says no worktrees -> wording without worktree', () => {
   const n = run(two(), NEW, { doc: '- No worktrees, no branches: all work on main.\n' });
   assert.match(n, /scratch clone/);
-  assert.match(n, /Serialize/);
+  assert.match(n, /serialize/i);
   assert.ok(!/worktree/i.test(n), n);
 });
 

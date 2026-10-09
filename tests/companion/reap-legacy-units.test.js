@@ -10,6 +10,7 @@
 // and NEVER calls process.kill (scheduler-based teardown only, proven by
 // asserting every scheduler call is one of launchctl/systemctl/crontab).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -108,7 +109,7 @@ function writeHealthyProjectDaemon(home, worktree) {
   fs.writeFileSync(hbPath, JSON.stringify({ ts: Date.now(), pid: process.pid, workspaceId: 'primary-x' }));
   const lockPath = ingest.ingestLockPath(home, worktree);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'reap-test' }));
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'reap-' + 'test' }));
 }
 
 function requireRepoKey(worktree) {

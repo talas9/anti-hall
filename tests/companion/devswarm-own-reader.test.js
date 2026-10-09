@@ -14,6 +14,7 @@
 // objects (the same instances devswarm-own-reader.js's lazy requires resolve
 // to), so these tests drive a REAL journal store in a tmp HOME with no git.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

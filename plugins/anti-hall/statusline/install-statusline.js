@@ -84,8 +84,8 @@ const CONSOLIDATED_CFG = path.join(BASE_CFG_DIR, 'consolidated-base.json');
 // Verify the dispatcher exists (sanity check). Skipped when the test override
 // is active because the test path is intentionally fake.
 if (!DISPATCHER_OVERRIDE && !fs.existsSync(DISPATCHER)) {
-  console.error('ERROR: statusline.js not found at: ' + DISPATCHER);
-  console.error('The installer must live in the same directory as statusline.js.');
+  console.error('❌ anti-hall · install-statusline: statusline.js not found at: ' + DISPATCHER);
+  console.error('Do instead: keep the installer in the same directory as statusline.js.');
   process.exit(1);
 }
 
@@ -116,7 +116,7 @@ const BACKUP_PATH = SETTINGS_PATH + '.bak-antihall';
 // Test guard (0.108.0 launchd/config leak): under a test (NODE_TEST_CONTEXT or
 // ANTIHALL_TEST_ISOLATION) never write user config outside a temp dir.
 if (require('../companion/lib/test-home-guard.js').userConfigWriteRefused(SETTINGS_PATH)) {
-  process.stderr.write('anti-hall: install-statusline.js refused under a test: ' + SETTINGS_PATH + ' is outside a temp dir (isolate HOME/cwd)\n');
+  process.stderr.write('⛔ anti-hall · install-statusline: refused under a test: ' + SETTINGS_PATH + ' is outside a temp dir.\nDo instead: isolate HOME/cwd.\n');
   process.exit(0);
 }
 
@@ -208,7 +208,7 @@ if (effectiveCmd && effectiveCmd.includes('statusline.js') &&
 
 if (!fs.existsSync(SETTINGS_PATH)) {
   if (scope === 'user') {
-    console.error('ERROR: ' + SETTINGS_PATH + ' not found. Is Claude Code installed?');
+    console.error('❌ anti-hall · install-statusline: ' + SETTINGS_PATH + ' not found. Is Claude Code installed?');
     process.exit(1);
   }
   // project scope — create the directory + empty settings.local.json
@@ -217,7 +217,7 @@ if (!fs.existsSync(SETTINGS_PATH)) {
     fs.writeFileSync(SETTINGS_PATH, '{}\n', 'utf8');
     console.log('Created: ' + SETTINGS_PATH);
   } catch (e) {
-    console.error('ERROR: Could not create ' + SETTINGS_PATH + ': ' + e.message);
+    console.error('❌ anti-hall · install-statusline: Could not create ' + SETTINGS_PATH + ': ' + e.message);
     process.exit(1);
   }
 }
@@ -230,7 +230,7 @@ let settings;
 try {
   settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
 } catch (e) {
-  console.error('ERROR: Could not parse ' + SETTINGS_PATH + ': ' + e.message);
+  console.error('❌ anti-hall · install-statusline: Could not parse ' + SETTINGS_PATH + ': ' + e.message);
   process.exit(1);
 }
 
@@ -266,8 +266,8 @@ if (isConsolidate && existingCmd) {
     console.log('  Fail-open: if the base command errors, the full rich anti-hall line is shown.');
     console.log('');
   } catch (e) {
-    console.error('WARNING: Could not write ' + CONSOLIDATED_CFG + ': ' + e.message);
-    console.error('Consolidated mode will not be active. Run without --consolidate to install normally.');
+    console.error('⚠️ anti-hall · install-statusline: Could not write ' + CONSOLIDATED_CFG + ': ' + e.message);
+    console.error('Do instead: run without --consolidate to install normally (consolidated mode will not be active).');
     console.log('');
   }
 } else if (existingCmd && fs.existsSync(BASE_CFG)) {
@@ -290,8 +290,8 @@ if (isConsolidate && existingCmd) {
     console.log('  command: ' + existingCmd);
     console.log('');
   } catch (e) {
-    console.error('WARNING: Could not write ' + BASE_CFG + ': ' + e.message);
-    console.error('The statusline will still work but your previous statusline will not be line 1.');
+    console.error('⚠️ anti-hall · install-statusline: Could not write ' + BASE_CFG + ': ' + e.message);
+    console.error('Why: the statusline will still work but your previous statusline will not be line 1.');
     console.log('');
   }
 } else if (isConsolidate) {
@@ -329,7 +329,7 @@ if (scope === 'project') {
       fs.appendFileSync(gitignorePath, suffix + localEntry + '\n', 'utf8');
       console.log('Updated .gitignore: added ' + localEntry);
     } catch (e) {
-      console.error('WARNING: Could not update .gitignore: ' + e.message);
+      console.error('⚠️ anti-hall · install-statusline: Could not update .gitignore: ' + e.message);
     }
   } else {
     console.log('.gitignore already ignores ' + localEntry);
@@ -345,7 +345,7 @@ if (scope === 'project') {
     ).trim();
     if (tracked) {
       console.log('');
-      console.log('WARNING: .claude/settings.local.json is currently tracked by git.');
+      console.log('⚠️ anti-hall · install-statusline: .claude/settings.local.json is currently tracked by git.');
       console.log('  It contains a machine-absolute path and should NOT be committed.');
       console.log('  To untrack it:');
       console.log('    git rm --cached .claude/settings.local.json');
@@ -367,7 +367,7 @@ if (!fs.existsSync(BACKUP_PATH)) {
     console.log('Backed up: ' + SETTINGS_PATH);
     console.log('       to: ' + BACKUP_PATH);
   } catch (e) {
-    console.error('WARNING: Could not create backup: ' + e.message);
+    console.error('⚠️ anti-hall · install-statusline: Could not create backup: ' + e.message);
     console.error('Proceeding without backup.');
   }
 } else {
@@ -394,7 +394,7 @@ console.log('');
 // Safety check: reject dispatcher paths that contain shell metacharacters
 // before embedding them into the statusLine.command shell string.
 if (!isShellSafe(DISPATCHER)) {
-  console.error('SAFETY: dispatcher path contains shell metacharacters — refusing to embed in statusLine.command.');
+  console.error('⛔ anti-hall · install-statusline: dispatcher path contains shell metacharacters — refusing to embed in statusLine.command.');
   console.error('  Path: ' + DISPATCHER);
   console.error('  To install manually, add to ' + SETTINGS_PATH + ':');
   console.error('    "statusLine": { "type": "command", "command": "node \\"/path/to/statusline.js\\"" }');
@@ -413,8 +413,8 @@ settings.statusLine = newStatusLine;
 try {
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n', 'utf8');
 } catch (e) {
-  console.error('ERROR: Could not write ' + SETTINGS_PATH + ': ' + e.message);
-  console.error('Restore from backup:');
+  console.error('❌ anti-hall · install-statusline: Could not write ' + SETTINGS_PATH + ': ' + e.message);
+  console.error('Do instead: restore from backup:');
   console.error('  node "' + path.join(SCRIPT_DIR, 'uninstall-statusline.js') + '"');
   process.exit(1);
 }

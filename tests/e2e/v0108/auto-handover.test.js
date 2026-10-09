@@ -77,7 +77,7 @@ test('crossing 85%: directive fires exactly once — writes a handover file, exp
     assert.strictEqual(r.status, 0, r.stderr);
     assert.ok(hasDirective(r), `should fire a directive at 90%; stdout: ${r.stdout}`);
     const ctx = r.json.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /AUTO-HANDOVER REQUIRED/);
+    assert.match(ctx, /write a handover now/);
     assert.match(ctx, /handover/i, 'must tell the agent to write a handover');
     assert.match(ctx, /hallucinat/i, 'must explain WHY: context bloat -> less accurate / more hallucination');
     assert.match(ctx, /\/compact|\/clear/, 'must urge /compact or /clear');
@@ -149,7 +149,7 @@ test('1M window from the statusline (sticky max_tokens): 150k tokens is 15% -> s
     const over = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: tokensFor(90, CONTEXT_WINDOW_1M) })]);
     const r2 = runHook(HOOK, payload(over), home);
     assert.ok(hasDirective(r2), `900k of a 1M window is 90%; stdout: ${r2.stdout}`);
-    assert.match(r2.json.hookSpecificOutput.additionalContext, /AUTO-HANDOVER REQUIRED/);
+    assert.match(r2.json.hookSpecificOutput.additionalContext, /write a handover now/);
   } finally { rm(home); }
 });
 
@@ -160,7 +160,7 @@ test('no window info but usage > 200k proves a 1M window (inferred-1m): 900k fir
     const r = runHook(HOOK, payload(t), home);
     assert.ok(hasDirective(r), `stdout: ${r.stdout}`);
     const ctx = r.json.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /CONTEXT AT ~90%/);
+    assert.match(ctx, /context is at ~90%/);
     assert.match(ctx, /inferred 1M window/);
   } finally { rm(home); }
 });
@@ -174,7 +174,7 @@ test('UNKNOWN window (no override, no statusline, <=200k) with the token ceiling
     assert.ok(hasDirective(r1), `stdout: ${r1.stdout}`);
     const ctx = r1.json.hookSpecificOutput.additionalContext;
     assert.match(ctx, /soft heads-up/);
-    assert.doesNotMatch(ctx, /AUTO-HANDOVER REQUIRED/);
+    assert.doesNotMatch(ctx, /write a handover now/);
     const r2 = runHook(HOOK, payload(t), home);
     assert.ok(!hasDirective(r2), `the advisory is not repeated every turn; stdout: ${r2.stdout}`);
   } finally { rm(home); }
@@ -237,7 +237,7 @@ test('opt-in absolute maxTokens ceiling: 175k tokens fires the mandatory directi
     const t = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: 175000 })]);
     const r = runHook(HOOK, payload(t), home, { ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000', ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '170000' });
     assert.ok(hasDirective(r), `stdout: ${r.stdout}`);
-    assert.match(r.json.hookSpecificOutput.additionalContext, /AUTO-HANDOVER REQUIRED/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /write a handover now/);
     const off = makeHome();
     try {
       const r2 = runHook(HOOK, payload(writeTranscript(off, [mainAssistantUsageLine({ inputTokens: 175000 })])), off, { ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000', ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' });
@@ -263,7 +263,7 @@ test('Stop-side fire: over threshold at a Stop with no directive yet this arm ->
     const r1 = runHook(NAG_HOOK, stopPayload, home, KNOWN_200K);
     assert.strictEqual(r1.status, 0, r1.stderr);
     assert.ok(hasStopNag(r1), `stdout: ${r1.stdout}`);
-    assert.match(r1.json.reason, /AUTO-HANDOVER REQUIRED/);
+    assert.match(r1.json.reason, /write a handover now/);
     const r2 = runHook(NAG_HOOK, stopPayload, home, KNOWN_200K);
     assert.ok(!hasStopNag(r2), `already fired this arm; stdout: ${r2.stdout}`);
     const below = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: tokensFor(40, CONTEXT_WINDOW_200K) })]);

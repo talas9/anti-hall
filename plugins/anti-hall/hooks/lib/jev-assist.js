@@ -96,8 +96,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const crypto = require('crypto');
-const { execFileSync, spawn } = require('child_process');
+const crypto = require('./lazy-node.js').crypto; // lazy: loaded on first use
+const cp = require('./lazy-node.js').lazy('child_process'); // lazy: loaded on first spawn
 const { jevDecide, loadJevConfig, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS } = require('./jev-client.js');
 const testHomeGuard = require('../../companion/lib/test-home-guard.js');
 const { scrubSecrets } = require('./secret-scrub.js');
@@ -123,6 +123,11 @@ const LEGACY_ON_DEFAULT = new Set(['speculation', 'triage']);
 
 function homeDir(home) {
   return testHomeGuard.resolveHome(typeof home === 'string' && home ? home : null);
+}
+// homeOf(home, env) -> an explicit home, else the HOME the caller's env implies, else undefined
+// (-> the process home). Lets a guard's evaluate(payload, env) steer every Jev lookup by its env.
+function homeOf(home, env) {
+  return home || (env && (env.HOME || env.USERPROFILE)) || undefined;
 }
 function jevConfigPath(home) {
   return path.join(homeDir(home), '.anti-hall', 'jev.json');
@@ -198,11 +203,11 @@ function envNameFor(id) {
 // > default). A future id with no schema entry falls through to undefined
 // here, and getMode() below falls back to reading fileCfg.integrations[id]
 // directly (the pre-schema behavior).
-function schemaIntegrationMode(id, home) {
+function schemaIntegrationMode(id, home, env) {
   try {
     const schema = require('./settings-schema.js');
     if (!schema.findSetting('jevIntegrations', id)) return undefined;
-    return require('./settings.js').get('jevIntegrations', id, undefined, { home: homeDir(home) });
+    return require('./settings.js').get('jevIntegrations', id, undefined, { home: homeDir(home), env });
   } catch (_) { return undefined; }
 }
 
@@ -210,11 +215,11 @@ function schemaIntegrationMode(id, home) {
 // schemaIntegrationMode(id, home) ('env'|'file'|'plugin-option'|'legacy'|
 // 'default'), or undefined when the id has no schema entry. Used only for
 // the pre-integrations-map triage:false legacy check below. Never throws.
-function schemaIntegrationSource(id, home) {
+function schemaIntegrationSource(id, home, env) {
   try {
     const schema = require('./settings-schema.js');
     if (!schema.findSetting('jevIntegrations', id)) return undefined;
-    return require('./settings.js').source('jevIntegrations', id, { home: homeDir(home) });
+    return require('./settings.js').source('jevIntegrations', id, { home: homeDir(home), env });
   } catch (_) { return undefined; }
 }
 
@@ -223,22 +228,23 @@ function schemaIntegrationSource(id, home) {
 // configured modes even while Jev is off).
 function getMode(id, fileCfg, home, opts) {
   const cfg = fileCfg || {};
-  let jevEnabled = cfg.enabled === true || process.env.ANTIHALL_JEV === '1';
+  const env = (opts && opts.env) || process.env;
+  let jevEnabled = cfg.enabled === true || env.ANTIHALL_JEV === '1';
   // `enabled` resolves through the unified settings store (env > settings.json
   // > /config > legacy jev.json > the caller's value), the same chain
   // jev-client.js uses; the raw jev.json alone would ignore a settings.json
   // value and the hooks would disagree with the client.
   try {
-    jevEnabled = require('./settings.js').get('jev', 'enabled', cfg.enabled === true, { home: homeDir(home) }) === true;
+    jevEnabled = require('./settings.js').get('jev', 'enabled', cfg.enabled === true, { home: homeDir(home), env }) === true;
   } catch (_) { /* keep the raw value */ }
-  if (process.env.ANTIHALL_JEV === '0') jevEnabled = false;
+  if (env.ANTIHALL_JEV === '0') jevEnabled = false;
   if (!jevEnabled && !(opts && opts.assumeEnabled)) return 'off';
 
-  if (process.env[envNameFor(id)] === '0') return 'off';
+  if (env[envNameFor(id)] === '0') return 'off';
 
   const integrations = (cfg.integrations && typeof cfg.integrations === 'object' &&
     !Array.isArray(cfg.integrations)) ? cfg.integrations : {};
-  const schemaValue = schemaIntegrationMode(id, home);
+  const schemaValue = schemaIntegrationMode(id, home, env);
   const value = schemaValue !== undefined ? schemaValue : integrations[id];
 
   // Legacy PRE-integrations-map switch: a bare {"triage": false} in jev.json
@@ -247,7 +253,7 @@ function getMode(id, fileCfg, home, opts) {
   // applies when nothing more specific (env/settings.json/plugin-option/the
   // nested "integrations.triage" legacy key) resolved a value, i.e.
   // schemaIntegrationMode fell all the way through to its own schema default.
-  if (id === 'triage' && cfg.triage === false && schemaIntegrationSource(id, home) === 'default') {
+  if (id === 'triage' && cfg.triage === false && schemaIntegrationSource(id, home, env) === 'default') {
     return 'off';
   }
 
@@ -455,13 +461,29 @@ function rotateAuditIfNeeded(p) {
 // triggered by `wouldChange` only (not `changed`), the stored row carries
 // `shadow: true` so `jev-report label` can tell an actual change from a
 // would-have-changed one.
+// Integrations whose verdict lives at the END of the judged text store a
+// head+tail snippet (200 + 400 chars + joiner, <= 700 total) instead of head-only.
+const TAIL_SNIPPET_IDS = new Set(['outputVerifyGuard']);
+const SNIPPET_HEAD = 200;
+const SNIPPET_TAIL = 400;
+
 function maybeWriteAuditSnippet({ home, id, hash, state, changed, wouldChange }) {
   try {
     const trigger = changed || wouldChange;
     if (!trigger || typeof state !== 'string' || !state) return;
     if (!readAuditConfig(home).snippets) return;
-    const scrubbed = scrubSecrets(state.slice(0, 2000));
-    const snippet = scrubbed.slice(0, 200);
+    let snippet;
+    if (TAIL_SNIPPET_IDS.has(id)) {
+      // Head+tail: the verdict (pass/fail summary) sits at the END of the
+      // output. Scrub the WHOLE text first so a secret straddling a cut
+      // boundary can't survive half-redacted, then keep head + tail.
+      const scrubbed = scrubSecrets(state);
+      snippet = scrubbed.length <= SNIPPET_HEAD + SNIPPET_TAIL
+        ? scrubbed
+        : scrubbed.slice(0, SNIPPET_HEAD) + ' \u2026 ' + scrubbed.slice(-SNIPPET_TAIL);
+    } else {
+      snippet = scrubSecrets(state.slice(0, 2000)).slice(0, 200);
+    }
     const p = auditLogPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     rotateAuditIfNeeded(p);
@@ -768,13 +790,13 @@ function directionFor(trust, changed) {
 // than raw text/state so a caller using `cacheKey` still memoizes correctly.
 const askSyncResultMemo = new Map();
 
-function jevDecideSync({ question, state, timeoutMs, home }) {
+function jevDecideSync({ question, state, timeoutMs, home, env: baseEnv }) {
   const budget = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : DEFAULT_SYNC_TIMEOUT_MS;
   try {
     const input = JSON.stringify({ question, state, timeoutMs: budget }); // jev-client scrubs outbound text
-    const env = Object.assign({}, process.env);
+    const env = Object.assign({}, baseEnv || process.env);
     if (home) env.HOME = home; // propagate a test fixture HOME to the worker
-    const raw = execFileSync(process.execPath, [WORKER_PATH], {
+    const raw = cp.execFileSync(process.execPath, [WORKER_PATH], {
       input,
       timeout: budget + 500, // hard backstop above the worker's own internal timeout
       maxBuffer: 1024 * 1024,
@@ -801,7 +823,7 @@ function defaultProject() {
   try { return path.basename(process.cwd()) || 'unknown'; } catch (_) { return 'unknown'; }
 }
 
-function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef }) {
+function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef, recordDisagreement, derivedFrom }) {
   const confident = !!(r && r.ok && Number.isFinite(r.confidence) && r.confidence >= threshold);
   const jevBool = (r && r.ok)
     ? (typeof judge === 'function' ? !!judge(r.answer) : r.answer)
@@ -821,7 +843,13 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   // mode been 'on', for every mode -- `jev-report.js` uses it for shadow rows
   // only (an 'on' row's `wouldChange` is identical to `changed` by construction,
   // so the report keeps reading `changed` there).
-  const wouldChangeDirection = directionFor(trust, (r && r.ok) ? (wouldBe !== baseline) : false);
+  // recordDisagreement (opt-in, label-only integrations such as modelRouting):
+  // report a would-change whenever Jev's answer DIFFERS from the rule-based
+  // verdict, regardless of confidence or mode, so an 'on' row (whose `changed`
+  // is null unless Jev confidently relaxed) is still a labelable decision.
+  const wouldChangeDirection = directionFor(trust, (r && r.ok)
+    ? (recordDisagreement ? (jevBool !== baseline) : (wouldBe !== baseline))
+    : false);
 
   const backend = !r ? 'baseline-only' : (cachedFlag ? 'cache' : (r.ok ? 'jev' : 'baseline-only'));
   const { costUsd, costSource } = r ? computeCostUsd({ r, cachedFlag, home }) : { costUsd: null, costSource: null };
@@ -840,7 +868,7 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
     // wouldChange: only written when it differs in meaning from `changed`
     // (mode !== 'on') -- an 'on' row's value would just duplicate `changed`,
     // and older/other readers never expect this field at all.
-    ...(mode !== 'on' ? { wouldChange: wouldChangeDirection } : {}),
+    ...((mode !== 'on' || recordDisagreement) ? { wouldChange: wouldChangeDirection } : {}),
     cached: !!cachedFlag,
     mode,
     // project: always populated (cwd-basename fallback, `jev report --by
@@ -857,6 +885,9 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   // transcript line count) — see turnRefFromTranscript() below. Optional,
   // same omitted-not-null convention as sessionId/compare.
   if (typeof turnRef === 'string' && turnRef) entry.turnRef = turnRef;
+  // derivedFrom: this row re-reads another integration's label (e.g. 'triage'),
+  // it is NOT an independent Jev decision; jev-report keeps it out of the Jev totals.
+  if (typeof derivedFrom === 'string' && derivedFrom) entry.derivedFrom = derivedFrom;
   if (r && !r.ok && r.reason) entry.reason = r.reason;
   // transport: which vendor served (or last failed) a FRESH call; fellBack:
   // true when the fallback transport answered after the primary failed. Both
@@ -907,10 +938,10 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
 // Returns null via the `skip` field when there is nothing to do (off, or
 // relax-block with a non-blocking baseline) — callers still get a full
 // baseline-only result in that case, without ever touching the network.
-function prepare({ id, home, trust, baseline, cacheKey, state }) {
-  const h = homeDir(home);
+function prepare({ id, home, env, trust, baseline, cacheKey, state }) {
+  const h = homeDir(homeOf(home, env));
   const fileCfg = readJevJson(h);
-  const mode = getMode(id, fileCfg, h);
+  const mode = getMode(id, fileCfg, h, { env });
   const hash = contentHash([id, QUESTION_VERSION, cacheKey != null ? String(cacheKey) : String(state)]);
 
   const cfg = loadJevConfig();
@@ -929,11 +960,11 @@ function prepare({ id, home, trust, baseline, cacheKey, state }) {
 // ask({id, question, state, trust, baseline, judge, cacheKey, budgetMs, home})
 //   -> Promise<{final, jev, baseline, confidence, ms, backend, h}>
 async function ask(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef } = opts;
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef, recordDisagreement } = opts;
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef, recordDisagreement });
   }
 
   const cache = readCache(h);
@@ -955,7 +986,7 @@ async function ask(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef, recordDisagreement });
 }
 
 // askSync(...) — same contract as ask(), but fully synchronous: the network
@@ -964,11 +995,11 @@ async function ask(opts = {}) {
 // uses. For callers (e.g. model-routing-guard) whose main() is synchronous
 // and cannot await.
 function askSync(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef } = opts;
-  const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, env, compare, project, sessionId, turnRef, recordDisagreement } = opts;
+  const { h, mode, hash, threshold, skip } = prepare({ id, home, env, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef, recordDisagreement });
   }
 
   let r; let cachedFlag = false;
@@ -987,7 +1018,7 @@ function askSync(opts = {}) {
       r = { ok: true, answer: cached.answer, confidence: cached.confidence, ms: 0 };
       cachedFlag = true;
     } else {
-      r = jevDecideSync({ question, state, timeoutMs: budgetMs, home: h });
+      r = jevDecideSync({ question, state, timeoutMs: budgetMs, home: h, env });
       if (r.ok) {
         writeCache(h, Object.assign({}, cache, {
           [hash]: { answer: r.answer, confidence: r.confidence, _seq: nextCacheSeq(cache) },
@@ -997,7 +1028,7 @@ function askSync(opts = {}) {
     askSyncResultMemo.set(hash, r);
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef, recordDisagreement });
 }
 
 // askDetached(opts) — fire-and-forget variant for callers on the user's
@@ -1019,7 +1050,7 @@ function askSync(opts = {}) {
 // other I/O path in this file).
 function askDetached(opts = {}) {
   try {
-    const { id, question, state, trust, baseline, cacheKey, budgetMs, home, compare, project, sessionId, turnRef } = opts;
+    const { id, question, state, trust, baseline, cacheKey, budgetMs, home, env, compare, project, sessionId, turnRef } = opts;
     // Check the integration mode BEFORE spawning — an 'off' integration (or
     // Jev disabled entirely, or a relax-block guard on a non-blocking
     // baseline) must cost this caller a single sync config read, never a
@@ -1028,7 +1059,7 @@ function askDetached(opts = {}) {
     // always logs, matching finalize()'s contract for call-volume/failure-
     // rate tracking) — written synchronously here since there's no network
     // call to wait on either way, so a spawn would only add overhead.
-    const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
+    const { h, mode, hash, threshold, skip } = prepare({ id, home, env, trust, baseline, cacheKey, state });
     if (skip) {
       finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
       return;
@@ -1039,11 +1070,11 @@ function askDetached(opts = {}) {
       const cfgTimeout = loadJevConfig().timeoutMs;
       if (cfgTimeout !== DEFAULT_TIMEOUT_MS) detachedBudgetMs = cfgTimeout;
     }
-    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs: detachedBudgetMs, home, compare, project, sessionId, turnRef });
-    const child = spawn(process.execPath, [DETACHED_WORKER_PATH], {
+    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs: detachedBudgetMs, home: homeOf(home, env), compare, project, sessionId, turnRef });
+    const child = cp.spawn(process.execPath, [DETACHED_WORKER_PATH], {
       detached: true,
       stdio: ['pipe', 'ignore', 'ignore'],
-      env: process.env,
+      env: env || process.env,
     });
     // A spawn failure surfaces as an 'error' event, not a throw — swallow it
     // so a broken/missing node binary can never crash the caller's hook.
@@ -1068,11 +1099,30 @@ const RELAX_SYNC_CAP_MS = 1500;
 function consultRelax(opts) {
   const o = opts || {};
   try {
-    const h = homeDir(o.home);
-    if (getMode(o.id, readJevJson(h), h) !== 'on') { askDetached(o); return null; }
+    const h = homeDir(homeOf(o.home, o.env));
+    if (getMode(o.id, readJevJson(h), h, { env: o.env }) !== 'on') { askDetached(o); return null; }
     const budgetMs = Math.min(Number.isFinite(o.budgetMs) ? o.budgetMs : RELAX_SYNC_CAP_MS, RELAX_SYNC_CAP_MS);
     return askSync(Object.assign({}, o, { budgetMs }));
   } catch (_) { return null; }
+}
+
+// speculationBackend(home) -> {backend:'jev'|'api'|'lexical', apiJudgeFlag, jevMode}.
+// WHO is the semantic speculation judge right now, mirroring the real hooks:
+// Jev enabled + integration "speculation" on -> speculation-guard asks Jev and
+// speculation-judge.js (the paid API judge) exits early; otherwise the API judge
+// when jev.semanticJudge is true; otherwise lexical speculation-guard only.
+// Does not check that a key resolves. Never throws.
+function speculationBackend(home) {
+  let jevMode = 'off';
+  let apiJudgeFlag = false;
+  try { jevMode = getMode('speculation', readJevJson(home), home); } catch (_) { /* off */ }
+  try { apiJudgeFlag = require('./settings.js').get('jev', 'semanticJudge', false, { home: homeDir(home) }) === true; } catch (_) { /* off */ }
+  // judgeBackend: how the semantic judge reaches the model (jev.judgeBackend:
+  // api | cli | auto); meaningful only when backend === 'api' (judge on).
+  let judgeBackend = 'api';
+  try { judgeBackend = require('./settings.js').get('jev', 'judgeBackend', 'api', { home: homeDir(home) }) || 'api'; } catch (_) { /* api */ }
+  const backend = jevMode === 'on' ? 'jev' : (apiJudgeFlag ? 'api' : 'lexical');
+  return { backend, apiJudgeFlag, jevMode, judgeBackend };
 }
 
 module.exports = {
@@ -1081,6 +1131,7 @@ module.exports = {
   askDetached,
   consultRelax,
   turnRefFromTranscript,
+  speculationBackend,
   RELAX_SYNC_CAP_MS,
   // finalize is exported for the small set of callers that already HAVE a
   // Jev answer from a cache another feature populated (e.g. jev-triage.js's

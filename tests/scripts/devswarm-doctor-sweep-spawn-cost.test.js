@@ -14,6 +14,7 @@
 //     all 50 under its meshId and proposed a fold).
 // Isolated HOME/USERPROFILE (tests never touch the real home).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

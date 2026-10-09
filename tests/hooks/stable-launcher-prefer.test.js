@@ -2,6 +2,7 @@
 // preferStableLauncher + every model-visible site that prints a devswarm CLI path:
 // the stable launcher is named when it exists (and the setting is on), else the
 // version-pinned path. Sites: devswarm-child-turn, devswarm-parent-inbox.
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

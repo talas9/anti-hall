@@ -9,6 +9,7 @@
 //
 // MODULE_UNDER_TEST selects HEAD vs the patched copy. Isolates HOME.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

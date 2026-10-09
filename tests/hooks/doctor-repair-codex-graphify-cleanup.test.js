@@ -13,6 +13,7 @@
 // REAL runRepairs() — home/cwd point at tmp dirs so a config.toml IS present
 // (scanCodex requires it) but nothing touches the real machine.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

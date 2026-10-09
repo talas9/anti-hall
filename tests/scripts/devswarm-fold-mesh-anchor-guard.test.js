@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { withReaderCursors } = require('../helpers/fake-reader-cursors.js');
 // Item 1 P0 fix — downstream-Primary mail loss, field evidence: a live
 // `primary-<hash>` row's cursor advanced across two wake-watch turns with NO

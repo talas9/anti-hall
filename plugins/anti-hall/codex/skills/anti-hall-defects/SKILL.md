@@ -1,9 +1,13 @@
 ---
 name: anti-hall-defects
-description: File, list, show, and rule on anti-hall's own defect reports via the durable, home-scoped, two-way defect channel from a Codex session. Use when the user says "file an anti-hall bug", "did they fix my report", "anti-hall defects", or "check my defect reports", or asks which anti-hall bugs keep recurring or for similar past fixes, while running under Codex.
+description: File, list or check anti-hall defect reports. Use for "file an anti-hall bug", "did they fix my report", "anti-hall defects".
 ---
 
 # anti-hall defects for Codex
+
+## When to use
+
+File, list, show, and rule on anti-hall's own defect reports via the durable, home-scoped, two-way defect channel from a Codex session. Use when the user says "file an anti-hall bug", "did they fix my report", "anti-hall defects", or "check my defect reports", or asks which anti-hall bugs keep recurring or for similar past fixes, while running under Codex.
 
 A durable, file-based, two-way channel for reporting bugs found in anti-hall itself back
 to the maintainer, and reading the maintainer's rulings back. It lives at
@@ -21,7 +25,7 @@ it selects it; resolve the plugin root from that path:
 ```bash
 # SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 ## Coverage note: no monitor on Codex

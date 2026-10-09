@@ -19,6 +19,7 @@
 // postToolUseBashPayload/makeHome) and reuses process.cwd() (this real repo
 // checkout) as the payload cwd, matching that file's REPO_KEY convention.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

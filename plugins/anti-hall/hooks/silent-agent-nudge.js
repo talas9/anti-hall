@@ -83,6 +83,7 @@
 //   exit 0 : always
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
@@ -464,14 +465,14 @@ function main() {
   }
 
   mark('decision');
-  const reason =
-    'anti-hall silent-agent-nudge: ' + shownCandidates.length +
-    ' of your own background subagent(s) have gone silent past the ' + minMinutes +
-    'm threshold: ' + shown + more + '. This is advisory only — nothing was ' +
-    'auto-killed. Check on ' + (shownCandidates.length === 1 ? 'it' : 'them') + ' (TaskOutput) or ' +
-    're-dispatch with tighter scope if it is dead (TaskStop first, per orchestration rule I) ' +
-    '— do not assume, verify. Set ANTIHALL_SILENT_AGENT_NUDGE=off to silence. ' +
-    (sessionId ? stopAck.ackHint('silent-agent-nudge', signature, home, sessionId) : '');
+  const reason = require('./lib/block-message.js').blockMessage({
+    guard: 'silent-agent-nudge',
+    what: shownCandidates.length + ' of your own background subagent(s) have gone silent past the ' + minMinutes + 'm threshold: ' + shown + more + '.',
+    why: 'Advisory only; nothing was auto-killed.',
+    instead: 'check on ' + (shownCandidates.length === 1 ? 'it' : 'them') + ' (TaskOutput), or re-dispatch with tighter scope if dead (TaskStop first, per orchestration rule I). Verify, do not assume.',
+    allowed: 'set ANTIHALL_SILENT_AGENT_NUDGE=off to silence this nudge',
+    extra: [sessionId ? stopAck.ackHint('silent-agent-nudge', signature, home, sessionId) : ''],
+  });
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(0);

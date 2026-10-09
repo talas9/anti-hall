@@ -1,9 +1,13 @@
 ---
 name: defects
-description: File, list, show, and rule on anti-hall's own defect reports via the durable, home-scoped, two-way defect channel. Use when the user says "file an anti-hall bug", "did they fix my report", "anti-hall defects", "report this to the maintainer", or "check my defect reports", or asks which anti-hall bugs keep recurring or for similar past fixes.
+description: File, list or check anti-hall defect reports. Use for "file an anti-hall bug", "did they fix my report", "anti-hall defects".
 ---
 
 # anti-hall:defects
+
+## When to use
+
+File, list, show, and rule on anti-hall's own defect reports via the durable, home-scoped, two-way defect channel. Use when the user says "file an anti-hall bug", "did they fix my report", "anti-hall defects", "report this to the maintainer", or "check my defect reports", or asks which anti-hall bugs keep recurring or for similar past fixes.
 
 A durable, file-based, two-way channel for reporting bugs found in anti-hall itself —
 the guards, hooks, skills, statusline, or DevSwarm integration — back to the maintainer,

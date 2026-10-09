@@ -1,9 +1,13 @@
 ---
 name: handover
-description: Use when the user says "prepare a handover", "handover", "write a handoff", "save session state", "hand this off", before /compact or /clear, at session end, or before ending work on a long task — writes a comprehensive, organized, minimal-but-lossless session handover so a fresh session can resume without re-deriving or guessing anything.
+description: Write a lossless session handover. Use for "handover", "save session state", before /compact or /clear, or at session end.
 ---
 
 # Handover
+
+## When to use
+
+Use when the user says "prepare a handover", "handover", "write a handoff", "save session state", "hand this off", before /compact or /clear, at session end, or before ending work on a long task — writes a comprehensive, organized, minimal-but-lossless session handover so a fresh session can resume without re-deriving or guessing anything.
 
 **Triggered automatically, too.** `hooks/auto-handover.js` (UserPromptSubmit) watches the
 main agent's estimated context usage and, at 85% by default (`autoHandover` section of

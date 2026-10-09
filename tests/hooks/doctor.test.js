@@ -6,6 +6,7 @@
 // black-box contract the plugin's own users rely on. Never touches the real
 // machine's HOME.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -88,7 +89,7 @@ test('doctor: OMC + DevSwarm absent -> exits 0, no crash, prints "not detected" 
     // A dormant DevSwarm (no descriptors, no supervisor installed) stays fully
     // silent — no head, no FAIL, matching the pre-existing conditional gate.
     assert.doesNotMatch(r.out, /DevSwarm liveness supervisor/);
-    assert.doesNotMatch(r.out, /✗/, 'no FAIL lines for a plain machine with nothing installed');
+    assert.doesNotMatch(r.out, /❌/, 'no FAIL lines for a plain machine with nothing installed');
   } finally {
     cleanup();
     try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
@@ -221,12 +222,12 @@ test('doctor: DevSwarm-active session -> the four Phase-1 hook self-tests all PA
     const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
     assert.strictEqual(r.code, 0, r.out);
     assert.match(r.out, /DevSwarm liveness supervisor/);
-    assert.match(r.out, /✓ devswarm-child-turn writes a turn-authored heartbeat/);
-    assert.match(r.out, /✓ devswarm-child-gate forces a child to self-report/);
-    assert.match(r.out, /✓ devswarm-parent-inbox surfaces a workspace unread backlog/);
-    assert.match(r.out, /✓ devswarm-parent-gate blocks the Primary turn while a child inbox is unread/);
+    assert.match(r.out, /✅ devswarm-child-turn writes a turn-authored heartbeat/);
+    assert.match(r.out, /✅ devswarm-child-gate forces a child to self-report/);
+    assert.match(r.out, /✅ devswarm-parent-inbox surfaces a workspace unread backlog/);
+    assert.match(r.out, /✅ devswarm-parent-gate blocks the Primary turn while a child inbox is unread/);
     // None of the Phase-1 self-tests may report a FAIL.
-    assert.doesNotMatch(r.out, /✗ devswarm-(child|parent)-(turn|gate|inbox)/);
+    assert.doesNotMatch(r.out, /❌ devswarm-(child|parent)-(turn|gate|inbox)/);
   } finally {
     cleanup();
     try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
@@ -304,7 +305,7 @@ test('doctor: Foreign skill/hook conflict scan surfaces a real foreign Stop-hook
     assert.strictEqual(r.code, 0, r.out);
     assert.match(r.out, /Foreign skill\/hook conflict scan/);
     assert.match(r.out, /foreign Stop hook: plugin "foo" registers foo-stop\.js/);
-    assert.doesNotMatch(r.out, /✗ foreign/, 'a foreign plugin\'s own config must never map to a doctor FAIL');
+    assert.doesNotMatch(r.out, /❌ foreign/, 'a foreign plugin\'s own config must never map to a doctor FAIL');
   } finally {
     cleanup();
     try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}

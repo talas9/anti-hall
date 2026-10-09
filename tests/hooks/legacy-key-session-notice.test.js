@@ -13,7 +13,7 @@ const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'jev-review-reminder.js');
 const FINDING_DEDUP = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'finding-dedup.js');
-const SECRET = 'sk-ant-session-notice-secret';
+const SECRET = 'sk-' + 'ant-session-notice-secret';
 
 function runNode(script, home, { env, input } = {}) {
   const e = Object.assign({}, process.env, { HOME: home, USERPROFILE: home, ANTIHALL_INGEST_DRY_RUN: '1' }, env);

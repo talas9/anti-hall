@@ -114,4 +114,52 @@ function pruneStale(opts) {
   }
 }
 
-module.exports = { pruneStale, DEFAULT_TTL_MS, DEFAULT_THROTTLE_MS };
+// pruneJevTriage(home, opts) — bounded sweep of the jev-triage residue under
+// ~/.anti-hall/cache/: stale per-hash claim files (jev-triage.claims/*), a dead
+// arrival worker's lock and `.work.<pid>` leftovers, and an arrival queue that
+// nobody has drained for a long time. All of it is disposable (claims and locks
+// are coordination markers; queued messages are labelled at render time
+// instead). Never touches jev-triage.json (the label cache) or any other file.
+// Throttled by the mtime of a stamp file; fail-open; returns files removed.
+const JT_CLAIM_TTL_MS = 10 * 60 * 1000;       // live claims last seconds (CLAIM_STALE_MS = 15 s)
+const JT_LOCK_TTL_MS = 5 * 60 * 1000;         // worker wall cap is 2 min
+const JT_QUEUE_TTL_MS = 60 * 60 * 1000;       // an undrained queue this old is abandoned
+const JT_PRUNE_THROTTLE_MS = 10 * 60 * 1000;
+
+function pruneJevTriage(home, opts) {
+  try {
+    if (typeof home !== 'string' || !home) return 0;
+    const o = opts || {};
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const throttleMs = Number.isFinite(o.throttleMs) ? o.throttleMs : JT_PRUNE_THROTTLE_MS;
+    const dir = path.join(home, '.anti-hall', 'cache');
+    const stamp = path.join(dir, '.prune-stamp-jev-triage');
+    try {
+      const age = now - fs.statSync(stamp).mtimeMs;
+      if (throttleMs > 0 && age >= -5 && age < throttleMs) return 0; // mtime can sit ~1 ms ahead of Date.now()
+    } catch (_) { /* no stamp -> sweep */ }
+    try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(stamp, ''); } catch (_) { return 0; }
+
+    let removed = 0;
+    const rm = (p, ttl) => {
+      try {
+        if (now - fs.statSync(p).mtimeMs > ttl) { fs.unlinkSync(p); removed++; }
+      } catch (_) { /* skip */ }
+    };
+    const claims = path.join(dir, 'jev-triage.claims');
+    let names = [];
+    try { names = fs.readdirSync(claims); } catch (_) { /* none */ }
+    for (const n of names) rm(path.join(claims, n), JT_CLAIM_TTL_MS);
+    rm(path.join(dir, 'jev-triage-arrival.lock'), JT_LOCK_TTL_MS);
+    let top = [];
+    try { top = fs.readdirSync(dir); } catch (_) { /* none */ }
+    for (const n of top) {
+      if (n === 'jev-triage-arrival.queue' || n.startsWith('jev-triage-arrival.queue.work.')) rm(path.join(dir, n), JT_QUEUE_TTL_MS);
+    }
+    return removed;
+  } catch (_) {
+    return 0;
+  }
+}
+
+module.exports = { pruneStale, pruneJevTriage, DEFAULT_TTL_MS, DEFAULT_THROTTLE_MS };

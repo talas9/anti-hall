@@ -11,6 +11,7 @@
 // devswarm.stableLauncher makes CLI/WATCHER sibling files instead — see
 // hooks/lib/devswarm-wake.js's wakeReassert for the fix of record).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

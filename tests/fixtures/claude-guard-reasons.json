@@ -1,0 +1,26 @@
+{
+ "command-guard:coord": {
+  "status": 2,
+  "reason": "⛔ anti-hall · command-guard: heavy command (verb: npm) blocked in the main thread.\nWhy: Raw output floods the main thread.\nDo instead: delegate to a subagent (it returns a short summary).\nAllowed here: piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <n>`, `<cc> -fsyntax-only`, --check/--dry-run/--list; or a read-only scratchpad script (executable, absolute path, no VAR= prefix) run with run_in_background (never in the foreground)."
+ },
+ "edit-guard:coord": {
+  "status": 2,
+  "reason": "⛔ anti-hall · edit-guard: Edit blocked: the coordinator does not touch files directly.\nWhy: Raw edits never happen in the main thread; the coordinator synthesizes a summary.\nDo instead: spawn a subagent to make this edit and have it report a tight summary.\nOverride (only if the user explicitly asked): node '<ROOT>/scripts/devswarm.js' skip edit-guard (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry"
+ },
+ "command-guard:primary": {
+  "status": 2,
+  "reason": "⛔ anti-hall · command-guard: heavy command (verb: npm) blocked in the main thread.\nWhy: Raw output floods the main thread.\nDo instead: workspace-scale matter (feature/fix/deploy): `node scripts/devswarm.js spawn <branch> -p \"<brief>\"` (guard-exempt, run inline); a single command: delegate to a subagent (it returns a short summary). Never hand a workspace-scale matter to a subagent.\nAllowed here: piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <n>`, `<cc> -fsyntax-only`, --check/--dry-run/--list; or a read-only scratchpad script (executable, absolute path, no VAR= prefix) run with run_in_background (never in the foreground)."
+ },
+ "edit-guard:primary": {
+  "status": 2,
+  "reason": "⛔ anti-hall · edit-guard: Edit blocked: the orchestrator does not touch files directly.\nWhy: Raw edits in the main thread flood it; a worker returns a tight summary instead.\nDo instead: workspace-scale matter (feature/fix/deploy, own branch + review): `node scripts/devswarm.js spawn <branch> -p \"<brief>\"` (guard-exempt, run inline). Small scoped edit: spawn a subagent and have it report a tight summary. Never hand a workspace-scale matter to a subagent.\nAllowed here: session notes/reports in .anti-hall/history/** or the scratchpad; repo docs need a subagent or a trusted .anti-hall/edit-allow.json\nOverride (only if the user explicitly asked): node '<ROOT>/scripts/devswarm.js' skip edit-guard (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry"
+ },
+ "command-guard:child": {
+  "status": 2,
+  "reason": "⛔ anti-hall · command-guard: heavy command (verb: npm) blocked in the main thread.\nWhy: Raw output floods the main thread.\nDo instead: delegate to a subagent (it returns a short summary).\nAllowed here: piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <n>`, `<cc> -fsyntax-only`, --check/--dry-run/--list; or a read-only scratchpad script (executable, absolute path, no VAR= prefix) run with run_in_background (never in the foreground)."
+ },
+ "edit-guard:child": {
+  "status": 2,
+  "reason": "⛔ anti-hall · edit-guard: Edit blocked: the orchestrator does not touch files directly.\nWhy: Raw edits in the main thread flood it; a worker returns a tight summary instead.\nDo instead: spawn a subagent to make this edit and have it report a tight summary.\nAllowed here: session notes/reports in .anti-hall/history/** or the scratchpad; repo docs need a subagent or a trusted .anti-hall/edit-allow.json\nOverride (only if the user explicitly asked): node '<ROOT>/scripts/devswarm.js' skip edit-guard (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry"
+ }
+}

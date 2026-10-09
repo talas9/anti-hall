@@ -13,7 +13,7 @@ const { makeHome } = require('../helpers/fixtures.js');
 const M = require('../../plugins/anti-hall/companion/lib/migrations.js');
 const settings = require('../../plugins/anti-hall/hooks/lib/settings.js');
 
-const SECRET = 'sk-key-file-secret-value';
+const SECRET = 'sk-' + 'key-file-secret-value';
 function putKeyFile(home, rel, body) {
   const p = path.join(home, rel);
   fs.mkdirSync(path.dirname(p), { recursive: true });

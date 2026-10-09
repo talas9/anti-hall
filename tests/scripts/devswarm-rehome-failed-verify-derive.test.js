@@ -12,6 +12,7 @@
 // rehomeAcrossStores returns at the `regConflict` branch — no real git worktree
 // needed, since this function never calls repoKeyForWorktree on its keys.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

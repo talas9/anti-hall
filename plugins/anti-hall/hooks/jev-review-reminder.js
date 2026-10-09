@@ -26,6 +26,7 @@
 //   exit 0 : ALWAYS — fail-open on any error, never blocks session start.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const os = require('os');
@@ -75,15 +76,15 @@ function buildLine(due) {
   const rest = due.length - named.length;
   let list = named.join(', ');
   if (rest > 0) list += `, +${rest} more`;
-  let line = `\u{1F514} JEV REVIEW DUE: ${list}. Tell the owner and offer to run ` +
-    '`/anti-hall:jev report` — they asked to be reminded.';
+  let line = `\u{1F4A1} anti-hall \u00B7 jev-review: review due for ${list}.\nDo instead: tell the owner and offer to run ` +
+    '`/anti-hall:jev report` (they asked to be reminded).';
   if (line.length > MAX_LINE_CHARS) {
     // Degrade gracefully: fewer named integrations before ever hard-truncating.
     for (let n = named.length - 1; n >= 1; n--) {
       const shortList = due.slice(0, n).map((d) => `${d.id} (${d.days}d, ${d.decisions} decisions)`).join(', ');
       const remaining = due.length - n;
-      const candidate = `\u{1F514} JEV REVIEW DUE: ${shortList}${remaining > 0 ? `, +${remaining} more` : ''}. ` +
-        'Tell the owner and offer to run `/anti-hall:jev report` — they asked to be reminded.';
+      const candidate = `\u{1F4A1} anti-hall \u00B7 jev-review: review due for ${shortList}${remaining > 0 ? `, +${remaining} more` : ''}.\nDo instead: ` +
+        'tell the owner and offer to run `/anti-hall:jev report` (they asked to be reminded).';
       if (candidate.length <= MAX_LINE_CHARS) { line = candidate; break; }
       line = candidate;
     }
@@ -117,7 +118,7 @@ function main() {
   if (keyNotice) lines.push(keyNotice);
 
   // "Recommended: enable Jev" — only while Jev is OFF, deduped (jev-recommend.js).
-  const recommend = require('./lib/jev-recommend.js').sessionNotice({ home, env: process.env });
+  const recommend = require('./lib/jev-recommend.js').sessionNotice({ home, env: process.env, payload });
   if (recommend) lines.push(recommend);
 
   const reviewLine = reviewDueLine(home);

@@ -40,16 +40,31 @@ function run(flags, hook, payload, home, extraEnv, timeout) {
   });
 }
 
+// Per-script trailing-arg allowlist (cost-trim R4-N1). `--audit` is git-guard's; `--host=claude`
+// is verify-first-orch's POSITIVE Claude-platform signal (lib/auto-handover-text.js isClaudeConfident)
+// and may appear ONLY in the Claude hooks.json, never in Codex's hooks.json or the install-codex output.
+const ARG_ALLOWLIST = {
+  'git-guard.js': { args: ['--audit'], claudeOnly: [] },
+  'coordinator-work-guard.js': { args: ['--post'], claudeOnly: [] },
+  'merge-side-pick.js': { args: ['--post'], claudeOnly: [] },
+  'verify-first-orch.js': { args: ['--host=claude'], claudeOnly: ['--host=claude'] },
+};
+
 // Each command is either the plain 0.122.0 form or, for a script in EXPOSED_HOOKS
-// only, the same form with the flags inserted after `node`.
-function check(cmds, root) {
-  const plain = new RegExp('^node "\\$\\{' + root + '\\}/hooks/([\\w-]+\\.js)"( --audit)?$');
+// only, the same form with the flags inserted after `node`. Trailing args must be
+// allowlisted for that exact script; `claudeOnly` args are a failure on Codex (isCodex).
+function check(cmds, root, isCodex) {
+  const plain = new RegExp('^node "\\$\\{' + root + '\\}/hooks/([\\w-]+\\.js)"((?: \\S+)*)$');
   const bad = [];
   const flagged = new Set();
   for (const c of cmds) {
     const isFlagged = c.startsWith(PREFIX);
     const m = (isFlagged ? 'node ' + c.slice(PREFIX.length) : c).match(plain);
     if (!m) { bad.push(c); continue; }
+    const args = m[2].trim() ? m[2].trim().split(' ') : [];
+    const allow = ARG_ALLOWLIST[m[1]] || { args: [], claudeOnly: [] };
+    if (args.some((a) => !allow.args.includes(a))) bad.push(c);
+    if (isCodex && args.some((a) => allow.claudeOnly.includes(a) || /^--host=/.test(a))) bad.push(c);
     const exposed = Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, m[1]);
     if (exposed !== isFlagged) bad.push(c);
     if (isFlagged) flagged.add(m[1]);
@@ -61,8 +76,8 @@ test('exactly the EXPOSED_HOOKS entries carry the flags; every other command kee
   const claudeCmds = commands(path.join(HOOKS, 'hooks.json'));
   const codexCmds = commands(path.join(PLUGIN, 'codex', 'hooks', 'hooks.json'));
   assert.ok(claudeCmds.length > 50 && codexCmds.length > 30, `expected the full hook sets, got ${claudeCmds.length}/${codexCmds.length}`);
-  const claude = check(claudeCmds, 'CLAUDE_PLUGIN_ROOT');
-  const codex = check(codexCmds, 'PLUGIN_ROOT');
+  const claude = check(claudeCmds, 'CLAUDE_PLUGIN_ROOT', false);
+  const codex = check(codexCmds, 'PLUGIN_ROOT', true);
   assert.deepStrictEqual(claude.bad, []);
   assert.deepStrictEqual(codex.bad, []);
   // every exposed script is registered for Claude and flagged there
@@ -77,7 +92,7 @@ test('install-codex flags the same scripts and nothing else', () => {
   for (const groups of Object.values(ANTI_HALL_HOOKS)) for (const g of groups) for (const h of g.hooks) cmds.push(h.command);
   assert.ok(cmds.length > 30);
   const bad = cmds.filter((c) => {
-    const file = path.basename(JSON.parse(c.slice(c.indexOf('"'))));
+    const file = path.basename(JSON.parse(c.match(/"(?:[^"\\]|\\.)*"/)[0]));
     return c.startsWith(PREFIX + '"') !== Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, file);
   });
   assert.deepStrictEqual(bad, []);

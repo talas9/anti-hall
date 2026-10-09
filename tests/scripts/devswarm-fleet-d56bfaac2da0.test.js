@@ -9,6 +9,7 @@
 //   PATCHED -> the scratch copy with d56bfaac2da0's fix applied (d56.js)
 // Isolates HOME/USERPROFILE to a scratch temp dir; never touches ~/.anti-hall.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');

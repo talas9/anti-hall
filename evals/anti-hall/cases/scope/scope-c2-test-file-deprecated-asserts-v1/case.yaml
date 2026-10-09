@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: "scope-c2-test-file-deprecated-asserts-v1"
+context:
+  scaffold_script: scaffold.sh

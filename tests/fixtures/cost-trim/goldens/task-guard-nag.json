@@ -1,0 +1,10 @@
+{
+  "scenario": "task-guard-nag",
+  "outputs": [
+    {
+      "label": "task-guard.js",
+      "status": 0,
+      "text": "⛔ anti-hall · task-guard: stop blocked: 2 non-blocked, unassigned task(s) have no in-flight agent: #1 \"task 1\", #2 \"task 2\".\nWhy: Dispatchable work is sitting idle.\nDo instead: dispatch them now in parallel (one background agent each, cap <N>), or stop only if a task truly needs the user (say which and why). A task waiting on an in-flight task: set its blockedBy (TaskUpdate addBlockedBy). A running agent already covers a task: set the task owner to it (TaskUpdate owner) and it counts as attended.\nAllowed here: a task blocked on the OWNER (hardware, a human decision): mark it metadata.blockedOn:'owner' (or 'user'/'human'/'external'), or give it an \"OWNER:\" / \"OWNER DECISION\" subject prefix. Never a fake blockedBy dependency."
+    }
+  ]
+}

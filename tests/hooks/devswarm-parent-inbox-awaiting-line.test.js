@@ -4,6 +4,7 @@
 // workspace title, scrubbed 80-char preview). Built from the same unanswered
 // data the segment already nags on; absent when nothing is unanswered.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -62,8 +63,8 @@ test('one unanswered question: count 1, age, workspace title and preview', () =>
     }, ['child-a']);
     const c = run(h.home);
     assert.match(lineOf(c), /^QUESTIONS AWAITING YOUR REPLY: 1 \(oldest 5m\) — Billing refactor: Should the invoice table keep the legacy currency column\?$/, c);
-    assert.ok(c.indexOf('QUESTIONS AWAITING') < c.indexOf('DEVSWARM OWN INBOX'), 'the line leads the segment');
-    assert.match(c, /DEVSWARM OWN INBOX — PRIORITY/, 'rest of the segment kept');
+    assert.ok(c.indexOf('QUESTIONS AWAITING') < c.indexOf('devswarm-own-inbox'), 'the line leads the segment');
+    assert.match(c, /devswarm-own-inbox: priority/, 'rest of the segment kept');
   } finally { h.cleanup(); }
 });
 
@@ -125,7 +126,7 @@ test('no questions: the line is absent', () => {
     writeSummary(h.home, { total: 1, cursor: 0, unread: 1, directUnread: 1, pendingQuestions: [] }, []);
     const c = run(h.home);
     assert.ok(!/QUESTIONS AWAITING/.test(c), c);
-    assert.match(c, /DEVSWARM OWN INBOX/, 'plain unread segment still shows');
+    assert.match(c, /devswarm-own-inbox/, 'plain unread segment still shows');
   } finally { h.cleanup(); }
 });
 
@@ -277,6 +278,6 @@ test('only ineligible senders -> the line is absent (silent on doubt); the segme
     deadSession(h, 'arch-c');
     const c = runEnv(h.home);
     assert.ok(!LINE_RE.test(c), c);
-    assert.match(c, /DEVSWARM OWN INBOX/, 'pre-existing nag still shows');
+    assert.match(c, /devswarm-own-inbox/, 'pre-existing nag still shows');
   } finally { h.cleanup(); }
 });

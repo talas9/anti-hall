@@ -1,9 +1,13 @@
 ---
 name: anti-hall-settings
-description: Show or change any anti-hall setting for Codex. Use when the user says "anti-hall settings", "show/change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
+description: Show or change anti-hall settings. Use for "anti-hall settings", "turn off X", "set auto-handover to 80%".
 ---
 
 # anti-hall settings for Codex
+
+## When to use
+
+Show or change any anti-hall setting for Codex. Use when the user says "anti-hall settings", "show/change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
 
 ## Resolve the plugin root
 
@@ -13,20 +17,21 @@ it from the path Codex shows you for this SKILL.md (see
 
 ```bash
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 All commands below run as `node "$ANTI_HALL_ROOT/scripts/settings.js" <verb>`.
 
 ## No `/config` equivalent on Codex
 
-On Claude Code every non-advanced setting is an arrow-key row in the native `/config`
-panel (via `plugin.json`'s `userConfig`, section-prefixed titles). **Codex has no
-equivalent** — its plugin manifest has no `userConfig` and there is no plugin settings UI.
-On Codex this skill (over `scripts/settings.js`) is the ONLY way to see or change a
+On Claude Code the native `/config` panel (the plugin's options screen) carries only the
+headline switches, the safety guards and the API keys; every other setting is reached
+through this skill's `scripts/settings.js`. **Codex has no `/config` equivalent** — its plugin manifest has no `userConfig` and there is no plugin settings UI.
+On Codex, run `show` (one table per category), then `show --section <category> [--all]`;
+change with `set` / `reset`. This skill (over `scripts/settings.js`) is the ONLY way to see or change a
 setting. It is complete (every setting, advanced included), and a value set here lands
 in `~/.anti-hall/settings.json`, which both platforms read from the same `~/.anti-hall/` home.
-On Claude Code, values you set in Claude Code's plugin options (`/config`) are copied into `~/.anti-hall/settings.json` on update (only when that value is already the one in effect, and never for the safety guards, which keep reading the plugin option); `/anti-hall:settings` is the place to see and change every setting.
+On Claude Code, a non-default value stored in Claude Code's plugin options by earlier versions is copied into `~/.anti-hall/settings.json` by the update or `doctor --repair` run of the first release that runs the migration (safety keys are copied as human-confirmed values), and still resolves until then; `/anti-hall:settings` is the place to see and change every setting.
 
 ## Direct named changes: one `set`, no table
 
@@ -65,7 +70,7 @@ factual, human-readable line (`{ok:false, needsConfirmation:true, warning}` on
   past the warning.
 
 A value in `~/.anti-hall/settings.json` counts for these keys like any other (normal
-precedence: env > settings.json > `/config` > default). Nothing mechanically stops an
+precedence: env > settings.json > plugin option > default). Nothing mechanically stops an
 agent from writing that file directly; the owner chose consent over an extra guard, so
 the rule is the same as above — never hand-edit a safety key in settings.json to get
 around the confirmation.
@@ -114,11 +119,29 @@ it. A symlinked file is refused. Absolute paths, `..` and match-everything globs
 all), `.claude`, `.codex`, hook config, or `~/.claude`. Subagents are unaffected.
 Kill-switch: `guards.projectEditAllow=false`.
 
+## Semantic judge: `judge on|off|status`
+
+The opt-in speculation-judge (`jev.semanticJudge`, off by default) has a one-line switch:
+
+```bash
+node "$ANTI_HALL_ROOT/scripts/settings.js" judge on|off|status
+```
+
+`on` sets the flag, then says whether an Anthropic key is visible to the CLI (never the key
+itself; a key stored as a plugin option is visible to hooks only, so "not visible" means
+unverified from the CLI) and how to add one, and prints the cost: about $0.0001–0.001 and
+1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on
+`eval/inference-bench.js` (84 synthetic cases). With `jev.judgeBackend` `cli` it uses the local
+`claude -p` CLI on the user's Claude login instead of a key (about 5–6 s per turn end, measured). `status` shows on/off, key
+visibility and the model (`jev.judgeModel`). Relay that output; do not add claims about accuracy.
+
+On Codex the judge hook is registered (`codex/hooks/hooks.json`), but it needs `guards.allowAnthropicEnvKey` true in `~/.anti-hall/settings.json` plus `ANTHROPIC_API_KEY` exported, since Codex has no plugin options; I have not run it live on Codex.
+
 ## Turning a hook off
 
 Every hook the Codex port registers reads the same switch as on Claude Code, so "turn
 off X" is one `set <section.key> false`: `context.*` (verify-first injections, task
-tracker, handover resume, defect nudge; `context.dedupeWindowMin` — fallback
+tracker, handover resume, defect nudge; `context.protocolLevel` (`compact` default / `full` = today's complete text everywhere) and `context.orchFullOn` (Codex receives the full orchestration rules at SessionStart unless set to `off`) and `context.codexOrchFullOn` (`session` default / `spawn` = experimental: compact lines at SessionStart, full rules once on the first `spawn_agent`); `context.dedupeWindowMin` — fallback
 per-session suppression window (minutes) for repeated UserPromptSubmit blocks (LIMIT
 CONSERVATION, TASK-LIST, DEVSWARM COMMS OVERRIDE, DEVSWARM WORKSPACES) when a burst
 of queued prompts lands in one turn, default 20, 0 = off/disables emit-dedupe

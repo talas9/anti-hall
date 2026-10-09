@@ -23,6 +23,7 @@
 // A clipped consumer can compare the bytes it actually received against
 // `totalBodyBytes`/the last row's `bodyLength` and detect the clip itself.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

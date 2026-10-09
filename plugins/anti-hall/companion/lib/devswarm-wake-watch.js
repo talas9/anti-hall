@@ -1621,12 +1621,10 @@ function main() {
   // fault (matches every other `refuse to arm` branch in this function).
   if (watchedRole === 'primary') {
     try {
-      let idleSkipOn = true;
-      try { idleSkipOn = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatchIdleSkip', true, env) !== false; }
-      catch (_) { idleSkipOn = true; }
-      if (idleSkipOn) {
-        const liveChildren = require('./devswarm-live-children.js');
-        if (!liveChildren.hasLiveChild(home, identity.cwd || cwd, { env, excludeHeldIgnored: true })) {
+      {
+        // Shared decision (also used by update.js / doctor advice): setting on
+        // AND positive proof of zero live non-held/non-ignored children.
+        if (require('./devswarm-live-children.js').idleSkipApplies(home, identity.cwd || cwd, { env })) {
           // Same rearm-cues.jsonl metric scripts/devswarm.js's cmdInboxTick
           // writes for its own idle-skip (trigger 'idle-skip') — deliberately
           // reimplemented here (append+cap) rather than requiring

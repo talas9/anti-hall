@@ -16,6 +16,7 @@
 // touches the real ~/.anti-hall, and ctx.env = {} so no ambient DEVSWARM_* leaks
 // in. REAL git repos back repoKey/meshId derivation (real `git` spawns).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

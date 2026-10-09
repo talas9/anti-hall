@@ -22,6 +22,7 @@
 //     component. Added explicit `unreadTotal`/`unreadNdjson`/`unreadStore` +
 //     `cursorNdjson`/`cursorStore` (old keys kept as exact aliases).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

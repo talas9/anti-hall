@@ -38,6 +38,7 @@
 //   exit 0 : ALWAYS — fail-open on any error, never blocks session start.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const os = require('os');
@@ -147,8 +148,12 @@ function main() {
   const candidate = pickCandidate(report, cfg);
   if (!candidate) return;
 
-  const additionalContext = `Jev scorecard: ${candidate.id} ready to switch ` +
-    `${candidate.direction === 'on' ? 'ON' : 'OFF'} — run /anti-hall:jev`;
+  const additionalContext = require('./lib/block-message.js').message({
+    kind: 'tip',
+    guard: 'jev-scorecard',
+    what: candidate.id + ' is ready to switch ' + (candidate.direction === 'on' ? 'ON' : 'OFF') + '.',
+    instead: 'run /anti-hall:jev.',
+  });
 
   const hookEventName = typeof payload.hook_event_name === 'string' && payload.hook_event_name
     ? payload.hook_event_name

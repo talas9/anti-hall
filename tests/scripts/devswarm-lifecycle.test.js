@@ -6,6 +6,7 @@
 // node version — 18/20 have no node:sqlite), and REAL git repos as `ctx.cwd`
 // (repoKeyForWorktree/resolveMainWorktree spawn real git).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -2111,7 +2112,7 @@ test('c558962503: diagnose surfaces a genuine 1-live split via degraded/warning 
 
     const line = cli.diagnoseHumanLine(d.result);
     assert.match(line, /mixedSplits=1/, 'human line carries the mixedSplits count');
-    assert.match(line, /WARNING/, 'human line surfaces the dangerous 1-live split distinctly');
+    assert.match(line, /warning/, 'human line surfaces the dangerous 1-live split distinctly');
   } finally { rm(home); rm(repo); }
 });
 
@@ -2132,7 +2133,7 @@ test('c558962503: a single healthy row — diagnose output unchanged (no false s
 
     const line = cli.diagnoseHumanLine(d.result);
     assert.match(line, /diagnose: ok/);
-    assert.ok(!/WARNING/.test(line), 'no warning suffix for a healthy single row');
+    assert.ok(!/warning/.test(line), 'no warning suffix for a healthy single row');
   } finally { rm(home); rm(repo); }
 });
 

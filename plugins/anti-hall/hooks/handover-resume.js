@@ -46,6 +46,7 @@
 //   otherwise (older than 7 days)              -> silent, no injection.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
@@ -110,7 +111,7 @@ function freshnessLine(cwd, sinceMs) {
   const status = git(['status', '--porcelain']);
   const commits = since === null ? '?' : String(parseInt(since, 10) || 0);
   const dirty = status === null ? '?' : String(status.split('\n').filter(Boolean).length);
-  return 'FRESHNESS (measured now): HEAD ' + head.trim() + '; ' + commits + ' commit(s) since this handover was ' +
+  return 'Freshness (measured now): HEAD ' + head.trim() + '; ' + commits + ' commit(s) since this handover was ' +
     'written (committer date after its mtime); ' + dirty + ' dirty file(s) in the working tree. Any non-zero ' +
     'count means the handover\'s git/state claims may be stale -- re-verify them before trusting them.';
 }
@@ -136,7 +137,7 @@ function writerActivityLine(cwd, handoversRoot, candidate) {
       try { m = fs.statSync(path.join(projectDirFor(r, require('../companion/lib/test-home-guard.js').resolveHome()), sid + '.jsonl')).mtimeMs; } catch (_) { continue; }
       const gap = m - candidate.mtimeMs;
       if (!(gap > WRITER_GRACE_MS)) return '';
-      return 'WRITER KEPT RUNNING: session ' + sid + ' kept running ' + Math.round(gap / 60000) +
+      return 'Writer kept running: session ' + sid + ' kept running ' + Math.round(gap / 60000) +
         ' min after this handover was written (its transcript last wrote at ' +
         new Date(m).toISOString().replace(/\.\d{3}Z$/, 'Z') + ') -- its Next Action may be stale; check ' +
         'what it did after the handover (mesh mail, workspaces, uncommitted edits) before acting on it.';
@@ -189,7 +190,7 @@ function buildContext(candidate, outcome, prefix, freshness, platform, writerLin
 
   const lines = [];
   lines.push(
-    prefix + ': ' + candidate.filePath +
+    '\uD83D\uDCA1 anti-hall \u00B7 handover-resume: ' + prefix + ': ' + candidate.filePath +
     ' (' + seqLabel + (predecessor ? ', predecessor ' + predecessor : '') +
     ' | date ' + candidate.date + ' | session ' + candidate.sessionId + ')' +
     (outcome ? ' -- INDEX.md outcome: ' + outcome : '')
@@ -197,7 +198,7 @@ function buildContext(candidate, outcome, prefix, freshness, platform, writerLin
   if (freshness) lines.push(freshness);
   if (writerLine) lines.push(writerLine);
   lines.push('');
-  lines.push('GUIDED RESUME PATH:');
+  lines.push('Do instead: follow this guided resume path.');
   // ADAPTIVE (peer ask 3, 0.112 lane): step 2 and step 3 only name what this
   // SPECIFIC handover actually has -- a handover written without a
   // Resume-verification checklist section, or without the detail files,
@@ -226,7 +227,7 @@ function buildContext(candidate, outcome, prefix, freshness, platform, writerLin
   steps.forEach((s, i) => lines.push((i + 1) + '. ' + s));
   lines.push('');
   lines.push(
-    'This handover SUPERSEDES the auto-compact summary and any legacy CONTINUE-HERE-style ' +
+    'Note: this handover supersedes the auto-compact summary and any legacy CONTINUE-HERE-style ' +
     'file for continuation state: where they conflict, trust the handover -- it is the ' +
     'evidence-backed record; the compact summary is lossy.'
   );
@@ -238,7 +239,7 @@ function buildContext(candidate, outcome, prefix, freshness, platform, writerLin
 // NEWER than the handover means work happened after the handover was written.
 function buildSnapshotLine(snap, candidate) {
   if (snap.mtimeMs > candidate.mtimeMs) {
-    return 'PRE-COMPACTION SNAPSHOT (newer than the handover): ' + snap.filePath +
+    return 'Pre-compaction snapshot (newer than the handover): ' + snap.filePath +
       ' -- anti-hall\'s PreCompact hook saved it mechanically right before compaction ' +
       '(git state, task-list snapshot, the last user messages verbatim). Work happened AFTER ' +
       'the handover was written: read this snapshot right after the handover to catch up, and ' +
@@ -251,12 +252,12 @@ function buildSnapshotLine(snap, candidate) {
 // buildSnapshotOnlyContext(snap) -- no usable HANDOVER*.md, but a PreCompact
 // snapshot exists for this session.
 function buildSnapshotOnlyContext(snap) {
-  return 'No HANDOVER*.md was written for this session, but anti-hall\'s PreCompact hook saved a ' +
-    'mechanical PRE-COMPACTION SNAPSHOT: ' + snap.filePath + ' (written ' +
-    new Date(snap.mtimeMs).toISOString() + '). Read it FULLY before trusting the compact summary: ' +
-    'it holds git state, a task-list snapshot and the last user messages VERBATIM, which may carry ' +
-    'session rules the summary dropped. It is a crash dump, not a handover (no judgment went into ' +
-    'it) -- once you have re-established state, write a real handover with the anti-hall handover skill.';
+  return require('./lib/block-message.js').message({
+    kind: 'tip', guard: 'handover-resume',
+    what: 'no HANDOVER*.md was written for this session, but a pre-compaction snapshot exists: ' + snap.filePath + ' (written ' + new Date(snap.mtimeMs).toISOString() + ').',
+    why: 'It holds git state, a task-list snapshot and the last user messages verbatim, which may carry session rules the compact summary dropped. It is a crash dump, not a handover (no judgment went into it).',
+    instead: 'read it fully before trusting the compact summary; once state is re-established, write a real handover with the anti-hall handover skill.',
+  });
 }
 
 // resumeStatePath(sessionId) -- v0.75.0 resume-verification rail. Lives under
@@ -294,9 +295,12 @@ function emitNegativeReport(payload) {
   const out = {
     hookSpecificOutput: {
       hookEventName,
-      additionalContext:
-        'No session handover found under .anti-hall/handovers/ -- if one was written ' +
-        'this session, it may be in the wrong location; the handover skill writes there.',
+      additionalContext: require('./lib/block-message.js').message({
+        kind: 'tip', guard: 'handover-resume',
+        what: 'No session handover found under .anti-hall/handovers/.',
+        why: 'If one was written this session, it may be in the wrong location.',
+        instead: 'the handover skill writes under .anti-hall/handovers/; check there.',
+      }),
     },
   };
   try {

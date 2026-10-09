@@ -16,6 +16,7 @@
 // not the payload's `sessionId` field (kept in payloads purely for
 // readability/uniqueness across cases, no longer load-bearing for this hook).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { testHookRaw, postToolUseBashPayload } = require('../helpers/spawn-hook.js');

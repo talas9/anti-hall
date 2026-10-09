@@ -7,6 +7,7 @@
 //
 // HERMETIC: every test uses its own tmp HOME (never the real ~/.anti-hall).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -38,9 +39,9 @@ function ctx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 function segment(c, banner) {
-  return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
+  return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || '';
 }
-function tableSeg(c) { return segment(c, 'DEVSWARM WORKSPACES'); }
+function tableSeg(c) { return segment(c, 'devswarm-workspaces'); }
 
 function swarmDir(home) {
   const d = path.join(home, '.anti-hall', 'devswarm');
@@ -281,9 +282,9 @@ test('D2 E2E: the SAME broadcast never repeats verbatim across turns of the SAME
   try {
     writeSharedSummary(h.home, {}, { recent: [{ from: 'peer-1', summary: 'wrapping up phase 3', ts: Date.now(), urgency: 'normal' }] });
     const r1 = testHook(HOOK, payload('sess-repeat'), { home: h.home, env: PRIMARY_ENV, expectJson: true });
-    assert.ok(ctx(r1).includes('DEVSWARM BROADCAST'), `first turn must show the broadcast; ctx=${ctx(r1)}`);
+    assert.ok(ctx(r1).includes('devswarm-broadcast'), `first turn must show the broadcast; ctx=${ctx(r1)}`);
     const r2 = testHook(HOOK, payload('sess-repeat'), { home: h.home, env: PRIMARY_ENV, expectJson: true });
-    assert.ok(!ctx(r2).includes('DEVSWARM BROADCAST'), `second turn, same session, unchanged summary must NOT repeat; ctx=${ctx(r2)}`);
+    assert.ok(!ctx(r2).includes('devswarm-broadcast'), `second turn, same session, unchanged summary must NOT repeat; ctx=${ctx(r2)}`);
   } finally { h.cleanup(); }
 });
 
@@ -316,6 +317,6 @@ test('D2 E2E: a broadcast older than ANTIHALL_BROADCAST_MAX_AGE_MS is dropped fr
     const r = testHook(HOOK, payload('sess-agecap'), {
       home: h.home, env: Object.assign({}, PRIMARY_ENV, { ANTIHALL_BROADCAST_MAX_AGE_MS: '1000' }), expectJson: true,
     });
-    assert.ok(!ctx(r).includes('DEVSWARM BROADCAST'), `an age-capped-out broadcast must render nothing; ctx=${ctx(r)}`);
+    assert.ok(!ctx(r).includes('devswarm-broadcast'), `an age-capped-out broadcast must render nothing; ctx=${ctx(r)}`);
   } finally { h.cleanup(); }
 });

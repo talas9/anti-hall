@@ -157,7 +157,7 @@ test('a scratchpad python script piped to tail stays blocked in the foreground (
     fs.writeFileSync(path.join(dir, 's.py'), 'print(1)\n');
     const res = run(`python3 ${dir}/s.py 2>&1 | tail -3`, dir);
     assert.strictEqual(res.status, 2);
-    assert.match(res.stdout, /STILL blocked in the foreground/);
+    assert.match(res.stdout, /run_in_background \(never in the foreground\)/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -201,7 +201,10 @@ test('git push: bare form + bounded filter allowed; env-assignment prefix stays 
 test('cd <dir> && for-loop of devswarm.js sends piped to `head -c N` is allowed; heavy verbs in the loop stay blocked', () => {
   const dir = fs.mkdtempSync(path.join('/tmp', 'dsloop-cdhead-'));
   try {
-    const abs = `node ${path.join(os.homedir(), '.anti-hall', 'bin', 'devswarm.js')}`;
+    // The guard accepts the PASSWD home (os.userInfo().homedir) or its own isolated
+    // $HOME as the absolute prefix. os.homedir() follows the test PROCESS's HOME,
+    // which is neither when the suite runs under a temp/overridden HOME.
+    const abs = `node ${path.join(os.userInfo().homedir, '.anti-hall', 'bin', 'devswarm.js')}`;
     assert.strictEqual(blocked(`cd ${dir} && for t in primary-6181f376 primary-0c66ac80; do ${abs} send --to $t --message-file /tmp/x.md | head -c 50; done`, dir), false);
     assert.strictEqual(blocked(`cd ${dir} && for t in a b; do ${DS} send --to $t --message-file /tmp/x.md | head -50; done`, dir), false);
     assert.ok(blocked(`cd ${dir} && for t in a; do npm test | head -c 50; done`, dir));

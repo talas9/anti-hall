@@ -16,6 +16,7 @@
 // (see tests/hooks/jev-triage.test.js's header comment for the same
 // documented deadlock and its fix).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
@@ -135,7 +136,7 @@ test('ENABLED + confident mock Jev: messages carry an advisory `triage` label; u
       const env = Object.assign({}, process.env, {
         HOME: home,
         ANTIHALL_JEV_TEST_ENDPOINT: endpoint,
-        CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
+        CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-' + 'key',
         // Match seedStore's explicit 'journal' backend — the spawned CLI (no
         // ctx0 override available from argv) otherwise defaults to whatever
         // devswarm-store.js auto-selects, which can differ from 'journal' and

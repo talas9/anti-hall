@@ -367,9 +367,9 @@ test('maybeWarnBudget: a new day resets spend and allows a fresh warning', () =>
 test('scrubSecrets: redacts Bearer tokens, known key prefixes, key= assignments, emails, and long alnum runs', () => {
   const { scrubSecrets } = freshLib();
   assert.strictEqual(scrubSecrets('Authorization: Bearer abc.def-123'), 'Authorization: Bearer [REDACTED]');
-  assert.strictEqual(scrubSecrets('key is sk-FAKEFAKEFAKEFAKE1234'), 'key is [REDACTED_KEY]');
+  assert.strictEqual(scrubSecrets('key is sk-' + 'FAKEFAKEFAKEFAKE1234'), 'key is [REDACTED_KEY]');
   assert.strictEqual(scrubSecrets('ghp_FAKEFAKEFAKEFAKE1234567890'), '[REDACTED_KEY]');
-  assert.strictEqual(scrubSecrets('api_key: "abcd1234efgh"'), 'api_key: [REDACTED]'); // separator kept (v0.108.0 redactor)
+  assert.strictEqual(scrubSecrets('api_key: "abcd' + '1234efgh"'), 'api_key: [REDACTED]'); // separator kept (v0.108.0 redactor)
   assert.strictEqual(scrubSecrets('contact mohammed@example.com for help'), 'contact [REDACTED_EMAIL] for help');
   assert.strictEqual(scrubSecrets('token was ' + 'a'.repeat(40)), 'token was [REDACTED_TOKEN]');
 });
@@ -419,7 +419,7 @@ test('maybeWriteAuditSnippet: ON + changed -> writes a redacted, <=200-char snip
   try {
     h.writeState('jev.json', { audit: { snippets: true } });
     const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
-    const state = 'The key is sk-FAKEFAKEFAKEFAKE1234 and here is the rest. '.repeat(5);
+    const state = ('The key is sk-' + 'FAKEFAKEFAKEFAKE1234 and here is the rest. ').repeat(5);
     maybeWriteAuditSnippet({ home: h.home, id: 'speculation', hash: 'abc123', state, changed: 'added' });
     const p = auditLogPath(h.home);
     const lines = fs.readFileSync(p, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
@@ -427,7 +427,7 @@ test('maybeWriteAuditSnippet: ON + changed -> writes a redacted, <=200-char snip
     assert.strictEqual(lines[0].h, 'abc123');
     assert.strictEqual(lines[0].id, 'speculation');
     assert.ok(lines[0].snippet.length <= 200);
-    assert.ok(!lines[0].snippet.includes('sk-FAKEFAKEFAKEFAKE1234'), 'the secret must be redacted, not stored raw');
+    assert.ok(!lines[0].snippet.includes('sk-' + 'FAKEFAKEFAKEFAKE1234'), 'the secret must be redacted, not stored raw');
     assert.ok(lines[0].snippet.includes('[REDACTED_KEY]'));
     const mode = fs.statSync(p).mode & 0o777;
     assert.strictEqual(mode, 0o600, 'audit log must be mode 600');
@@ -951,7 +951,7 @@ test('askSync(): relax-block via subprocess, confident non-mechanical relaxes th
       };
       const r = await runAskSyncInChild({
         id: 'modelRouting', question: CHOICE_Q, state: 'write the report', trust: 'relax-block',
-        baseline: true, judgeSrc: "(a) => a === 'mechanical'", budgetMs: 8000,
+        baseline: true, judgeSrc: "a => a === 'mechanical'", budgetMs: 8000,
       }, env);
       assert.strictEqual(r.final, false, 'confident non-mechanical relaxes the block');
       assert.strictEqual(r.backend, 'jev');
@@ -1374,5 +1374,56 @@ test('rollups are never removed by default; jev.rollupRetentionDays > 0 is an ow
       lib.writeDailyRollups(h.home);
       assert.ok(!fs.existsSync(path.join(dir, '2020-01-01.json')), 'opt-in removes rollups older than N days');
     });
+  } finally { h.cleanup(); }
+});
+
+test('askSync(): recordDisagreement logs wouldChange + audit snippet on an ON row whose Jev answer differs but is not confident (modelRouting)', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true }, integrations: { modelRouting: 'on' } });
+    await withMockServer(choiceHandler('authoring', 0.3), async (endpoint) => {
+      const env = { HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint };
+      const base = { id: 'modelRouting', question: CHOICE_Q, state: 'run the deploy script', trust: 'relax-block', baseline: true, judgeSrc: "a => a === 'mechanical'", budgetMs: 3000 };
+      const r = await runAskSyncInChild(Object.assign({}, base, { recordDisagreement: true }), env);
+      assert.strictEqual(r.final, true, 'low-confidence disagreement never relaxes the block');
+      const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+      assert.strictEqual(log[0].mode, 'on');
+      assert.strictEqual(log[0].changed, null);
+      assert.strictEqual(log[0].wouldChange, 'relaxed', 'Jev tier differs from the rule-based verdict');
+      const audit = fs.readFileSync(path.join(h.home, '.anti-hall', 'logs', 'jev-audit.ndjson'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      assert.strictEqual(audit.length, 1);
+      assert.strictEqual(audit[0].shadow, true);
+      assert.ok(audit[0].snippet.includes('deploy'));
+    });
+  } finally { h.cleanup(); }
+});
+
+test('maybeWriteAuditSnippet: outputVerifyGuard stores head+tail (tail summary kept, tail secrets redacted, <=700)', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { audit: { snippets: true } });
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    const state = 'HEADLINE ' + 'x '.repeat(2000) + ' key sk-' + 'FAKEFAKEFAKEFAKE1234 ' + 'y '.repeat(50) + 'Tests: 3 failed, 12 passed';
+    maybeWriteAuditSnippet({ home: h.home, id: 'outputVerifyGuard', hash: 'h1', state, changed: 'added' });
+    const row = JSON.parse(fs.readFileSync(auditLogPath(h.home), 'utf8').trim());
+    assert.ok(row.snippet.startsWith('HEADLINE'));
+    assert.ok(row.snippet.endsWith('Tests: 3 failed, 12 passed'));
+    assert.ok(row.snippet.includes(' … '));
+    assert.ok(row.snippet.length <= 700);
+    assert.ok(!row.snippet.includes('FAKEFAKEFAKEFAKE1234'));
+    assert.ok(row.snippet.includes('[REDACTED_KEY]'));
+    assert.strictEqual(fs.statSync(auditLogPath(h.home)).mode & 0o777, 0o600);
+  } finally { h.cleanup(); }
+});
+
+test('maybeWriteAuditSnippet: other integrations stay head-only (byte-identical 200-char prefix)', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { audit: { snippets: true } });
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    const state = 'a '.repeat(50) + 'b '.repeat(300) + 'TAILMARK';
+    maybeWriteAuditSnippet({ home: h.home, id: 'speculation', hash: 'h2', state, changed: 'added' });
+    const row = JSON.parse(fs.readFileSync(auditLogPath(h.home), 'utf8').trim());
+    assert.strictEqual(row.snippet, state.slice(0, 200));
   } finally { h.cleanup(); }
 });

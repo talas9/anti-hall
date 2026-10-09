@@ -1,9 +1,13 @@
 ---
 name: anti-hall-handover
-description: Use when the user says "prepare a handover", "handover", "write a handoff", "save session state", "hand this off", before a context compaction/reset, at session end, or before ending work on a long task — writes a comprehensive, organized, minimal-but-lossless session handover so a fresh session can resume without re-deriving or guessing anything.
+description: Write a lossless session handover. Use for "handover", "save session state", before /compact or /clear, or at session end.
 ---
 
 # anti-hall handover for Codex
+
+## When to use
+
+Use when the user says "prepare a handover", "handover", "write a handoff", "save session state", "hand this off", before a context compaction/reset, at session end, or before ending work on a long task — writes a comprehensive, organized, minimal-but-lossless session handover so a fresh session can resume without re-deriving or guessing anything.
 
 Codex-native mirror of the Claude `handover` skill — same artifact contract
 and templates; only platform phrasing differs (no `/compact` references,

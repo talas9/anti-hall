@@ -13,6 +13,7 @@
 // parent process and kill that intermediate — proving the fix against actual
 // OS reparenting, not a mocked ppid.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const assert = require('node:assert');
 const test = require('node:test');
 const fs = require('node:fs');

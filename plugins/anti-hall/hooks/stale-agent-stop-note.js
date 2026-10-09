@@ -51,14 +51,23 @@ function note(scan, taskId, nowMs) {
     const seen = pm.lastSeenMs > pm.sentAtMs
       ? ' Its own transcript was last written ' + Math.max(0, Math.round((nowMs - pm.lastSeenMs) / 60000)) + ' min ago.'
       : '';
-    return 'STALE-STOP NOTE: "' + oneLine(name, 60) + '" was sent a message at ' + hhmm(pm.sentAtMs) +
-      ', after its last report' + last + ', and has not reported since: it may be working on that message.' +
-      seen + ' Advisory only; the stop is not blocked.';
+    return require('./lib/block-message.js').message({
+      kind: 'warn',
+      guard: 'stale-stop',
+      what: '"' + oneLine(name, 60) + '" was sent a message at ' + hhmm(pm.sentAtMs) + ', after its last report' + last + ', and has not reported since.',
+      why: 'It may be working on that message.' + seen,
+      instead: 'advisory only; the stop is not blocked.',
+    });
   }
   const rec = scan.launched.get(taskId);
   if (rec && !rec.teammate && !scan.terminal.has(taskId) && Number.isFinite(rec.resumedAtMs) && rec.resumedAtMs > 0) {
-    return 'STALE-STOP NOTE: "' + oneLine(taskId, 60) + '" was resumed at ' + hhmm(rec.resumedAtMs) +
-      ', after its last report, and has not reported since: it may be working. Advisory only; the stop is not blocked.';
+    return require('./lib/block-message.js').message({
+      kind: 'warn',
+      guard: 'stale-stop',
+      what: '"' + oneLine(taskId, 60) + '" was resumed at ' + hhmm(rec.resumedAtMs) + ', after its last report, and has not reported since.',
+      why: 'It may be working.',
+      instead: 'advisory only; the stop is not blocked.',
+    });
   }
   return null;
 }

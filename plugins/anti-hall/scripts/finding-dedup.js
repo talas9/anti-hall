@@ -282,7 +282,7 @@ async function dedupe(findings, opts) {
 function printHuman(groups) {
   for (const g of groups) {
     for (const p of g.pairs) {
-      console.error(`possible duplicates: ${p.a} ~ ${p.b} (conf ${p.confidence.toFixed(2)})`);
+      console.error(`⚠️ anti-hall · finding-dedup: possible duplicates: ${p.a} ~ ${p.b} (conf ${p.confidence.toFixed(2)})`);
     }
   }
 }
@@ -294,7 +294,7 @@ function noKeyNotice() {
   try {
     const jc = require('../hooks/lib/jev-client.js');
     if (jc.loadJevConfig().enabled && !jc.resolveCredential(jc.loadJevConfig())) {
-      console.error('finding-dedup: ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
+      console.error('💡 anti-hall · finding-dedup: ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
     }
   } catch (_) { /* notice is best-effort */ }
 }

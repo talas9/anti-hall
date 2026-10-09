@@ -16,6 +16,7 @@
 // data passes `cwd: REPO_CWD` (via withCwd) and writes to the ONE shared
 // summary file at REPO_KEY.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -38,7 +39,7 @@ const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + no source-branch
 // literal (not a substring match) so a "QUIET" test can assert the segment is
 // EXACTLY this and nothing else.
 const OVERRIDE_REASSERT =
-  'DEVSWARM COMMS OVERRIDE: mesh only — native hivecontrol messaging blocked. ' +
+  '💡 anti-hall · devswarm-comms: mesh only — native hivecontrol messaging blocked. ' +
   'Check: `roster` / `mesh read`. Direct: `send --to <meshId>`.';
 
 // REPO_CWD/REPO_HASH/REPO_KEY — this test process's own cwd (a real git
@@ -65,11 +66,11 @@ function ctx(r) {
 // first line starts with `banner`, or '' if absent. Lets a test assert on the
 // archive/inbox banner alone, independent of the always-on live table segment.
 function segment(c, banner) {
-  return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
+  return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || '';
 }
 // tableSeg(ctx) -> the live-workspace-table segment (or '').
 function tableSeg(c) {
-  return segment(c, 'DEVSWARM WORKSPACES');
+  return segment(c, 'devswarm-workspaces');
 }
 // tableRow(ctx, id) -> the table row line for workspace `id`, or ''.
 function tableRow(c, id) {
@@ -229,14 +230,14 @@ test('TABLE: workspace with fully-consumed unread + no stuck verdict -> live tab
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
     // An ACTIVE workspace always appears in the live table, even when quiet.
-    assert.ok(tableSeg(c).includes('DEVSWARM WORKSPACES'), `live table expected; ctx=${c}`);
+    assert.ok(tableSeg(c).includes('devswarm-workspaces'), `live table expected; ctx=${c}`);
     const row = tableRow(c, 'wsA');
     assert.ok(row, `wsA must have a table row; ctx=${c}`);
     assert.ok(/\bactive\b/.test(row), `quiet workspace status must be active; row=${row}`);
     assert.ok(/\|\s*0\s*\|/.test(row), `unread column must be 0; row=${row}`);
     // But no attention/archive banners when nothing is unread/stuck/archive-ready.
-    assert.ok(!c.includes('DEVSWARM PARENT INBOX'), `no inbox banner; ctx=${c}`);
-    assert.ok(!c.includes('DEVSWARM ARCHIVE-READY'), `no archive banner; ctx=${c}`);
+    assert.ok(!c.includes('devswarm-parent-inbox'), `no inbox banner; ctx=${c}`);
+    assert.ok(!c.includes('devswarm-archive-ready'), `no archive banner; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -250,7 +251,7 @@ test('INJECT: workspace with unread backlog -> PARENT INBOX context with count +
     assert.strictEqual(r.status, 0);
     assert.ok(r.json, `stdout must be JSON; stdout=${r.stdout}`);
     const c = ctx(r);
-    assert.ok(c.includes('DEVSWARM PARENT INBOX'), `expected inbox banner; ctx=${c}`);
+    assert.ok(c.includes('devswarm-parent-inbox'), `expected inbox banner; ctx=${c}`);
     assert.ok(c.includes('wsA'), 'must name the workspace');
     assert.ok(c.includes('3 unread'), `must report the unread count; ctx=${c}`);
   } finally { h.cleanup(); }
@@ -297,7 +298,7 @@ test('ARCHIVE: archive_ready workspace -> urges verify-per-repo-policy + archive
     writeSharedSummary(h.home, { wsA: { archive_ready: true } });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(c.includes('DEVSWARM ARCHIVE-READY'), `expected archive banner; ctx=${c}`);
+    assert.ok(c.includes('devswarm-archive-ready'), `expected archive banner; ctx=${c}`);
     assert.ok(c.includes('wsA'), 'must name the workspace');
     assert.ok(/MERGED \+ TESTED \+ DEPLOYED/.test(c), `must urge verify-per-repo-policy; ctx=${c}`);
     assert.ok(/per YOUR repo's policy/i.test(c), `must defer to the parent repo's own policy; ctx=${c}`);
@@ -320,7 +321,7 @@ test('ARCHIVE: ignore mark silences the archive reminder for that workspace only
     const c = ctx(r);
     // The ignore mark silences the archive NUDGE for wsA only (wsA still appears in
     // the factual live table — ignore governs the reminder, not the status table).
-    const archive = segment(c, 'DEVSWARM ARCHIVE-READY');
+    const archive = segment(c, 'devswarm-archive-ready');
     assert.ok(archive, `archive banner expected for wsB; ctx=${c}`);
     assert.ok(!archive.includes('wsA'), `ignored workspace must not be nudged; archive=${archive}`);
     assert.ok(archive.includes('wsB'), 'non-ignored workspace must still be nudged');
@@ -338,7 +339,7 @@ test('ARCHIVE: recent nudge within cooldown -> archive banner suppressed (table 
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
     // Cooldown suppresses the repeat NUDGE banner...
-    assert.ok(!c.includes('DEVSWARM ARCHIVE-READY'), `cooldown should suppress the archive banner; ctx=${c}`);
+    assert.ok(!c.includes('devswarm-archive-ready'), `cooldown should suppress the archive banner; ctx=${c}`);
     // ...but the live table still reports the factual archive-ready status.
     assert.ok(/archive-ready/.test(tableRow(c, 'wsA')), `table row must show archive-ready; ctx=${c}`);
   } finally { h.cleanup(); }
@@ -359,7 +360,7 @@ test('MULTI-WORKSPACE: two workspaces in ONE shared summary each render independ
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
     // wsAlpha: archive-ready + its own done-state, per ITS OWN entry.
-    const archive = segment(c, 'DEVSWARM ARCHIVE-READY');
+    const archive = segment(c, 'devswarm-archive-ready');
     assert.ok(archive.includes('wsAlpha'), `wsAlpha must be archive-ready; ctx=${c}`);
     assert.ok(!archive.includes('wsBeta'), `wsBeta must NOT be archive-ready; ctx=${c}`);
     // wsAlpha's `merged` gate is never set here, so the archive-ready row
@@ -765,14 +766,14 @@ test('TABLE: coexists with the unread inbox + archive-ready + broadcast banners 
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
     // All four segments present.
-    assert.ok(tableSeg(c).includes('DEVSWARM WORKSPACES'), `table segment present; ctx=${c}`);
-    assert.ok(segment(c, 'DEVSWARM BROADCAST'), `broadcast segment present; ctx=${c}`);
-    assert.ok(segment(c, 'DEVSWARM PARENT INBOX'), `unread inbox banner present; ctx=${c}`);
-    assert.ok(segment(c, 'DEVSWARM ARCHIVE-READY'), `archive banner present; ctx=${c}`);
+    assert.ok(tableSeg(c).includes('devswarm-workspaces'), `table segment present; ctx=${c}`);
+    assert.ok(segment(c, 'devswarm-broadcast'), `broadcast segment present; ctx=${c}`);
+    assert.ok(segment(c, 'devswarm-parent-inbox'), `unread inbox banner present; ctx=${c}`);
+    assert.ok(segment(c, 'devswarm-archive-ready'), `archive banner present; ctx=${c}`);
     // Table lists both workspaces.
     assert.ok(tableRow(c, 'wsUnread'), 'table row for unread workspace');
     assert.ok(tableRow(c, 'wsDone'), 'table row for archive-ready workspace');
-    assert.ok(segment(c, 'DEVSWARM BROADCAST').includes('peer-1'), 'broadcast segment names the sender');
+    assert.ok(segment(c, 'devswarm-broadcast').includes('peer-1'), 'broadcast segment names the sender');
   } finally { h.cleanup(); }
 });
 
@@ -787,8 +788,8 @@ test('URGENCY: an urgent direct renders the LOUD imperative segment, distinct fr
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const urgentSeg = segment(c, 'DEVSWARM URGENT INBOX');
-    const normalSeg = segment(c, 'DEVSWARM PARENT INBOX');
+    const urgentSeg = segment(c, 'devswarm-urgent-inbox');
+    const normalSeg = segment(c, 'devswarm-parent-inbox');
     assert.ok(urgentSeg, `urgent segment expected; ctx=${c}`);
     assert.ok(urgentSeg.includes('wsUrgent'), `urgent segment names wsUrgent; seg=${urgentSeg}`);
     assert.ok(!urgentSeg.includes('wsNormal'), `urgent segment must not include the normal workspace; seg=${urgentSeg}`);
@@ -807,8 +808,8 @@ test('URGENCY: unrecognized/null urgency falls back to the standard (normal) tie
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(segment(c, 'DEVSWARM PARENT INBOX').includes('wsLegacy'), `legacy/null urgency must render via the standard segment; ctx=${c}`);
-    assert.strictEqual(segment(c, 'DEVSWARM URGENT INBOX'), '', `no urgent segment for a null-urgency unread; ctx=${c}`);
+    assert.ok(segment(c, 'devswarm-parent-inbox').includes('wsLegacy'), `legacy/null urgency must render via the standard segment; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-urgent-inbox'), '', `no urgent segment for a null-urgency unread; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -821,8 +822,8 @@ test('URGENCY: low-urgency unread is TABLE-ROW-ONLY — excluded from every text
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
     assert.ok(tableRow(c, 'wsLow'), `low-urgency workspace must still get a table row; ctx=${c}`);
-    assert.strictEqual(segment(c, 'DEVSWARM PARENT INBOX'), '', `no standard segment for a low-urgency-only unread; ctx=${c}`);
-    assert.strictEqual(segment(c, 'DEVSWARM URGENT INBOX'), '', `no urgent segment for a low-urgency unread; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-parent-inbox'), '', `no standard segment for a low-urgency-only unread; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-urgent-inbox'), '', `no urgent segment for a low-urgency unread; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -840,10 +841,10 @@ test('URGENCY: a STUCK (stale/escalated) workspace is never demoted to table-row
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
     assert.ok(tableRow(c, 'wsStuck'), `stuck workspace must still get a table row; ctx=${c}`);
-    const normalSeg = segment(c, 'DEVSWARM PARENT INBOX');
+    const normalSeg = segment(c, 'devswarm-parent-inbox');
     assert.ok(normalSeg.includes('wsStuck'), `stuck workspace must appear in the standard imperative segment despite low message urgency; seg=${normalSeg}`);
     assert.ok(normalSeg.includes('stale'), `status must be visible in the segment; seg=${normalSeg}`);
-    assert.strictEqual(segment(c, 'DEVSWARM URGENT INBOX'), '', `low urgency must not promote to the urgent segment; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-urgent-inbox'), '', `low urgency must not promote to the urgent segment; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -862,7 +863,7 @@ test('WORDING: normal-tier unread segment is ADVISORY, not a hard STOP', () => {
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const seg = segment(c, 'DEVSWARM PARENT INBOX');
+    const seg = segment(c, 'devswarm-parent-inbox');
     assert.ok(seg, `normal segment expected; ctx=${c}`);
     assert.ok(!/STOP/.test(seg), `normal-tier segment must not contain STOP; seg=${seg}`);
     assert.ok(!/before continuing/.test(seg), `normal-tier segment must not contain 'before continuing'; seg=${seg}`);
@@ -882,7 +883,7 @@ test('WORDING: urgent-tier unread segment stays LOUD (STOP + before continuing)'
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const seg = segment(c, 'DEVSWARM URGENT INBOX');
+    const seg = segment(c, 'devswarm-urgent-inbox');
     assert.ok(seg, `urgent segment expected; ctx=${c}`);
     assert.ok(/STOP/.test(seg), `urgent-tier segment must contain STOP; seg=${seg}`);
     assert.ok(/before continuing/.test(seg), `urgent-tier segment must contain 'before continuing'; seg=${seg}`);
@@ -897,11 +898,11 @@ test('WORDING: high-urgency also routes to the LOUD urgent segment', () => {
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const seg = segment(c, 'DEVSWARM URGENT INBOX');
+    const seg = segment(c, 'devswarm-urgent-inbox');
     assert.ok(seg, `high-urgency segment expected via the urgent path; ctx=${c}`);
     assert.ok(seg.includes('wsHigh'), `urgent segment names wsHigh; seg=${seg}`);
     assert.ok(/STOP/.test(seg) && /before continuing/.test(seg), `high-urgency segment must stay loud; seg=${seg}`);
-    assert.strictEqual(segment(c, 'DEVSWARM PARENT INBOX'), '', `high-urgency workspace must not also appear in the normal segment; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-parent-inbox'), '', `high-urgency workspace must not also appear in the normal segment; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -918,7 +919,7 @@ test('CHILD NOT DRAINING: a registered workspace TITLE is shown in the human-fac
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const seg = segment(c, 'DEVSWARM PARENT INBOX');
+    const seg = segment(c, 'devswarm-parent-inbox');
     assert.ok(seg.includes('billing-refactor'), `must show the registered title; seg=${seg}`);
     assert.ok(seg.includes('CHILD NOT DRAINING'), `must carry the CHILD NOT DRAINING label; seg=${seg}`);
   } finally { h.cleanup(); }
@@ -933,7 +934,7 @@ test('CHILD NOT DRAINING: oldestDirectUnreadTs surfaces as "(oldest Xm)" in the 
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const seg = segment(c, 'DEVSWARM PARENT INBOX');
+    const seg = segment(c, 'devswarm-parent-inbox');
     assert.match(seg, /oldest 1[45]m/, `must surface the oldest-unread age; seg=${seg}`);
   } finally { h.cleanup(); }
 });
@@ -948,7 +949,7 @@ test('BROADCAST: a plain broadcast renders soft, advisory react-if-concerned wor
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const seg = segment(c, 'DEVSWARM BROADCAST');
+    const seg = segment(c, 'devswarm-broadcast');
     assert.ok(seg, `broadcast segment expected; ctx=${c}`);
     assert.match(seg, /advisory/i);
     assert.match(seg, /react ONLY if you judge it relevant/);
@@ -966,7 +967,7 @@ test('BROADCAST: an urgent broadcast renders LOUD ([URGENT] tag) yet stays advis
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const seg = segment(c, 'DEVSWARM BROADCAST');
+    const seg = segment(c, 'devswarm-broadcast');
     assert.ok(seg, `broadcast segment expected; ctx=${c}`);
     assert.ok(seg.includes('[URGENT] peer-3'), `urgent broadcast must be tagged; seg=${seg}`);
     assert.match(seg, /react ONLY if you judge it relevant/, 'still advisory wording, even when loud');
@@ -984,7 +985,7 @@ test('BROADCAST: a heartbeat row (no isHeartbeat discriminator on the wire) rend
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const seg = segment(c, 'DEVSWARM BROADCAST');
+    const seg = segment(c, 'devswarm-broadcast');
     assert.ok(seg && seg.includes('peer-4'), `heartbeat-shaped row surfaces via the broadcast segment; ctx=${c}`);
     assert.match(seg, /NEVER blocks/i);
   } finally { h.cleanup(); }
@@ -996,7 +997,7 @@ test('BROADCAST: no recent[] entries -> no broadcast segment', () => {
     writeSharedSummary(h.home, { wsA: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.strictEqual(segment(c, 'DEVSWARM BROADCAST'), '', `no recent[] -> no broadcast segment; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-broadcast'), '', `no recent[] -> no broadcast segment; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -1085,9 +1086,9 @@ test('FAIL-OPEN: corrupt summary.json -> treated as no data, exit 0, no crash', 
 // a live-but-QUIET daemon (backlog present, no new messages) no longer
 // false-reads as stale via a frozen generatedAt.
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000; // must match HEARTBEAT_STALE_MS in the hook
-// staleBanner(ctx) -> the '⚠ DEVSWARM STALE DATA' segment, or ''.
+// staleBanner(ctx) -> the 'devswarm-stale-data' segment, or ''.
 function staleBanner(c) {
-  return c.split('\n\n').find((s) => s.includes('DEVSWARM STALE DATA')) || '';
+  return c.split('\n\n').find((s) => s.includes('devswarm-stale-data')) || '';
 }
 function writeDaemonHeartbeat(home, hash, ts, pid) {
   const p = path.join(swarmDir(home), 'heartbeats', 'ingest-' + hash + '.json');
@@ -1121,7 +1122,7 @@ test('STALE: fresh heartbeat + live lock (repoKey-keyed) -> healthy -> NO banner
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    assert.ok(tableSeg(c).includes('DEVSWARM WORKSPACES'), `table still present; ctx=${c}`);
+    assert.ok(tableSeg(c).includes('devswarm-workspaces'), `table still present; ctx=${c}`);
     assert.strictEqual(staleBanner(c), '', `healthy daemon must not warn; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -1139,8 +1140,8 @@ test('STALE: heartbeat older than threshold (repoKey-keyed) -> banner ABOVE the 
     assert.ok(/ingest daemon last alive/.test(banner), `banner text; banner=${banner}`);
     assert.ok(/doctor/.test(banner), `banner must point to a remedy; banner=${banner}`);
     // Banner must sit ABOVE the live workspace table.
-    const iBanner = c.indexOf('DEVSWARM STALE DATA');
-    const iTable = c.indexOf('DEVSWARM WORKSPACES');
+    const iBanner = c.indexOf('devswarm-stale-data');
+    const iTable = c.indexOf('devswarm-workspaces');
     assert.ok(iBanner >= 0 && iTable >= 0 && iBanner < iTable, `banner above table; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -1154,7 +1155,7 @@ test('STALE: missing heartbeat file (daemon never wrote one for this project) + 
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
     assert.ok(staleBanner(c), `missing heartbeat must warn; ctx=${c}`);
-    assert.ok(c.includes('DEVSWARM PARENT INBOX'), `live unread still surfaced alongside; ctx=${c}`);
+    assert.ok(c.includes('devswarm-parent-inbox'), `live unread still surfaced alongside; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -1268,7 +1269,7 @@ function writeDaemonHeartbeatFull(home, hash, fields) {
   fs.writeFileSync(p, JSON.stringify(fields));
 }
 function monitorFaultBanner(c) {
-  return c.split('\n\n').find((s) => s.includes('DEVSWARM INGEST FAILING')) || '';
+  return c.split('\n\n').find((s) => s.includes('devswarm-ingest-failing')) || '';
 }
 
 test('MONITOR-FAULT: alive (fresh heartbeat + live lock) but monitor failing past threshold -> monitor-fault banner, NOT the stale banner', { skip: process.platform === 'win32' }, () => {
@@ -1292,11 +1293,11 @@ test('MONITOR-FAULT: alive (fresh heartbeat + live lock) but monitor failing pas
     assert.ok(/anti-hall:doctor/.test(banner), banner);
     assert.strictEqual(staleBanner(c), '', `must NOT also render the stale banner; ctx=${c}`);
     // Banner must sit ABOVE the live workspace table, same slot as the stale banner.
-    const iBanner = c.indexOf('DEVSWARM INGEST FAILING');
-    const iTable = c.indexOf('DEVSWARM WORKSPACES');
+    const iBanner = c.indexOf('devswarm-ingest-failing');
+    const iTable = c.indexOf('devswarm-workspaces');
     assert.ok(iBanner >= 0 && iTable >= 0 && iBanner < iTable, `banner above table; ctx=${c}`);
     // exactly ONE banner segment, never two.
-    const bannerSegs = c.split('\n\n').filter((s) => s.includes('DEVSWARM STALE DATA') || s.includes('DEVSWARM INGEST FAILING'));
+    const bannerSegs = c.split('\n\n').filter((s) => s.includes('devswarm-stale-data') || s.includes('devswarm-ingest-failing'));
     assert.strictEqual(bannerSegs.length, 1, `exactly one banner must render; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -1314,7 +1315,7 @@ test('MONITOR-FAULT: timeout fault -> plain wording without a doctor call to act
     writeDaemonLock(h.home, REPO_KEY, process.pid);
     timeoutBeat();
     const first = monitorFaultBanner(prompt());
-    assert.ok(/DEVSWARM INGEST FAILING/.test(first), first);
+    assert.ok(/devswarm-ingest-failing/.test(first), first);
     assert.ok(/healthy/.test(first) && /not answering/.test(first) && /mesh messages/.test(first) && /DevSwarm app/.test(first), first);
     assert.ok(!/Run \/anti-hall:doctor/.test(first), `timeout must not tell the user to run doctor: ${first}`);
     assert.strictEqual(monitorFaultBanner(prompt()), '', '2nd prompt in the same episode emits nothing');
@@ -1430,7 +1431,7 @@ test('H4 x failed: status:"failed" + EMPTY store -> non-destructive guard preven
 const OWN_ID = 'primary-' + REPO_HASH;
 function ownSegment(c) {
   // The segment may now lead with the "QUESTIONS AWAITING YOUR REPLY" line.
-  return segment(c, 'DEVSWARM OWN INBOX') || segment(c, 'QUESTIONS AWAITING YOUR REPLY');
+  return segment(c, 'devswarm-own-inbox') || segment(c, 'QUESTIONS AWAITING YOUR REPLY');
 }
 
 test('OWN UNREAD: Primary\'s own summary-projected unread -> imperative PRIORITY segment (parity with child wording)', () => {
@@ -1455,7 +1456,7 @@ test('OWN UNREAD: urgent own-unread gets the URGENT PRIORITY prefix (D4 honoring
     writeSharedSummary(h.home, { [OWN_ID]: { total: 1, cursor: 0, unread: 1, directUnread: 1, urgencyMax: 'urgent' } });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const own = ownSegment(ctx(r));
-    assert.match(own, /DEVSWARM OWN INBOX — URGENT PRIORITY/, `own=${own}`);
+    assert.match(own, /devswarm-own-inbox: urgent priority/, `own=${own}`);
   } finally { h.cleanup(); }
 });
 
@@ -1469,7 +1470,7 @@ test('OWN UNREAD: coexists with a child unread banner without prefix collision, 
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
     const own = ownSegment(c);
-    const child = segment(c, 'DEVSWARM PARENT INBOX:');
+    const child = segment(c, 'devswarm-parent-inbox:');
     assert.ok(own, `own segment present; ctx=${c}`);
     assert.ok(child, `child segment present; ctx=${c}`);
     assert.ok(own.includes('1'), `own unread count; own=${own}`);
@@ -1488,7 +1489,7 @@ test('OWN UNREAD: no own-primary entry in summary -> no own segment (fail-open),
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
     assert.strictEqual(ownSegment(c), '', `no own segment when summary has no own entry; ctx=${c}`);
-    assert.ok(c.includes('DEVSWARM PARENT INBOX'), `child unread still surfaced; ctx=${c}`);
+    assert.ok(c.includes('devswarm-parent-inbox'), `child unread still surfaced; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -1648,7 +1649,7 @@ test('OWN UNREAD DECIDE+REPLY REGRESSION: plain unread with no pendingQuestions 
     const own = ownSegment(ctx(r));
     const cliPath = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'devswarm.js');
     const expected =
-      'DEVSWARM OWN INBOX — PRIORITY: you have 4 unread parent/peer '
+      '⚠️ anti-hall · devswarm-own-inbox: priority — you have 4 unread parent/peer '
       + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
       + 'parent/peer message(s) FIRST before continuing. Read them via '
       + '`node ' + cliPath + ' inbox read-primary ' + OWN_ID + '` (anti-hall devswarm CLI — '
@@ -2038,13 +2039,13 @@ test('OWN UNREAD/#34: the Primary\'s own summary entry never double-surfaces as 
     assert.strictEqual(tableRow(c, OWN_ID), '', `OWN_ID must never appear as a table row; ctx=${c}`);
     // Never in the child unread/urgent-unread attention segments (which suggest
     // `devswarm.js inbox read <id>` — broken for a primary id).
-    const urgentChild = segment(c, 'DEVSWARM URGENT INBOX');
-    const normalChild = segment(c, 'DEVSWARM PARENT INBOX:');
+    const urgentChild = segment(c, 'devswarm-urgent-inbox');
+    const normalChild = segment(c, 'devswarm-parent-inbox:');
     assert.ok(!urgentChild.includes(OWN_ID), `OWN_ID must not appear in URGENT INBOX; seg=${urgentChild}`);
     assert.ok(!normalChild.includes(OWN_ID), `OWN_ID must not appear in PARENT INBOX; seg=${normalChild}`);
     // Never in the archive-ready recommendation (which suggests
     // `devswarm.js archive-request <id>` — also broken for a primary id).
-    const archive = segment(c, 'DEVSWARM ARCHIVE-READY');
+    const archive = segment(c, 'devswarm-archive-ready');
     assert.ok(!archive.includes(OWN_ID), `OWN_ID must not appear in the archive banner; seg=${archive}`);
     // The real child wsA is unaffected by the exclusion.
     assert.ok(tableRow(c, 'wsA'), `wsA must still have a table row; ctx=${c}`);
@@ -2075,7 +2076,7 @@ test('P1 FIX: standard unread (PARENT INBOX) segment carries an ABSOLUTE, existi
   try {
     writeSharedSummary(h.home, { wsA: { total: 3, cursor: 0, unread: 3, directUnread: 3 } });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
-    assertAbsoluteExistingCliPaths(segment(ctx(r), 'DEVSWARM PARENT INBOX'));
+    assertAbsoluteExistingCliPaths(segment(ctx(r), 'devswarm-parent-inbox'));
   } finally { h.cleanup(); }
 });
 
@@ -2087,7 +2088,7 @@ test('STABLE LAUNCHER: when ~/.anti-hall/bin/devswarm.js exists, emitted hints n
     fs.writeFileSync(launcher, '// stub\n');
     writeSharedSummary(h.home, { wsA: { total: 3, cursor: 0, unread: 3, directUnread: 3 } });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
-    const seg = segment(ctx(r), 'DEVSWARM PARENT INBOX');
+    const seg = segment(ctx(r), 'devswarm-parent-inbox');
     assert.ok(seg.includes('`node ' + launcher + ' send --to'), `must name the stable launcher; seg=${seg}`);
     assert.ok(!seg.includes(path.join('scripts', 'devswarm.js')), `must not name the version-pinned path; seg=${seg}`);
   } finally { h.cleanup(); }
@@ -2098,7 +2099,7 @@ test('P1 FIX: urgent unread (URGENT INBOX) segment carries an ABSOLUTE, existing
   try {
     writeSharedSummary(h.home, { wsUrgent: { total: 1, cursor: 0, unread: 1, directUnread: 1, urgencyMax: 'urgent' } });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
-    assertAbsoluteExistingCliPaths(segment(ctx(r), 'DEVSWARM URGENT INBOX'));
+    assertAbsoluteExistingCliPaths(segment(ctx(r), 'devswarm-urgent-inbox'));
   } finally { h.cleanup(); }
 });
 
@@ -2116,7 +2117,7 @@ test('P1 FIX: archive-ready segment carries an ABSOLUTE, existing devswarm.js pa
   try {
     writeSharedSummary(h.home, { wsA: { archive_ready: true } });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
-    assertAbsoluteExistingCliPaths(segment(ctx(r), 'DEVSWARM ARCHIVE-READY'));
+    assertAbsoluteExistingCliPaths(segment(ctx(r), 'devswarm-archive-ready'));
   } finally { h.cleanup(); }
 });
 
@@ -2128,13 +2129,13 @@ test('P1 FIX: archive-ready segment carries an ABSOLUTE, existing devswarm.js pa
 // MAX_MESH_ISSUES cap is the only anti-spam.
 
 function orphanSeg(c) {
-  return segment(c, '⚠ DEVSWARM ORPHANED MESH');
+  return segment(c, 'devswarm-orphaned-mesh');
 }
 function staleRegistrySeg(c) {
-  return segment(c, '⚠ DEVSWARM STALE WORKSPACE(S)');
+  return segment(c, 'devswarm-stale-workspaces');
 }
 
-test('HELD PARTITIONS: summary.heldPartitions (with orphans empty) -> never renders the ORPHANED MESH warning', () => {
+test('HELD PARTITIONS: summary.heldPartitions (with orphans empty) -> never renders the devswarm-orphaned-mesh warning', () => {
   const h = makeHome();
   try {
     // computeSummary diverts owner-held ids (devswarm.heldPartitions) into
@@ -2147,7 +2148,7 @@ test('HELD PARTITIONS: summary.heldPartitions (with orphans empty) -> never rend
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    assert.ok(!c.includes('ORPHANED MESH'), `held partition must never trigger the orphan warning; ctx=${c}`);
+    assert.ok(!c.includes('devswarm-orphaned-mesh'), `held partition must never trigger the orphan warning; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -2206,7 +2207,7 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
       OVERRIDE_REASSERT,
       // Header text changed: "live" was actively misleading once a dormant
       // (likely-closed) row can appear in this same table.
-      'DEVSWARM WORKSPACES (re-sent on change, else every 10 turns):\n'
+      '💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):\n'
         + '| workspace | status | finish | unread | last |\n'
         + '|---|---|---|---|---|\n'
         + '| wsA | active | working | 2 | — |',
@@ -2215,7 +2216,7 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
       'When mentioning a workspace to the human, use its TITLE from the table above '
         + '(truncate ~48 chars) — NEVER the bare mesh id. Mesh ids belong ONLY inside '
         + 'command strings (`send --to <meshId>`, etc).',
-      'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — wsA (2 unread). '
+      '⚠️ anti-hall · devswarm-parent-inbox: 1 active workspace(s) need attention — wsA (2 unread). '
         + 'CHILD NOT DRAINING: these are message(s) YOU sent that the child has NOT yet '
         + 'drained. Poke it (`node ' + cliPath + ' send --to <id> --message-file <path>`) or '
         + 'escalate/reassign it — do not assume it has seen the backlog just because '
@@ -2223,8 +2224,8 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
         + 'A workspace flagged stale/escalated has a wedged child — check on it.',
     ].join('\n\n');
     assert.strictEqual(c, expected, `updated golden (item 5, CHILD NOT DRAINING wording) must match; ctx=${c}`);
-    assert.ok(!c.includes('ORPHANED MESH'), 'no orphan segment expected');
-    assert.ok(!c.includes('STALE WORKSPACE(S)'), 'no stale-registry segment expected');
+    assert.ok(!c.includes('devswarm-orphaned-mesh'), 'no orphan segment expected');
+    assert.ok(!c.includes('devswarm-stale-workspaces'), 'no stale-registry segment expected');
   } finally { h.cleanup(); }
 });
 
@@ -2291,10 +2292,10 @@ test('ORPHANS+STALE: malformed/absent fields -> no throw, nothing extra rendered
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    assert.ok(!c.includes('ORPHANED MESH'), `malformed orphans must render nothing; ctx=${c}`);
-    assert.ok(!c.includes('STALE WORKSPACE(S)'), `all-unsafe stale entries must render nothing; ctx=${c}`);
+    assert.ok(!c.includes('devswarm-orphaned-mesh'), `malformed orphans must render nothing; ctx=${c}`);
+    assert.ok(!c.includes('devswarm-stale-workspaces'), `all-unsafe stale entries must render nothing; ctx=${c}`);
     // The rest of the hook still functions normally (unaffected by the malformed fields).
-    assert.ok(c.includes('DEVSWARM PARENT INBOX'), `unrelated segments must still render; ctx=${c}`);
+    assert.ok(c.includes('devswarm-parent-inbox'), `unrelated segments must still render; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 

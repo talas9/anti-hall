@@ -7,6 +7,7 @@
 // plan from blocked (a-done) to wouldArchive with a proven merge + c-g passing.
 // Isolated HOME; the app DB is a node:sqlite fixture.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

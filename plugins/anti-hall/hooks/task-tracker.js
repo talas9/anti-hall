@@ -32,28 +32,51 @@
 // No external deps; pure Node built-ins. JSON via JSON.stringify.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 const DD = require('./lib/dispatch-demand.js');
 const { reconstructTasks, classifyOpen, openOf, unknownNote } = require('./lib/task-state.js');
 
-const FULL =
-  'TASK-LIST DISCIPLINE: capture EVERY user request as a task (TaskCreate) ' +
-  'before starting work, so no request is lost. Assign each task a priority ' +
-  '(metadata.priority: P0/P1/P2) and maintain the list sorted ' +
-  'highest-priority-first so the most important work is always on top; work ' +
-  'tasks in that order. Keep statuses current: in_progress when starting, ' +
-  'completed when done, deferred if explicitly deprioritized. Keep the MAIN ' +
-  'thread non-blocking - delegate heavy/long work to background subagents and ' +
-  'continue. Report progress to the user. Do not finish a turn with ' +
-  'silently-dropped requests.';
+const BM = require('./lib/block-message.js');
+const NON_BLOCKING = 'keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; ';
+function fullMessage(withNonBlocking) {
+  return BM.message({
+    kind: 'tip',
+    guard: 'task-tracker',
+    what: 'capture EVERY user request as a task (TaskCreate) before starting work, so no request is lost.',
+    instead: 'give each task a priority (metadata.priority: P0/P1/P2) and keep the list sorted highest first; keep statuses current (in_progress when starting, completed when done, deferred if explicitly deprioritized); ' +
+      (withNonBlocking ? NON_BLOCKING : '') + 'report progress; never finish a turn with a silently dropped request.',
+  });
+}
+const FULL_TODAY = fullMessage(true);
 
-const SHORT =
-  'TASK-LIST: capture every request as a priority-sorted task; keep statuses ' +
-  'current; delegate heavy work; drop nothing.';
+// Compact level (default): drops only the "keep the MAIN thread non-blocking - delegate heavy/long
+// work" clause, which the session core and orchestration rule B already carry every session.
+// protocolLevel=full (and any settings failure) keeps FULL_TODAY.
+const FULL_COMPACT = fullMessage(false);
+// Codex has no TaskCreate tool: same discipline, neutral task/plan-list wording. Claude text unchanged.
+const toCodex = (t) => t.replace('as a task (TaskCreate) ', 'as an item in your task/plan list ');
+const FULL_TODAY_CODEX = toCodex(FULL_TODAY);
+const FULL_COMPACT_CODEX = toCodex(FULL_COMPACT);
+function isCodexHost(payload) {
+  try { return require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex'; } catch (_) { return false; }
+}
+function fullText(codex) {
+  const today = codex ? FULL_TODAY_CODEX : FULL_TODAY;
+  try {
+    return require('./verify-first-core.js').protocolLevel() === 'compact' ? (codex ? FULL_COMPACT_CODEX : FULL_COMPACT) : today;
+  } catch (_) { return today; }
+}
+
+const SHORT = BM.message({
+  kind: 'tip',
+  guard: 'task-tracker',
+  what: 'capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.',
+});
 
 // DevSwarm PRIMARY ONLY. FULL/SHORT above — and the ACTIONABLE-NOW dispatch line in
 // freshnessNote() — say "delegate to a background subagent", which is the WRONG
@@ -62,13 +85,12 @@ const SHORT =
 // (DEVSWARM_REPO_ID set AND DEVSWARM_SOURCE_BRANCH empty). Outside DevSwarm, and in
 // a CHILD workspace, the injected text is byte-for-byte unchanged. Mirrors rule W in
 // verify-first-full.js.
-const DEVSWARM_PRIMARY =
-  'DEVSWARM PRIMARY — DISPATCH TIER: for each task, CLASSIFY before you dispatch. A ' +
-  'workspace-scale MATTER (a feature/fix/deploy — multi-step, own branch, own review) is ' +
-  'spun as its own CHILD WORKSPACE: `node scripts/devswarm.js spawn <branch> -p "<brief>"`. ' +
-  'Only finer-grained work (a lookup, a single command, a scoped investigation, a review ' +
-  'pass) goes to a background subagent. A workspace-scale task handed to a subagent is the ' +
-  'same failure as leaving it idle.';
+const DEVSWARM_PRIMARY = BM.message({
+  kind: 'tip',
+  guard: 'task-tracker',
+  what: 'Primary dispatch tier: classify each task before you dispatch it.',
+  instead: 'a workspace-scale MATTER (feature/fix/deploy: multi-step, own branch, own review) gets its own CHILD WORKSPACE: `node scripts/devswarm.js spawn <branch> -p "<brief>"`. Only finer-grained work (a lookup, a single command, a scoped investigation, a review pass) goes to a background subagent. Handing a workspace-scale task to a subagent is the same failure as leaving it idle.',
+});
 
 // isDevswarmPrimary(env, cwd) — the shared gate (hooks/lib/primary-tier.js): DevSwarm Primary, devswarm.dispatchTierText on,
 // and not a repo that forbids workspaces. Fail-open to FALSE => the baseline text only.
@@ -184,9 +206,9 @@ function pickMessage(payload) {
         stateDir, prefix: 'task-tracker', keepFile: stateFile,
       });
     } catch (_) {}
-    return FULL;
+    return fullText(isCodexHost(payload));
   } catch (_) {
-    return FULL; // any unexpected error -> never weaken discipline
+    return fullText(isCodexHost(payload)); // any unexpected error -> never weaken discipline
   }
 }
 
@@ -246,7 +268,8 @@ function freshnessNote(payload) {
     const actionable = classifyOpen(open, state.taskMap);
     if (actionable.length >= 1 && DD.enabled()) {
       let running = null;
-      try { running = require('./lib/agent-scan.js').runningAgentsOrNull(tp, lines); } catch (_) { running = null; }
+      let proof = { running: null, seen: [], windowBytes: 0 };
+      try { proof = require('./lib/agent-scan.js').agentCountProof(tp, lines); running = proof.running; } catch (_) { running = null; }
       const res = DD.evaluate({ actionable, knownIds: [...state.taskMap.keys()], inProgressIds: open.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running });
       if (res.fire) {
         // Jev dispatchTier (advisory, default on): "→ <tier> (<conf>)" per task
@@ -263,12 +286,20 @@ function freshnessNote(payload) {
         if (tier) { try { tier.commit(); } catch (_) {} }
         demandShown = res.dispatch.length;
       } else if (res.unknown) {
-        out += 'Background-agent running-agent count unknown (transcript window too short to prove none are in flight): check before dispatching more. ';
+        // Actionable: say what WAS seen and why the rest cannot be proven.
+        const ids = proof.seen.slice(0, 3).join(', ') + (proof.seen.length > 3 ? ' +' + (proof.seen.length - 3) + ' more' : '');
+        const mb = proof.windowBytes ? Math.round(proof.windowBytes / (1024 * 1024)) : 0;
+        out += 'Background-agent running-agent count unknown (' +
+          (proof.seen.length ? 'saw ' + proof.seen.length + ' launched, all finished: ' + ids + '; ' : 'none seen; ') +
+          (mb ? 'launches older than the last ' + mb + 'MB of transcript cannot be checked' : 'transcript unreadable') +
+          '): check before dispatching more. ';
       }
     }
 
     // (b) freshness note about open tasks (in_progress subject if any).
-    const inProg = open.find((t) => /in[-_]?progress/i.test(t.status || ''));
+    const blocked = open.filter((t) => DD.isOwnerBlocked(t));
+    const counted = open.filter((t) => !DD.isOwnerBlocked(t));
+    const inProg = counted.find((t) => /in[-_]?progress/i.test(t.status || ''));
     // FIX 7: control-char strip (oneLine) THEN JSON.stringify so the task-supplied
     // subject is rendered as an inert quoted string and can never inject
     // instruction-shaped content into the UserPromptSubmit additionalContext.
@@ -281,7 +312,17 @@ function freshnessNote(payload) {
     const inProgHasSubject = inProg && inProg.content != null && String(inProg.content) !== String(inProg.id);
     const subj = inProg ? oneLine(inProgHasSubject ? inProg.content : '(subject unknown)', 50) : '';
     const tail2 = inProg && subj ? ' (oldest in_progress subject: ' + JSON.stringify(subj) + ')' : '';
-    const freshLine = 'open tasks: ' + open.length + tail2 + ' — update or close them.';
+    // Owner/external-blocked tasks (same predicate as the Stop task-guard) are not
+    // work the agent can close: excluded from N, shown as "(+K blocked: why)".
+    const nBlocked = blocked.length;
+    const why = [...new Set(blocked.map((t) => {
+      const bo = typeof t.blockedOn === 'string' ? t.blockedOn.trim().toLowerCase() : '';
+      return bo || 'owner';
+    }))].join('/');
+    const blockedTail = nBlocked ? ' (+' + nBlocked + ' blocked: ' + why + ')' : '';
+    const freshLine = counted.length === 0
+      ? 'open tasks: 0' + blockedTail + '.'
+      : 'open tasks: ' + counted.length + blockedTail + tail2 + ' — update or close them.';
 
     const base = out ? out + ' ' + freshLine : freshLine;
     return unk ? base + ' ' + unk : base;
@@ -343,6 +384,7 @@ try {
 
   let text;
   let primaryBlock = '';
+  let freshNote = '';
   if (skipped) {
     text = '';
   } else {
@@ -355,6 +397,7 @@ try {
     if (mHome) DD.resolvePending({ home: mHome, sessionId: payload && payload.session_id, transcriptPath: payload && payload.transcript_path });
     const note = freshnessNote(payload);
     if (note) text = text + ' ' + note;
+    freshNote = note;
     // DevSwarm PRIMARY only: name the workspace tier at the dispatch point.
     // KEEPALIVE (0.111 item 1): DEVSWARM_PRIMARY is static and was previously
     // appended to `text` EVERY turn regardless of the FULL/SHORT window above
@@ -394,9 +437,9 @@ try {
       const opts = {
         home: os.homedir(), sessionId: payload && payload.session_id,
         transcriptPath: payload && payload.transcript_path, key: 'task-tracker',
-        content: text, normalize: (t) => t.split(FULL).join(SHORT),
+        content: text, normalize: (t) => t.split(fullText(isCodexHost(payload))).join(SHORT),
       };
-      if (text.startsWith(FULL)) dedupe.record(opts);
+      if (text.startsWith(fullText(isCodexHost(payload)))) dedupe.record(opts);
       else emit = dedupe.shouldEmit(opts);
     } catch (_) { emit = true; }
   }
@@ -404,6 +447,25 @@ try {
   // Official schema: `hookEventName` is NESTED in `hookSpecificOutput`, not a
   // top-level sibling. KB §1.4 specifies `hookSpecificOutput.additionalContext`
   // for UserPromptSubmit; nesting here is correct per the harness contract.
+  // B5: the SHORT reminder (~135 chars, every prompt) was ~$100 of 13 days. It is static, so once the burst
+  // collapse above has decided this turn emits, it follows the same keepalive as the other static reminder
+  // blocks (first sight after the FULL primer / compaction, then every guards.injectionRepeatEvery delivered
+  // turns; 0 = every turn). It rides as its own '\n\n' segment so emit-dedupe can see it consumed. The per-turn
+  // freshness note (open tasks, DISPATCH NOW) still arrives every turn it applies.
+  if (emit && text && text.startsWith(SHORT)) {
+    let showShort = true;
+    try {
+      let repeatEvery = 10;
+      try { repeatEvery = require('./lib/settings.js').get('guards', 'injectionRepeatEvery', 10); } catch (_) {}
+      showShort = require('./lib/emit-dedupe.js').shouldEmit({
+        home: require('../companion/lib/test-home-guard.js').resolveHome(), sessionId: payload && payload.session_id,
+        transcriptPath: payload && payload.transcript_path,
+        key: 'task-tracker-short', content: SHORT,
+        keepaliveTurns: Number.isFinite(repeatEvery) && repeatEvery > 0 ? repeatEvery : 0,
+      });
+    } catch (_) { showShort = true; }
+    text = showShort ? [SHORT, freshNote].filter(Boolean).join('\n\n') : freshNote;
+  }
   const finalText = [emit ? text : '', primaryBlock].filter(Boolean).join('\n\n');
   const out = {
     hookSpecificOutput: {
@@ -412,7 +474,7 @@ try {
     },
   };
   emit = emit || !!primaryBlock;
-  if (emit) process.stdout.write(JSON.stringify(out) + '\n');
+  if (emit && finalText) process.stdout.write(JSON.stringify(out) + '\n');
   const mHome2 = emit && demandShown > 0 ? metricsHome() : null;
   if (mHome2) DD.recordDemand({ home: mHome2, sessionId: payload && payload.session_id, count: demandShown });
 } catch (_) {

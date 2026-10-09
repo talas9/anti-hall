@@ -14,6 +14,7 @@
 // pending/notDraining/oldestUnreadAgeMs values are hardcoded false/null —
 // `prev`'s last-known values (possibly absent) are carried through instead.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

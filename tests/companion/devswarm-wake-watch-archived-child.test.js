@@ -5,6 +5,7 @@
 // no re-arm loop) and resumes normal output once the descriptor is restored.
 // Active children and Primaries are unaffected. Home is isolated via HOME.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

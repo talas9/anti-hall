@@ -15,6 +15,7 @@
 // the ACTUAL update.js foldArchivedRowsPostUpdate + devswarm.js resume-marker
 // reader/writer to prove the wiring is real, not just exercised via a stub.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
