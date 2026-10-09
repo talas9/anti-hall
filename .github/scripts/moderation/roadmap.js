@@ -2,11 +2,12 @@
 // roadmap.yml: keeps the "anti-hall roadmap" board and labels consistent, flags stale work,
 // posts the weekly digest, and reports the weekly mistake rate of all the automation.
 // Board writes need PROJECT_TOKEN (or ROADMAP_PROJECT_TOKEN); without it they are skipped with a
-// notice and the label-based parts still run. Never closes, deletes or archives anything.
+// notice and the label-based parts still run. Only closes issues delivered on dev by a merged PR (delivered.js); never deletes or archives.
 
 const fs = require('node:fs');
 const L = require('./lib.js');
 const SEC = require('./security-alerts.js');
+const DELIVERED = require('./delivered.js');
 const LOG = 'roadmap-log';
 const DAY = 864e5;
 
@@ -165,9 +166,13 @@ async function apply({ github, context, core, getOctokit }) {
   const p = context.payload;
   const one = (context.eventName === 'workflow_dispatch' && Number(p.inputs['item-number'])) || (p.issue && p.issue.number) || (p.pull_request && p.pull_request.number) || null;
 
-  // 1. Board consistency.
+  // 0. Issues closed by PRs merged into dev (GitHub only auto-closes for the default branch).
+  let delivered = [];
+  try { delivered = await DELIVERED.run({ github, repo, act }); } catch (e) { errors.push(`delivered: ${e.message}`); }
+
+  // 1. Board consistency (closed issues go to Done; sweep everything when some were just closed).
   let board = {};
-  try { board = await boardSync({ getOctokit, core, cfg, items, repo, act, item: one }); } catch (e) { errors.push(`board: ${e.message}`); }
+  try { board = await boardSync({ getOctokit, core, cfg, items, repo, act, item: delivered.length ? null : one }); } catch (e) { errors.push(`board: ${e.message}`); }
 
   // 2. Stale in-progress work (labels only, so it runs without the board token).
   const staleMs = cfg.project.stale_days * DAY;
@@ -217,7 +222,7 @@ async function apply({ github, context, core, getOctokit }) {
 
   L.record(LOG, {
     workflow: 'roadmap', event: `${context.eventName}.${state.mode}`, item: one ? `#${one}` : 'all', verdict: state.mode,
-    board, security, stale: stale.map((i) => i.number), no_milestone: noMilestone.length, no_size: noSize.length,
+    board, security, delivered, stale: stale.map((i) => i.number), no_milestone: noMilestone.length, no_size: noSize.length,
     provider: model.provider, fallback_reason: model.reason, latency_ms: process.env.MODEL_LATENCY_MS || null, tokens: process.env.MODEL_TOKENS || null,
     actions, errors, dry_run: dry,
   });
