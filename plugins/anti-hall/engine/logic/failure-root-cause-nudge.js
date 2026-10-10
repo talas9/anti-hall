@@ -116,8 +116,7 @@ function decide(p) {
   if (ah.settings.bool('failure_nudge.filter_setting')) {
     var errorText = typeof p.error === 'string' ? p.error : '';
     if (p.is_interrupt === true || fnIsHarnessRefusal(errorText) || fnIsExpectedNonzero(cmd, errorText)) return 'allow';
-    var home = ah.env.get(ah.cfg('env.home'));
-    if ((home === null || home === '') && p.session_id) return 'defer';
+    // with no home for the gate's state the gate cannot persist and shows the nudge, as the Node gate does
     if (!turnGate.firstThisTurn({
       sessionId: p.session_id, agentId: typeof p.agent_id === 'string' ? p.agent_id : '', transcriptPath: p.transcript_path,
       key: ah.cfg('failure_nudge.gate_key'),

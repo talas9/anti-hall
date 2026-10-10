@@ -376,7 +376,31 @@ pub fn repeat_of(case: &Value) -> usize {
 }
 
 /// Every case's answer from the script, against its stored `expect`. Returns the number of cases and of each kind.
+pub fn regen_defers_local(check: &str) {
+    if std::env::var("AH_REGEN_DEFERS").is_err() {
+        return;
+    }
+    let mut out = String::new();
+    for c in load(check) {
+        let mut c = c;
+        if c["expect"]["v"] == "defer" {
+            let l = lay(&c);
+            let got = run_case(check, &l, repeat_of(&c)).unwrap();
+            c["expect"] = verdict_json(&got, &l);
+            if c.get("watch").is_some() {
+                c["writes"] = watched_all(&c, &l);
+            }
+            crate::discard::harmless(std::fs::remove_dir_all(&l.home));
+            crate::discard::harmless(std::fs::remove_dir_all(&l.real));
+        }
+        out.push_str(&serde_json::to_string(&c).unwrap());
+        out.push('\n');
+    }
+    std::fs::write(dir().join(format!("{check}.jsonl")), out).unwrap();
+}
+
 pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
+    regen_defers_local(check);
     let mut kinds = BTreeMap::new();
     let cases = load(check);
     assert!(cases.len() >= 20, "{check}: a golden corpus of real size");

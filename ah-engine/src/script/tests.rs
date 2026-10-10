@@ -335,7 +335,9 @@ fn the_policy_applies_to_every_kind_of_script_failure() {
 #[test]
 fn api_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("api-guard");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 50, "a corpus that exercises both answers: {kinds:?}");
+    // the corpus pins no interpreter (PATH names none), so every case answers without a probe and none defers (lane L07); the
+    // probes themselves are compared with Node by the node_parity api-guard harness
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && kinds.get("defer").is_none(), "a corpus that answers every case: {kinds:?}");
 }
 
 #[test]
@@ -394,13 +396,15 @@ fn a_config_over_the_read_cap_defers_instead_of_being_read_truncated() {
 #[test]
 fn ship_it_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("ship-it-guard");
-    for k in ["allow", "defer", "block", "advisory"] {
+    for k in ["allow", "block", "advisory"] {
         assert!(kinds.get(k).copied().unwrap_or(0) > 5, "a corpus that exercises {k}: {kinds:?}");
     }
+    assert!(kinds.get("defer").is_none(), "no deferral: {kinds:?}");
 }
 
 /// Every case of a golden corpus through the script; mismatches are listed (up to `limit`) before the test fails.
 pub(super) fn golden_report(check: &str, limit: usize) {
+    golden::regen_defers_local(check);
     let cases = golden::load(check);
     let (mut bad, mut shown) = (0usize, 0usize);
     for c in &cases {
@@ -1022,7 +1026,7 @@ mod sibling {
 #[test]
 fn compact_declaration_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("compact-declaration-guard");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("defer").copied().unwrap_or(0) > 50, "both answers: {kinds:?}");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 30 && kinds.get("defer").is_none(), "both answers, no deferral: {kinds:?}");
 }
 
 #[test]
@@ -1069,7 +1073,7 @@ fn repair_on_reload_script_matches_the_compiled_port() {
 fn merge_side_pick_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-side-pick");
     assert!(
-        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 20,
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && kinds.get("defer").is_none(),
         "every answer: {kinds:?}"
     );
 }
@@ -1089,6 +1093,7 @@ fn scan_throttle_script_matches_the_compiled_port() {
         return;
     }
     let mut kinds = std::collections::BTreeMap::new();
+    golden::regen_defers_local("scan-throttle");
     for c in golden::load("scan-throttle") {
         let l = golden::lay(&c);
         let got = super::run_forced("scan-throttle", &l.payload, &l.opts, &l.event, &l.env).expect("a shipped script");
@@ -1105,14 +1110,14 @@ fn scan_throttle_script_matches_the_compiled_port() {
         *kinds.entry(got["v"].as_str().unwrap_or("").to_string()).or_insert(0usize) += 1;
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
     }
-    assert!(kinds["advisory"] > 50 && kinds["allow"] > 100 && kinds["defer"] > 100, "every answer: {kinds:?}");
+    assert!(kinds["advisory"] > 50 && kinds["allow"] > 100 && !kinds.contains_key("defer"), "every answer, no deferral: {kinds:?}");
 }
 
 #[test]
 fn merge_gate_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-gate");
     assert!(
-        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 10,
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && kinds.get("defer").is_none(),
         "every answer: {kinds:?}"
     );
 }
