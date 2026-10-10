@@ -299,6 +299,9 @@ the engine's own `stop` and `serve`; any failure keeps the old binary. `--dry-ru
 kit the binary and plugin go in through the kit (`bundle/` and a `go-live.sh` re-apply, `--live-select` picks the entries), so the kit's
 own rollback keeps working. Setting `engine.autoUpdate` = `stable` or `dev` (default `off`) runs `--auto` from the engine scheduler, at most
 once a day. The updater's only network requests are the GitHub release API and downloads, and `git fetch` of one commit for the dev plugin sync;
+`ah-engine engine-update <same arguments>` runs the same script (the engine itself does no network access, and a broken engine is still
+updated with the script by hand). The scheduler job `engine_update` (defaults file `engine_update.toml`) runs `engine-update --auto`
+every 6 hours; the script does nothing unless `engine.autoUpdate` is set and limits itself to one check a day.
 see [PRIVACY.md](../PRIVACY.md).
 
 **Go-live.** An engine check is trusted only after it has agreed with the Node hook it replaces. Before release the whole
