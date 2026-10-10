@@ -5,6 +5,9 @@
 //! their process); see docs/DEVELOPMENT.md.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
+#[global_allocator]
+static ALLOC: ah_engine::memstat::Counting = ah_engine::memstat::Counting;
+
 mod broad_kill;
 #[path = "../common/mod.rs"]
 mod common;

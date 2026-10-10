@@ -70,6 +70,17 @@ impl Soak {
         Soak { dir, transcript }
     }
 
+    fn with_transcript(transcript: PathBuf) -> Soak {
+        let dir = std::env::temp_dir().join(format!("ahd-measure-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        assert!(transcript.is_absolute(), "AH_CACHE_MEASURE_TRANSCRIPT must be an absolute path");
+        let meta = std::fs::metadata(&transcript).unwrap_or_else(|e| panic!("AH_CACHE_MEASURE_TRANSCRIPT is not readable: {e}"));
+        assert!(meta.is_file(), "AH_CACHE_MEASURE_TRANSCRIPT must name a file");
+        assert!(meta.permissions().readonly(), "AH_CACHE_MEASURE_TRANSCRIPT must be read-only");
+        Soak { dir, transcript }
+    }
+
     fn env(&self, c: &mut Command) {
         let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
         c.env_clear()
@@ -210,11 +221,12 @@ fn a_long_mixed_run_stays_under_the_default_cap_and_flat_with_zero_restarts() {
 #[ignore = "manual issue-21 measurement: prints cache memory at 0/1000/2500/5000 calls"]
 fn measure_byte_bounded_caches_at_requested_checkpoints() {
     assert_disk_floor();
-    let s = Soak::new();
+    let label = measurement_label();
+    let s = Soak::with_transcript(measurement_transcript());
     let map = s.map();
     let points = measurement_points();
     let mut done = 0usize;
-    let mut prev = sample(0, &s.status(), None);
+    let mut prev = sample(&label, 0, &s.status(), None);
     print_row_header();
     print_row(&prev);
     for target in points.into_iter().filter(|p| *p > 0) {
@@ -223,10 +235,18 @@ fn measure_byte_bounded_caches_at_requested_checkpoints() {
             s.hook(&map, "Stop", &s.stop_payload(done));
             done += 1;
         }
-        let row = sample(done, &s.status(), Some(&prev));
+        let row = sample(&label, done, &s.status(), Some(&prev));
         print_row(&row);
         prev = row;
     }
+}
+
+fn measurement_transcript() -> PathBuf {
+    std::env::var("AH_CACHE_MEASURE_TRANSCRIPT").map(PathBuf::from).expect("AH_CACHE_MEASURE_TRANSCRIPT must point at the shared read-only large transcript")
+}
+
+fn measurement_label() -> String {
+    std::env::var("AH_CACHE_MEASURE_LABEL").unwrap_or_else(|_| "scenario".into())
 }
 
 fn measurement_points() -> Vec<usize> {
@@ -238,44 +258,61 @@ fn measurement_points() -> Vec<usize> {
 }
 
 struct Row {
+    label: String,
     calls: usize,
-    rss_kb: u64,
-    footprint_kb: u64,
-    jemalloc_allocated: u64,
-    jemalloc_resident: u64,
-    cache_bytes: u64,
-    allocs_total: u64,
-    allocs_per_request: f64,
+    rss_kb: Option<u64>,
+    footprint_kb: Option<u64>,
+    jemalloc_allocated: Option<u64>,
+    jemalloc_resident: Option<u64>,
+    cache_bytes: Option<u64>,
+    allocs_total: Option<u64>,
+    allocs_per_request: Option<f64>,
 }
 
-fn sample(calls: usize, st: &serde_json::Value, prev: Option<&Row>) -> Row {
+fn sample(label: &str, calls: usize, st: &serde_json::Value, prev: Option<&Row>) -> Row {
     let m = &st["memory"];
-    let tt = &m["caches"]["transcript_tail"];
-    let walks = &m["caches"]["agent_scan_walks"];
-    let allocs_total = m["allocs"].as_u64().unwrap_or(0);
+    let allocs_total = m["allocs"].as_u64();
     let delta_calls = prev.map_or(0, |p| calls.saturating_sub(p.calls));
-    let delta_allocs = prev.map_or(0, |p| allocs_total.saturating_sub(p.allocs_total));
+    let delta_allocs = prev.and_then(|p| allocs_total.zip(p.allocs_total).map(|(now, old)| now.saturating_sub(old)));
     Row {
+        label: label.to_string(),
         calls,
-        rss_kb: m["rss_kb"].as_u64().unwrap_or(0),
-        footprint_kb: m["footprint_kb"].as_u64().unwrap_or(0),
-        jemalloc_allocated: m["jemalloc"]["allocated"].as_u64().unwrap_or(0),
-        jemalloc_resident: m["jemalloc"]["resident"].as_u64().unwrap_or(0),
-        cache_bytes: tt["bytes"].as_u64().unwrap_or(0) + walks["estimated_bytes"].as_u64().unwrap_or(0),
+        rss_kb: m["rss_kb"].as_u64().or_else(|| st["rss_kb"].as_u64()),
+        footprint_kb: m["footprint_kb"].as_u64().or_else(|| st["footprint_kb"].as_u64()),
+        jemalloc_allocated: m["jemalloc"]["allocated"].as_u64(),
+        jemalloc_resident: m["jemalloc"]["resident"].as_u64(),
+        cache_bytes: cache_bytes(m),
         allocs_total,
-        allocs_per_request: if delta_calls == 0 { 0.0 } else { delta_allocs as f64 / delta_calls as f64 },
+        allocs_per_request: delta_allocs.and_then(|a| (delta_calls > 0).then_some(a as f64 / delta_calls as f64)),
     }
 }
 
+fn cache_bytes(m: &serde_json::Value) -> Option<u64> {
+    let tail = m["caches"]["transcript_tail"]["bytes"].as_u64();
+    let walks = m["caches"]["agent_scan_walks"]["estimated_bytes"].as_u64();
+    (tail.is_some() || walks.is_some()).then_some(tail.unwrap_or(0) + walks.unwrap_or(0))
+}
+
 fn print_row_header() {
-    println!("calls\trss_kb\tfootprint_kb\tjemalloc_allocated\tjemalloc_resident\tcache_bytes\tallocs_per_request");
+    println!("scenario\tcalls\trss_kb\tfootprint_kb\tjemalloc_allocated\tjemalloc_resident\tcache_bytes\tallocs_per_request");
 }
 
 fn print_row(r: &Row) {
     println!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{:.2}",
-        r.calls, r.rss_kb, r.footprint_kb, r.jemalloc_allocated, r.jemalloc_resident, r.cache_bytes, r.allocs_per_request
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        r.label,
+        r.calls,
+        fmt_u64(r.rss_kb),
+        fmt_u64(r.footprint_kb),
+        fmt_u64(r.jemalloc_allocated),
+        fmt_u64(r.jemalloc_resident),
+        fmt_u64(r.cache_bytes),
+        r.allocs_per_request.map(|n| format!("{n:.2}")).unwrap_or_else(|| "NA".into())
     );
+}
+
+fn fmt_u64(v: Option<u64>) -> String {
+    v.map(|n| n.to_string()).unwrap_or_else(|| "NA".into())
 }
 
 fn assert_disk_floor() {

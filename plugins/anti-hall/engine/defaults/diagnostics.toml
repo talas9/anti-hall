@@ -53,7 +53,7 @@ unit = "bytes"
 
 [diagnostics.mem_regression_calls]
 doc = "Calls the issue-21 cache regression drives against large transcript-tail answers before and after warm-up."
-value = 4
+value = 65
 min = 2
 unit = "count"
 

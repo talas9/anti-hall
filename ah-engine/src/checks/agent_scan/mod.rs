@@ -1024,7 +1024,12 @@ fn parse_inbox_send(text: &str) -> Res<Option<String>> {
 }
 
 /// `namesAgent(input, id, launched)`: does a tool_use input name this agent, by full id or a unique hex prefix?
+#[cfg(test)]
 fn names_agent(input: Option<&Value>, id: &str, launched: &OMap<Rec>) -> Res<bool> {
+    names_agent_with_keys(input, id, &launched.keys().cloned().collect::<Vec<_>>())
+}
+
+fn names_agent_with_keys(input: Option<&Value>, id: &str, launched_keys: &[String]) -> Res<bool> {
     let falsy = !truthy(input);
     let v = if falsy { None } else { input };
     if let Some(v) = v
@@ -1043,7 +1048,7 @@ fn names_agent(input: Option<&Value>, id: &str, launched: &OMap<Rec>) -> Res<boo
         if !id.starts_with(m.as_str()) {
             continue;
         }
-        if launched.keys().filter(|k| k.starts_with(m.as_str())).count() == 1 {
+        if launched_keys.iter().filter(|k| k.starts_with(m.as_str())).count() == 1 {
             return Ok(true);
         }
     }
@@ -1277,7 +1282,7 @@ fn omap_u64_bytes(m: &OMap<u64>, per: u64) -> u64 {
 /// `scanTranscript(transcriptPath, readTail(path, tail), opts)`. `Ok(None)` is JavaScript's `null` (unreadable).
 ///
 /// A transcript that fits the window is walked once: the walk over its complete lines is kept (per path, bounded by
-/// `agent_scan.cache_*`) and the next call reads only the bytes appended since, then finishes a copy of the kept walk. The
+/// `agent_scan.cache_*`) and the next call reads only the bytes appended since, then finishes against the kept walk by view. The
 /// kept walk is the very state a fresh scan of the whole file reaches, so the answer is identical; a file that is longer than
 /// the window slides its window with every append and is scanned afresh.
 pub fn scan_transcript(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
@@ -1628,23 +1633,25 @@ fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
     let mut background: HashSet<String> = v.launched_ids().into_iter().collect();
     background.extend(v.terminal_ids());
 
-    let stops: Vec<Stop> = v.base.stops.iter().chain(v.suffix.stops.iter()).cloned().collect();
-    for s in &stops {
+    let mut stop_marks: Vec<(String, u64, f64, Vec<String>)> = Vec::new();
+    for s in v.base.stops.iter().chain(v.suffix.stops.iter()) {
         if s.tool_use_id.as_ref().is_some_and(|t| v.errored(t)) {
             continue;
         }
         if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| v.answered(t)) {
             continue;
         }
-        v.mark_terminal(&s.id, s.seq, s.ts);
-        let names = v.team_info_for_agent(&s.id);
+        stop_marks.push((s.id.clone(), s.seq, s.ts, v.team_info_for_agent(&s.id)));
+    }
+    for (id, seq, ts, names) in stop_marks {
+        v.mark_terminal(&id, seq, ts);
         for n in names {
-            if !v.has_team_events(&s.id) {
-                v.team_event(&n, "stop", s.ts, s.seq);
+            if !v.has_team_events(&id) {
+                v.team_event(&n, "stop", ts, seq);
             }
         }
-        if v.has_team_events(&s.id) {
-            v.team_event(&s.id, "stop", s.ts, s.seq);
+        if v.has_team_events(&id) {
+            v.team_event(&id, "stop", ts, seq);
         }
     }
 
@@ -1656,15 +1663,14 @@ fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
         }
         let own = v.launched_get(id).and_then(|r| r.tool_use_id.clone());
         let mut hit: Option<(u64, f64)> = None;
-        let others: Vec<Other> = v.base.others.iter().chain(v.suffix.others.iter()).cloned().collect();
-        for o in &others {
+        for o in v.base.others.iter().chain(v.suffix.others.iter()) {
             if o.tool_use_id.is_some() && o.tool_use_id == own {
                 continue;
             }
             let call = o.tool_use_id.as_ref().and_then(|t| v.tool_use(t));
             if let Some(c) = call {
                 let delivery = c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n));
-                if !(delivery && names_agent_with_keys(c.input.as_ref(), id, v.launched_ids().iter())?) {
+                if !(delivery && names_agent_with_keys(c.input.as_ref(), id, &launched_ids)?) {
                     continue;
                 }
             }
@@ -1681,7 +1687,7 @@ fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
     // RESUME RECONCILIATION.
     let mut known = v.launched_ids();
     for t in v.terminal_ids() {
-        if !known.contains(t) {
+        if !known.contains(&t) {
             known.push(t);
         }
     }
