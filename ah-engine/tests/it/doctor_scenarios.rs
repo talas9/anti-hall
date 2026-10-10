@@ -1126,10 +1126,12 @@ fn nd_node_missing_old_broken_and_fine() {
     shell.has("warn", &["node is not on PATH", "Node is optional"]);
     shell.lacks("no working engine");
     // too old, broken, fine: warnings and a note, never a failure while the engine works
+    // a stand-in node answers every start with its version, so the Node twins are off for these stages
+    twins_off(&sc);
     sc.programs(&[("node", "echo v18.19.0")], &[]);
     let d = sc.doctor(&[]);
     d.has("warn", &["Node v18.19.0 is < 22; Node is optional"]);
-    assert_eq!(d.code, 0);
+    assert_eq!(d.code, 0, "{}", d.text);
     sc.shell().has("warn", &["Node v18.19.0 is < 22; Node is optional"]);
     sc.programs(&[("node", "echo oops >&2; exit 4")], &[]);
     let d = sc.doctor(&[]);
@@ -1140,6 +1142,17 @@ fn nd_node_missing_old_broken_and_fine() {
     sc.shell().has("info", &["Node v22.3.0 (>= 22) found; optional"]);
 }
 
+/// Turn `doctor.node_twins` off in the scenario's plugin copy (defaults and pristine twin).
+fn twins_off(sc: &Sc) {
+    for dir in ["engine/defaults", "engine/defaults.pristine"] {
+        let f = sc.plugin.join(dir).join("doctor.toml");
+        let t = fs::read_to_string(&f).unwrap();
+        let at = t.find("[doctor.node_twins]").unwrap();
+        let v = at + t[at..].find("value = true").unwrap();
+        fs::write(&f, format!("{}value = false{}", &t[..v], &t[v + "value = true".len()..])).unwrap();
+    }
+}
+
 #[test]
 fn nd_with_node_twins_off_the_doctor_never_starts_node() {
     // a node on PATH that records every start: with doctor.node_twins off, the engine doctor (live self-tests, statusline
@@ -1148,13 +1161,7 @@ fn nd_with_node_twins_off_the_doctor_never_starts_node() {
     let mut sc = Sc::new();
     sc.own_plugin();
     sc.stub_engine("0.1.0");
-    for dir in ["engine/defaults", "engine/defaults.pristine"] {
-        let f = sc.plugin.join(dir).join("doctor.toml");
-        let t = fs::read_to_string(&f).unwrap();
-        let at = t.find("[doctor.node_twins]").unwrap();
-        let v = at + t[at..].find("value = true").unwrap();
-        fs::write(&f, format!("{}value = false{}", &t[..v], &t[v + "value = true".len()..])).unwrap();
-    }
+    twins_off(&sc);
     let log = sc.root.join("node-starts.log");
     sc.programs(&[("node", &format!("echo \"$*\" >> '{}'\necho v22.3.0", log.display()))], &[]);
     let d = sc.doctor(&[]);
