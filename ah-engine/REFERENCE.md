@@ -9274,6 +9274,27 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_scripts.sentinel_rel` | `.anti-hall/codex-activated.json` |  |  | The activation marker, relative to the home directory (under the state directory). |
 | `codex_scripts.stale_ms` | `900000` |  | ms | A usage-cache snapshot older than this is reported stale (hooks/limit-conserve.js STALE_MS); the reading is still evaluated. |
 
+### diagnostics.toml / diagnostics
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `diagnostics.mem_log` | `true` |  |  | Append one NDJSON line per served request to the memory log: time, request kind, event, the checks that ran, resident set and allocator figures before and after, and the size of the transcript file. Costs a few microseconds and one small append per request; turn it off once the memory question is closed. |
+| `diagnostics.mem_log_max_bytes` | `4194304` |  | bytes | Size at which the memory log is rotated (the old file is kept once, as <name>.1, replacing the previous one), so the log never holds more than twice this. |
+| `diagnostics.mem_snapshot` | `true` |  |  | When the resident-set cap trips, write one snapshot before the daemon exits: allocator figures, thread count, the interpreters and caches of every worker, and the platform's own memory map of the process. |
+| `diagnostics.mem_snapshot_max_bytes` | `262144` |  | bytes | Largest the snapshot file may be; the platform memory-map text is cut to fit. |
+| `diagnostics.mem_snapshot_probe` | `vmmap, --summary, {pid}` |  |  | Command whose output goes into the snapshot as the platform's memory map of the daemon (macOS: vmmap summary); the program, then its arguments with `{pid}` substituted. Where /proc/<pid>/smaps_rollup exists it is used instead. An empty list or a missing program leaves the field empty. |
+| `diagnostics.mem_snapshot_probe_ms` | `4000` |  | ms | Longest the memory-map command may run. |
+| `diagnostics.mem_snapshot_wait_ms` | `3000` |  | ms | Longest the snapshot waits for every worker to report its interpreter and caches (a busy worker reports after its request); workers that have not reported by then are listed as missing. |
+| `diagnostics.summary_read_bytes` | `8388608` |  | bytes | Most of the memory log (newest part) `status --memory` reads to build its summary. |
+| `diagnostics.summary_top` | `10` |  |  | Rows shown per ranking (events, checks) in the memory summary of `ah-engine status --memory`. |
+
+### diagnostics.toml / files
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `files.mem_log` | `mem.ndjson` |  |  | Per-request memory log file name (state directory). |
+| `files.mem_snapshot` | `mem-snapshot.json` |  |  | Cap-trip memory snapshot file name (state directory). |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
