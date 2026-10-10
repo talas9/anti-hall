@@ -31,11 +31,10 @@ description: What anti-hall adds to Claude Code and Codex, one card per feature.
 
     Supervision and recovery for parallel workspaces.
 
-- :material-speedometer: **[Rust engine](engine.md)**
-
-    A resident engine answers hooks; Node stays as the exact fallback.
-
 </div>
+
+These features all run on anti-hall's Rust engine, the core component. See
+[How it works](../how-it-works/index.md).
 
 !!! note "Claude Code and Codex"
     Every feature ships for both. Where an example differs, it is shown in tabs.

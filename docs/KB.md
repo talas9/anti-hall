@@ -152,7 +152,7 @@ into the `KB-claude-codex.md` synthesis (kept standalone for provenance + depth)
 | [`features/skills.md`](./features/skills.md) | Docs site page: Every skill, when to use it, and the Codex skill names. | - | Living | 2026-10 | `mkdocs.yml` |
 | [`features/statusline.md`](./features/statusline.md) | Docs site page: The optional two-line statusline: install, consolidate, remove. | - | Living | 2026-10 | `mkdocs.yml` |
 | [`features/devswarm.md`](./features/devswarm.md) | Docs site page: The optional DevSwarm integration and its companions. | - | Living | 2026-10 | `mkdocs.yml` |
-| [`features/engine.md`](./features/engine.md) | Docs site page: The Rust engine (not in a release yet): what it is, live answers and Node fallback. | - | Living | 2026-10 | `mkdocs.yml` |
+| [`how-it-works/index.md`](./how-it-works/index.md) | Docs site page: how it works, the Rust engine as the core component and the temporary Node fallback. | - | Living | 2026-10 | `mkdocs.yml` |
 | [`settings/index.md`](./settings/index.md) | Docs site page: Changing settings: the skill, `/config`, the CLI, precedence, safety settings. | - | Living | 2026-10 | `mkdocs.yml` |
 | [`troubleshooting.md`](./troubleshooting.md) | Docs site page: The doctor, common problems, what the messages mean, turning a check off. | - | Living | 2026-10 | `mkdocs.yml` |
 | [`contributing.md`](./contributing.md) | Docs site page: Contributing links and how to build the docs site. | - | Living | 2026-10 | `mkdocs.yml` |

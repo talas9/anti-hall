@@ -17,13 +17,17 @@ hide:
 [Install](start/install.md){ .md-button .md-button--primary }
 [See the guards](features/guards.md){ .md-button }
 
+<p class="ah-tagline">Powered by a Rust engine at its core. <a href="how-it-works/">How it works</a></p>
+
 </div>
 
 ## What it is
 
-anti-hall is a plugin for **Claude Code**, with a separate port for **Codex**. It adds
-hooks (small programs the assistant's harness runs before and after each step) and a set
-of skills you can call by name. Together they stop the assistant from:
+anti-hall is a plugin for **Claude Code**, with a separate port for **Codex**. At its
+core is a **Rust engine** that answers every hook (the checks the assistant's harness runs
+before and after each step) through one thin trigger, running the plugin's own rules
+([How it works](how-it-works/index.md)). On top of it sit hooks and a set of skills you
+can call by name. Together they stop the assistant from:
 
 - **stating things it has not checked**: a library function that does not exist, "it
   works" without running anything, "done" with tasks still open;
@@ -32,7 +36,7 @@ of skills you can call by name. Together they stop the assistant from:
 - **flooding your main conversation**: heavy commands and file edits go to helper agents,
   and runaway agent spawning is capped.
 
-A small Rust engine answers the hooks; Node.js 22+ is the fallback. There are no npm dependencies. It runs on macOS and Linux (including WSL on
+Node.js 22+ is a temporary compatibility fallback during the migration and is removed in v1.0. There are no npm dependencies. It runs on macOS and Linux (including WSL on
 Windows). Everything it keeps stays on your machine, apart from one update check, which
 you can turn off ([details](#network-and-privacy)).
 
@@ -46,15 +50,15 @@ you can turn off ([details](#network-and-privacy)).
 
     No force-pushes, no AI credit lines in commits or GitHub text.
 
-- :material-speedometer: **Fast**
+- :material-format-list-checks: **Task tracking**
 
-    A Rust engine answers hooks from memory; Node is the exact fallback.
+    A task list the assistant must keep honest before it stops.
 
 </div>
 
 ## Install in one minute
 
-You need **Node.js 22 or newer** on your `PATH` (`node --version`), the fallback that always works. The engine binary is fetched for you (needs `curl` or `wget`, and `tar`).
+You need **Node.js 22 or newer** on your `PATH` (`node --version`) for now (no longer needed from v1.0). The engine binary is fetched for you (needs `curl` or `wget`, and `tar`).
 
 === "Claude Code"
 
@@ -156,9 +160,9 @@ table is in [PRIVACY.md](../PRIVACY.md).
 
     What each guard stops and how to turn it off.
 
-- :material-speedometer: **[Rust engine](features/engine.md)**
+- :material-engine: **[How it works](how-it-works/index.md)**
 
-    One resident process answers hooks fast; Node is the safety net.
+    The Rust engine at the core: one resident process answers every hook.
 
 - :material-tune: **[Settings](settings/index.md)**
 

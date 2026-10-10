@@ -7,7 +7,7 @@ description: Run the doctor, understand common anti-hall messages, and turn a ch
 
 ## Start with the doctor
 
-Ask **"is anti-hall working"**, or run `/anti-hall:doctor`. The doctor checks that Node is
+Ask **"is anti-hall working"**, or run `/anti-hall:doctor`. The doctor checks that the engine and, for now, Node are
 found and every hook is present and valid, then runs live self-tests to confirm the guards
 actually fire. It also checks optional integrations (oh-my-claudecode, Codex, DevSwarm)
 only when they are present.
@@ -21,9 +21,11 @@ only when they are present.
 ## Common problems
 
 ??? question "Nothing happens. Are the hooks running?"
-    Hooks run as `node <hook>.js`. If `node` is not on the `PATH` of the shell Claude Code
-    starts hooks from, every hook is skipped without an error. Check `node --version`
-    (22 or newer), then restart Claude Code so a new session starts.
+    The Rust engine answers hooks; the temporary Node.js compatibility fallback (removed in
+    v1.0) answers the rest. If the engine is not installed and `node` is not on the `PATH`
+    of the shell Claude Code starts hooks from, those hooks are skipped without an error.
+    Run the doctor, check `node --version` (22 or newer, for now), then restart Claude Code
+    so a new session starts.
 
 ??? question "The statusline does not show"
     It is not installed automatically: run `/anti-hall:install-statusline`. Then restart
