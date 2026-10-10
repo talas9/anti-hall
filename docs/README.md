@@ -21,7 +21,7 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | [`features/skills.md`](./features/skills.md) | Every skill, when to use it, and the Codex skill names. |
 | [`features/statusline.md`](./features/statusline.md) | The optional two-line statusline: install, consolidate, remove. |
 | [`features/devswarm.md`](./features/devswarm.md) | The optional DevSwarm integration and its companions. |
-| [`features/engine.md`](./features/engine.md) | The Rust engine (not in a release yet): what it is, live answers and Node fallback. |
+| [`how-it-works/index.md`](./how-it-works/index.md) | How it works: the Rust engine as the core component and the temporary Node fallback. |
 | [`settings/index.md`](./settings/index.md) | Changing settings: the skill, `/config`, the CLI, precedence, safety settings. |
 | [`troubleshooting.md`](./troubleshooting.md) | The doctor, common problems, what the messages mean, turning a check off. |
 | [`contributing.md`](./contributing.md) | Contributing links and how to build the docs site. |
