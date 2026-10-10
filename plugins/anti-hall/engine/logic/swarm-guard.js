@@ -126,7 +126,7 @@ function swgSharedTreeNote(p) {
   if (!inp || !swgSharesTree(inp, tree)) return '';
   var tp = p.transcript_path;
   if (!tp || typeof tp !== 'string') return '';
-  var scan = ah.transcript.agents(tp);
+  var scan = ah.transcript.agentsWindow(tp); // Node's runningAgents: the default window only
   if (scan === null) return '';
   if (scan.unsure) return null;
   // Another agent counts only when its own spawn input is known, write-capable and not isolated.

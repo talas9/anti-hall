@@ -1544,7 +1544,7 @@ value = ["Array", "String", "Object", "Promise", "Map", "Set", "WeakMap", "WeakS
 
 [edit_guard.summary]
 doc = "One-line description of the edit-guard check in the generated reference."
-value = "Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js)."
+value = "Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Codex apply_patch: blocks a write into the launcher directory for every agent, lets a subagent pass, and decides every main-thread target as the Node edit-guard does (the coordinator allowlist with its symlink and hard-link honesty checks, the trusted per-project allowlist, the harness plan file, the session scratchpad, handover documents, plan mode, DevSwarm child workers and the DevSwarm wording); a call that needs the hook process's own working directory or home defers to the Node hook (port of edit-guard.js)."
 
 [edit_guard.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -1563,7 +1563,7 @@ doc = "The tool whose target is `tool_input.notebook_path` instead of `tool_inpu
 value = "NotebookEdit"
 
 [edit_guard.patch_tool]
-doc = "The Codex tool whose targets are the files of a patch; the engine has no patch parser, so it defers."
+doc = "The Codex tool whose targets are the files of a patch (parsed with the shared apply_patch parser)."
 value = "apply_patch"
 
 [edit_guard.launcher_dir]

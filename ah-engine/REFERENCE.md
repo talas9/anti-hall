@@ -99,7 +99,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `fable-availability` | SessionStart: records whether a Fable model is available (from the host's model cache) in ~/.anti-hall/fable-availability.json and tells the session when it is (port of fable-availability.js). |
 | `inbox-read-guard` | Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes the wrapper; dormant unless DevSwarm is active (port of inbox-read-guard.js). |
 | `phase-tracker` | Records each Agent or Task spawn in ~/.anti-hall (the statusline's live swarm bar and the running-agents heartbeat); never blocks (port of phase-tracker.js). |
-| `orch-on-spawn` | Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker defers to Node, which owns the claim race (port of orch-on-spawn.js). |
+| `orch-on-spawn` | Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker takes the claim (a file created only when absent) and sends the full rules; only the retry slot after the claim lease, which needs the transcript scan, defers to Node (port of orch-on-spawn.js). |
 | `verify-first-orch` | SessionStart orchestration text for the Claude entry: composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node (port of verify-first-orch.js --host=claude). |
 | `verify-first-orch-codex` | SessionStart orchestration text for the Codex entry (the same hook without --host=claude, so never Claude-confident): composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node. |
 | `verify-first` | UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node (port of verify-first.js). |
@@ -124,7 +124,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `stale-agent-stop-note` | Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js). |
 | `merge-gate` | Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js). |
 | `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
-| `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
+| `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Codex apply_patch: blocks a write into the launcher directory for every agent, lets a subagent pass, and decides every main-thread target as the Node edit-guard does (the coordinator allowlist with its symlink and hard-link honesty checks, the trusted per-project allowlist, the harness plan file, the session scratchpad, handover documents, plan mode, DevSwarm child workers and the DevSwarm wording); a call that needs the hook process's own working directory or home defers to the Node hook (port of edit-guard.js). |
 | `engine-role-guard` | PreToolUse on Bash: refuses an ah-engine command the caller's role may not run, per the roles.matrix (subagent from the payload, workspace child from the environment). |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
@@ -690,6 +690,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.port_digits_max` | `5` |  |  | Most digits a URL port may have. |
 | `command.port_max` | `65535` |  |  | Largest TCP port a URL may carry. |
 | `command.python_script_ext` | `(?i)\.py$` |  |  | Script file extension of the other interpreters for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
+| `command.realpath_max_links` | `40` |  |  | How many symbolic links one real-path walk follows before it gives up (the walk of fs.realpathSync, which keeps every component's spelling). |
 | `command.scratch_clone_sync_subs` | `pull, fetch` |  |  | git subcommands that are light in the main thread when run in a git checkout outside the session's own tree (git -C <abs\|~ dir> or one leading cd <abs\|~ dir>), chained with && or ; only to light segments and at most one final \| tail/head -N, on one plain line (command-guard.js isAllowedScratchCloneSync, SCRATCH_CLONE_SYNC_SUBS). A sync prints a few lines; the output-flood rule is for unbounded runners and builds. Empty turns the exemption off. |
 | `command.scratch_leaf` | `scratchpad` |  |  | Name of the scratchpad directory of a session. |
 | `command.scratch_uid_prefix` | `claude-` |  |  | Prefix of the per-user directory under a tmp root that holds session scratchpads. |
@@ -1122,9 +1123,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `edit_guard.msg_launcher_what` | `{tool} into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.` |  |  | Launcher-directory block headline; {tool} is the tool name. |
 | `edit_guard.msg_launcher_why` | `anti-hall installs and refreshes those files itself; overwriting one would ru...` |  |  | Launcher-directory block reason. |
 | `edit_guard.notebook_tool` | `NotebookEdit` |  |  | The tool whose target is `tool_input.notebook_path` instead of `tool_input.file_path`. |
-| `edit_guard.patch_tool` | `apply_patch` |  |  | The Codex tool whose targets are the files of a patch; the engine has no patch parser, so it defers. |
+| `edit_guard.patch_tool` | `apply_patch` |  |  | The Codex tool whose targets are the files of a patch (parsed with the shared apply_patch parser). |
 | `edit_guard.setting` | `6 entries` |  |  | Where the guard's on/off switch is read from (safety.editGuard, default on). |
-| `edit_guard.summary` | `Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answ...` |  |  | One-line description of the edit-guard check in the generated reference. |
+| `edit_guard.summary` | `Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Code...` |  |  | One-line description of the edit-guard check in the generated reference. |
 
 ### small_guards.toml / expected_failure
 
@@ -5281,7 +5282,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.failure_mode_default` | `open` |  |  | Failure mode of an engine-only check not listed in script.failure_mode_by_check. |
 | `script.heap_budget_base_bytes` | `524288` |  | bytes | Memory budget the interpreter test holds one worker thread to (DECISIONS.md 1.111): this much for the runtime, the shared context, the host bindings and the lib files, plus script.heap_budget_per_check_bytes for every check script it has run. Measured 2026-10-09: 224 KB base, 1.04 MB with all 16 shipped scripts (git.js 365 KB, the others 1-195 KB); a context per check held 3.3 MB. |
 | `script.heap_budget_per_check_bytes` | `98304` |  | bytes | Per check script share of the interpreter budget above (DECISIONS.md 1.111). |
-| `script.includes` | `11 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
+| `script.includes` | `13 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
 | `script.lib_dir` | `lib` |  |  | Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script. |
 | `script.lock_max_held` | `2` |  |  | Most cross-process locks (`ah.state.lock`) a script may hold at once in one call. A script that nests two takes them in one fixed order and releases the inner one first. |
 | `script.lock_wait_max_ms` | `5000` |  | ms | Longest wait a script may ask `ah.state.lock` for in place of its group's wait. |
@@ -5311,7 +5312,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.sweep_max_remove` | `200` |  |  | Most files one `ah.state.sweep` call may delete, whatever the script asks for. |
 | `script.tail_buf_bytes` | `65536` |  | bytes | Size of the buffer `ah.transcript.tailLines` reads a file through. |
 | `script.tail_max_bytes` | `16777216` |  | bytes | Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for. |
-| `script.time_limit_by_check` | `20 entries` |  |  | Per-check limit of one script call (ms; the interpreter thread's CPU time, and the wall-clock backstop is script.wall_limit_factor times it), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; `command` (command-guard) resolves repositories and runs `git` for its edit parity and carve-outs (a child process wait is credited back, but a loaded machine stretches the interpreter's own time as well); `git` (git-guard) tokenizes the whole command and its heredoc bodies (the frozen replay of 2026-10-09 interrupted it at 50 ms on 3 long heredoc commands, each answered the same with the time); api-guard and ship-it-guard parse Bash writes with command-guard's parsers (script.includes) and compact-declaration-guard parses the current turn of a 1.5 MB transcript tail, so they get command-guard's order of time and more; `precompact-snapshot` reads the transcript tail of a PreCompact (a real 1.5 MB tail takes about 190 ms in the interpreter, so 50 ms would defer it to Node every time); `claim-ledger` walks up to 2 MB of transcript evidence; the Stop-time and prompt-time checks that scan the transcript tail or state (tasklist-guard, task-guard, silent-agent-nudge, stale-agent-stop-note, auto-handover, auto-handover-pause-nag, compact-advice-guard, limit-conserve-inject, idle-agent-sweep) get 500 ms because, measured 2026-10-09 on the frozen replay (2113 calls), the 50 ms default interrupted tasklist-guard on 2 and silent-agent-nudge on 6 of 61 Stop calls (and stale-agent-stop-note on a 156 MB transcript), each deferring a decision the script makes identically when given the time; its SessionStart advisory only lists and stats files. |
+| `script.time_limit_by_check` | `21 entries` |  |  | Per-check limit of one script call (ms; the interpreter thread's CPU time, and the wall-clock backstop is script.wall_limit_factor times it), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; `command` (command-guard) resolves repositories and runs `git` for its edit parity and carve-outs (a child process wait is credited back, but a loaded machine stretches the interpreter's own time as well); `git` (git-guard) tokenizes the whole command and its heredoc bodies (the frozen replay of 2026-10-09 interrupted it at 50 ms on 3 long heredoc commands, each answered the same with the time); api-guard and ship-it-guard parse Bash writes with command-guard's parsers (script.includes) and compact-declaration-guard parses the current turn of a 1.5 MB transcript tail, so they get command-guard's order of time and more; `precompact-snapshot` reads the transcript tail of a PreCompact (a real 1.5 MB tail takes about 190 ms in the interpreter, so 50 ms would defer it to Node every time); `claim-ledger` walks up to 2 MB of transcript evidence; the Stop-time and prompt-time checks that scan the transcript tail or state (tasklist-guard, task-guard, silent-agent-nudge, stale-agent-stop-note, auto-handover, auto-handover-pause-nag, compact-advice-guard, limit-conserve-inject, idle-agent-sweep) get 500 ms because, measured 2026-10-09 on the frozen replay (2113 calls), the 50 ms default interrupted tasklist-guard on 2 and silent-agent-nudge on 6 of 61 Stop calls (and stale-agent-stop-note on a 156 MB transcript), each deferring a decision the script makes identically when given the time; its SessionStart advisory only lists and stats files. |
 | `script.time_limit_ms` | `50` | `AH_ENGINE_SCRIPT_TIME_MS` | ms | CPU-time limit of one script call (the interpreter thread's own CPU time, see script.wall_limit_factor for the wall-clock backstop); past it the interpreter is interrupted and the call defers to Node (never a silent allow). |
 | `script.wall_limit_factor` | `10` |  |  | The wall-clock backstop of a script call, as a multiple of its time limit. The limit itself counts the interpreter thread's CPU time, so a thread kept waiting for a core by a loaded machine is not interrupted; the backstop ends a script that waits without using CPU. Time a host function spends blocked (a child process, a lock) is credited back to the backstop. |
 | `script.write_max_bytes` | `1048576` |  | bytes | Largest text one `ah.state.writeAtomic` call may write; a larger text is refused. |
@@ -9110,6 +9111,54 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `units.why_exit` | `exit {code}` |  |  | Reason of a failed service-manager command. {code}. |
 | `units.why_test_guard` | `not run under a test or a temporary home` |  |  | Reason a service-manager command was not run: a test or a temporary home. |
 | `units.xml_escapes` | `&, &amp;, <, &lt;, >, &gt;, ", &quot;, ', &apos;` |  |  | The XML escapes applied to every value put in a LaunchAgent, in order (the ampersand first). |
+
+### guards_l12.toml / edit_guard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `edit_guard.builder_id_env` | `DEVSWARM_BUILDER_ID` |  |  | The environment variable that holds a DevSwarm workspace's builder id. |
+| `edit_guard.builder_id_pattern` | `^[A-Za-z0-9._-]+$` |  |  | What a builder id may look like to be looked up as a descriptor file name (a regular expression, JavaScript syntax). |
+| `edit_guard.descriptor_dir` | `.anti-hall, devswarm, workspaces` |  |  | Where anti-hall's DevSwarm workspace descriptors live under the home directory, as its parts. |
+| `edit_guard.descriptor_ext` | `.json` |  |  | The extension of a workspace descriptor file. |
+| `edit_guard.handover_parts` | `3 entries` |  |  | The canonical handover path under the project root, as its parts before the date directory, and the file name after the session directory. |
+| `edit_guard.msg_new_allowed` | `.anti-hall/handovers/**.` |  |  | What stays allowed next to a redirected handover document. |
+| `edit_guard.msg_new_instead` | `write it under .anti-hall/handovers/** and copy elsewhere afterwards if the p...` |  |  | What to do instead for a new handover document. |
+| `edit_guard.msg_new_override` | `{skip} (~/.anti-hall/skip.json, 15-min TTL), then retry` |  |  | The override line of the handover redirect ({skip} is the skip command). |
+| `edit_guard.msg_new_what` | `{tool} of a new session-handover doc at this path is blocked.` |  |  | Heading of the block on a new handover document at the wrong place ({tool} is the tool name). |
+| `edit_guard.msg_new_why` | `New handovers belong under .anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HAN...` |  |  | Why a new handover document is redirected. |
+| `edit_guard.msg_outside_instead` | `write it yourself (the main thread may; no subagent, no override needed) at {...` |  |  | What to do instead ({path} is the canonical handover path). |
+| `edit_guard.msg_outside_what` | `{tool} of a session-handover doc outside the project is blocked.` |  |  | Heading of the block on a handover document outside the project ({tool} is the tool name). |
+| `edit_guard.msg_outside_why` | `Handovers live inside the project, where handover-resume finds them; this pat...` |  |  | Why a handover document outside the project is blocked. |
+| `edit_guard.msg_patch_instead` | `send a well-formed patch (*** Begin Patch ... *** End Patch), or delegate the...` |  |  | What to do instead for an unparseable patch ({sub} names the worker). |
+| `edit_guard.msg_patch_what` | `this apply_patch could not be parsed ({error}), so its targets cannot be chec...` |  |  | Heading of the block on an apply_patch the parser rejects ({error} is the parser's message). |
+| `edit_guard.msg_patch_why` | `Edits in the main thread must be checked against the delegation rule.` |  |  | Why an unparseable patch is blocked on the main thread. |
+| `edit_guard.msg_self_edit_instead` | `ask the user to change it (or delegate the change to {sub}), then the user re...` |  |  | What to do instead ({sub} names the worker). |
+| `edit_guard.msg_self_edit_what` | `{tool} of .anti-hall/edit-allow.json is blocked.` |  |  | Heading of the block on an edit of the repository's own edit allowlist ({tool} is the tool name). |
+| `edit_guard.msg_self_edit_why` | `That file decides which files the main thread may edit directly, so the main ...` |  |  | Why the repository's own edit allowlist is never edited by the main thread. |
+| `edit_guard.msg_what` | `{tool} blocked: the {who} does not touch files directly.` |  |  | Heading of the delegation block ({tool} is the tool name, {who} the next text). |
+| `edit_guard.nudge_default_threshold` | `5` |  |  | The threshold used when the setting holds nothing usable. |
+| `edit_guard.nudge_prune_prefix` | `inline-work` |  |  | The writer prefix of the stale-file sweep of the counter files. |
+| `edit_guard.nudge_setting` | `6 entries` |  |  | Where the inline-work advisory's on/off switch is read from (devswarm.inlineWorkNudge, default on). |
+| `edit_guard.nudge_sid_max` | `128` |  |  | The longest session id kept in the counter file name. |
+| `edit_guard.nudge_sid_unsafe` | `[^A-Za-z0-9_.-]` |  |  | Characters of the session id replaced by an underscore in the counter file name (a regular expression, JavaScript syntax). |
+| `edit_guard.nudge_state_ext` | `.json` |  |  | The extension of the inline-work counter file. |
+| `edit_guard.nudge_state_prefix` | `inline-work-` |  |  | The state file name of the inline-work counter before the session id (under the state directory). |
+| `edit_guard.nudge_threshold_setting` | `7 entries` |  |  | Where the inline-work advisory's call threshold is read from (devswarm.inlineWorkNudgeThreshold, default 5, at least 1). |
+| `edit_guard.repos_dir` | `.devswarm, repos` |  |  | DevSwarm's worktree root under the home directory, as its parts: a working directory below it belongs to a child workspace. |
+| `edit_guard.session_id_unsafe` | `[^A-Za-z0-9._-]` |  |  | Characters of a session id replaced by an underscore in the handover path (a regular expression, JavaScript syntax). |
+
+### guards_l12.toml / orch_on_spawn
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `orch_on_spawn.claim2_suffix` | `claim2` |  |  | The suffix of the retry claim file name after the epoch id, before the extension. |
+| `orch_on_spawn.claim_ext` | `.json` |  |  | The extension of a claim file. |
+| `orch_on_spawn.claim_suffix` | `claim` |  |  | The suffix of the first claim file name after the epoch id, before the extension. |
+| `orch_on_spawn.codex_tool_suffix` | `spawn_agent$` |  |  | A spawn tool name ending in this text is Codex's (a regular expression, JavaScript syntax). |
+| `orch_on_spawn.default_event` | `PreToolUse` |  |  | The event name echoed when the payload names none. |
+| `orch_on_spawn.epoch_unsafe` | `[^A-Za-z0-9_-]` |  |  | Characters of an epoch id dropped from a claim file name (a regular expression, JavaScript syntax). |
+| `orch_on_spawn.lease_ms` | `120000` |  | ms | How long the first claim of an epoch is held before a second slot may be opened by a spawn that finds no delivered copy (2 minutes). |
+| `orch_on_spawn.token_format` | `[anti-hall orch-full:{epoch}]` |  |  | The token appended to the delivered text so the transcript scan can recognise this epoch's copy ({epoch} is the epoch id). |
 
 ## Messages
 

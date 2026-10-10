@@ -13,6 +13,8 @@ use super::guard::*;
 use super::support::*;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 const HOME: &str = "$HOME";
@@ -440,6 +442,8 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         let c = fx(["cli", "agent", "none", "vscode"][r.below(4)]);
         add(pl(json!(tool), Some(json!({"file_path": e["file"]})), marker), &c, format!("real-{i}"));
     }
+    // ---- (6) the main thread: the verdict on each target (lane L12)
+    main_thread(&mut out);
     out
 }
 
@@ -448,5 +452,289 @@ pub(crate) fn opts() -> Opts {
     o.events = vec!["PreToolUse"];
     o.tools = vec!["*"];
     o.node_flags = strs(&["--no-concurrent-recompilation", "--no-concurrent-sparkplug"]);
+    o.state_files = Some(|_| regex::Regex::new(r"^\.anti-hall/inline-work-.*\.json$").unwrap());
     o
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// (6) the main thread
+
+fn git(dir: &Path, args: &[&str]) {
+    let mut c = Command::new("git");
+    c.args(args).current_dir(dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    for (k, v) in super::lab::GITENV {
+        c.env(k, v);
+    }
+    c.output().expect("git must be runnable");
+}
+
+fn put(home: &Path, rel: &str, body: &str) {
+    write_file(&home.join(rel), body.as_bytes());
+}
+
+fn sha256_hex(b: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, b).as_ref().iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn uid() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail
+    unsafe { libc::getuid() }
+}
+
+/// A repository allowlist and the matching trust record (`trust`: a different recorded hash).
+fn allowlist(home: &Path, body: &str, trust: Option<&str>) {
+    put(home, "proj/.anti-hall/edit-allow.json", body);
+    let key = std::fs::canonicalize(home.join("proj")).unwrap().to_string_lossy().to_string();
+    let hash = trust.map_or_else(|| sha256_hex(body.as_bytes()), str::to_string);
+    put(home, ".anti-hall/trusted-edit-allow.json", &format!("{{{}:{}}}", serde_json::to_string(&key).unwrap(), serde_json::to_string(&hash).unwrap()));
+}
+
+/// `$HOME/proj` (a repository) with files of every kind, `$HOME/other` (a second one), links, a hard link and the harness plan files.
+fn main_setup(home: &Path) {
+    for (rel, body) in [
+        ("proj/src/main.rs", "fn main() {}\n"),
+        ("proj/src/lib.rs", "x\n"),
+        ("proj/docs/readme.md", "x\n"),
+        ("proj/CLAUDE.md", "x\n"),
+        ("proj/AGENTS.md", "x\n"),
+        ("proj/PLAN.md", "x\n"),
+        ("proj/sub/CLAUDE.md", "x\n"),
+        ("proj/x.txt", "x\n"),
+        ("proj/handover-note.md", "x\n"),
+        ("proj/CONTINUE-HERE.md", "x\n"),
+        ("proj/.claude/s.json", "{}\n"),
+        ("proj/.anti-hall/history/n.md", "x\n"),
+        ("proj/hooks/h.js", "x\n"),
+        ("other/a.txt", "x\n"),
+        ("outside/o.txt", "x\n"),
+        (".claude/plans/p.md", "x\n"),
+        (".anti-hall/bin/launcher.sh", "#!/bin/sh\n"),
+    ] {
+        put(home, rel, body);
+    }
+    for r in ["proj", "other"] {
+        git(&home.join(r), &["init", "-q", "-b", "main"]);
+    }
+    let l = |from: &str, to: &str| {
+        std::os::unix::fs::symlink(home.join(from), home.join(to)).ok();
+    };
+    l("outside/o.txt", "proj/lnk.txt");
+    l("outside", "proj/lnkdir");
+    l("proj/src/lib.rs", "proj/STATE.json");
+    l("proj", "lnkproj");
+    std::fs::hard_link(home.join("proj/src/lib.rs"), home.join("proj/GEMINI.md")).ok();
+    std::fs::hard_link(home.join("proj/x.txt"), home.join("proj/hard.txt")).ok();
+}
+
+fn ds_desc(home: &Path) {
+    put(home, ".anti-hall/devswarm/workspaces/b1.json", "{}");
+}
+
+fn push1(out: &mut Vec<Scenario>, payload: Value, c: &Arc<Ctx>, id: String) {
+    out.push(Scenario { id, ctx: Some(c.clone()), steps: vec![Step::new(payload)] });
+}
+
+fn main_thread(out: &mut Vec<Scenario>) {
+    let base = |entry: &str| Ctx::new().env("ANTIHALL_INGEST_DRY_RUN", "1").env("CLAUDE_CODE_ENTRYPOINT", entry).setup(main_setup);
+    let c_cli = base("cli").arc();
+    let c_agent = base("agent_tool").arc();
+    let c_none = Ctx::new().env("ANTIHALL_INGEST_DRY_RUN", "1").setup(main_setup).arc();
+    let c_trust = base("cli")
+        .setup(|h| {
+            main_setup(h);
+            allowlist(h, r#"{"paths":["docs/**","*.md","src/gen/*.rs","../escape","/abs","~/x",".git/hooks/*","src/lib.rs"]}"#, None);
+        })
+        .arc();
+    let c_untrusted = base("cli")
+        .setup(|h| {
+            main_setup(h);
+            allowlist(h, r#"{"paths":["docs/**"]}"#, Some("deadbeef"));
+        })
+        .arc();
+    let c_trust_off = base("cli")
+        .settings(json!({"guards": {"projectEditAllow": false}}))
+        .setup(|h| {
+            main_setup(h);
+            allowlist(h, r#"{"paths":["docs/**"]}"#, None);
+        })
+        .arc();
+    let c_extra = base("cli").settings(json!({"guards": {"editGuardAllow": "src/lib.rs,*.txt"}})).arc();
+    let c_ds = base("cli").env("DEVSWARM_REPO_ID", "r1").arc();
+    let c_ds_off = base("cli").env("DEVSWARM_REPO_ID", "r1").settings(json!({"devswarm": {"dispatchTierText": false}})).arc();
+    let c_ds_child = base("cli")
+        .env("DEVSWARM_REPO_ID", "r1")
+        .env("DEVSWARM_SOURCE_BRANCH", "feat")
+        .env("DEVSWARM_BUILDER_ID", "b1")
+        .setup(|h| {
+            main_setup(h);
+            ds_desc(h);
+        })
+        .arc();
+    let c_ds_child_nodesc = base("cli").env("DEVSWARM_REPO_ID", "r1").env("DEVSWARM_SOURCE_BRANCH", "feat").env("DEVSWARM_BUILDER_ID", "nope").arc();
+    let c_ds_nudge = base("cli").env("DEVSWARM_REPO_ID", "r1").settings(json!({"devswarm": {"inlineWorkNudgeThreshold": 2}})).arc();
+    let c_ds_nudge_off = base("cli").env("DEVSWARM_REPO_ID", "r1").settings(json!({"devswarm": {"inlineWorkNudge": false}})).arc();
+
+    let plan = json!({"permission_mode": "plan"});
+    let uidv = uid();
+    // the session scratchpad of the transcript's project directory (any of the three temp roots)
+    let scratch = format!("/tmp/claude-{uidv}/-seg-proj/sid1/scratchpad");
+    let tp = json!({"transcript_path": "/x/-seg-proj/sid1.jsonl", "session_id": "sid1"});
+
+    let paths: Vec<String> = [
+        "CLAUDE.md",
+        "AGENTS.md",
+        "GEMINI.md",
+        "PLAN.md",
+        "plan.md",
+        "STATE.json",
+        "sub/CLAUDE.md",
+        "src/lib.rs",
+        "src/main.rs",
+        "src/new.py",
+        "docs/readme.md",
+        "docs/new.md",
+        "x.txt",
+        "new.txt",
+        ".claude/s.json",
+        ".claude/new.json",
+        ".omc/state.json",
+        ".anti-hall/history/n.md",
+        ".anti-hall/history/new.md",
+        ".anti-hall/other.json",
+        ".anti-hall/edit-allow.json",
+        ".anti-hall/EDIT-ALLOW.json",
+        "../other/a.txt",
+        "../outside/o.txt",
+        "lnk.txt",
+        "lnkdir/o.txt",
+        "lnkdir/new.txt",
+        "hard.txt",
+        "handover-note.md",
+        "docs/HANDOVER-2026.md",
+        "HANDOVER-new.md",
+        "x-handoff.md",
+        "session-compact-handover.md",
+        "handover.js",
+        "CONTINUE-HERE.md",
+        "NEW.continue-here.md",
+        "sub/CONTINUE-HERE.md",
+        "hooks/h.js",
+        "hooks/hooks.json",
+        ".git/config",
+        ".git/hooks/pre-commit",
+        "../lnkproj/CLAUDE.md",
+        "$HOME/proj/CLAUDE.md",
+        "$HOME/lnkproj/PLAN.md",
+        "$HOME/.claude/plans/p.md",
+        "$HOME/.claude/plans/new.md",
+        "$HOME/.claude/plans/x.txt",
+        "$HOME/.claude/plans/../s.json",
+        "$HOME/handover-x.md",
+        "$HOME/.anti-hall/handovers/2026-01-01/s/HANDOVER.md",
+        "$HOME/.claude/projects/p/memory/MEMORY.md",
+        "/tmp/x.md",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let mut p2 = paths.clone();
+    p2.push(format!("{scratch}/n.txt"));
+    p2.push(format!("{scratch}/../x.txt"));
+    p2.push(format!("/tmp/claude-{uidv}/-seg-proj/other/scratchpad/n.txt"));
+    let all: Vec<(&str, &Arc<Ctx>)> =
+        vec![("cli", &c_cli), ("trust", &c_trust), ("untrusted", &c_untrusted), ("trustoff", &c_trust_off), ("extra", &c_extra), ("ds", &c_ds)];
+    for (k, c) in &all {
+        for (i, f) in p2.iter().enumerate() {
+            for (t, field) in [("Edit", "file_path"), ("Write", "file_path"), ("NotebookEdit", "notebook_path")] {
+                if i % 3 != 0 && t != "Edit" && *k != "cli" {
+                    continue;
+                }
+                let payload = assign(
+                    json!({"hook_event_name": "PreToolUse", "tool_name": t, "session_id": "sid1", "cwd": "$HOME/proj", "tool_input": {field: f}}),
+                    tp.clone(),
+                );
+                push1(out, payload, c, format!("main-{k}-{t}-{i}-{}", clip(&non_alnum_underscore(f), 30)));
+            }
+        }
+    }
+    // plan mode, a subdirectory as the working directory, MultiEdit, the subagent and the unknown entry point
+    for (k, c) in [("cli", &c_cli), ("ds", &c_ds), ("dsoff", &c_ds_off)] {
+        for (i, f) in paths.iter().enumerate() {
+            let payload = assign(
+                json!({"hook_event_name": "PreToolUse", "tool_name": "Write", "session_id": "sid1", "cwd": "$HOME/proj", "tool_input": {"file_path": f}}),
+                plan.clone(),
+            );
+            push1(out, payload, c, format!("mainplan-{k}-{i}-{}", clip(&non_alnum_underscore(f), 30)));
+            let sub = json!({"hook_event_name": "PreToolUse", "tool_name": "MultiEdit", "session_id": "sid1", "cwd": "$HOME/proj/src", "tool_input": {"file_path": f}});
+            push1(out, sub, c, format!("mainsub-{k}-{i}-{}", clip(&non_alnum_underscore(f), 30)));
+        }
+    }
+    // an existing launcher file spelled in another case: the path is judged as written (fs.realpathSync keeps the spelling)
+    for (k, c) in [("agent", &c_agent), ("cli", &c_cli)] {
+        for (i, f) in [
+            "$HOME/.Anti-Hall/bin/launcher.sh",
+            "$HOME/.ANTI-HALL/bin",
+            "$HOME/.anti-hall/BIN/launcher.sh",
+            "$HOME/.anti-hall/bin/launcher.sh",
+            "$HOME/LNKPROJ/CLAUDE.md",
+        ]
+        .iter()
+        .enumerate()
+        {
+            push1(out, pls("Edit", json!({"file_path": f})), c, format!("mainlauncher-{k}-{i}"));
+        }
+    }
+    for (k, c) in [("agent", &c_agent), ("none", &c_none)] {
+        for (i, f) in ["CLAUDE.md", "src/lib.rs", ".anti-hall/bin/x.sh", "$HOME/.anti-hall/bin/x.sh"].iter().enumerate() {
+            push1(out, pls("Edit", json!({"file_path": f})), c, format!("mainother-{k}-{i}"));
+        }
+    }
+    // a DevSwarm child workspace is a worker; the descriptor, or its absence, decides
+    for (k, c) in [("child", &c_ds_child), ("childnodesc", &c_ds_child_nodesc)] {
+        for (i, f) in ["src/lib.rs", "CLAUDE.md", "$HOME/.anti-hall/bin/x.sh"].iter().enumerate() {
+            let payload =
+                json!({"hook_event_name": "PreToolUse", "tool_name": "Edit", "session_id": "sid1", "cwd": "$HOME/proj", "tool_input": {"file_path": f}});
+            push1(out, payload, c, format!("mainds-{k}-{i}"));
+        }
+    }
+    // Codex apply_patch: the targets are checked one by one, an unparseable patch is blocked
+    let patches: Vec<String> = vec![
+        "*** Begin Patch\n*** Add File: CLAUDE.md\n+x\n*** End Patch".into(),
+        "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-x\n+y\n*** End Patch".into(),
+        "*** Begin Patch\n*** Update File: CLAUDE.md\n*** Move to: src/moved.rs\n@@\n-x\n+y\n*** End Patch".into(),
+        "*** Begin Patch\n*** Delete File: src/lib.rs\n*** End Patch".into(),
+        "*** Begin Patch\n*** Add File: PLAN.md\n+x\n*** Add File: src/new.rs\n+y\n*** End Patch".into(),
+        "*** Begin Patch\n*** Add File: src/new.rs\n+y\n*** Add File: PLAN.md\n+x\n*** End Patch".into(),
+        "*** Begin Patch\n*** Add File: ../escape.md\n+x\n*** End Patch".into(),
+        "*** Begin Patch\n*** Add File: $HOME/.anti-hall/bin/x.sh\n+x\n*** End Patch".into(),
+        "*** Begin Patch\n*** Add File: $HOME/proj/docs/a.md\n+x\n*** End Patch".into(),
+        "junk".into(),
+        "".into(),
+        "*** Begin Patch\n*** End Patch".into(),
+        "*** Begin Patch\n*** Add File: CLAUDE.md\n+x".into(),
+    ];
+    for (k, c) in [("cli", &c_cli), ("trust", &c_trust), ("agent", &c_agent), ("none", &c_none)] {
+        for (i, cmd) in patches.iter().enumerate() {
+            let payload =
+                json!({"hook_event_name": "PreToolUse", "tool_name": "apply_patch", "session_id": "sid1", "cwd": "$HOME/proj", "tool_input": {"command": cmd}});
+            push1(out, payload, c, format!("mainpatch-{k}-{i}"));
+        }
+    }
+    let payload = |cwd: Value| json!({"hook_event_name": "PreToolUse", "tool_name": "apply_patch", "session_id": "sid1", "cwd": cwd, "tool_input": {"command": patches[1].clone()}});
+    push1(out, payload(json!("$HOME/proj/src")), &c_cli, "mainpatch-cwdsub".into());
+    // the inline-work counter of a DevSwarm Primary: counted on every main-thread call, in Node's file
+    for (k, c) in [("ds", &c_ds), ("dsoff", &c_ds_nudge_off), ("nudge2", &c_ds_nudge)] {
+        for variant in 0..2 {
+            let mut steps: Vec<Step> = Vec::new();
+            for i in 0..8 {
+                let f = ["docs/a.md", "CLAUDE.md", "src/lib.rs", "src/main.rs"][(i + variant) % 4];
+                let extra = if k == "nudge2" && variant == 1 { json!({"transcript_path": "/nonexistent/t.jsonl"}) } else { json!({}) };
+                steps.push(Step::new(assign(
+                    json!({"hook_event_name": "PreToolUse", "tool_name": "Write", "session_id": "sid1", "cwd": "$HOME/proj", "tool_input": {"file_path": f}}),
+                    extra,
+                )));
+            }
+            out.push(Scenario { id: format!("mainnudge-{k}-{variant}"), ctx: Some(c.clone()), steps });
+        }
+    }
 }

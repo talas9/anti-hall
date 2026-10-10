@@ -225,11 +225,31 @@ var fs = (function () {
     if (l.kind === 'error') throw cmdErr('EIO', 'lstat ' + p + ' ' + l.code);
     return stat(l);
   }
-  // JavaScript's realpathSync resolves `..` lexically first; the native one is libc realpath.
+  // JavaScript's realpathSync resolves `..` lexically first and then walks the path one component at a time (lstat, and readlink for
+  // a link): it keeps each component as it was spelled, where the native one is libc realpath, which on a case-insensitive volume
+  // (macOS) also returns the spelling the directory holds (`.Anti-Hall` for `.anti-hall`).
+  function jsRealpath(p0) {
+    var segs = path.resolve(p0).split('/').filter(Boolean), current = '', i = 0, hops = 0;
+    while (i < segs.length) {
+      var base = current + '/' + segs[i], l = ah.fs.lstat(base);
+      if (l === null) throw cmdErr('ENOENT', 'realpath ' + p0);
+      if (l.kind === 'error') throw cmdErr('EIO', 'realpath ' + p0);
+      if (l.kind !== 'link') { current = base; i++; continue; }
+      var target = ah.fs.readlink(base), alive = ah.fs.realpathEx(base);
+      if (target === null) throw cmdErr('EIO', 'realpath ' + p0);
+      if (alive.error) throw cmdErr(alive.error === 'NotFound' ? 'ENOENT' : 'EIO', 'realpath ' + p0);
+      if (++hops > ah.cfgNum('command.realpath_max_links')) throw cmdErr('EIO', 'realpath ' + p0);
+      segs = path.resolve(path.resolve(current === '' ? '/' : current, target), segs.slice(i + 1).join('/')).split('/').filter(Boolean);
+      current = '';
+      i = 0;
+    }
+    return current === '' ? '/' : current;
+  }
   function real(p, native) {
     p = String(p);
     if (!path.isAbsolute(p)) unsure();
-    var r = ah.fs.realpathEx(native ? p : path.resolve(p));
+    if (!native) return jsRealpath(p);
+    var r = ah.fs.realpathEx(p);
     if (r.error) throw cmdErr(r.error === 'NotFound' ? 'ENOENT' : 'EIO', 'realpath ' + p);
     return r.path;
   }
@@ -982,6 +1002,8 @@ LIB['./edit-guard.js'] = (function () {
       try { alreadyExists = fs.existsSync(path.resolve(String(cwd), String(filePath))); } catch (e) { if (e.unsure) throw e; alreadyExists = true; }
       return alreadyExists ? 'allow' : 'block-handover';
     }
+    // a handover-shaped .md that resolves outside the project gets its own redirect (hooks/edit-guard.js, owner-reported 2026-10-08)
+    if (isHandoverDoc(filePath) && cwd && !isWithinCwd(filePath, cwd) && !isPlanMode(payload)) return 'block-handover-outside';
     if (isPlanMode(payload) && !isLikelySource(filePath) && allowlistIsHonest(filePath, cwd)) return 'allow';
     return 'block';
   }

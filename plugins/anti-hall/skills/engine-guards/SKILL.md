@@ -57,5 +57,7 @@ What the automatic guards check and how to read a block.
 - `devswarm_sup_env.retention_budget_ms` = 5000: Time budget of one store's tombstoning batches (environment only, as in Node: ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS)
 - `devswarm_sup.retention.requireWitness` = true: Tombstone only when Node's planner ran and agreed, whenever a Node is installed: a Node that fails or disagrees holds the store back
 - `devswarm_sup.witness` = "on": Run the non-acting Node witness for the native supervisor duties: on | off
+- `devswarm.inlineWorkNudge` = true: Where the inline-work advisory's on/off switch is read from (devswarm.inlineWorkNudge, default on)
+- `devswarm.inlineWorkNudgeThreshold` = 5: Where the inline-work advisory's call threshold is read from (devswarm.inlineWorkNudgeThreshold, default 5, at least 1)
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

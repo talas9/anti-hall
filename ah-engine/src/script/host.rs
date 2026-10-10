@@ -246,6 +246,10 @@ pub enum Op {
     Remove,
     /// Rename the file to the path named by `text` (also under the write root).
     Rename,
+    /// Create the file with `text` only when it does not exist yet (`O_EXCL`): `true` for the one caller that created it.
+    Create,
+    /// Set the modification and access times of an existing regular file to now (`utimes`), leaving its content alone.
+    Touch,
 }
 
 /// The scoped file API under any absolute `root` (the home directory, or a project root the script names): `rel` must start with
@@ -262,6 +266,20 @@ pub fn scoped(root: &str, rel: &str, text: &str, op: Op) -> rquickjs::Result<boo
             Ok(std::fs::rename(from, to).is_ok())
         }
         Op::Mkdir => Ok(scoped_target(root, rel, 0, true)?.is_some()),
+        Op::Create => {
+            let Some(path) = scoped_target(root, rel, text.len(), false)? else { return Ok(false) };
+            use std::os::unix::fs::OpenOptionsExt;
+            let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) else { return Ok(false) };
+            // the file exists now: a failed write still leaves the claim standing, as the Node writer does
+            crate::discard::harmless(std::io::Write::write_all(&mut f, text.as_bytes()));
+            Ok(true)
+        }
+        Op::Touch => {
+            let Some(path) = scoped_existing(root, rel)? else { return Ok(false) };
+            let now = std::time::SystemTime::now();
+            let times = std::fs::FileTimes::new().set_accessed(now).set_modified(now);
+            Ok(std::fs::File::open(&path).and_then(|f| f.set_times(times)).is_ok())
+        }
         Op::WriteAfterReply => {
             let Some(path) = scoped_target(root, rel, text.len(), false)? else { return Ok(false) };
             let style = crate::atomic::Style { skip_sync: defaults::num("script.write_sync") == 0, ..crate::atomic::Style::default() };
@@ -452,6 +470,22 @@ pub fn agents(path: &str) -> String {
         Ok(None) => "null".into(),
         Ok(Some(rows)) => {
             let rows: Vec<serde_json::Value> = rows.iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
+            serde_json::json!({"rows": rows}).to_string()
+        }
+    }
+}
+
+/// `agentsWindow(path)`: the agents a transcript shows as running in its default window only, the way the Node `runningAgents` reads
+/// it (no widening to a longer window, and no refusal to count when the window shows none): `null` (unreadable),
+/// `{"unsure":true}`, else `{"rows":[...]}` as [`agents`].
+pub fn agents_window(path: &str) -> String {
+    use crate::checks::agent_scan;
+    let opts = agent_scan::Opts { now_ms: crate::checks::replykit::io::now_ms(), ignore_unanswered_stops: false };
+    match agent_scan::scan_transcript(path, defaults::num("agent_scan.tail_bytes"), &opts) {
+        Err(_) => r#"{"unsure":true}"#.into(),
+        Ok(None) => "null".into(),
+        Ok(Some(scan)) => {
+            let rows: Vec<serde_json::Value> = scan.rows().iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
             serde_json::json!({"rows": rows}).to_string()
         }
     }
@@ -929,6 +963,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;
     h.set("memory", Function::new(c.clone(), memory)?)?;
     h.set("agents", Function::new(c.clone(), |p: String| agents(&p))?)?;
+    h.set("agentsWindow", Function::new(c.clone(), |p: String| agents_window(&p))?)?;
     h.set("repoContext", Function::new(c.clone(), |d: String, anc: Option<bool>| -> rquickjs::Result<String> { repo_context(&d, anc.unwrap_or(true)) })?)?;
     h.set("scrubSecrets", Function::new(c.clone(), |t: String| crate::jev::scrub::scrub_secrets(&t))?)?;
     h.set("cfgLive", Function::new(c.clone(), |k: String| -> rquickjs::Result<String> { cfg_live(&k) })?)?;

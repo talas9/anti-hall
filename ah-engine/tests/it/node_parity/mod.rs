@@ -57,7 +57,10 @@ fn api_guard_matches_node() {
 fn edit_guard_matches_node() {
     let _s = serial();
     let Some(hooks) = hooks_dir() else { return };
-    guard::require(&edit_guard::opts(), &hooks, edit_guard::scenarios(), 1000);
+    let rep = guard::require(&edit_guard::opts(), &hooks, edit_guard::scenarios(), 1000);
+    // the main-thread corpus (lane L12) has a verdict for every target: the engine decides all of it
+    let bad: Vec<&String> = rep.stats.deferred_ids.iter().filter(|id| id.starts_with("main")).collect();
+    assert!(bad.is_empty(), "the engine deferred where it must decide: {} ids, first {:?}", bad.len(), bad.iter().take(40).collect::<Vec<_>>());
 }
 
 #[test]
