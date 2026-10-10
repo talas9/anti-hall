@@ -100,6 +100,26 @@ value = "operator reset"
 doc = "Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}."
 value = "daemon pid {pid} died without a clean exit"
 
+[msg.log_crash_context]
+doc = "Log detail when a daemon is found dead without a clean exit, with the last breadcrumb. Placeholders: {pid}, {context}."
+value = "daemon pid {pid} died without a clean exit; last context {context}"
+
+[msg.panic_payload_unknown]
+doc = "Panic payload text when Rust did not carry a string."
+value = "non-string panic payload"
+
+[msg.thread_unknown]
+doc = "Thread name used in panic reports for unnamed threads."
+value = "unnamed"
+
+[msg.thread_panic]
+doc = "Log detail when a daemon service thread panics. Placeholders: {thread}, {n}, {max}."
+value = "daemon service thread {thread} panicked ({n}/{max})"
+
+[msg.thread_panic_restart]
+doc = "Clean restart reason when a daemon service thread exceeds its panic restart cap. Placeholder: {thread}."
+value = "daemon service thread {thread} exceeded panic restart cap"
+
 [msg.log_budget]
 doc = "Log detail when a rule evaluation exceeded its CPU budget."
 value = "rule evaluation exceeded its cpu budget"
@@ -425,6 +445,10 @@ value = "delivery to a session's mailbox is planned (D45); the run is recorded, 
 [msg.schedule_timeout]
 doc = "Detail of a run that passed its timeout."
 value = "the run passed its timeout and was stopped"
+
+[msg.schedule_panic]
+doc = "Detail of a scheduled run panic caught at the job boundary."
+value = "the run panicked and was stopped"
 
 [msg.schedule_failed]
 doc = "Event-log detail of a failed run. Placeholders: {job}, {detail}."

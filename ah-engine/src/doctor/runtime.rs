@@ -274,6 +274,9 @@ pub fn daemon_section(doc: &mut Doc) {
         let (class, reason, hint) = (f["class"].as_str().unwrap_or(""), f["reason"].as_str().unwrap_or(""), f["hint"].as_str().unwrap_or(""));
         doc.warnl(defaults::render("doctor_msg.failure_recorded", &[("class", &class), ("reason", &reason), ("hint", &hint)]));
     }
+    if let Some(c) = health::last_crash() {
+        doc.warnl(defaults::render("doctor_msg.last_crash", &[("crash", &c)]));
+    }
 }
 
 #[cfg(test)]

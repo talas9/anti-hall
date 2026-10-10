@@ -33,6 +33,7 @@ pub mod stoploop;
 pub mod table;
 
 use crate::client::Outcome;
+use crate::discard::Logged;
 use crate::error::DispatchError;
 use crate::{defaults, health};
 use native::{Answer, Meta};
@@ -142,8 +143,8 @@ impl PayloadInput {
     fn structural_tool_name(&self) -> Option<String> {
         match &self.file {
             Some(file) => {
-                let mut f = file.try_clone().ok()?;
-                f.seek(SeekFrom::Start(0)).ok()?;
+                let mut f = file.try_clone().ok_logged("dispatch_spill_clone")?;
+                f.seek(SeekFrom::Start(0)).ok_logged("dispatch_spill_seek")?;
                 scan_tool_name(&mut f).ok().flatten()
             }
             None => scan_tool_name(&mut self.raw.as_slice()).ok().flatten(),

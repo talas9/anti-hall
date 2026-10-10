@@ -14,7 +14,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 static ALLOC: ah_engine::memstat::Counting = ah_engine::memstat::Counting;
 
 fn main() {
-    std::panic::set_hook(Box::new(|_| {})); // a panic must never reach the host's stderr
+    ah_engine::crash::install_panic_hook();
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(feature = "diag")]
     if args.first().map(String::as_str) == Some("diag") {

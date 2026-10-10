@@ -23,7 +23,10 @@ fn main() {
         for (kind, path) in files {
             let target = repo.join(path.as_str().unwrap_or(""));
             let text = hooksgen::render(host, kind).unwrap_or_default();
-            fs::write(&target, text).unwrap_or_else(|e| panic!("{}: {e}", target.display()));
+            if let Err(e) = fs::write(&target, text) {
+                eprintln!("{}: {e}", target.display());
+                std::process::exit(1);
+            }
         }
     }
 }

@@ -345,7 +345,10 @@ fn shipped() -> &'static Layer {
     L.get_or_init(|| {
         let mut entries = defaults::with_prefix("events.");
         entries.extend(defaults::with_prefix("entries."));
-        shipped_of(&entries).unwrap_or_else(|e| panic!("{e:?}"))
+        shipped_of(&entries).unwrap_or_else(|e| {
+            eprintln!("{e:?}");
+            std::process::abort();
+        })
     })
 }
 

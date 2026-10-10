@@ -88,17 +88,19 @@ impl State {
     }
 
     fn integrations(&mut self) -> &mut Obj {
-        let idx = self.top.iter().position(|(n, _)| n == k("integrations")).unwrap_or(0);
+        let idx = match self.top.iter().position(|(n, _)| n == k("integrations")) {
+            Some(idx) => idx,
+            None => {
+                self.top.push((k("integrations").to_string(), J::Obj(Vec::new())));
+                self.top.len() - 1
+            }
+        };
+        if !matches!(self.top[idx].1, J::Obj(_)) {
+            self.top[idx].1 = J::Obj(Vec::new());
+        }
         match &mut self.top[idx].1 {
             J::Obj(o) => o,
-            // `read` guarantees an object; an empty one stands in for a state that was changed under us
-            other => {
-                *other = J::Obj(Vec::new());
-                match other {
-                    J::Obj(o) => o,
-                    _ => unreachable!("just assigned an object"),
-                }
-            }
+            _ => std::process::abort(),
         }
     }
 

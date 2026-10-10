@@ -327,7 +327,10 @@ impl Db {
         let (tx, rx) = mpsc::sync_channel(defaults::num("storage.write_queue") as usize);
         let mem = Arc::new(Mem::new());
         let m = mem.clone();
-        let handle = std::thread::spawn(move || writer(write, rx, &m, window));
+        let handle = std::thread::Builder::new().name("ah-db-writer".into()).spawn(move || writer_supervised(write, rx, m, window)).map_err(|e| {
+            crate::discard::note("db_writer_spawn", &e.to_string());
+            DbError::Unavailable
+        })?;
         Ok(Arc::new(Db {
             tx: Mutex::new(Some(tx)),
             read: Mutex::new(read),
@@ -405,7 +408,33 @@ impl Drop for Db {
 /// only what is already queued), at most `storage.batch_max`; commit them as one transaction, then answer each. A
 /// longer window trades the first write's latency for fewer syncs under load. Ends when every sender is gone and the
 /// queue is empty.
-fn writer(mut conn: Connection, rx: Receiver<Job>, mem: &Mem, window: Duration) {
+fn writer_supervised(mut conn: Connection, rx: Receiver<Job>, mem: Arc<Mem>, window: Duration) {
+    let mut panics = 0_u64;
+    loop {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer(&mut conn, &rx, &mem, window)));
+        if r.is_ok() {
+            return;
+        }
+        panics += 1;
+        let max = defaults::num("daemon.thread_restart_max");
+        crate::health::log_event(
+            "thread_panic",
+            "db_writer",
+            &defaults::render("msg.thread_panic", &[("thread", &"db_writer"), ("n", &panics), ("max", &max)]),
+        );
+        crate::health::record_failure(
+            "panic",
+            "thread_panic",
+            &defaults::render("msg.thread_panic", &[("thread", &"db_writer"), ("n", &panics), ("max", &max)]),
+        );
+        if panics > max {
+            return;
+        }
+        std::thread::sleep(defaults::millis("daemon.thread_restart_backoff_ms"));
+    }
+}
+
+fn writer(conn: &mut Connection, rx: &Receiver<Job>, mem: &Mem, window: Duration) {
     let max = defaults::num("storage.batch_max") as usize;
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
@@ -418,7 +447,7 @@ fn writer(mut conn: Connection, rx: Receiver<Job>, mem: &Mem, window: Duration) 
                 None => break,
             }
         }
-        commit_batch(&mut conn, batch, mem);
+        commit_batch(conn, batch, mem);
     }
 }
 

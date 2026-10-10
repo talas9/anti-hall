@@ -193,6 +193,30 @@ pub(crate) fn read_json(key: &str) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(state_file(key)).ok()?).ok()
 }
 
+/// Write the latest crash report. Used by the panic hook and by stale-run-marker reaping.
+pub fn write_crash_report(v: &Value) {
+    crate::discard::logged("crash_report_write", crate::atomic::write(state_file("last_crash"), v.to_string()));
+}
+
+/// The last recorded crash report.
+pub fn last_crash() -> Option<Value> {
+    read_json("last_crash")
+}
+
+/// Write the current boundary breadcrumb so an abort or SIGSEGV leaves useful context for the next start.
+pub fn write_crash_breadcrumb(request: &str, event: &str, check: &str, uptime_s: u64, memory: Value) {
+    let v = json!({
+        "ts": now_ms(),
+        "pid": std::process::id(),
+        "request": request,
+        "event": event,
+        "check": check,
+        "uptime_s": uptime_s,
+        "memory": memory,
+    });
+    crate::discard::logged("crash_breadcrumb_write", crate::atomic::write(state_file("crash_breadcrumb"), v.to_string()));
+}
+
 /// A healthy start clears an environment-class failure (the user fixed it); permanent ones stay.
 pub fn clear_env_failure() {
     if read_json("failure").and_then(|v| v["class"].as_str().map(|c| c == "env")).unwrap_or(false) {
@@ -268,7 +292,12 @@ pub fn reap_marker() {
     let claim = file(&format!("{}{}", defaults::text("files.reaped_prefix"), std::process::id()));
     if std::fs::rename(&m, &claim).is_ok() {
         crate::discard::harmless(std::fs::remove_file(&claim)); // keep: cleanup that raced; an absent file is the goal state
-        log_event("crash", "unknown", &defaults::render("msg.log_crash", &[("pid", &pid.to_string())]));
+        let breadcrumb = read_json("crash_breadcrumb").unwrap_or_else(|| json!({"context": "unknown"}));
+        let report = json!({"ts": now_ms(), "kind": "crash", "code": "unknown", "pid": pid, "breadcrumb": breadcrumb});
+        write_crash_report(&report);
+        let detail = defaults::render("msg.log_crash_context", &[("pid", &pid), ("context", &report)]);
+        log_event("crash", "unknown", &detail);
+        record_failure("crash", "unknown", &detail);
     }
 }
 
@@ -425,6 +454,7 @@ pub fn summary() -> Value {
         "breaker": {"open": breaker_left.is_some(), "remaining_s": breaker_left.map(|d| d.as_secs() + 1), "last_open": last("breaker_open")},
         "fallbacks": {"total": total(&fallbacks), "by_reason": fallbacks},
         "defaults": {"total": total(&defaults_fb), "by_reason": defaults_fb, "last": last_defaults},
+        "last_crash": last_crash(),
         "log": file(log_name()).display().to_string(),
     })
 }

@@ -972,6 +972,10 @@ value = "client circuit breaker open for {secs}s more ({reason}); hooks use the 
 doc = "DMN-11. Placeholders: {class}, {reason}, {hint}."
 value = "last recorded failure ({class}): {reason} {hint}"
 
+[doctor_msg.last_crash]
+doc = "DMN-12. Placeholder: {crash}."
+value = "last crash: {crash}"
+
 [doctor_msg.config_fell_back]
 doc = "CF-02. Placeholders: {file}, {detail}, {layer}, {code}."
 value = "{file}: {detail}; using the {layer} copy instead - Fix: correct the edit, or restore the file from engine/defaults.pristine/"

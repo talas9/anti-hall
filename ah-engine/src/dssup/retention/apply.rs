@@ -512,13 +512,21 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
 
 /// `state[key]` as a mutable object, created (empty) when missing or not an object.
 pub fn obj_mut<'a>(o: &'a mut OVal, key: &str) -> &'a mut OVal {
-    if o.get(key).is_none_or(|v| !matches!(v, OVal::Obj(_))) {
-        o.set(key, OVal::Obj(Vec::new()));
+    if !matches!(o, OVal::Obj(_)) {
+        *o = OVal::Obj(Vec::new());
     }
-    match o {
-        OVal::Obj(v) => v.iter_mut().find(|(k, _)| k == key).map(|(_, x)| x).unwrap_or_else(|| unreachable!()),
-        _ => unreachable!(),
+    let OVal::Obj(v) = o else { return o };
+    let idx = match v.iter().position(|(k, _)| k == key) {
+        Some(idx) => idx,
+        None => {
+            v.push((key.to_string(), OVal::Obj(Vec::new())));
+            v.len() - 1
+        }
+    };
+    if !matches!(v[idx].1, OVal::Obj(_)) {
+        v[idx].1 = OVal::Obj(Vec::new());
     }
+    &mut v[idx].1
 }
 
 /// The write half of `pruneStore` for rows chosen from an agreed plan. `Err` only before or between batches, never inside the

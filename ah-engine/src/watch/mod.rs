@@ -293,7 +293,8 @@ impl Watcher {
             wake_cv: Condvar::new(),
         });
         let (s, poll, cap) = (Arc::clone(&shared), cfg.poll, cfg.max_entries);
-        let thread = std::thread::Builder::new().name("ah-watch".into()).spawn(move || scan_loop(&s, poll, cap)).ok();
+        let thread =
+            crate::discard::logged_ok("watch_thread_spawn", std::thread::Builder::new().name("ah-watch".into()).spawn(move || scan_loop(&s, poll, cap)));
         Watcher { cfg, shared, thread }
     }
 

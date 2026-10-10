@@ -275,7 +275,7 @@ pub fn date_parse(s: &str) -> Res<f64> {
         let off = match c.get(8).map(|m| m.as_str()) {
             Some(z) if z.len() == 6 => {
                 let sign = if z.starts_with('-') { -1 } else { 1 };
-                let (oh, om) = (z[1..3].parse::<i64>().unwrap_or(99), z[4..6].parse::<i64>().unwrap_or(99));
+                let (oh, om) = (z.get(1..3).and_then(|s| s.parse::<i64>().ok()).unwrap_or(99), z.get(4..6).and_then(|s| s.parse::<i64>().ok()).unwrap_or(99));
                 if oh > 23 || om > 59 {
                     return Err(Unsupported);
                 }
@@ -388,7 +388,8 @@ pub fn iso_utc(ms: f64) -> String {
 
 /// `toISOString().slice(11, 16) + ' UTC'`.
 pub fn hhmm(ms: f64) -> String {
-    format!("{}{}", &iso_utc(ms)[11..16], defaults::text("agent_scan.utc_suffix"))
+    let iso = iso_utc(ms);
+    format!("{}{}", iso.get(11..16).unwrap_or("00:00"), defaults::text("agent_scan.utc_suffix"))
 }
 
 /// A string's length in UTF-16 units (`.length`).

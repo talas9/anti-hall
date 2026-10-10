@@ -125,6 +125,14 @@ value = "crashloop.until"
 doc = "Written while a daemon runs; a leftover one with a dead pid is logged as one crash."
 value = "daemon.run"
 
+[files.crash_breadcrumb]
+doc = "Last request/job/check breadcrumb written at boundary entry so an abnormal exit can be reported with context on the next start."
+value = "crash-breadcrumb.json"
+
+[files.last_crash]
+doc = "Last panic or stale-run-marker crash report, shown by status and doctor."
+value = "last-crash.json"
+
 [files.reaped_prefix]
 doc = "Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended)."
 value = "daemon.run.reaped."
@@ -368,6 +376,17 @@ unit = "ms"
 [daemon.forced_exit_code]
 doc = "Exit status of a forced drain exit (sysexits EX_TEMPFAIL, 75); the next client call starts a fresh daemon."
 value = 75
+
+[daemon.thread_restart_max]
+doc = "Panics a daemon service thread may recover from before the daemon requests a clean restart."
+value = 3
+min = 0
+
+[daemon.thread_restart_backoff_ms]
+doc = "Sleep before a supervised daemon service thread restarts after a panic."
+value = 100
+min = 0
+unit = "ms"
 
 [daemon.start_fail_exit_code]
 doc = "Exit status when the daemon cannot start (sysexits EX_CONFIG, 78)."
@@ -767,4 +786,3 @@ value = "defaults {file}: could not add missing {keys}: {err}"
 [defaults_load.msg_heal_none]
 doc = "Printed by `config heal` when no edited defaults file lacks a setting of the pristine copy."
 value = "nothing to heal: the edited defaults have every setting of the pristine copy"
-

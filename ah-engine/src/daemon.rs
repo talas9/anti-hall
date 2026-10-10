@@ -13,6 +13,7 @@
 //! (overflow = BUSY), and a watchdog (heartbeats + RSS check) that turns a stall into a clean drain+exit.
 use crate::config::Config;
 use crate::defaults;
+use crate::discard::Logged;
 use crate::frame::{self, Kind};
 use crate::health;
 use crate::limits::{self, Buckets};
@@ -149,6 +150,21 @@ pub struct Shared {
 /// The value of `name=<value>` in a space-separated argument string (empty when absent).
 fn kv(args: &str, name: &str) -> String {
     args.split_whitespace().find_map(|w| w.strip_prefix(name).and_then(|r| r.strip_prefix('='))).unwrap_or("").to_string()
+}
+
+fn request_context(req: &[u8]) -> (String, String) {
+    let text = String::from_utf8_lossy(req);
+    let (head, body) = text.split_once('\n').unwrap_or((&text, ""));
+    let request = head.split_whitespace().next().unwrap_or("").to_string();
+    let event = if head.starts_with("V ") {
+        serde_json::from_str::<serde_json::Value>(crate::reqenv::split_request(body).1)
+            .ok()
+            .and_then(|v| v.get("hook_event_name").or_else(|| v.get("hookEventName")).and_then(serde_json::Value::as_str).map(str::to_string))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    (request, event)
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -477,7 +493,7 @@ fn test_verb(t: &str, sh: &Shared) -> (Reply, After) {
     match verb {
         "sleep" => std::thread::sleep(Duration::from_millis(ms)), // ms comes from the test caller, not a tunable
         "stall" => sh.stall_ms.store(ms, SeqCst),
-        "panic" => panic!("{}", defaults::text("msg.reply_test_panic")),
+        "panic" => std::panic::resume_unwind(Box::new(defaults::text("msg.reply_test_panic").to_string())),
         _ => return (Reply::Err(defaults::text("msg.reply_unknown_request").into()), After::Continue),
     }
     (Reply::Ok("ok".into()), After::Continue)
@@ -787,7 +803,7 @@ pub fn drain_spool(sh: &Shared) -> crate::spool::Drained {
 
 /// Read a whole request within `read_deadline` and `max` bytes.
 fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static str> {
-    s.set_read_timeout(Some(defaults::millis("daemon.read_poll_ms"))).ok();
+    s.set_read_timeout(Some(defaults::millis("daemon.read_poll_ms"))).ok_logged("daemon_read_timeout");
     let start = Instant::now();
     let (mut buf, mut chunk) = (Vec::new(), vec![0u8; defaults::num("io.small_chunk_bytes") as usize]);
     loop {
@@ -830,7 +846,7 @@ pub static SLOW_REPLIES: AtomicU64 = AtomicU64::new(0);
 pub static REPLY_WRITE_ERRORS: AtomicU64 = AtomicU64::new(0);
 
 fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) -> After {
-    s.set_nonblocking(false).ok();
+    s.set_nonblocking(false).ok_logged("daemon_socket_blocking");
     let started = Instant::now();
     crate::load::take_scan();
     crate::load::take_request();
@@ -847,6 +863,9 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             return After::Continue;
         }
     };
+    let (request, event) = request_context(&req);
+    let _breadcrumb = crate::crash::enter("request", &request, &event, "", "");
+    health::write_crash_breadcrumb(&request, &event, "", sh.started.elapsed().as_secs(), sh.memory());
     telemetry::stage_begin();
     let mem_before = crate::memdiag::begin(cfg.effective.boolean("diagnostics.mem_log"));
     let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
@@ -900,6 +919,18 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         scan_bytes: crate::load::take_scan(),
     });
     after
+}
+
+fn spawn_service(sh: &Arc<Shared>, name: &'static str, run: Arc<dyn Fn() + Send + Sync>) {
+    let s = sh.clone();
+    let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || s.draining.load(SeqCst));
+    let s = sh.clone();
+    let restart: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |thread| {
+        let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
+        health::record_failure("panic", "thread_panic", &why);
+        begin_drain(&s, &why, false);
+    });
+    crate::crash::spawn_supervised(name, stop, restart, run);
 }
 
 fn worker(sh: Arc<Shared>, idx: usize) {
@@ -1077,6 +1108,7 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Option<std::fs::File>, 
 }
 
 /// What a running daemon stands on: its state directory, the lock file it holds (by inode) and its executable.
+#[derive(Clone)]
 struct Footing {
     dir: std::path::PathBuf,
     lock: std::path::PathBuf,
@@ -1171,7 +1203,7 @@ pub fn serve() {
         }
     };
     crate::discard::harmless(std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))); // keep: best effort, fail-open
-    listener.set_nonblocking(true).ok();
+    listener.set_nonblocking(true).ok_logged("daemon_listener_nonblocking");
     // SAFETY: both handlers are `extern "C"` fns that only store to an atomic, which is async-signal-safe.
     unsafe {
         libc::signal(libc::SIGHUP, on_hup as extern "C" fn(libc::c_int) as libc::sighandler_t);
@@ -1217,11 +1249,12 @@ pub fn serve() {
     }
     for i in 0..sh.cfg().workers {
         let s = sh.clone();
-        std::thread::spawn(move || worker(s, i));
+        let name: &'static str = "worker";
+        spawn_service(&sh, name, Arc::new(move || worker(s.clone(), i)));
     }
     {
         let s = sh.clone();
-        std::thread::spawn(move || watchdog(s));
+        spawn_service(&sh, "watchdog", Arc::new(move || watchdog(s.clone())));
     }
     {
         // the daemon's footing, as it is now: a test (or an uninstall) that removes the state dir or the binary under a
@@ -1229,13 +1262,13 @@ pub fn serve() {
         let footing =
             Footing { dir: paths::dir(), lock: lock_path.clone(), lock_ino: lock.metadata().map(|m| m.ino()).unwrap_or(0), exe: std::env::current_exe().ok() };
         let s = sh.clone();
-        std::thread::spawn(move || footing_watch(s, footing));
+        spawn_service(&sh, "footing_watch", Arc::new(move || footing_watch(s.clone(), footing.clone())));
     }
     start_scheduler(&sh);
     start_devswarm(&sh);
     {
         let s = sh.clone();
-        std::thread::spawn(move || telemetry_flusher(s));
+        spawn_service(&sh, "telemetry_flusher", Arc::new(move || telemetry_flusher(s.clone())));
     }
     accept_loop(&sh, &listener);
     crate::dssup::ingest::join_all(); // a monitor call in flight has already taken its messages off the native queue
@@ -1315,7 +1348,7 @@ fn start_scheduler(sh: &Arc<Shared>) {
     let sched = Arc::new(Scheduler::new(&FileSource::standard(sh.cfg().test_hooks), sh.db.clone(), inproc, Box::new(PlannedDelivery), observe, setting));
     crate::discard::harmless(sh.sched.set(sched.clone())); // keep: best effort, fail-open
     let s = sh.clone();
-    std::thread::spawn(move || sched.run_ticker(&|| s.draining.load(SeqCst)));
+    spawn_service(sh, "scheduler", Arc::new(move || sched.run_ticker(&|| s.draining.load(SeqCst))));
 }
 
 /// The `schedule` control verb: `list`, `run job=<name>`, `history [job=<name>] [limit=<n>]`.
@@ -1325,7 +1358,11 @@ fn schedule_ctl(sh: &Shared, args: &str) -> serde_json::Value {
         "run" => sched.run_now(&kv(args, "job")),
         "history" => {
             let limit = kv(args, "limit").parse().unwrap_or(defaults::num("schedule.history_default") as usize);
-            let runs = sh.db.as_ref().and_then(|db| db.read(|c| crate::schedule::history(c, &kv(args, "job"), limit)).ok()).unwrap_or_default();
+            let runs = sh
+                .db
+                .as_ref()
+                .and_then(|db| db.read(|c| crate::schedule::history(c, &kv(args, "job"), limit)).ok_logged("schedule_history_read"))
+                .unwrap_or_default();
             serde_json::json!({"running": true, "runs": runs})
         }
         _ => sched.list(),
@@ -1428,8 +1465,8 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 sh.stats.busy.fetch_add(1, SeqCst);
                 sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
                 let mut s = s;
-                s.set_nonblocking(false).ok();
-                s.set_write_timeout(Some(defaults::millis("daemon.busy_write_ms"))).ok();
+                s.set_nonblocking(false).ok_logged("daemon_busy_blocking");
+                s.set_write_timeout(Some(defaults::millis("daemon.busy_write_ms"))).ok_logged("daemon_busy_timeout");
                 crate::discard::harmless(s.write_all(&Reply::Busy.frame())); // keep: best effort, fail-open
             } else {
                 // requests ahead of this one: the queued ones and those a worker is serving now
