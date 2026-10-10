@@ -56,31 +56,8 @@ var dedupe = {
   scanTail: function (tp, bytes) {
     var mk = tp + '\0' + bytes;
     if (Object.prototype.hasOwnProperty.call(dedupe.scanMemo, mk)) return dedupe.scanMemo[mk];
-    var size = ah.fs.size(tp), result = null;
-    if (size !== null) {
-      var tail = ah.fs.readTail(tp, bytes);
-      if (tail !== null) {
-        var atts = [], anyTs = false, unsure = false, att = ah.cfg('emit_dedupe.attachment_type'), ev = ah.cfg('emit_dedupe.hook_event');
-        tail.split('\n').forEach(function (line) {
-          if (!line || unsure) return;
-          if (!anyTs && line.indexOf('"timestamp"') !== -1) anyTs = true;
-          if (line.indexOf(att) === -1) return;
-          var e;
-          try { e = JSON.parse(line); } catch (x) { return; }
-          var a = e && e.type === 'attachment' ? e.attachment : null;
-          if (!a || a.type !== att || a.hookEvent !== ev) return;
-          var raw = e.timestamp, ts;
-          if (typeof raw === 'string') {
-            ts = jx.dateParse(raw);
-            if (ts === undefined) { unsure = true; return; }
-          } else if (typeof raw === 'number' || Array.isArray(raw)) { unsure = true; return; }
-          else return;
-          if (!isFinite(ts)) return;
-          atts.push({ ts: ts, els: Array.isArray(a.content) ? a.content.map(function (x) { return String(x); }) : [String(a.content == null ? '' : a.content)] });
-        });
-        result = unsure ? { unsure: true } : (anyTs ? { atts: atts, size: size } : null);
-      }
-    }
+    // The host reads the window and returns the delivered attachments (a 4 MB window is far past the script's CPU limit line by line).
+    var raw = ahHost.transcriptDedupeTail(tp, bytes), result = raw === null || raw === undefined ? null : JSON.parse(raw);
     dedupe.scanMemo[mk] = result;
     return result;
   },

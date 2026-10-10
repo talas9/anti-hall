@@ -239,6 +239,11 @@ value = 4194304
 min = 1024
 unit = "bytes"
 
+[script.transcript_cache_entries]
+doc = "Most (transcript, window) answers `ahHost.transcriptDedupeTail` keeps in the engine process, each valid while the file keeps its size and modification time; past it the cache is emptied."
+value = 64
+min = 1
+
 [script.tail_max_bytes]
 doc = "Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for."
 value = 16777216
