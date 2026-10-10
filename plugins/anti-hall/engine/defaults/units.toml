@@ -373,6 +373,10 @@ value = "ledger.jsonl"
 doc = "The lock a run holds, so two runs never act at once."
 value = "units.lock"
 
+[units.log_detail]
+doc = "The detail of the engine log line of a units action; {target}, {outcome} and {reason} are filled in."
+value = "{target} {outcome} {reason}"
+
 [units.log_kind]
 doc = "The engine event log kind of a units action."
 value = "units"

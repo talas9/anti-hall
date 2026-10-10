@@ -50,9 +50,8 @@ test('monitors.json entries are well-formed and their command targets exist', ()
   assert.ok(Array.isArray(m) && m.length > 0);
   for (const e of m) {
     for (const k of ['name', 'command', 'description']) assert.strictEqual(typeof e[k], 'string', `monitor ${k}`);
-    const refs = rootRefs(e.command);
-    assert.ok(refs.length > 0, 'monitor command must use CLAUDE_PLUGIN_ROOT');
-    for (const r of refs) assert.ok(fs.existsSync(path.join(PLUGIN, r)), `missing ${r}`);
+    assert.ok(e.command.includes('CLAUDE_PLUGIN_ROOT'), 'monitor command must use CLAUDE_PLUGIN_ROOT');
+    for (const r of rootRefs(e.command)) assert.ok(fs.existsSync(path.join(PLUGIN, r)), `missing ${r}`);
   }
 });
 

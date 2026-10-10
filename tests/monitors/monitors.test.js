@@ -74,19 +74,11 @@ test('command never references ${user_config.*} — REJECTED as of Claude Code v
   assert.doesNotMatch(RAW, /\$\{user_config\./, 'monitors.json must not use ${user_config.*} substitution');
 });
 
-test('the devswarm-wake-watch command resolves to a REAL file on disk in this plugin tree', () => {
-  const parsed = JSON.parse(RAW);
-  const entry = parsed.find((m) => m.name === 'devswarm-wake-watch');
+test('the devswarm-wake-watch command runs the engine directly (no Node, no launcher)', () => {
+  const entry = JSON.parse(RAW).find((m) => m.name === 'devswarm-wake-watch');
   assert.ok(entry, 'devswarm-wake-watch entry must be present');
-  const resolvedCommand = entry.command.split('${CLAUDE_PLUGIN_ROOT}').join(PLUGIN_ROOT); // every occurrence: the launcher path comes first
-  const watcherPath = path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-wake-watch.js');
-  // Normalize separators before comparing: monitors.json's command string
-  // always uses forward slashes, but PLUGIN_ROOT/watcherPath are built with
-  // path.join() and use backslashes on Windows — a naive .includes() would
-  // never match there even though both sides point at the same real path.
-  const normalize = (s) => s.split(path.sep).join('/');
-  assert.ok(normalize(resolvedCommand).includes(normalize(watcherPath)), 'command must point at the real watcher script path');
-  assert.ok(fs.existsSync(watcherPath), 'the watcher script referenced by monitors.json must actually exist on disk');
+  assert.match(entry.command, /ah-engine" devswarm wake-watch --auto$/);
+  assert.doesNotMatch(entry.command, /\bnode\b|ah-run\.sh|\.js/);
 });
 
 test('the watcher script the entry points at is require()-loadable and side-effect-free on require (main() guarded)', () => {
@@ -100,7 +92,7 @@ test('the watcher script the entry points at is require()-loadable and side-effe
 
 test('the devswarm-wake-watch command passes --auto so harness-started refusals stay silent on stdout', () => {
   const entry = JSON.parse(RAW).find((m) => m.name === 'devswarm-wake-watch');
-  assert.match(entry.command, /devswarm-wake-watch\.js" --auto$/);
+  assert.match(entry.command, / --auto$/);
 });
 
 test('every monitor command quotes ${CLAUDE_PLUGIN_ROOT} (a path with spaces must not split)', () => {

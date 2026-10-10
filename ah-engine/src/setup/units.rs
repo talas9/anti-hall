@@ -270,7 +270,7 @@ impl Run<'_, '_> {
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(defaults::text("units.ledger_file"))) {
                 crate::discard::harmless(std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes())); // keep: best effort, the report has it
             }
-            crate::health::log_event(defaults::text("units.log_kind"), action, &format!("{target} {outcome} {reason}"));
+            crate::health::log_event(defaults::text("units.log_kind"), action, &fill(defaults::text("units.log_detail"), &[("target", target), ("outcome", outcome), ("reason", reason)]));
             crate::telemetry::emit::add_items(1);
         }
         if outcome == defaults::text("units.out_failed") {
