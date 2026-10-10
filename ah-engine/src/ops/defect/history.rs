@@ -10,7 +10,8 @@ use crate::checks::guardkit::text::js_trim;
 use crate::checks::jsport::date;
 use crate::checks::jsport::json::{self, J};
 use crate::defaults;
-use crate::ops::js::{Defer, cmp_semver, head16, len16, locale_compare};
+use crate::ops::js::{Defer, cmp_semver, len16};
+use store::head16;
 use regex::Regex;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -381,12 +382,16 @@ pub struct Record {
     class: Option<String>,
 }
 
+/// A text field of a stored row. A row the tool wrote always holds text here; a hand-edited one may not: a number or a boolean
+/// reads as its JavaScript text, anything else (an object, an array) as absent. Node would carry the raw value on (and throw
+/// on the first text operation over it), which a typed record cannot.
 fn s_of(o: &J, k: &str) -> Result<Option<String>, Defer> {
-    match o.get(k) {
-        None | Some(J::Null) => Ok(None),
-        Some(J::Str(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(Defer),
-    }
+    Ok(match o.get(k) {
+        Some(J::Str(s)) => Some(s.clone()),
+        Some(J::Num(n)) => Some(crate::checks::jsport::num::to_js_string(*n)),
+        Some(J::Bool(b)) => Some(b.to_string()),
+        _ => None,
+    })
 }
 
 fn normalize_record(fp: &str, parsed: &[J]) -> Result<Record, Defer> {
@@ -460,6 +465,12 @@ pub fn load_all_records(home: &str) -> Result<Vec<Record>, Defer> {
 
 // ---- recurring --------------------------------------------------------------------------------------------------------
 
+/// Whether `--since` is a version, a date this port reads, or no date at all (no filter, as in Node). A string whose
+/// `Date.parse` result is not reproduced here (`10/01/2026`, `2026/10/01`) is refused with a usage message instead.
+pub fn since_is_readable(since: &str) -> bool {
+    since.is_empty() || is_version(since) || date::parse(since) != date::Parsed::Unknown
+}
+
 fn is_version(s: &str) -> bool {
     rx("defect.version_re", false).is_match(s)
 }
@@ -477,8 +488,8 @@ fn since_filter(since: Option<&str>) -> Result<RecordFilter, Defer> {
         }));
     }
     match date::parse(since) {
-        date::Parsed::Unknown => Err(Defer),
-        date::Parsed::Nan => Ok(Box::new(|_| true)),
+        // `defect recurring` refuses such a --since before it gets here (`since_is_readable`)
+        date::Parsed::Unknown | date::Parsed::Nan => Ok(Box::new(|_| true)),
         date::Parsed::Ms(t) => Ok(Box::new(move |r| match r.date.as_deref().map(date::parse) {
             Some(date::Parsed::Ms(d)) => d >= t,
             _ => false,
@@ -527,21 +538,47 @@ fn group_by<'a>(records: &[&'a Record], key: impl Fn(&Record) -> String) -> Vec<
     groups
 }
 
+/// `a.localeCompare(b)`: the root collation of the printable ASCII text the tool sorts (punctuation and symbols in the shipped
+/// order, then digits, then letters ignoring case; ties broken by case, lower case first), and for any other character a
+/// fixed order after every ASCII one, by code point. ICU weighs such characters by its own tables (an accented letter beside
+/// its base letter), which this order does not reproduce; the tool only sorts component names, causes, dates and commit
+/// subjects, which are ASCII unless a record was edited by hand. ASCII-only text goes through the shared port
+/// (`js::locale_compare`), whose weights the fallback's (`opcli.collate_*`) repeat.
 fn lc(a: &str, b: &str) -> Result<Ordering, Defer> {
-    locale_compare(a, b)
+    if let Ok(o) = crate::ops::js::locale_compare(a, b) {
+        return Ok(o);
+    }
+    let symbols = defaults::text("defect.collation_symbols");
+    let rank = |c: char| -> u32 {
+        if let Some(i) = symbols.chars().position(|s| s == c) {
+            return i as u32;
+        }
+        match c {
+            '0'..='9' => defaults::num("opcli.collate_digit_base") as u32 + (c as u32 - '0' as u32),
+            'a'..='z' => defaults::num("opcli.collate_letter_base") as u32 + (c as u32 - 'a' as u32),
+            'A'..='Z' => defaults::num("opcli.collate_letter_base") as u32 + (c as u32 - 'A' as u32),
+            _ => defaults::num("opcli.collate_other_base") as u32 + c as u32,
+        }
+    };
+    let ra: Vec<u32> = a.chars().map(rank).collect();
+    let rb: Vec<u32> = b.chars().map(rank).collect();
+    match ra.cmp(&rb) {
+        Ordering::Equal => {}
+        other => return Ok(other),
+    }
+    for (x, y) in a.chars().zip(b.chars()) {
+        if x != y {
+            // same primary weight, different case: lower case sorts first
+            return Ok(if x.is_lowercase() { Ordering::Less } else { Ordering::Greater });
+        }
+    }
+    Ok(Ordering::Equal)
 }
 
-/// A sort that may defer: the comparator can fail on text it has no collation weight for.
+/// A sort whose comparator returns a `Result` (the formatting helpers share that shape); the comparators here never fail.
 fn sort_by_try<T>(v: &mut [T], mut cmp: impl FnMut(&T, &T) -> Result<Ordering, Defer>) -> Result<(), Defer> {
-    let mut failed = false;
-    v.sort_by(|a, b| match cmp(a, b) {
-        Ok(o) => o,
-        Err(_) => {
-            failed = true;
-            Ordering::Equal
-        }
-    });
-    if failed { Err(Defer) } else { Ok(()) }
+    v.sort_by(|a, b| cmp(a, b).unwrap_or(Ordering::Equal));
+    Ok(())
 }
 
 /// The `recurring` report, as an object, and the same data for the text layout.

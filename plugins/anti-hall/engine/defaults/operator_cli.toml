@@ -1,0 +1,42 @@
+# ah-engine shipped defaults for the operator command-line verbs made engine-only by lane L03 (v1.0, no Node): the native
+# answers of `defect` and `jev-setup` for the cases that used to defer to their Node scripts, and the verbs `dispatch-report`,
+# `finding-dedup`, `auto-handover-config` and `coordinator-work-baseline`. Format: see the header of engine.toml.
+# Texts that a parity test compares with a Node script are that script's own words.
+
+[opcli.fail_exit]
+doc = "Exit code of a run that could not finish or was refused (the Node scripts' own code for a failure)."
+value = 1
+
+# ---- defect --------------------------------------------------------------------------------------------------------------
+
+[opcli.collate_digit_base]
+doc = "Collation of `defect recurring` / `similar` sorts: the weight of '0' (digits sort after the punctuation of defect.collation_symbols)."
+value = 1000
+
+[opcli.collate_letter_base]
+doc = "Collation: the weight of 'a' and 'A' (letters sort after digits, case ignored at this level)."
+value = 2000
+
+[opcli.collate_other_base]
+doc = "Collation: the weight added to the code point of any other character (non-ASCII, control), so it sorts after every ASCII letter, by code point. ICU's own tables (an accented letter beside its base letter) are not reproduced."
+value = 3000
+
+[opcli.defect_reason_unread_date]
+doc = "`defect archive`: the reason an entry stays in place when its last-seen date is one this tool does not read (a hand-edited record)."
+value = "unreadable date"
+
+[opcli.defect_reason_move_failed]
+doc = "`defect archive`: the reason an entry stays in place when moving it into the archive failed (the Node tool stopped with a stack trace here). Placeholder: {error}."
+value = "move failed: {error}"
+
+[opcli.defect_argv_common]
+doc = "The git arguments that print the common git directory of the checkout {root} (relative to it or absolute), asked when the file resolver is unsure of the repository layout."
+value = ["-C", "{root}", "rev-parse", "--git-common-dir"]
+
+[opcli.defect_since_unread]
+doc = "`defect recurring --since`: refused when it is neither a version nor a date this tool reads. Placeholder: {since}."
+value = "❌ anti-hall · defect: recurring: --since \"{since}\" is not a date this tool reads; use YYYY-MM-DD[THH:MM[:SS]][Z], \"Mon D, YYYY\" or a version like v1.2.3"
+
+[opcli.defect_internal]
+doc = "Said when a defect run met an internal fault (nothing was written)."
+value = "❌ anti-hall · defect: internal error; nothing was written"

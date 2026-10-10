@@ -9,7 +9,7 @@ use crate::checks::guardkit::text::{collapse_ws, js_trim};
 use crate::checks::jsport::date;
 use crate::checks::jsport::json::{self, J};
 use crate::defaults;
-use crate::ops::js::{Defer, cmp_semver, head16, len16, slice16};
+use crate::ops::js::{Defer, cmp_semver, len16};
 use ring::digest;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -67,6 +67,21 @@ fn sanitize(value: &str) -> String {
 }
 
 /// `truncationNotice(originalLength, continued)`
+/// `s.slice(from, to)` on UTF-16 code units. An edge that falls inside a surrogate pair leaves half of it, which JavaScript
+/// keeps as a lone surrogate; a Rust string cannot hold one, so that half becomes U+FFFD, one code unit as well. That is
+/// what Node prints for it on stdout; in a stored record Node writes the `\\uXXXX` escape of the half instead.
+pub(crate) fn slice16(s: &str, from: usize, to: usize) -> Result<String, Defer> {
+    let u: Vec<u16> = s.encode_utf16().collect();
+    let to = to.min(u.len());
+    let from = from.min(to);
+    Ok(String::from_utf16_lossy(&u[from..to]))
+}
+
+/// `s.slice(0, n)`, as [`slice16`].
+pub(crate) fn head16(s: &str, n: usize) -> Result<String, Defer> {
+    slice16(s, 0, n)
+}
+
 fn truncation_notice(original: usize, continued: bool) -> String {
     let pointer = if continued { defaults::text("defect.notice_pointer") } else { "" };
     defaults::render("defect.notice", &[("pointer", &pointer), ("n", &original)])
@@ -676,7 +691,11 @@ pub fn archive_sweep(now_ms: f64, home: &str) -> Result<J, Defer> {
         }
         let last_seen = match st.last_seen.as_deref().map(date::parse) {
             Some(date::Parsed::Ms(ms)) => Some(ms),
-            Some(date::Parsed::Unknown) => return Err(Defer),
+            Some(date::Parsed::Unknown) => {
+                // a hand-edited date whose `Date.parse` result is not reproduced here: the entry stays where it is
+                results.push(row(false, Some(defaults::text("opcli.defect_reason_unread_date")), None));
+                continue;
+            }
             _ => None,
         };
         if last_seen.is_none_or(|ls| now_ms - ls < defaults::num("defect.archive_age_ms") as f64) {
@@ -690,8 +709,10 @@ pub fn archive_sweep(now_ms: f64, home: &str) -> Result<J, Defer> {
         let dest_dir = archive_dir(home).join(yyyymm(now_ms));
         ensure_dir(&dest_dir);
         let dest = dest_dir.join(&name);
-        if std::fs::rename(&file, &dest).is_err() {
-            return Err(Defer); // Node throws here and the tool exits with a stack trace; the Node tool decides
+        if let Err(e) = std::fs::rename(&file, &dest) {
+            // Node throws here and stops with a stack trace; the entry stays, the reason is reported and the sweep goes on
+            results.push(row(false, Some(&defaults::render("opcli.defect_reason_move_failed", &[("error", &e)])), None));
+            continue;
         }
         results.push(row(true, None, Some(dest.to_string_lossy().into_owned())));
     }
