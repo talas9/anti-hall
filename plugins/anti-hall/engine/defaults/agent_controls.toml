@@ -618,3 +618,30 @@ min = 1
 [silent_nudge.ack_hint]
 doc = "The override sentence appended to the nudge (stop-ack.js ackHint); {key} is hook:signature, {now} the time, {path} the ack file."
 value = "Override (only if the user explicitly confirmed this exact condition is fine): write {\"{key}\": {now}} into {path} (merge with existing keys); it then stays advisory for the rest of the session."
+
+# ---- the kept walk of a transcript that fits the scan window (checks::agent_scan::scan_kept, #22) ------------------
+
+[agent_scan.cache_max_paths]
+doc = "How many transcripts the scan keeps a walk for between calls, so a Stop reads only the bytes appended since the last scan (0 turns the cache off). The least recently used one is dropped first."
+value = 4
+unit = "count"
+
+[agent_scan.cache_idle_ms]
+doc = "How long a kept walk may sit unused before it is dropped."
+value = 900000
+unit = "ms"
+
+[agent_scan.cache_max_bytes]
+doc = "Largest estimated size of one kept walk; a walk that grows past it is not kept (the next scan reads the file afresh, as it did before the cache)."
+value = 16777216
+unit = "bytes"
+
+[agent_scan.cache_entry_bytes]
+doc = "Estimated bytes one entry of a kept walk (a tool use, an answered or errored call, a launch, a stop, a retained answer) holds, for the size cap above."
+value = 256
+unit = "bytes"
+
+[agent_scan.cache_fingerprint_bytes]
+doc = "Bytes at the start of a transcript, and bytes just before the kept offset, hashed to notice a rewritten or rotated file; a kept walk whose file no longer matches is rebuilt from the start."
+value = 4096
+unit = "bytes"

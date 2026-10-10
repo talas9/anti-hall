@@ -59,6 +59,9 @@ fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
     }
     let mut rd = std::io::BufReader::new(f);
     let names = defaults::list("tasklist_guard.task_tool_names");
+    // one SIMD substring finder per tool name: the widened window is read on every Stop whose tail holds no task activity, and a
+    // byte-by-byte comparison of every name at every offset made that read cost 180 ms of CPU on a 33 MB transcript (#22)
+    let finders: Vec<memchr::memmem::Finder<'_>> = names.iter().map(|n| memchr::memmem::Finder::new(n.as_bytes())).collect();
     let mut buf: Vec<u8> = Vec::new();
     loop {
         buf.clear();
@@ -70,7 +73,7 @@ fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
             buf.pop();
         }
         // only a line that names a task tool can matter; the rest is skipped without decoding
-        if !names.iter().any(|n| buf.windows(n.len()).any(|w| w == n.as_bytes())) {
+        if !finders.iter().any(|f| f.find(&buf).is_some()) {
             continue;
         }
         let line = String::from_utf8_lossy(&buf).into_owned();
