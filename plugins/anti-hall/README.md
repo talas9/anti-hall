@@ -42,17 +42,16 @@ skips every anti-hall hook, and nothing is surfaced.
 
 ## How the hooks run
 
-`hooks/hooks.json` holds one thin trigger per event (`hooks/ah-hook.sh <Event>`). If the optional `ah-engine` binary is installed
+`hooks/hooks.json` holds one thin trigger per event (`hooks/ah-hook.sh <Event>`). The core is the `ah-engine` binary
 (downloaded once from the GitHub Release and installed only if its sha256 equals the one pinned in `ah-engine.lock`; skip it with
-the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0`), the engine answers what it can prove identical to the Node hook and hands the rest to Node, so it is never
-weaker than Node; with no binary the Node hooks run as before. Its rules, settings and texts are plain files in `engine/`, hot-reloaded
-with fallbacks (edited, last-known-good, pristine, Node). Still on Node: DevSwarm mesh writes and daemons, every call that consults Jev,
+the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0`), the engine answers what it can prove identical to the Node hook and, during the migration, hands the rest to the temporary Node compatibility hooks (removed in v1.0, when the engine is the only runtime); with no binary those Node hooks run. Its rules, settings and texts are plain files in `engine/`, hot-reloaded
+with fallbacks (edited, last-known-good, pristine). Still on the temporary Node hooks: DevSwarm mesh writes and daemons, every call that consults Jev,
 the semantic judge and the statusline. macOS and Linux; Windows is not supported yet. Details:
 [AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md).
 
 ## Network and data
 
-No analytics and nothing is reported to anyone; the optional `ah-engine` keeps local-only usage counters (identifiers only, never content; `telemetry.enabled`). Full detail: [PRIVACY.md](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md).
+No analytics and nothing is reported to anyone; the `ah-engine` keeps local-only usage counters (identifiers only, never content; `telemetry.enabled`). Full detail: [PRIVACY.md](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md).
 
 | Feature | Default | Sends to | What |
 |---|---|---|---|

@@ -8,6 +8,8 @@ Status: **draft**, written against the `dev` branch at plugin version 0.202.0. E
 names the file it comes from; when this document and the code disagree, the code is
 right and this document gets a fix.
 
+1.0 ships with the Rust engine (`ah-engine`) as the only runtime and no Node requirement; the Node hooks are a temporary compatibility fallback removed in 1.0.
+
 | Surface | Count | Source of truth |
 |---|---|---|
 | Settings keys | 329 in 20 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
@@ -258,7 +260,7 @@ Hooks marked "none (not toggleable)" are listed in `NOT_TOGGLEABLE`
   `compact-advice-guard`) also honour `stop_hook_active`.
 - **No network unless documented.** Hooks make no network calls except those listed in
   [`PRIVACY.md`](../PRIVACY.md): the update check (`git ls-remote --tags`, on by default),
-  the one-time download of the optional `ah-engine` binary from the GitHub Release (sha256-pinned in `ah-engine.lock`; the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0` skips it), and the opt-in Jev, semantic-judge and triage calls. A new outbound call is a MINOR
+  the one-time download of the `ah-engine` binary from the GitHub Release (sha256-pinned in `ah-engine.lock`; the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0` skips it), and the opt-in Jev, semantic-judge and triage calls. A new outbound call is a MINOR
   change that must land in `PRIVACY.md` in the same release; a new default-on one is MAJOR.
 - **No automated deletion.** Automatic paths (hooks, `update.js`, `doctor --repair`,
   the supervisor) never delete messages, user files or repo content. Deletion-class
@@ -287,7 +289,7 @@ Frozen per hook: its script name, event, matcher, the setting and skip name, and
 | `<repo>/.anti-hall/handovers/` | `INDEX.md` + `<date>/<session>/<name>` | `hooks/lib/auto-handover-text.js`, `hooks/lib/handover-find.js` |
 | `<repo>/.anti-hall/command-allow.json`, `edit-allow.json` | per-project allowlists (used only once trusted) | `hooks/lib/command-allow.js` |
 
-Everything else under `~/.anti-hall/` (`cache/`, `state/`, `agents/`, `bin/`, `ah-engine/` (the optional engine's binary, state databases, local telemetry and last-known-good copies), every
+Everything else under `~/.anti-hall/` (`cache/`, `state/`, `agents/`, `bin/`, `ah-engine/` (the engine's binary, state databases, local telemetry and last-known-good copies), every
 `*-state.json`, lock and marker files, the SQLite schema inside `devswarm.db`) is internal:
 its location and format may change in any release.
 
