@@ -38,6 +38,7 @@ fn transcript_tail_large_answers_do_not_grow_allocator_after_warmup() {
     for n in 0..(calls * 2) {
         let path = dir.join(format!("large-{n}.jsonl"));
         let line = serde_json::json!({
+            "type": "attachment",
             "timestamp": format!("2026-10-06T12:{:02}:{:02}.000Z", (n / 60) % 60, n % 60),
             "attachment": {"type":"hook_additional_context","hookEvent":"UserPromptSubmit","content":[payload]}
         });
