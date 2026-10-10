@@ -295,6 +295,26 @@ overwrites a binary it did not install (a local build is left alone). Every outc
 `~/.anti-hall/ah-engine/bootstrap.log`. A plugin tree without `ah-engine.lock` installs nothing and stays on Node. Opt out with
 the setting `engine.bootstrap` = false (`/config`, `/anti-hall:settings`; stored in `~/.anti-hall/settings.json`) or the environment variable `AH_ENGINE_BOOTSTRAP=0`, which overrides the setting (see also [RELEASING.md](../ah-engine/RELEASING.md)). This download is the only network request the engine's install makes; see [PRIVACY.md](../PRIVACY.md).
 
+**Updating the engine (`ah-update`).** One script, `hooks/ah-update.sh` (POSIX sh, no Node; deliberately outside the engine so a broken
+engine stays fixable), moves the binary between three sources. Every URL, timeout and channel name is in `engine/ah-update.toml`.
+
+| Command | What it does |
+|---|---|
+| `sh hooks/ah-update.sh --from FILE [--sha256 X]` | Offline: FILE is a release `.tar.gz` or a bare binary. The expected sha256 is `--sha256`, else the `SHA256SUMS` next to FILE, else `ah-engine.lock`; with none of them the sha is printed and `--yes` is required. A mismatch refuses. |
+| `sh hooks/ah-update.sh --channel stable` | The latest `ah-engine-v*` release, checked against its `SHA256SUMS`, this plugin's lock when the versions match, and the GitHub build attestation when `gh` is installed and logged in (skipped with a note otherwise). |
+| `sh hooks/ah-update.sh --channel dev` | The latest `ah-engine-dev-<sha8>` pre-release (built and attested by CI on each `engine-proto` push that changes `ah-engine/`). With the live kit installed it also syncs the plugin files at the commit the pre-release records, so engine and plugin do not drift. |
+| `sh hooks/ah-update.sh --rollback` | Restores the previous binary (`bin/ah-engine.prev`); run again to toggle. With the live kit, restores the previous bundle and re-applies it. |
+
+Each update smoke-tests the new binary (`version`), swaps it in atomically (the old one is kept as `.prev`), then restarts the daemon with
+the engine's own `stop` and `serve`; any failure keeps the old binary. `--dry-run` checks everything and installs nothing. With the live
+kit the binary and plugin go in through the kit (`bundle/` and a `go-live.sh` re-apply, `--live-select` picks the entries), so the kit's
+own rollback keeps working. Setting `engine.autoUpdate` = `stable` or `dev` (default `off`) runs `--auto` from the engine scheduler, at most
+once a day. The updater's only network requests are the GitHub release API and downloads, and `git fetch` of one commit for the dev plugin sync;
+`ah-engine engine-update <same arguments>` runs the same script (the engine itself does no network access, and a broken engine is still
+updated with the script by hand). The scheduler job `engine_update` (defaults file `engine_update.toml`) runs `engine-update --auto`
+every 6 hours; the script does nothing unless `engine.autoUpdate` is set and limits itself to one check a day.
+see [PRIVACY.md](../PRIVACY.md).
+
 **Go-live.** An engine check is trusted only after it has agreed with the Node hook it replaces. Before release the whole
 dispatcher was replayed against Node (see [Measured results](#measured-results-pre-release)); per entry the engine can also run
 beside Node on live traffic: `mode = "shadow"` on a guard entry that has a built-in check runs the check next to the Node hook,
