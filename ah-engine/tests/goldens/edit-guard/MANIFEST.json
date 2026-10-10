@@ -72,7 +72,7 @@
     "plugins/anti-hall/hooks/devswarm-version-refresh.js": "4f660d4d3c3979bf79cfdda3834ce80394aa2fbcb72221936ef521e9ef42da88",
     "plugins/anti-hall/hooks/devswarm-version.js": "733f7c61503d7d54aca7600f2d2f3cb9de6669245fada495d5153fe098760340",
     "plugins/anti-hall/hooks/dispatch-tier.js": "ae6b92f8835e75492a89219e057376db7bf9de059eb6dfb93526859da7f795f6",
-    "plugins/anti-hall/hooks/edit-guard.js": "bfb7d0fd3fd14e76bad1d630e303722a2a448585e6a8ef8bcd214546623a80ca",
+    "plugins/anti-hall/hooks/edit-guard.js": "373090e1459b593330fa717d8ad3c3e108da5a2e13bbfeba7c2377af1ffea18c",
     "plugins/anti-hall/hooks/hooks.json": "03448165fb812d32cdc83daf06eaeba1682bcfe9a04196e7ed932d39c0997cb1",
     "plugins/anti-hall/hooks/lib/block-message.js": "3a3fc759a50c15bf3914286d238d36154515bd02b2de11e0833136d1ea733694",
     "plugins/anti-hall/hooks/lib/codex-apply-patch.js": "bcbf4c7579f40337f711f316c7a3854f89210be9d3842808779fe8cd3b0cca81",
@@ -141,7 +141,7 @@
     "plugins/anti-hall/statusline/statusline.js": "ef855854349c8ef5e2144ae5d6eef8cd411b7e419939ab0ec3bd4dba1d2f3d1a",
     "plugins/anti-hall/statusline/uninstall-statusline.js": "d52e32b54a07a12eaf71b19c362fdc7dad6eb6d844ae64b6be429bd0b1f3f389"
   },
-  "fingerprint": "04f054c4f80b1b6b2dbdb56bda33d59af34c962d8d18bcd6e5a64d6fb16ce7ec",
+  "fingerprint": "939d228856108d69145515e6316039d8053551995995681098274a242025114a",
   "os": "macos-aarch64",
   "record": "AH_RECORD_NODE=1 cargo nextest run --release --profile record -E 'test(<the lane's test>)'  # lane edit-guard",
   "test": "edit-guard",
