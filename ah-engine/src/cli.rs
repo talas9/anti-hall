@@ -90,6 +90,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("shadow-compare", crate::ops::cmd_shadow_compare),
         ("update", crate::operator::update::run),
         ("install-codex", crate::operator::install_codex::run),
+        ("codex-limit-status", crate::ops::cmd_codex_limit_status),
+        ("codex-activate", crate::ops::cmd_codex_activate),
         ("handovers", crate::handovers::run_cmd),
         ("devswarm", crate::dswire::cli::run),
         ("refresh", crate::refresh::run_cmd),

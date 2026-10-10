@@ -266,13 +266,6 @@ script = "statusline/statusline-rich.js"
 lane = "L09"
 reason = "the engine doctor starts Node (probes the Node hooks and companions)"
 
-# --- run/install-codex
-[[node]]
-surface = "run/install-codex"
-script = "codex/install-codex.js"
-lane = "L16"
-reason = "the Codex installer is still Node"
-
 # --- run/install-statusline
 [[node]]
 surface = "run/install-statusline"

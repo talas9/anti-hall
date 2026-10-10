@@ -22,32 +22,6 @@ value = "ANTIHALL_UPDATE_QUIET"
 doc = "The running Claude Code binary; the fallback `update` runs `plugin update` with when `claude` is not on the PATH."
 value = "CLAUDE_CODE_EXECPATH"
 
-# ---- shadow comparison --------------------------------------------------------------------------------------------------
-
-[operator.shadow]
-doc = "1 = the Node version of an operator command runs read-only beside the engine's (update: `--check` after the update; install-codex: `--dry-run` before the write) and a difference in the reported result is logged. The engine's result is always the real one; the Node script is never run in a way that repeats a side effect. 0 = off."
-value = 1
-min = 0
-max = 1
-
-[operator.shadow_timeout_ms]
-doc = "How long the Node shadow run may take before it is abandoned (nothing is logged for an abandoned run)."
-value = 30000
-unit = "ms"
-min = 1000
-
-[operator.shadow_codex_log]
-doc = "Event-log text when the Node `install-codex.js --dry-run` reports something other than what the engine then wrote."
-value = "install-codex shadow mismatch: node={node} engine={engine}"
-
-[operator.dry_run_flag]
-doc = "The flag that makes install-codex write nothing (given to the Node shadow run)."
-value = "--dry-run"
-
-[operator.codex_script_rel]
-doc = "The Node installer inside the plugin directory."
-value = "codex/install-codex.js"
-
 # ---- update: paths and limits ---------------------------------------------------------------------------------------------
 
 [update.marketplace_rel]

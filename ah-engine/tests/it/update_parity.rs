@@ -778,26 +778,6 @@ fn a_matching_node_run_logs_nothing() {
 }
 
 #[test]
-fn a_disagreeing_node_installer_is_logged_and_the_files_are_still_written() {
-    let c = cx(&|home, _| fs::create_dir_all(home.join(".anti-hall/ah-engine")).unwrap());
-    let p = c.root.join("fake-node");
-    put(&c.root, "fake-node", "#!/bin/sh\necho 'anti-hall Codex install (project): would update'\necho '- hooks: nowhere unchanged'\n");
-    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-    cmd.arg("install-codex")
-        .arg("--root")
-        .arg(plugin())
-        .current_dir(&c.cwd)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", &c.home)
-        .env("AH_ENGINE_NODE", &p);
-    assert_eq!(finish(cmd.output().unwrap()).code, 0);
-    assert!(c.cwd.join(".codex/hooks.json").exists());
-    assert!(all_text(&c.home.join(".anti-hall")).contains("install_codex_shadow_mismatch"));
-}
-
-#[test]
 fn update_heals_the_units_by_default_obeys_the_switch_and_is_idempotent() {
     let o = Opt { no_upstream_move: true, ..Opt::default() };
     let w = world(&o);

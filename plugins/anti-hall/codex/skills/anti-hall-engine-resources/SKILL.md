@@ -28,6 +28,8 @@ Daemon status, metrics, backups, schedules and limits.
 | `ah-engine version` | `` Print the version this build reports | main, codex, workspace, subagent |
 | `ah-engine mcp-reaper` | `run [--dry-run]` The standalone MCP orphan reaper as an engine command (the port of companion/mcp-reaper.js): `run` makes one sweep (the scheduled job... | main, codex |
 | `ah-engine units` | `<status\|install\|heal\|uninstall> [--dry-run] [--bin <path>]` The engine's service units: `status` lists the engine unit and the units the Node installers wrote, with whether the engine runs their... | main, codex, workspace, subagent (owner args: install, heal, uninstall) |
+| `ah-engine codex-activate` | `` Write the advisory Codex activation marker ~/.anti-hall/codex-activated.json ({activatedAt, scope = the working directory}) that the... | main, codex |
+| `ah-engine codex-limit-status` | `` Print whether limit conservation is active, as JSON (active, reason, weekly, fiveHour, sonnetWeekly, source, stale, resetsAt): the Codex... | main, codex, workspace, subagent |
 
 ## Guards
 

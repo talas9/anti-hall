@@ -32,16 +32,3 @@ pub(crate) fn warn(line: &str) {
 pub(crate) fn t(key: &str) -> &'static str {
     defaults::text(key)
 }
-
-/// The first stdout line of the Node script `script` run read-only as the shadow of an engine command: `None` when shadowing
-/// is off, the script or Node is not there, or the run failed or timed out (an abandoned run is not a mismatch).
-pub(crate) fn shadow_line(env: &crate::jev::settings::Env, script: &str, args: &[String], cwd: Option<&std::path::Path>) -> Option<String> {
-    if defaults::num("operator.shadow") == 0 || !std::path::Path::new(script).is_file() {
-        return None;
-    }
-    let node = env.get(defaults::text("env.node")).filter(|n| !n.is_empty()).unwrap_or_else(|| t("doctor.node_default"));
-    let mut argv = vec![script.to_string()];
-    argv.extend(args.iter().cloned());
-    let r = update::run_child(node, &argv, cwd, &[], std::time::Duration::from_millis(defaults::num("operator.shadow_timeout_ms")));
-    (r.status == Some(0)).then_some(r.stdout)
-}
