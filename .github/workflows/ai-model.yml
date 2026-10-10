@@ -158,6 +158,15 @@ jobs:
                 await core.summary.addRaw(`Claude primary error result (HTTP ${res.api_error_status ?? 'n/a'}): ${String(res.result).slice(0, 200).replace(/[\r\n|]+/g, ' ')} (cost ${res.total_cost_usd}, ${res.duration_ms} ms)\n\n`, true).write();
               }
             } catch { /* no execution file */ }
+            try { // TEMP DEBUG (removed before merge): tool list and block types of the primary run
+              const log = JSON.parse(fs.readFileSync(process.env.EXEC_FILE, 'utf8'));
+              const arr = [].concat(log);
+              const init = arr.find((m) => m && m.type === 'system' && m.subtype === 'init') || {};
+              core.info(`DBG init tools=${JSON.stringify(init.tools)} cli=${init.claude_code_version}`);
+              for (const m of arr) if (m && m.type === 'assistant') core.info(`DBG assistant blocks=${(m.message.content || []).map((b) => b.type + (b.name ? ':' + b.name : '') + (b.text ? '(' + b.text.length + ' chars, starts ' + JSON.stringify(b.text.slice(0, 20)) + ')' : '')).join(',')}`);
+              const r = arr.find((m) => m && m.type === 'result') || {};
+              core.info(`DBG result: has structured_output=${'structured_output' in r} result_chars=${String(r.result || '').length} starts=${JSON.stringify(String(r.result || '').slice(0, 20))} stop=${r.stop_reason} terminal=${r.terminal_reason}`);
+            } catch (e) { core.info('DBG parse fail ' + e.message); }
             let why = '';
             if (process.env.OK1 !== 'true') why = 'secret empty';
             else if (process.env.OUTCOME !== 'success') {
