@@ -6,6 +6,31 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.300.2 (2026-10-10)
+
+Engine update tool, security fixes and repo tidy.
+
+### Added
+
+- **`ah-update`**: one command (`hooks/ah-update.sh`, no Node) moves the engine binary between sources: offline from a file (`--from`), the latest stable release (`--channel stable`) or the latest dev build (`--channel dev`), with sha256 checks and `--rollback`. The new `engine.autoUpdate` setting (`off`, `stable`, `dev`; default `off`) can run it for you at most once a day (#141).
+
+### Fixed
+
+- **Security**: the markdown escapers in the handover and pre-compact snapshot hooks now escape the backslash first, so a backslash can no longer undo an escape (#133); the remaining engine workflow actions are pinned to commit SHAs (#134).
+- **Engine settings parity**: the settings CLI knows `engine.autoUpdate`, and the parity goldens run in CI whenever the engine config or settings schema changes (#153).
+
+### Docs
+
+- OpenSSF Best Practices badge in the README (#147).
+- Engine docs match the shipped engine; new section on verifying release binaries (#135, #138).
+- GUIDE, AH-ENGINE, PRIVACY and llms.txt describe `ah-update` and `engine.autoUpdate`; the repo-pipelines and contributing docs say Copilot is off by default.
+
+### Repo (no effect on the installed plugin)
+
+- Repo root tidied: benchmark scripts moved from `eval/` to `tools/eval/`, docs site requirements to `docs/requirements.*`, the engine lock example into `ah-engine/`; stray helper scripts removed (#149, #152).
+- Issue-triage workflow retired (community workflow handles it) and the community gate crash fixed (#146).
+- Model steps use structured output; GitHub Copilot is off by default in the model chain (`copilot_fallback: false`) (#150).
+
 ## 0.300.1 (2026-10-10)
 
 Docs, site and repo patch. No engine or hook behavior changes.
