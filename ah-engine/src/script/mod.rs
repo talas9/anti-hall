@@ -20,6 +20,13 @@
 //! times every worker thread, all of it in the C allocator's zone outside the heap counters; see DECISIONS.md, revision
 //! 1.111. The runtime allocates through the Rust allocator, so its heap is in `status --memory`'s live heap.
 //!
+//! Bounds (issue #21): a worker's interpreter holds only as many loaded checks as fit `script.runtime_soft_bytes` after a
+//! collection; past it the least recently called checks are unloaded (down to `script.runtime_unload_to_bytes`) and rebuilt from
+//! their files by their next call. The per-call heap ceiling is `script.call_memory_bytes` above the size after loading, never
+//! past the absolute `script.runtime_max_bytes`. Measured on a replay, the interpreter's size after a collection equals its size
+//! before it (no garbage waits for the collector) and is flat once every check has been loaded, so the bound is on what is kept
+//! loaded, not on garbage.
+//!
 //! A call runs under a CPU-time limit (`script.time_limit_ms`, with a wall-clock backstop of `script.wall_limit_factor` times it, both enforced by the interpreter's interrupt handler), a heap ceiling (`script.call_memory_bytes` above the size measured after loading) and a
 //! stack ceiling. Any failure (exception, interrupt, out of memory, a verdict of the wrong shape) is a deferral, never a
 //! silent allow (D11).
@@ -42,6 +49,7 @@ pub mod host_proc;
 pub mod host_spawn;
 pub mod host_transcript;
 pub mod host_ts;
+pub mod recache;
 pub mod sysmem;
 
 use crate::checks::git::util::Settings;
@@ -66,6 +74,9 @@ struct Pool {
     ctx: Option<(Fingerprint, Context)>,
     /// Each loaded check's own files (includes, then its script), as they were when its entry was registered.
     checks: HashMap<String, Fingerprint>,
+    /// When each loaded entry was last called (a per-pool counter), for least-recently-used unloading.
+    used: HashMap<String, u64>,
+    tick: u64,
     /// Interrupt deadlines of the call in progress.
     deadline: Arc<Deadline>,
     epoch: Instant,
@@ -75,6 +86,7 @@ struct Pool {
 impl Drop for Pool {
     fn drop(&mut self) {
         self.checks.clear();
+        self.used.clear();
         self.ctx = None;
         self.rt.run_gc();
     }
@@ -144,7 +156,7 @@ impl Pool {
             let now = epoch.elapsed().as_nanos() as u64;
             (cpu != 0 && crate::limits::thread_cpu_us() > cpu) || (wall != 0 && now > wall) || (req != 0 && now > req)
         })));
-        Some(Pool { ctx: None, checks: HashMap::new(), deadline, epoch, rt })
+        Some(Pool { ctx: None, checks: HashMap::new(), used: HashMap::new(), tick: 0, deadline, epoch, rt })
     }
 }
 
@@ -383,12 +395,16 @@ fn limit_ms(name: &str, event: &str) -> u64 {
 /// The shared context with the entry `entry` of `own` registered under `key`, built (and the memory ceiling set) when the lib
 /// files or the entry's files changed since.
 fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprint, entry: &str) -> Result<Context, String> {
+    pool.tick += 1;
+    pool.used.insert(key.to_string(), pool.tick);
     let libs_stale = pool.ctx.as_ref().is_none_or(|(fp, _)| fp != libs);
     if libs_stale || pool.checks.get(key).is_none_or(|fp| fp != own) {
         // a replaced context or entry goes before the new one is built, and its cycles are collected
         pool.checks.remove(key);
         if libs_stale {
             pool.checks.clear();
+            pool.used.clear();
+            pool.used.insert(key.to_string(), pool.tick);
             pool.ctx = None;
         }
         pool.rt.set_memory_limit(0);
@@ -400,10 +416,48 @@ fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprin
         load_check(&ctx, key, own, entry)?;
         pool.checks.insert(key.to_string(), own.clone());
         pool.rt.run_gc();
-        let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
-        pool.rt.set_memory_limit(base + defaults::num("script.call_memory_bytes") as usize);
+        let mut base = pool.rt.memory_usage().malloc_size.max(0) as usize;
+        let soft = defaults::num("script.runtime_soft_bytes") as usize;
+        if base > soft {
+            base = unload_cold(pool, &ctx, key, soft);
+        }
+        // the ceiling is relative to what the scripts hold now, but never past the absolute per-runtime one
+        let limit = base.saturating_add(defaults::num("script.call_memory_bytes") as usize).min(defaults::num("script.runtime_max_bytes") as usize);
+        pool.rt.set_memory_limit(limit);
     }
     pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or_else(|| "context".to_string())
+}
+
+/// Unload the least recently called entries (never `keep`) until the runtime holds at most `script.runtime_unload_to_bytes`, `script.unload_batch` entries per collection; returns the size it ends at. An unloaded
+/// entry is rebuilt from its files by its next call (`ensure_entry` finds it missing from `checks`).
+fn unload_cold(pool: &mut Pool, ctx: &Context, keep: &str, soft: usize) -> usize {
+    let target = (defaults::num("script.runtime_unload_to_bytes") as usize).min(soft);
+    let batch = (defaults::num("script.unload_batch") as usize).max(1);
+    let mut size = pool.rt.memory_usage().malloc_size.max(0) as usize;
+    while size > target {
+        let mut cold: Vec<(u64, String)> =
+            pool.checks.keys().filter(|k| k.as_str() != keep).map(|k| (pool.used.get(k).copied().unwrap_or(0), k.clone())).collect();
+        if cold.is_empty() {
+            break;
+        }
+        cold.sort();
+        let names: Vec<String> = cold.into_iter().take(batch).map(|(_, k)| k).collect();
+        ctx.with(|c| {
+            if let Ok(reg) = c.globals().get::<_, rquickjs::Object>(defaults::text("script.registry_global")) {
+                for n in &names {
+                    // a failed removal leaves the entry registered but unlisted in `checks`: it is rebuilt (replaced) on its next call
+                    crate::discard::logged("script_unload", reg.remove(n.as_str()));
+                }
+            }
+        });
+        for n in &names {
+            pool.checks.remove(n);
+            pool.used.remove(n);
+        }
+        pool.rt.run_gc();
+        size = pool.rt.memory_usage().malloc_size.max(0) as usize;
+    }
+    size
 }
 
 /// Ask the plugin script `name` (`engine/logic/<name>.js`, owner override first) to apply one of its rules: call its top-level

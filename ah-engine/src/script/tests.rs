@@ -78,7 +78,7 @@ fn checks_share_one_context_but_not_their_declarations() {
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
-/// Memory budget (DECISIONS.md 1.111): one worker thread that has run EVERY shipped check script holds at most
+/// Memory budget (DECISIONS.md 1.111; the soft limit of issue #21): one worker thread that has run EVERY shipped check script holds at most
 /// `script.heap_budget_base_bytes` + `script.heap_budget_per_check_bytes` per script in its interpreter. A context per check
 /// (about 150 KB each before any check code, 3.3 MB for the 16 scripts of 2026-10-09) fails this; the shared context
 /// (1.0 MB) passes, and the budget grows with the number of scripted checks, not with the calls.
@@ -103,7 +103,7 @@ fn one_thread_running_every_shipped_script_stays_within_the_interpreter_budget()
     })
     .join()
     .expect("the scripts ran");
-    assert_eq!(used.0, n, "every script loaded once into the shared context");
+    assert!(used.0 <= n && used.0 > 0, "at most every script is loaded into the shared context at once ({} of {n})", used.0);
     let budget = defaults::num("script.heap_budget_base_bytes") + defaults::num("script.heap_budget_per_check_bytes") * n as u64;
     assert!(used.1 as u64 <= budget, "{n} scripts hold {} bytes in one thread's interpreter, over the budget of {budget}", used.1);
 }
@@ -1312,4 +1312,71 @@ fn stop_time_checks_have_their_own_time_limit() {
     ] {
         assert!(by.get(name).and_then(defaults::V::as_integer).is_some_and(|ms| ms >= 500), "{name}");
     }
+}
+
+/// Issue #21: a worker's interpreter does not grow with the number of calls. Round-robin over every shipped script, many rounds: past
+/// the soft limit the least recently called checks are unloaded (and rebuilt by their next call, with the same answer), so the size after
+/// a collection stays inside a band and the later rounds are no larger than the earlier ones.
+#[test]
+fn interpreter_memory_stays_in_a_band_over_many_calls() {
+    let h = home("band");
+    let ext = defaults::text("script.ext");
+    let dir = defaults::root().expect("plugin root").join(defaults::text("script.logic_dir"));
+    let mut names: Vec<String> =
+        std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| e.file_name().to_string_lossy().strip_suffix(ext).map(str::to_string)).collect();
+    names.sort();
+    let soft = defaults::num("script.runtime_soft_bytes") as i64;
+    let max = defaults::num("script.runtime_max_bytes") as i64;
+    let rounds = 6;
+    let sizes = std::thread::spawn(move || {
+        let e = env(&h);
+        let payload = json!({"hook_event_name": "Notification", "cwd": h});
+        let mut first_answers: Vec<String> = Vec::new();
+        let mut sizes = Vec::new();
+        for round in 0..rounds {
+            for (i, name) in names.iter().enumerate() {
+                let full = format!("{:?}", super::run_forced(name, &payload, &Value::Null, "Notification", &e));
+                // the KIND of answer (allow, defer, advisory, block) does not depend on whether the entry was just rebuilt; a check that keeps
+                // state across calls (task-tracker's repeat reminder) words its text differently the second time
+                let v = full.split_once("(\"").map_or(full.clone(), |(kind, _)| kind.to_string());
+                if round == 0 {
+                    first_answers.push(v);
+                } else {
+                    assert_eq!(first_answers[i], v, "{name} answered differently in round {round}");
+                }
+            }
+            let (_, bytes, ..) = super::pool_usage().expect("ran scripts");
+            sizes.push(bytes);
+        }
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        sizes
+    })
+    .join()
+    .expect("the scripts ran");
+    // one check is loaded after the limit is applied, so the band is the soft limit plus the largest single check (well under 1 MiB)
+    for (r, b) in sizes.iter().enumerate() {
+        assert!(*b <= soft + (1 << 20) && *b <= max, "round {r}: {b} bytes after a collection, soft limit {soft}, ceiling {max}: {sizes:?}");
+    }
+    // flat: the last rounds hold no more than the second round (+5%), however many calls were made in between
+    assert!(sizes[rounds - 1] as f64 <= sizes[1] as f64 * 1.05, "growth over calls: {sizes:?}");
+}
+
+/// Issue #21: the regex cache is ONE cache bounded by estimated bytes: many distinct patterns cannot push it past its budget, and two
+/// threads asking for the same pattern share one compiled program.
+#[test]
+fn the_shared_regex_cache_is_bounded_by_bytes_and_shared_across_threads() {
+    let budget = defaults::num("script.regex_cache_bytes") as usize;
+    let max = defaults::num("script.regex_cache_max") as usize;
+    // each pattern is distinct and long enough that the budget (not the entry count) is what binds first
+    let long = |i: usize| format!("zzcache{i}\\s+{}", "(?:a|b)x".repeat(40));
+    for i in 0..(max * 3) {
+        let r = super::recache::get(&long(i), "i").expect("valid pattern");
+        assert!(r.is_match(&format!("zzcache{i}  {}", "ax".repeat(40))), "pattern {i} does not match its own text");
+        let (n, bytes) = super::recache::usage();
+        assert!(bytes <= budget && n <= max, "after {i} patterns: {n} entries, {bytes} bytes, budget {budget}, max {max}");
+    }
+    let a = super::recache::get("zzshared\\d+", "").unwrap();
+    let b = std::thread::spawn(|| super::recache::get("zzshared\\d+", "").unwrap()).join().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&a, &b), "two threads got two compiled copies");
+    assert!(super::recache::get("(", "").is_err(), "an invalid pattern is an error, not a cache entry");
 }

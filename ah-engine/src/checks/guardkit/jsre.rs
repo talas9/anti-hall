@@ -111,8 +111,3 @@ pub fn compile(src: &str, ci: bool) -> Regex {
 pub fn compile_multiline(src: &str, ci: bool) -> Regex {
     lit_re(&format!("(?m:{})", translate(src, ci)))
 }
-
-/// Like [`compile`] but `None` when the translated source is not a valid Rust regex (a user-supplied pattern).
-pub fn try_compile(src: &str, ci: bool) -> Option<Regex> {
-    Regex::new(&translate(src, ci)).ok()
-}
