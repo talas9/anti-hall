@@ -42,6 +42,8 @@ pub struct Config {
     pub idle_exit: Option<Duration>,
     /// Test-only control verbs (`CTL sleep`, `CTL stall`); never on unless the `test_hooks` env var is set.
     pub test_hooks: bool,
+    /// Diagnostic note for reproducing allocator behaviour; the engine does not enable the OS facility itself.
+    pub malloc_stack_logging: String,
 }
 
 impl Config {
@@ -77,6 +79,7 @@ impl Config {
                 s => Some(Duration::from_secs(s)),
             },
             test_hooks: crate::defaults::env_var("test_hooks").is_some(),
+            malloc_stack_logging: e.text("diagnostics.malloc_stack_logging"),
         }
     }
 }

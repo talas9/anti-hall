@@ -403,6 +403,7 @@ impl Shared {
             "rules": {"version": rules.version, "count": rules.rules.len(), "fingerprint": format!("{:016x}", rules.fingerprint())},
             "summary": self.telemetry.headline(),
             "mem_limit": self.rlimit,
+            "malloc_stack_logging": cfg.malloc_stack_logging,
             "storage": self.storage,
             "rss_cap_kb": cfg.rss_cap_kb,
             "inject_gate": {"sessions": gs.sessions, "slots": gs.slots, "bytes": gs.bytes, "evictions": gs.evictions,
@@ -787,13 +788,12 @@ pub fn drain_spool(sh: &Shared) -> crate::spool::Drained {
 
 /// Read a whole request within `read_deadline` and `max` bytes.
 fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static str> {
-    s.set_read_timeout(Some(defaults::millis("daemon.read_poll_ms"))).ok();
-    let start = Instant::now();
+    if s.set_nonblocking(true).is_err() {
+        return Err(defaults::text("msg.reply_read_error"));
+    }
+    let deadline = Instant::now() + cfg.read_deadline;
     let (mut buf, mut chunk) = (Vec::new(), vec![0u8; defaults::num("io.small_chunk_bytes") as usize]);
     loop {
-        if start.elapsed() > cfg.read_deadline {
-            return Err(defaults::text("msg.reply_read_deadline"));
-        }
         match s.read(&mut chunk) {
             Ok(0) => return Ok(buf),
             Ok(n) => {
@@ -802,7 +802,12 @@ fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static st
                     return Err(defaults::text("msg.reply_too_large"));
                 }
             }
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !wait_stream(s, libc::POLLIN, deadline) {
+                    return Err(defaults::text("msg.reply_read_deadline"));
+                }
+            }
             Err(_) => return Err(defaults::text("msg.reply_read_error")),
         }
     }
@@ -810,17 +815,65 @@ fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static st
 
 /// Write the reply; false when it could not be written (the client is gone or stopped reading).
 fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) -> bool {
-    if let Err(e) = s.set_write_timeout(Some(cfg.write_deadline)) {
-        health::log_event("reply", "set_timeout", &e.to_string());
-    }
-    // A failed write means the client sees a cut frame and falls back to Node (it never mistakes it for an answer); the
-    // cause is logged here so a pattern of them is visible, and `reply_write_errors` counts them.
-    if let Err(e) = s.write_all(&r.frame()) {
+    let frame = r.frame();
+    let mut written = 0;
+    let deadline = Instant::now() + cfg.write_deadline;
+    if let Err(e) = s.set_nonblocking(true) {
         REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
         health::log_event("reply", "write_failed", &e.to_string());
         return false;
     }
+    // A failed write means the client sees a cut frame and falls back to Node (it never mistakes it for an answer); the
+    // cause is logged here so a pattern of them is visible, and `reply_write_errors` counts them.
+    while written < frame.len() {
+        match s.write(&frame[written..]) {
+            Ok(0) => {
+                REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                health::log_event("reply", "write_failed", defaults::text("msg.reply_write_deadline"));
+                return false;
+            }
+            Ok(n) => written += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !wait_stream(s, libc::POLLOUT, deadline) {
+                    REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                    health::log_event("reply", "write_failed", defaults::text("msg.reply_write_deadline"));
+                    return false;
+                }
+            }
+            Err(e) => {
+                REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                health::log_event("reply", "write_failed", &e.to_string());
+                return false;
+            }
+        }
+    }
     true
+}
+
+fn wait_stream(s: &UnixStream, events: libc::c_short, deadline: Instant) -> bool {
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        let mut timeout = remaining.as_millis().min(i32::MAX as u128) as i32;
+        if timeout == 0 && !remaining.is_zero() {
+            timeout = 1;
+        }
+        let mut pfd = libc::pollfd { fd: s.as_raw_fd(), events, revents: 0 };
+        // SAFETY: `pfd` is a live, writable `pollfd` and the count passed is 1.
+        let n = unsafe { libc::poll(&mut pfd, 1, timeout) };
+        if n > 0 {
+            return true;
+        }
+        if n == 0 {
+            return false;
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return false;
+        }
+    }
 }
 
 /// Replies finished after their client's deadline had passed (slow but healthy; counted apart from failures).
@@ -1402,6 +1455,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         unsafe { libc::poll(&mut pfd, 1, timeout) };
         let mut got_any = false;
         loop {
+            sh.loop_beat.store(sh.ms(), SeqCst);
             let s = match listener.accept() {
                 Ok((s, _)) => s,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break, // nothing pending: back to poll
@@ -1428,9 +1482,20 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 sh.stats.busy.fetch_add(1, SeqCst);
                 sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
                 let mut s = s;
-                s.set_nonblocking(false).ok();
-                s.set_write_timeout(Some(defaults::millis("daemon.busy_write_ms"))).ok();
-                crate::discard::harmless(s.write_all(&Reply::Busy.frame())); // keep: best effort, fail-open
+                s.set_nonblocking(true).ok();
+                let frame = Reply::Busy.frame();
+                match s.write(&frame) {
+                    Ok(n) if n == frame.len() => {}
+                    Ok(_) => {
+                        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                    }
+                    Err(_) => {
+                        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                    }
+                };
             } else {
                 // requests ahead of this one: the queued ones and those a worker is serving now
                 let in_flight = q.len() as u64 + sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64;

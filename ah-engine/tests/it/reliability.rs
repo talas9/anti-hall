@@ -4,6 +4,7 @@
 use crate::common;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -119,6 +120,87 @@ fn raw_exchange(e: &Env, req: &[u8]) -> Vec<u8> {
     let mut b = Vec::new();
     ah_engine::discard::harmless(s.read_to_end(&mut b));
     b
+}
+
+fn set_recv_buf(s: &std::os::unix::net::UnixStream, bytes: libc::c_int) -> libc::c_int {
+    // SAFETY: `s` is a live socket; `bytes` is passed by pointer with its exact size.
+    let set = unsafe {
+        libc::setsockopt(
+            s.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&bytes as *const libc::c_int).cast(),
+            std::mem::size_of_val(&bytes) as libc::socklen_t,
+        )
+    };
+    assert_eq!(set, 0, "SO_RCVBUF set failed: {}", std::io::Error::last_os_error());
+    let mut got = 0 as libc::c_int;
+    let mut len = std::mem::size_of_val(&got) as libc::socklen_t;
+    // SAFETY: `got` and `len` are valid output pointers for this socket option.
+    let get = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF, (&mut got as *mut libc::c_int).cast(), &mut len) };
+    assert_eq!(get, 0, "SO_RCVBUF get failed: {}", std::io::Error::last_os_error());
+    got
+}
+
+fn config_reply_len(e: &Env) -> usize {
+    let mut s = std::os::unix::net::UnixStream::connect(e.eng().join("e.sock")).unwrap();
+    ah_engine::discard::harmless(s.write_all(b"CTL config\n"));
+    ah_engine::discard::harmless(s.shutdown(std::net::Shutdown::Write));
+    let b = read_all_deadline(&mut s, Duration::from_secs(5));
+    let (k, body) = ah_engine::frame::decode(&b).expect("config reply");
+    assert_eq!(k, ah_engine::frame::Kind::Ok);
+    body.len()
+}
+
+fn write_fill_reply_len(e: &Env, bytes: usize) -> usize {
+    let mut s = std::os::unix::net::UnixStream::connect(e.eng().join("e.sock")).unwrap();
+    let req = format!("CTL config\n{}", "x".repeat(bytes));
+    ah_engine::discard::harmless(s.write_all(req.as_bytes()));
+    ah_engine::discard::harmless(s.shutdown(std::net::Shutdown::Write));
+    let b = read_all_deadline(&mut s, Duration::from_secs(5));
+    let (k, body) = ah_engine::frame::decode(&b).expect("write-fill reply");
+    assert_eq!(k, ah_engine::frame::Kind::Ok);
+    body.len()
+}
+
+fn ensure_write_fill(e: &Env, larger_than: usize) -> usize {
+    let mut bytes = larger_than;
+    loop {
+        let len = write_fill_reply_len(e, bytes);
+        if len > larger_than {
+            return bytes;
+        }
+        bytes *= 2;
+    }
+}
+
+fn read_all_deadline(s: &mut std::os::unix::net::UnixStream, max: Duration) -> Vec<u8> {
+    s.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + max;
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match s.read(&mut chunk) {
+            Ok(0) => return out,
+            Ok(n) => out.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return out;
+                };
+                let mut timeout = remaining.as_millis().min(i32::MAX as u128) as i32;
+                if timeout == 0 && !remaining.is_zero() {
+                    timeout = 1;
+                }
+                let mut pfd = libc::pollfd { fd: s.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                // SAFETY: `pfd` is a live, writable `pollfd` and the count passed is 1.
+                if unsafe { libc::poll(&mut pfd, 1, timeout) } <= 0 {
+                    return out;
+                }
+            }
+            Err(_) => return out,
+        }
+    }
 }
 
 /// A fake daemon on the engine socket that answers every connection with `reply(request)`.
@@ -644,6 +726,77 @@ fn queue_overflow_answers_busy_and_clients_fall_back() {
 }
 
 #[test]
+fn accept_loop_survives_a_hundred_client_flood_with_silent_peers() {
+    let e = Env::new(
+        "flood",
+        &[
+            ("AH_ENGINE_WORKERS", "4"),
+            ("AH_ENGINE_QUEUE", "64"),
+            ("AH_ENGINE_READ_MS", "250"),
+            ("AH_ENGINE_WRITE_MS", "250"),
+            ("AH_ENGINE_STALL_MS", "1000"),
+            ("AH_ENGINE_WATCHDOG_TICK_MS", "100"),
+            ("AH_ENGINE_SESSION_RPS", "0"),
+            ("AH_ENGINE_PROJECT_RPS", "0"),
+        ],
+    );
+    e.warm();
+    let old = e.pid().unwrap();
+    let cfg_reply_len = config_reply_len(&e);
+    let mut silent = Vec::new();
+    for _ in 0..20 {
+        silent.push(std::os::unix::net::UnixStream::connect(e.eng().join("e.sock")).unwrap());
+    }
+    let probe = std::os::unix::net::UnixStream::connect(e.eng().join("e.sock")).unwrap();
+    let effective_recv = set_recv_buf(&probe, 1024) as usize;
+    let fill = ensure_write_fill(&e, effective_recv);
+    assert!(write_fill_reply_len(&e, fill) > effective_recv);
+    assert!(cfg_reply_len > 0);
+    drop(probe);
+    let oversized_config = format!("CTL config\n{}", "x".repeat(fill));
+    let mut no_read = Vec::new();
+    for _ in 0..10 {
+        let mut s = std::os::unix::net::UnixStream::connect(e.eng().join("e.sock")).unwrap();
+        assert_eq!(set_recv_buf(&s, 1024) as usize, effective_recv);
+        ah_engine::discard::harmless(s.write_all(oversized_config.as_bytes()));
+        ah_engine::discard::harmless(s.shutdown(std::net::Shutdown::Write));
+        no_read.push(s);
+    }
+    let mut hs = Vec::new();
+    for i in 0..70 {
+        let sock = e.eng().join("e.sock");
+        hs.push(std::thread::spawn(move || {
+            let mut s = std::os::unix::net::UnixStream::connect(sock).unwrap();
+            let req = if i % 2 == 0 { format!("V 0.1.0\n{}", DENY_IN) } else { "CTL status\n".to_string() };
+            ah_engine::discard::harmless(s.write_all(req.as_bytes()));
+            ah_engine::discard::harmless(s.shutdown(std::net::Shutdown::Write));
+            let b = read_all_deadline(&mut s, Duration::from_secs(5));
+            ah_engine::frame::decode(&b).map(|(k, _)| k).ok()
+        }));
+    }
+    let mut answered = 0;
+    for h in hs {
+        match h.join().unwrap() {
+            Some(ah_engine::frame::Kind::Ok | ah_engine::frame::Kind::Busy) => answered += 1,
+            other => panic!("well-behaved client got no usable reply: {other:?}"),
+        }
+    }
+    assert_eq!(answered, 70);
+    for mut s in silent {
+        let b = read_all_deadline(&mut s, Duration::from_secs(3));
+        let (k, body) = ah_engine::frame::decode(&b).expect("silent peer gets framed timeout");
+        assert_eq!(k, ah_engine::frame::Kind::Err);
+        assert_eq!(body, ah_engine::defaults::text("msg.reply_read_deadline"));
+    }
+    drop(no_read);
+    std::thread::sleep(Duration::from_millis(1300));
+    assert_eq!(e.pid(), Some(old), "watchdog must not restart a healthy accept loop");
+    assert!(e.status()["reply_write_errors"].as_u64().unwrap_or(0) > 0, "no-read peers should trip the write deadline");
+    let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
+    assert!(!log.contains("watchdog\tstall"), "{log}");
+}
+
+#[test]
 fn rate_limited_session_gets_busy_so_it_falls_back() {
     let e = Env::new("rate", &[("AH_ENGINE_SESSION_RPS", "1"), ("AH_ENGINE_SESSION_BURST", "2")]);
     e.warm(); // consumes some of s1's burst
@@ -693,10 +846,12 @@ fn memory_limit_and_nice_are_applied_and_reported() {
     let e = Env::new("mem", &[("AH_ENGINE_MEM_MB", "64"), ("AH_ENGINE_NICE", "7")]);
     e.warm();
     let st = e.status();
-    assert!(st["mem_limit"].as_str().unwrap().starts_with("ok:64") || st["mem_limit"].as_str().unwrap().starts_with("err:"), "{st}");
-    // macOS rejects setrlimit(RLIMIT_DATA) with EINVAL (verified with a C probe); there the RSS cap is the guard.
     if cfg!(target_os = "linux") {
         assert_eq!(st["mem_limit"], "ok:64");
+    } else if cfg!(target_os = "macos") {
+        assert_eq!(st["mem_limit"], "unsupported:rlimit_data");
+    } else {
+        assert!(st["mem_limit"].as_str().unwrap().starts_with("ok:64") || st["mem_limit"].as_str().unwrap().starts_with("err:"), "{st}");
     }
     let pid = e.pid().unwrap();
     let nice = Command::new("ps").args(["-o", "nice=", "-p", &pid.to_string()]).output().unwrap();
