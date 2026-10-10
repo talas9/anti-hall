@@ -16,6 +16,7 @@ mod agent_controls_parity;
 mod cascade_judge;
 mod compiled_logic_gate;
 mod codex_scripts_parity;
+mod codex_apply_patch_e2e;
 mod ctxbudget_e2e;
 mod defaults_failover;
 mod defaults_keys;

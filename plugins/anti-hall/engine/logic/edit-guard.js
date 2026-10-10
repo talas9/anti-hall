@@ -1,8 +1,10 @@
 // check = "edit-guard" (PreToolUse on Edit, Write, MultiEdit, NotebookEdit; apply_patch for Codex). Blocks a write into the
 // launcher directory (~/.anti-hall/bin) for every agent, literally or through a symlink already on disk, and answers quietly
 // for every call that is not the main thread. A main-thread call defers to Node, which owns the coordinator allowlists and the
-// symlink / hard-link honesty checks; so does apply_patch (its targets need the Codex patch parser) and any payload whose
-// paths cannot be resolved without the hook's own working directory or home. Mirrors hooks/edit-guard.js `main` and
+// symlink / hard-link honesty checks, and so does any payload whose paths cannot be resolved without the hook's own working
+// directory or home. A Codex apply_patch is read through the shared patch parser (lib/77-apply-patch.js): every Add / Update /
+// Delete path and Move-to destination is checked against the launcher directory (Codex honors exit 2 only with the reason on
+// stderr, so the block carries it there too), a non-main-thread patch is allowed, and a main-thread patch defers. Mirrors hooks/edit-guard.js `main` and
 // `resolvesIntoLauncherBinDir`. Keys and messages: small_guards.toml (edit_guard.*).
 // Kept on purpose (issue #55): a main-thread write to a file outside any repo (for example a small file in the home directory) is
 // still delegated. The main-thread verdict is Node's (this script defers), so an engine-only allow would be weaker than Node, and
@@ -45,25 +47,41 @@ function decide(p) {
   if (!ah.settings.bool('edit_guard.setting') || ah.settings.skipped(ah.cfg('edit_guard.guard_name'))) return 'allow';
   var tool = isObj(p) ? p.tool_name : undefined;
   if (typeof tool !== 'string') return 'allow';
-  if (tool === ah.cfg('edit_guard.patch_tool')) return 'defer';
-  if (ah.cfg('edit_guard.edit_tools').indexOf(tool) < 0) return 'allow';
+  var isPatch = tool === ah.cfg('edit_guard.patch_tool');
+  if (!isPatch && ah.cfg('edit_guard.edit_tools').indexOf(tool) < 0) return 'allow';
   // Without a home directory the request environment was cut off or the hook has none: neither the launcher directory nor
   // the entry point can be trusted.
   var home = ah.env.get(ah.cfg('env.home'));
   if (home === null) return 'defer';
   var ti = isObj(p.tool_input) ? p.tool_input : null;
   var field = tool === ah.cfg('edit_guard.notebook_tool') ? 'notebook_path' : 'file_path';
-  var file = orEmpty(ti === null ? undefined : ti[field]), cwd = orEmpty(p.cwd);
-  if (file === null || cwd === null) return 'defer';
-  var hit = resolvesIntoLauncher(file, cwd, home);
-  if (hit === null) return 'defer';
+  var cwd = orEmpty(p.cwd);
+  var files;
+  if (isPatch) {
+    // Node resolves the targets against the payload cwd (the hook's own when there is none): only an absolute one is reproduced
+    if (cwd === null || !ah.path.isAbsolute(cwd)) return 'defer';
+    var cmd = ti === null ? undefined : ti.command;
+    if (typeof cmd !== 'string') return 'defer';
+    var parsed = applyPatch.parse(cmd);
+    files = parsed.ok ? applyPatch.targetPaths(parsed.files, cwd) : [];
+  } else {
+    var one = orEmpty(ti === null ? undefined : ti[field]);
+    if (one === null || cwd === null) return 'defer';
+    files = [one];
+  }
+  var hit = false;
+  for (var i = 0; i < files.length && !hit; i++) {
+    var h = resolvesIntoLauncher(files[i], cwd, home);
+    if (h === null) return 'defer';
+    hit = h;
+  }
   if (hit) {
     var reason = text.message('block', ah.cfg('edit_guard.guard_name'), {
       what: text.render(ah.cfg('edit_guard.msg_launcher_what'), { tool: tool }), why: ah.cfg('edit_guard.msg_launcher_why'),
       instead: ah.cfg('edit_guard.msg_launcher_instead'), allowed: ah.cfg('edit_guard.msg_launcher_allowed'),
     });
-    // Claude reads the block from stdout alone
-    return { exact: { code: 2, out: text.blockJson(reason), err: '' } };
+    // Claude reads the block from stdout alone; Codex honors exit 2 only with the reason on stderr (an apply_patch carries it there)
+    return { exact: { code: 2, out: text.blockJson(reason), err: isPatch ? reason + '\n' : '' } };
   }
   return coordinator.isCoordinator(p) ? 'defer' : 'allow';
 }
