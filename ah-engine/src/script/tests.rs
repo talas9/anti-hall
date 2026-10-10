@@ -1115,7 +1115,9 @@ fn jev_review_reminder_script_matches_the_compiled_port() {
 #[test]
 fn repair_on_reload_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("repair-on-reload");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 10 && kinds.get("defer").copied().unwrap_or(0) > 10, "both answers: {kinds:?}");
+    // L06: a due repair is asked of the refresh job (allow); only the undecidable shapes (no home, no plugin root, a version
+    // that is not a plain three-part one) still defer
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 40 && kinds.get("defer").copied().unwrap_or(0) > 5, "both answers: {kinds:?}");
 }
 
 #[test]

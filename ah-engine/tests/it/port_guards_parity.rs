@@ -26,6 +26,9 @@ enum Expect {
     Same,
     /// The engine must defer to Node.
     Defer,
+    /// The engine answers silently (allow) and asks the refresh job for the work Node started detached: exactly one new file,
+    /// `.anti-hall/refresh/repair.json` (L06). Node is not run (it would start a detached repair process).
+    Request,
 }
 
 struct Case {
@@ -236,6 +239,21 @@ fn check_rows(hook: &str, check: &str, rows: Vec<Case>) -> (usize, usize) {
                     bad.push(format!("{}: a deferral must leave the home untouched, got {eng_snap:?}", case.name));
                 } else if case.acts && node.1.is_empty() && node_snap == BTreeMap::from_iter(setup_snapshot(&case.files, &nh, now)) {
                     bad.push(format!("{}: marked as a row where Node acts, but Node printed and wrote nothing", case.name));
+                } else {
+                    deferred += 1;
+                }
+            }
+            Expect::Request => {
+                let mut want: BTreeMap<String, String> = BTreeMap::from_iter(setup_snapshot(&case.files, &rh, now));
+                let req = ".anti-hall/refresh/repair.json";
+                let wrote = eng_snap.get(req).cloned();
+                want.extend(wrote.clone().map(|w| (req.to_string(), w)));
+                if eng.0 != 0 || !eng.1.is_empty() || !eng.2.is_empty() {
+                    bad.push(format!("{}: expected a silent allow, got {}", case.name, show(&eng)));
+                } else if !wrote.is_some_and(|w| w.contains("\"requestedAt\"") && w.contains("\"version\"")) {
+                    bad.push(format!("{}: no repair request written: {eng_snap:?}", case.name));
+                } else if eng_snap != want {
+                    bad.push(format!("{}: only the request may change in the home, got {eng_snap:?}", case.name));
                 } else {
                     deferred += 1;
                 }
@@ -1000,7 +1018,7 @@ fn prompt_submit() -> Value {
 
 fn repair_cases() -> Vec<Case> {
     let ex = Expect::Same;
-    let df = Expect::Defer;
+    let df = Expect::Request;
     let m = ".anti-hall/update-sweep-state.json";
     let done = markers(|_| Some("{V}".into()));
     let cool = ".anti-hall/repair-on-reload.last.json";
@@ -1092,8 +1110,8 @@ fn repair_cases() -> Vec<Case> {
         )
         .skip_node(),
         Case::json("judge-child-silent", prompt_submit(), ex).env("ANTIHALL_JUDGE_CHILD", "1"),
-        Case::new("empty-stdin-all-stamped-defers", "", df).file(m, &done),
-        Case::new("garbage-stdin-all-stamped-defers", "{nope", df).file(m, &done),
+        Case::new("empty-stdin-all-stamped-defers", "", Expect::Defer).file(m, &done),
+        Case::new("garbage-stdin-all-stamped-defers", "{nope", Expect::Defer).file(m, &done),
         Case::new("payload-null-all-stamped", "null", ex).file(m, &done),
         Case::json("payload-array-all-stamped", json!([1]), ex).file(m, &done),
     ];

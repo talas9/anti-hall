@@ -88,6 +88,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("install-codex", crate::operator::install_codex::run),
         ("handovers", crate::handovers::run_cmd),
         ("devswarm", crate::dswire::cli::run),
+        ("refresh", crate::refresh::run_cmd),
     ]
 }
 

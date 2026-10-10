@@ -53,6 +53,7 @@ pub mod paths;
 pub mod proc;
 /// Process watch: orphan sweep, resource and disk warnings.
 pub mod procwatch;
+pub mod refresh;
 pub mod reqenv;
 pub mod roles;
 pub mod rules;

@@ -51,6 +51,16 @@ cp.spawn = function (cmd, args, opts) {
 };
 ";
 
+/// The detached refresh scripts the Node hooks start; the engine replaces each with a request to `ah-engine refresh` (L06).
+const REFRESH_SCRIPTS: [&str; 3] = ["\"version-alert-refresh.js\"", "\"devswarm-version-refresh.js\"", "\"claude-cli-version-refresh.js\""];
+
+/// A tree difference that is only the engine's refresh request: the request file, or a directory it created.
+fn is_refresh_request(d: &str) -> bool {
+    let Some(key) = d.strip_suffix(": only in engine") else { return false };
+    let key = format!("/{key}");
+    key.ends_with("/.anti-hall") || key.contains("/.anti-hall/refresh")
+}
+
 /// Node's `cwdKey` (hooks/progress-prune.js): the 31-hash of the UTF-16 units, in base 36, behind `cwd_`.
 fn cwd_key(cwd: &str) -> String {
     let mut hash: i32 = 0;
@@ -665,10 +675,14 @@ pub(crate) fn run_hook(hook: &str, hooks_dir: &Path, repo: &Path, mutate: Option
         if node_res.out != eng_res.out {
             problems.push(format!("stdout node={:?} engine={:?}", clip(&node_res.out, 400), clip(&eng_res.out, 400)));
         }
-        if !spawned.is_empty() {
+        // v1.0 lane L06: where Node started its detached refresh script the engine asks its own refresh job instead (a
+        // request file under `.anti-hall/refresh/`, handled by `ah-engine refresh`) and says nothing, as Node did. That
+        // request, with the directories it needed, is the one expected difference; any other spawn or difference is not.
+        let refresh_only = !spawned.is_empty() && spawned.iter().all(|s| REFRESH_SCRIPTS.iter().any(|r| s.contains(r)));
+        if !spawned.is_empty() && !refresh_only {
             problems.push(format!("node started a background process ({}) but the engine decided", clip(&spawned.join("; "), 200)));
         }
-        problems.extend(diff_trees(&node_tree, &eng_tree, &norm));
+        problems.extend(diff_trees(&node_tree, &eng_tree, &norm).into_iter().filter(|d| !(refresh_only && is_refresh_request(d))));
         if problems.is_empty() {
             st.same += 1;
             if !node_res.out.is_empty() {
