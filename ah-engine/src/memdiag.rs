@@ -79,6 +79,11 @@ pub fn allocator() -> Option<Alloc> {
     je::alloc()
 }
 
+/// Configured bounds for the issue-21 memory regression.
+pub fn regression_limits() -> (u64, u64) {
+    (crate::defaults::num("diagnostics.mem_regression_calls"), crate::defaults::num("diagnostics.mem_regression_growth_bytes"))
+}
+
 /// The C library's allocator totals (what jemalloc's figures leave out: bundled SQLite and anything else that calls `malloc`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sys {

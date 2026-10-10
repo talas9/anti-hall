@@ -12,13 +12,13 @@
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{js_trim, js_trim_start as trim_start};
 use crate::defaults;
-use quick_cache::{Weighter, sync::Cache};
+use moka::sync::{Cache, CacheBuilder};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(test)]
 mod tests;
@@ -1105,34 +1105,46 @@ struct Kept {
 #[derive(Clone)]
 struct KeptEntry {
     kept: std::sync::Arc<Kept>,
-    bytes: u64,
+    weight: u32,
 }
 
-#[derive(Clone)]
-struct KeptWeighter;
+fn kept_weight(path: &str, bytes: u64) -> u32 {
+    (path.len() as u64 + bytes).min(u32::MAX as u64) as u32
+}
 
-impl Weighter<String, KeptEntry> for KeptWeighter {
-    fn weight(&self, key: &String, val: &KeptEntry) -> u64 {
-        key.len() as u64 + val.bytes
+static KEPT: OnceLock<Mutex<KeptCache>> = OnceLock::new();
+
+struct KeptCache {
+    cap: u64,
+    cache: Cache<String, KeptEntry>,
+}
+
+fn new_kept_cache(cap: u64) -> Cache<String, KeptEntry> {
+    CacheBuilder::new(cap).weigher(|_k: &String, v: &KeptEntry| v.weight).build()
+}
+
+fn with_kept_cache<R>(f: impl FnOnce(&Cache<String, KeptEntry>) -> R) -> R {
+    let mut g = KEPT
+        .get_or_init(|| {
+            let cap = defaults::num("agent_scan.cache_max_bytes");
+            Mutex::new(KeptCache { cap, cache: new_kept_cache(cap) })
+        })
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cap = defaults::num("agent_scan.cache_max_bytes");
+    if g.cap != cap {
+        *g = KeptCache { cap, cache: new_kept_cache(cap) };
     }
-}
-
-static KEPT: OnceLock<Cache<String, KeptEntry, KeptWeighter>> = OnceLock::new();
-
-fn kept_cache() -> &'static Cache<String, KeptEntry, KeptWeighter> {
-    let c = KEPT.get_or_init(|| {
-        let cap = defaults::num("agent_scan.cache_max_bytes");
-        Cache::with_weighter(defaults::num("agent_scan.cache_max_paths").max(1) as usize, cap, KeptWeighter)
-    });
-    c.set_capacity(defaults::num("agent_scan.cache_max_bytes"));
-    c
+    f(&g.cache)
 }
 
 /// (transcripts kept, their estimated bytes by the cache's own estimate, transcript bytes they have read) for the memory snapshot.
 pub fn kept_usage() -> (usize, u64, u64) {
-    let c = kept_cache();
-    let read = c.iter().map(|(_, e)| e.kept.off).sum();
-    (c.len(), c.weight(), read)
+    with_kept_cache(|c| {
+        c.run_pending_tasks();
+        let read = c.iter().map(|(_, e)| e.kept.off).sum();
+        (c.entry_count() as usize, c.weighted_size(), read)
+    })
 }
 
 /// A cheap digest of `len` bytes of the file at `at` (None when they cannot be read).
@@ -1215,7 +1227,11 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
     let size = m.len();
     let fp = defaults::num("agent_scan.cache_fingerprint_bytes").max(1);
     let gen_ = defaults::generation();
-    let taken = kept_cache().remove(path).map(|(_, e)| e.kept);
+    let taken = with_kept_cache(|c| {
+        let kept = c.get(path).map(|e| e.kept);
+        c.invalidate(path);
+        kept
+    });
     let mut k = match taken {
         Some(k)
             if k.gen_ == gen_
@@ -1275,9 +1291,15 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
             k.back = back;
             k.used_ms = now;
             let ttl = defaults::num("agent_scan.cache_idle_ms");
-            let cache = kept_cache();
-            cache.retain(|_, e| now.saturating_sub(e.kept.used_ms) <= ttl);
-            cache.insert(path.to_string(), KeptEntry { kept: std::sync::Arc::new(k), bytes });
+            with_kept_cache(|cache| {
+                for (p, e) in cache.iter() {
+                    if now.saturating_sub(e.kept.used_ms) > ttl {
+                        cache.invalidate(p.as_ref());
+                    }
+                }
+                let weight = kept_weight(path, bytes);
+                cache.insert(path.to_string(), KeptEntry { kept: std::sync::Arc::new(k), weight });
+            });
         }
     }
     scan
@@ -1288,82 +1310,138 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
 }
 
 fn finish_ref(w: &Walk, path: &str, opts: &Opts) -> Res<Scan> {
-    let mut w = Walk {
-        launched: w.launched.clone(),
-        terminal: w.terminal.clone(),
-        desc_by_tool_use: w.desc_by_tool_use.clone(),
-        others: w.others.clone(),
-        other_bytes: w.other_bytes,
-        dropped_ids: HashSet::new(),
-        tool_uses: w.tool_uses.clone(),
-        stops: w.stops.clone(),
-        errored: w.errored.clone(),
-        answered: w.answered.clone(),
-        team_events: w.team_events.clone(),
-        team_info: w.team_info.clone(),
-        terminal_ev: w.terminal_ev.clone(),
-        resume_seq: w.resume_seq.clone(),
-        resume_full: w.resume_full.clone(),
-        resume_ts: w.resume_ts.clone(),
-    };
-    finish_mut(&mut w, path, opts)
+    finish_view(
+        FinishView {
+            launched: w.launched.clone(),
+            terminal: w.terminal.clone(),
+            terminal_ev: w.terminal_ev.clone(),
+            team_events: w.team_events.clone(),
+            desc_by_tool_use: &w.desc_by_tool_use,
+            tool_uses: &w.tool_uses,
+            stops: &w.stops,
+            errored: &w.errored,
+            answered: &w.answered,
+            others: &w.others,
+            team_info: &w.team_info,
+            resume_seq: &w.resume_seq,
+            resume_full: &w.resume_full,
+            resume_ts: &w.resume_ts,
+        },
+        path,
+        opts,
+    )
+}
+
+struct FinishView<'a> {
+    launched: OMap<Rec>,
+    terminal: HashSet<String>,
+    terminal_ev: HashMap<String, Vec<(u64, f64)>>,
+    team_events: OMap<Vec<TeamEv>>,
+    desc_by_tool_use: &'a HashMap<String, String>,
+    tool_uses: &'a HashMap<String, ToolUse>,
+    stops: &'a [Stop],
+    errored: &'a HashSet<String>,
+    answered: &'a HashSet<String>,
+    others: &'a [Other],
+    team_info: &'a OMap<TeamInfo>,
+    resume_seq: &'a OMap<u64>,
+    resume_full: &'a HashSet<String>,
+    resume_ts: &'a HashMap<String, f64>,
+}
+
+impl FinishView<'_> {
+    fn mark_terminal(&mut self, id: &str, seq: u64, ts: f64) {
+        self.terminal.insert(id.to_string());
+        self.terminal_ev.entry(id.to_string()).or_default().push((seq, ts));
+    }
+
+    fn team_event(&mut self, name: &str, kind: &'static str, ts: f64, seq: u64) {
+        if !self.team_events.has(name) {
+            self.team_events.set(name, Vec::new());
+        }
+        if let Some(v) = self.team_events.get_mut(name) {
+            v.push(TeamEv { kind, ts, seq });
+        }
+    }
 }
 
 fn finish_mut(w: &mut Walk, path: &str, opts: &Opts) -> Res<Scan> {
+    finish_view(
+        FinishView {
+            launched: std::mem::take(&mut w.launched),
+            terminal: std::mem::take(&mut w.terminal),
+            terminal_ev: std::mem::take(&mut w.terminal_ev),
+            team_events: std::mem::take(&mut w.team_events),
+            desc_by_tool_use: &w.desc_by_tool_use,
+            tool_uses: &w.tool_uses,
+            stops: &w.stops,
+            errored: &w.errored,
+            answered: &w.answered,
+            others: &w.others,
+            team_info: &w.team_info,
+            resume_seq: &w.resume_seq,
+            resume_full: &w.resume_full,
+            resume_ts: &w.resume_ts,
+        },
+        path,
+        opts,
+    )
+}
+
+fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
     // Attach descriptions where the Agent tool_use was in the window.
-    let ids: Vec<String> = w.launched.keys().cloned().collect();
+    let ids: Vec<String> = v.launched.keys().cloned().collect();
     for id in &ids {
-        let d = w.launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.desc_by_tool_use.get(t)).cloned();
-        if let (Some(d), Some(r)) = (d, w.launched.get_mut(id)) {
+        let d = v.launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| v.desc_by_tool_use.get(t)).cloned();
+        if let (Some(d), Some(r)) = (d, v.launched.get_mut(id)) {
             r.description = d;
         }
         // `rec.spawnInput`: the input of the launching call when it is in the window (an object or array, as `typeof` says)
-        let spawn = w.launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.tool_uses.get(t)).and_then(|c| c.input.clone());
-        if let (Some(i), Some(r)) = (spawn.filter(|i| i.is_object() || i.is_array()), w.launched.get_mut(id)) {
+        let spawn = v.launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| v.tool_uses.get(t)).and_then(|c| c.input.clone());
+        if let (Some(i), Some(r)) = (spawn.filter(|i| i.is_object() || i.is_array()), v.launched.get_mut(id)) {
             r.spawn_input = Some(i);
         }
     }
 
     // Background-agent ids known from the walk: a teammate name equal to one is a collision.
-    let mut background: HashSet<String> = w.launched.keys().cloned().collect();
-    background.extend(w.terminal.iter().cloned());
+    let mut background: HashSet<String> = v.launched.keys().cloned().collect();
+    background.extend(v.terminal.iter().cloned());
 
-    let stops = w.stops.clone();
-    for s in &stops {
-        if s.tool_use_id.as_ref().is_some_and(|t| w.errored.contains(t)) {
+    for s in v.stops {
+        if s.tool_use_id.as_ref().is_some_and(|t| v.errored.contains(t)) {
             continue;
         }
-        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| w.answered.contains(t)) {
+        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| v.answered.contains(t)) {
             continue;
         }
-        w.mark_terminal(&s.id, s.seq, s.ts);
-        let names: Vec<String> = w.team_info.iter().filter(|(_, i)| i.agent_id == s.id).map(|(n, _)| n.clone()).collect();
+        v.mark_terminal(&s.id, s.seq, s.ts);
+        let names: Vec<String> = v.team_info.iter().filter(|(_, i)| i.agent_id == s.id).map(|(n, _)| n.clone()).collect();
         for n in names {
-            if !w.team_events.has(&s.id) {
-                w.team_event(&n, "stop", s.ts, s.seq);
+            if !v.team_events.has(&s.id) {
+                v.team_event(&n, "stop", s.ts, s.seq);
             }
         }
-        if w.team_events.has(&s.id) {
-            w.team_event(&s.id, "stop", s.ts, s.seq);
+        if v.team_events.has(&s.id) {
+            v.team_event(&s.id, "stop", s.ts, s.seq);
         }
     }
 
     // SAFETY NET: a later answer to a TaskOutput/SendMessage call that quotes a launched agent's id.
-    let launched_ids: Vec<String> = w.launched.keys().cloned().collect();
+    let launched_ids: Vec<String> = v.launched.keys().cloned().collect();
     for id in &launched_ids {
-        if w.terminal.contains(id) {
+        if v.terminal.contains(id) {
             continue;
         }
-        let own = w.launched.get(id).and_then(|r| r.tool_use_id.clone());
+        let own = v.launched.get(id).and_then(|r| r.tool_use_id.clone());
         let mut hit: Option<(u64, f64)> = None;
-        for o in &w.others {
+        for o in v.others {
             if o.tool_use_id.is_some() && o.tool_use_id == own {
                 continue;
             }
-            let call = o.tool_use_id.as_ref().and_then(|t| w.tool_uses.get(t));
+            let call = o.tool_use_id.as_ref().and_then(|t| v.tool_uses.get(t));
             if let Some(c) = call {
                 let delivery = c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n));
-                if !(delivery && names_agent(c.input.as_ref(), id, &w.launched)?) {
+                if !(delivery && names_agent(c.input.as_ref(), id, &v.launched)?) {
                     continue;
                 }
             }
@@ -1373,29 +1451,29 @@ fn finish_mut(w: &mut Walk, path: &str, opts: &Opts) -> Res<Scan> {
             }
         }
         if let Some((seq, ts)) = hit {
-            w.mark_terminal(id, seq, ts);
+            v.mark_terminal(id, seq, ts);
         }
     }
 
     // RESUME RECONCILIATION.
-    let mut known: Vec<String> = w.launched.keys().cloned().collect();
-    for t in &w.terminal {
+    let mut known: Vec<String> = v.launched.keys().cloned().collect();
+    for t in &v.terminal {
         if !known.contains(t) {
             known.push(t.clone());
         }
     }
-    let resumes: Vec<(String, u64)> = w.resume_seq.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let resumes: Vec<(String, u64)> = v.resume_seq.iter().map(|(k, v)| (k.clone(), *v)).collect();
     let slack = defaults::num("agent_scan.resume_skew_slack_ms") as f64;
     for (rid, r_seq) in resumes {
         let mut targets: Vec<String> = known.iter().filter(|k| k.starts_with(rid.as_str())).cloned().collect();
-        if !w.resume_full.contains(&rid) && targets.len() != 1 {
+        if !v.resume_full.contains(&rid) && targets.len() != 1 {
             targets.clear();
         }
         if targets.is_empty()
-            && w.resume_full.contains(&rid)
-            && let Some(ts) = w.resume_ts.get(&rid).copied()
+            && v.resume_full.contains(&rid)
+            && let Some(ts) = v.resume_ts.get(&rid).copied()
         {
-            w.launched.set(
+            v.launched.set(
                 &rid,
                 Rec {
                     adopted: true,
@@ -1413,20 +1491,20 @@ fn finish_mut(w: &mut Walk, path: &str, opts: &Opts) -> Res<Scan> {
             );
             targets.push(rid.clone());
         }
-        let r_ts = w.resume_ts.get(&rid).copied();
+        let r_ts = v.resume_ts.get(&rid).copied();
         for id in targets {
-            if let (Some(ts), Some(rec)) = (r_ts, w.launched.get_mut(&id)) {
+            if let (Some(ts), Some(rec)) = (r_ts, v.launched.get_mut(&id)) {
                 rec.resumed_at_ms = Some(rec.resumed_at_ms.unwrap_or(0.0).max(ts));
             }
-            if !w.terminal.contains(&id) {
+            if !v.terminal.contains(&id) {
                 continue;
             }
-            let stands = w
+            let stands = v
                 .terminal_ev
                 .get(&id)
                 .is_some_and(|evs| evs.iter().any(|(s, ts)| *s > r_seq && !(ts.is_finite() && r_ts.is_some_and(|r| r.is_finite() && *ts < r - slack))));
             if !stands {
-                w.terminal.remove(&id);
+                v.terminal.remove(&id);
             }
         }
     }
@@ -1434,9 +1512,9 @@ fn finish_mut(w: &mut Walk, path: &str, opts: &Opts) -> Res<Scan> {
     // PENDING TEAMMATE MESSAGES: replay each teammate's events in time order.
     let mut pending: Vec<(String, Pending)> = Vec::new();
     let silence = defaults::num("agent_scan.pending_silence_ms") as f64;
-    let names: Vec<String> = w.team_events.keys().cloned().collect();
+    let names: Vec<String> = v.team_events.keys().cloned().collect();
     for name in names {
-        let Some(evs) = w.team_events.get(&name) else { continue };
+        let Some(evs) = v.team_events.get(&name) else { continue };
         if !evs.iter().any(|e| e.kind == "spawn" || e.kind == "idle") {
             continue;
         }
@@ -1494,19 +1572,19 @@ fn finish_mut(w: &mut Walk, path: &str, opts: &Opts) -> Res<Scan> {
         let seen = teammate_sidechain_mtime(path, &name);
         let last_seen = if seen > sent { seen } else { sent };
         let live = opts.now_ms - last_seen < silence;
-        let info = w.team_info.get(&name);
+        let info = v.team_info.get(&name);
         let agent_id = info.map(|i| i.agent_id.clone()).unwrap_or_default();
         let tuid = info.and_then(|i| i.tool_use_id.clone());
         pending.push((name.clone(), Pending { sent_at_ms: sent, last_idle_ms: last_idle, last_seen_ms: last_seen, live, agent_id }));
         if !live {
             continue;
         }
-        w.launched.set(
+        v.launched.set(
             &name,
             Rec {
                 adopted: false,
                 output_file: String::new(),
-                description: tuid.and_then(|t| w.desc_by_tool_use.get(&t).cloned()).unwrap_or_default(),
+                description: tuid.and_then(|t| v.desc_by_tool_use.get(&t).cloned()).unwrap_or_default(),
                 launched_at_ms: sent,
                 tool_use_id: None,
                 resumed_at_ms: Some(sent),
@@ -1517,9 +1595,9 @@ fn finish_mut(w: &mut Walk, path: &str, opts: &Opts) -> Res<Scan> {
                 spawn_input: None,
             },
         );
-        w.terminal.remove(&name);
+        v.terminal.remove(&name);
     }
-    Ok(Scan { launched: std::mem::take(&mut w.launched), terminal: std::mem::take(&mut w.terminal), pending })
+    Ok(Scan { launched: v.launched, terminal: v.terminal, pending })
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows

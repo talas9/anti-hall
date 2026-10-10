@@ -11,10 +11,10 @@
 //! | `jevCachePeek(hash)` | the answer and confidence of the Jev cache entry under `hash`: see [`cache_peek`] |
 
 use crate::checks::emit_dedupe::scan_tail;
-use quick_cache::{Weighter, sync::Cache};
+use moka::sync::{Cache, CacheBuilder};
 use rquickjs::{Ctx, Function, Object};
 use serde_json::json;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 type Key = (String, u64);
 type Stamp = (u64, std::time::SystemTime);
@@ -23,30 +23,51 @@ type Stamp = (u64, std::time::SystemTime);
 struct Entry {
     stamp: Stamp,
     answer: String,
+    weight: u32,
 }
 
-#[derive(Clone)]
-struct EntryWeighter;
-
-impl Weighter<Key, Entry> for EntryWeighter {
-    fn weight(&self, key: &Key, val: &Entry) -> u64 {
-        (key.0.len() + std::mem::size_of::<u64>() + val.answer.len()) as u64
-    }
+fn entry_weight(key: &Key, answer: &str) -> u32 {
+    (key.0.len() + std::mem::size_of::<u64>() + answer.len()).min(u32::MAX as usize) as u32
 }
 
 /// Last answer per (path, window): valid while the file keeps its size and modification time.
-static CACHE: OnceLock<Cache<Key, Entry, EntryWeighter>> = OnceLock::new();
+static CACHE: OnceLock<Mutex<TranscriptCache>> = OnceLock::new();
 
-fn cache() -> &'static Cache<Key, Entry, EntryWeighter> {
-    let c = CACHE.get_or_init(|| Cache::with_weighter(1, crate::defaults::num("script.transcript_cache_max_bytes"), EntryWeighter));
-    c.set_capacity(crate::defaults::num("script.transcript_cache_max_bytes"));
-    c
+struct TranscriptCache {
+    cap: u64,
+    cache: Cache<Key, Entry>,
+}
+
+fn new_cache(cap: u64) -> Cache<Key, Entry> {
+    CacheBuilder::new(cap).weigher(|_k: &Key, v: &Entry| v.weight).build()
+}
+
+fn with_cache<R>(f: impl FnOnce(&Cache<Key, Entry>) -> R) -> R {
+    let mut g = CACHE
+        .get_or_init(|| {
+            let cap = crate::defaults::num("script.transcript_cache_max_bytes");
+            Mutex::new(TranscriptCache { cap, cache: new_cache(cap) })
+        })
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cap = crate::defaults::num("script.transcript_cache_max_bytes");
+    if g.cap != cap {
+        *g = TranscriptCache { cap, cache: new_cache(cap) };
+    }
+    f(&g.cache)
 }
 
 /// (entries, bytes of cached answers) of the transcript-tail cache, for the memory snapshot.
 pub fn cache_usage() -> (usize, usize) {
-    let c = cache();
-    (c.len(), c.weight() as usize)
+    with_cache(|c| {
+        c.run_pending_tasks();
+        (c.entry_count() as usize, c.weighted_size() as usize)
+    })
+}
+
+/// Clear the transcript-tail cache (test support and daemon reload hygiene).
+pub fn clear_cache() {
+    with_cache(|c| c.invalidate_all());
 }
 
 fn stamp_of(path: &str) -> Option<Stamp> {
@@ -67,7 +88,7 @@ pub fn dedupe_tail(path: &str, bytes: f64) -> String {
     let stamp = stamp_of(path);
     let key = (path.to_string(), n);
     if let Some(st) = stamp
-        && let Some(hit) = cache().get(&key).filter(|e| e.stamp == st).map(|e| e.answer)
+        && let Some(hit) = with_cache(|c| c.get(&key)).filter(|e| e.stamp == st).map(|e| e.answer)
     {
         return hit;
     }
@@ -77,7 +98,8 @@ pub fn dedupe_tail(path: &str, bytes: f64) -> String {
         Ok(Some(t)) => json!({"size": t.size, "atts": t.atts.iter().map(|a| json!({"ts": a.ts, "els": a.els})).collect::<Vec<_>>()}).to_string(),
     };
     if let (Some(st), false) = (stamp, out.contains("unsure")) {
-        cache().insert(key, Entry { stamp: st, answer: out.clone() });
+        let weight = entry_weight(&key, &out);
+        with_cache(|c| c.insert(key, Entry { stamp: st, answer: out.clone(), weight }));
     }
     out
 }

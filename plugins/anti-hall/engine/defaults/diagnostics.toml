@@ -51,6 +51,18 @@ value = 8388608
 min = 4096
 unit = "bytes"
 
+[diagnostics.mem_regression_calls]
+doc = "Calls the issue-21 cache regression drives against large transcript-tail answers before and after warm-up."
+value = 72
+min = 2
+unit = "count"
+
+[diagnostics.mem_regression_growth_bytes]
+doc = "Allowed jemalloc allocated-byte growth after the issue-21 cache regression warms up."
+value = 12582912
+min = 1048576
+unit = "bytes"
+
 [files.mem_log]
 doc = "Per-request memory log file name (state directory)."
 value = "mem.ndjson"
