@@ -665,7 +665,7 @@ fn correct_matches_node() {
         }),
         c("corr-sends-the-message-and-records-the-warning", &["correct", "child-1"], true).setup(plan_with(two, "")),
         c("corr-sends-with-stray-signals-and-jev", &["correct", "child-1"], true).setup(both(Box::new(plan_with(two, "")), stray)),
-        c("corr-to-an-unregistered-id-is-node", &["correct", "ghost"], false).setup(|h| {
+        c("corr-to-an-unregistered-id", &["correct", "ghost"], true).setup(|h| {
             put(
                 h,
                 ".anti-hall/devswarm/plans/ghost.json",
@@ -675,7 +675,7 @@ fn correct_matches_node() {
         c("corr-unsafe-id", &["correct", "../x"], true),
         c("corr-no-id", &["correct"], true),
     ];
-    check(&fx, &cases, &[], 11, 1);
+    check(&fx, &cases, &[], 13, 0);
 }
 
 // ---- reap-orphans ---------------------------------------------------------------------------------------------------------
