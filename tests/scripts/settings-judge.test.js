@@ -13,7 +13,7 @@ const ROOT = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
 const CLI = path.join(ROOT, 'scripts', 'settings.js');
 const DOCTOR = path.join(ROOT, 'hooks', 'doctor.js');
 const SECRET = 'sk-ant-TESTSECRET-0123456789';
-const COST = 'about $0.0001–0.001 and 1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on eval/inference-bench.js (84 synthetic cases)';
+const COST = 'about $0.0001–0.001 and 1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on tools/eval/inference-bench.js (84 synthetic cases)';
 
 function envFor(home, extra) {
   const e = Object.assign({}, process.env, { HOME: home, USERPROFILE: home }, extra || {});

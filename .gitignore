@@ -21,9 +21,9 @@ HANDOVER-*.md
 assets/demo/*.cast
 
 # eval raw per-response results + run logs — regenerable from run.js, bulky, machine-run
-eval/results*.json
-eval/scope-results*.json
-eval/*.log
+tools/eval/results*.json
+tools/eval/scope-results*.json
+tools/eval/*.log
 # local project working notes — never ship to the public repo
 CLAUDE.md
 
@@ -64,3 +64,7 @@ tools/__pycache__/
 
 # Local Playwright MCP scratch
 .playwright-mcp/
+
+# personal launchers (local only)
+cc.sh
+cx.sh

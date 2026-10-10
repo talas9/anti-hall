@@ -13,7 +13,7 @@ ah-engine has its own semver, separate from the plugin. A release is tagged `ah-
 | `ah-engine/scripts/package.sh` | Deterministic `ah-engine-vX.Y.Z-<triple>.tar.gz` plus `.sha256`. |
 | `ah-engine/scripts/package-src.sh` | Vendored source tarball `ah-engine-vX.Y.Z-src.tar.gz` plus `.sha256`. |
 | `ah-engine/scripts/update-lock.sh` | Writes `ah-engine.lock` from a directory of assets. |
-| `ah-engine.lock.example` | Example lock file from a local host build. |
+| `ah-engine/ah-engine.lock.example` | Example lock file from a local host build. |
 
 ## Fingerprint
 

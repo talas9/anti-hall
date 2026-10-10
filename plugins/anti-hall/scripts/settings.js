@@ -341,8 +341,8 @@ function cmdTrustAllow(kind, args, opts) {
   }
 }
 
-const JUDGE_COST = 'about $0.0001\u20130.001 and 1\u20133 s per turn end, estimated, not measured; precision 0.78\u20130.81 and recall 1.0 measured on eval/inference-bench.js (84 synthetic cases)';
-const JUDGE_COST_CLI = 'no API bill (your Claude login\'s usage) and about 5\u20136 s per turn end, measured; precision 0.78\u20130.81 and recall 1.0 measured on eval/inference-bench.js (84 synthetic cases)';
+const JUDGE_COST = 'about $0.0001\u20130.001 and 1\u20133 s per turn end, estimated, not measured; precision 0.78\u20130.81 and recall 1.0 measured on tools/eval/inference-bench.js (84 synthetic cases)';
+const JUDGE_COST_CLI = 'no API bill (your Claude login\'s usage) and about 5\u20136 s per turn end, measured; precision 0.78\u20130.81 and recall 1.0 measured on tools/eval/inference-bench.js (84 synthetic cases)';
 
 // judge on|off|status — the opt-in semantic speculation-judge (jev.semanticJudge).
 // The key is only RESOLVED here (never printed). A key stored as a Claude Code

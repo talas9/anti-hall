@@ -8,7 +8,7 @@
 // into cat/tee, echo/printf), per lib/shell-writes.js. A shell write whose text
 // is not visible (cp, sed -i, python -c, a variable) is not checked.
 //
-// THE MECHANICAL ANSWER TO API HALLUCINATION. The benchmark in the eval/ directory showed the
+// THE MECHANICAL ANSWER TO API HALLUCINATION. The benchmark in the tools/eval/ directory showed the
 // verify-first *prompt* does not reliably stop a model inventing non-existent
 // APIs — the model ignores "go verify" ~95% of the time. So this guard does the
 // verification ITSELF, deterministically, on the code about to be written: it
