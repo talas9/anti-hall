@@ -19,7 +19,7 @@ value = { args = "[--force] [--home <dir>]", read_only = false, status = "implem
 
 [job.refresh]
 doc = "Handle the session-cache refresh requests (L06): runs `ah-engine refresh --json` as a subprocess, so a timeout kills it and every probe it started. Off when refresh.every_ms is 0."
-value = { kind = "engine", action = "refresh", every_key = "refresh.every_ms", jitter_ms = 5000, timeout_ms = 900000, retries = 0, backoff_ms = 5000, backoff_max_ms = 60000, cooldown_ms = 60000, catch_up = "skip", persist = false }
+value = { kind = "engine", action = "refresh", every_key = "refresh.every_ms", jitter_ms = 5000, timeout_ms = 900000, retries = 3, backoff_ms = 60000, backoff_max_ms = 900000, cooldown_ms = 900000, catch_up = "skip", persist = false }
 
 [refresh.every_ms]
 doc = "How often the refresh job looks for requests; a request waits at most this long (plus jitter). Cheap when there is none: it reads a few small files. 0 turns the job off."

@@ -165,8 +165,16 @@ doc = "Event-log detail (rate-limited, code proc_unread) when a helper exited bu
 value = "{what} exited but its output was not complete; its process group was killed"
 
 [msg.log_lock_no_daemon]
-doc = "Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty)."
-value = "lock {path} held (pid {pid}) but no daemon answers; this start gives up and the call falls back to Node"
+doc = "Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty), {live_engine}."
+value = "lock {path} held (pid {pid}, live_engine={live_engine}) but no daemon answers; this start gives up and the call falls back to Node"
+
+[msg.daemon_already_running]
+doc = "Printed on stderr when a second daemon start finds an existing daemon/lock holder for the socket. Placeholders: {path}, {pid}, {live_engine}, {answers}."
+value = "ah-engine daemon already running for socket {path}; exiting (holder pid {pid}, live_engine={live_engine}, answers={answers})"
+
+[msg.log_cpu_sustained]
+doc = "Event-log detail when the daemon CPU self-check observes sustained CPU and backs off scheduled jobs. Placeholders: {pct}, {ms}, {backoff_ms}."
+value = "daemon CPU {pct}% over {ms} ms; backing off scheduled jobs for {backoff_ms} ms"
 
 [msg.exit_reason_handoff]
 doc = "Drain reason for a handoff to a newer build or a stop request."
@@ -429,6 +437,14 @@ value = "the run passed its timeout and was stopped"
 [msg.schedule_failed]
 doc = "Event-log detail of a failed run. Placeholders: {job}, {detail}."
 value = "job {job} failed: {detail}"
+
+[msg.schedule_skipped]
+doc = "Event-log detail when a scheduled job skipped itself because there was no work. Placeholders: {job}, {detail}."
+value = "job {job} skipped: {detail}"
+
+[msg.schedule_no_work]
+doc = "Reason text when a scheduled job has no recent sessions or pending requests to handle."
+value = "no recent sessions or pending work"
 
 [msg.schedule_daemon_gone]
 doc = "An in-process job found the daemon gone (it was exiting)."

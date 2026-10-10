@@ -86,7 +86,7 @@ doc = "GitHub realtime (feature #20, independent of DevSwarm): `status` prints, 
 value = { args = "<status|segment|poll> [--cwd <dir>] [--force]", read_only = false, read_only_args = ["status", "segment"], status = "implemented" }
 
 [cmd.gh_poll]
-doc = "The scheduled GitHub realtime tick (the `gh_poll` job): notices pushes, polls the followed repos that are due inside the rate budget and records the edges; prints its counts with --json and always exits 0."
+doc = "The scheduled GitHub realtime tick (the `gh_poll` job): notices pushes, polls the followed repos that are due inside the rate budget and records the edges; prints its counts with --json; exits nonzero when recent sessions exist and the tick leaves gh missing/logged-out/offline so the scheduler backs off."
 value = { args = "", read_only = false, status = "implemented" }
 
 [cmd.migrate]
