@@ -622,7 +622,7 @@ value = "Override (only if the user explicitly confirmed this exact condition is
 # ---- the kept walk of a transcript that fits the scan window (checks::agent_scan::scan_kept, #22) ------------------
 
 [agent_scan.cache_max_paths]
-doc = "How many transcripts the scan keeps a walk for between calls, so a Stop reads only the bytes appended since the last scan (0 turns the cache off). The least recently used one is dropped first."
+doc = "Compatibility switch for the kept-walk cache: 0 turns it off; positive values allow caching. The byte cap, not this legacy count, controls eviction."
 value = 4
 unit = "count"
 

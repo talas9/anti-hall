@@ -189,6 +189,32 @@ fn kept_walk_cache_stays_under_the_configured_byte_cap() {
 }
 
 #[test]
+fn kept_walk_cache_counts_large_retained_tool_inputs() {
+    let dir = scratch("retained-inputs");
+    let big = "x".repeat((ah_engine::defaults::num("agent_scan.cache_max_bytes") / 2) as usize);
+    let inserted = 12usize;
+    for n in 0..inserted {
+        let path = dir.join(format!("t{n}.jsonl"));
+        let lines = [
+            assistant_use(
+                &format!("toolu_agent_big_{n}"),
+                "Agent",
+                json!({"description": "worker", "prompt": big, "run_in_background": true}),
+                "2026-10-06T12:00:00.000Z",
+            ),
+            assistant_use(&format!("toolu_task_big_{n}"), "Task", json!({"description": "task", "prompt": big}), "2026-10-06T12:00:01.000Z"),
+            assistant_use(&format!("toolu_send_big_{n}"), "SendMessage", json!({"agent": "worker", "message": big}), "2026-10-06T12:00:02.000Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let _ = scan_transcript(path.to_str().unwrap(), WINDOW, &opts(false)).unwrap();
+    }
+    let (walks, bytes, _) = kept_usage();
+    assert!(walks < inserted, "large retained-input walks were undercounted and stayed cached: {walks} walks after {inserted} inserts");
+    assert!(bytes <= ah_engine::defaults::num("agent_scan.cache_max_bytes"), "kept-walk cache held {bytes} bytes, over configured cap");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn real_transcripts_cut_at_many_points_scan_the_same() {
     let Some(corpus) = std::env::var_os("AH_SCAN_CORPUS") else { return };
     let dir = scratch("corpus");

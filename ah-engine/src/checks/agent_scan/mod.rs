@@ -1160,8 +1160,83 @@ fn digest_at(f: &std::fs::File, at: u64, len: u64) -> Option<u64> {
 /// A rough size of what a walk holds, for the cache cap.
 fn walk_bytes(w: &Walk) -> u64 {
     let per = defaults::num("agent_scan.cache_entry_bytes");
-    w.other_bytes
-        + per * (w.tool_uses.len() + w.answered.len() + w.errored.len() + w.launched.keys().count() + w.terminal.len() + w.stops.len() + w.others.len()) as u64
+    omap_rec_bytes(&w.launched, per)
+        + set_bytes(&w.terminal, per)
+        + map_string_string_bytes(&w.desc_by_tool_use, per)
+        + w.others.iter().map(|o| other_bytes(o, per)).sum::<u64>()
+        + set_bytes(&w.dropped_ids, per)
+        + w.tool_uses.iter().map(|(k, v)| string_bytes(k, per) + tool_use_bytes(v, per)).sum::<u64>()
+        + w.stops.iter().map(|s| stop_bytes(s, per)).sum::<u64>()
+        + set_bytes(&w.errored, per)
+        + set_bytes(&w.answered, per)
+        + omap_team_events_bytes(&w.team_events, per)
+        + omap_team_info_bytes(&w.team_info, per)
+        + w.terminal_ev.iter().map(|(k, v)| string_bytes(k, per) + per * (1 + v.len() as u64)).sum::<u64>()
+        + omap_u64_bytes(&w.resume_seq, per)
+        + set_bytes(&w.resume_full, per)
+        + w.resume_ts.keys().map(|k| string_bytes(k, per) + per).sum::<u64>()
+}
+
+fn string_bytes(s: &str, per: u64) -> u64 {
+    per + s.len() as u64
+}
+
+fn opt_string_bytes(s: Option<&String>, per: u64) -> u64 {
+    s.map_or(0, |s| string_bytes(s, per))
+}
+
+fn value_bytes(v: &Value, per: u64) -> u64 {
+    match v {
+        Value::Null | Value::Bool(_) | Value::Number(_) => per,
+        Value::String(s) => string_bytes(s, per),
+        Value::Array(a) => per + a.iter().map(|v| value_bytes(v, per)).sum::<u64>(),
+        Value::Object(o) => per + o.iter().map(|(k, v)| string_bytes(k, per) + value_bytes(v, per)).sum::<u64>(),
+    }
+}
+
+fn set_bytes(s: &HashSet<String>, per: u64) -> u64 {
+    per + s.iter().map(|v| string_bytes(v, per)).sum::<u64>()
+}
+
+fn map_string_string_bytes(m: &HashMap<String, String>, per: u64) -> u64 {
+    per + m.iter().map(|(k, v)| string_bytes(k, per) + string_bytes(v, per)).sum::<u64>()
+}
+
+fn rec_bytes(r: &Rec, per: u64) -> u64 {
+    per + string_bytes(&r.output_file, per)
+        + string_bytes(&r.description, per)
+        + opt_string_bytes(r.tool_use_id.as_ref(), per)
+        + string_bytes(&r.task_type, per)
+        + r.spawn_input.as_ref().map_or(0, |v| value_bytes(v, per))
+}
+
+fn tool_use_bytes(t: &ToolUse, per: u64) -> u64 {
+    per + opt_string_bytes(t.name.as_ref(), per) + t.input.as_ref().map_or(0, |v| value_bytes(v, per))
+}
+
+fn stop_bytes(s: &Stop, per: u64) -> u64 {
+    per + string_bytes(&s.id, per) + opt_string_bytes(s.tool_use_id.as_ref(), per)
+}
+
+fn other_bytes(o: &Other, per: u64) -> u64 {
+    per + opt_string_bytes(o.tool_use_id.as_ref(), per) + string_bytes(&o.text, per)
+}
+
+fn omap_rec_bytes(m: &OMap<Rec>, per: u64) -> u64 {
+    per + m.keys().map(|k| string_bytes(k, per)).sum::<u64>() + m.iter().map(|(k, v)| string_bytes(k, per) + rec_bytes(v, per)).sum::<u64>()
+}
+
+fn omap_team_events_bytes(m: &OMap<Vec<TeamEv>>, per: u64) -> u64 {
+    per + m.keys().map(|k| string_bytes(k, per)).sum::<u64>() + m.iter().map(|(k, v)| string_bytes(k, per) + per * (1 + v.len() as u64)).sum::<u64>()
+}
+
+fn omap_team_info_bytes(m: &OMap<TeamInfo>, per: u64) -> u64 {
+    per + m.keys().map(|k| string_bytes(k, per)).sum::<u64>()
+        + m.iter().map(|(k, v)| string_bytes(k, per) + per + opt_string_bytes(v.tool_use_id.as_ref(), per) + string_bytes(&v.agent_id, per)).sum::<u64>()
+}
+
+fn omap_u64_bytes(m: &OMap<u64>, per: u64) -> u64 {
+    per + m.keys().map(|k| string_bytes(k, per)).sum::<u64>() + m.iter().map(|(k, _)| string_bytes(k, per) + per).sum::<u64>()
 }
 
 /// `scanTranscript(transcriptPath, readTail(path, tail), opts)`. `Ok(None)` is JavaScript's `null` (unreadable).

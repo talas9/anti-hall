@@ -240,7 +240,7 @@ min = 1024
 unit = "bytes"
 
 [script.transcript_cache_max_bytes]
-doc = "Total byte cap for (transcript, window) answers `ahHost.transcriptDedupeTail` keeps in the engine process, each valid while the file keeps its size and modification time. Eviction is by the cache policy's least-hot entries rather than clearing the whole cache."
+doc = "Total byte cap for (transcript, window) answers `ahHost.transcriptDedupeTail` keeps in the engine process, each valid while the file keeps its size and modification time. Eviction is Moka's LRU-based TinyLFU policy rather than clearing the whole cache."
 value = 8388608
 min = 1
 unit = "bytes"
