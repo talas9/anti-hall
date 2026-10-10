@@ -155,7 +155,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `devswarm-rt-advisory` | Tells the main session which DevSwarm workspace changes (stuck, CI, PR, lifecycle) it has not seen yet; engine-only. |
 | `session-end-mcp-reaper` | SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node (port of session-end-mcp-reaper.js). |
 | `procwatch-advisory` | SessionStart, UserPromptSubmit and PreToolUse advisory: leftover processes of ended Claude sessions, agents silent past a threshold, processes of this session using too much CPU or memory, and low free disk; warns only (a kill is a per-class opt-in of the scheduled sweep, a block at critical disk an opt-in setting). |
-| `task-tracker` | UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the newRequest Jev label of each prompt and the previous turn's demand score; a session that could be a DevSwarm Primary, or has a task the per-turn DISPATCH NOW line would name or a dispatch-tier outcome still to record, defers to Node (port of task-tracker.js). |
+| `task-tracker` | UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node (port of task-tracker.js). |
 
 ## Settings
 
@@ -1818,7 +1818,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.default_host` | `claude` |  |  | The host whose table is used when `--host` is not given. |
 | `dispatch.default_timeout_s` | `600` |  | s | The timeout of a Node hook whose hooks.json entry has none (0 in the table): the host's own default for a command hook (600 s on Claude per docs/KB-claude-code-hooks.md; Codex's default is not verified here, so the same bound is used). Never zero: a zero timeout would kill the hook at its first poll. |
 | `dispatch.defer_exit` | `75` |  |  | Exit code with which the dispatcher asks its wrapper to run the event's Node hooks one by one, as the host does (the joined output could not be delivered faithfully). EX_TEMPFAIL; the host reads it as a non-blocking hook error and shows stderr, so without a wrapper the deferral is visible, never silent. |
+| `dispatch.defer_to_node` | `1` | `AH_ENGINE_DEFER_TO_NODE` |  | 1 (until the Node cutover) = a path the engine cannot decide (infrastructure fault, spent event budget, panic) hands the event to the wrapper's Node hooks with dispatch.defer_exit. 0 = no Node exists: advisory events skip their hooks (logged, counted in telemetry as dispatcher-<path>, one stderr line) and guard events follow dispatch.failure_mode; an over-cap context is delivered for the host to spill when it cannot be spilled natively. |
 | `dispatch.exact_chars` | `_- ,\|` |  |  | Besides letters and digits, the characters a Claude matcher may contain and still be an exact name or list. |
+| `dispatch.failure_mode` | `3 entries` |  |  | With dispatch.defer_to_node 0, what a GUARD event does when the engine cannot decide, per path: `budget` (the event's budget_ms passed before every hook could start), `infra` (an unreadable payload or map, a hook the OS would not start, a lost table row, no engine answer and no fallback) and `panic` (the dispatcher hit an internal error). `closed` blocks (exit 2, dispatch.msg_fail_closed, bounded on Stop events by dispatch.stop_block_cap), `open` lets the call through with a loud stderr line (dispatch.msg_no_node_open). A panic is `open` because a bug of the engine's own must not lock the user out of every tool. |
 | `dispatch.fallback_lists` | `2 entries` |  |  | Per host, the wrapper's fallback list relative to the plugin root (the same files as dispatch.generated_files): a defaults load is rejected when a list runs hooks for an event the table has no row for, and the dispatcher answers an event without a row with the neutral no-op only when this list marks it as a thin trigger. |
 | `dispatch.gen_default_kind` | `hooks` |  |  | The file `gen-hooks` prints when `--kind` is not given. |
 | `dispatch.generated_files` | `2 entries` |  |  | Per host and kind of generated file (hooks, registry, list, map), its path relative to the repository root. `tests/hooks_files.rs` requires each committed file to equal what `gen-hooks` prints and `ah-gen-fallback-list` writes them. |
@@ -1856,6 +1858,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.msg_bad_map` | `cannot read the fallback map {path}: {err}` |  |  | Error printed when the `--fallback-map` file cannot be read as a JSON object of events to hook ids to commands. |
 | `dispatch.msg_conflict` | `hooks {ids} returned outputs that cannot be combined into one` |  |  | Reason logged when several hooks returned output one hook output cannot combine. |
 | `dispatch.msg_context_over_cap` | `joined context is {len} characters, over the {cap} the host delivers inline` |  |  | Event-log detail when the joined additionalContext of an event is over the host's inline cap. |
+| `dispatch.msg_context_spilled` | `joined context spilled: {inline} characters inline, {file} characters of {hoo...` |  |  | Event-log detail when an over-cap joined context was spilled to a file. Placeholders: {inline}, {file}, {hooks}, {path}. |
 | `dispatch.msg_defer` | `dispatcher deferred the whole call: {why}` |  |  | Event-log detail when the dispatcher cannot answer an event and defers the whole call. |
 | `dispatch.msg_defer_separately` | `anti-hall: the joined {event} context is {len} characters, over the {cap} the...` |  |  | Printed on stderr with dispatch.defer_exit when the joined output is over the host's cap. Placeholders: {event}, {len}, {cap}. |
 | `dispatch.msg_fail_closed` | `anti-hall: the engine could not run the guards for {event} ({why}). The call ...` |  |  | Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}. |
@@ -1865,10 +1868,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.msg_hook_timeout` | `the hook ran past its timeout and was killed; the host discards a timed-out hook` |  |  | Event-log detail when a Node hook was still running at its timeout and was killed with its group (the host discards such a hook, so the call goes on). |
 | `dispatch.msg_infra_defer` | `anti-hall: the engine could not dispatch {event} ({why}); the Node hooks decide` |  |  | Printed on stderr with dispatch.defer_exit when an infrastructure fault (a hook the OS would not start, an unreadable payload or fallback map, a usage error, the event's budget spent) keeps the dispatcher from deciding: the wrapper then runs the Node hooks. Placeholders: {event}, {why}. |
 | `dispatch.msg_no_fallback` | `entry {id} deferred with no runnable Node command` |  |  | Reason logged when a deferred hook entry has no runnable Node command. |
+| `dispatch.msg_no_node_event` | `{path}: {why}` |  |  | Event-log detail for a path that answered without Node. Placeholders: {path}, {why}. |
+| `dispatch.msg_no_node_open` | `anti-hall: the guards for {event} could not run ({why}); this call went throu...` |  |  | Printed on stderr (exit 0) when a guard event is let through because the engine cannot decide it and its failure mode is open. Placeholders: {event}, {why}. |
+| `dispatch.msg_no_node_skipped` | `anti-hall: the {event} hooks were skipped ({why}); run `ah-engine doctor` if ...` |  |  | Printed on stderr (exit 0) when an event that cannot block is skipped because the engine cannot decide it and no Node hooks exist. Placeholders: {event}, {why}. |
 | `dispatch.msg_no_row` | `the dispatch table has no well-formed row for {host} {event}: the Node hooks ...` |  |  | Deferral reason when the dispatch table has no well-formed row for an event the fallback list does not mark as a thin trigger. Placeholders: {host}, {event}. |
 | `dispatch.msg_panic` | `the dispatcher hit an internal error: the Node hooks decide` |  |  | Deferral reason (event log and stderr) when the dispatcher panicked on a guard event: the Node hooks answer instead of a block. |
 | `dispatch.msg_skipped_entry` | `entry {id} skipped: no runnable Node command` |  |  | Event-log detail when a non-guard event goes on without an entry that has no runnable Node command. Placeholder: {id}. |
 | `dispatch.msg_skipped_entry_stderr` | `anti-hall: skipped {event} Node hook {id}: no runnable Node command` |  |  | Printed on stderr when a non-guard event goes on without an entry that has no runnable Node command. Placeholders: {event}, {id}. |
+| `dispatch.msg_spill_failed` | `context spill file not written: {err}` |  |  | Event-log detail when the spill file could not be written (the previous over-cap answer stands). Placeholder: {err}. |
+| `dispatch.msg_spill_pointer` | `[anti-hall: the context of {hooks} more hook(s), {chars} characters, did not ...` |  |  | The last line of a spilled additionalContext: tells the model where the rest of the session context is. Placeholders: {path} (absolute file path), {hooks} (how many hooks' contexts are in the file), {chars} (their size). |
+| `dispatch.msg_spill_sweep` | `removed {n} stale context spill file(s)` |  |  | Event-log detail after stale spill files were removed. Placeholder: {n}. |
 | `dispatch.msg_spool_sweep` | `removed {n} stale dispatch stdin spool file(s)` |  |  | Event-log detail when stale named raw-payload spool files were removed. Placeholder: {n}. |
 | `dispatch.msg_stdin_over_cap` | `the hook payload is larger than {max} bytes; built-in checks are skipped and ...` |  |  | Event-log detail when the payload on stdin is longer than client.max_stdin and is sent to Node hooks through an anonymous open file. Placeholder: {max}. |
 | `dispatch.msg_stop_active` | `anti-hall: the engine could not run the guards for {event} ({why}), and a Sto...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the host says a Stop hook already blocked this turn (stop_hook_active). Placeholders: {event}, {why}. |
@@ -1887,6 +1896,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.rerun_reserve_ms` | `5000` |  | ms | The least host time that must be left (the event's longest hooks.json timeout minus the time the dispatcher has used) for a spent budget to defer to the wrapper's Node rerun (dispatch.defer_exit). With less left the rerun would be killed by the host, which treats a timed-out hook as an allow, so a guard event fails closed instead. |
 | `dispatch.root_vars` | `2 entries` |  |  | Per host, the environment variables that hold the plugin root, first set one wins; the host exports them to hook commands, a command naming an unset one cannot run, and a built-in check gets the root as its plugin_root. |
 | `dispatch.shell` | `/bin/sh, -c` |  |  | The shell a Node hook command runs under, with its command flag (hooks.json commands are shell-form strings). |
+| `dispatch.spill_dir` | `context-spill` |  |  | The directory under the state dir that holds the over-cap context files (mode 0600, one per spilled event). |
+| `dispatch.spill_file` | `{event}-{ts}-{pid}.txt` |  |  | File name of one spilled context. Placeholders: {event} (letters and digits of the hook event), {ts} (milliseconds), {pid}. |
+| `dispatch.spill_over_cap` | `1` | `AH_ENGINE_SPILL_OVER_CAP` |  | 1 = a SessionStart (or any event that cannot block) whose joined additionalContext is over dispatch.context_cap is delivered natively: the hooks' contexts that fit stay inline whole and in hook order, the rest is written to a file under dispatch.spill_dir and a pointer line (dispatch.msg_spill_pointer) names it, so nothing is cut and no Node hook runs. The host would spill an over-cap value itself but keeps only about 2000 characters of it inline. 0 = the previous answer: hand the event to the wrapper's Node hooks (dispatch.defer_exit) while dispatch.defer_to_node is 1, else deliver the join and let the host spill it. Used only when the join is exactly the hooks' contexts joined by dispatch.context_joiner and the file can be written; otherwise the previous answer stands. |
+| `dispatch.spill_stale_s` | `604800` |  | s | Age at which a spilled context file is removed. A session reads its file soon after it starts, so a week is generous; the file only holds text the hooks print again at the next start. |
 | `dispatch.spool_stale_s` | `1800` |  | s | Age at which a named raw-payload stdin spool file from an older build or unlink failure is considered stale and removed. Keep this larger than the longest hook timeout. |
 | `dispatch.stop_block_cap` | `2` |  |  | How many consecutive fail-closed blocks a Stop or SubagentStop may answer in one session before every later one fails open with a log (the count resets when the guards run fine again). |
 | `dispatch.stop_events` | `Stop, SubagentStop` |  |  | Guard events whose exit 2 keeps the agent running instead of denying one call (Stop, SubagentStop). A fail-closed block there must be bounded, or an agent whose hooks cannot run could never finish: the payload's stop_hook_active true fails open, and so do more than dispatch.stop_block_cap consecutive fail-closed blocks in one session (the Node Stop hooks make the same stop_hook_active check). |
@@ -3395,7 +3408,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `taskstate.backfill_chunk_bytes` | `1048576` |  |  | How much of the transcript the backfill reads at a time. |
-| `taskstate.backfill_exact_bytes` | `8388608` |  |  | How far back the backfill scans before the engine hands the call to Node. Node stops after 150 ms of wall clock (64 MiB at most); the engine scans a fixed number of bytes instead so its answer never depends on machine speed, and past this bound it defers rather than guess where Node would have stopped. |
+| `taskstate.backfill_exact_bytes` | `67108864` |  |  | How far back the backfill scans before the engine hands the call to Node: Node's own byte cap (64 MiB). Node also stops after 150 ms of wall clock; the engine scans a fixed number of bytes instead so its answer never depends on machine speed. Where Node's clock would have stopped it short on a slow machine, the engine finds the subjects Node missed (a fuller note, never a missing one); past this bound it defers rather than guess where Node would have stopped. |
 | `taskstate.backfill_max_candidates` | `256` |  |  | How many unpaired task-creation results the backfill remembers while scanning backward. |
 | `taskstate.backfill_max_subject` | `200` |  |  | Longest subject the backfill recovers, in UTF-16 units. |
 | `taskstate.backfill_prefix_scan_bytes` | `8388608` |  |  | How far past the window start the backfill looks for the end of the line that straddles it. |
@@ -5280,6 +5293,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.failure_mode_by_check` | `6 entries` |  |  | Failure mode of an engine-only check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. None ships `closed`: sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript. |
 | `script.failure_mode_closed` | `closed` |  |  | The failure-mode value that blocks on a guard event (any other value allows). |
 | `script.failure_mode_default` | `open` |  |  | Failure mode of an engine-only check not listed in script.failure_mode_by_check. |
+| `script.grep_max_bytes` | `2097152` |  | bytes | Most bytes of lines `ahHost.transcriptGrep` hands back to a script; a search that matches more is answered unsure and the script defers. |
 | `script.heap_budget_base_bytes` | `524288` |  | bytes | Memory budget the interpreter test holds one worker thread to (DECISIONS.md 1.111): this much for the runtime, the shared context, the host bindings and the lib files, plus script.heap_budget_per_check_bytes for every check script it has run. Measured 2026-10-09: 224 KB base, 1.04 MB with all 16 shipped scripts (git.js 365 KB, the others 1-195 KB); a context per check held 3.3 MB. |
 | `script.heap_budget_per_check_bytes` | `98304` |  | bytes | Per check script share of the interpreter budget above (DECISIONS.md 1.111). |
 | `script.includes` | `13 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
@@ -5314,6 +5328,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.tail_max_bytes` | `16777216` |  | bytes | Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for. |
 | `script.time_limit_by_check` | `21 entries` |  |  | Per-check limit of one script call (ms; the interpreter thread's CPU time, and the wall-clock backstop is script.wall_limit_factor times it), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; `command` (command-guard) resolves repositories and runs `git` for its edit parity and carve-outs (a child process wait is credited back, but a loaded machine stretches the interpreter's own time as well); `git` (git-guard) tokenizes the whole command and its heredoc bodies (the frozen replay of 2026-10-09 interrupted it at 50 ms on 3 long heredoc commands, each answered the same with the time); api-guard and ship-it-guard parse Bash writes with command-guard's parsers (script.includes) and compact-declaration-guard parses the current turn of a 1.5 MB transcript tail, so they get command-guard's order of time and more; `precompact-snapshot` reads the transcript tail of a PreCompact (a real 1.5 MB tail takes about 190 ms in the interpreter, so 50 ms would defer it to Node every time); `claim-ledger` walks up to 2 MB of transcript evidence; the Stop-time and prompt-time checks that scan the transcript tail or state (tasklist-guard, task-guard, silent-agent-nudge, stale-agent-stop-note, auto-handover, auto-handover-pause-nag, compact-advice-guard, limit-conserve-inject, idle-agent-sweep) get 500 ms because, measured 2026-10-09 on the frozen replay (2113 calls), the 50 ms default interrupted tasklist-guard on 2 and silent-agent-nudge on 6 of 61 Stop calls (and stale-agent-stop-note on a 156 MB transcript), each deferring a decision the script makes identically when given the time; its SessionStart advisory only lists and stats files. |
 | `script.time_limit_ms` | `50` | `AH_ENGINE_SCRIPT_TIME_MS` | ms | CPU-time limit of one script call (the interpreter thread's own CPU time, see script.wall_limit_factor for the wall-clock backstop); past it the interpreter is interrupted and the call defers to Node (never a silent allow). |
+| `script.transcript_cache_entries` | `64` |  |  | Most (transcript, window) answers `ahHost.transcriptDedupeTail` keeps in the engine process, each valid while the file keeps its size and modification time; past it the cache is emptied. |
 | `script.wall_limit_factor` | `10` |  |  | The wall-clock backstop of a script call, as a multiple of its time limit. The limit itself counts the interpreter thread's CPU time, so a thread kept waiting for a core by a loaded machine is not interrupted; the backstop ends a script that waits without using CPU. Time a host function spends blocked (a child process, a lock) is credited back to the backstop. |
 | `script.write_max_bytes` | `1048576` |  | bytes | Largest text one `ah.state.writeAtomic` call may write; a larger text is refused. |
 | `script.write_path_max` | `600` |  |  | Longest relative path one `ah.state.writeAtomic` call may name. |
@@ -5504,16 +5519,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `task_tracker.annotation_joiner` | ` ` |  |  | What stands between a task label and its tier annotation. |
 | `task_tracker.blocked_tail` | ` (+{n} blocked: {why})` |  |  | The tail naming tasks that wait on someone else; `{n}` is how many and `{why}` who. |
+| `task_tracker.bytes_per_mb` | `1048576` |  |  | Bytes in one megabyte, for the window named in the unknown-count note. |
 | `task_tracker.codex_from` | `as a task (TaskCreate) ` |  |  | The words of the directive that name the Claude-only task tool; the Codex text swaps the first occurrence. |
 | `task_tracker.codex_to` | `as an item in your task/plan list ` |  |  | What the Codex text says in their place. |
 | `task_tracker.control_re` | `[\x00-\x1F\x7F-\x9F]` |  |  | JavaScript regex source (case-sensitive) of the control characters a quoted subject replaces with a space. |
 | `task_tracker.dd_setting` | `6 entries` |  |  | Where the per-turn dispatch demand switch is read from (guards.dispatchDemand, default on): while it is on, a session with a task the demand line would name is left to Node. |
 | `task_tracker.dedupe_key` | `task-tracker` |  |  | The emit-dedupe key of the directive and the combined text. |
 | `task_tracker.dedupe_short_key` | `task-tracker-short` |  |  | The emit-dedupe key of the short reminder, kept apart so the keepalive can ration it. |
+| `task_tracker.demand_joiner` | `, ` |  |  | What joins the labelled tasks of the demand line. |
+| `task_tracker.demand_line` | `DISPATCH NOW in parallel — one background agent EACH, this turn ({running} ru...` |  |  | The per-turn demand line; `{running}` the running agents, `{cap}` the parallel cap, `{shown}` the labelled tasks, `{more}` the tail for tasks past the shown ones. |
+| `task_tracker.demand_more` | `, +{n} more` |  |  | The tail of the demand line when more tasks are dispatchable than are shown; `{n}` is how many more. |
+| `task_tracker.demand_show_max` | `12` |  |  | How many dispatchable tasks the demand line names. |
 | `task_tracker.done_statuses` | `completed, done, cancelled, canceled` |  |  | Statuses (lowercase) that mean a task no longer blocks the ones waiting on it. |
 | `task_tracker.ellipsis` | `…` |  |  | What ends a subject that was cut. |
 | `task_tracker.event` | `UserPromptSubmit` |  |  | The hook event name in the output. |
+| `task_tracker.footer_joiner` | ` ` |  |  | What stands between the demand line and the Jev footer. |
+| `task_tracker.freshness_joiner` | ` ` |  |  | What stands between the demand block and the open-tasks line. |
 | `task_tracker.full_level` | `full` |  |  | The protocol level at which the directive keeps the non-blocking clause (any other level drops it). |
 | `task_tracker.future_tolerance_ms` | `300000` |  | ms | How far ahead of now a stored timestamp may be (clock skew) before it counts as corrupt and the window is treated as expired. |
 | `task_tracker.growth_bytes` | `245760` |  | bytes | How much the transcript may grow after a full directive before the next prompt injects it again (about 60 thousand tokens, where adherence to an instruction starts to decay). |
@@ -5533,6 +5556,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.metrics_ignored` | `demandsIgnored` |  |  | The counter of demands no spawn followed. |
 | `task_tracker.metrics_pending` | `pending` |  |  | The key of the metrics file that holds the demands still to be scored, per session. |
 | `task_tracker.metrics_pending_ttl_ms` | `86400000` |  | ms | How long a demand waits to be scored before it is dropped. |
+| `task_tracker.metrics_shown` | `demandsShown` |  |  | The counter of per-turn demand lines shown. |
 | `task_tracker.non_blocking` | `keep the MAIN thread non-blocking by delegating heavy/long work to background...` |  |  | The clause the compact protocol level leaves out of the directive (the session core already carries it). |
 | `task_tracker.note_joiner` | ` ` |  |  | What joins the directive or the reminder and the open-tasks line inside one text. |
 | `task_tracker.open_some` | `open tasks: {n}{blocked}{tail} — update or close them.` |  |  | The open-tasks line when tasks are open; `{n}` the count, `{blocked}` the blocked-tasks tail, `{tail}` the oldest in-progress subject. |
@@ -5558,8 +5582,36 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.subject_tail` | ` (oldest in_progress subject: {subject})` |  |  | The tail naming the oldest in-progress task; `{subject}` is its quoted subject. |
 | `task_tracker.subject_unknown` | `(subject unknown)` |  |  | What stands for a subject that was never learned. |
 | `task_tracker.summary` | `UserPromptSubmit task-list discipline: the full directive or the short remind...` |  |  | One-line description of the task-tracker check in the generated reference. |
+| `task_tracker.tier_arrow` | `→ ` |  |  | What starts a tier annotation. |
+| `task_tracker.tier_conf` | ` ({conf})` |  |  | The confidence part of a tier annotation; `{conf}` is the confidence rounded to two decimals. |
+| `task_tracker.tier_conf_floor` | `0.6` |  |  | A workspace or workflow verdict below this confidence (a decimal, written as text) is shown as the default tier. |
+| `task_tracker.tier_default` | `subagent` |  |  | The tier a low-confidence or repo-overridden verdict is shown as (the cheapest). |
+| `task_tracker.tier_done_re` | `^(completed\|done)$` |  |  | JavaScript regex source (case-insensitive) of a task status that counts as done for outcome tracking. |
+| `task_tracker.tier_footer` | `Jev recommendation — final call is yours.` |  |  | The footer of a demand line that carried tier annotations. |
+| `task_tracker.tier_id_after` | `(?!\d)` |  |  | JavaScript regex source that must not follow `#<id>` for the id to be named (so #1 does not match #12). |
+| `task_tracker.tier_id_ok_re` | `^[A-Za-z0-9_-]+$` |  |  | JavaScript regex source of a task id the evidence search can use as a pattern; any other id is left to Node. |
+| `task_tracker.tier_min_workflow_agents` | `3` |  |  | Agents dispatched for one workflow-tier task at which the dispatch counts as a fan-out. |
+| `task_tracker.tier_names` | `workspace, workflow, subagent` |  |  | The tiers a cached Jev verdict may name, in the order of the question. |
+| `task_tracker.tier_spawn_agent_tools` | `Agent, Task` |  |  | The tool names whose description naming `#<id>` is an agent dispatch. |
+| `task_tracker.tier_spawn_shell_re` | `devswarm(\.js)?\s+spawn\b` |  |  | JavaScript regex source of a shell command that spawns a workspace. |
+| `task_tracker.tier_spawn_shell_tool` | `Bash` |  |  | The tool name whose command naming `#<id>` is a workspace dispatch when it matches the spawn pattern. |
+| `task_tracker.tier_spawn_workflow_tool` | `Workflow` |  |  | The tool name whose input naming `#<id>` is a workflow dispatch. |
+| `task_tracker.tier_text_joiner` | `\n` |  |  | What joins a task's subject and description in the text Jev classifies. |
+| `task_tracker.tier_use_marker` | `"tool_use"` |  |  | The text a transcript line must hold to be looked at as a tool call for outcome tracking. |
+| `task_tracker.tier_words` | `16 entries` |  |  | The words of the outcome records. dispatched: prefix of the dispatch outcome; followed, overridden: the recommendation against the dispatch; repo_override, low_conf: why a verdict was shown as the default tier; one_lane, escalated, fanned_out, no_fanout, not_applicable: the result of a dispatch; verdict: prefix of the verdict counters; the *_counter names count the results. |
+| `task_tracker.tier_workflow` | `workflow` |  |  | The tier of breadth-first work. |
+| `task_tracker.tier_workspace` | `workspace` |  |  | The tier a repository that forbids workspaces never gets recommended. |
+| `task_tracker.unknown_head` | `Background-agent running-agent count unknown (` |  |  | The start of the note that the running-agent count is unknown. |
+| `task_tracker.unknown_ids_joiner` | `, ` |  |  | What joins the launch ids in the unknown-count note. |
+| `task_tracker.unknown_ids_max` | `3` |  |  | How many seen launches the unknown-count note names. |
+| `task_tracker.unknown_ids_more` | ` +{n} more` |  |  | What follows the named launches when more were seen; `{n}` is how many more. |
+| `task_tracker.unknown_none` | `none seen; ` |  |  | Part of that note when no launch was seen. |
+| `task_tracker.unknown_older` | `launches older than the last {mb}MB of transcript cannot be checked` |  |  | Part of that note when launches older than the scanned window cannot be checked; `{mb}` the window in whole megabytes. |
+| `task_tracker.unknown_saw` | `saw {n} launched, all finished: {ids}; ` |  |  | Part of that note when launches were seen; `{n}` how many, `{ids}` the first of them. |
 | `task_tracker.unknown_session` | `unknown` |  |  | The session name used when a request has none. |
 | `task_tracker.unknown_tag` | `tracker` |  |  | The tag the unknown-state note is throttled under. |
+| `task_tracker.unknown_tail` | `): check before dispatching more. ` |  |  | The end of the note that the running-agent count is unknown. |
+| `task_tracker.unknown_unreadable` | `transcript unreadable` |  |  | Part of that note when the transcript could not be read. |
 | `task_tracker.what_full` | `capture EVERY user request as a task (TaskCreate) before starting work, so no...` |  |  | The first line of the full directive. |
 | `task_tracker.what_short` | `capture every request as a priority-sorted task; keep statuses current; deleg...` |  |  | The short per-turn reminder. |
 | `task_tracker.why_joiner` | `/` |  |  | What joins the distinct reasons tasks are blocked. |
@@ -5812,7 +5864,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.kind_command` | `command` |  |  | The name of the command allowlist kind. |
 | `ops.kind_edit` | `edit` |  |  | The name of the edit allowlist kind. |
 | `ops.list_sep` | `, ` |  |  | Separator of the values listed in a settings message. |
-| `ops.lock_busy` | `settings.json is being written by another process; run the Node settings tool...` |  |  | Said when another process holds the settings lock past the wait budget; the Node tool names the holder, so the command leaves the change to it. |
+| `ops.lock_busy` | `settings.json is being written by another process (pid {pid}); retry` |  |  | Said when another process holds the settings lock past the wait budget. Placeholders: pid (the holder's process id, or the lock_pid_unknown word). |
+| `ops.lock_pid_unknown` | `unknown` |  |  | Stands for the holder's pid in lock_busy when the lock record names none. |
 | `ops.locked_suffix` | ` (safety: needs --confirmed)` |  |  | After the name of a safety setting in the tables. |
 | `ops.logs_default` | `jev-assist.ndjson` |  |  | Where every other integration logs. |
 | `ops.logs_triage` | `jev-triage.ndjson (+ outcome rows in jev-assist.ndjson)` |  |  | Where the triage integration logs. |
@@ -5893,11 +5946,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.table_headers_integrations` | `Integration, Effective, Configured, Source, Logs to` |  |  | The columns of the Jev integrations table. |
 | `ops.true_word` | `true` |  |  | The value `judge on` stores. |
 | `ops.trust_done` | `trusted {repo}/{rel} (sha256 {hash}):` |  |  | First line after a trust is recorded. Placeholders: repo, rel, hash. |
+| `ops.trust_exotic_breaks` | `,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
 | `ops.trust_missing` | `no {rel} in {top}` |  |  | No allowlist file. Placeholders: rel, top. |
 | `ops.trust_not_git` | `not inside a git repository: {target}` |  |  | No repository. Placeholder: target. |
 | `ops.trust_state` | `{rel} in {top} is {state}` |  |  | An unusable allowlist file. Placeholders: rel, top, state. |
 | `ops.trust_symlink` | `refusing a symlinked {rel} (or .anti-hall dir) in {top}` |  |  | A symlinked allowlist. Placeholders: rel, top. |
-| `ops.trust_unsure` | `the repository layout needs the Node settings tool to classify; nothing was r...` |  |  | Said when the repository layout cannot be classified exactly; the Node tool decides. |
+| `ops.trust_unparsable` | `{rel} in {top} uses JSON the engine cannot read exactly (a lone surrogate esc...` |  |  | Said when the allow file holds JSON the engine's parser does not reproduce (a lone surrogate escape, or nesting past the limit); nothing is recorded. Placeholders: rel, top. |
+| `ops.trust_unsure` | `cannot classify the repository layout at {target} exactly; nothing was record...` |  |  | Said when the repository holding the target has a .git file whose line breaks cannot be classified exactly, or the repository cannot be located exactly; nothing is recorded. Placeholders: target. |
 | `ops.trust_warning` | `{what}{repo} without delegating them. Re-run with --confirmed to trust this e...` |  |  | The confirmation request. Placeholders: what, repo, hash. |
 | `ops.trust_what_command` | `Trusting lets the main thread run these commands in ` |  |  | What trusting a command allowlist allows. |
 | `ops.trust_what_edit` | `Trusting lets the main thread edit files matching these paths in ` |  |  | What trusting an edit allowlist allows. |

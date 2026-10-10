@@ -59,7 +59,8 @@ impl Sys for RealSys {
         let (prog, args) = argv.split_first()?;
         let mut cmd = std::process::Command::new(prog);
         cmd.args(args);
-        let out = crate::proc::run(cmd, defaults::text("units.cmd_what"), defaults::millis("units.cmd_timeout_ms"), defaults::millis("units.cmd_poll_ms")).ok()?;
+        let out =
+            crate::proc::run(cmd, defaults::text("units.cmd_what"), defaults::millis("units.cmd_timeout_ms"), defaults::millis("units.cmd_poll_ms")).ok()?;
         out.status.code()
     }
 
@@ -237,7 +238,10 @@ pub fn engine_files(m: Manager, home: &Path, exe: &str) -> Vec<(PathBuf, String)
             let unit = defaults::text("units.unit_name");
             let dir = systemd_dir(home);
             vec![
-                (dir.join(format!("{unit}{}", defaults::text("units.service_suffix"))), fill(defaults::text("units.service_template"), &[("exec", &exec.join(" "))])),
+                (
+                    dir.join(format!("{unit}{}", defaults::text("units.service_suffix"))),
+                    fill(defaults::text("units.service_template"), &[("exec", &exec.join(" "))]),
+                ),
                 (dir.join(timer_name(unit)), fill(defaults::text("units.timer_template"), &[("interval", &interval)])),
             ]
         }
@@ -270,7 +274,11 @@ impl Run<'_, '_> {
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(defaults::text("units.ledger_file"))) {
                 crate::discard::harmless(std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes())); // keep: best effort, the report has it
             }
-            crate::health::log_event(defaults::text("units.log_kind"), action, &fill(defaults::text("units.log_detail"), &[("target", target), ("outcome", outcome), ("reason", reason)]));
+            crate::health::log_event(
+                defaults::text("units.log_kind"),
+                action,
+                &fill(defaults::text("units.log_detail"), &[("target", target), ("outcome", outcome), ("reason", reason)]),
+            );
             crate::telemetry::emit::add_items(1);
         }
         if outcome == defaults::text("units.out_failed") {
@@ -344,9 +352,7 @@ impl Run<'_, '_> {
         let text = std::fs::read_to_string(self.units_dir().join(defaults::text("units.ledger_file"))).ok()?;
         text.lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|v| {
-                v["action"] == defaults::text("units.act_retire") && v["outcome"] == defaults::text("units.out_ok") && v["target"] == target
-            })
+            .filter(|v| v["action"] == defaults::text("units.act_retire") && v["outcome"] == defaults::text("units.out_ok") && v["target"] == target)
             .filter_map(|v| v["action_id"].as_str().map(str::to_string))
             .next_back()
     }
@@ -508,7 +514,12 @@ fn retire_node_units(run: &mut Run<'_, '_>) {
     for inst in node_instances(m, &ctx.home) {
         let Some(first) = inst.files.first().map(|p| p.display().to_string()) else { continue };
         if let Some(prev) = run.retired_before(&first) {
-            run.row(defaults::text("units.act_mistake"), &first, defaults::text("units.out_ok"), &fill(defaults::text("units.why_came_back"), &[("action_id", &prev)]));
+            run.row(
+                defaults::text("units.act_mistake"),
+                &first,
+                defaults::text("units.out_ok"),
+                &fill(defaults::text("units.why_came_back"), &[("action_id", &prev)]),
+            );
             continue;
         }
         // the live re-check: the duty is read now, right before acting
@@ -641,11 +652,7 @@ pub fn run_real(sub: Sub, dry: bool, bin: Option<String>) -> Result<Report, &'st
     let state = crate::paths::dir();
     let exe = bin.unwrap_or_else(|| home.join(defaults::text("units.engine_bin_rel")).display().to_string());
     let sys = RealSys::new(&home, &env);
-    let _held = if dry || sub == Sub::Status {
-        None
-    } else {
-        Some(lock(&state).ok_or("units.msg_busy")?)
-    };
+    let _held = if dry || sub == Sub::Status { None } else { Some(lock(&state).ok_or("units.msg_busy")?) };
     let now_ms = crate::health::now_ms();
     Ok(execute(sub, &Ctx { home, state, exe, dry, sys: &sys, duty: &engine_runs, now_ms }))
 }

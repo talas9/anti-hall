@@ -469,7 +469,7 @@ fn a_guard_event_with_a_missing_node_script_fails_closed_before_spawning_node() 
 
 #[test]
 fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_node() {
-    // SessionEnd: its only hook (the MCP reaper) has no built-in check, so a missing script is skipped and logged there
+    // SessionEnd: its only hook (the MCP reaper) sweeps natively now (L10b: no Node companion needed) but defers when the home is not an absolute path (HOME below), so the missing script is skipped and logged there
     let e = Env::new("missing-script-nonguard");
     let mark = e.dir.join("fake-node-ran");
     let body = format!(r#": > {}; echo MODULE_NOT_FOUND >&2; exit 1"#, mark.display());
@@ -482,7 +482,7 @@ fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_n
         true,
         &p,
         false,
-        &[("CLAUDE_PLUGIN_ROOT", empty_root.to_str().unwrap()), ("PATH", bin.to_str().unwrap())],
+        &[("CLAUDE_PLUGIN_ROOT", empty_root.to_str().unwrap()), ("PATH", bin.to_str().unwrap()), ("HOME", "relative-home")],
     );
 
     assert_eq!((code, out.as_str()), (0, ""), "{err}");

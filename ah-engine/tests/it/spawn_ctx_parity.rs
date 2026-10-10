@@ -717,7 +717,7 @@ fn spawn_cases() -> Vec<Case> {
         ("marker-bom", "\u{feff}{\"epochId\":\"1\",\"decision\":\"pending\",\"sentAt\":1}"),
     ] {
         let c = case(name, spawn_call("Agent", json!("s1"))).file(&marker_file("s1"), body);
-        v.push(if name == "marker-extra-keys-pending-ok" { c } else { c });
+        v.push(c);
     }
     v.push(case("marker-is-directory", spawn_call("Agent", json!("s1"))).seed(Seed::Dir(marker_file("s1"))));
     v.push(

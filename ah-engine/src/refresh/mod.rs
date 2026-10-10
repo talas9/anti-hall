@@ -66,7 +66,8 @@ pub fn run_cmd(p: &Parsed) -> i32 {
         }
     };
     if p.json {
-        let rows: Vec<Value> = out.iter().map(|d| json!({"probe": d.probe, "outcome": d.outcome, "reason": d.reason, "target": d.target, "ms": d.ms})).collect();
+        let rows: Vec<Value> =
+            out.iter().map(|d| json!({"probe": d.probe, "outcome": d.outcome, "reason": d.reason, "target": d.target, "ms": d.ms})).collect();
         println!("{}", json!({"probes": rows}));
     } else {
         for d in &out {
@@ -96,19 +97,38 @@ pub fn run(home: &Path, force: bool) -> Option<Vec<Done>> {
         let pending = at.is_some_and(|a| a > last);
         let is_repair = probe == "repair";
         if !(pending || (force && !is_repair)) {
-            out.push(Done { probe: probe.into(), outcome: defaults::text("refresh.outcome_skipped").into(), reason: String::new(), target: String::new(), ms: 0 });
+            out.push(Done {
+                probe: probe.into(),
+                outcome: defaults::text("refresh.outcome_skipped").into(),
+                reason: String::new(),
+                target: String::new(),
+                ms: 0,
+            });
             continue;
         }
         let reason = if pending { defaults::text("refresh.reason_requested") } else { defaults::text("refresh.reason_forced") };
         let started = Instant::now();
         let (outcome, why, target, mark) = match probe {
             "version" => probe_version(home),
-            "claude_cli" => probe_cli(home, defaults::list("refresh.claude_cli_bins"), defaults::text("session.claude_cli_cache"), defaults::text("session.claude_cli_baseline")),
-            "devswarm" => probe_cli(home, defaults::list("refresh.devswarm_bins"), defaults::text("session.devswarm_cache"), defaults::text("session.devswarm_baseline")),
+            "claude_cli" => probe_cli(
+                home,
+                defaults::list("refresh.claude_cli_bins"),
+                defaults::text("session.claude_cli_cache"),
+                defaults::text("session.claude_cli_baseline"),
+            ),
+            "devswarm" => {
+                probe_cli(home, defaults::list("refresh.devswarm_bins"), defaults::text("session.devswarm_cache"), defaults::text("session.devswarm_baseline"))
+            }
             "repair" => repair(home, req.as_ref()),
             _ => continue,
         };
-        let done = Done { probe: probe.into(), outcome: outcome.into(), reason: if why.is_empty() { reason.into() } else { why }, target, ms: started.elapsed().as_millis() as u64 };
+        let done = Done {
+            probe: probe.into(),
+            outcome: outcome.into(),
+            reason: if why.is_empty() { reason.into() } else { why },
+            target,
+            ms: started.elapsed().as_millis() as u64,
+        };
         record(&done);
         if mark && let Some(a) = at {
             handled.insert(probe.to_string(), json!(a));
@@ -196,7 +216,8 @@ fn probe_version(home: &Path) -> (&'static str, String, String, bool) {
         exec(git, &args, cwd, timeout).filter(|(code, out, _)| *code == Some(0) && !out.is_empty()).map(|(_, out, _)| out)
     };
     let clone = home.join(defaults::text("session.marketplace_dir"));
-    let output = ask(defaults::text("refresh.tag_remote"), None).or_else(|| if clone.is_dir() { ask(defaults::text("refresh.tag_fallback_remote"), Some(&clone)) } else { None });
+    let output = ask(defaults::text("refresh.tag_remote"), None)
+        .or_else(|| if clone.is_dir() { ask(defaults::text("refresh.tag_fallback_remote"), Some(&clone)) } else { None });
     let shown = target.to_string_lossy().into_owned();
     let Some(output) = output else { return failed("refresh.reason_no_output", shown, true) };
     let Some(latest) = highest_tag(&output) else { return failed("refresh.reason_no_tag", shown, true) };

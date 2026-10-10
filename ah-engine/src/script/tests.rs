@@ -1098,7 +1098,10 @@ mod sibling {
 #[test]
 fn compact_declaration_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("compact-declaration-guard");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 30 && !kinds.contains_key("defer"), "both answers, no deferral: {kinds:?}");
+    assert!(
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 30 && !kinds.contains_key("defer"),
+        "both answers, no deferral: {kinds:?}"
+    );
 }
 
 #[test]

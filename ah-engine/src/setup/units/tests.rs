@@ -75,8 +75,9 @@ fn plist(d: &Path, label: &str) -> PathBuf {
 }
 
 fn retired(d: &Path) -> Vec<String> {
-    let mut v: Vec<String> =
-        std::fs::read_dir(d.join("state/units/retired")).map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+    let mut v: Vec<String> = std::fs::read_dir(d.join("state/units/retired"))
+        .map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
     v.sort();
     v
 }
@@ -122,10 +123,7 @@ fn systemd_install_writes_a_service_and_a_timer_with_quoted_exec_and_enables_the
     assert!(service.contains(&format!("ExecStart=\"{e}\" \"serve\"")), "{service}");
     let timer = std::fs::read_to_string(dir.join("anti-hall-engine.timer")).unwrap();
     assert!(timer.contains("OnUnitInactiveSec=300") && timer.contains("WantedBy=timers.target"), "{timer}");
-    assert_eq!(
-        sys.calls(),
-        vec!["systemctl --user --version", "systemctl --user daemon-reload", "systemctl --user enable --now anti-hall-engine.timer"]
-    );
+    assert_eq!(sys.calls(), vec!["systemctl --user --version", "systemctl --user daemon-reload", "systemctl --user enable --now anti-hall-engine.timer"]);
 }
 
 #[test]

@@ -935,6 +935,8 @@ mod tests {
             "tier.",
             "dispatch.in_process",
             "dispatch.max_timeout_s",
+            "dispatch.defer_to_node", // the Node-cutover switch of the dispatcher: one value for the whole daemon, read per path the engine cannot decide
+            "dispatch.spill_over_cap", // the over-cap SessionStart spill switch: one value for the whole daemon
             "session.gitignore_probe_ms",
             "statusline.total_deadline_ms", // the status line command is its own process: its overall deadline is read once per run
             "realtime.",                    // the file-watch facility's debounce and poll intervals: daemon-wide, not per request

@@ -331,7 +331,10 @@ impl Run<'_> {
             ("changed".into(), num(changed)),
             ("removed".into(), num(removed_total)),
             ("errors".into(), num(errors)),
-            ("detail".into(), J::Str(defaults::fill(text("update_post.graphify_detail"), &[("changed", &changed), ("removed", &removed_total), ("errors", &err)]))),
+            (
+                "detail".into(),
+                J::Str(defaults::fill(text("update_post.graphify_detail"), &[("changed", &changed), ("removed", &removed_total), ("errors", &err)])),
+            ),
         ])
     }
 

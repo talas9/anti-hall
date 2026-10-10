@@ -2,10 +2,10 @@
 //! gauge. Port of `statusline/phase-bar.js` (its in-process entry `runWithInput`).
 use super::util::{n, parse_int_of, safe_label, trim};
 use crate::checks::jsport::json::{self, J};
+use crate::checks::jsport::text::slice16_lossy as head16;
 use crate::checks::jsport::{num, text};
 use crate::defaults;
 use crate::migrate::j_truthy;
-use crate::checks::jsport::text::slice16_lossy as head16;
 use crate::ops::js::len16;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

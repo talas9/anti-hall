@@ -40,4 +40,3 @@ pub fn sweep(dry: bool) -> (i32, Value) {
         _ => (1, Value::Null),
     }
 }
-
