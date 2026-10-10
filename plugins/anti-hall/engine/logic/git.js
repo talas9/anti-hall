@@ -6,7 +6,8 @@
 // only the file system, `git` process, settings and Jev primitives (`ah.*`).
 //
 // A script failure (an exception, a stack overflow on a pathological command, the time limit) defers to the Node hook.
-// Anything that cannot be reproduced exactly sets S.overflow and the whole verdict defers (never weaker than Node).
+// What the Node hook read from its own process (its working directory) is answered by lib/78-hook-proc.js; a file over one read is
+// scanned at its head and tail; a Jev consult gets the time the request has left.
 'use strict';
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -554,22 +555,24 @@ function consultJev(text) {
   if (S.jevSpentMs + budget + ah.cfg('git.jev_backstop_ms') > ah.cfg('git.jev_total_budget_ms')) return false;
   // inside a request whose client stops waiting before this consult could finish: the whole verdict goes to Node, whose hook
   // consults Jev with its full budget
+  // inside a request whose client stops waiting before the full consult could finish: the consult gets what is left (an 'on'
+  // answer that does not arrive adds no block, as a timed-out Node consult adds none); too little left to ask at all is logged
   const left = ah.jev.deadlineLeftMs();
+  let wait = budget;
   if (left !== null && left < budget + ah.cfg('git.jev_backstop_ms')) {
-    // only a mode that can change the verdict ('on') needs Node's full-budget consult; a shadow ask never changes it
-    if (ah.jev.mode(ah.cfg('git.jev_id')) === 'on') S.overflow = true;
-    return false;
+    wait = left - ah.cfg('git.jev_backstop_ms');
+    if (wait <= 0) { if (ah.jev.mode(ah.cfg('git.jev_id')) === 'on') ah.log('git_jev_no_time', String(left)); return false; }
   }
-  const n = ah.cfg('git.jev_state_chars');
-  // a window that would cut a surrogate pair is Node's lone surrogate: the whole verdict is deferred
-  if (key.length > n && /[\ud800-\udbff]/.test(key.charAt(n - 1)) && /[\udc00-\udfff]/.test(key.charAt(n))) { S.overflow = true; return false; }
+  let n = ah.cfg('git.jev_state_chars');
+  // the window never ends in a lone high surrogate (Node's would; the question's state is one unit shorter, its answer unchanged)
+  if (key.length > n && /[\ud800-\udbff]/.test(key.charAt(n - 1)) && /[\udc00-\udfff]/.test(key.charAt(n))) n--;
   const started = Date.now();
   let verdict = false;
   try {
     verdict = ah.jev.ask({
       id: ah.cfg('git.jev_id'),
       question: { type: 'noul', instructions: ah.cfg('git.jev_instructions'), criteria: [['true', ah.cfg('git.jev_true')], ['false', ah.cfg('git.jev_false')]] },
-      state: key.slice(0, n), trust: 'add_block', baseline: false, budgetMs: budget,
+      state: key.slice(0, n), trust: 'add_block', baseline: false, budgetMs: wait,
       sessionId: S.session === null ? undefined : S.session, projectFrom: S.procCwd, sync: true,
     }) === true;
   } catch (e) { verdict = false; }
@@ -584,8 +587,13 @@ function readFileText(path) {
   const cap = ah.cfgNum('script.read_max_bytes');
   const size = ah.fs.size(path);
   if (size === null) return null;
-  if (size > cap) { S.overflow = true; return null; } // a file this script cannot read whole
-  return ah.fs.readText(path, cap);
+  if (size <= cap) return ah.fs.readText(path, cap);
+  // a file over one read: its head (cut at the last line end) and its tail (from a whole line) are scanned; the middle is not
+  ah.log('git_file_over_read_cap', path);
+  const head = ah.fs.readText(path, cap), tail = ah.fs.readTail(path, cap);
+  if (head === null) return tail;
+  const cut = head.lastIndexOf('\n');
+  return (cut > 0 ? head.slice(0, cut) : head) + '\n' + (tail === null ? '' : tail);
 }
 
 function ghSelfCreditMessage(args) {
@@ -2537,9 +2545,8 @@ function decide(p, opts, event) {
   if (ah.settings.skipped(ah.cfg('git.guard_name'))) return 'allow';
   const cmd = ti.command;
   if (cmd === '') return 'allow';
-  const cwdIn = typeof p.cwd === 'string' ? p.cwd : '';
-  // without a working directory the daemon cannot know the hook process's own: Node decides
-  if (cwdIn === '') return 'defer';
+  // `payload.cwd || process.cwd()`: without one, the hook process's own directory (lib/78-hook-proc.js)
+  const cwdIn = hookProc.cwd(p);
   let home = ah.env.get(ah.cfg('env.home'));
   if (home === null) home = ah.env.get(ah.cfg('env.home_alt'));
   const session = p.session_id ? String(p.session_id) : null;
@@ -2549,7 +2556,6 @@ function decide(p, opts, event) {
   S.pluginRoot = (opts && typeof opts.plugin_root === 'string' && opts.plugin_root) || ah.env.get(ah.cfg('env.plugin_root')) || '';
   shellScan.reset();
   const hit = scanCommand(cmd, 0, cwdIn);
-  if (S.overflow) return 'defer';
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
   if (S.handoverSkipped > 0) {
     const t = text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped });

@@ -1,0 +1,250 @@
+# ah-engine defaults of the v1.0 lane L07 (PreToolUse guards answered without the Node hook): the bounded host spawn primitive,
+# api-guard's interpreter probes and texts, the shell-write parser's limits, and the stand-ins for what only the Node hook
+# process could see (its working directory). Format: see the header of engine.toml.
+#
+# The regular expressions are JavaScript source compiled by the engine's JavaScript translator (Rust side) or by the script
+# interpreter (script side).
+
+# ---- host spawn primitive (`ahHost.spawnProbe`, src/script/host_spawn.rs) ----------------------------------------------------
+
+[host_spawn.programs]
+doc = "The only programs a script may start through the spawn primitive: bare names, each looked up on the request's PATH (the user's own install), never the daemon's PATH or the plugin's files. api-guard probes these interpreters."
+value = ["python3", "python", "node"]
+
+[host_spawn.path_env]
+doc = "The request environment variable that holds the search path for a spawned program."
+value = "PATH"
+
+[host_spawn.default_path]
+doc = "The search path used when the request carries no PATH: the default of the C library's execvp, which is what Node's spawn falls back to."
+value = "/usr/bin:/bin"
+
+[host_spawn.scrub_env]
+doc = "Names of request environment variables never passed to a spawned program (case-insensitive): interpreter start-up injection vectors, as the Node api-guard scrubs them."
+value = '^(NODE_OPTIONS|NODE_PATH|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PYTHONINSPECT|PYTHONEXECUTABLE|PYTHONUSERBASE|PYTHONSAFEPATH)$'
+
+[host_spawn.timeout_max_ms]
+doc = "Ceiling of one spawned program's run, whatever the script asks; it is also cut to what the request has left (see host_spawn.deadline_reserve_ms), so a slow interpreter costs a fail-open notice, never the reply."
+value = 15000
+min = 1
+unit = "ms"
+
+[host_spawn.deadline_reserve_ms]
+doc = "Time kept back from the request's deadline when a spawned program's timeout is cut to it: the other checks of the event and the reply still need it."
+value = 600
+min = 0
+unit = "ms"
+
+[host_spawn.min_run_ms]
+doc = "A spawn whose cut timeout is below this does not run at all (reported as skipped)."
+value = 1
+min = 1
+unit = "ms"
+
+[host_spawn.max_calls]
+doc = "Most programs one script call may start (api-guard: two version probes, one per module group up to api_guard_v1.max_modules, one Node probe, the version lines of the message)."
+value = 16
+min = 1
+
+[host_spawn.poll_ms]
+doc = "How often a running spawned program is checked for exit."
+value = 2
+min = 1
+unit = "ms"
+
+[host_spawn.output_max_bytes]
+doc = "Largest stdout or stderr a spawned program may write; more marks the run `overflow` (the Node probe's maxBuffer) and both streams are cut here."
+value = 262144
+min = 1024
+unit = "bytes"
+
+# ---- the hook process (engine/logic/lib/78-hook-proc.js) -------------------------------------------------------------------------
+
+[hook_proc.cwd_envs]
+doc = "Stand-ins for the hook process's working directory, which a Node guard read (process.cwd()) when the payload had no cwd or a relative one: the first of these request variables that holds an absolute path. Claude Code runs a hook in the session's directory, which CLAUDE_PROJECT_DIR names."
+value = ["CLAUDE_PROJECT_DIR", "HOME"]
+
+[hook_proc.cwd_last]
+doc = "The hook process's working directory when no stand-in in hook_proc.cwd_envs is absolute."
+value = "/"
+
+# ---- api-guard (engine/logic/api-guard.js) ------------------------------------------------------------------------------------
+
+[api_guard_v1.max_modules]
+doc = "Most module groups probed per language (one interpreter run each), as the Node guard bounds them."
+value = 8
+min = 1
+
+[api_guard_v1.max_code_chars]
+doc = "A code chunk longer than this (JavaScript string length) is not checked, as in the Node guard."
+value = 600000
+min = 1
+
+[api_guard_v1.spawn_timeout_ms]
+doc = "The per-probe timeout the guard asks for (the Node guard's own); the spawn primitive cuts it to host_spawn.timeout_max_ms and the request's deadline."
+value = 15000
+min = 1
+unit = "ms"
+
+[api_guard_v1.spawn_timeout_env]
+doc = "Environment variable that replaces api_guard_v1.spawn_timeout_ms when it holds a positive integer (the Node guard's test knob)."
+value = "ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS"
+
+[api_guard_v1.python_bins]
+doc = "The Python interpreters tried, in order; the first whose version probe exits 0 and prints api_guard_v1.python3_version_pattern is used."
+value = ["python3", "python"]
+
+[api_guard_v1.python3_version_pattern]
+doc = "What a usable Python's version output (stdout and stderr joined) must contain."
+value = 'Python 3\.'
+
+[api_guard_v1.version_args]
+doc = "Arguments that make an interpreter print its version (the Python check and the version list of the block message)."
+value = ["--version"]
+
+[api_guard_v1.python_args]
+doc = "Arguments before the Python probe's source and its JSON check list: -I (isolated: no user site-packages, no environment, no current directory on sys.path) and -c."
+value = ["-I", "-c"]
+
+[api_guard_v1.python_probe]
+doc = "The Python probe: drops the working directory from sys.path, imports each base module once, walks the receiver path and answers 1 (attribute present), 0 (missing) or 2 (unknown) per [receiver, attribute] pair of its JSON argument."
+value = """import sys, json, os
+cwd = os.getcwd()
+sys.path[:] = [p for p in sys.path if p not in ("", ".", cwd)]
+checks = json.loads(sys.argv[1])
+out = []
+for r, a in checks:
+    try:
+        parts = r.split(".")
+        obj = __import__(parts[0])
+        for p in parts[1:]:
+            obj = getattr(obj, p)
+        out.append(0 if not hasattr(obj, a) else 1)
+    except Exception:
+        out.append(2)
+sys.stdout.write(json.dumps(out))
+"""
+
+[api_guard_v1.node_bin]
+doc = "The JavaScript runtime probed for require() modules and global builtins: the user's own `node` on the request's PATH (when it is not installed, JavaScript references are not checked)."
+value = "node"
+
+[api_guard_v1.node_args]
+doc = "Arguments before the JavaScript probe's source and its two JSON arguments."
+value = ["-e"]
+
+[api_guard_v1.node_probe]
+doc = "The JavaScript probe: requires each module once and walks each global path, answering 1 (present), 0 (missing) or 2 (unknown) per attribute; it runs in the hook's working directory so installed packages resolve."
+value = """const mods = JSON.parse(process.argv[1]);
+const globals = JSON.parse(process.argv[2]);
+const res = { req: {}, glob: [] };
+for (const mod of Object.keys(mods)) {
+  let m; try { m = require(mod); } catch (e) { res.req[mod] = mods[mod].map(() => 2); continue; }
+  res.req[mod] = mods[mod].map((a) => { try { return typeof m[a] === "undefined" ? 0 : 1; } catch (e) { return 2; } });
+}
+function resolve(p) { let o = globalThis; for (const k of p.split(".")) { if (o == null) return undefined; o = o[k]; } return o; }
+res.glob = globals.map((p) => { try { return typeof resolve(p) === "undefined" ? 0 : 1; } catch (e) { return 2; } });
+process.stdout.write(JSON.stringify(res));
+"""
+
+[api_guard_v1.tmpdir_env]
+doc = "The request environment variable naming the temporary directory the Python probe runs in (never the repository)."
+value = "TMPDIR"
+
+[api_guard_v1.tmpdir_default]
+doc = "The Python probe's directory when api_guard_v1.tmpdir_env is unset or not absolute."
+value = "/tmp"
+
+[api_guard_v1.version_joiner]
+doc = "Separator between the interpreter version lines in the block message."
+value = ", "
+
+[api_guard_v1.msg_what]
+doc = "Block headline; {versions} lists the interpreters' version lines."
+value = "this code references API(s) that do not exist in your installed runtime ({versions}):"
+
+[api_guard_v1.msg_why]
+doc = "Block message: why."
+value = "These attributes are absent from the real module/object; they look like fabrications."
+
+[api_guard_v1.msg_instead]
+doc = "Block message: what to do instead."
+value = "verify the correct name (check the docs or run a quick `hasattr` / `typeof` probe) and fix the reference before writing."
+
+[api_guard_v1.msg_override]
+doc = "Block message: the override."
+value = "only if you target a NEWER version where it exists: write ~/.anti-hall/skip.json {\"api-guard\": <unix-ms-expiry>}"
+
+[api_guard_v1.msg_item_prefix]
+doc = "Prefix of each fabricated reference listed under the block message."
+value = "  • "
+
+[api_guard_v1.msg_timeout]
+doc = "The one stderr line when a probe timed out, was killed or could not run in the time left and nothing was blocked (the edit is allowed unchecked); {bin} is the interpreter, {ms} the asked budget."
+value = "anti-hall api-guard: API verification skipped (probe for \"{bin}\" timed out after {ms}ms budget) — edit allowed unchecked."
+
+# ---- shell-write parser (engine/logic/inc/shell-writes.js) -------------------------------------------------------------------------
+
+[shell_writes.big_len]
+doc = "A command longer than this is not parsed whole: its leading heredoc header (or its first shell_writes.head_len characters) is, with the heredoc body attached as the content (hooks/lib/shell-writes.js BIG_LEN)."
+value = 60000
+min = 1
+
+[shell_writes.head_len]
+doc = "How much of a big command's start is parsed when it has no leading heredoc, cut at a line end (hooks/lib/shell-writes.js HEAD_LEN)."
+value = 16384
+min = 1
+
+# ---- compact-declaration-guard (engine/logic/compact-declaration-guard.js) --------------------------------------------------------
+
+[compact_decl_v1.declaration_forms]
+doc = "Which of the recommendation patterns of lib/76-compact-advice.js (cadv.ADVICE_RES, by position) count as a declaration for this guard: 0 \"safe to compact\" and 2 \"safe for a reset\" (hooks/lib/compact-advice.js DECLARATION_RE_INDEXES); the pause nag's mandated \"good point to /compact\" footer and a bare /compact command do not."
+value = [0, 2]
+
+[compact_decl_v1.this_tool]
+doc = "How the block message names the tool when the payload has no tool name."
+value = "this tool"
+
+[compact_decl_v1.msg_what]
+doc = "Block headline; {phrase} is the declaration found, {tool} the tool that started new work."
+value = "you declared SAFE TO COMPACT this turn (\"{phrase}\") and then started new work ({tool})."
+
+[compact_decl_v1.msg_why]
+doc = "Block message: why."
+value = "The declaration must be the last act of the turn; new work after it makes the handover stale."
+
+[compact_decl_v1.msg_instead]
+doc = "Block message: what to do instead."
+value = "stop, or retract: write a line \"RETRACT SAFE TO COMPACT: <why>\", then refresh the handover before declaring again."
+
+[compact_decl_v1.msg_allowed]
+doc = "Block message: what stays allowed."
+value = "read-only tools."
+
+# ---- inbox-read-guard (engine/logic/inbox-read-guard.js) ----------------------------------------------------------------------
+
+[inbox_read_v1.store_cli_present]
+doc = "Whether the wrapper's store-read command exists, so a raw read of the DevSwarm store (its database, sidecars and journal) is blocked as well as a raw inbox read. The Node hook asked hooks/lib/devswarm-inbox-paths.js storeReadCliPresent(), true for every shipped plugin since the journal store; the engine ships the same answer."
+value = true
+
+[inbox_read_v1.guard_store]
+doc = "The guard name a raw store read is blocked under."
+value = "devswarm-store-read"
+
+[inbox_read_v1.msg_store_what]
+doc = "Store-read block: what."
+value = "reading the raw DevSwarm store (SQLite db, sidecars, journal NDJSON) directly is blocked."
+
+[inbox_read_v1.msg_store_why]
+doc = "Store-read block: why."
+value = "The store is the write/derive layer; a raw read risks a partial view and a layering violation."
+
+[inbox_read_v1.msg_store_instead]
+doc = "Store-read block: what to do instead."
+value = "`devswarm.js inbox read <id>` (or `devswarm.js inbox pull <id>` first to import)."
+
+# ---- output-verify-guard (engine/logic/output-verify-guard.js) ----------------------------------------------------------------
+
+[output_verify_v1.key_order]
+doc = "The order in which the host writes the keys of a tool output object (Claude Code's Bash tool_response, seen in recorded payloads), so the scanned text is built in the order the Node hook saw. The engine receives the payload with its keys sorted; keys not listed here follow the listed ones, sorted."
+value = ["stdout", "stderr", "interrupted", "isImage", "noOutputExpected", "backgroundTaskId", "timedOutAfterMs", "backgroundCwdHint", "bashEditDiff"]

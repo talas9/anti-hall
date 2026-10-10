@@ -39,6 +39,7 @@ pub mod host_d;
 mod host_io;
 pub mod host_mesh;
 pub mod host_proc;
+pub mod host_spawn;
 pub mod host_ts;
 pub mod sysmem;
 

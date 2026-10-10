@@ -75,5 +75,6 @@ files = [
     "operator_cli.toml",
     "wake_watch.toml",
     "refresh.toml",
+    "guards_v1.toml",
 ]
 extra_dir = "hooks.d"

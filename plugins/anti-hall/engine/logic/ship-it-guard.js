@@ -1,7 +1,8 @@
-// check = "ship-it-guard" (PreToolUse on Write, Edit, MultiEdit, NotebookEdit; Bash and apply_patch defer to Node).
+// check = "ship-it-guard" (PreToolUse on Write, Edit, MultiEdit, NotebookEdit; Bash and apply_patch for Codex).
 // Opt-in plan gate: blocks an edit of a hard-risk file when the repo has no PLAN.md, and advises on a code file that no
-// phase of the plan declares. Mirrors hooks/ship-it-guard.js. Every pattern, list and message is in
-// engine/defaults/small_guards.toml (ship_it.*); this file is only the decision.
+// phase of the plan declares (structured edits only). A Bash write's targets come from command-guard's shell parsers
+// (script.includes: command, shell-writes), a Codex patch's from lib/77-apply-patch.js. Mirrors hooks/ship-it-guard.js. Every
+// pattern, list and message is in engine/defaults/small_guards.toml (ship_it.*); this file is only the decision.
 'use strict';
 
 function isNonCode(fp) {
@@ -109,18 +110,45 @@ function targetPaths(ti) {
   return out;
 }
 
+// The files the call writes: [files, kind] with kind 'edit', 'shell' or 'patch'; null when the shell-write switch is off.
+function writeTargets(p, cwdAbs) {
+  var tool = p.tool_name, ti = p.tool_input;
+  if (tool === ah.cfg('api_guard.tool_shell')) {
+    if (!ah.settings.bool('api_guard.shell_setting')) return null;
+    var command = ti && ti.command;
+    var realCwd = LIB['./lib/scratchpad.js'].realpathOrSelf(cwdAbs);
+    var ws = swShellWrites(command, Object.assign({}, p, { cwd: cwdAbs }));
+    if (S && S.unsure) { ah.log('ship_it_unsure', 'shell-write parse needed the hook process; parsed targets kept'); S.unsure = false; }
+    return [ws.filter(function (w) { return !w.scratch; }).map(function (w) {
+      var rel = ah.path.relative(realCwd, w.abs);
+      return rel && rel.slice(0, 2) !== '..' && !ah.path.isAbsolute(rel) ? rel : w.abs;
+    }), 'shell'];
+  }
+  if (tool === ah.cfg('api_guard.tool_patch')) {
+    var parsed = applyPatch.parse(ti && ti.command);
+    return [parsed.ok ? applyPatch.targetPaths(parsed.files, cwdAbs) : [], 'patch'];
+  }
+  return [targetPaths(ti), 'edit'];
+}
+
 function decideInner(p) {
   var guard = ah.cfg('ship_it.guard_name');
+  if (p === undefined) return null;
   if (ah.settings.skipped(guard) || !ah.settings.bool('ship_it.setting')) return null;
-  var tool = p && typeof p === 'object' && !Array.isArray(p) ? p.tool_name : undefined;
-  if (typeof tool === 'string' && ah.cfg('ship_it.deferred_tools').indexOf(tool) >= 0) return 'defer';
-  var files = targetPaths(p && typeof p === 'object' && !Array.isArray(p) ? p.tool_input : undefined);
+  if (p === null || typeof p !== 'object' || Array.isArray(p)) p = {};
+  // `payload.cwd` as given (a string, even empty or relative), else the hook process's own; the files are read at its absolute form
+  var cwd = typeof p.cwd === 'string' ? p.cwd : hookProc.cwd(p);
+  var cwdAbs = cwd === '' ? hookProc.base() : ah.path.isAbsolute(cwd) ? cwd : ah.path.resolveAbs(hookProc.base() + '/' + cwd);
+  var t = writeTargets(p, cwdAbs);
+  if (t === null) return null;
+  var files = t[0], kind = t[1];
+  if (!files.length) return null;
   var code = files.filter(function (f) { return !isNonCode(f); });
   if (code.length === 0) return null;
-  var cwd = p.cwd;
-  if (typeof cwd !== 'string' || !ah.path.isAbsolute(cwd)) return 'defer';
-  var planPath = ah.path.join(cwd, ah.cfg('ship_it.plan_file'));
-  var planExists = ah.fs.isFile(planPath);
+  // findPlanPath(cwd): no plan for an empty cwd; the path is shown as Node joins it
+  var planPath = cwd === '' ? '' : ah.path.join(cwd, ah.cfg('ship_it.plan_file'));
+  var planAbs = cwd === '' ? '' : ah.path.join(cwdAbs, ah.cfg('ship_it.plan_file'));
+  var planExists = planAbs !== '' && ah.fs.isFile(planAbs);
   var risky = code.filter(isHardRisk);
   if (risky.length && !planExists) {
     return {
@@ -130,16 +158,23 @@ function decideInner(p) {
       }),
     };
   }
-  if (!planExists) return null;
-  var plan = ah.fs.readText(planPath) || '';
+  if (!planExists || kind !== 'edit') return null;
+  var plan = ah.fs.readText(planAbs) || '';
   var declared = parsePlanDeclaredFiles(plan);
   if (!declared) return null;
-  var shown = code.filter(function (f) { return !fileMatchesDeclared(f, declared, cwd); })[0];
+  var shown = code.filter(function (f) { return !fileMatchesDeclared(f, declared, cwd === '' ? '' : cwdAbs); })[0];
   if (shown === undefined) return null;
-  var t = text.message('warn', guard, {
+  var adv = text.message('warn', guard, {
     what: text.render(ah.cfg('ship_it.msg_adv_what'), { file: shown, plan: planPath }), why: ah.cfg('ship_it.msg_adv_why'), instead: ah.cfg('ship_it.msg_adv_instead'),
   });
-  return { advisory: text.advisoryJson('PreToolUse', t) };
+  return { advisory: text.advisoryJson('PreToolUse', adv) };
 }
 
-function decide(p) { var v = decideInner(p); return v === null ? 'allow' : v; }
+function decide(p, opts) {
+  cmdBegin(opts);
+  var v;
+  // the Node guard fails open on any internal error; the time and memory limits still reach the engine
+  try { v = decideInner(p); } catch (e) { if (cmdFatal(e) && !e.unsure) throw e; v = null; }
+  cmdEnd();
+  return v === null ? 'allow' : v;
+}

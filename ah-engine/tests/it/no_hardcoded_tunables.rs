@@ -85,6 +85,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "a thread-local counter of the processes the script call started, initialised to zero (its bound is script.exec_max_calls): state, not a tunable",
     ),
     (
+        "src/script/host_spawn.rs",
+        "static RUNS",
+        "a thread-local counter of the programs this script call has started, zero at the start (its bound is host_spawn.max_calls): state, not a tunable",
+    ),
+    (
         "src/script/host_proc.rs",
         "static SEEN",
         "a thread-local list of the pids this script call has listed, empty at the start (the safety bound of the signal primitive): state, not a tunable",

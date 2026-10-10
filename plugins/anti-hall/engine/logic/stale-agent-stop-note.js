@@ -2,8 +2,9 @@
 // transcript shows was sent a message (a teammate's inbox) or resumed (a background agent) after its last report, with no report
 // since, one line says so: the agent may be working, and a report the coordinator read earlier describes the state before the
 // message. It says nothing when the state is unknown. The scan is ah.transcript.agentScan (the pending messages, the launched
-// agents and the terminal ids; a TaskStop with no result yet is not counted). A transcript the host cannot read exactly as
-// JavaScript would, and a request whose HOME is unset, defer to Node. Mirrors hooks/stale-agent-stop-note.js.
+// agents and the terminal ids; a TaskStop with no result yet is not counted). A relative transcript path is read from the hook
+// process's directory (lib/78-hook-proc.js); a transcript the host cannot read exactly as JavaScript would says nothing (the
+// state is unknown; logged). Mirrors hooks/stale-agent-stop-note.js.
 // Keys and texts: agent_controls.toml (stale_note.*).
 'use strict';
 
@@ -43,14 +44,13 @@ function sanNote(scan, taskId, now) {
 }
 
 function decide(p) {
-  if (spawn.osHome() === null) return 'defer';
   if (!ah.settings.bool('stale_note.setting')) return 'allow';
   if (p === null || typeof p !== 'object' || Array.isArray(p) || p.tool_name !== ah.cfg('stale_note.tool')) return 'allow';
   var ti = p.tool_input, taskId = ti && ti.task_id, tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
   if (typeof taskId !== 'string' || !taskId || !tp) return 'allow';
-  var scan = ah.transcript.agentScan(tp, ah.cfgNum('stale_note.scan_bytes'), true);
+  var scan = ah.transcript.agentScan(hookProc.open(p, tp), ah.cfgNum('stale_note.scan_bytes'), true);
   if (scan === null) return 'allow';
-  if (scan.unsure) return 'defer';
+  if (scan.unsure) { ah.log('stale_note_scan_unsure', tp); return 'allow'; }
   var t = sanNote(scan, taskId, ah.clock.now());
   return t === null ? 'allow' : { advisory: text.advisoryJson('PreToolUse', t) };
 }

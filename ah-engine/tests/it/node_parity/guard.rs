@@ -805,6 +805,7 @@ fn run_guard_with(o: &Opts, hooks: &Path, scenarios: &[Scenario], golden: &Golde
     ));
     if !stats.deferred_ids.is_empty() {
         let mut by: BTreeMap<String, usize> = BTreeMap::new();
+        s.push_str(&format!("  LOCAL deferred ids: {:?}\n", stats.deferred_ids));
         for id in &stats.deferred_ids {
             *by.entry(id.split('-').next().unwrap_or("").to_string()).or_insert(0) += 1;
         }
