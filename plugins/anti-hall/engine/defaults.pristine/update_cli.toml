@@ -36,14 +36,6 @@ value = 30000
 unit = "ms"
 min = 1000
 
-[operator.shadow_update_log]
-doc = "Event-log text when the Node `update.js --check` disagrees with the engine's update about the latest version."
-value = "update shadow mismatch: node --check reports latest {nl}, the engine updated to {el}"
-
-[operator.shadow_check_log]
-doc = "Event-log text when the Node `update.js --check` prints a different status line than `update --check`."
-value = "update --check shadow mismatch: node={node} engine={engine}"
-
 [operator.shadow_codex_log]
 doc = "Event-log text when the Node `install-codex.js --dry-run` reports something other than what the engine then wrote."
 value = "install-codex shadow mismatch: node={node} engine={engine}"
@@ -87,7 +79,7 @@ doc = "The manifest as git names it on a remote ref (`--check` reads the remote 
 value = "plugins/anti-hall/.claude-plugin/plugin.json"
 
 [update.node_script_rel]
-doc = "The Node update script inside the plugin directory, run with --post-pull-only for the stages the engine does not port (the DevSwarm store sweeps and the settings migration)."
+doc = "The Node update script inside the plugin directory; its exported stage functions run (bounded) only for the DevSwarm store stages the engine does not answer itself."
 value = "skills/update/scripts/update.js"
 
 [update.max_bytes]

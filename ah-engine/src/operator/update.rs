@@ -486,8 +486,6 @@ struct Core {
     stop: bool,
     /// The post-pull stages' answers, in the status order.
     stages: Vec<(String, J)>,
-    /// An early return (offline, dirty, pull failure): no stages run.
-    early: bool,
 }
 
 fn early(installed: &Option<String>, action: String, stop: bool) -> Core {
@@ -501,7 +499,6 @@ fn early(installed: &Option<String>, action: String, stop: bool) -> Core {
         changelog: String::new(),
         stop,
         stages: Vec::new(),
-        early: true,
     }
 }
 
@@ -554,7 +551,6 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
             changelog: String::new(),
             stop: false,
             stages,
-            early: false,
         };
     }
     let inst = installed.clone().unwrap_or_default();
@@ -577,7 +573,7 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
         _ => String::new(),
     };
     let action = harness_action(Some(&harness), updated, latest.as_deref().unwrap_or(t("update.null_word")));
-    Core { installed, latest, updated, synced, harness: Some(harness), action, changelog, stop: false, stages, early: false }
+    Core { installed, latest, updated, synced, harness: Some(harness), action, changelog, stop: false, stages }
 }
 
 // ---- the Node stages --------------------------------------------------------------------------------------------------------
@@ -722,18 +718,9 @@ fn go(p: &Parsed) -> Result<i32, String> {
     if !paths.override_ignored.is_empty() && !post_pull_only {
         out(&format!("{}\n", paths.override_ignored))?;
     }
-    let shadow_script = join(&paths.plugin_src, t("update.node_script_rel"));
-    let node_env = |a: &str| vec![a.to_string()];
     if is_check {
         let status = run_check(&rx, &paths);
-        let line = stringify(&status);
-        out(&format!("{line}\n{}\n", render_human(&rx, &status, "")))?;
-        // the Node check runs after the engine's, so the two fetches never race
-        if let Some(node) = super::shadow_line(&env, &shadow_script, &node_env(t("update.check_flag")), None).and_then(|o| o.lines().next().map(str::to_string))
-            && node != line
-        {
-            crate::discard::note("update_check_shadow_mismatch", &defaults::render("operator.shadow_check_log", &[("node", &node), ("engine", &line)]));
-        }
+        out(&format!("{}\n{}\n", stringify(&status), render_human(&rx, &status, "")))?;
         return Ok(0);
     }
     let core = run_core(&rx, &env, &home, &paths, post_pull_only);
@@ -743,17 +730,5 @@ fn go(p: &Parsed) -> Result<i32, String> {
         return Ok(0);
     }
     out(&format!("{}\n{}\n", stringify(&status), render_human(&rx, &status, &core.changelog)))?;
-    // After the update, so the Node check's fetch cannot change what the pull reports. It must agree on the latest version.
-    if !post_pull_only
-        && !core.early
-        && let Some(n) = super::shadow_line(&env, &shadow_script, &node_env(t("update.check_flag")), None)
-            .and_then(|o| o.lines().next().and_then(|l| json::parse(l, defaults::num("update.json_max_depth") as usize).ok()))
-    {
-        let shown = |v: Option<&J>| v.map_or_else(|| t("update.null_word").to_string(), js_string);
-        let (nl, el) = (shown(n.get("latest")), shown(status.get("latest")));
-        if nl != el {
-            crate::discard::note("update_shadow_mismatch", &defaults::render("operator.shadow_update_log", &[("nl", &nl), ("el", &el)]));
-        }
-    }
     Ok(i32::from(core.stop))
 }

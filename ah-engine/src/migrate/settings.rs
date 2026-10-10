@@ -759,7 +759,7 @@ fn migrate_from_legacy(ctx: &Ctx) -> (bool, u64, u64) {
 }
 
 /// `migrate-settings-from-legacy`: stamped per plugin version in the shared marker file.
-pub(super) fn settings_migration(ctx: &Ctx, rows: &mut Vec<Row>) {
+pub(crate) fn settings_migration(ctx: &Ctx, rows: &mut Vec<Row>) {
     let id = super::step("settings");
     let key = defaults::text("migrate.settings_marker_key");
     let version = ctx.version.as_deref();
@@ -789,7 +789,7 @@ pub(super) fn settings_migration(ctx: &Ctx, rows: &mut Vec<Row>) {
 
 /// `repair-jev-triage-cache`: drop the poisoned no-label entries (a bare `{_seq}` that was cached as a verdict before 0.200.0)
 /// from the disposable triage cache; labelled entries and real no-label verdicts are kept.
-pub(super) fn jev_triage_cache(ctx: &Ctx, rows: &mut Vec<Row>) {
+pub(crate) fn jev_triage_cache(ctx: &Ctx, rows: &mut Vec<Row>) {
     let id = super::step("triage");
     let row = |status: &str, msg: String| Row { id: id.into(), action: id.into(), status: status.into(), msg };
     let file = ctx.base().join(defaults::text("migrate.jev_triage_cache"));
@@ -825,6 +825,74 @@ pub(super) fn jev_triage_cache(ctx: &Ctx, rows: &mut Vec<Row>) {
         Ok(()) => rows.push(row("fixed", defaults::render("migrate_msg.triage_fixed", &[("n", &poisoned), ("kept", &kept)]))),
         Err(e) => rows.push(row("failed", defaults::render("migrate_msg.triage_raised", &[("error", &super::node_err(&e, "open", &file))]))),
     }
+}
+
+/// `jevKeyFilePresent`: the Jev key file the settings name (or the vendor's default one) when it is a non-empty file.
+fn jev_key_file(ctx: &Ctx) -> Option<PathBuf> {
+    let text = |key: &str, dflt: &str| -> String {
+        match find(defaults::text("migrate.settings_section_jev"), key).and_then(|e| get(ctx, e, Some(&J::Str(dflt.to_string())))) {
+            Some(J::Str(s)) => s,
+            _ => String::new(),
+        }
+    };
+    let key_file = text(defaults::text("update_post.key_opt_in_file_key"), "");
+    let home = Path::new(&ctx.home);
+    let path = match js_trim(&key_file) {
+        "" => {
+            let transport = text(defaults::text("update_post.key_opt_in_transport_key"), defaults::text("update_post.key_opt_in_transport_default"));
+            let rel = if transport == defaults::text("update_post.key_opt_in_transport_typesafe") { "jev.key_file_typesafe" } else { "jev.key_file_vercel" };
+            home.join(defaults::text(rel))
+        }
+        "~" => home.to_path_buf(),
+        k => match k.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(k),
+        },
+    };
+    std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() > 0).map(|_| path)
+}
+
+/// `migrateLegacyKeyOptIn`: (status, message, stamp).
+fn legacy_key_opt_in_pass(ctx: &Ctx) -> (&'static str, String, bool) {
+    let msg = |k: &str| defaults::text(k).to_string();
+    if let Ok(bytes) = std::fs::read(settings_path(ctx))
+        && !matches!(parse_json(&String::from_utf8_lossy(&bytes)), Some(J::Obj(_)))
+    {
+        return ("failed", msg("update_post.key_opt_in_unreadable"), false);
+    }
+    let section = defaults::text("migrate.settings_section_jev");
+    let flag = defaults::text("update_post.key_opt_in_flag");
+    if lookup(load(ctx).get(section), flag).is_some() {
+        return ("skipped", msg("update_post.key_opt_in_user_set"), true);
+    }
+    let enabled = find(section, defaults::text("update_post.key_opt_in_enabled_key")).and_then(|e| get(ctx, e, Some(&J::Bool(false))));
+    if !matches!(enabled, Some(J::Bool(true))) {
+        return ("skipped", msg("update_post.key_opt_in_jev_off"), true);
+    }
+    let Some(key_path) = jev_key_file(ctx) else { return ("skipped", msg("update_post.key_opt_in_no_file"), true) };
+    if !set(ctx, section, flag, &J::Bool(true), None, true).ok {
+        return ("failed", msg("update_post.key_opt_in_write_failed"), false);
+    }
+    ("fixed", defaults::render("update_post.key_opt_in_fixed", &[("path", &key_path.display())]), true)
+}
+
+/// `runLegacyKeyOptInMigration`: the one-time opt-in of `jev.allowLegacyKeyRead` for an install that has Jev on and a key
+/// file (presence only; the key is never read). Stamped under a fixed version so a later reset is not undone. The settings
+/// are read without the environment, as the Node migration reads them.
+pub(crate) fn legacy_key_opt_in(ctx: &Ctx) -> Row {
+    let id = defaults::text("update_post.key_opt_in_id");
+    let row = |status: &str, msg: String| Row { id: id.into(), action: id.into(), status: status.into(), msg };
+    let marker = defaults::text("update_post.key_opt_in_marker");
+    let once = defaults::text("update_post.key_opt_in_version");
+    if super::is_applied(&read_markers(ctx), marker, Some(once)) {
+        return row("skipped", defaults::text("update_post.key_opt_in_applied").to_string());
+    }
+    let bare = Ctx::new(ctx.home.clone(), ctx.cwd.clone(), std::collections::BTreeMap::new(), ctx.dry_run, ctx.version.clone(), ctx.plugin_root.clone());
+    let (status, msg, stamp) = legacy_key_opt_in_pass(&bare);
+    if stamp && !ctx.dry_run {
+        super::mark_applied(ctx, marker, Some(once));
+    }
+    row(status, msg)
 }
 
 #[cfg(test)]
