@@ -95,6 +95,8 @@ cleanup() {
   return 0
 }
 die() { say "ah-update: $*"; cleanup; trap - 0; exit 1; }
+# A closed output pipe (`ah-update.sh | head`) must not kill an update half way and leave the lock behind.
+trap '' PIPE
 trap 'cleanup; exit 1' HUP INT TERM
 trap cleanup 0
 
