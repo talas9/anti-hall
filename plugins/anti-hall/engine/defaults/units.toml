@@ -1,0 +1,408 @@
+# ah-engine shipped defaults for the engine's own service units (`ah-engine units`, `src/setup/units.rs`): the one launchd /
+# systemd user unit that keeps the engine daemon (`ah-engine serve`) running, and the retirement of the units the Node installers
+# wrote (companion/install-reaper.js, install-devswarm-supervisor.js, install-devswarm-ingest.js). Format: see the header of
+# engine.toml.
+#
+# The engine unit does not compete with the daemon a hook starts: it runs `ah-engine serve` on load and again every
+# units.watch_interval_s, and `serve` returns at once when a daemon already answers (the singleton lock decides), so it only ever
+# starts a daemon when none runs (after a reboot, a crash, a version handoff). A Node unit is retired only when the engine already
+# runs its duty, so a duty is never dropped and never run twice. Nothing is ever deleted: a unit file that is removed is moved
+# into the engine state directory (units.state_subdir / units.retired_subdir).
+
+[cmd.units]
+doc = "The engine's service units: `status` lists the engine unit and the units the Node installers wrote, with whether the engine runs their duty; `install` writes (or refreshes) the one unit that keeps `ah-engine serve` running (launchd on macOS, a systemd user service and timer on Linux) and loads it; `heal` installs and then retires each Node unit whose duty the engine runs (the MCP reaper when its job is on, the DevSwarm supervisor and ingest when devswarm_sup.mode / devswarm_ingest.mode is engine); `uninstall` unloads the engine unit. `--dry-run` reports and changes nothing; `--bin <path>` names the engine binary the unit runs. A removed unit file is moved into the state directory, never deleted. A retired unit that comes back is recorded as a mistake and left alone."
+value = { args = "<status|install|heal|uninstall> [--dry-run] [--bin <path>]", read_only = false, read_only_args = ["status"], read_only_flags = ["--dry-run"], status = "implemented" }
+
+# ---- the command -------------------------------------------------------------------------------------------------------------
+
+[units.sub_status]
+doc = "The subcommand that reports and changes nothing."
+value = "status"
+
+[units.sub_install]
+doc = "The subcommand that writes and loads the engine unit."
+value = "install"
+
+[units.sub_heal]
+doc = "The subcommand that installs the engine unit and retires the Node units whose duty the engine runs (what update and doctor --repair call)."
+value = "heal"
+
+[units.sub_uninstall]
+doc = "The subcommand that unloads the engine unit and moves its files aside."
+value = "uninstall"
+
+[units.flag_dry]
+doc = "The option that reports what would be done and changes nothing."
+value = "--dry-run"
+
+[units.flag_bin]
+doc = "The option that names the engine binary the unit runs (default: units.engine_bin_rel under the home directory)."
+value = "--bin"
+
+[units.msg_usage]
+doc = "Printed (stderr) for a command line `units` does not know."
+value = "usage: ah-engine units <status|install|heal|uninstall> [--dry-run] [--bin <path>] [--json]"
+
+[units.msg_busy]
+doc = "Printed when another `units` run holds the lock: nothing was done."
+value = "anti-hall units: another run is in progress; nothing was done"
+
+[units.msg_no_home]
+doc = "Printed when no home directory is set: nothing was done."
+value = "anti-hall units: no home directory; nothing was done"
+
+[units.msg_unsupported]
+doc = "The note of a platform with no unit support (neither launchd nor systemd): nothing is written. {os}."
+value = "no service manager support on {os}: the daemon is started by the hooks only"
+
+[units.msg_no_bin]
+doc = "The note when the engine binary the unit would run is missing or not executable: nothing is written. {bin}."
+value = "the engine binary {bin} is missing or not executable; install the engine first"
+
+[units.msg_no_systemctl]
+doc = "The note when systemd's user manager is not available: nothing is written; the line to add with `crontab -e` instead. {line}."
+value = "systemd user manager not available; to keep the engine running, add this line with crontab -e: {line}"
+
+[units.line_action]
+doc = "One line of the human report. {action} {target} {outcome} {reason} (the reason with its leading separator, or nothing)."
+value = "{action} {target}: {outcome}{reason}"
+
+[units.reason_sep]
+doc = "Between the outcome and the reason in a report line."
+value = " - "
+
+[units.line_note]
+doc = "One note line of the human report. {note}."
+value = "note: {note}"
+
+# ---- action, outcome and reason words (the report, the ledger and telemetry) ---------------------------------------------------
+
+[units.act_write]
+doc = "Action: a unit file was written (new or changed)."
+value = "write"
+
+[units.act_unchanged]
+doc = "Action: a unit file already had these bytes."
+value = "unchanged"
+
+[units.act_load]
+doc = "Action: a service-manager command was run."
+value = "run"
+
+[units.act_retire]
+doc = "Action: a Node unit was retired (unloaded and its files moved aside)."
+value = "retire"
+
+[units.act_keep]
+doc = "Action: a Node unit was left in place (its duty is not the engine's yet)."
+value = "keep"
+
+[units.act_remove]
+doc = "Action: an engine unit file was moved aside (uninstall)."
+value = "remove"
+
+[units.act_optin]
+doc = "Action: the Node reaper's opt-in was carried over to the engine job."
+value = "optin"
+
+[units.act_mistake]
+doc = "Action: a Node unit the engine retired earlier is back (the owner reinstalled it); it is left alone and recorded as a mistake signal of that retirement."
+value = "mistake"
+
+[units.act_status]
+doc = "Action: a status line (nothing changed)."
+value = "status"
+
+[units.out_ok]
+doc = "Outcome: done."
+value = "ok"
+
+[units.out_dry]
+doc = "Outcome: a dry run; nothing was changed."
+value = "dry-run"
+
+[units.out_failed]
+doc = "Outcome: it failed."
+value = "failed"
+
+[units.out_refused]
+doc = "Outcome: a service-manager command refused under a test or a temporary home."
+value = "refused"
+
+[units.out_nonzero]
+doc = "Outcome: a service-manager command ran and exited non-zero (expected for an unload of a unit that is not loaded; only the last command of a step decides whether the step failed)."
+value = "non-zero exit"
+
+[units.out_present]
+doc = "Status outcome: the file is there."
+value = "present"
+
+[units.out_absent]
+doc = "Status outcome: the file is not there."
+value = "absent"
+
+[units.why_duty_node]
+doc = "Reason a Node unit is kept: the engine does not run its duty yet."
+value = "duty not in the engine yet"
+
+[units.why_duty_engine]
+doc = "Reason a Node unit is retired: the engine runs its duty."
+value = "duty runs in the engine"
+
+[units.why_came_back]
+doc = "Reason of a mistake signal: the unit was retired earlier and is installed again. {action_id} is the retirement it refers to."
+value = "retired earlier (action {action_id}) and installed again; left alone"
+
+[units.why_test_guard]
+doc = "Reason a service-manager command was not run: a test or a temporary home."
+value = "not run under a test or a temporary home"
+
+[units.why_exit]
+doc = "Reason of a failed service-manager command. {code}."
+value = "exit {code}"
+
+# ---- the engine unit -----------------------------------------------------------------------------------------------------------
+
+[units.engine_bin_rel]
+doc = "The engine binary the unit runs, relative to the home directory (where the bootstrap installs it and the hook wrapper finds it)."
+value = ".anti-hall/ah-engine/bin/ah-engine"
+
+[units.os_launchd]
+doc = "The operating system (Rust's std::env::consts::OS) whose units are launchd LaunchAgents."
+value = "macos"
+
+[units.os_systemd]
+doc = "The operating system whose units are systemd user units."
+value = "linux"
+
+[units.watch_interval_s]
+doc = "How often the unit runs `ah-engine serve` again (a no-op while a daemon answers), in seconds."
+value = 300
+min = 60
+unit = "s"
+
+[units.serve_args]
+doc = "The arguments the unit gives the engine binary."
+value = ["serve"]
+
+[units.label]
+doc = "The launchd label of the engine unit."
+value = "com.anti-hall.engine"
+
+[units.launchd_dir]
+doc = "The LaunchAgents directory, relative to the home directory."
+value = "Library/LaunchAgents"
+
+[units.plist_suffix]
+doc = "The file name suffix of a launchd unit."
+value = ".plist"
+
+[units.plist_log]
+doc = "Where launchd sends the unit's stdout and stderr (the daemon writes its own log)."
+value = "/dev/null"
+
+[units.plist_template]
+doc = "The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {interval} {log}; every value is XML-escaped."
+value = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+{args}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>{interval}</integer>
+  <key>StandardOutPath</key>
+  <string>{log}</string>
+  <key>StandardErrorPath</key>
+  <string>{log}</string>
+</dict>
+</plist>
+'''
+
+[units.plist_arg]
+doc = "One ProgramArguments entry of the LaunchAgent. {arg}."
+value = "    <string>{arg}</string>"
+
+[units.xml_escapes]
+doc = "The XML escapes applied to every value put in a LaunchAgent, in order (the ampersand first)."
+value = [["&", "&amp;"], ["<", "&lt;"], [">", "&gt;"], ['"', "&quot;"], ["'", "&apos;"]]
+
+[units.systemd_dir]
+doc = "The systemd user unit directory, relative to the home directory."
+value = ".config/systemd/user"
+
+[units.unit_name]
+doc = "The systemd unit name of the engine unit (the service and the timer share it)."
+value = "anti-hall-engine"
+
+[units.service_suffix]
+doc = "The file name suffix of a systemd service."
+value = ".service"
+
+[units.timer_suffix]
+doc = "The file name suffix of a systemd timer."
+value = ".timer"
+
+[units.service_template]
+doc = "The systemd user service of the engine unit. {exec} is the quoted command line."
+value = '''
+[Unit]
+Description=anti-hall engine daemon (starts it when none is running)
+
+[Service]
+Type=simple
+ExecStart={exec}
+'''
+
+[units.timer_template]
+doc = "The systemd user timer that starts the service on login and again after it has been inactive for the interval. {interval}."
+value = '''
+[Unit]
+Description=anti-hall engine daemon watch ({interval}s)
+
+[Timer]
+OnActiveSec=10
+OnUnitInactiveSec={interval}
+
+[Install]
+WantedBy=timers.target
+'''
+
+[units.exec_arg]
+doc = "One argument of the ExecStart line: double-quoted, with the systemd escapes applied. {arg}."
+value = '"{arg}"'
+
+[units.systemd_escapes]
+doc = "The escapes applied to an ExecStart argument, in order: backslash and double quote for the quoting, a dollar and a percent sign doubled so systemd expands neither a variable nor a specifier."
+value = [["\\", "\\\\"], ['"', '\"'], ["$", "$$"], ["%", "%%"]]
+
+[units.cron_line]
+doc = "The crontab line offered when systemd's user manager is not available. {exe}."
+value = '*/5 * * * * "{exe}" serve >/dev/null 2>&1'
+
+# ---- service-manager commands (each argument is a template: {plist} {label} {unit} {timer} {service}) -------------------------
+
+[units.launchd_load]
+doc = "The commands that (re)load a LaunchAgent: unload (its failure is ignored, the unit may not be loaded) then load."
+value = [["launchctl", "unload", "{plist}"], ["launchctl", "load", "{plist}"]]
+
+[units.launchd_unload]
+doc = "The command that unloads a LaunchAgent (its failure is ignored: the unit may not be loaded)."
+value = [["launchctl", "unload", "{plist}"]]
+
+[units.launchd_loaded]
+doc = "The command whose exit 0 says a label is loaded."
+value = ["launchctl", "list", "{label}"]
+
+[units.systemd_probe]
+doc = "The command whose exit 0 says systemd's user manager is available."
+value = ["systemctl", "--user", "--version"]
+
+[units.systemd_load]
+doc = "The commands that load the engine unit: re-read the unit files, then enable and start the timer."
+value = [["systemctl", "--user", "daemon-reload"], ["systemctl", "--user", "enable", "--now", "{timer}"]]
+
+[units.systemd_loaded]
+doc = "The command whose exit 0 says a timer or service is enabled."
+value = ["systemctl", "--user", "is-enabled", "--quiet", "{unit}"]
+
+[units.systemd_unload]
+doc = "The command that disables and stops a unit (its failure is ignored: the unit may not be enabled)."
+value = [["systemctl", "--user", "disable", "--now", "{unit}"]]
+
+[units.systemd_reload]
+doc = "The command that re-reads the unit files after files were moved aside."
+value = [["systemctl", "--user", "daemon-reload"]]
+
+[units.cmd_timeout_ms]
+doc = "Longest one service-manager command may run before it is killed and counted as failed."
+value = 15000
+min = 100
+unit = "ms"
+
+[units.cmd_poll_ms]
+doc = "How often a running service-manager command is checked."
+value = 20
+min = 1
+unit = "ms"
+
+[units.cmd_what]
+doc = "The name of a service-manager command in a log line."
+value = "units"
+
+# ---- safety of the service-manager commands ------------------------------------------------------------------------------------
+
+[units.test_markers]
+doc = "Environment variables that mark a test run: while one is set (non-empty), no service-manager command runs (files are still written under the test's home). The same markers the Node installers honour."
+value = ["ANTIHALL_TEST_ISOLATION", "NODE_TEST_CONTEXT"]
+
+[units.allow_tmp_home_env]
+doc = "The environment variable that, set to 1, lets service-manager commands run although the home directory is under a temporary directory (a deliberate temporary-home install)."
+value = "ANTIHALL_UNITS_ALLOW_TMP_HOME"
+
+[units.allow_tmp_home_word]
+doc = "The value of units.allow_tmp_home_env that allows it."
+value = "1"
+
+[units.tmp_roots]
+doc = "Directory prefixes that are temporary: a home under one of them is never a real operator home, so no service-manager command runs for it (the system temporary directory is checked too)."
+value = ["/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"]
+
+# ---- state, ledger and lock ----------------------------------------------------------------------------------------------------
+
+[units.state_subdir]
+doc = "The units directory inside the engine state directory (ledger, lock, retired files). The reaper opt-in marker is mcp_reaper.job_optin_rel."
+value = "units"
+
+[units.retired_subdir]
+doc = "Where moved-aside unit files go, inside the units directory: `<file name>.<epoch ms>`."
+value = "retired"
+
+[units.ledger_file]
+doc = "The append-only ledger of every action a non-dry run took (one JSON line each: ts, action_id, action, target, outcome, reason, latency_ms)."
+value = "ledger.jsonl"
+
+[units.lock_file]
+doc = "The lock a run holds, so two runs never act at once."
+value = "units.lock"
+
+[units.log_kind]
+doc = "The engine event log kind of a units action."
+value = "units"
+
+# ---- the Node units (retired when the engine runs their duty) ----------------------------------------------------------------
+
+[units.duty_reaper]
+doc = "The duty word of the MCP reaper: the engine runs it when the mcp_reaper job is on (maintenance.mcpReaperJob not off, job interval above 0)."
+value = "mcp_reaper"
+
+[units.duty_supervisor]
+doc = "The duty word of the DevSwarm supervisor: the engine runs it when devswarm_sup.mode is engine."
+value = "devswarm_sup"
+
+[units.duty_ingest]
+doc = "The duty word of the DevSwarm ingest daemons: the engine runs them when devswarm_ingest.mode is engine."
+value = "devswarm_ingest"
+
+[units.node_units]
+doc = "The units the Node installers write. name: report name; duty: the duty word; label: the launchd label (a family also matches `<label>.<suffix>`); unit: the systemd unit name (a family also matches `<unit>-<suffix>`); files: the systemd file suffixes; stop: the systemd unit to disable ({unit} is the matched unit name); family: one unit per project."
+value = [
+  { name = "mcp-reaper", duty = "mcp_reaper", label = "com.anti-hall.mcp-reaper", unit = "anti-hall-mcp-reaper", files = [".service", ".timer"], stop = "{unit}.timer", family = false },
+  { name = "devswarm-supervisor", duty = "devswarm_sup", label = "com.anti-hall.devswarm-supervisor", unit = "anti-hall-devswarm-supervisor", files = [".service", ".timer"], stop = "{unit}.timer", family = false },
+  { name = "devswarm-ingest", duty = "devswarm_ingest", label = "com.anti-hall.devswarm-ingest", unit = "anti-hall-devswarm-ingest", files = [".service"], stop = "{unit}.service", family = true },
+]
+
+[units.label_sep]
+doc = "Between a family label and its per-project suffix."
+value = "."
+
+[units.unit_sep]
+doc = "Between a family unit name and its per-project suffix."
+value = "-"

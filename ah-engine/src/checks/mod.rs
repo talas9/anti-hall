@@ -18,6 +18,7 @@ pub mod git;
 pub mod guardkit;
 pub mod idle_agent_sweep;
 pub mod jsport;
+pub mod mcp_reaper;
 pub mod replykit;
 pub mod scripted;
 pub mod session;
