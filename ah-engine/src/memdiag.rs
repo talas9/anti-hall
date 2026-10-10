@@ -345,10 +345,10 @@ pub fn summary() -> Value {
     let max = defaults::num("diagnostics.summary_read_bytes");
     let mut text = tail_of(&rotated(&path), max);
     text.push_str(&tail_of(&path, max));
-    summary_of(&text, max)
+    summary_of(&text)
 }
 
-fn summary_of(text: &str, max: u64) -> Value {
+fn summary_of(text: &str) -> Value {
     let mut lines: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
     lines.sort_by_key(|l| l["ts"].as_u64().unwrap_or(0));
     let lines = lines.as_slice();
@@ -388,7 +388,7 @@ mod tests {
                 .to_string()
         };
         let text = [line(1, "Stop", &["x", "y"], 100, 110), line(2, "Stop", &["x"], 110, 105), line(3, "Pre", &["y"], 105, 106)].join("\n");
-        let s = summary_of(&text, 1 << 20);
+        let s = summary_of(&text);
         assert_eq!(s["requests"], 3);
         assert_eq!(s["top_events"][0]["name"], "V Stop");
         assert_eq!(s["top_events"][0]["rss_delta_kb_total"], 5);
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(s["top_checks"][0]["rss_delta_kb_total"], 11);
         assert_eq!(s["rss_kb_first"], 100);
         assert_eq!(s["rss_kb_last"], 106);
-        assert_eq!(summary_of("", 1 << 20), Value::Null);
+        assert_eq!(summary_of(""), Value::Null);
     }
 
     #[test]
