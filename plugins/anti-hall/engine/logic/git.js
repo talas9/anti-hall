@@ -2546,6 +2546,8 @@ function decide(p, opts, event) {
   const cmd = ti.command;
   if (cmd === '') return 'allow';
   // `payload.cwd || process.cwd()`: without one, the hook process's own directory (lib/78-hook-proc.js)
+  // a relative payload cwd resolves against the hook process's own directory, which the daemon cannot know: Node decides
+  if (typeof p.cwd === 'string' && p.cwd !== '' && p.cwd.charAt(0) !== '/') return 'defer';
   const cwdIn = hookProc.cwd(p);
   let home = ah.env.get(ah.cfg('env.home'));
   if (home === null) home = ah.env.get(ah.cfg('env.home_alt'));

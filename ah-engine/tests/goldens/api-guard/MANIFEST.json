@@ -121,7 +121,7 @@
     "plugins/anti-hall/hooks/limit-conserve.js": "94135fdf4755ecf57f162663310f893b1b6f512a21ea65caa8b78369c6d20daa",
     "plugins/anti-hall/hooks/session-end-mcp-reaper.js": "0203db1547d0c97d8781254f5035be7a9cd12fab1ad3e89d1188a988197e8dfe",
     "plugins/anti-hall/hooks/skip-guard.js": "13f984532797fb064dcf3589d862a8f15d1fd955bb31c0125e63b4ffc734da0e",
-    "plugins/anti-hall/monitors/monitors.json": "45c25e52ef8aeae0f9cda92f79870629ea8d95f208140836ae9cd948273e7508",
+    "plugins/anti-hall/monitors/monitors.json": "7dc520918c6a8308dcfdcc4001fb0edec9138b12d0c07e3f7298e15e9fb7ee65",
     "plugins/anti-hall/scripts/devswarm-lib/archive.js": "f4d33ae0198b841394a2f6d0f9d5148e9f1c24dc3fb16e86357ab86014029318",
     "plugins/anti-hall/scripts/devswarm-lib/core.js": "c41d9a005285de6a65c27f20dc543f7405e851515a20e26d1ff3e14d5e1bba05",
     "plugins/anti-hall/scripts/devswarm-lib/cursors.js": "1f50ba1a7a7ea49ed69af3de5d1293d3b065273f95420425a8950b33538f2c5f",
@@ -149,7 +149,7 @@
     "plugins/anti-hall/statusline/statusline.js": "ef855854349c8ef5e2144ae5d6eef8cd411b7e419939ab0ec3bd4dba1d2f3d1a",
     "plugins/anti-hall/statusline/uninstall-statusline.js": "d52e32b54a07a12eaf71b19c362fdc7dad6eb6d844ae64b6be429bd0b1f3f389"
   },
-  "fingerprint": "655ed8ca8578b3af47d00a5b4a5b06393f847b7852084c3712a12b4b3c07c428",
+  "fingerprint": "52b32a92454636535fa3742547e5382f86290645084cfa3ceecda48dabe3d894",
   "os": "macos-aarch64",
   "record": "AH_RECORD_NODE=1 cargo nextest run --release --profile record -E 'test(<the lane's test>)'  # lane api-guard",
   "test": "api-guard",
