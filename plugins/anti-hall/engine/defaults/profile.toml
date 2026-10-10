@@ -1,0 +1,12 @@
+# ah-engine profiling switches (issues #21 and #22). Measurement only: every switch is off by default and costs one relaxed
+# atomic load per request while off. Format: see the header of engine.toml.
+
+[profile.stage_log]
+doc = "Path of a newline-delimited JSON file the daemon appends one line to per served request, with the time spent in each stage of it (queue wait, read, parse, preamble, table select, entries, observe, script, child process with its spawn/wait/collect split, git, encode, write) and per check. Empty = off (the default). A relative path is resolved against the daemon's state directory."
+value = ""
+
+[profile.js_stats_every]
+doc = "Every this many scripted check calls on a worker thread, read the thread's QuickJS memory usage (a walk of its whole heap) and publish it to `status --json` -> `memory.js`. 0 = never (the default)."
+value = 0
+min = 0
+unit = "calls"

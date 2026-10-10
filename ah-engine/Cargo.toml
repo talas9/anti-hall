@@ -40,7 +40,18 @@ notify = { version = "=8.2.0", default-features = false, features = ["macos_fsev
 [target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu")))'.dependencies]
 tikv-jemallocator = "0.7"
 
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu")))'.dependencies.tikv-jemalloc-sys]
+# Profiling only (feature `prof`): the allocator's own statistics (allocated, active, resident, mapped, retained) for `status --json`.
+version = "0.7"
+optional = true
+
 [features]
+# Profiling only (never in a release build): an allocation profile of the daemon (dhat). Build `--features dhat-heap`; the daemon
+# writes `dhat-heap.json` in its working directory when it exits cleanly (`ah-engine stop`). Uses the system allocator, not
+# jemalloc, so `status` heap figures read 0 in this build.
+dhat-heap = ["dep:dhat"]
+# Profiling only (never in a release build): jemalloc built with statistics, reported under `status --json` -> `memory.jemalloc`.
+prof = ["dep:tikv-jemalloc-sys", "tikv-jemalloc-sys/stats"]
 # Developer diagnostics only (never in a release build): `ah-engine diag heap` reports heap peak/current bytes per check,
 # measured with the dhat allocator. Off by default; see docs/DEVELOPMENT.md.
 diag = ["dep:dhat"]

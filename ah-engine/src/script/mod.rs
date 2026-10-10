@@ -138,6 +138,26 @@ pub fn pool_usage() -> Option<(usize, i64, i64, i64, i64)> {
     })
 }
 
+thread_local! {
+    static CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Profiling only: every `profile.js_stats_every` calls on this thread, publish its QuickJS memory usage (see `crate::prof::js`).
+fn publish_js_usage(pool: &Pool) {
+    let every = defaults::num("profile.js_stats_every");
+    if every == 0 {
+        return;
+    }
+    let n = CALLS.with(|c| {
+        c.set(c.get() + 1);
+        c.get()
+    });
+    if n % every == 0 {
+        let u = pool.rt.memory_usage();
+        crate::prof::js::publish([u.malloc_size, u.malloc_count, u.memory_used_size, u.obj_count, u.str_count, u.js_func_count, pool.checks.len() as i64]);
+    }
+}
+
 fn mtime_ns(m: &std::fs::Metadata) -> u128 {
     m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos())
 }
@@ -411,6 +431,7 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
 }
 
 fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
+    let _js = crate::prof::span(crate::prof::Stage::Js);
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -438,6 +459,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
             });
             pool.disarm();
             host::set_deadline(None);
+            publish_js_usage(pool);
             let text = out?;
             let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
             verdict_of(&v)

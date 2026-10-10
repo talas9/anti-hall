@@ -99,13 +99,19 @@ pub fn evaluate(meta: &Meta, p: &Value, observe: &dyn Fn(&Entry, &Answer, u64)) 
     {
         crate::gate::global().turn(sid);
     }
-    table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
+    let select = crate::prof::span(crate::prof::Stage::Select);
+    let selected = table::select(&meta.host, &meta.event, p, meta.tool.as_deref());
+    drop(select);
+    let _entries = crate::prof::span(crate::prof::Stage::Entries);
+    selected
         .into_iter()
         .filter(|e| e.check.is_some() && meta.only.as_ref().is_none_or(|ids| ids.contains(&e.id)))
         .map(|e| {
             let started = std::time::Instant::now();
             let a = run_entry(&e, meta, p);
-            observe(&e, &a, started.elapsed().as_micros() as u64);
+            let us = started.elapsed().as_micros() as u64;
+            crate::prof::check(e.check.as_deref().unwrap_or(""), us);
+            observe(&e, &a, us);
             (e.id, a)
         })
         .collect()

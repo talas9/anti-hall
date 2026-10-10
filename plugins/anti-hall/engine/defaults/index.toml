@@ -7,6 +7,7 @@
 
 files = [
     "engine.toml",
+    "profile.toml",
     "messages.toml",
     "git.toml",
     "command.toml",
