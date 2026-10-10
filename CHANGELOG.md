@@ -8826,7 +8826,7 @@ the exact failing case (`asyncio.run_all`) now blocks. Doc-only follow-up `547e1
 
 **`api-guard` — a mechanical guard against API hallucination, built on eval evidence.**
 
-A controlled A/B eval (see [`eval/`](eval/)) established that the verify-first *prompt*
+A controlled A/B eval (see [`tools/eval/`](https://github.com/talas9/anti-hall/tree/main/tools/eval)) established that the verify-first *prompt*
 does not reliably reduce API fabrication: across four rounds (incl. a powered 122-trap,
 tools-on run with a naive baseline) the protocol netted **no statistically-significant
 reduction** (McNemar p=0.26), and the model ran a verification tool only ~5% of the time —
