@@ -9,9 +9,9 @@ on:
   push:
     branches: [engine-proto, dev, main]
     tags: ['v*']
-    paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'plugins/anti-hall/engine/**', 'plugins/anti-hall/hooks/lib/settings-schema.js', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
   pull_request:
-    paths: ['ah-engine/**', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'plugins/anti-hall/engine/**', 'plugins/anti-hall/hooks/lib/settings-schema.js', '.github/workflows/ah-engine.yml']
   schedule:
     - cron: '17 3 * * *' # nightly: the full suite on both OSes
     - cron: '17 4 * * 1' # weekly: the full doc-check on both OSes

@@ -315,7 +315,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - procwatch: enabled, devServerMode=report, testRunnerMode=report, stuckMinutes=20 | buildDaemonMode, mcpServerMode, shellTaskMode, otherMode
 - resourceWatch: enabled, cpuPercent=90, memoryMb=4096, renice=false | cpuWindowSeconds, swapMb, pressurePercent, macPressureLevel, cooldownSeconds
 - diskWatch: enabled, warnGb=20, criticalGb=5, blockAtCritical=false | warnPercent, criticalPercent, cooldownSeconds
-- engine: bootstrap
+- engine: bootstrap, autoUpdate=off
 - defects: defaultProj=—
 
 **State** (`~/.anti-hall/`): settings.json; ah-engine/; skip.json; jev.json; update-sweep-state.json; version-check.json, version-alert-reload.json; orch-full/; auto-handover/<session>.json, context-pct/<session>.json; codex-availability.json, phase-state.json, agents/; claim-ledger/, approvals/, defects/; logs/; coordinator-work-session-<session>.json; coordinator-work-metrics.json; coordinator-work-trips.log; .coordinator-work-fold-stamp.json; devswarm/. Per project: `.anti-hall/progress/`, `history/`, `handovers/`.

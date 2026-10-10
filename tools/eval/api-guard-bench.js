@@ -5,7 +5,7 @@
 // Substantiates the README/CHANGELOG "~95% catch / ~0% false-positive" claim
 // with a committed, auditable corpus and runner (no hidden subagent runs).
 //
-//   node eval/api-guard-bench.js
+//   node tools/eval/api-guard-bench.js
 //
 // It feeds each case to the REAL hook (plugins/.../api-guard.js) as a Write
 // payload and checks the exit code (2 = block, 0 = allow):
@@ -22,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const HOOK = path.join(__dirname, '..', 'plugins', 'anti-hall', 'hooks', 'api-guard.js');
+const HOOK = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'api-guard.js');
 
 function runHook(file_path, content) {
   const payload = JSON.stringify({
@@ -116,7 +116,7 @@ function walk(dir, out) {
   return out;
 }
 const sweep = { ok: 0, n: 0, fp: [] };
-const pluginsDir = path.join(__dirname, '..', 'plugins');
+const pluginsDir = path.join(__dirname, '..', '..', 'plugins');
 for (const f of walk(pluginsDir, [])) {
   let content;
   try { content = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }

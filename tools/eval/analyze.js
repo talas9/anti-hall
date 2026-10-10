@@ -14,8 +14,8 @@
 //   - tool-use rates per arm (did the model actually run a verification command?)
 //
 // USAGE
-//   node eval/analyze.js eval/results-powered*.json
-//   node eval/analyze.js eval/results-toolson.json
+//   node tools/eval/analyze.js tools/eval/results-powered*.json
+//   node tools/eval/analyze.js tools/eval/results-toolson.json
 // (globs are shell-expanded; pass the files as args.)
 //
 // Honest by design: reports the real discordant-pair count and whether the
@@ -27,7 +27,7 @@ const fs = require('fs');
 
 const files = process.argv.slice(2);
 if (!files.length) {
-  console.error('usage: node eval/analyze.js <results.json> [more.json ...]');
+  console.error('usage: node tools/eval/analyze.js <results.json> [more.json ...]');
   process.exit(2);
 }
 

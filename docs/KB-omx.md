@@ -13,7 +13,7 @@ Verified local package: `oh-my-codex@0.18.16` with CLI binary `omx`.
 | Area | Verified state | Anti-hall implication |
 | --- | --- | --- |
 | Package | `npm view oh-my-codex` reports name `oh-my-codex`, version `0.18.16`, description “Multi-agent orchestration layer for OpenAI Codex CLI,” repository `github.com/Yeachan-Heo/oh-my-codex`, homepage `yeachan-heo.github.io/oh-my-codex`. | Treat OMX as third-party Codex orchestration companion, not as built-in Codex. |
-| Installed CLI | `omx --version` reported `oh-my-codex v0.18.16`. | `cx.sh` can wrap `omx --madmax "$@"` for local dangerous-bypass launch. |
+| Installed CLI | `omx --version` reported `oh-my-codex v0.18.16`. | `omx --madmax` is the local dangerous-bypass launch. |
 | Plugin manifest | Installed OMX `.codex-plugin/plugin.json` exposes `skills`, `mcpServers`, `apps`, `hooks`, and interface metadata. | Anti-hall Codex plugin should use the same broad manifest pattern where needed. |
 | Hooks | Installed OMX hook bundle uses `${PLUGIN_ROOT}/hooks/codex-native-hook.mjs` across SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, PreCompact, PostCompact, Stop. | Anti-hall plugin-bundled hooks should use `${PLUGIN_ROOT}` too. |
 | Setup/doctor | OMX package scripts include `setup` and `doctor`; installed skills include `omx-setup` and `doctor`. | Anti-hall should document “install/enable OMX” separately from anti-hall activation. |

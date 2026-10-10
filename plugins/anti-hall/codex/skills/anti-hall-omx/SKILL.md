@@ -1,13 +1,13 @@
 ---
 name: anti-hall-omx
-description: Integrate anti-hall with oh-my-codex (OMX). Use for OMX setup/doctor, cx.sh, dangerous bypass launch, or OMX-driven workflows.
+description: Integrate anti-hall with oh-my-codex (OMX). Use for OMX setup/doctor, dangerous bypass launch, or OMX-driven workflows.
 ---
 
 # anti-hall OMX integration
 
 ## When to use
 
-Integrate anti-hall with oh-my-codex (OMX). Use when the user asks about OMX, omx setup/doctor, Codex workflows, cx.sh, dangerous bypass launch, or activating anti-hall workflows through OMX.
+Integrate anti-hall with oh-my-codex (OMX). Use when the user asks about OMX, omx setup/doctor, Codex workflows, dangerous bypass launch, or activating anti-hall workflows through OMX.
 
 OMX is the Codex workflow/orchestration companion. OMC is Claude-focused; for Codex use OMX.
 
@@ -37,7 +37,7 @@ omx --madmax "$@"
 Resume last run:
 
 ```bash
-./cx.sh resume --last
+omx --madmax resume --last
 ```
 
 ## Anti-hall + OMX workflow mapping

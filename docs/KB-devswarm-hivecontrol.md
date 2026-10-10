@@ -460,7 +460,7 @@ platform-identical** (both call the same `hivecontrol`):
 |---|---|---|
 | L1 → children | `hivecontrol workspace create … -a claude` | `hivecontrol workspace create … -a codex` |
 | L2 in-child fan-out | **Workflow tool + subagents** (OMC) | **`omx team` / workers** (OMX) |
-| Bypass launcher parity | `cc.sh` = `claude --dangerously-skip-permissions` | `cx.sh` = `omx --madmax` |
+| Bypass launcher parity | `claude --dangerously-skip-permissions` | `omx --madmax` |
 
 ### 8.5 Guard interactions
 

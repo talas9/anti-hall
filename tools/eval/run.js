@@ -21,8 +21,8 @@
 //   api           — calls the Anthropic Messages API directly (needs a key).
 //
 // USAGE
-//   node eval/run.js                       # cli backend, on your subscription
-//   EVAL_BACKEND=api ANTHROPIC_API_KEY=sk-... node eval/run.js
+//   node tools/eval/run.js                       # cli backend, on your subscription
+//   EVAL_BACKEND=api ANTHROPIC_API_KEY=sk-... node tools/eval/run.js
 //
 // ENV
 //   EVAL_BACKEND       (default cli) — "cli" | "api"
@@ -30,7 +30,7 @@
 //   EVAL_MODEL         (default: cli→"opus", api→"claude-haiku-4-5")
 //   EVAL_JUDGE_MODEL   (default = EVAL_MODEL) — judge model
 //   EVAL_REPEATS       (default 1) — repeats per task per condition
-//   EVAL_OUT           (default eval/results.json) — raw results path
+//   EVAL_OUT           (default tools/eval/results.json) — raw results path
 //   EVAL_LIMIT         (optional) — only run first N tasks (debugging)
 //
 // Zero npm deps: built-in https + child_process. Honest by design: the api
@@ -43,7 +43,7 @@ const path = require('path');
 const https = require('https');
 const { execFileSync } = require('child_process');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const TASKS_PATH = process.env.EVAL_TASKS
   ? path.resolve(process.cwd(), process.env.EVAL_TASKS)
   : path.join(__dirname, 'trap-tasks.json');
@@ -285,9 +285,9 @@ async function main() {
   if (BACKEND === 'api' && !apiKey) {
     console.error('EVAL_BACKEND=api but no ANTHROPIC_API_KEY set — refusing to fabricate results.\n');
     console.error('Either run on your subscription (default):');
-    console.error('  node eval/run.js\n');
+    console.error('  node tools/eval/run.js\n');
     console.error('or supply a key for the API backend:');
-    console.error('  EVAL_BACKEND=api ANTHROPIC_API_KEY=sk-... node eval/run.js\n');
+    console.error('  EVAL_BACKEND=api ANTHROPIC_API_KEY=sk-... node tools/eval/run.js\n');
     console.error('Optional: EVAL_MODEL, EVAL_REPEATS, EVAL_JUDGE_MODEL, EVAL_LIMIT, EVAL_OUT');
     process.exit(2);
   }

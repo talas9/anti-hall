@@ -2,13 +2,13 @@
 'use strict';
 // inference-bench.js — offline precision/recall for catching confident,
 // unsupported inferences (a cause stated as fact with no hedge word and no tool
-// evidence). Corpus: eval/inference-cases.json (84 synthetic labelled cases,
+// evidence). Corpus: tools/eval/inference-cases.json (84 synthetic labelled cases,
 // fixed dev/test split, written before the detector).
 //
-//   node eval/inference-bench.js                 # deterministic detector, in-process
-//   node eval/inference-bench.js --hook          # the real speculation-guard hook, end to end
-//   node eval/inference-bench.js --codex         # detector on Codex rollout-shaped transcripts
-//   node eval/inference-bench.js --judge-cli     # LIVE: speculation-judge via `claude -p` (uses your
+//   node tools/eval/inference-bench.js                 # deterministic detector, in-process
+//   node tools/eval/inference-bench.js --hook          # the real speculation-guard hook, end to end
+//   node tools/eval/inference-bench.js --codex         # detector on Codex rollout-shaped transcripts
+//   node tools/eval/inference-bench.js --judge-cli     # LIVE: speculation-judge via `claude -p` (uses your
 //                                                #   Claude subscription, ~5 s per case)
 //   --json                                       # machine-readable summary
 //
@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '..', '..');
 const HOOKS = path.join(ROOT, 'plugins', 'anti-hall', 'hooks');
 const CASES = JSON.parse(fs.readFileSync(path.join(__dirname, 'inference-cases.json'), 'utf8')).cases;
 

@@ -117,4 +117,4 @@ The version lives in `plugins/anti-hall/.claude-plugin/plugin.json`. The Codex m
 
 ## Issue triage bot
 
-A new issue gets its form answers mapped to labels by `.github/workflows/triage.yml` (no model, no secret). It also gets one automated first-pass comment and labels from `.github/workflows/issue-triage.yml`. It only reads the issue, adds labels and posts that single comment; a maintainer always follows up. Maintainers enable it by setting the `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) repository secret; without one it does nothing.
+A new issue is triaged by `.github/workflows/community.yml`: rules map the form answers to labels, and one automated triage brief is posted (a model call through `.github/workflows/ai-model.yml` when a Claude token is available, rules only otherwise; Copilot is off by default). It only reads the issue, adds labels and posts that single comment; a maintainer always follows up.
