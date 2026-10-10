@@ -141,6 +141,31 @@ pub fn apply_mem_limit(mb: u64) -> String {
     format!("ok:{mb}")
 }
 
+/// Threads in this process (0 when the platform will not say).
+pub fn thread_count() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(s) = std::fs::read_to_string("/proc/self/status")
+            && let Some(n) = s.lines().find_map(|l| l.strip_prefix("Threads:")).and_then(|v| v.trim().parse::<u64>().ok())
+        {
+            return n;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `proc_taskinfo` is a plain C struct of integers, for which all-zero bytes are a valid value.
+        let mut ti: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let want = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        // SAFETY: `ti` is a writable `proc_taskinfo` of exactly `want` bytes, the size passed to the call.
+        let got =
+            unsafe { libc::proc_pidinfo(std::process::id() as libc::c_int, libc::PROC_PIDTASKINFO, 0, (&mut ti as *mut libc::proc_taskinfo).cast(), want) };
+        if got == want {
+            return ti.pti_threadnum.max(0) as u64;
+        }
+    }
+    0
+}
+
 /// Lower this process's priority by `n`.
 pub fn apply_nice(n: i32) {
     if n > 0 {

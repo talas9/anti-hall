@@ -165,6 +165,20 @@ pub fn pool_usage() -> Option<(usize, i64, i64, i64, i64)> {
     })
 }
 
+/// This thread's share of the memory picture for the cap-trip snapshot: its interpreter (runtimes, contexts, loaded checks, bytes
+/// QuickJS holds) and its regex cache. Runs a collection, so only for a diagnostic, never on a request path.
+pub fn thread_diag() -> serde_json::Value {
+    let regex_cache = host::regex_cache_len();
+    let thread = std::thread::current().name().map(str::to_string);
+    match pool_usage() {
+        Some((checks, bytes, allocs, funcs, code)) => serde_json::json!({
+            "thread": thread, "runtimes": 1, "contexts": 1, "checks_loaded": checks, "quickjs_bytes": bytes,
+            "quickjs_allocs": allocs, "js_funcs": funcs, "js_func_code_bytes": code, "regex_cache": regex_cache,
+        }),
+        None => serde_json::json!({"thread": thread, "runtimes": 0, "contexts": 0, "regex_cache": regex_cache}),
+    }
+}
+
 fn mtime_ns(m: &std::fs::Metadata) -> u128 {
     m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos())
 }

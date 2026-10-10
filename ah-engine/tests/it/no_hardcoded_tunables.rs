@@ -63,6 +63,10 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/docs.rs", "\\n## ", "section headings and intro lines of the generated Markdown reference: the generator's own format"),
     ("src/memstat.rs", "static INNER", "the allocator the counters wrap: a compile-time choice by target, code not configuration"),
     ("src/main.rs", "static ALLOC", "the global allocator item: a language construct, not a value"),
+    ("src/memdiag.rs", "static ON", "a thread-local flag initialised off: state, not a tunable"),
+    ("src/memdiag.rs", "static NOTE", "a thread-local slot initialised empty (the checks and transcript path of the request in progress): state, not a tunable"),
+    ("src/memdiag.rs", "static ARRIVED", "a condition variable the snapshot waits on: a language construct, not a value"),
+    ("src/memdiag.rs", "static REPORTED", "a thread-local marker initialised to zero (which snapshot this worker already answered): state, not a tunable"),
     ("src/load.rs", "static SCAN_BYTES", "a thread-local counter initialised to zero: state, not a tunable"),
     ("src/load.rs", "static REQUEST", "a thread-local slot initialised empty: state, not a tunable"),
     (

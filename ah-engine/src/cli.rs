@@ -299,7 +299,8 @@ fn cmd_status(p: &Parsed) -> i32 {
     let v = client::status_value();
     // `--memory`: just the memory breakdown (live heap against RSS, and the size of every long-lived in-memory structure)
     let v = if p.rest.iter().any(|a| a == "--memory") {
-        json!({"running": v["running"], "rss_peak_kb": v["rss_peak_kb"], "rss_cap_kb": v["rss_cap_kb"], "memory": v["memory"]})
+        json!({"running": v["running"], "rss_peak_kb": v["rss_peak_kb"], "rss_cap_kb": v["rss_cap_kb"], "memory": v["memory"],
+            "latest_snapshot": crate::memdiag::latest_snapshot(), "mem_log": crate::memdiag::summary()})
     } else {
         v
     };

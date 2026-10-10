@@ -1106,6 +1106,11 @@ fn kept_lock() -> std::sync::MutexGuard<'static, Option<HashMap<String, Kept>>> 
     KEPT.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// (transcripts kept, their estimated bytes by the cache's own estimate, transcript bytes they have read) for the memory snapshot.
+pub fn kept_usage() -> (usize, u64, u64) {
+    kept_lock().as_ref().map_or((0, 0, 0), |m| m.values().fold((m.len(), 0, 0), |(n, b, o), k| (n, b + walk_bytes(&k.walk), o + k.off)))
+}
+
 /// A cheap digest of `len` bytes of the file at `at` (None when they cannot be read).
 fn digest_at(f: &std::fs::File, at: u64, len: u64) -> Option<u64> {
     use std::hash::Hasher;

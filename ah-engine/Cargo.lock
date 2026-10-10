@@ -35,6 +35,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "toml",
  "unicode-normalization",

@@ -26,6 +26,12 @@ fn cache() -> std::sync::MutexGuard<'static, HashMap<Key, (Stamp, String)>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// (entries, bytes of cached answers) of the transcript-tail cache, for the memory snapshot.
+pub fn cache_usage() -> (usize, usize) {
+    let c = cache();
+    (c.len(), c.iter().map(|((p, _), (_, r))| p.len() + r.len()).sum())
+}
+
 fn stamp_of(path: &str) -> Option<Stamp> {
     let m = std::fs::metadata(path).ok()?;
     Some((m.len(), m.modified().ok()?))

@@ -314,6 +314,14 @@ once a day. The updater's only network requests are the GitHub release API and d
 `ah-engine engine-update <same arguments>` runs the same script (the engine itself does no network access, and a broken engine is still
 updated with the script by hand). The scheduler job `engine_update` (defaults file `engine_update.toml`) runs `engine-update --auto`
 every 6 hours; the script does nothing unless `engine.autoUpdate` is set and limits itself to one check a day.
+
+Memory diagnostics (issue #21, defaults file `diagnostics.toml`). With `diagnostics.mem_log` on (default) the daemon appends one NDJSON line
+per served request to `mem.ndjson` in the state directory (rotated at `diagnostics.mem_log_max_bytes`): the request kind and event, the checks
+that ran, the resident set, the allocator's allocated and resident bytes and the counted heap before and after, and the size of the
+transcript file. When the resident-set cap trips (`diagnostics.mem_snapshot`) the daemon writes `mem-snapshot.json` before it drains:
+allocator statistics, thread count, each worker's interpreter and regex cache, the transcript caches and the platform memory map.
+`ah-engine status --memory` prints the live figures, the latest snapshot and a summary of the log (top events and checks by total
+resident-set growth; a check's row counts every request it took part in, so rows overlap). Nothing here changes a decision.
 see [PRIVACY.md](../PRIVACY.md).
 
 **Go-live.** An engine check is trusted only after it has agreed with the Node hook it replaces. Before release the whole

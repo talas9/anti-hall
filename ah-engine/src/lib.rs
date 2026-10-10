@@ -42,6 +42,7 @@ pub mod judge;
 pub mod limits;
 pub mod load;
 pub mod maintain;
+pub mod memdiag;
 pub mod memstat;
 pub mod mesh;
 pub mod meshw;

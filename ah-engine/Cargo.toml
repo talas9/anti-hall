@@ -41,6 +41,8 @@ notify = { version = "=8.2.0", default-features = false }
 # the crate supports (see src/main.rs).
 [target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu")))'.dependencies]
 tikv-jemallocator = "0.7"
+# Its C API, for the allocator statistics of the memory diagnostics (src/memdiag.rs); already in the tree through the crate above.
+tikv-jemalloc-sys = { version = "0.7", features = ["stats"] }
 
 [features]
 # Developer diagnostics only (never in a release build): `ah-engine diag heap` reports heap peak/current bytes per check,

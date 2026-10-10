@@ -491,6 +491,7 @@ struct DaemonObserver<'a> {
 
 impl crate::hookio::Observer for DaemonObserver<'_> {
     fn check(&self, check: &str, rule_id: &str, verdict: &crate::checks::Verdict, micros: u64) {
+        crate::memdiag::note_check(check);
         self.t.observe_check_in(self.event, check, rule_id, verdict, micros, self.project);
     }
 
@@ -575,6 +576,7 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
     };
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
     crate::load::note_request(crate::hookio::event_of(&p).unwrap_or(""), p.get("session_id").and_then(|v| v.as_str()));
+    crate::memdiag::note_payload(&p);
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
     crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
@@ -632,6 +634,7 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     }
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
     crate::load::note_request(&meta.event, p.get("session_id").and_then(|v| v.as_str()));
+    crate::memdiag::note_payload(&p);
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
     crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
@@ -669,6 +672,7 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
         }
         let answer = if v == Verdict::Defer { "defer" } else { "decided" };
         sh.telemetry.with_metrics(|m| m.inc("dispatch_checks", &[("event", meta.event.as_str()), ("check", check), ("answer", answer)]));
+        crate::memdiag::note_check(check);
         sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
     };
     let answers = crate::dispatch::native::evaluate(&meta, &p, &observe);
@@ -838,6 +842,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         }
     };
     telemetry::stage_begin();
+    let mem_before = crate::memdiag::begin(cfg.effective.boolean("diagnostics.mem_log"));
     let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
         Ok(r) => r,
         Err(_) => {
@@ -848,6 +853,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             (Reply::Err(defaults::text("msg.reply_internal").into()), After::Continue)
         }
     };
+    let mem_after = mem_before.is_some().then(crate::memdiag::measure_after);
     let late = crate::deadline::remaining() == Some(Duration::ZERO);
     let delivered = write_reply(&mut s, &reply, &cfg);
     if delivered {
@@ -864,6 +870,20 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     }
     crate::deadline::end();
     let (event, session) = crate::load::take_request();
+    if let (Some(before), Some(after_m)) = (mem_before, mem_after) {
+        let kind = req.split(|b| *b == b' ' || *b == b'\n').next().map(|k| String::from_utf8_lossy(k).into_owned()).unwrap_or_default();
+        crate::memdiag::finish(
+            before,
+            &crate::memdiag::Done {
+                kind,
+                event: event.clone(),
+                in_flight,
+                busy: sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64,
+                proc_ms: started.elapsed().as_millis() as u64,
+                after: after_m,
+            },
+        );
+    }
     sh.load.record(&crate::load::Sample {
         at_ms: health::now_ms(),
         wait_us: wait.as_micros() as u64,
@@ -893,10 +913,14 @@ fn worker(sh: Arc<Shared>, idx: usize) {
                 }
             }
         };
-        let Some((conn, wait, in_flight)) = conn else { continue };
+        let Some((conn, wait, in_flight)) = conn else {
+            crate::memdiag::worker_tick(idx);
+            continue;
+        };
         sh.busy_since[idx].store(sh.ms() + 1, SeqCst);
         let after = serve_conn(conn, &sh, wait, in_flight);
         sh.busy_since[idx].store(0, SeqCst);
+        crate::memdiag::worker_tick(idx);
         if after == After::Exit {
             begin_drain(&sh, defaults::text("msg.exit_reason_handoff"), false);
         }
@@ -994,10 +1018,27 @@ fn watchdog(sh: Arc<Shared>) {
                 health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &rss), ("cap", &cfg.rss_cap_kb)]));
                 // its own kind: the cap trip above is the one the crash-loop rule counts, this line only explains it
                 health::log_event("memory", "breakdown", &sh.memory_line());
-                begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true);
+                if cfg_snapshot_on(&sh) {
+                    // the snapshot first (workers report between requests), then the drain; later ticks leave the drain to that thread
+                    if crate::memdiag::claim_snapshot() {
+                        let s = sh.clone();
+                        let workers = cfg.workers;
+                        std::thread::spawn(move || {
+                            crate::memdiag::capture(s.memory(), workers, s.cfg().rss_cap_kb, s.started.elapsed().as_secs());
+                            begin_drain(&s, defaults::text("msg.exit_reason_rss"), true);
+                        });
+                    }
+                } else {
+                    begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true);
+                }
             }
         }
     }
+}
+
+/// Whether a cap trip writes the memory snapshot before it drains.
+fn cfg_snapshot_on(sh: &Shared) -> bool {
+    sh.cfg().effective.boolean("diagnostics.mem_snapshot")
 }
 
 /// Take the singleton lock. Waits briefly for an outgoing (version-handoff) daemon to release it, but

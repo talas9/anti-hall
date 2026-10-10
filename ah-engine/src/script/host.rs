@@ -139,6 +139,11 @@ fn entry(key: &str) -> rquickjs::Result<&'static defaults::Entry> {
     defaults::get(key).ok_or_else(|| err("cfg", defaults::render("script.msg_unknown_key", &[("key", &key)])))
 }
 
+/// Patterns this thread's regex cache holds (for the memory snapshot).
+pub(super) fn regex_cache_len() -> usize {
+    RES.with(|c| c.borrow().len())
+}
+
 /// Compile (cached) a pattern for `flags`.
 pub(super) fn with_re<R>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
     RES.with(|cache| {
