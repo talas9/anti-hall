@@ -18,14 +18,14 @@ struct Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        std::fs::remove_dir_all(&self.root).ok();
     }
 }
 
 impl Scratch {
     fn new(tag: &str) -> Scratch {
         let root = std::env::temp_dir().join(format!("ah-refresh-it-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        std::fs::remove_dir_all(&root).ok();
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
         std::fs::create_dir_all(root.join("state")).unwrap();

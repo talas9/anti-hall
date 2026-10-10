@@ -110,7 +110,8 @@ pub fn run(p: &Parsed) -> i32 {
     let (tx, rx) = std::sync::mpsc::channel();
     let input = stdin.clone();
     std::thread::spawn(move || {
-        crate::discard::harmless(tx.send(render_all(&input))); // keep: the main thread gave up at the deadline
+        render_all(&input);
+        crate::discard::harmless(tx.send(())); // keep: the main thread gave up at the deadline
     });
     let wait = (started + total).saturating_duration_since(std::time::Instant::now()) + defaults::millis("statusline.cut_grace_ms");
     match rx.recv_timeout(wait) {

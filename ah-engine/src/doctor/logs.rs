@@ -115,7 +115,7 @@ mod tests {
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ah-doctor-logs-{name}-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        crate::discard::harmless(std::fs::create_dir_all(&d)); // a test scratch directory
         d
     }
 
@@ -127,7 +127,7 @@ mod tests {
         std::fs::write(d.join(file), "{\"level\":\"info\",\"msg\":\"quiet\"}\n{torn\n{\"level\":\"warn\",\"msg\":\"new\"}\n5\n").unwrap();
         let got: Vec<String> = read_recent(&d).iter().map(|e| field(e, "msg", "")).collect();
         assert_eq!(got, ["old", "new"]);
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // a test scratch directory
     }
 
     #[test]

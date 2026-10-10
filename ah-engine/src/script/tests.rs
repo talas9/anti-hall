@@ -361,7 +361,7 @@ fn api_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("api-guard");
     // the corpus pins no interpreter (PATH names none), so every case answers without a probe and none defers (lane L07); the
     // probes themselves are compared with Node by the node_parity api-guard harness
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && kinds.get("defer").is_none(), "a corpus that answers every case: {kinds:?}");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && !kinds.contains_key("defer"), "a corpus that answers every case: {kinds:?}");
 }
 
 #[test]
@@ -423,7 +423,7 @@ fn ship_it_guard_script_matches_the_compiled_port() {
     for k in ["allow", "block", "advisory"] {
         assert!(kinds.get(k).copied().unwrap_or(0) > 5, "a corpus that exercises {k}: {kinds:?}");
     }
-    assert!(kinds.get("defer").is_none(), "no deferral: {kinds:?}");
+    assert!(!kinds.contains_key("defer"), "no deferral: {kinds:?}");
 }
 
 /// Every case of a golden corpus through the script; mismatches are listed (up to `limit`) before the test fails.
@@ -1079,7 +1079,7 @@ mod sibling {
 #[test]
 fn compact_declaration_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("compact-declaration-guard");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 30 && kinds.get("defer").is_none(), "both answers, no deferral: {kinds:?}");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 30 && !kinds.contains_key("defer"), "both answers, no deferral: {kinds:?}");
 }
 
 #[test]
@@ -1128,7 +1128,7 @@ fn repair_on_reload_script_matches_the_compiled_port() {
 fn merge_side_pick_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-side-pick");
     assert!(
-        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && kinds.get("defer").is_none(),
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && !kinds.contains_key("defer"),
         "every answer: {kinds:?}"
     );
 }
@@ -1172,7 +1172,7 @@ fn scan_throttle_script_matches_the_compiled_port() {
 fn merge_gate_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-gate");
     assert!(
-        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && kinds.get("defer").is_none(),
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && !kinds.contains_key("defer"),
         "every answer: {kinds:?}"
     );
 }

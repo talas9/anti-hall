@@ -348,7 +348,7 @@ impl Run<'_, '_> {
                 v["action"] == defaults::text("units.act_retire") && v["outcome"] == defaults::text("units.out_ok") && v["target"] == target
             })
             .filter_map(|v| v["action_id"].as_str().map(str::to_string))
-            .last()
+            .next_back()
     }
 }
 
@@ -399,10 +399,8 @@ fn install_into(run: &mut Run<'_, '_>) {
         Manager::Launchd => (argv("units.launchd_loaded", &[("label", label)]), argvs("units.launchd_load", &[("plist", &plist)])),
         Manager::Systemd => (argv("units.systemd_loaded", &[("unit", &timer)]), argvs("units.systemd_load", &[("timer", &timer)])),
     };
-    if changed || run.probe(&loaded) != Some(true) {
-        if !run.sequence(&load) && !ctx.sys.guarded() {
-            run.report.failed = true;
-        }
+    if (changed || run.probe(&loaded) != Some(true)) && !run.sequence(&load) && !ctx.sys.guarded() {
+        run.report.failed = true;
     }
 }
 

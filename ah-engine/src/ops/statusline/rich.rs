@@ -477,9 +477,7 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
 /// string whose V8 reading the port does not reproduce leaves the duration out.
 fn session_duration(cwd: &str, cx: &Ctx) -> Option<String> {
     use crate::checks::jsport::date::{Parsed, parse};
-    let Some(data) = read_json(&Path::new(cwd).join(defaults::text("statusline.claude_dir")).join(defaults::text("statusline.session_file"))) else {
-        return None;
-    };
+    let data = read_json(&Path::new(cwd).join(defaults::text("statusline.claude_dir")).join(defaults::text("statusline.session_file")))?;
     let start = data.get("startTime").filter(|v| truthy(Some(v)))?;
     let parsed = match start {
         J::Str(s) => parse(s),

@@ -30,7 +30,7 @@ struct Run {
 /// Run the monitor command with a stub engine (`engine_body`, absent when None) and a stub launcher that prints what it got.
 fn run(tag: &str, engine_body: Option<&str>) -> Run {
     let root: PathBuf = std::env::temp_dir().join(format!("ah-monfb-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    std::fs::remove_dir_all(&root).ok();
     let home = root.join("home");
     let plugin = root.join("plugin");
     std::fs::create_dir_all(&home).unwrap();
@@ -48,7 +48,7 @@ fn run(tag: &str, engine_body: Option<&str>) -> Run {
         .output()
         .unwrap();
     let r = Run { code: o.status.code(), out: String::from_utf8_lossy(&o.stdout).to_string() };
-    let _ = std::fs::remove_dir_all(&root);
+    std::fs::remove_dir_all(&root).ok();
     r
 }
 

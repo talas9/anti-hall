@@ -171,7 +171,7 @@ pub fn notice_intent(wt: &str, child: &str, stale_since: Option<f64>, now: i64) 
     ]))
 }
 
-fn str_of<'a>(v: Option<&'a OVal>) -> Option<&'a str> {
+fn str_of(v: Option<&OVal>) -> Option<&str> {
     match v {
         Some(OVal::Str(s)) => Some(s.as_str()),
         _ => None,
