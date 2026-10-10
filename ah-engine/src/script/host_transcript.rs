@@ -6,6 +6,9 @@
 //! | raw function | what it does |
 //! |---|---|
 //! | `transcriptDedupeTail(path, bytes)` | the delivered hook-context attachments of the last `bytes` of a transcript: see [`dedupe_tail`] |
+//! | `transcriptGrep(path, bytes, needles, re, flags)` | the lines of the last `bytes` that hold every needle (and match the pattern): see [`grep`] |
+//! | `agentCountProof(path)` | the running agents with what the scan saw, for an unknown count: see [`count_proof`] |
+//! | `jevCachePeek(hash)` | the answer and confidence of the Jev cache entry under `hash`: see [`cache_peek`] |
 
 use crate::checks::emit_dedupe::scan_tail;
 use rquickjs::{Ctx, Function, Object};
@@ -39,10 +42,10 @@ pub fn dedupe_tail(path: &str, bytes: f64) -> String {
     let cap = crate::defaults::num("script.tail_max_bytes");
     let n = if bytes.is_finite() && bytes > 0.0 { (bytes as u64).min(cap) } else { cap };
     let stamp = stamp_of(path);
-    if let Some(st) = stamp {
-        if let Some(hit) = cache().get(&(path.to_string(), n)).filter(|(s, _)| *s == st).map(|(_, r)| r.clone()) {
-            return hit;
-        }
+    if let Some(st) = stamp
+        && let Some(hit) = cache().get(&(path.to_string(), n)).filter(|(s, _)| *s == st).map(|(_, r)| r.clone())
+    {
+        return hit;
     }
     let out = match scan_tail(path, n) {
         Err(_) => r#"{"unsure":true}"#.to_string(),
@@ -59,9 +62,81 @@ pub fn dedupe_tail(path: &str, bytes: f64) -> String {
     out
 }
 
+/// `grep(path, bytes, needles, re, flags)`: JSON text. The lines of the last `bytes` of a transcript (capped by
+/// `script.tail_max_bytes`; a window that cuts the file drops its first, partial line; lines split on `\n` alone, as a script's
+/// `tail.split('\n')` splits) that contain every string of the JSON array `needles` and, when `re` is not empty, match the
+/// pattern. `{"lines":[...]}`; `null` when the file is missing or unreadable; `{"unsure":true}` for a relative path or when the
+/// lines are more than `script.grep_max_bytes` (the script then defers: it asked for too little to filter on).
+pub fn grep(path: &str, bytes: f64, needles: &str, re: &str, flags: &str) -> rquickjs::Result<String> {
+    if !path.starts_with('/') {
+        return Ok(r#"{"unsure":true}"#.into());
+    }
+    let Ok(needles) = serde_json::from_str::<Vec<String>>(needles) else { return Ok(r#"{"unsure":true}"#.into()) };
+    let cap = crate::defaults::num("script.tail_max_bytes");
+    let n = if bytes.is_finite() && bytes > 0.0 { (bytes as u64).min(cap) } else { cap };
+    let Some(tail) = crate::checks::replykit::io::read_window(path, n) else { return Ok("null".into()) };
+    let mut lines = tail.data.split('\n');
+    if tail.truncated {
+        lines.next();
+    }
+    let max = crate::defaults::num("script.grep_max_bytes") as usize;
+    let mut total = 0usize;
+    let mut out: Vec<&str> = Vec::new();
+    for line in lines {
+        if !needles.iter().all(|nd| line.contains(nd.as_str())) {
+            continue;
+        }
+        if !re.is_empty() && !super::host::with_re(re, flags, |r| r.is_match(line))? {
+            continue;
+        }
+        total += line.len();
+        if total > max {
+            return Ok(r#"{"unsure":true}"#.into());
+        }
+        out.push(line);
+    }
+    Ok(json!({"lines": out}).to_string())
+}
+
+/// `count_proof(path)`: JSON text. `{"unsure":true}` for a relative path or a line JavaScript might read differently; else
+/// `{"rows":[{"id","description"}]|null,"seen":[ids],"windowBytes":n}` as `agentCountProof` of the Node scan returns it (`rows`
+/// null: the count cannot be trusted; `seen`: the ids the scanned window shows launched; `windowBytes`: 0 when the default
+/// window held the answer, else the window the proof covers).
+pub fn count_proof(path: &str) -> String {
+    use crate::checks::agent_scan;
+    if !path.starts_with('/') {
+        return r#"{"unsure":true}"#.into();
+    }
+    let opts = agent_scan::Opts { now_ms: super::host::now_ms(), ignore_unanswered_stops: false };
+    match agent_scan::agent_count_proof(path, &opts) {
+        Err(_) => r#"{"unsure":true}"#.into(),
+        Ok(p) => json!({
+            "rows": p.rows.map(|r| r.iter().map(|x| json!({"id": x.id, "description": x.description})).collect::<Vec<_>>()),
+            "seen": p.seen,
+            "windowBytes": p.window_bytes,
+        })
+        .to_string(),
+    }
+}
+
+/// `cache_peek(hash)`: JSON text. What the dispatch-tier annotator reads of the shared Jev cache entry under `hash`: `null`
+/// when there is no truthy entry, `{"unsure":true}` when the file is one only JavaScript reads, else
+/// `{"answer": string|null, "confidence": number|null}`.
+pub fn cache_peek(hash: &str) -> rquickjs::Result<String> {
+    let home = super::host::with_settings(|st| st.home.clone())?;
+    Ok(match crate::jev::cache::FileCache::for_home(std::path::Path::new(&home)).peek(hash) {
+        None => r#"{"unsure":true}"#.into(),
+        Some(None) => "null".into(),
+        Some(Some((answer, confidence))) => json!({"answer": answer, "confidence": confidence}).to_string(),
+    })
+}
+
 /// Add the task-family transcript functions to `ahHost`.
 pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set("transcriptDedupeTail", Function::new(c.clone(), |p: String, b: f64| dedupe_tail(&p, b))?)?;
+    h.set("transcriptGrep", Function::new(c.clone(), |p: String, b: f64, nd: String, re: String, fl: String| grep(&p, b, &nd, &re, &fl))?)?;
+    h.set("agentCountProof", Function::new(c.clone(), |p: String| count_proof(&p))?)?;
+    h.set("jevCachePeek", Function::new(c.clone(), |hsh: String| cache_peek(&hsh))?)?;
     Ok(())
 }
 
@@ -70,7 +145,8 @@ mod tests {
     use super::*;
 
     fn att(ts: &str, content: &str) -> String {
-        json!({"type":"attachment","timestamp":ts,"attachment":{"type":"hook_additional_context","hookEvent":"UserPromptSubmit","content":[content]}}).to_string()
+        json!({"type":"attachment","timestamp":ts,"attachment":{"type":"hook_additional_context","hookEvent":"UserPromptSubmit","content":[content]}})
+            .to_string()
     }
 
     fn scratch(tag: &str) -> String {

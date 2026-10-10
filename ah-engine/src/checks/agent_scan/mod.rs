@@ -1230,29 +1230,49 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
     Ok(Scan { launched: w.launched, terminal: w.terminal, pending })
 }
 
-/// `runningAgentsOrNull(path)`: the running agents, or `None` when the count cannot be trusted (an unreadable transcript,
-/// or one longer than the widened window with no agent found in it).
-pub fn running_agents_or_null(path: &str, opts: &Opts) -> Res<Option<Vec<Row>>> {
+/// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows
+/// launched (all finished when `rows` is `None`), and how many bytes of transcript the proof covers (0: the agents were found
+/// in the default window; the whole file size when it fits a window).
+pub struct Proof {
+    /// The running agents, or `None` when the count cannot be trusted.
+    pub rows: Option<Vec<Row>>,
+    /// Ids launched in the scanned window, in launch order.
+    pub seen: Vec<String>,
+    /// Bytes of transcript the proof covers.
+    pub window_bytes: u64,
+}
+
+/// `agentCountProof(path)`: [`running_agents_or_null`] with what it saw, so a caller can say why a count is unknown.
+pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
+    let none = |seen: Vec<String>, window_bytes: u64| Proof { rows: None, seen, window_bytes };
+    let seen_of = |s: &Scan| s.launched.iter().map(|(id, _)| id.clone()).collect::<Vec<String>>();
     let tail = defaults::num("agent_scan.tail_bytes");
-    let Some(scan) = scan_transcript(path, tail, opts)? else { return Ok(None) };
+    let Some(scan) = scan_transcript(path, tail, opts)? else { return Ok(none(Vec::new(), 0)) };
     let rows = scan.rows();
     if !rows.is_empty() {
-        return Ok(Some(rows));
+        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: 0 });
     }
-    let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return Ok(None) };
+    let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return Ok(none(Vec::new(), 0)) };
     if size <= tail {
-        return Ok(Some(rows));
+        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: size });
     }
     let wide_bytes = defaults::num("agent_scan.wide_tail_bytes");
     // `scanTranscript(path, readTail(path, WIDE) )`: an unreadable wide read falls back to the default tail read.
     let wide_window = if Tail::open(path, wide_bytes).is_some() { wide_bytes } else { tail };
-    let Some(wide) = scan_transcript(path, wide_window, opts)? else { return Ok(None) };
+    let Some(wide) = scan_transcript(path, wide_window, opts)? else { return Ok(none(seen_of(&scan), tail)) };
     let wrows = wide.rows();
+    let seen = seen_of(&wide);
     if !wrows.is_empty() {
-        return Ok(Some(wrows));
+        return Ok(Proof { rows: Some(wrows), seen, window_bytes: wide_bytes });
     }
     if size <= wide_bytes {
-        return Ok(Some(Vec::new()));
+        return Ok(Proof { rows: Some(Vec::new()), seen, window_bytes: wide_bytes });
     }
-    Ok(None)
+    Ok(none(seen, wide_bytes))
+}
+
+/// `runningAgentsOrNull(path)`: the running agents, or `None` when the count cannot be trusted (an unreadable transcript,
+/// or one longer than the widened window with no agent found in it).
+pub fn running_agents_or_null(path: &str, opts: &Opts) -> Res<Option<Vec<Row>>> {
+    Ok(agent_count_proof(path, opts)?.rows)
 }

@@ -244,6 +244,12 @@ doc = "Most (transcript, window) answers `ahHost.transcriptDedupeTail` keeps in 
 value = 64
 min = 1
 
+[script.grep_max_bytes]
+doc = "Most bytes of lines `ahHost.transcriptGrep` hands back to a script; a search that matches more is answered unsure and the script defers."
+value = 2097152
+min = 65536
+unit = "bytes"
+
 [script.tail_max_bytes]
 doc = "Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for."
 value = 16777216
