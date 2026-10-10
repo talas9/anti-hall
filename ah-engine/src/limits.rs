@@ -129,6 +129,7 @@ pub fn apply_mem_limit(mb: u64) -> String {
     }
     #[cfg(target_os = "macos")]
     {
+        #[allow(clippy::needless_return)] // the cfg-gated block below is compiled out here, so this is the tail only on macOS
         return "unsupported:macos".into();
     }
     #[cfg(not(target_os = "macos"))]

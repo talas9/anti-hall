@@ -64,6 +64,10 @@ value = "stopped ({secs} s left)"
 doc = "Log detail when the daemon was killed by a signal while starting."
 value = "daemon killed while starting"
 
+[msg.log_client_panic]
+doc = "Log detail when the hook client hit an internal error (a panic) and failed open."
+value = "hook client internal error; failing open"
+
 [msg.log_fallback_timeout]
 doc = "Log detail when the Node fallback did not finish in time."
 value = "node fallback did not finish"

@@ -111,7 +111,7 @@ pub(crate) fn fail_open_unavailable() -> bool {
 fn mark_daemon_down(reason: &str) {
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
     let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
-    crate::discard::logged("daemon_down_marker_write", crate::atomic::write(&state_file("daemon_down_marker"), until.to_string()));
+    crate::discard::logged("daemon_down_marker_write", crate::atomic::write(state_file("daemon_down_marker"), until.to_string()));
     health::log_event("client_down", "daemon", reason);
 }
 
@@ -643,7 +643,8 @@ pub fn hook_main(args: &[String]) -> i32 {
         let cap_hit = raw.len() as u64 > max;
         let force_fallback = read.is_err() || cap_hit || std::str::from_utf8(&raw).is_err();
         let rest = (force_fallback && cap_hit).then_some(stdin);
-        let fail_closed_unavailable = force_fallback && event_from_lossy(&raw).is_none_or(|event| guarded(&event));
+        // a stdin I/O error is an internal fault and fails open; an oversize or non-UTF-8 payload is deliberate and stays fail-closed on guards
+        let fail_closed_unavailable = force_fallback && read.is_ok() && event_from_lossy(&raw).is_none_or(|event| guarded(&event));
         let o = run_bytes(raw, force_fallback, fallback.as_deref(), rest, fail_closed_unavailable);
         if !o.err.is_empty() {
             let mut se = std::io::stderr();
@@ -663,16 +664,14 @@ pub fn hook_main(args: &[String]) -> i32 {
     res.unwrap_or_else(|_| panic_code(args))
 }
 
-/// The exit code after a panic in [`hook_main`]: when a Node fallback was given (`--fallback`, or its environment
-/// variable), `dispatch.defer_exit` so the wrapper runs it, never a silent allow; with no fallback there is nothing to
-/// hand over and the call stays the neutral no-op. Every read is guarded: the panic may have come from the defaults.
-fn panic_code(args: &[String]) -> i32 {
-    let given =
-        args.iter().any(|a| a == "--fallback") || std::panic::catch_unwind(|| std::env::var_os(defaults::env_name("fallback")).is_some()).unwrap_or(false);
-    if !given {
-        return 0;
-    }
-    std::panic::catch_unwind(|| defaults::num("dispatch.defer_exit") as i32).unwrap_or(crate::bootstrap::UNAVAILABLE_EXIT)
+/// The exit code after a panic in [`hook_main`]: an internal client error fails open (exit 0) and says why in the health log;
+/// it never blocks the session and never starts the Node hooks (their run is not bounded by the client deadline). Every read
+/// is guarded: the panic may have come from the defaults or the log itself.
+fn panic_code(_args: &[String]) -> i32 {
+    crate::discard::harmless(std::panic::catch_unwind(|| {
+        health::log_event("client_panic", "panic", defaults::text("msg.log_client_panic"));
+    })); // keep: a failing log must not turn the fail-open into a second panic
+    0
 }
 
 #[cfg(test)]
@@ -695,12 +694,9 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_with_a_node_fallback_given_defers_to_it() {
-        // review P2 #4: a panic answered 0 (an allow) even when the wrapper had a Node fallback to run
-        assert_eq!(panic_code(&["--fallback".into(), "/x/hook.js".into()]), defaults::num("dispatch.defer_exit") as i32);
-        if std::env::var_os(defaults::env_name("fallback")).is_none() {
-            assert_eq!(panic_code(&[]), 0, "no fallback to hand over: the neutral no-op");
-        }
+    fn a_panic_fails_open_even_with_a_node_fallback_given() {
+        assert_eq!(panic_code(&["--fallback".into(), "/x/hook.js".into()]), 0);
+        assert_eq!(panic_code(&[]), 0);
     }
 
     #[test]

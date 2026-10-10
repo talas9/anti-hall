@@ -21,6 +21,7 @@ use ah_engine::dispatch::table;
 use serde_json::Value;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::process::{Command, Stdio};
 
 /// What the dispatcher reads from stdin.
@@ -101,8 +102,10 @@ enum Want {
 enum Daemon {
     /// Inside the client (`dispatch.in_process` 1): no daemon.
     InProcess,
-    /// Through the daemon path with no daemon and none to start: every check runs as its Node hook.
+    /// Checks down: a daemon that answers with nothing usable, so every check runs as its Node hook.
     Down,
+    /// Through the daemon path with no daemon at all and none to start: the client fails open at once (no hook runs).
+    Absent,
     /// A daemon that answers with a frame whose body is not a reply.
     Garbage,
     /// A daemon that answers every check with a block, `DAEMONBLOCK` on stderr.
@@ -601,8 +604,11 @@ fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
     use ah_engine::frame::{Kind, encode as frame};
     use std::io::Read;
     let body = match mode {
-        Daemon::InProcess | Daemon::Down => return None,
-        Daemon::Garbage => "this is not a dispatch reply".to_string(),
+        Daemon::InProcess | Daemon::Absent => return None,
+        // "checks down" for the matrix: the daemon answers, but with nothing the dispatcher can use, so every check runs as its Node
+        // hook. A daemon that is truly absent, hung, marked down or answering busy fails open at once instead (see
+        // `a_truly_absent_daemon_fails_open_without_running_hooks`), so it cannot stand in for "checks down".
+        Daemon::Garbage | Daemon::Down => "this is not a dispatch reply".to_string(),
         Daemon::Blocks => {
             let valid = payload(case.host, &case.event, &case.dir);
             let answers: Vec<(String, Answer)> = table::select(case.host, &case.event, &valid, Some(tool_of(case.host)))
@@ -741,6 +747,31 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
         }
     }
     assert!(failures.is_empty(), "{} fail-closed violations:\n{}", failures.len(), failures.join("\n"));
+}
+
+#[test]
+fn a_truly_absent_daemon_fails_open_without_running_hooks() {
+    for host in table::hosts() {
+        for event in ["PreToolUse", "Stop"] {
+            if table::entries(host, event).is_empty() {
+                continue;
+            }
+            let host: &'static str = Box::leak(host.to_string().into_boxed_str());
+            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-absent-{host}-{event}-{}", std::process::id())) };
+            let row = Row { name: "absent daemon", daemon: Daemon::Absent, ..BASE };
+            ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
+            // the first run builds the defaults cache (slow in a debug binary on a busy box); the wrapper's watchdog bounds that
+            // cold start, so the timing is asserted on the warm run
+            for (n, t0) in [(0, None), (1, Some(std::time::Instant::now()))] {
+                let r = run_kept(&case, &row, MARK, MARK2);
+                assert_eq!(r.code, 0, "[{host}/{event}] absent daemon must fail open: {:?}", r.err);
+                assert!(r.out.is_empty() && !r.marked, "[{host}/{event}] run {n}: no hook, no output on an unavailable daemon: {:?}", r.out);
+                if let Some(t0) = t0 {
+                    assert!(t0.elapsed() < Duration::from_secs(1), "[{host}/{event}] warm absent daemon took {:?}", t0.elapsed());
+                }
+            }
+        }
+    }
 }
 
 #[test]

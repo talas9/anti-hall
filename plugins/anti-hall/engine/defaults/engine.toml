@@ -471,7 +471,7 @@ unit = "bytes"
 
 [client.wrapper_extra_ms]
 doc = "Extra shell watchdog budget beyond the client deadline and client slack; this lets the client write the daemon-down marker and release the single-flight spawn lock before the wrapper kills it."
-value = 400
+value = 250
 min = 1
 unit = "ms"
 
