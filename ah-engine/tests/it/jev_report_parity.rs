@@ -640,3 +640,114 @@ fn the_low_credit_latch_fires_once_a_day() -> R {
     }
     Ok(())
 }
+
+// ---- cases the engine used to leave to Node (lane L03: no exit 75 on jev-report) -------------------------------------------
+
+/// `same` with a second, test-only home given by `--home`: each run gets its own copy of `other` (the `{OTHER}` argument).
+fn same_with_other_home(seed: &Path, other: &Path, env: &[(&str, &str)], args: &[&str]) -> R<Out> {
+    let name = format!("jev-report {} (--home other)", args.join(" "));
+    let (nh, eh, no_, eo_) = (Scratch::new("n")?, Scratch::new("e")?, Scratch::new("no")?, Scratch::new("eo")?);
+    for (h, o) in [(nh.path(), no_.path()), (eh.path(), eo_.path())] {
+        fs::create_dir_all(h.join("tmp"))?;
+        copy_dir(seed, h)?;
+        copy_dir(other, o)?;
+    }
+    let argv = |o: &Path| args.iter().map(|a| if *a == "{OTHER}" { o.to_string_lossy().into_owned() } else { (*a).to_string() }).collect::<Vec<_>>();
+    let mut n = Command::new("node");
+    n.arg(plugin_src().join("scripts/jev-report.js")).args(argv(no_.path()));
+    let mut e = Command::new(BIN);
+    e.arg("jev-report").args(argv(eo_.path()));
+    let (no, eo) = (run(n, nh.path(), env)?, run(e, eh.path(), env)?);
+    let m = |o: &Out, h: &Path, x: &Path| Out { stdout: mask(&mask(&o.stdout, h), x), stderr: mask(&mask(&o.stderr, h), x), code: o.code };
+    let (nm, em) = (m(&no, nh.path(), no_.path()), m(&eo, eh.path(), eo_.path()));
+    assert_text(&name, "stdout", &nm.stdout, &em.stdout);
+    assert_text(&name, "stderr", &nm.stderr, &em.stderr);
+    assert_eq!(nm.code, em.code, "{name}: exit code");
+    assert_eq!(snapshot(no_.path())?, snapshot(eo_.path())?, "{name}: --home tree");
+    assert_ne!(em.code, 75, "{name}: the engine deferred to Node instead of answering");
+    Ok(em)
+}
+
+#[test]
+fn weekly_with_another_home_reads_modes_like_node() -> R {
+    let other_files = [
+        r#"{"enabled":true,"integrations":{"speculation":"off","customProbe":"on","modelRouting":"on"},"triage":false}"#,
+        r#"{"enabled":false,"integrations":{"claimLedger":"shadow"}}"#,
+        "not json",
+    ];
+    for real_settings in ["{}", r#"{"jev":{"enabled":true},"jevIntegrations":{"speculation":"shadow"}}"#] {
+        let seed = Scratch::new("seed")?;
+        full_seed(seed.path(), real_settings)?;
+        for jev in other_files {
+            let other = Scratch::new("other")?;
+            full_seed(other.path(), "{}")?;
+            write(other.path(), ".anti-hall/jev.json", jev)?;
+            for env in [&[][..], &[("ANTIHALL_JEV", "1")][..]] {
+                for a in [&["--weekly", "--home", "{OTHER}"][..], &["--weekly", "--json", "--home", "{OTHER}"][..]] {
+                    same_with_other_home(seed.path(), other.path(), env, a)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn every_credit_balance_shape_matches_node() -> R {
+    let on = r#"{"jev":{"enabled":true,"budget":{"mode":"watch","minCreditUsd":100}}}"#;
+    let bodies: &[&'static str] = &[
+        r#"{"balance":"0x10","total_used":"0b11"}"#,
+        r#"{"balance":"0o17","total_used":"0xZZ"}"#,
+        r#"{"balance":"-0x10"}"#,
+        r#"{"balance":[5],"total_used":[]}"#,
+        r#"{"balance":[[7]],"total_used":[1,2]}"#,
+        r#"{"balance":["1",2]}"#,
+        r#"{"balance":[null],"total_used":[true]}"#,
+        r#"{"balance":true,"total_used":false}"#,
+        r#"{"balance":{}}"#,
+        r#"{"balance":[{}]}"#,
+        r#"{"balance":" 12.5 ","total_used":"Infinity"}"#,
+        r#"{"balance":"1e3","total_used":"-Infinity"}"#,
+        r#"{"balance":"inf"}"#,
+        r#"{"balance":"+.5","total_used":"5."}"#,
+        r#"{"balance":null,"total_used":null}"#,
+        "0",
+        "7",
+        r#""text""#,
+        "[3]",
+        "true",
+    ];
+    for body in bodies {
+        let seed = credit_seed(on)?;
+        let url = serve(200, body, 2);
+        same(Some(seed.path()), &[("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "k"), ("ANTIHALL_JEV_TEST_ENDPOINT_VERCEL", &url)], &["--json"])?;
+    }
+    Ok(())
+}
+
+/// A label that cannot be written: both tools say so on stderr with the same words before the system's error text, print
+/// nothing on stdout and exit 1.
+#[test]
+fn a_label_that_cannot_be_written_fails_like_node() -> R {
+    let seed = Scratch::new("seed")?;
+    full_seed(seed.path(), "{}")?;
+    for (bin, script) in [("node", true), (BIN, false)] {
+        let h = Scratch::new("h")?;
+        copy_dir(seed.path(), h.path())?;
+        fs::create_dir_all(h.path().join("tmp"))?;
+        fs::remove_file(h.path().join(".anti-hall/logs/jev-labels.ndjson"))?;
+        fs::create_dir_all(h.path().join(".anti-hall/logs/jev-labels.ndjson"))?;
+        let mut c = Command::new(bin);
+        if script {
+            c.arg(plugin_src().join("scripts/jev-report.js"));
+        } else {
+            c.arg("jev-report");
+        }
+        c.args(["label", "sp1", "tp"]);
+        let o = run(c, h.path(), &[])?;
+        let head = format!("❌ anti-hall · jev-report: label: failed to write {}/.anti-hall/logs/jev-labels.ndjson: ", h.path().display());
+        assert!(o.stderr.starts_with(&head), "{bin}: {o:?}");
+        assert_eq!((o.stdout.as_str(), o.code), ("", 1), "{bin}");
+    }
+    Ok(())
+}

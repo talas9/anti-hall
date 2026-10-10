@@ -1,0 +1,487 @@
+# ah-engine shipped defaults for the operator command-line verbs made engine-only by lane L03 (v1.0, no Node): the native
+# answers of `defect` and `jev-setup` for the cases that used to defer to their Node scripts, and the verbs `dispatch-report`,
+# `finding-dedup`, `auto-handover-config` and `coordinator-work-baseline`. Format: see the header of engine.toml.
+# Texts that a parity test compares with a Node script are that script's own words.
+
+[opcli.fail_exit]
+doc = "Exit code of a run that could not finish or was refused (the Node scripts' own code for a failure)."
+value = 1
+
+# ---- defect --------------------------------------------------------------------------------------------------------------
+
+[opcli.collate_digit_base]
+doc = "Collation of `defect recurring` / `similar` sorts: the weight of '0' (digits sort after the punctuation of defect.collation_symbols)."
+value = 1000
+
+[opcli.collate_letter_base]
+doc = "Collation: the weight of 'a' and 'A' (letters sort after digits, case ignored at this level)."
+value = 2000
+
+[opcli.collate_other_base]
+doc = "Collation: the weight added to the code point of any other character (non-ASCII, control), so it sorts after every ASCII letter, by code point. ICU's own tables (an accented letter beside its base letter) are not reproduced."
+value = 3000
+
+[opcli.defect_reason_unread_date]
+doc = "`defect archive`: the reason an entry stays in place when its last-seen date is one this tool does not read (a hand-edited record)."
+value = "unreadable date"
+
+[opcli.defect_reason_move_failed]
+doc = "`defect archive`: the reason an entry stays in place when moving it into the archive failed (the Node tool stopped with a stack trace here). Placeholder: {error}."
+value = "move failed: {error}"
+
+[opcli.defect_argv_common]
+doc = "The git arguments that print the common git directory of the checkout {root} (relative to it or absolute), asked when the file resolver is unsure of the repository layout."
+value = ["-C", "{root}", "rev-parse", "--git-common-dir"]
+
+[opcli.defect_since_unread]
+doc = "`defect recurring --since`: refused when it is neither a version nor a date this tool reads. Placeholder: {since}."
+value = "❌ anti-hall · defect: recurring: --since \"{since}\" is not a date this tool reads; use YYYY-MM-DD[THH:MM[:SS]][Z], \"Mon D, YYYY\" or a version like v1.2.3"
+
+[opcli.defect_internal]
+doc = "Said when a defect run met an internal fault (nothing was written)."
+value = "❌ anti-hall · defect: internal error; nothing was written"
+
+# ---- jev-setup: the shadow-review verbs and `test` -----------------------------------------------------------------------
+
+[opcli.no_change_verbs]
+doc = "The `jev-setup` verbs that change nothing, so a successful run does not count as a change in the telemetry (an empty word is the bare command)."
+value = ["status", "", "test", "review-due"]
+
+[opcli.review_state_file]
+doc = "The durable shadow-review state, relative to the anti-hall home directory."
+value = "jev-review-state.json"
+
+[opcli.review_metrics_file]
+doc = "The shadow-review metrics log (one JSON row per event), relative to the anti-hall home directory."
+value = "logs/jev-review.ndjson"
+
+[opcli.review_after_days_default]
+doc = "jev.reviewAfterDays when the setting is zero or not a number (Node: `Number(x) || 7`)."
+value = 7
+
+[opcli.review_min_decisions_default]
+doc = "jev.reviewMinDecisions when the setting is not a finite number."
+value = 30
+
+[opcli.review_day_ms]
+doc = "Milliseconds in a day (the review windows and the snooze are counted in whole days)."
+value = 86400000
+
+[opcli.review_hour_ms]
+doc = "Milliseconds in an hour (the due-to-reviewed latency is said in hours)."
+value = 3600000
+
+[opcli.review_max_time_ms]
+doc = "The largest instant a date can hold, in milliseconds (a snooze past it has no date)."
+value = 8640000000000000
+
+[opcli.review_mode_shadow]
+doc = "The mode an integration must be in for its shadow numbers to be reviewed."
+value = "shadow"
+
+[opcli.review_rollup_midnight]
+doc = "The suffix that turns a rollup's day into its UTC midnight."
+value = "T00:00:00Z"
+
+[opcli.review_keys]
+doc = "Names of the JSON members of the review state, a decision row and a rollup."
+value = { integrations = "integrations", shadow_since = "shadowSince", last_reviewed = "lastReviewedAt", snoozed_until = "snoozedUntil", due_since = "dueSince", id = "id", type = "type", day = "day", groups = "groups", n = "n", ts = "ts", days = "days", decisions = "decisions", latency = "latencyMs", reviewed_type = "reviewed" }
+
+[opcli.review_none]
+doc = "`review-due` when nothing is due. Placeholders: {after}, {min}."
+value = "jev review-due: nothing due (reviewAfterDays={after}, reviewMinDecisions={min})"
+
+[opcli.review_head]
+doc = "`review-due` heading above the due integrations."
+value = "jev review-due:"
+
+[opcli.review_row]
+doc = "`review-due` line of one due integration. Placeholders: {id}, {days}, {decisions}."
+value = "  {id} ({days}d, {decisions} decisions)"
+
+[opcli.review_json_flag]
+doc = "The argument that makes `review-due` print JSON."
+value = "--json"
+
+[opcli.reviewed_usage]
+doc = "`reviewed` without an integration."
+value = "reviewed: usage is `reviewed <integration>`"
+
+[opcli.reviewed_ok]
+doc = "`reviewed` confirmation. Placeholders: {id}, {late}."
+value = "{id} marked reviewed{late}"
+
+[opcli.reviewed_late]
+doc = "The part of the `reviewed` confirmation that says how long the review was due. Placeholder: {hours}."
+value = " (was due for {hours}h)"
+
+[opcli.snooze_usage]
+doc = "`snooze` without an integration or with a missing or non-positive --days."
+value = "snooze: usage is `snooze <integration> --days N`"
+
+[opcli.snooze_range]
+doc = "`snooze` refused: the snooze would end after the last date a date can hold (nothing is written)."
+value = "snooze: --days is too large for a date"
+
+[opcli.snooze_ok]
+doc = "`snooze` confirmation. Placeholders: {id}, {until}."
+value = "{id} snoozed until {until}"
+
+[opcli.review_write_failed]
+doc = "A review-state write that failed after the verb was answered (best effort, as in Node: said, not fatal). Placeholder: {error}."
+value = "⚠️ anti-hall · jev-setup: could not save the review state: {error}"
+
+[opcli.review_state_bad]
+doc = "The review state holds an entry that is not an object, which the verb cannot update (nothing is written). Placeholder: {id}."
+value = "review state: the entry of {id} is not an object; fix or remove ~/.anti-hall/jev-review-state.json"
+
+[opcli.test_not_enabled]
+doc = "`test` while Jev is off."
+value = "test: jev is not enabled — run `enable` first"
+
+[opcli.test_question]
+doc = "The yes/no question `test` asks (a Noul question: instructions, then the labels of true and false)."
+value = { instructions = "Is the sky typically blue on a clear day?", when_true = "yes", when_false = "no" }
+
+[opcli.test_state]
+doc = "The text `test` has Jev judge."
+value = "On a clear day, the sky appears blue."
+
+[opcli.test_ok]
+doc = "`test` line of a target that answered. Placeholders: {ms}, {confidence}, {tag}."
+value = "ok — latency {ms}ms, confidence {confidence} ({tag})"
+
+[opcli.test_failed]
+doc = "`test` line of a target that did not answer. Placeholders: {reason}, {tag}."
+value = "failed: {reason} ({tag})"
+
+[opcli.test_tag_one]
+doc = "`test` tag when one transport is tested. Placeholder: {transport}."
+value = "transport: {transport}"
+
+[opcli.test_tag_two]
+doc = "`test` tag when primary and fallback are both tested. Placeholders: {label}, {transport}."
+value = "{label}, transport: {transport}"
+
+[opcli.test_label_primary]
+doc = "`test` label of the primary transport."
+value = "primary"
+
+[opcli.test_label_fallback]
+doc = "`test` label of the fallback transport."
+value = "fallback"
+
+[opcli.test_rejected_re]
+doc = "A failure reason that means the vendor rejected the key."
+value = "^http-40[13]"
+
+[opcli.test_rejected_hint]
+doc = "What `test` adds when the key was rejected."
+value = "the key was rejected — check the key is correct AND that the transport (vercel vs typesafe) matches where the key was issued"
+
+# ---- the shared rules script of the four report/config verbs ---------------------------------------------------------------
+
+[opcli.rules_script]
+doc = "The plugin script (engine/logic/<name>.js) that holds the rules of auto-handover-config, dispatch-report and finding-dedup: the command reads the files and the settings and asks it, through the script host (JSON in, JSON out), for the words."
+value = "rules/operator-cli"
+
+[opcli.cwb_script]
+doc = "The plugin script (engine/logic/<name>.js) that replays a transcript through the coordinator-work classifier: it builds on command.js and coordinator-work-guard.js (script.includes)."
+value = "rules/coordinator-work-baseline"
+
+[opcli.rules_failed]
+doc = "Said on stderr when a rules script could not run (scripts off, missing, or it failed); nothing is written. Placeholder: {verb}."
+value = "❌ anti-hall · {verb}: the rules script could not run; nothing was done"
+
+# ---- auto-handover-config ------------------------------------------------------------------------------------------------
+
+[opcli.ahc_section]
+doc = "The settings section of the auto-handover trigger."
+value = "autoHandover"
+
+[opcli.ahc_current]
+doc = "The settings `writeConfig` and `resolveEffective` read, in order, each as `name:default` (the default is JSON): the value a verb starts from."
+value = [
+  "enabled:true", "pct:85", "nag:true", "nagStepPct:5", "nagQuietMin:15", "maxTokens:0", "gateNewWork:true", "gateBudgetPct:5",
+  "decisivePrompt:true", "gateHousekeepingMarkers:\"\"",
+]
+
+[opcli.ahc_default_pct]
+doc = "The threshold `on` restores when the stored one is not 1-99."
+value = 85
+
+[opcli.ahc_default_nag_step_pct]
+doc = "The nag step reported when the trigger is switched off by the environment."
+value = 5
+
+[opcli.ahc_default_nag_quiet_min]
+doc = "The nag quiet time (minutes) reported when the trigger is switched off by the environment."
+value = 15
+
+[opcli.ahc_default_gate_budget_pct]
+doc = "The gate budget (percent) reported when the trigger is switched off by the environment."
+value = 5
+
+[opcli.ahc_env_pct]
+doc = "The environment variable that sets the threshold; `0` switches the trigger off outright."
+value = "ANTIHALL_AUTO_HANDOVER_PCT"
+
+[opcli.ahc_pct_min]
+doc = "The smallest valid threshold percent."
+value = 1
+
+[opcli.ahc_pct_max]
+doc = "The largest valid threshold percent."
+value = 99
+
+[opcli.ahc_fail_prefix]
+doc = "Prefix of an error line of auto-handover-config."
+value = "❌ anti-hall · auto-handover-config: "
+
+[opcli.ahc_usage]
+doc = "Usage line of `ah-engine auto-handover-config`."
+value = "💡 anti-hall · auto-handover-config: usage: ah-engine auto-handover-config get [--json] | set <1-99> | off | on | nag on|off | nag-step <n> | nag-quiet <n> | max-tokens <n>"
+
+[opcli.ahc_get_enabled]
+doc = "`get` line. Placeholder: {value}."
+value = "enabled: {value}"
+
+[opcli.ahc_get_pct]
+doc = "`get` line. Placeholders: {value}, {source}."
+value = "pct: {value} (source: {source})"
+
+[opcli.ahc_get_max_tokens]
+doc = "`get` line. Placeholders: {value}, {off}."
+value = "maxTokens: {value}{off}"
+
+[opcli.ahc_get_max_tokens_off]
+doc = "The part of the maxTokens line that says the ceiling is off."
+value = " (ceiling off)"
+
+[opcli.ahc_get_nag]
+doc = "`get` line. Placeholder: {value}."
+value = "nag: {value}"
+
+[opcli.ahc_get_nag_step]
+doc = "`get` line. Placeholder: {value}."
+value = "nagStepPct: {value}"
+
+[opcli.ahc_get_nag_quiet]
+doc = "`get` line. Placeholder: {value}."
+value = "nagQuietMin: {value}"
+
+[opcli.ahc_get_gate_new_work]
+doc = "`get` line. Placeholder: {value}."
+value = "gateNewWork: {value}"
+
+[opcli.ahc_get_gate_budget]
+doc = "`get` line. Placeholder: {value}."
+value = "gateBudgetPct: {value}"
+
+[opcli.ahc_set_invalid]
+doc = "`set` refused. Placeholder: {arg}."
+value = "set: invalid percent \"{arg}\" — expected an integer 1-99"
+
+[opcli.ahc_set_ok]
+doc = "`set` confirmation. Placeholder: {n}."
+value = "auto-handover threshold set to {n}%"
+
+[opcli.ahc_off_ok]
+doc = "`off` confirmation."
+value = "auto-handover disabled"
+
+[opcli.ahc_on_ok]
+doc = "`on` confirmation."
+value = "auto-handover enabled"
+
+[opcli.ahc_nag_usage]
+doc = "`nag` refused."
+value = "nag: usage is `nag on|off`"
+
+[opcli.ahc_nag_ok]
+doc = "`nag` confirmation. Placeholder: {value}."
+value = "auto-handover nag {value}"
+
+[opcli.ahc_nag_step_invalid]
+doc = "`nag-step` refused. Placeholder: {arg}."
+value = "nag-step: invalid value \"{arg}\" — expected a positive integer"
+
+[opcli.ahc_nag_step_ok]
+doc = "`nag-step` confirmation. Placeholder: {n}."
+value = "auto-handover nag-step set to {n}"
+
+[opcli.ahc_nag_quiet_invalid]
+doc = "`nag-quiet` refused. Placeholder: {arg}."
+value = "nag-quiet: invalid value \"{arg}\" — expected a positive integer (minutes)"
+
+[opcli.ahc_nag_quiet_ok]
+doc = "`nag-quiet` confirmation. Placeholder: {n}."
+value = "auto-handover nag-quiet set to {n} minutes"
+
+[opcli.ahc_max_tokens_invalid]
+doc = "`max-tokens` refused. Placeholder: {arg}."
+value = "max-tokens: invalid value \"{arg}\" — expected an integer >= 0 (0 turns the ceiling off)"
+
+[opcli.ahc_max_tokens_off_ok]
+doc = "`max-tokens 0` confirmation."
+value = "auto-handover token ceiling off"
+
+[opcli.ahc_max_tokens_ok]
+doc = "`max-tokens` confirmation. Placeholder: {n}."
+value = "auto-handover token ceiling set to {n} tokens"
+
+# ---- dispatch-report ------------------------------------------------------------------------------------------------------
+
+[opcli.dr_demand_file]
+doc = "The dispatch-demand metrics file, relative to the anti-hall home directory."
+value = "dispatch-demand-metrics.json"
+
+[opcli.dr_cw_metrics_file]
+doc = "The coordinator-work metrics file, relative to the anti-hall home directory."
+value = "coordinator-work-metrics.json"
+
+[opcli.dr_cw_session_re]
+doc = "The file name of a live coordinator-work session file."
+value = "^coordinator-work-session-.+\\.json$"
+
+[opcli.dr_json_flag]
+doc = "The argument that makes `dispatch-report` print JSON."
+value = "--json"
+
+[opcli.dr_na]
+doc = "How an undefined share or rate is said."
+value = "n/a"
+
+[opcli.dr_title]
+doc = "`dispatch-report` heading."
+value = "anti-hall dispatch report"
+
+[opcli.dr_demand]
+doc = "`dispatch-report` demand line. Placeholders: {shown}, {followed}, {ignored}, {compliance}."
+value = "  dispatch demand: shown {shown} · followed {followed} · ignored {ignored} · compliance {compliance}"
+
+[opcli.dr_idle]
+doc = "`dispatch-report` idle-neglect line. Placeholder: {blocks}."
+value = "  idle-neglect blocks: {blocks}"
+
+[opcli.dr_tier_a]
+doc = "`dispatch-report` dispatch-tier line 1. Placeholders: {workspace}, {workflow}, {subagent}."
+value = "  jev dispatchTier: verdicts workspace {workspace} · workflow {workflow} · subagent {subagent}"
+
+[opcli.dr_tier_b]
+doc = "`dispatch-report` dispatch-tier line 2. Placeholders: {followed}, {overridden}, {rate}, {one_lane}, {escalated}, {fanned_out}, {no_fanout}."
+value = "    followed {followed} · overridden {overridden} (follow rate {rate}) · subagent one-lane {one_lane} / escalated {escalated} · workflow fanned-out {fanned_out} / no-fanout {no_fanout}"
+
+[opcli.dr_cw]
+doc = "`dispatch-report` coordinator-work line. Placeholders: {nudges}, {blocks}, {mean}, {max}, {skipped}, {sessions}."
+value = "  coordinator work: nudges {nudges} · blocks {blocks} · blocks/session mean {mean} max {max} · skipped would-be blocks {skipped} ({sessions} sessions)"
+
+[opcli.dr_cw_version]
+doc = "`dispatch-report` line of one plugin version. Placeholders: {version}, {sessions}, {share}, {attempted}."
+value = "    {version}: sessions {sessions} · work share {share} (attempted {attempted})"
+
+[opcli.dr_cw_baseline]
+doc = "`dispatch-report` pointer to the baseline command."
+value = "    baseline: ah-engine coordinator-work-baseline <transcript.jsonl> (share = as recorded (no enforcement), attempted = with enforcement)"
+
+[opcli.dr_cw_delivery]
+doc = "`dispatch-report` note on nudge delivery."
+value = "    nudge delivery: live-observed on Claude Code CLI 2.1.238, not doc-confirmed; re-verify after a CLI upgrade; blocks are the enforcement"
+
+[opcli.dr_cw_gaps]
+doc = "`dispatch-report` note on the classifier's known gaps."
+value = "    known gaps: obfuscated inline bodies, loose inline count-only, session-compiled binaries, mtime back-dating, managed-location scripts, gitignored build launchers and submodule scripts count, just/task, stash pop/apply (see GUIDE)"
+
+# ---- finding-dedup ---------------------------------------------------------------------------------------------------------
+
+[opcli.fd_id]
+doc = "The Jev integration id of finding-dedup."
+value = "findingDedup"
+
+[opcli.fd_file_flag]
+doc = "The argument that names the findings file (stdin otherwise)."
+value = "--file"
+
+[opcli.fd_max_pairs]
+doc = "Most candidate pairs asked per run (the same pairs are dropped for the same input)."
+value = 200
+
+[opcli.fd_concurrency]
+doc = "Pairs asked at the same time."
+value = 4
+
+[opcli.fd_line_window]
+doc = "Two findings of the same file are candidates when their lines are at most this far apart."
+value = 40
+
+[opcli.fd_confidence_floor_pct]
+doc = "The confidence (percent) a Jev answer needs for a pair to count as a duplicate, whatever confidenceThreshold the owner configured (the offline benchmark's floor)."
+value = 85
+min = 0
+max = 100
+
+[opcli.fd_question]
+doc = "The yes/no question asked of each pair (the benchmark's exact wording): instructions, then the labels of true and false."
+value = { instructions = "Do finding A and finding B describe the SAME underlying root-cause issue (even if worded differently, restated, or found at slightly different code lines)? Answer false if they are different bugs/mechanisms even if in the same area of code.", when_true = "same underlying issue", when_false = "different issues" }
+
+[opcli.fd_unknown_file]
+doc = "How the file of a finding without one is said in the text Jev judges."
+value = "unknown"
+
+[opcli.fd_state]
+doc = "The text Jev judges for a pair. Placeholders: {a}, {b} (each a finding described by fd_describe)."
+value = "Finding A: {a}\n\nFinding B: {b}"
+
+[opcli.fd_dup_line]
+doc = "stderr line of one Jev-confirmed pair. Placeholders: {a}, {b}, {confidence}."
+value = "⚠️ anti-hall · finding-dedup: possible duplicates: {a} ~ {b} (conf {confidence})"
+
+[opcli.fd_no_key]
+doc = "stderr line when Jev is on and no key is visible to this process. Placeholder: {notice}."
+value = "💡 anti-hall · finding-dedup: {notice}"
+
+[opcli.fd_round_suffix]
+doc = "How a finding that shares its id with another round is named. Placeholders: {id}, {round}."
+value = "{id}@round{round}"
+
+[opcli.fd_no_round]
+doc = "The round written for a finding without one when its id is shared."
+value = "-"
+
+# ---- coordinator-work-baseline ---------------------------------------------------------------------------------------------
+
+[opcli.cwb_from_flag]
+doc = "The argument that skips the first lines of the transcript (its value is the first line used)."
+value = "--from-line"
+
+[opcli.cwb_cwd_flag]
+doc = "The argument that sets the working directory of every replayed call."
+value = "--cwd"
+
+[opcli.cwb_json_flag]
+doc = "The argument that makes the baseline print JSON."
+value = "--json"
+
+[opcli.cwb_prefilter]
+doc = "A transcript line can matter only when it holds one of these texts (a Bash tool use or a tool result); the others are never read."
+value = ["\"tool_use\"", "\"tool_result\""]
+
+[opcli.cwb_not_found]
+doc = "stderr when the transcript is not a file. Placeholder: {file}."
+value = "coordinator-work-baseline: transcript not found: {file}"
+
+[opcli.cwb_enoent]
+doc = "The reason said when the transcript does not exist (the operating system's own words, as Node prints them). Placeholder: {path}."
+value = "ENOENT: no such file or directory, stat '{path}'"
+
+[opcli.cwb_error]
+doc = "stderr when the transcript cannot be read. Placeholder: {error}."
+value = "coordinator-work-baseline: {error}"
+
+[opcli.cwb_line]
+doc = "The baseline line. Placeholders: {calls}, {work}, {share}, {attempted}, {nudge}, {block}."
+value = "coordinator work baseline: calls {calls} · work {work} · share {share} as recorded (no enforcement) · attempted share {attempted} with enforcement · would nudge {nudge} · would block {block}"
+
+[opcli.cwb_unclassified]
+doc = "stderr note when some commands could not be classified by the engine and were counted as not work. Placeholder: {count}."
+value = "coordinator-work-baseline: {count} command(s) depend on something only the hook process can see (a relative path, an unreadable file) and were counted as not work"

@@ -5,7 +5,7 @@
 pub(crate) mod history;
 pub(crate) mod store;
 
-use super::js::{Defer, head16, len16};
+use super::js::{Defer, len16};
 use super::{env_snapshot, err, home, out, plugin_root};
 use crate::checks::git::util::posix_basename;
 use crate::checks::jsport::ident;
@@ -15,6 +15,7 @@ use crate::defaults;
 use crate::reqenv::RequestEnv;
 use crate::setup::jsfmt::{parse_int, pretty};
 use std::collections::BTreeMap;
+use store::head16;
 
 /// A flag's value: a word, or the bare flag.
 #[derive(Clone, PartialEq, Eq)]
@@ -182,15 +183,35 @@ fn default_proj() -> String {
     super::settings::effective_text(defaults::text("defect.proj_section"), defaults::text("defect.proj_key"), "").unwrap_or_default()
 }
 
-/// `repoKeyForWorktree(cwd)`: `<sanitized repo name>-<6 hex of the common dir>`, `None` outside a repository; `Err` when the
-/// repository layout needs the Node resolver.
+/// The common git directory of the outermost superproject of `cwd`, asked of git itself (bounded calls): the answer for a
+/// layout the file resolver is unsure of (a `.git` file with unusual line ends, a linked worktree of a submodule).
+fn git_common_dir(run: &Run, cwd: &str) -> Option<String> {
+    let env = RequestEnv::from_pairs(run.env.clone());
+    let scrub = defaults::list("codex_handover.git_scrub_env");
+    let timeout = defaults::millis("codex_handover.identity_git_timeout_ms");
+    let git = |root: &str, key: &str| -> Option<String> {
+        let argv: Vec<String> = defaults::list(key).iter().map(|a| a.replace("{root}", root)).collect();
+        let out = crate::checks::jsport::gitrun::git_scrubbed(root, &argv.iter().map(String::as_str).collect::<Vec<_>>(), timeout, &env, &scrub)?;
+        let t = crate::checks::guardkit::text::js_trim(&out).to_string();
+        (!t.is_empty()).then_some(t)
+    };
+    let mut root = cwd.to_string();
+    for _ in 0..defaults::num("codex_handover.max_submodule_hops") {
+        match git(&root, "codex_handover.argv_super") {
+            Some(up) if up != root => root = up,
+            _ => break,
+        }
+    }
+    let common = git(&root, "opcli.defect_argv_common")?;
+    let abs = crate::checks::git::util::resolve(&root, &common, "/");
+    std::fs::canonicalize(&abs).ok().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// `repoKeyForWorktree(cwd)`: `<sanitized repo name>-<6 hex of the common dir>`, `None` outside a repository.
 fn repo_key(run: &Run, cwd: &str) -> Result<Option<String>, Defer> {
     let ctx = ident::resolve_context(cwd, false, &RequestEnv::from_pairs(run.env.clone()));
-    if ctx.unsure {
-        return Err(Defer);
-    }
-    let Some(root) = ctx.worktree_root else { return Ok(None) };
-    let Some(common) = ident::common_dir(&root) else { return Ok(None) };
+    let common = if ctx.unsure { git_common_dir(run, cwd) } else { ctx.worktree_root.as_deref().and_then(ident::common_dir) };
+    let Some(common) = common else { return Ok(None) };
     let parent = crate::checks::git::util::posix_dirname(&common);
     let base = sanitize_repo_name(&posix_basename(&parent));
     let d = ring::digest::digest(&ring::digest::SHA256, common.as_bytes());
@@ -438,6 +459,10 @@ fn cmd_backfill(run: &Run, a: &Args) -> Result<i32, Defer> {
 }
 
 fn cmd_recurring(run: &Run, a: &Args) -> Result<i32, Defer> {
+    if let Some(since) = a.string("since").filter(|s| !history::since_is_readable(s)) {
+        err(&(defaults::render("opcli.defect_since_unread", &[("since", &since)]) + "\n"));
+        return Ok(defaults::num("opcli.fail_exit") as i32);
+    }
     let records = history::load_all_records(&run.home)?;
     let rep = history::recurring(&records, a.string("since"))?;
     if a.get("json").is_some() {
@@ -486,6 +511,8 @@ fn run_inner(p: &Parsed) -> i32 {
         return 1;
     }
     let run = Run::new();
+    // the command's own process: its local time zone is the one the user's dates mean
+    let _zone = crate::checks::jsport::date::ZoneGuard::new(&RequestEnv::from_pairs(run.env.clone()));
     let r = match cmd {
         "report" => cmd_report(&run, &a),
         "list" => cmd_list(&run, &a),
@@ -502,9 +529,10 @@ fn run_inner(p: &Parsed) -> i32 {
     };
     match r {
         Ok(code) => code,
+        // every input is answered natively; a helper's error shape that still surfaces is an internal fault, reported as one
         Err(Defer) => {
-            err(&(defaults::text("defect.deferred").to_string() + "\n"));
-            super::defer_code()
+            err(&(defaults::text("opcli.defect_internal").to_string() + "\n"));
+            defaults::num("opcli.fail_exit") as i32
         }
     }
 }

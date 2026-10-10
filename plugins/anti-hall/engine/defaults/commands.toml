@@ -98,8 +98,24 @@ doc = "The health check and repair of anti-hall (D81), with the Node doctor's re
 value = { args = "[--check] [--repair|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]", read_only = false, status = "implemented" }
 
 [cmd.jev-setup]
-doc = "Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, and `mode <integration> on|shadow|off`; `test` and the review verbs stay in the Node script."
-value = { args = "<status|enable|disable|set-key|bind-generic-key|mode> [--transport vercel|typesafe] [--fallback vercel|typesafe|none] [--role fallback] [--vendor vercel|typesafe]", read_only = false, status = "implemented" }
+doc = "Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, `mode <integration> on|shadow|off`, `test` (one real gateway call per configured transport, each on its own) and the shadow-review verbs `review-due [--json]`, `reviewed <integration>` and `snooze <integration> --days N`."
+value = { args = "<status|enable|disable|set-key|bind-generic-key|test|mode|review-due|reviewed|snooze> [--days <n>] [--transport vercel|typesafe] [--fallback vercel|typesafe|none] [--role fallback] [--vendor vercel|typesafe]", read_only = false, status = "implemented" }
+
+[cmd.auto-handover-config]
+doc = "Get or change the auto-handover trigger's settings (L03, the port of scripts/auto-handover-config.js): `get [--json]` (the resolved values and where the threshold came from), `set <1-99>`, `off`, `on`, `nag on|off`, `nag-step <n>`, `nag-quiet <n>`, `max-tokens <n>` (0 turns the token ceiling off). It writes through the settings store, one key at a time, like `settings set`."
+value = { args = "<get [--json]|set <1-99>|off|on|nag on|off|nag-step <n>|nag-quiet <n>|max-tokens <n>>", read_only = false, status = "implemented" }
+
+[cmd.dispatch-report]
+doc = "Read-only effectiveness metrics (L03, the port of scripts/dispatch-report.js): the parallel-dispatch demand shown, followed and ignored with its compliance rate, the idle-neglect blocks, the Jev dispatch-tier verdicts and follow rate, and the coordinator-work window's nudges, blocks and work share per plugin version."
+value = { args = "[--json]", read_only = true, status = "implemented" }
+
+[cmd.finding-dedup]
+doc = "Advisory duplicate-finding detector for the deadly-loop reviewers (L03, the port of scripts/finding-dedup.js): reads a JSON array of findings (stdin or `--file`), asks Jev whether candidate pairs describe the same root cause, and prints `{groups}` on stdout and one `possible duplicates` line per confirmed pair on stderr. It never collapses anything; with Jev off or unkeyed it prints no groups."
+value = { args = "[--file <findings.json>]", read_only = true, status = "implemented" }
+
+[cmd.coordinator-work-baseline]
+doc = "Replay a session transcript's main-thread Bash calls through the coordinator-work classifier and window (L03, the port of scripts/coordinator-work-baseline.js) and print what the guard would have done: calls, work, share as recorded, attempted share with enforcement, would-nudge and would-block counts."
+value = { args = "<transcript.jsonl> [--from-line <n>] [--cwd <dir>] [--json]", read_only = true, status = "implemented" }
 
 [cmd.capability-scan]
 doc = "A read-only gap report (D81, the port of scripts/capability-scan.js): for each opt-in capability of a plugin tree, whether it is shipped and whether it is active on this machine, and how to enable it; prints the JSON report, then one line per capability."

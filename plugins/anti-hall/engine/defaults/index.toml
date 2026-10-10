@@ -72,6 +72,7 @@ files = [
     "realtime.toml",
     "github_rt.toml",
     "jev_report.toml",
+    "operator_cli.toml",
     "wake_watch.toml",
     "refresh.toml",
 ]

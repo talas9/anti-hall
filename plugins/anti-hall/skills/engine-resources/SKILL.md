@@ -12,7 +12,9 @@ Daemon status, metrics, backups, schedules and limits.
 | Verb | What it does | Roles |
 |---|---|---|
 | `ah-engine backup` | `[--to <dir>]` Make a consistent online snapshot of hot.db and archive.db with SQLite's backup API, scrubbed of secrets, in backups/<ms> or the given... | main, codex |
+| `ah-engine coordinator-work-baseline` | `<transcript.jsonl> [--from-line <n>] [--cwd <dir>] [--json]` Replay a session transcript's main-thread Bash calls through the coordinator-work classifier and window (L03, the port of... | main, codex, workspace, subagent |
 | `ah-engine ctl` | `<ping\|reload\|stop\|status>` Send a control verb to the daemon: ping, reload, stop or status | main, codex |
+| `ah-engine dispatch-report` | `[--json]` Read-only effectiveness metrics (L03, the port of scripts/dispatch-report.js): the parallel-dispatch demand shown, followed and ignored... | main, codex, workspace, subagent |
 | `ah-engine impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including... | main, codex, workspace, subagent |
 | `ah-engine maintain` | `` Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived... | main, codex |
 | `ah-engine metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one... | main, codex, workspace, subagent |

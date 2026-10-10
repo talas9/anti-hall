@@ -461,29 +461,29 @@ doc = "How long a cached credit balance is served before the endpoint is asked a
 value = 900000
 unit = "ms"
 
-[jevrep.msg_defer]
-doc = "Said on stderr when the command leaves the report to the Node script (nothing was written). Placeholder: {why}."
-value = "ah-engine jev-report: {why}; run scripts/jev-report.js instead"
+[jevrep.msg_fail]
+doc = "Said on stderr when a run cannot finish (nothing else is printed or written). Placeholder: {why}."
+value = "❌ anti-hall · jev-report: {why}"
 
 [jevrep.why_script]
 doc = "The report rules script is off or failed."
 value = "the report rules script could not run"
 
-[jevrep.why_home]
-doc = "The weekly scorecard resolves modes from the real home, so another --home is left to Node."
-value = "the weekly scorecard with a --home other than the home directory"
+[jevrep.fail_exit]
+doc = "Exit code of a run that could not finish (the Node script's own code for a failed write)."
+value = 1
 
-[jevrep.why_credit]
-doc = "The credit balance could not be read in a way this port reproduces."
-value = "the credit balance answer has a shape this port does not read"
+[jevrep.msg_label_write_failed]
+doc = "Said on stderr when `label <hash> tp|fp` could not append the label (the Node script's message). Placeholders: {path}, {error}."
+value = "❌ anti-hall · jev-report: label: failed to write {path}: {error}"
 
-[jevrep.why_id]
-doc = "An integration id in the log is not text."
-value = "a decision row names an integration that is not text"
+[jevrep.msg_prune_failed]
+doc = "Said on stderr when `prune-audit` could not rewrite the audit log (the Node script's message). Placeholder: {error}."
+value = "❌ anti-hall · jev-report: prune-audit: failed: {error}"
 
-[jevrep.why_write]
-doc = "A file the command had to write could not be written."
-value = "a file could not be written"
+[jevrep.object_text]
+doc = "JavaScript's String() of an object, used when a credit balance field is an array holding an object (Number() of it is NaN)."
+value = "[object Object]"
 
 [jevrep.budget_watch]
 doc = "The budget mode that turns the budget section on."

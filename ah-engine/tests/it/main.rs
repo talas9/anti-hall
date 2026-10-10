@@ -58,6 +58,7 @@ mod jev_report_parity;
 mod jev_scrub_reload;
 mod js_number_printers;
 mod judge_parity;
+mod l03_cli_parity;
 mod launcher_parity;
 mod mcp_reaper_parity;
 mod memory_soak;
