@@ -72,7 +72,7 @@ fn run(mut cmd: Command, home: &Path, cwd: &Path, extra: &[(&str, &str)], stdin:
         .env("AH_ENGINE_SHADOW_RATE_PHASE", "0")
         .env("AH_ENGINE_SHADOW_RATE_INSTALL", "0")
         .env("AH_ENGINE_SHADOW_RATE_UNINSTALL", "0")
-        // the Node installer writes the Node-only command; the engine's installer writes the launcher form unless told otherwise
+        // the Node installer writes the Node-only command; the engine's installer writes its own command unless told otherwise
         .env("ANTIHALL_STATUSLINE_NODE_ONLY", "1")
         .current_dir(cwd)
         .stdin(Stdio::piped())
@@ -749,6 +749,32 @@ fn statusline_agrees_with_node() -> R {
     write(act.path(), ".anti-hall/agent-spawns.log", &format!("{now} abc\n{} abc\n{now} other\n", now - 600_000))?;
     let c = Same { seed: Some(act.path()), env: &[], stdin: inputs[0], ..c };
     statusline_pair(&c, &[])?;
+    // what the engine used to leave to Node: a label with ESC before an astral character, a cut through a surrogate pair, a
+    // cost at the `toFixed` limit, a relative payload cwd, and a session start that is not a string
+    let odd = Scratch::new("odd")?;
+    write(odd.path(), ".claude.json", "{}")?;
+    let phase = serde_json::json!({"code": "P", "desc": format!("{}\u{1F600}tail", "x".repeat(30)), "done": 1, "total": 2, "step": "s\u{1b}\u{1F600}t"});
+    write(odd.path(), ".anti-hall/phase-state.json", &phase.to_string())?;
+    let esc_dir = r.join("d\u{1b}\u{1F600}e");
+    fs::create_dir_all(&esc_dir)?;
+    for stdin in [
+        r#"{"model":{"display_name":"M"},"cost":{"total_cost_usd":1e21,"total_duration_ms":1}}"#,
+        r#"{"model":{"display_name":"M"},"cost":{"total_cost_usd":12345678901234567890123,"total_duration_ms":1}}"#,
+        r#"{"model":{"display_name":"M"},"cwd":"pkg"}"#,
+    ] {
+        for cwd in [r.as_path(), esc_dir.as_path()] {
+            let c = Same { script: "statusline/statusline.js", verb: "statusline", seed: Some(odd.path()), cwd: Some(cwd), env: &[], stdin };
+            statusline_pair(&c, &[])?;
+        }
+    }
+    let two_hours_ago = (ah_engine::checks::jsport::date::now_ms() as i64 - 2 * 3_600_000).to_string();
+    for start in [two_hours_ago.as_str(), "true", "[\"2020-01-01T00:00:00Z\"]", "\"garbage\"", "{\"a\":1}", "1e300"] {
+        write(&r, ".claude/session.json", &format!("{{\"startTime\":{start}}}"))?;
+        let c = Same { script: "statusline/statusline.js", verb: "statusline", seed: Some(odd.path()), cwd: Some(&r), env: &[], stdin: r#"{"model":{"display_name":"M"}}"# };
+        statusline_pair(&c, &[])?;
+    }
+    fs::remove_dir_all(r.join(".claude"))?;
+    fs::remove_dir_all(&esc_dir)?;
     // fallback renderers (a string cost makes the rich renderer throw)
     let c = Same { stdin: r#"{"model":{"display_name":"M"},"cost":{"total_cost_usd":"5"},"context_window":{"remaining_percentage":30}}"#, ..c };
     statusline_pair(&c, &[])?;
@@ -811,6 +837,7 @@ fn phase_agrees_with_node() -> R {
         Some(""),
         Some("\u{feff}{}"),
         Some(r#"{"a":1,"a":2,"b":"\u00e9\ud83d\ude00"}"#),
+        Some(r#"{"b":1,"7":2,"__proto__":{"x":1},"3":0}"#),
     ];
     for state in states {
         let seed = Scratch::new("seed")?;
@@ -822,18 +849,7 @@ fn phase_agrees_with_node() -> R {
                 continue;
             }
             let c = Same { script: "statusline/phase.js", verb: "phase", seed: state.map(|_| seed.path()), cwd: None, env: &[], stdin: "" };
-            // `update 5=x` and `update __proto__=1` are left to Node by design: compare only that nothing is written
-            if args.contains(&"5=x") || args.contains(&"__proto__=1") {
-                let eh = Scratch::new("e")?;
-                let before = snapshot(eh.path())?;
-                let mut cmd = Command::new(BIN);
-                cmd.arg("phase").args(*args);
-                let o = run(cmd, eh.path(), eh.path(), &[], "")?;
-                assert_eq!(o.code, 75, "deferred");
-                assert_eq!(before, snapshot(eh.path())?, "a deferral writes nothing");
-                CASES.fetch_add(1, Ordering::SeqCst);
-                continue;
-            }
+            // `update 5=x` (an index key, written first) and `update __proto__=1` (ignored unless an own key) answer natively too
             same(&c, args)?;
         }
     }
@@ -841,21 +857,23 @@ fn phase_agrees_with_node() -> R {
 }
 
 #[test]
-fn phase_defers_on_a_state_javascript_would_mishandle() -> R {
-    for state in ["[1,2]", "null", "5", "\"str\"", "true"] {
+fn phase_leaves_a_state_that_is_not_an_object_untouched() -> R {
+    // JavaScript throws on null and on primitives (nothing written) and drops named members of an array (the same bytes back);
+    // JSON with a lone surrogate escape, which JavaScript would rewrite, is kept as it is rather than changed
+    for state in ["[1,2]", "null", "5", "\"str\"", "true", "{\"a\":\"\\ud800\"}"] {
         for args in [vec!["advance"], vec!["step", "x"], vec!["agents", "2"], vec!["update", "a=1"]] {
-            let h = Scratch::new("defer")?;
+            let h = Scratch::new("keep")?;
             phase_seed(h.path(), state)?;
             let mut cmd = Command::new(BIN);
             cmd.arg("phase").args(&args);
             let o = run(cmd, h.path(), h.path(), &[], "")?;
-            assert_eq!(o.code, 75, "{state} {args:?}");
+            assert_eq!((o.code, o.stderr.as_str()), (0, ""), "{state} {args:?}");
             assert_eq!(fs::read_to_string(h.path().join(".anti-hall/phase-state.json"))?, state, "nothing written");
         }
     }
     // set and clear never read the old state
     for (state, args) in [("[1,2]", vec!["set", "P", "d", "1", "2"]), ("null", vec!["clear"])] {
-        let h = Scratch::new("defer-ok")?;
+        let h = Scratch::new("keep-ok")?;
         phase_seed(h.path(), state)?;
         let mut cmd = Command::new(BIN);
         cmd.arg("phase").args(&args);
@@ -1005,23 +1023,32 @@ fn install_agrees_with_node_on_unwritable_and_unreadable_files() -> R {
 }
 
 #[test]
-fn install_defers_on_a_settings_file_it_cannot_parse_like_javascript() -> R {
+fn install_reports_a_settings_file_it_cannot_parse_and_writes_nothing() -> R {
     for body in ["{bad", "", "null", "[1]", "5", "\u{feff}{}", "{\"a\":\"\\ud800\"}"] {
         let seed = home_with(Some(body), &[])?;
         let before = snapshot(seed.path())?;
         let mut cmd = Command::new(BIN);
         cmd.arg("install-statusline");
         let o = run(cmd, seed.path(), seed.path(), &[], "")?;
-        // `[1]` and `5` have no statusLine and Node would add one; the engine leaves every non-object file to Node
-        assert_eq!(o.code, 75, "{body:?}: {}", o.stderr);
-        assert!(o.stdout.is_empty(), "{body:?}: a deferral prints nothing on stdout, got {:?}", o.stdout);
-        assert_eq!(before, snapshot(seed.path())?, "{body:?}: a deferral writes nothing");
+        assert_eq!(o.code, 1, "{body:?}: {}", o.stderr);
+        assert!(o.stderr.contains("Could not parse"), "{body:?}: {}", o.stderr);
+        assert_eq!(before, snapshot(seed.path())?, "{body:?}: nothing written");
         let mut cmd = Command::new(BIN);
         cmd.arg("uninstall-statusline");
         let o = run(cmd, seed.path(), seed.path(), &[], "")?;
-        assert_eq!(o.code, 75, "{body:?} uninstall: {}", o.stderr);
-        assert_eq!(before, snapshot(seed.path())?, "{body:?}: a deferral writes nothing");
+        assert_eq!(o.code, 1, "{body:?} uninstall: {}", o.stderr);
+        assert!(o.stderr.contains("Could not parse"), "{body:?}: {}", o.stderr);
+        assert_eq!(before, snapshot(seed.path())?, "{body:?}: nothing written");
     }
+    // an unreadable base or backup file falls through to the next strategy, as the script does
+    let seed = home_with(Some("{\"statusLine\":{\"type\":\"command\",\"command\":\"x\"}}"), &[(".anti-hall/base-statusline.json", "{bad")])?;
+    fs::write(seed.path().join(".claude/settings.json.bak-antihall"), "{bad")?;
+    let mut cmd = Command::new(BIN);
+    cmd.arg("uninstall-statusline");
+    let o = run(cmd, seed.path(), seed.path(), &[], "")?;
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert!(o.stderr.contains("Falling through to backup") && o.stderr.contains("Falling through to key-removal"), "{}", o.stderr);
+    assert!(!fs::read_to_string(seed.path().join(".claude/settings.json"))?.contains("statusLine"), "the key was removed");
     Ok(())
 }
 
@@ -1069,13 +1096,15 @@ fn install_agrees_with_node_in_the_project_scope() -> R {
             one(&c, true, &["--project", "--consolidate"])?;
         }
     }
-    // a .gitignore that is a directory: Node crashes with a stack trace, the engine leaves it to Node
+    // a .gitignore that is a directory: Node crashes with a stack trace; the engine says why, exits 1 and writes nothing
     let d = project_cwd(&[(".claude/settings.local.json", "{}"), (".gitignore/x", "")], None)?;
     let h = home_with(None, &[])?;
     let mut cmd = Command::new(BIN);
     cmd.args(["install-statusline", "--project"]);
     let o = run(cmd, h.path(), d.path(), &[], "")?;
-    assert_eq!(o.code, 75);
+    assert_eq!(o.code, 1, "{}", o.stderr);
+    assert!(o.stderr.contains("EISDIR"), "{}", o.stderr);
+    assert_eq!(fs::read_to_string(d.path().join(".claude/settings.local.json"))?, "{}");
     Ok(())
 }
 

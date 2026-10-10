@@ -5,7 +5,8 @@ use crate::checks::jsport::json::{self, J};
 use crate::checks::jsport::{num, text};
 use crate::defaults;
 use crate::migrate::j_truthy;
-use crate::ops::js::{Defer, head16, len16};
+use crate::checks::jsport::text::slice16_lossy as head16;
+use crate::ops::js::len16;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -140,22 +141,22 @@ fn s_field(state: &J, k: &str) -> String {
 }
 
 /// `phaseBarLine()`
-fn phase_bar_line(cx: &Ctx) -> Result<Phase, Defer> {
-    let Some(raw) = read_state(cx) else { return Ok(Phase::None) };
-    let Some(state) = parse(&raw) else { return Ok(Phase::None) };
+fn phase_bar_line(cx: &Ctx) -> Phase {
+    let Some(raw) = read_state(cx) else { return Phase::None };
+    let Some(state) = parse(&raw) else { return Phase::None };
     if matches!(state, J::Null) {
-        return Ok(Phase::Threw);
+        return Phase::Threw;
     }
-    let code = trim(&safe_label(&s_field(&state, "code"))?).to_string();
-    let mut desc = trim(&safe_label(&s_field(&state, "desc"))?).to_string();
+    let code = trim(&safe_label(&s_field(&state, "code"))).to_string();
+    let mut desc = trim(&safe_label(&s_field(&state, "desc"))).to_string();
     let done = parse_int_of(state.get("done"));
     let total = parse_int_of(state.get("total"));
-    let (Some(done), Some(total)) = (done, total) else { return Ok(Phase::None) };
+    let (Some(done), Some(total)) = (done, total) else { return Phase::None };
     if code.is_empty() || desc.is_empty() || total <= 0.0 {
-        return Ok(Phase::None);
+        return Phase::None;
     }
     if len16(&desc) > defaults::num("statusline.desc_max") as usize {
-        desc = head16(&desc, defaults::num("statusline.desc_max") as usize - 1)? + defaults::text("statusline.ellipsis");
+        desc = head16(&desc, defaults::num("statusline.desc_max") as usize - 1) + defaults::text("statusline.ellipsis");
     }
     let pct = num::js_round((done / total) * 100.0).clamp(0.0, 100.0);
     let bar = render_bar(done, total, cx.now);
@@ -176,16 +177,16 @@ fn phase_bar_line(cx: &Ctx) -> Result<Phase, Defer> {
         let word = if agents == 1.0 { defaults::text("statusline.agent_one") } else { defaults::text("statusline.agent_many") };
         extras.push(format!("{}{}{word}{}", color("blue"), n(agents), color("reset")));
     }
-    let mut step = trim(&safe_label(&s_field(&state, "step"))?).to_string();
+    let mut step = trim(&safe_label(&s_field(&state, "step"))).to_string();
     if !step.is_empty() {
         if len16(&step) > defaults::num("statusline.step_max") as usize {
-            step = head16(&step, defaults::num("statusline.step_max") as usize - 1)? + defaults::text("statusline.ellipsis");
+            step = head16(&step, defaults::num("statusline.step_max") as usize - 1) + defaults::text("statusline.ellipsis");
         }
         extras.push(format!("{}{step}{}", color("dim"), color("reset")));
     }
     let extra_str = if extras.is_empty() { String::new() } else { format!(" {}|{} {}", color("dim"), color("reset"), extras.join(" ")) };
     let (bold, magenta, white, cyan, yellow) = (color("bold"), color("magenta"), color("white"), color("cyan"), color("yellow"));
-    Ok(Phase::Line(defaults::render(
+    Phase::Line(defaults::render(
         "statusline.phase_template",
         &[
             ("bar", &bar),
@@ -203,7 +204,7 @@ fn phase_bar_line(cx: &Ctx) -> Result<Phase, Defer> {
             ("total", &n(total)),
             ("extra", &extra_str),
         ],
-    )))
+    ))
 }
 
 /// The percentage fields of a `context_window` object, as `contextLine` and `persistContextPct` read them.
@@ -253,7 +254,7 @@ fn current_session_tag(input: &str) -> Option<String> {
         let t = trim(s);
         if !t.is_empty() {
             let tag: String = t.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
-            let tag = head16(&tag, defaults::num("statusline.tag_max") as usize).ok()?;
+            let tag = head16(&tag, defaults::num("statusline.tag_max") as usize);
             return (!tag.is_empty()).then_some(tag);
         }
     }
@@ -331,10 +332,11 @@ fn persist_context_pct(cx: &Ctx, input: &str) {
     let tag = match data.get("session_id") {
         Some(J::Str(s)) if !trim(s).is_empty() => {
             let t: String = trim(s).chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
-            match head16(&t, defaults::num("statusline.tag_max") as usize) {
-                Ok(t) if !t.is_empty() => t,
-                _ => return,
+            let t = head16(&t, defaults::num("statusline.tag_max") as usize);
+            if t.is_empty() {
+                return;
             }
+            t
         }
         _ => return,
     };
@@ -365,12 +367,11 @@ fn persist_context_pct(cx: &Ctx, input: &str) {
 }
 
 /// `runWithInput(input)` of the phase bar: the line (with its newline trimmed), `None` when nothing renders.
-pub fn run(cx: &Ctx, input: &str) -> Result<Option<String>, Defer> {
+pub fn run(cx: &Ctx, input: &str) -> Option<String> {
     persist_context_pct(cx, input);
-    let line = match phase_bar_line(cx)? {
-        Phase::Threw => return Ok(None),
+    match phase_bar_line(cx) {
+        Phase::Threw => None,
         Phase::Line(l) => Some(l),
         Phase::None => activity_line(cx, input).or_else(|| context_line(input)),
-    };
-    Ok(line)
+    }
 }
