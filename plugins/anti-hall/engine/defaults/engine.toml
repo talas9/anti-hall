@@ -203,8 +203,16 @@ value = 512
 env = "AH_ENGINE_MEM_MB"
 unit = "MB"
 
+[daemon.mem_metric]
+doc = "Which figure `daemon.rss_cap_kb` is compared with: `footprint` (the process's own memory: macOS physical footprint, Linux RssAnon + RssShmem; shared and reclaimable file pages are not counted) or `rss` (the kernel's resident set, which also counts shared code pages touched over time and made the daemon restart without a real leak). Falls back to the resident set where the platform has no footprint."
+value = "footprint"
+
+[daemon.mem_metric_rss]
+doc = "The word that selects the resident set for `daemon.mem_metric`."
+value = "rss"
+
 [daemon.rss_cap_kb]
-doc = "Resident-set cap; above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. Set from measurement, not guessed (DECISIONS.md 1.111, 2026-10-09): on the real-payload replay (2,113 recorded hook calls, unpaced, isolated home) the engine with 16 scripted checks sits at 69 MB after one pass and 78 MB after three (jemalloc, aarch64-apple-darwin), and at 102 MB after one pass with the system allocator (the x86_64-apple-darwin and musl builds, measured as a system-allocator build on this Mac); the live heap is 45-52 MB. The engine before the scripted checks (live4) measured 62 and 68 MB on the same replay, so the previous 64 MB cap (set from a synthetic soak with a 16-18 MB live heap) sat inside the steady state of both: the daemon restarted 4 times in 600 s and the crash-loop breaker sent every hook to Node. The cap sits above the larger figure with room for the slow growth both builds show on repeated passes (about 1.5 MB per 1,000 calls), so only real growth trips it."
+doc = "Memory cap, compared with the figure `daemon.mem_metric` selects (default: the footprint, not the resident set); above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. The measurement below is of the resident set. Set from measurement, not guessed (DECISIONS.md 1.111, 2026-10-09): on the real-payload replay (2,113 recorded hook calls, unpaced, isolated home) the engine with 16 scripted checks sits at 69 MB after one pass and 78 MB after three (jemalloc, aarch64-apple-darwin), and at 102 MB after one pass with the system allocator (the x86_64-apple-darwin and musl builds, measured as a system-allocator build on this Mac); the live heap is 45-52 MB. The engine before the scripted checks (live4) measured 62 and 68 MB on the same replay, so the previous 64 MB cap (set from a synthetic soak with a 16-18 MB live heap) sat inside the steady state of both: the daemon restarted 4 times in 600 s and the crash-loop breaker sent every hook to Node. The cap sits above the larger figure with room for the slow growth both builds show on repeated passes (about 1.5 MB per 1,000 calls), so only real growth trips it."
 value = 131072
 env = "AH_ENGINE_RSS_CAP_KB"
 unit = "KB"

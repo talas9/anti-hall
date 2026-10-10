@@ -170,9 +170,11 @@ pub fn pool_usage() -> Option<(usize, i64, i64, i64, i64)> {
 pub fn thread_diag() -> serde_json::Value {
     let regex_cache = host::regex_cache_len();
     let thread = std::thread::current().name().map(str::to_string);
+    // QuickJS bytes before and after one collection: a drop is garbage that waited for the GC threshold, not a leak
+    let before = POOL.with(|c| c.borrow().as_ref().map(|p| p.rt.memory_usage().malloc_size));
     match pool_usage() {
         Some((checks, bytes, allocs, funcs, code)) => serde_json::json!({
-            "thread": thread, "runtimes": 1, "contexts": 1, "checks_loaded": checks, "quickjs_bytes": bytes,
+            "thread": thread, "runtimes": 1, "contexts": 1, "checks_loaded": checks, "quickjs_bytes": bytes, "quickjs_bytes_before_gc": before,
             "quickjs_allocs": allocs, "js_funcs": funcs, "js_func_code_bytes": code, "regex_cache": regex_cache,
         }),
         None => serde_json::json!({"thread": thread, "runtimes": 0, "contexts": 0, "regex_cache": regex_cache}),
