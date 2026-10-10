@@ -98,6 +98,12 @@ struct Opt {
     markers: bool,
     /// `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS`.
     budget: Option<&'static str>,
+    /// Jev is on and a Jev key file exists: the one-time legacy key opt-in has work to do.
+    jev_key: bool,
+    /// The home's Codex hooks.json still registers a retired graphify script.
+    graphify: bool,
+    /// The engine runs with no usable Node: `node` on the PATH and `AH_ENGINE_NODE` are a shim that records the call and fails.
+    no_node: bool,
 }
 
 struct World {
@@ -171,6 +177,19 @@ fn world(o: &Opt) -> World {
         let body: Vec<String> = keys.iter().map(|k| format!(r#""{k}":{{"completedVersion":"{v}"}}"#)).collect();
         put(&home, ".anti-hall/update-sweep-state.json", format!("{{{}}}", body.join(",")));
     }
+    if o.jev_key {
+        put(&home, ".anti-hall/settings.json", "{\n  \"jev\": {\n    \"enabled\": true\n  }\n}\n");
+        put(&home, ".config/vercel/ai-gateway-key", "k");
+    }
+    if o.graphify {
+        put(&home, ".codex/hooks.json", GRAPHIFY);
+    }
+    if o.no_node {
+        let log = root.join("node-calls.log");
+        let shim = format!("#!/bin/sh\necho \"node $*\" >> '{}'\nexit 127\n", log.display());
+        put(&root, "no-node/node", shim);
+        fs::set_permissions(root.join("no-node/node"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let claude = if o.claude_fails {
         "#!/bin/sh\necho 'boom: registry locked' >&2\nexit 3\n"
     } else if o.claude_confirms {
@@ -243,8 +262,32 @@ fn run_engine(w: &World, o: &Opt, args: &[&str]) -> Out {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     cmd.arg("update").args(args).current_dir(&w.home);
     envs(&mut cmd, w, o);
+    if o.no_node {
+        let shim = w.root.join("no-node");
+        cmd.env("PATH", format!("{}:{}:{}", shim.display(), w.bin.display(), std::env::var("PATH").unwrap())).env("AH_ENGINE_NODE", shim.join("node"));
+    }
     finish(cmd.output().unwrap())
 }
+
+/// What the Node shim recorded (empty: nothing tried to run Node).
+fn node_calls(w: &World) -> String {
+    fs::read_to_string(w.root.join("node-calls.log")).unwrap_or_default()
+}
+
+const GRAPHIFY: &str = r#"{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "node /x/plugins/anti-hall/hooks/graphify-session.js"}]},
+      {"hooks": [{"type": "command", "command": "/other/tool.sh"}]}
+    ],
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "node C:\\x\\hooks\\graphify-guard.js"}]}
+    ],
+    "Stop": "not a list"
+  },
+  "other": 1.50
+}
+"#;
 
 fn norm(text: &str, w: &World) -> String {
     let canon = fs::canonicalize(&w.root).unwrap();
@@ -348,6 +391,7 @@ fn assert_same_update(name: &str, node: &str, engine: &str) {
 fn parity(name: &str, o: &Opt, args: &[&str]) -> String {
     let (a, b) = (world(o), world(o));
     let (node, eng) = (run_node(&a, o, args), run_engine(&b, o, args));
+    assert_eq!(node_calls(&b), "", "{name}: the engine tried to run Node");
     assert_eq!(node.code, eng.code, "{name}: exit code\nnode out: {}\nengine out: {}\nengine err: {}", node.stdout, eng.stdout, eng.stderr);
     let (ns, es) = (norm(&node.stdout, &a), norm(&eng.stdout, &b));
     let moved = ns.lines().next().is_some_and(|l| l.contains("\"updated\":true") && l.contains("\"ingestHeal\""));
@@ -670,33 +714,50 @@ fn fake_node(w: &World, line: &str) -> PathBuf {
 }
 
 #[test]
-fn a_disagreeing_node_check_is_logged_and_the_engine_result_stands() {
+fn update_never_asks_node_for_a_second_opinion() {
     let o = Opt::default();
     let w = world(&o);
-    fs::create_dir_all(w.home.join(".anti-hall/ah-engine")).unwrap(); // the event log is only written where the state dir exists
+    fs::create_dir_all(w.home.join(".anti-hall/ah-engine")).unwrap();
     let node = fake_node(&w, r#"{"installed":"9.9.9","latest":"9.9.9","updated":false,"cacheSynced":false,"action":"x"}"#);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-    cmd.args(["update", "--check"]).current_dir(&w.home);
-    envs(&mut cmd, &w, &o);
-    let out = finish(cmd.env("AH_ENGINE_NODE", &node).output().unwrap());
-    assert_eq!(out.code, 0);
-    assert!(out.stdout.contains("update available (0.1.0"), "the engine's own answer is printed: {}", out.stdout);
-    assert!(all_text(&w.home.join(".anti-hall")).contains("update_check_shadow_mismatch"), "the mismatch is logged");
+    for args in [&["--check"][..], &[][..]] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        cmd.arg("update").args(args).current_dir(&w.home);
+        envs(&mut cmd, &w, &o);
+        let out = finish(cmd.env("AH_ENGINE_NODE", &node).output().unwrap());
+        assert_eq!(out.code, 0, "{}", out.stderr);
+    }
+    assert!(!all_text(&w.home.join(".anti-hall")).contains("shadow_mismatch"), "no Node shadow run, so nothing to disagree with");
+}
+
+// ---- no Node at all (v1.0 acceptance: `update` and `update --check` on a scratch home) ---------------------------------------
+
+#[test]
+fn no_node_check_matches_node() {
+    parity("nn_check_available", &Opt { no_node: true, ..Opt::default() }, &["--check"]);
+    parity("nn_check_current", &Opt { no_node: true, no_upstream_move: true, ..Opt::default() }, &["--check"]);
 }
 
 #[test]
-fn a_disagreeing_node_update_check_is_logged_before_the_update() {
-    let o = Opt::default();
-    let w = world(&o);
-    fs::create_dir_all(w.home.join(".anti-hall/ah-engine")).unwrap(); // the event log is only written where the state dir exists
-    let node = fake_node(&w, r#"{"installed":"9.9.9","latest":"9.9.9","updated":false,"cacheSynced":false,"action":"x"}"#);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-    cmd.arg("update").current_dir(&w.home);
-    envs(&mut cmd, &w, &o);
-    let out = finish(cmd.env("AH_ENGINE_NODE", &node).output().unwrap());
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(out.stdout.contains("\"updated\":true"));
-    assert!(all_text(&w.home.join(".anti-hall")).contains("update_shadow_mismatch"));
+fn no_node_update_that_moves_the_version_matches_node() {
+    parity("nn_update", &Opt { no_node: true, ..Opt::default() }, &[]);
+}
+
+#[test]
+fn no_node_update_when_current_matches_node() {
+    parity("nn_current", &Opt { no_node: true, no_upstream_move: true, ..Opt::default() }, &[]);
+    parity("nn_post_pull_only", &Opt { no_node: true, no_upstream_move: true, ..Opt::default() }, &["--post-pull-only"]);
+}
+
+#[test]
+fn legacy_jev_key_opt_in_matches_node() {
+    let out = parity("jev_key", &Opt { no_node: true, jev_key: true, no_upstream_move: true, ..Opt::default() }, &[]);
+    assert!(out.contains("legacy-key-opt-in fixed: ENABLED jev.allowLegacyKeyRead"), "{out}");
+}
+
+#[test]
+fn codex_graphify_cleanup_matches_node() {
+    let out = parity("graphify", &Opt { no_node: true, graphify: true, no_upstream_move: true, ..Opt::default() }, &[]);
+    assert!(out.contains("1 config(s) cleaned, 2 stale group(s) removed"), "{out}");
 }
 
 #[test]
