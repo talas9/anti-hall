@@ -116,7 +116,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `defect-nudge` | SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported (port of defect-nudge.js); counts and ages only. |
 | `progress-prune` | SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to git-ignore .anti-hall/ (port of progress-prune.js). |
 | `speculation-guard` | Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair (port of speculation-guard.js). |
-| `speculation-judge` | Stop: the opt-in semantic judge; answers every path without a model call, and in a one-shot process asks the Claude CLI judge itself (jev.judgeBackend cli); an Anthropic API call, and a model call inside the daemon, stay with Node (port of speculation-judge.js). |
+| `speculation-judge` | Stop: the opt-in semantic judge; answers every path without a model call, and asks the Claude CLI judge itself (jev.judgeBackend cli) in the dispatcher process or a one-shot process; an Anthropic API call, and the call inside the daemon (which defers it to the dispatcher), stay with Node (port of speculation-judge.js). |
 | `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js). |
 | `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js). |
 | `ask-guard` | Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js). |
@@ -1648,6 +1648,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `judge.backend_setting` | `7 entries` |  |  | How the judge reaches the model: jev.judgeBackend (env ANTIHALL_JUDGE_BACKEND), api (default), cli or auto (api when an Anthropic key is visible, else cli). |
 | `judge.cli_args` | `15 items` |  |  | The judge's argv after the program name: no tools, no MCP servers, no settings files, every hook disabled, JSON output (Node: cliArgs). An element that is exactly the model or system placeholder is replaced by that value. |
 | `judge.cli_bin` | `claude` |  |  | The program the judge runs, looked up on the PATH of the hook's own environment (Node: spawn('claude')). |
+| `judge.dispatch_blocking_checks` | `speculation-judge` |  |  | The checks the dispatcher process runs itself, once, when the daemon deferred them: their answer needs a model call of seconds, which the daemon's exchange deadline cannot wait for, but the dispatcher is a one-shot process under the hook's own timeout (the Stop hook allows 30 s; the CLI judge is cut at speculation_judge.timeout_ms). A check that still defers there is left to its Node hook. |
 | `judge.err_answer` | `answer` |  |  | Telemetry error word: the model's answer did not parse into the expected decision. |
 | `judge.err_exit` | `exit` |  |  | Telemetry error word: the CLI exited non-zero or by a signal. |
 | `judge.err_output` | `output` |  |  | Telemetry error word: the CLI's output was not the JSON it promises, or reported is_error. |
@@ -1688,8 +1689,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `speculation_judge.backend_jev` | `jev` |  |  | The speculationBackend value that leaves the speculation question to Jev alone. |
 | `speculation_judge.backend_setting` | `7 entries` |  |  | Which backend answers the speculation question when the semantic judge is on: haiku (default, today's behaviour: the judge asks the model, except while Jev's own speculation integration is on) jev (the judge never asks the model; speculation-guard's Jev path is the only semantic check) or cascade (as jev, with the Jev-first cascade switched on for the speculation integration: a Jev answer under the escalation threshold is re-judged by the model in the background and applies from the next turn). Setting jev.speculationBackend, env ANTIHALL_JEV_SPECULATION_BACKEND. |
+| `speculation_judge.claim_bidi_re` | `[‪-‮⁦-⁩]` |  |  | Bidi overrides and isolates removed from the judge's claim (U+202A-U+202E, U+2066-U+2069). |
+| `speculation_judge.claim_controls_re` | `[\x00-\x1F\x7F-\x9F]` |  |  | Control characters replaced by a space in the judge's claim (Node: /[\x00-\x1F\x7F-\x9F]/g). |
+| `speculation_judge.claim_default` | `an unverified factual claim` |  |  | The claim named in the block when the judge gave none (Node: sanitizeClaim fallback). |
+| `speculation_judge.claim_ellipsis` | `…` |  |  | Appended to a claim cut at claim_max. |
+| `speculation_judge.claim_max` | `120` |  |  | UTF-16 units of the judge's claim kept in the block reason. |
+| `speculation_judge.claim_ws_re` | `\s+` |  |  | White space runs collapsed to one space in the judge's claim (Node: /\s+/g). |
 | `speculation_judge.decision_allow` | `allow` |  |  | The decision value that allows. |
 | `speculation_judge.decision_block` | `block` |  |  | The decision value that blocks. |
+| `speculation_judge.evidence_window` | `1048576` |  |  | Bytes of the transcript tail read for the user request and the tool evidence (Node: 1024 * 1024). |
 | `speculation_judge.hash_suffix` | `:judge` |  |  | Appended to the reply before hashing it, so the judge's hashes never collide with speculation-guard's. |
 | `speculation_judge.input_evidence` | `\n\nTOOL EVIDENCE (most recent last):\n` |  |  | Heading of the tool evidence in the judge input. |
 | `speculation_judge.input_item` | `[{n}] ` |  |  | Prefix of each evidence chunk; {n} is its 1-based number. |
@@ -1703,8 +1711,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_judge.max_evidence` | `6000` |  |  | UTF-16 units of tool evidence the judge sees, newest chunks first (Node: MAX_EVIDENCE). |
 | `speculation_judge.max_message` | `8000` |  |  | UTF-16 units of the reply the judge sees (Node: MAX_MESSAGE). |
 | `speculation_judge.max_request` | `2000` |  |  | UTF-16 units of the user request the judge sees (Node: MAX_REQUEST). |
+| `speculation_judge.msg_instead` | `verify it with a tool, or say what is unverified ('I don't know, here is what...` |  |  | What to do instead. |
+| `speculation_judge.msg_what` | `your reply states '{claim}' as fact, but nothing this session checked shows i...` |  |  | What the block says; {claim} is the sanitized claim. |
+| `speculation_judge.msg_why` | `Unverified claims read as facts.` |  |  | Why the block matters. |
 | `speculation_judge.reply_window` | `524288` |  |  | Bytes of the transcript tail read for the reply when the payload does not carry it (Node: readTranscriptTail default 512 KB). |
 | `speculation_judge.state_prefix` | `judge-state-` |  |  | Name prefix of the per-session state file under the anti-hall directory (Node: judge-state-<session>.json). |
+| `speculation_judge.system_prompt` | `You are an anti-hallucination evaluator for a coding assistant.\nYour job: as...` |  |  | The judge's system prompt (judge-core.js JUDGE_SYSTEM), byte for byte. |
+| `speculation_judge.timeout_ms` | `25000` |  |  | The CLI judge's timeout (Node: runCliJudge timeoutMs 25000; the Stop hook's budget is 30 s). |
 
 ### judge.toml / triage
 

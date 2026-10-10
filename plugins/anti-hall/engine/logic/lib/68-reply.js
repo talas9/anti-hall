@@ -8,8 +8,9 @@ var rp = {
     var t = ah.fs.readTail(path, window);
     return t === null ? null : t.split(/\r?\n/);
   },
-  // The text of one transcript entry; `map` (optional) is applied to every collected string.
-  collect: function (node, map) {
+  // The text of one transcript entry; `map` (optional) is applied to every collected string. `dedup` (Jev's input only) skips the
+  // nested message when this entry's own `content` was already collected, so the text is not read twice.
+  collect: function (node, map, dedup) {
     if (!node || typeof node !== 'object') return '';
     var f = map || function (s) { return s; };
     var parts = [];
@@ -24,14 +25,14 @@ var rp = {
         if (typeof b.text === 'string') parts.push(f(b.text));
       }
     }
-    if (node.message && typeof node.message === 'object' && node.message !== node) {
-      var sub = rp.collect(node.message, map);
+    if (node.message && typeof node.message === 'object' && node.message !== node && (!dedup || node.content)) {
+      var sub = rp.collect(node.message, map, dedup);
       if (sub) parts.push(sub);
     }
     return parts.join(' ');
   },
-  // The text of the last assistant entry of `lines` that has any: {text} (null when none) or {unsure: true}.
-  lastAssistant: function (lines, map) {
+  // The text of the last assistant entry of `lines` that has any: {text} (null when none) or {unsure: true}. `dedup`: see collect.
+  lastAssistant: function (lines, map, dedup) {
     var last = null;
     for (var i = 0; i < lines.length; i++) {
       var raw = lines[i];
@@ -45,7 +46,7 @@ var rp = {
       var e = r.v;
       var role = e && (e.role || (e.message && e.message.role));
       if (role !== ah.cfg('replykit.role_assistant')) continue;
-      var text = rp.collect(e, map);
+      var text = rp.collect(e, map, dedup);
       if (text) last = text;
     }
     return { text: last };

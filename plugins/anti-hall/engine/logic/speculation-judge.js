@@ -4,7 +4,9 @@
 // the Node order: the judge-child guard, the switch, the skip file, the backend switch (jev.speculationBackend `jev` leaves the
 // question to speculation-guard's Jev path), Jev's own speculation integration being fully on, a payload without a transcript, a
 // judge backend with no Anthropic key (Node makes no call), an empty reply, a reply already blocked and the block cap. A reply that
-// needs the model defers: the model call takes seconds, which no engine exchange can wait for, so the Node hook makes it. Keys and
+// needs the model makes the call through the Claude CLI (ah.judge.cli) in a process that may wait seconds for it (the dispatcher
+// process, which runs the check again after the daemon deferred it); the daemon itself defers it. An API call (a visible key) stays
+// the Node hook's: the engine never sends a key anywhere. Keys and
 // texts: judge.toml (speculation_judge.*, judge.*).
 'use strict';
 
@@ -36,6 +38,19 @@ function sjPrior(path) {
   if (r.invalid) return { hash: '', blocks: 0 };
   var v = r.v;
   return { hash: v && typeof v.hash === 'string' ? v.hash : '', blocks: jx.isObj(v) && typeof v.blocks === 'number' && Number.isFinite(v.blocks) ? v.blocks : 0 };
+}
+
+// The judge's echoed claim is model-produced and reflected into the block reason: control characters become spaces, bidi controls go,
+// white space collapses, and it is cut to claim_max units (Node: sanitizeClaim).
+function sjClaim(s) {
+  var dflt = ah.cfg('speculation_judge.claim_default');
+  if (typeof s !== 'string') return dflt;
+  var out = s.replace(new RegExp(ah.cfg('speculation_judge.claim_controls_re'), 'g'), ' ').replace(new RegExp(ah.cfg('speculation_judge.claim_bidi_re'), 'g'), '')
+    .replace(new RegExp(ah.cfg('speculation_judge.claim_ws_re'), 'g'), ' ').trim();
+  if (!out) return dflt;
+  var max = ah.cfgNum('speculation_judge.claim_max');
+  if (out.length > max) out = out.slice(0, max).trimEnd() + ah.cfg('speculation_judge.claim_ellipsis');
+  return out;
 }
 
 function decide(p) {
@@ -83,5 +98,16 @@ function decide(p) {
   var prior = sjPrior(home + '/' + stateRel);
   if (prior === null) return 'defer';
   if (hash === prior.hash || prior.blocks >= ah.cfgNum('speculation_judge.max_blocks')) return 'allow';
-  return 'defer'; // the model call is the Node hook's
+  // The model call takes seconds: the daemon cannot wait for it (ah.judge.cli answers null there and the dispatcher process, which can,
+  // runs this check again), and an unreadable transcript line is the Node hook's.
+  var call = ah.judge.cli({ transcript: transcript, message: last });
+  if (call === null) return 'defer';
+  var d = call.decision;
+  // fail-open: no answer, a non-object, a missing decision field or "allow"
+  if (d === null || typeof d !== 'object' || d.decision !== ah.cfg('speculation_judge.decision_block')) return 'allow';
+  if (!ah.state.writeAtomic(stateRel, JSON.stringify({ hash: hash, blocks: prior.blocks + 1 }))) return 'allow';
+  var guard = ah.cfg('speculation_judge.guard_name');
+  var what = text.render(ah.cfg('speculation_judge.msg_what'), { claim: sjClaim(typeof d.claim === 'string' && d.claim ? d.claim : null) });
+  var reason = text.message('block', guard, { what: what, why: ah.cfg('speculation_judge.msg_why'), instead: ah.cfg('speculation_judge.msg_instead') });
+  return { exact: { code: 0, out: JSON.stringify({ decision: ah.cfg('speculation_judge.decision_block'), reason: reason }) + '\n', err: '' } };
 }

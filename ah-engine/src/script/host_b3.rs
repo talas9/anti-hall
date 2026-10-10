@@ -12,6 +12,7 @@
 //! | `readTail(path, window)` | the last `window` bytes of a file as text (lossy UTF-8), the possibly partial first line dropped when the file is larger; `null` when unreadable |
 //! | `maskQuoted(text)` | the reply with its quoted material blanked (the speculation guard's `maskQuotedText`) |
 //! | `jevMode(id)` | the mode (`on`, `shadow`, `off`) of Jev integration `id` for this request |
+//! | `judgeCliCall(spec)` | the speculation judge's model call (`{transcript, message}` as JSON text): the model's parsed answer as JSON text, or `null` when the call must be left to the Node hook (see [`crate::judge::host`]) |
 //! | `jevAskSpec(spec)` | ask Jev (`spec`: JSON text, see [`jev_ask`]): detached (returns `null`) or synchronous (returns the outcome as JSON text) |
 //! | `fnv(text)` / `contentHash(parts)` | the 64-bit FNV-1a hex of a text (the spawn key) / the Jev content hash of a list of texts |
 //! | `localTime(ms)` | JSON local calendar fields of an instant with the zone offset |
@@ -212,6 +213,10 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set("maskQuoted", Function::new(c.clone(), |t: String| crate::checks::guardkit::mask::mask_quoted_text(&t))?)?;
     h.set("jevMode", Function::new(c.clone(), |id: String| jev_mode(&id))?)?;
     h.set("jevAskSpec", Function::new(c.clone(), |spec: String| jev_ask(&spec))?)?;
+    h.set(
+        "judgeCliCall",
+        Function::new(c.clone(), |spec: String| -> rquickjs::Result<Option<String>> { with_settings(|st| crate::judge::host::call(st, &spec)) })?,
+    )?;
     h.set("fnv", Function::new(c.clone(), |t: String| format!("{:016x}", crate::health::fnv(&t)))?)?;
     h.set(
         "contentHash",
