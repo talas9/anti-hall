@@ -782,7 +782,7 @@ fn the_ingest_verb_is_read_only_open_to_every_role_and_names_the_owner_and_the_p
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let v: Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&o.stdout)));
-    assert_eq!(v["mode"], "witness", "the default: the Node daemons drain");
+    assert_eq!(v["mode"], "engine", "the default: the engine drains");
     assert_eq!(v["projects"][0]["repoKey"], x.project.repo_key.as_str());
     assert_eq!(v["projects"][0]["workspaceId"], x.project.workspace_id.as_str());
     assert!(v["projects"][0]["heartbeat"]["workingDir"].is_string());

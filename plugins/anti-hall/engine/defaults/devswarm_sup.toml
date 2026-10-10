@@ -3,14 +3,14 @@
 # scheduler can take them over and the Node job can be switched off as a whole. Format: see the header of engine.toml. Every key
 # can be overridden in the `devswarm_sup` section of settings.json. Nothing here is compiled into the binary.
 #
-# THE SWITCH: `devswarm_sup.mode`. `witness` (the default) leaves every duty to the Node supervisor and the engine runs none of
-# them. `engine` makes the engine's scheduler job `devswarm_supervisor` run the duties below, takes poke and escalate (their
-# executors default to `auto`, which follows this mode), and refuses to act while the Node supervisor is still running (the
-# double-run guard). The go-live steps are in docs/AH-ENGINE.md, "DevSwarm supervisor cutover".
+# THE SWITCH: `devswarm_sup.mode`. `engine` (the default) makes the engine's scheduler job `devswarm_supervisor` run the duties
+# below; `witness` leaves every duty to the Node supervisor and the engine runs none of them. In engine mode the engine also takes
+# poke and escalate (their executors default to `auto`, which follows this mode) and refuses to act while the Node supervisor is
+# still running (the double-run guard). The go-live steps are in docs/AH-ENGINE.md, "DevSwarm supervisor cutover".
 
 [devswarm_sup.mode]
-doc = "Who owns the supervisor duties: witness (the Node supervisor job does; the engine runs none of them) | engine (the engine's scheduler runs them, poke and escalate follow). Anything else reads as witness, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit."
-value = "witness"
+doc = "Who owns the supervisor duties: engine (the default: the engine's scheduler runs them, poke and escalate follow; while a Node supervisor job is still installed and running the engine stands down, so there is never a second actor) | witness (the Node supervisor job does; the engine runs none of them). Anything else reads as witness, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit."
+value = "engine"
 
 [devswarm_sup.reconcile_mode]
 doc = "Who runs the reconcile sweep duty while devswarm_sup.mode is `engine`: node (Node's reconcileSweepIfDue, unchanged; the default until the proof window) | engine (the engine reconciles each project natively, every state change witnessed against Node on scratch copies first, and Node runs the rest of the sweep: the mesh fold, the active-workspace probe, start-up sampling). Anything else reads as node, so a typo never starts a second actor."
@@ -207,6 +207,30 @@ value = ".anti-hall/logs/devswarm-sup-witness-state.json"
 doc = "The witness log, one JSON line per comparison (`match`: true / false, or null when Node could not run), relative to the home directory."
 value = ".anti-hall/logs/devswarm-sup-witness.ndjson"
 
+[devswarm_sup.action_log]
+doc = "The action ledger of the supervisor, one JSON line per action it took (kind = action_kind: feature, action, target, inputs, outcome, reason, latency_ms, action_id) and per mistake signal found later (kind = mistake_kind, naming the action_id), relative to the home directory. Each line also goes to telemetry as a `cmd` event (h = the action, e = the outcome), counted in `ah-engine telemetry summary` under detail.cmd."
+value = ".anti-hall/logs/devswarm-sup-actions.ndjson"
+
+[devswarm_sup.action_kind]
+doc = "The kind of an action line of the action ledger."
+value = "action"
+
+[devswarm_sup.mistake_kind]
+doc = "The kind of a mistake line of the action ledger."
+value = "mistake"
+
+[devswarm_sup.action_feature]
+doc = "The feature name of the supervisor's action lines."
+value = "devswarm-supervisor"
+
+[devswarm_sup.action_success]
+doc = "The outcomes that count as success in telemetry; any other counts as an error (a notice that had to be parked, a write that failed)."
+value = ["ok", "ran", "marked", "retired", "pruned"]
+
+[devswarm_sup.mistake_command]
+doc = "The telemetry `cmd` h of a mistake signal (e = the action word it is about). An escalation notice is a mistake when the escalated workspace later turns out to have a live session (the `cleared` line of the recovery log)."
+value = "dssup-mistake"
+
 [devswarm_sup.env_disable]
 doc = "The environment variable that is the hard kill switch of every DevSwarm job (Node: DISABLE_ANTIHALL_DEVSWARM)."
 value = "DISABLE_ANTIHALL_DEVSWARM"
@@ -276,16 +300,76 @@ value = "could not remove {file}: {err}"
 doc = "The result message of a directory that could not be listed. {dir} {err}."
 value = "could not list {dir}: {err}"
 
-[devswarm_sup.notify_escalation]
-doc = "The Node function the engine runs once after it escalates a workspace, so the parent (Primary) gets the same one-time notice Node's escalation sends (a store message with the hash escalate:<id>:<staleSince>, parked and retried by the liveness sweep when the Primary is not registered). Arguments: the plugin root, the home directory, the workspace id."
-value = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const R=require(process.argv[1]+"/companion/lib/recovery.js");const L=require(process.argv[1]+"/companion/lib/liveness.js");const h=process.argv[2];const d=S.readDescriptors(h).find((x)=>x.id===process.argv[3]);let v={};try{v=JSON.parse(require("fs").readFileSync(L.livenessPathFor(process.argv[3],h),"utf8"))}catch(e){}if(d)R.notifyParentEscalation(d,v,{home:h});console.log(JSON.stringify({notified:!!d}))'
+[devswarm_sup.esc_intent_keys]
+doc = "The fields of an escalation notice (recovery.js notifyParentEscalation intent, parked as escalation-pending/<child>.json), in Node's order: childId, parentId, repoKey, row, delivered, deliveredAt, lastStatus, lastAttemptAt."
+value = ["childId", "parentId", "repoKey", "row", "delivered", "deliveredAt", "lastStatus", "lastAttemptAt"]
 
-[devswarm_sup.notify_timeout_ms]
-doc = "Bound of the escalation-notice subprocess."
+[devswarm_sup.esc_row_keys]
+doc = "The fields of the notice's store row, in Node's order: workspaceId (the parent), ts, sender, hash, body."
+value = ["workspaceId", "ts", "sender", "hash", "body"]
+
+[devswarm_sup.esc_status_words]
+doc = "The delivery statuses of a notice (appendIntoPartition), in the order ok, busy (the parent's id lock), gone (the parent is not registered in its store), error (any other failure; also a notice without a project store key)."
+value = ["ok", "busy", "gone", "error"]
+
+[devswarm_sup.esc_sender]
+doc = "The sender of the notice row: a synthetic name no real workspace id can be."
+value = "system"
+
+[devswarm_sup.esc_hash]
+doc = "The notice row's dedupe hash: one row per escalation, whoever sends it how often."
+value = "escalate:{id}:{since}"
+
+[devswarm_sup.esc_since_none]
+doc = "What stands for the stale-since time in the hash when the verdict has none."
+value = "x"
+
+[devswarm_sup.esc_body]
+doc = "The notice text the parent reads. {id} = the child workspace, {idle} = esc_idle or nothing."
+value = "child {id} idle{idle} — pokes exhausted, a human must click/continue the workspace in the DevSwarm app (or reassign/archive it)"
+
+[devswarm_sup.esc_idle]
+doc = "The idle part of the notice text, in whole minutes since the workspace went stale."
+value = " {min}m"
+
+[devswarm_sup.esc_minute_ms]
+doc = "Milliseconds per minute of the idle part."
 value = 60000
-min = 1000
-max = 600000
+min = 1
+max = 60000
 unit = "ms"
+
+[devswarm_sup.esc_why_no_worktree]
+doc = "Why no notice is sent: the workspace has no worktree to name its parent from."
+value = "no-worktree"
+
+[devswarm_sup.esc_why_unsafe_parent]
+doc = "Why no notice is sent: the parent id is not a safe file name."
+value = "unsafe-parent-id"
+
+[devswarm_sup.esc_why_self]
+doc = "Why no notice is sent: the parent is the workspace itself (never notify self)."
+value = "self"
+
+[devswarm_sup.esc_why_no_descriptor]
+doc = "Why no notice is sent after an escalation: the workspace has no readable descriptor."
+value = "no-descriptor"
+
+[devswarm_sup.esc_skipped]
+doc = "The outcome word of a notice that was not built."
+value = "skipped"
+
+[devswarm_sup.esc_action]
+doc = "The action word of the one-time notice after an engine escalation (action ledger, telemetry `cmd` h)."
+value = "dssup-escalation-notice"
+
+[devswarm_sup.esc_action_forced]
+doc = "The action word of the forced notice for a stale workspace with an urgent mesh unread."
+value = "dssup-forced-notice"
+
+[devswarm_sup.esc_action_drain]
+doc = "The action word of a parked notice delivered by a later sweep."
+value = "dssup-notice-drained"
 
 # ---- the worker process ----------------------------------------------------------------------------------------------------
 
@@ -389,6 +473,10 @@ value = "workspace {id} was already recovered {n} time(s) (limit {max}); needs a
 [devswarm_sup.msg_recover_failed]
 doc = "Printed when the recovery run could not be completed. {why}."
 value = "recover did not complete: {why}"
+
+[devswarm_sup.msg_recover_rollback_no_node]
+doc = "Printed when devswarm_sup.node_duties names recover (the rollback to Node's own kill) but no Node can be found: the engine refuses rather than signal with its own kill, and records nothing."
+value = "recover is rolled back to Node (devswarm_sup.node_duties names recover) but no Node is installed; remove recover from devswarm_sup.node_duties to use the engine's own recovery"
 
 # ---- recover, native ---------------------------------------------------------------------------------------------------------
 # The kill-and-resume of ONE workspace's session (src/dssup/kill.rs): target-session.js and recovery.js `recover` in Rust. Node's
@@ -650,6 +738,45 @@ value = ["status", "lastOutboundTs", "staleSince", "nudgeAttempts", "nudgedAt", 
 doc = "The verdict status of a workspace that is not stale."
 value = "alive"
 
+[devswarm_sup.lv_status_stale]
+doc = "The verdict status of a workspace whose transcript and worktree are both idle (or that never launched) while inbound mail waits: the poke / escalate candidate the action layer reads."
+value = "stale"
+
+[devswarm_sup.lv_grace_skew_ms]
+doc = "A descriptor written up to this far in the future (clock jitter) still counts as just spawned (Node SKEW_TOLERANCE_MS)."
+value = 5000
+min = 0
+max = 600000
+unit = "ms"
+
+[devswarm_sup.set_post_spawn_grace_sec]
+doc = "Right after a child workspace is spawned it is not force-notified as stale for this long. Node: devswarm.postSpawnGraceSec."
+value = { type = "number", section = "devswarm", key = "postSpawnGraceSec", env = "ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC", min = 0, max = 1800, default = 120 }
+
+[devswarm_sup.lv_summary_workspaces]
+doc = "The member of a project summary (summaries/<repoKey>.json) that maps workspace ids to their entries."
+value = "workspaces"
+
+[devswarm_sup.lv_field_archive_ready]
+doc = "The summary entry field that says a workspace is done and ready to archive (it is then never force-notified)."
+value = "archive_ready"
+
+[devswarm_sup.lv_urgency_fields]
+doc = "The summary entry fields holding the highest unread urgency, direct then broadcast (readMeshUrgency)."
+value = ["urgencyMax", "broadcastUrgencyMax"]
+
+[devswarm_sup.lv_urgent_tiers]
+doc = "The urgency words that force a parent notice for a stale workspace at once (Node URGENT_TIERS)."
+value = ["high", "urgent"]
+
+[devswarm_sup.lv_suppress_reasons]
+doc = "Why a stale workspace is not force-notified, in Node's order: post-spawn grace, archive-ready, a live session, the Primary's own row."
+value = ["post-spawn-grace", "archive-ready", "idle-alive", "primary-row-not-nudgeable"]
+
+[devswarm_sup.lv_not_urgent]
+doc = "The forced-notice outcome of a stale workspace without an urgent unread."
+value = "not-urgent"
+
 [devswarm_sup.lv_field_ts]
 doc = "The field of a heartbeat record that holds its time."
 value = "ts"
@@ -729,8 +856,16 @@ doc = "Dry run of the native retention: it plans and compares with Node's planne
 value = { type = "bool", section = "devswarm_sup", key = "dryRun.retention", env = "ANTIHALL_DEVSWARM_SUP_DRYRUN_RETENTION", default = false }
 
 [devswarm_sup.set_rt_require_witness]
-doc = "Tombstone only when Node's planner ran and agreed. Turn off only when Node is decommissioned and the agreement record is proven; the engine then relies on its own two identical plans and its in-transaction checks."
+doc = "Tombstone only when Node's planner ran and agreed, whenever a Node is installed: a Node that fails or disagrees holds the store back. On a machine with no Node at all (decommissioned) the engine relies on its own two identical plans, its in-transaction checks and the archive written first. The journal fold and the archive-cap eviction still need Node's agreement and are held without it."
 value = { type = "bool", section = "devswarm_sup", key = "retention.requireWitness", env = "ANTIHALL_DEVSWARM_SUP_RETENTION_REQUIRE_WITNESS", default = true }
+
+[devswarm_sup.rt_action]
+doc = "The action word of a retention pass that tombstoned rows of a store (action ledger, telemetry `cmd` h; the target is the store hash)."
+value = "dssup-retention-tombstone"
+
+[devswarm_sup.rt_action_pruned]
+doc = "The outcome word of a retention pass that tombstoned rows."
+value = "pruned"
 
 [devswarm_sup.rt_day_ms]
 doc = "Milliseconds in the retention window's day."
@@ -1419,6 +1554,18 @@ value = ["repositoryId", "toBranch", "createdAt"]
 [devswarm_sup.as_markers_app]
 doc = "The `archivedBy` values that mark a marker as written from the app's own state (those the app showing open again may retire)."
 value = ["devswarm-app", "devswarm-app-deleted", "devswarm-ui-sync"]
+
+[devswarm_sup.as_action_mark]
+doc = "The action word of an archived marker the app sync wrote (action ledger, telemetry `cmd` h). Without any Node on the machine the engine writes markers on its own plan; with Node present it still writes only when Node's dry run names the same workspaces."
+value = "dssup-app-archived-marker"
+
+[devswarm_sup.as_action_marked]
+doc = "The outcome word of a marker written."
+value = "marked"
+
+[devswarm_sup.as_action_failed]
+doc = "The outcome word of a marker that could not be written."
+value = "failed"
 
 
 # ---- the deferred stage, native (src/dssup/deferred.rs) --------------------------------------------------------------------------

@@ -326,24 +326,28 @@ fn a_witness_that_cannot_run_writes_nothing_unless_it_is_switched_off() {
     }
     let c = generate("rt-nowit", 42, "small");
     let env = env_of("30", "5", "100", "true");
-    struct NoNode(System);
+    struct NoNode(System, bool);
     impl Runner for NoNode {
         fn run(&self, spec: &RunSpec) -> RunResult {
             if spec.bin.as_deref() == Some("node") {
-                return RunResult { missing: true, error: Some("not found".into()), ..RunResult::default() };
+                return RunResult { missing: self.1, error: Some("not found".into()), stderr: "boom".into(), ..RunResult::default() };
             }
             self.0.run(spec)
         }
     }
     let h = copy_home(&c, "nonode");
-    let out = engine_duty(&h, c.now, &env, &NoNode(System::configured()));
+    let out = engine_duty(&h, c.now, &env, &NoNode(System::configured(), false));
     assert!(out["detail"]["store"]["held"].is_string(), "{out}");
     untouched(&c, &h);
+    // no Node on the machine at all: the engine's two identical plans and its transaction checks stand in for the witness
+    let hg = copy_home(&c, "nonode-gone");
+    let out = engine_duty(&hg, c.now, &env, &NoNode(System::configured(), true));
+    assert!(out["detail"]["store"]["tombstoned"].as_i64().unwrap() > 0, "{out}");
     // switched off (Node decommissioned): the engine's two identical plans and its transaction checks are the guard
     let mut off = env.clone();
     off.insert("ANTIHALL_DEVSWARM_SUP_RETENTION_REQUIRE_WITNESS".into(), "false".into());
     let h2 = copy_home(&c, "nonode-off");
-    let out = engine_duty(&h2, c.now, &off, &NoNode(System::configured()));
+    let out = engine_duty(&h2, c.now, &off, &NoNode(System::configured(), false));
     assert!(out["detail"]["store"]["tombstoned"].as_i64().unwrap() > 0, "{out}");
 }
 

@@ -189,6 +189,8 @@ fn choose(p: &Plan, s: &Settings, bytes_before: u64) -> (Chosen, Choice) {
 enum Witness {
     Said(Value),
     Unavailable(String),
+    /// There is no Node on this machine at all: the witness is decommissioned, not failing.
+    Absent(String),
 }
 
 fn ask_node(ctx: &Ctx, runner: &dyn Runner, hash: &str, s: &Settings, st: &OVal) -> Witness {
@@ -199,9 +201,10 @@ fn ask_node(ctx: &Ctx, runner: &dyn Runner, hash: &str, s: &Settings, st: &OVal)
     let timeout = d.get("witness_timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
     let r = node(runner, ctx, d.str_field("witness_snippet"), &[&spec.to_string()], timeout);
     if !r.ok {
-        return Witness::Unavailable(
-            r.error.clone().unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { super::tick::cut(&r.stderr) }),
-        );
+        if r.missing {
+            return Witness::Absent(r.error.clone().unwrap_or_else(|| defaults::text("devswarm_sup.msg_no_node").into()));
+        }
+        return Witness::Unavailable(r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr)));
     }
     match serde_json::from_str::<Value>(r.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default()) {
         Ok(v) => Witness::Said(v),
@@ -273,6 +276,11 @@ pub(super) fn one_store(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Setti
             if require {
                 return Ended::Held(format!("{}: {why}", defaults::text("devswarm_sup.rt_msg_no_witness")));
             }
+        }
+        // no Node on this machine: the engine relies on its two identical plans, the in-transaction re-checks and the archive
+        // written first (retention_require_witness guards against a Node that FAILS, not one that was removed)
+        Witness::Absent(why) => {
+            witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "match": Value::Null, "node": why}));
         }
     }
     // the store must not have moved under the comparison
@@ -424,10 +432,25 @@ fn locked(ctx: &Ctx, runner: &dyn Runner, s: &Settings, dry_switch: bool) -> Res
     due.retain(|x| !held_back(ctx, &x.hash, backoff));
     let mut result = Value::Null;
     if let Some(target) = due.first() {
+        let started = std::time::Instant::now();
         match one_store(ctx, runner, &mut st, s, &target.hash, dry, false) {
             Ended::Pruned(r) => {
                 let fold = legacy_fold(ctx, runner, &target.hash);
                 record_store(&mut st, &target.hash, &r, ctx.now);
+                if r.tombstoned > 0 || !r.ok {
+                    super::tick::record_action(
+                        ctx.home,
+                        &super::tick::Action {
+                            action: defaults::text("devswarm_sup.rt_action"),
+                            target: &target.hash,
+                            inputs: json!({"ageCandidates": r.age_candidates, "sizeCandidates": r.size_candidates, "overLimit": r.over_limit}),
+                            outcome: if r.ok { defaults::text("devswarm_sup.rt_action_pruned") } else { defaults::text("devswarm_sup.as_action_failed") },
+                            reason: "",
+                            latency_ms: started.elapsed().as_millis() as u64,
+                            now: ctx.now,
+                        },
+                    );
+                }
                 result = json!({"ok": r.ok, "hash": r.hash, "tombstoned": r.tombstoned, "ageCandidates": r.age_candidates, "sizeCandidates": r.size_candidates,
                     "overLimit": r.over_limit, "overLimitProtected": r.over_limit_protected, "budgetExhausted": r.budget_exhausted, "batches": r.batches, "legacy": fold});
             }

@@ -3,8 +3,9 @@
 //! verdict, NDJSON inbox and cursor, store mail with and without reader-cursor floors, live and dead sessions, odd descriptors),
 //! built by Node's own store code. The same home is run through Node's reference and through the engine, and:
 //!
-//! * every verdict the engine writes is byte-identical to Node's (and never `stale`: a stale workspace is Node's);
-//! * every workspace the engine hands to Node really is one Node needs to decide (`stale`) or a documented deferral;
+//! * every verdict the engine writes is byte-identical to Node's, `stale` ones included (the engine decides every workspace it
+//!   can read exactly like Node);
+//! * every workspace the engine hands to Node is a documented deferral, never a stale one;
 //! * the recovery log holds the same lines for the workspaces the engine decided, and the engine wrote nothing else: the home
 //!   tree is byte-identical to before except `liveness/` and `recovery.log`;
 //! * a dry run writes nothing at all.
@@ -153,16 +154,11 @@ fn check(c: &Corpus) -> BTreeMap<String, usize> {
     for id in &out.native {
         let written = std::fs::read_to_string(live.join(format!("{id}.json"))).unwrap();
         assert_eq!(written, node.texts[id], "verdict bytes of {id}");
-        assert_ne!(status_of(&written), "stale", "{id}: the engine never writes a stale verdict");
         *stats.entry(format!("native:{}", status_of(&written))).or_default() += 1;
     }
     for (id, why) in &out.full {
-        let key = if why == "stale" {
-            assert_eq!(status_of(&node.texts[id]), "stale", "{id}: deferred as stale but Node says {}", node.texts[id]);
-            "deferred:stale".to_string()
-        } else {
-            format!("deferred:{why}")
-        };
+        assert_ne!(why, "stale", "{id}: a stale workspace is the engine's own now");
+        let key = format!("deferred:{why}");
         *stats.entry(key).or_default() += 1;
         // a deferred workspace's verdict file is exactly what it was
         let now_text = std::fs::read(live.join(format!("{id}.json"))).ok();
@@ -210,7 +206,7 @@ fn engine_verdicts_equal_nodes_on_random_corpora() {
     eprintln!("liveness corpus: {all:?}");
     let native: usize = all.iter().filter(|(k, _)| k.starts_with("native:")).map(|(_, v)| v).sum();
     assert!(native > 300, "the corpus must exercise the native path: {all:?}");
-    for want in ["native:alive", "native:nudged", "native:escalated", "deferred:stale"] {
+    for want in ["native:alive", "native:nudged", "native:escalated", "native:stale"] {
         assert!(all.get(want).copied().unwrap_or(0) > 0, "no {want} case in the corpus: {all:?}");
     }
 }
@@ -262,7 +258,8 @@ fn the_duty_runs_native_with_nodes_tail_and_a_matching_witness() {
     let detail = &rec["detail"];
     assert!(detail["native"].as_u64().unwrap() > 20, "{rec}");
     assert!(detail["node"].is_object() && detail["node"].get("error").is_none(), "Node's tail sweep must run: {rec}");
-    // Node's sweep (restricted to the handed-over workspaces) recomputed the stale ones and left the decided ones as written
+    assert!(detail["stale"].as_u64().unwrap() > 0, "{rec}");
+    // the engine wrote every stale verdict itself; Node's sweep (restricted to the Jev / step-plan tail) left them as written
     let after = tree(&ds(&c).join("liveness"), &[]);
     let kinds = c.manifest["kinds"].as_array().unwrap();
     let mut stale = 0;
@@ -275,7 +272,12 @@ fn the_duty_runs_native_with_nodes_tail_and_a_matching_witness() {
         }
         if status == "stale" {
             stale += 1;
-            assert!(detail["full"].as_array().unwrap().iter().any(|f| f["id"] == id), "{id} is stale but the engine did not hand it over");
+            let full = detail["full"].as_array().unwrap().iter().find(|f| f["id"] == id);
+            // a documented deferral is Node's whole (it recomputes the verdict and sends its own notice); never a deferral as stale
+            assert!(full.is_none_or(|f| f["why"] != "stale"), "{id} is stale and the engine's own, yet handed over as stale");
+            if full.is_none() {
+                assert!(detail["forced"].as_array().unwrap().iter().any(|f| f["id"] == id), "{id} is stale but no forced-notice decision: {detail}");
+            }
         }
         if let Some(k) = k
             && (k["jev"] == true || k["plan"] == true)
@@ -290,4 +292,201 @@ fn the_duty_runs_native_with_nodes_tail_and_a_matching_witness() {
     let line: Value = serde_json::from_str(w.lines().last().expect("a witness line")).unwrap();
     assert_eq!(line["duty"], "verdicts", "{line}");
     assert_eq!(line["match"], true, "witness mismatch: {line}");
+}
+
+// ---- no Node on the machine ------------------------------------------------------------------------------------------------
+
+/// The system runner, except that the Node executable does not exist (a machine where Node was removed).
+struct NoNode(System);
+
+impl ah_engine::dsact::runner::Runner for NoNode {
+    fn run(&self, spec: &ah_engine::dsact::runner::RunSpec) -> ah_engine::dsact::runner::RunResult {
+        if spec.bin.as_deref() == Some(ah_engine::defaults::text("devswarm_sup.node_bin")) {
+            return ah_engine::dsact::runner::RunResult { missing: true, error: Some("No such file or directory (os error 2)".into()), ..Default::default() };
+        }
+        self.0.run(spec)
+    }
+}
+
+/// Without any Node the verdicts duty still decides and writes every verdict it can read like Node (stale ones included), the
+/// tail work it cannot do is reported as skipped (not failed), and the witness records that Node could not run.
+#[test]
+fn without_node_the_verdicts_duty_runs_and_writes_stale_verdicts_itself() {
+    if !have_node_sqlite() {
+        return; // the corpus itself is built by Node's store code
+    }
+    let c = build("lv-nonode", 41, 90, false);
+    let st = duty_settings(&c);
+    let root = ah_engine::defaults::root().unwrap();
+    let ctx = ah_engine::dssup::tick::Ctx { home: &c.home, root: &root, st: &st, now: c.now, engine_pokes: true };
+    let rec = ah_engine::dssup::tick::run_duty("verdicts", &ctx, &NoNode(System::configured()));
+    assert_eq!(rec["outcome"], "ran", "{rec}");
+    let detail = &rec["detail"];
+    assert!(detail["native"].as_u64().unwrap() > 20, "{rec}");
+    assert!(detail["stale"].as_u64().unwrap() > 0, "the corpus must hold a stale workspace: {rec}");
+    if detail["tail"].as_array().is_some_and(|t| !t.is_empty()) || detail["full"].as_array().is_some_and(|f| !f.is_empty()) {
+        assert!(detail["node"]["skipped"].is_string(), "the tail is skipped, not failed: {rec}");
+        assert!(detail["node"].get("error").is_none(), "{rec}");
+    }
+    let live = ds(&c).join("liveness");
+    let stale_files =
+        std::fs::read_dir(&live).unwrap().flatten().filter(|e| status_of(&std::fs::read_to_string(e.path()).unwrap_or_default()) == "stale").count();
+    assert!(stale_files > 0, "the engine wrote the stale verdicts");
+    let w = std::fs::read_to_string(c.home.join(".anti-hall/logs/devswarm-sup-witness.ndjson")).unwrap_or_default();
+    let line: Value = serde_json::from_str(w.lines().last().expect("a witness line")).unwrap();
+    assert_eq!(line["match"], Value::Null, "Node could not run: {line}");
+}
+
+// ---- the escalation notice against Node's notifyParentEscalation / drainEscalationIntents ---------------------------------
+
+fn plugin_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("plugins").join("anti-hall")
+}
+
+fn git(args: &[&str], cwd: &Path) {
+    let o = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(cwd)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+}
+
+fn node_js(code: &str, args: &[&str]) -> Value {
+    let o = Command::new("node").args(["-e", code]).arg(plugin_root()).args(args).env("ANTIHALL_TEST_ISOLATION", "1").output().unwrap();
+    assert!(o.status.success(), "node: {}", String::from_utf8_lossy(&o.stderr));
+    serde_json::from_str(String::from_utf8_lossy(&o.stdout).lines().last().unwrap_or("null")).unwrap_or(Value::Null)
+}
+
+struct Fam {
+    _t: TempDir,
+    base: PathBuf,
+    main: PathBuf,
+    child_wt: PathBuf,
+    parent: String,
+    key: String,
+}
+
+const CHILD: &str = "ws-child-1";
+
+/// A git repo with one linked worktree (the child), and a home for each side.
+fn family(tag: &str) -> Fam {
+    ah_engine::defaults::init().unwrap();
+    let t = TempDir::new(tag);
+    let base = std::fs::canonicalize(&t.0).unwrap();
+    let main = base.join("repo");
+    std::fs::create_dir_all(&main).unwrap();
+    git(&["init", "-q"], &main);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"], &main);
+    git(&["worktree", "add", "-q", "-b", "child", "../wt-child"], &main);
+    let child_wt = base.join("wt-child");
+    let parent = liveness::parent_id(child_wt.to_str().unwrap()).unwrap().unwrap();
+    let key = ah_engine::meshw::ident::repo_key_for_worktree(child_wt.to_str().unwrap()).unwrap().unwrap();
+    Fam { _t: t, base, main, child_wt, parent, key }
+}
+
+/// A home with the child's descriptor and a store (Node's code) holding `registered`.
+fn home_for(f: &Fam, name: &str, registered: &str) -> PathBuf {
+    let home = f.base.join(name);
+    let ws = home.join(".anti-hall/devswarm/workspaces");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join(format!("{CHILD}.json")), serde_json::json!({"id": CHILD, "worktreePath": f.child_wt, "sessionId": "s-1"}).to_string()).unwrap();
+    node_js(
+        "const S=require(process.argv[1]+'/companion/lib/devswarm-store.js');const s=S.openStore({home:process.argv[2],hash:process.argv[3]});s.upsertRegistry({id:process.argv[4],worktreePath:process.argv[5],sessionId:'sess-p',inboxPath:null,cursorPath:null,nudgeCommand:null});s.close();console.log(1)",
+        &[home.to_str().unwrap(), &f.key, registered, f.main.to_str().unwrap()],
+    );
+    home
+}
+
+fn register(f: &Fam, home: &Path, id: &str) {
+    node_js(
+        "const S=require(process.argv[1]+'/companion/lib/devswarm-store.js');const s=S.openStore({home:process.argv[2],hash:process.argv[3]});s.upsertRegistry({id:process.argv[4],worktreePath:process.argv[5],sessionId:'sess-p',inboxPath:null,cursorPath:null,nudgeCommand:null});s.close();console.log(1)",
+        &[home.to_str().unwrap(), &f.key, id, f.main.to_str().unwrap()],
+    );
+}
+
+/// The parent partition's rows and the parked notices, as Node reads them.
+fn dump(f: &Fam, home: &Path) -> Value {
+    node_js(
+        "const fs=require('fs'),path=require('path');const h=process.argv[2];process.env.HOME=h;const S=require(process.argv[1]+'/companion/lib/devswarm-store.js');const s=S.openStore({home:h,hash:process.argv[3]});const msgs=s.listMessages(process.argv[4]);s.close();const dir=path.join(h,'.anti-hall/devswarm/escalation-pending');const parked={};try{for(const n of fs.readdirSync(dir).sort())parked[n]=fs.readFileSync(path.join(dir,n),'utf8')}catch(_){}console.log(JSON.stringify({msgs,parked}))",
+        &[home.to_str().unwrap(), &f.key, &f.parent],
+    )
+}
+
+fn node_notify(f: &Fam, home: &Path, since: i64, now: i64) {
+    node_js(
+        "const h=process.argv[2];process.env.HOME=h;const R=require(process.argv[1]+'/companion/lib/recovery.js');R.notifyParentEscalation({id:process.argv[3],worktreePath:process.argv[4],sessionId:'s-1'},{staleSince:Number(process.argv[5])},{home:h,now:Number(process.argv[6])});console.log(1)",
+        &[home.to_str().unwrap(), CHILD, f.child_wt.to_str().unwrap(), &since.to_string(), &now.to_string()],
+    );
+}
+
+fn env_of(home: &Path) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
+    env
+}
+
+/// The same notice, delivered by Node into one home and by the engine into a twin: identical rows; parked (parent not registered)
+/// identical intent bytes; and after the parent registers, the drains of both deliver it the same way.
+#[test]
+fn the_escalation_notice_is_nodes_delivered_parked_and_drained() {
+    if !have_node_sqlite() {
+        return;
+    }
+    let f = family("notice");
+    let (since, now) = (1_790_000_000_000_i64, 1_790_000_754_321_i64);
+    // delivered: the parent is registered
+    let (hn, he) = (home_for(&f, "node-ok", &f.parent), home_for(&f, "eng-ok", &f.parent));
+    node_notify(&f, &hn, since, now);
+    let d = ah_engine::dssup::verdict::notify_parent(&he, &env_of(&he), f.child_wt.to_str().unwrap(), CHILD, Some(since as f64), now).unwrap();
+    assert_eq!((d.status, d.inserted), ("ok", true));
+    let (a, b) = (dump(&f, &hn), dump(&f, &he));
+    assert_eq!(a["msgs"].as_array().unwrap().len(), 1, "{a}");
+    assert_eq!(a, b, "delivered notice");
+    // a second delivery of the same escalation is a duplicate on both sides
+    let again = ah_engine::dssup::verdict::notify_parent(&he, &env_of(&he), f.child_wt.to_str().unwrap(), CHILD, Some(since as f64), now + 1).unwrap();
+    assert_eq!((again.status, again.inserted), ("ok", false));
+    assert_eq!(dump(&f, &he)["msgs"].as_array().unwrap().len(), 1);
+    // parked: the parent is not registered in its store
+    let (hn, he) = (home_for(&f, "node-gone", "someone-else"), home_for(&f, "eng-gone", "someone-else"));
+    node_notify(&f, &hn, since, now);
+    let d = ah_engine::dssup::verdict::notify_parent(&he, &env_of(&he), f.child_wt.to_str().unwrap(), CHILD, Some(since as f64), now).unwrap();
+    assert_eq!((d.status, d.newly_parked), ("gone", true));
+    let (a, b) = (dump(&f, &hn), dump(&f, &he));
+    assert_eq!(a["parked"].as_object().unwrap().len(), 1, "{a}");
+    assert_eq!(a, b, "parked notice");
+    // the parent registers; the next sweep's drain delivers it
+    register(&f, &hn, &f.parent);
+    register(&f, &he, &f.parent);
+    let later = now + 60_000;
+    node_js(
+        "const h=process.argv[2];process.env.HOME=h;const R=require(process.argv[1]+'/companion/lib/recovery.js');console.log(JSON.stringify(R.drainEscalationIntents(h,{now:Number(process.argv[3])})))",
+        &[hn.to_str().unwrap(), &later.to_string()],
+    );
+    let dr = ah_engine::dssup::verdict::drain_notices(&he, &env_of(&he), later);
+    assert_eq!((dr.attempted, dr.delivered, dr.pending), (1, 1, 0));
+    let (a, b) = (dump(&f, &hn), dump(&f, &he));
+    assert_eq!(a["msgs"].as_array().unwrap().len(), 1, "{a}");
+    assert_eq!(a, b, "drained notice");
+    // the action ledger holds the delivery, with its id
+    let ledger = std::fs::read_to_string(he.join(".anti-hall/logs/devswarm-sup-actions.ndjson")).unwrap();
+    assert!(ledger.lines().any(|l| l.contains("\"dssup-notice-drained\"") && l.contains("\"action_id\"")), "{ledger}");
+    // and a drain with nothing left does nothing
+    assert_eq!(ah_engine::dssup::verdict::drain_notices(&he, &env_of(&he), later + 1), ah_engine::dssup::verdict::Drained::default());
+}
+
+/// No notice is built for a workspace that is its own parent, and none without a worktree.
+#[test]
+fn no_notice_for_self_or_without_a_worktree() {
+    ah_engine::defaults::init().unwrap();
+    let f = family("notice-self");
+    let now = 1_790_000_000_000_i64;
+    assert!(ah_engine::dssup::verdict::notice_intent("", CHILD, None, now).is_err());
+    let main_id = ah_engine::meshw::ident::primary_workspace_id(f.main.to_str().unwrap()).unwrap();
+    assert!(ah_engine::dssup::verdict::notice_intent(f.main.to_str().unwrap(), &main_id, None, now).is_err(), "never notify self");
+    let it = ah_engine::dssup::verdict::notice_intent(f.child_wt.to_str().unwrap(), CHILD, None, now).unwrap();
+    assert!(it.stringify().contains(&format!("\"hash\":\"escalate:{CHILD}:x\"")), "{}", it.stringify());
 }

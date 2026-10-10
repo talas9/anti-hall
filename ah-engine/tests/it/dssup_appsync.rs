@@ -220,6 +220,8 @@ struct Alter<'a> {
     markers: Vec<&'static str>,
     f: Box<dyn Fn(Value) -> Value + 'a>,
     fail: bool,
+    /// With `fail`: the Node executable does not exist (else it exists and fails).
+    gone: bool,
     seen: Mutex<usize>,
 }
 
@@ -228,7 +230,7 @@ impl Runner for Alter<'_> {
         if spec.args.get(1).is_some_and(|s| self.markers.iter().any(|m| s.contains(m))) {
             *self.seen.lock().unwrap() += 1;
             if self.fail {
-                return RunResult { missing: true, error: Some("not found".into()), ..RunResult::default() };
+                return RunResult { missing: self.gone, error: Some("not found".into()), stderr: "boom".into(), ..RunResult::default() };
             }
             let mut r = self.inner.run(spec);
             if r.ok {
@@ -318,7 +320,7 @@ fn a_witness_that_disagrees_writes_no_marker_and_retires_none() {
     ];
     for (name, f) in cases {
         let h = copy_home(&c, &format!("dis-{}", name.replace(' ', "-")));
-        let r = Alter { inner: System::configured(), markers: GATED.to_vec(), f, fail: false, seen: Mutex::new(0) };
+        let r = Alter { inner: System::configured(), markers: GATED.to_vec(), f, fail: false, gone: false, seen: Mutex::new(0) };
         let out = engine_duty(&h, c.now, &[], &r);
         assert_eq!(out["outcome"], "ran", "{out}");
         assert!(*r.seen.lock().unwrap() >= 1, "{name}: the gate never asked Node");
@@ -345,13 +347,22 @@ fn a_node_that_cannot_run_writes_no_marker_and_retires_none() {
     let seed_markers = files(&c.home, "archived/");
     let seed_ws = files(&c.home, "workspaces/");
     let h = copy_home(&c, "nonode");
-    let r = Alter { inner: System::configured(), markers: GATED.to_vec(), f: Box::new(|v| v), fail: true, seen: Mutex::new(0) };
+    // a Node that exists and fails: nothing is marked, the marks stay pending
+    let r = Alter { inner: System::configured(), markers: GATED.to_vec(), f: Box::new(|v| v), fail: true, gone: false, seen: Mutex::new(0) };
     let out = engine_duty(&h, c.now, &[], &r);
     assert_eq!(out["outcome"], "ran", "{out}");
     assert!(out["detail"]["archived"]["pending"].as_i64().unwrap() >= 1, "{out}");
     assert_eq!(out["detail"]["archived"]["marked"], 0, "{out}");
     assert_eq!(seed_markers, files(&h, "archived/"));
     assert_eq!(seed_ws, files(&h, "workspaces/"));
+    // no Node on the machine at all: the engine marks on its own plan (a marker is never a delete or an overwrite)
+    let h2 = copy_home(&c, "gone");
+    let r = Alter { inner: System::configured(), markers: GATED.to_vec(), f: Box::new(|v| v), fail: true, gone: true, seen: Mutex::new(0) };
+    let out = engine_duty(&h2, c.now, &[], &r);
+    assert_eq!(out["outcome"], "ran", "{out}");
+    assert!(out["detail"]["archived"]["marked"].as_i64().unwrap() >= 1, "{out}");
+    assert_eq!(out["detail"]["archived"]["pending"], 0, "{out}");
+    assert_eq!(seed_ws, files(&h2, "workspaces/"));
 }
 
 #[test]
