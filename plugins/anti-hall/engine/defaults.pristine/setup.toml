@@ -399,7 +399,7 @@ value = "❌ anti-hall · jev-setup: "
 
 [setup.msg_usage]
 doc = "Usage line of `ah-engine jev-setup`."
-value = "\U0001f4a1 anti-hall · jev-setup: usage: ah-engine jev-setup status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|bind-generic-key --vendor V|mode <integration> on|shadow|off (test, review-due, reviewed and snooze stay in node scripts/jev-setup.js)"
+value = "\U0001f4a1 anti-hall · jev-setup: usage: ah-engine jev-setup status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|bind-generic-key --vendor V|test|mode <integration> on|shadow|off|review-due [--json]|reviewed <integration>|snooze <integration> --days N"
 
 [setup.msg_unknown_setting]
 doc = "Why a settings write was refused: the key is not one this command writes. Placeholder: setting."

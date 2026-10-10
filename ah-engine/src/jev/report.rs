@@ -49,7 +49,7 @@ fn now_ms() -> u64 {
 }
 
 /// `retainedLogFiles`: the numbered generations oldest first, then the live file when it exists.
-fn retained(p: &Path) -> Vec<PathBuf> {
+pub(crate) fn retained(p: &Path) -> Vec<PathBuf> {
     let (Some(dir), Some(base)) = (p.parent(), p.file_name().map(|n| n.to_string_lossy().into_owned())) else { return Vec::new() };
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
     let prefix = format!("{base}.");

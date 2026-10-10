@@ -7,8 +7,11 @@
 //! `~/.anti-hall/jev.json` is a read-modify-write that keeps the fields this command does not know about, in their order.
 //!
 //! The engine's Jev resolver (`jev::settings`, `jev::credentials`) answers every "what would the hooks use" question, so
-//! `status` cannot show a value the hooks are not using. Left on Node: `test` (a real gateway call) and the shadow-review
-//! verbs `review-due`, `reviewed` and `snooze`.
+//! `status` cannot show a value the hooks are not using. `test` (a real gateway call per transport) lives in `jev_setup/test.rs`
+//! and the shadow-review verbs `review-due`, `reviewed` and `snooze` in `jev_setup/review.rs`; every verb is answered here.
+mod review;
+mod test;
+
 use super::jsfmt::{keys, pretty, to_fixed2};
 use super::{SetupError, home_dir, io_err, out, read_capped, read_prefix, text_of, warn, what};
 use crate::checks::guardkit::nodelock;
@@ -739,12 +742,13 @@ struct Opts {
     fallback: Option<String>,
     role: Option<String>,
     vendor: Option<String>,
+    days: Option<String>,
     positional: Vec<String>,
 }
 
 /// `parseArgs`: an option takes the word after it (missing is `undefined`, kept as `None`); `--days` is consumed too.
 fn parse_args(argv: &[String]) -> Opts {
-    let mut o = Opts { transport: None, fallback: None, role: None, vendor: None, positional: Vec::new() };
+    let mut o = Opts { transport: None, fallback: None, role: None, vendor: None, days: None, positional: Vec::new() };
     let mut i = 0;
     while i < argv.len() {
         let a = argv[i].as_str();
@@ -766,7 +770,10 @@ fn parse_args(argv: &[String]) -> Opts {
                     _ => o.vendor = v,
                 }
             }
-            None if a == "--days" => i += 1,
+            None if a == "--days" => {
+                i += 1;
+                o.days = argv.get(i).cloned();
+            }
             None => o.positional.push(a.to_string()),
         }
         i += 1;
@@ -980,13 +987,17 @@ pub fn run(args: &[String]) -> Result<i32, SetupError> {
         "set-key" => cmd_set_key(&mut cx, &o)?,
         "bind-generic-key" => cmd_bind_generic_key(&mut cx, &o)?,
         "mode" => cmd_mode(&mut cx, &o)?,
+        "test" => test::cmd_test(&mut cx)?,
+        "review-due" => review::cmd_review_due(&mut cx, &o.positional)?,
+        "reviewed" => review::cmd_reviewed(&mut cx, &o.positional)?,
+        "snooze" => review::cmd_snooze(&mut cx, &o.positional, o.days.as_deref())?,
         _ => {
             warn(defaults::text("setup.msg_usage"));
             cx.code = 1;
         }
     }
     // a verb that changes the Jev settings or keys counts as one change when it succeeded
-    if cx.code == 0 && !matches!(verb, "status" | "") {
+    if cx.code == 0 && !matches!(verb, "status" | "" | "test" | "review-due") {
         crate::telemetry::emit::add_items(1);
     }
     Ok(cx.code)

@@ -104,6 +104,8 @@ fn mask(s: &str, homes: &[&Path]) -> String {
     for (re, with) in [
         (r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", "TS"),
         (r"corrupt-\d+", "corrupt-N"),
+        (r"latency \d+ms", "latency Nms"),
+        (r#""latencyMs":\d+"#, r#""latencyMs":N"#),
         (r#""ts":\d+"#, r#""ts":N"#),
         (r#""started":\d+"#, r#""started":N"#),
         (r"[\u{25d0}\u{25d3}\u{25d1}\u{25d2}]", "S"),
@@ -421,5 +423,175 @@ fn defect_identity_in_a_repository_the_file_resolver_is_unsure_of_matches_node()
     for a in [&["report", "--class", "doc", "--sev", "p1", "--sym", "crlf repo"][..], &["list", "--mine", "--json"][..]] {
         same(&c, a)?;
     }
+    Ok(())
+}
+
+// ---- jev-setup: test, review-due, reviewed, snooze -----------------------------------------------------------------------
+
+const JEV_SETUP: &str = "scripts/jev-setup.js";
+
+fn jev_same<'a>(seed: Option<&'a Path>, env: &'a [(&'a str, &'a str)]) -> Same<'a> {
+    Same { script: JEV_SETUP, verb: "jev-setup", seed, cwd: None, env, stdin: "" }
+}
+
+fn days_ago(n: i64) -> String {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64 - n * 86_400_000;
+    let secs = ms / 1000;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+fn review_seed(rows: usize, age_days: i64, extra: &[(&str, &str)]) -> R<Scratch> {
+    let s = Scratch::new("review")?;
+    write(s.path(), ".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#)?;
+    write(s.path(), ".anti-hall/jev.json", r#"{"integrations":{"zzCustom":"shadow","zzOff":"off"}}"#)?;
+    let mut log = String::new();
+    for i in 0..rows {
+        let row = serde_json::json!({"ts":days_ago(age_days - (i as i64 % 3)),"id":"zzCustom","mode":"shadow"});
+        log.push_str(&(row.to_string() + "\n"));
+    }
+    log.push_str("not json\n");
+    log.push_str(&(serde_json::json!({"ts":days_ago(age_days),"id":"zzCustom","type":"outcome"}).to_string() + "\n"));
+    if rows > 0 {
+        write(s.path(), ".anti-hall/logs/jev-assist.ndjson", &log)?;
+    }
+    for (rel, text) in extra {
+        write(s.path(), rel, text)?;
+    }
+    Ok(s)
+}
+
+#[test]
+fn jev_setup_review_due_matches_node() -> R {
+    // no evidence: nothing is due, and the state file is created with shadowSince = now for each shadow integration
+    let none = review_seed(0, 0, &[])?;
+    for a in [&["review-due"][..], &["review-due", "--json"][..]] {
+        same(&jev_same(Some(none.path()), &[]), a)?;
+    }
+    // enough old decisions: due; with a recent review, a snooze, too few decisions, and a stored dueSince to clear
+    let due = review_seed(40, 20, &[])?;
+    for a in [&["review-due"][..], &["review-due", "--json"][..], &["review-due", "extra"][..]] {
+        let o = same(&jev_same(Some(due.path()), &[]), a)?;
+        assert!(o.stdout.contains("zzCustom"), "{o:?}");
+    }
+    let few = review_seed(5, 20, &[])?;
+    same(&jev_same(Some(few.path()), &[]), &["review-due"])?;
+    let state = |entry: String| format!(r#"{{"keep":1,"integrations":{{"zzCustom":{entry}}}}}"#);
+    let recent = review_seed(40, 20, &[(".anti-hall/jev-review-state.json", &state(format!(r#"{{"shadowSince":"{}","lastReviewedAt":"{}"}}"#, days_ago(20), days_ago(2))))])?;
+    same(&jev_same(Some(recent.path()), &[]), &["review-due"])?;
+    let snoozed = review_seed(40, 20, &[(".anti-hall/jev-review-state.json", &state(format!(r#"{{"shadowSince":"{}","snoozedUntil":"{}","dueSince":"{}"}}"#, days_ago(20), days_ago(-3), days_ago(1))))])?;
+    same(&jev_same(Some(snoozed.path()), &[]), &["review-due", "--json"])?;
+    // a rollup-only history counts too, and a corrupt state file starts fresh
+    let roll = review_seed(0, 0, &[
+        (".anti-hall/logs/jev-daily/2020-01-02.json", r#"{"day":"2020-01-02","groups":[{"id":"zzCustom","n":31},{"id":"other","n":9}]}"#),
+        (".anti-hall/jev-review-state.json", "{not json"),
+    ])?;
+    same(&jev_same(Some(roll.path()), &[]), &["review-due", "--json"])?;
+    Ok(())
+}
+
+#[test]
+fn jev_setup_reviewed_and_snooze_match_node() -> R {
+    let seed = review_seed(40, 20, &[(
+        ".anti-hall/jev-review-state.json",
+        &format!(r#"{{"integrations":{{"zzCustom":{{"shadowSince":"{}","dueSince":"{}"}}}}}}"#, days_ago(20), days_ago(0) /* due just now */),
+    )])?;
+    let c = jev_same(Some(seed.path()), &[]);
+    for a in [
+        &["reviewed"][..],
+        &["reviewed", "zzCustom"][..],
+        &["reviewed", "neverSeen"][..],
+        &["snooze"][..],
+        &["snooze", "zzCustom"][..],
+        &["snooze", "zzCustom", "--days", "0"][..],
+        &["snooze", "zzCustom", "--days", "-2"][..],
+        &["snooze", "zzCustom", "--days", "abc"][..],
+        &["snooze", "zzCustom", "--days", "Infinity"][..],
+        &["snooze", "--days", "3", "zzCustom"][..],
+        &["snooze", "zzCustom", "--days", "0.5"][..],
+        &["snooze", "zzCustom", "--days", "1e1"][..],
+    ] {
+        same(&c, a)?;
+    }
+    // a snooze that no date can hold: Node stops with a stack trace, the engine says so and writes nothing
+    let (o, h) = one(JEV_SETUP, Some("jev-setup"), Some(seed.path()), None, &[], &["snooze", "zzCustom", "--days", "1e12"])?;
+    assert_eq!(o.code, 1, "{o:?}");
+    assert!(o.stderr.contains("--days is too large"), "{o:?}");
+    assert_eq!(snapshot(h.path())?, snapshot(seed.path())?.into_iter().chain(snapshot(h.path())?.into_iter().filter(|(k, _)| k.starts_with("tmp"))).collect(), "nothing written");
+    // the reviewed metric row
+    let (_, h) = one(JEV_SETUP, Some("jev-setup"), Some(seed.path()), None, &[], &["reviewed", "zzCustom"])?;
+    let metric = fs::read_to_string(h.path().join(".anti-hall/logs/jev-review.ndjson"))?;
+    assert!(metric.contains(r#""type":"reviewed","id":"zzCustom","latencyMs":"#), "{metric}");
+    Ok(())
+}
+
+struct Gateway {
+    port: u16,
+}
+
+fn gateway(status: u16, body: &'static str) -> Gateway {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut c) = conn else { break };
+            let mut buf = vec![0u8; 8192];
+            let mut got = 0;
+            c.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+            while let Ok(n) = std::io::Read::read(&mut c, &mut buf[got..]) {
+                got += n;
+                if n == 0 || buf[..got].windows(4).any(|w| w == b"\r\n\r\n") && got > 200 {
+                    break;
+                }
+            }
+            let out = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            if c.write_all(out.as_bytes()).is_err() {
+                break;
+            }
+        }
+    });
+    Gateway { port }
+}
+
+#[test]
+fn jev_setup_test_matches_node() -> R {
+    let on = review_seed(0, 0, &[])?;
+    let off = Scratch::new("off")?;
+    write(off.path(), ".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#)?;
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    // not enabled
+    same(&jev_same(Some(off.path()), &[]), &["test"])?;
+    // no key
+    same(&jev_same(Some(on.path()), &[]), &["test"])?;
+    // answered, rejected, malformed
+    let ok = gateway(200, r#"{"answers":{"decision":{"noul":0.9}}}"#);
+    let url = leak(format!("http://127.0.0.1:{}/v1/systemone", ok.port));
+    let key = ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "test-key-only");
+    let o = same(&jev_same(Some(on.path()), &[key, ("ANTIHALL_JEV_TEST_ENDPOINT", url)]), &["test"])?;
+    assert!(o.stdout.starts_with("ok \u{2014} latency"), "{o:?}");
+    let denied = gateway(401, r#"{"error":"no"}"#);
+    let url = leak(format!("http://127.0.0.1:{}/v1/systemone", denied.port));
+    let o = same(&jev_same(Some(on.path()), &[key, ("ANTIHALL_JEV_TEST_ENDPOINT", url)]), &["test"])?;
+    assert_eq!(o.code, 1);
+    assert!(o.stdout.contains("the key was rejected"), "{o:?}");
+    let junk = gateway(200, r#"{"answers":{}}"#);
+    let url = leak(format!("http://127.0.0.1:{}/v1/systemone", junk.port));
+    same(&jev_same(Some(on.path()), &[key, ("ANTIHALL_JEV_TEST_ENDPOINT", url)]), &["test"])?;
+    // primary and fallback, each on its own
+    let two = review_seed(0, 0, &[(".anti-hall/settings.json", r#"{"jev":{"enabled":true,"transport":"vercel","fallbackTransport":"typesafe"}}"#)])?;
+    let (v, t) = (gateway(200, r#"{"answers":{"decision":{"noul":0.2}}}"#), gateway(503, "{}"));
+    let (vu, tu) = (leak(format!("http://127.0.0.1:{}/x", v.port)), leak(format!("http://127.0.0.1:{}/x", t.port)));
+    let env = [key, ("CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY", "other-key"), ("ANTIHALL_JEV_TEST_ENDPOINT_VERCEL", vu), ("ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE", tu)];
+    let o = same(&jev_same(Some(two.path()), &env), &["test"])?;
+    assert!(o.stdout.contains("(primary, transport: vercel)") && o.stdout.contains("(fallback, transport: typesafe)"), "{o:?}");
     Ok(())
 }
