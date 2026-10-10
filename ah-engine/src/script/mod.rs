@@ -37,6 +37,7 @@ pub mod host;
 pub mod host_b3;
 pub mod host_d;
 mod host_io;
+pub mod host_mesh;
 pub mod host_proc;
 pub mod host_spawn;
 pub mod host_ts;
@@ -88,20 +89,39 @@ pub struct Deadline {
     pub cpu: AtomicU64,
     /// The wall-clock backstop (ns since the pool epoch).
     pub wall: AtomicU64,
+    /// When the client of the request being answered stops waiting (ns since the pool epoch; 0 = none): past it nobody reads the
+    /// answer, so the call is cut and the check defers to its own Node hook. Never moved by blocked time (the client waits in
+    /// real time); lifted with the other limits by `commit()`.
+    pub req: AtomicU64,
 }
 
 impl Pool {
-    /// Start the limits of a call of `limit_ms` script time.
-    fn arm(&self, limit_ms: u64) {
+    /// Start the limits of a call of `limit_ms` script time; `cut` also arms the request's client deadline.
+    fn arm(&self, limit_ms: u64, cut: bool) {
         let cpu_now = crate::limits::thread_cpu_us();
         self.deadline.cpu.store(cpu_now.saturating_add(limit_ms.saturating_mul(1000)).max(1), Ordering::Relaxed);
+        let now = self.epoch.elapsed();
         let wall = limit_ms.saturating_mul(defaults::num("script.wall_limit_factor").max(1)).saturating_mul(1_000_000);
-        self.deadline.wall.store((self.epoch.elapsed().as_nanos() as u64).saturating_add(wall).max(1), Ordering::Relaxed);
+        self.deadline.wall.store((now.as_nanos() as u64).saturating_add(wall).max(1), Ordering::Relaxed);
+        let req = crate::deadline::at().filter(|_| cut).map_or(0, |at| {
+            let left = at.saturating_duration_since(Instant::now());
+            (now.as_nanos() as u64).saturating_add(left.as_nanos() as u64).max(1)
+        });
+        self.deadline.req.store(req, Ordering::Relaxed);
+        crate::deadline::set_cut_armed(req != 0);
+    }
+
+    /// Whether the call in progress has run past its request's client deadline.
+    fn past_request(&self) -> bool {
+        let req = self.deadline.req.load(Ordering::Relaxed);
+        req != 0 && self.epoch.elapsed().as_nanos() as u64 > req
     }
 
     fn disarm(&self) {
         self.deadline.cpu.store(0, Ordering::Relaxed);
         self.deadline.wall.store(0, Ordering::Relaxed);
+        self.deadline.req.store(0, Ordering::Relaxed);
+        crate::deadline::set_cut_armed(false);
     }
 
     fn new() -> Option<Pool> {
@@ -116,7 +136,12 @@ impl Pool {
         rt.set_interrupt_handler(Some(Box::new(move || {
             let cpu = d.cpu.load(Ordering::Relaxed);
             let wall = d.wall.load(Ordering::Relaxed);
-            (cpu != 0 && crate::limits::thread_cpu_us() > cpu) || (wall != 0 && epoch.elapsed().as_nanos() as u64 > wall)
+            let req = d.req.load(Ordering::Relaxed);
+            if cpu != 0 || wall != 0 {
+                crate::deadline::beat(); // the interpreter is running: a slow call, not a hung worker
+            }
+            let now = epoch.elapsed().as_nanos() as u64;
+            (cpu != 0 && crate::limits::thread_cpu_us() > cpu) || (wall != 0 && now > wall) || (req != 0 && now > req)
         })));
         Some(Pool { ctx: None, checks: HashMap::new(), deadline, epoch, rt })
     }
@@ -400,7 +425,7 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
         };
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.arm(limit);
+            pool.arm(limit, false);
             let out = ctx.with(|c| -> Result<String, String> {
                 let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
                 let f: Function = reg.get(key.as_str()).catch(&c).map_err(|e| e.to_string())?;
@@ -424,7 +449,25 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
     }
 }
 
+/// Whether a call of check `name` on `event` is cut at its request's client deadline (`script.cut_at_request_deadline`). A cut call
+/// defers to the check's Node hook; the one check it would weaken is an engine-only check whose failure mode is `closed` on a
+/// guard event (its Node hook is a no-op, so a deferral would allow what its failure blocks): that one keeps only its own limit.
+pub fn cut_at_deadline(name: &str, event: &str) -> bool {
+    defaults::num("script.cut_at_request_deadline") == 1
+        && !(defaults::list("script.engine_only_checks").contains(&name)
+            && failure_mode(name) == defaults::text("script.failure_mode_closed")
+            && defaults::list("dispatch.guard_events").contains(&event))
+}
+
+/// A call cut at its request's client deadline: no failure of the script (nothing is counted as an error), the check defers to
+/// its own Node hook, which the client runs for this entry alone.
+pub fn cut(name: &str, event: &str) -> Verdict {
+    crate::discard::note("script_deadline", &defaults::render("script.msg_deadline_cut", &[("check", &name), ("event", &event)]));
+    Verdict::Defer
+}
+
 fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
+    let mut was_cut = false;
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -437,7 +480,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         let limit = limit_ms(name, event);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.arm(limit);
+            pool.arm(limit, cut_at_deadline(name, event));
             let out = ctx.with(|c| -> Result<String, String> {
                 let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
                 let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
@@ -450,6 +493,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
                 let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
                 Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
             });
+            was_cut = out.is_err() && pool.past_request();
             pool.disarm();
             host::set_deadline(None);
             let text = out?;
@@ -459,6 +503,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
     });
     match r {
         Ok(v) => v,
+        Err(_) if was_cut => Some(cut(name, event)),
         Err(e) => Some(failed(name, event, &e)),
     }
 }

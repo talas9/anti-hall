@@ -1,3 +1,12 @@
+#![allow(
+    dead_code,
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::needless_range_loop,
+    clippy::useless_vec,
+    clippy::regex_creation_in_loops,
+    clippy::let_underscore_must_use
+)]
 //! The reconcile port, slice S7 (archived registry rows and twin descriptors), against Node's own functions.
 //!
 //! Every case builds a scratch home, plans with the engine and runs the witness gate: Node's function on one mirror, the engine's
@@ -46,7 +55,11 @@ fn init_defaults() {
 fn fix(tag: &str) -> Fix {
     init_defaults();
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let home = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/work/recon-tests").join(format!("s7-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    let home = PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/scratch/recon-tests").join(format!(
+        "s7-{tag}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let mut env: HashMap<String, String> = HashMap::new();
@@ -93,7 +106,14 @@ impl Fix {
     }
     fn row(&self, key: &str, id: &str, wt: &str, sid: &str) {
         let st = self.store(key);
-        let r = RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: Some(sid.into()), inbox_path: None, cursor_path: None, nudge_command: None };
+        let r = RegistryRow {
+            id: id.into(),
+            worktree_path: Some(wt.into()),
+            session_id: Some(sid.into()),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
         assert!(st.upsert_registry(&r, 1_000, |_, _| true).unwrap());
     }
     fn desc(&self, id: &str, wt: &str, sid: &str) -> String {
@@ -182,7 +202,18 @@ fn archive_left_reason_matches_node_for_every_branch() {
 }
 
 fn reg_row(id: &str, wt: &str, sid: Option<&str>) -> RegRow {
-    RegRow { row: RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: sid.map(Into::into), inbox_path: None, cursor_path: None, nudge_command: None }, updated_at: Some(1), write_seq: Some(1) }
+    RegRow {
+        row: RegistryRow {
+            id: id.into(),
+            worktree_path: Some(wt.into()),
+            session_id: sid.map(Into::into),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        },
+        updated_at: Some(1),
+        write_seq: Some(1),
+    }
 }
 
 #[test]
@@ -570,7 +601,14 @@ fn restore_fixture(f: &Fix, with_row: bool) -> (String, String) {
     // the owner's store exists (an empty one, or with the id's row)
     let st = f.store(&k);
     if with_row {
-        let r = RegistryRow { id: "W".into(), worktree_path: Some(p.clone()), session_id: Some("old".into()), inbox_path: None, cursor_path: None, nudge_command: None };
+        let r = RegistryRow {
+            id: "W".into(),
+            worktree_path: Some(p.clone()),
+            session_id: Some("old".into()),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
         assert!(st.upsert_registry(&r, 1_000, |_, _| true).unwrap());
     }
     (p, k)
@@ -750,7 +788,11 @@ fn a_sigkill_between_the_hard_link_and_the_unlink_leaves_the_twin_in_both_places
             }
             // Node's next pass finishes it
             let code = "process.env.HOME=process.argv[2];const F=require(process.argv[1]+'/scripts/devswarm-lib/fold.js');const fs=require('fs');const d=JSON.parse(fs.readFileSync(process.argv[2]+'/.anti-hall/devswarm/archived/A.json','utf8'));F.retireIdentityFamilyDescriptors(process.argv[2],'A',d,{})";
-            let n = Command::new("node").args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap()]).env("ANTI_HALL_LOG_DIR", f.home.join("logs")).output().unwrap();
+            let n = Command::new("node")
+                .args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap()])
+                .env("ANTI_HALL_LOG_DIR", f.home.join("logs"))
+                .output()
+                .unwrap();
             assert!(n.status.success(), "{}", String::from_utf8_lossy(&n.stderr));
             assert!(!f.exists(&act) && f.exists(&arch), "{point}: converged");
             // and the engine's own next pass finds nothing left to do

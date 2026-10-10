@@ -33,8 +33,12 @@ fn strings(v: &toml::Value, out: &mut Vec<String>) {
     }
 }
 
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle)
+/// Which of `needles` occur in `hay`, in one Aho-Corasick pass (overlapping matches, so a sentinel inside another is still
+/// found). The naive window compare per sentinel over the release binary (built with `opt-level = "z"`) took 1100 s on a macOS
+/// runner and over 1800 s on a Linux one.
+fn found(hay: &[u8], needles: &[&[u8]]) -> std::collections::BTreeSet<usize> {
+    let ac = aho_corasick::AhoCorasick::new(needles).unwrap();
+    ac.find_overlapping_iter(hay).map(|m| m.pattern().as_usize()).collect()
 }
 
 #[test]
@@ -43,7 +47,7 @@ fn no_defaults_text_is_embedded_in_the_binary() {
     let mut files = Vec::new();
     toml_files(&engine_dir().join("defaults"), &mut files);
     assert!(files.len() >= 28, "the shipped defaults were not found: {}", files.len());
-    let (mut checked, mut leaked) = (0usize, Vec::new());
+    let mut sentinels: Vec<(String, String)> = Vec::new();
     for f in &files {
         let table: toml::Table = std::fs::read_to_string(f).unwrap().parse().unwrap();
         let mut texts = Vec::new();
@@ -53,14 +57,14 @@ fn no_defaults_text_is_embedded_in_the_binary() {
             if t.chars().count() < 32 || !t.contains(' ') && t.chars().count() < 48 {
                 continue;
             }
-            checked += 1;
             // the whole text: a shared prefix (the host's JSON envelope, a protocol keyword) is syntax, a whole message is not
-            if contains(&bin, t.as_bytes()) {
-                leaked.push(format!("{}: {:?}", f.file_name().unwrap().to_string_lossy(), t.chars().take(60).collect::<String>()));
-            }
+            sentinels.push((f.file_name().unwrap().to_string_lossy().into_owned(), t));
         }
     }
+    let checked = sentinels.len();
     assert!(checked > 500, "the scan is vacuous: only {checked} sentinels");
+    let hits = found(&bin, &sentinels.iter().map(|(_, t)| t.as_bytes()).collect::<Vec<_>>());
+    let leaked: Vec<String> = hits.iter().map(|&i| format!("{}: {:?}", sentinels[i].0, sentinels[i].1.chars().take(60).collect::<String>())).collect();
     assert!(leaked.is_empty(), "{} shipped strings are compiled into the binary (read them from the plugin files):\n{}", leaked.len(), leaked.join("\n"));
 }
 
@@ -68,16 +72,17 @@ fn no_defaults_text_is_embedded_in_the_binary() {
 fn no_rule_text_is_embedded_in_the_binary() {
     let bin = std::fs::read(BIN).unwrap();
     let rules: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(engine_dir().join("rules.json")).unwrap()).unwrap();
-    let mut checked = 0;
+    let mut heads: Vec<(&str, String)> = Vec::new();
     for r in rules["rules"].as_array().unwrap() {
         for k in ["pattern", "message"] {
             if let Some(t) = r[k].as_str().filter(|t| t.chars().count() >= 24) {
-                checked += 1;
-                let head: String = t.chars().take(24).collect();
-                assert!(!contains(&bin, head.as_bytes()), "rule {k} {head:?} is compiled into the binary");
+                heads.push((k, t.chars().take(24).collect()));
             }
         }
     }
+    let checked = heads.len();
+    let hits = found(&bin, &heads.iter().map(|(_, h)| h.as_bytes()).collect::<Vec<_>>());
+    assert!(hits.is_empty(), "rule text is compiled into the binary: {:?}", hits.iter().map(|&i| &heads[i]).collect::<Vec<_>>());
     assert!(checked >= 4, "the scan is vacuous: {checked}");
 }
 

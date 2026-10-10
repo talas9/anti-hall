@@ -124,8 +124,8 @@ test('NORMAL: v0.67.0 human-readable ids are never flagged as malformed uuids', 
       'fix-analytics-coverage-gaps-a55f20ef',
       'primary-2e126d49',
       'antihall-selftest',
-      'fl-skyflutter-observability-ga4-event-registry-inst',
-      'x-make-the-skyfb-deploy-pipeline-honest-about-drif-a55f20ef',
+      'fl-appflutter-observability-ga4-event-registry-inst',
+      'x-make-the-appfb-deploy-pipeline-honest-about-drif-a55f20ef',
     ]) put(home, 'workspaces', id);
     assert.deepStrictEqual(D.scanDescriptors({ home }).findings, [],
       'human-readable ids contain non-hex letters and must never trip the uuid shape check');
@@ -137,8 +137,8 @@ test('NORMAL: a human-readable id that prefixes another live id is NOT a shadow 
   try {
     // Real pair from the live store, both ACTIVE — the shadow check is
     // archived-only by design, so this must stay silent.
-    put(home, 'workspaces', 'fl-skyflutter-observability-ga4-event-registry-inst');
-    put(home, 'workspaces', 'fl-skyflutter-observability-ga4-event-registry-inst-a55f20ef');
+    put(home, 'workspaces', 'fl-appflutter-observability-ga4-event-registry-inst');
+    put(home, 'workspaces', 'fl-appflutter-observability-ga4-event-registry-inst-a55f20ef');
     assert.deepStrictEqual(D.scanDescriptors({ home }).findings, []);
   } finally { cleanup(); }
 });
@@ -160,7 +160,7 @@ test('NORMAL: two live descriptors sharing a worktreePath are NOT flagged (v0.67
   try {
     const wt = path.join(home, 'wt', 'shared');
     put(home, 'workspaces', '80417e76-9312-48c6-b500-6ed4684225e3', { worktreePath: wt });
-    put(home, 'workspaces', 'fix-skyflutter-live-crashes-a55f20ef', { worktreePath: wt });
+    put(home, 'workspaces', 'fix-appflutter-live-crashes-a55f20ef', { worktreePath: wt });
     assert.deepStrictEqual(D.scanDescriptors({ home }).findings, []);
   } finally { cleanup(); }
 });

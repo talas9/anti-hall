@@ -22,7 +22,7 @@ Daemon status, metrics, backups, schedules and limits.
 | `ah-engine serve` | `` Run the resident daemon in the foreground (the client starts it detached when needed) | main, codex, workspace, subagent |
 | `ah-engine status` | `[--memory]` Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did | main, codex, workspace, subagent |
 | `ah-engine stop` | `` Ask the daemon to drain and exit | main, codex |
-| `ah-engine telemetry` | `[summary\|events\|rollup] [--window <7d>] [--kind <k>] [--limit <n>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and... | main, codex, workspace, subagent (owner args: rollup) |
+| `ah-engine telemetry` | `[summary\|events\|rollup\|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and... | main, codex, workspace, subagent (owner args: rollup) |
 | `ah-engine version` | `` Print the version this build reports | main, codex, workspace, subagent |
 
 ## Guards

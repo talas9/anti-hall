@@ -39,14 +39,69 @@ var wd = {
     if (p.split('/').indexOf('..') >= 0 || wd.isUnder(ah.path.resolveAbs(cx.cwd), cx.tmp)) throw wd.UNSURE;
     return false;
   },
+  // The paths a session's ONE user request names (cx.requested: [{raw, abs}]), or [] when the session has more than one request,
+  // none, or the window does not hold the whole transcript. A path that is, or holds, the session directory is not an output.
+  requestedPaths: function (lines, cx, complete) {
+    if (!complete) return [];
+    var skip = ah.cfg('workdetect.request_skip_prefixes'), trim = ah.cfg('workdetect.request_path_trim'), count = 0, raws = [];
+    for (var i = 0; i < lines.length; i++) {
+      var raw = lines[i];
+      if (raw.indexOf('"user"') < 0) continue;
+      var r = jx.parse(raw.trim());
+      if (r.unsure) throw wd.UNSURE;
+      var e = r.v;
+      if (r.invalid || !e || e.type !== 'user' || e.isMeta === true || !e.message) continue;
+      var c = e.message.content, txt = '', isResult = false;
+      if (typeof c === 'string') txt = c;
+      else if (Array.isArray(c)) {
+        for (var k = 0; k < c.length; k++) {
+          if (c[k] && c[k].type === ah.cfg('task_guard.tool_result_type')) isResult = true;
+          else if (c[k] && c[k].type === 'text' && typeof c[k].text === 'string') txt += (txt ? '\n' : '') + c[k].text;
+        }
+      }
+      var head = txt.trim();
+      if (isResult || !head || skip.some(function (x) { return head.indexOf(x) === 0; })) continue;
+      count++;
+      var re = wd.re('workdetect.request_path_re', 'g'), m;
+      while ((m = re.exec(txt)) !== null) {
+        var t = (m[1] || m[2] || '');
+        while (t.length > 0 && trim.indexOf(t.charAt(t.length - 1)) >= 0) t = t.slice(0, -1);
+        if (t.length > 1) raws.push(t);
+      }
+    }
+    if (count !== 1) return [];
+    var home = ah.home(), out = [];
+    for (var j = 0; j < raws.length; j++) {
+      var abs;
+      if (raws[j].charAt(0) === '/') abs = ah.path.resolveAbs(raws[j]);
+      else if (raws[j].charAt(0) === '~') { if (!home || (raws[j].length > 1 && raws[j].charAt(1) !== '/')) continue; abs = ah.path.resolveAbs(home + raws[j].slice(1)); }
+      else if (cx.cwd) abs = ah.path.resolve(cx.cwd, raws[j]);
+      else continue;
+      if (abs === '/' || (cx.cwd && wd.isUnder(ah.path.resolveAbs(cx.cwd), abs))) continue;
+      out.push({ raw: raws[j], abs: abs });
+    }
+    return out;
+  },
+  // Whether `fp` is, or is inside, a path the single user request named.
+  inRequested: function (fp, cx) {
+    if (!cx.requested || cx.requested.length === 0) return false;
+    var abs;
+    if (fp.charAt(0) === '/') abs = ah.path.resolveAbs(fp);
+    else if (cx.cwd) abs = ah.path.resolve(cx.cwd, fp);
+    else return false;
+    return cx.requested.some(function (r) { return wd.isUnder(abs, r.abs); });
+  },
   // `isExcludedWritePath(fp)`: the scratchpad, an anti-hall state directory, or a copy under the temp root.
   excludedWritePath: function (fp, cx) {
     if (!fp) return false;
+    if (wd.inRequested(fp, cx)) return true;
     if (wd.re('workdetect.scratchpad_path').test(fp) || wd.re('workdetect.state_dir').test(fp)) return true;
     return wd.underTmp(fp, cx);
   },
-  pathHint: function (cmd, root) {
-    return !!cmd && (wd.re('workdetect.scratchpad_path').test(cmd) || wd.re('workdetect.state_dir').test(cmd) || (!!root && cmd.indexOf(root) >= 0));
+  // A session whose working directory is the scratchpad writes relative paths there (hooks/lib/work-detect.js hasExcludedPathHint).
+  cwdScratch: function (cx) { return !!cx && !!cx.cwd && wd.re('workdetect.scratchpad_path').test(cx.cwd + '/'); },
+  pathHint: function (cmd, root, cx) {
+    return wd.cwdScratch(cx) || !!cmd && ((cx.requested || []).some(function (r) { return cmd.indexOf(r.raw) >= 0 || cmd.indexOf(r.abs) >= 0; }) || wd.re('workdetect.scratchpad_path').test(cmd) || wd.re('workdetect.state_dir').test(cmd) || (!!root && cmd.indexOf(root) >= 0));
   },
   allPathsExcluded: function (n, cx) {
     var toks = n.split(/\s+/).filter(Boolean);
@@ -118,7 +173,7 @@ var wd = {
       if (!cmd || wd.housekeepingOnly(cmd)) return false;
       var n = wd.neutralize(cmd);
       if (!wd.bashWork(n)) return false;
-      var scratchOnly = wd.pathHint(cmd, cx.tmp) && !wd.re('workdetect.always_work', 'i').test(n) && wd.allPathsExcluded(n, cx);
+      var scratchOnly = wd.pathHint(cmd, cx.tmp, cx) && !wd.re('workdetect.always_work', 'i').test(n) && wd.allPathsExcluded(n, cx);
       return !scratchOnly;
     }
     return false;

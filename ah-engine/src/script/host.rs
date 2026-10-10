@@ -96,8 +96,19 @@ pub(super) fn lift_deadline() {
         if let Some(d) = c.borrow().as_ref() {
             d.wall.store(0, std::sync::atomic::Ordering::Relaxed);
             d.cpu.store(0, std::sync::atomic::Ordering::Relaxed);
+            d.req.store(0, std::sync::atomic::Ordering::Relaxed);
         }
     });
+    crate::deadline::set_cut_armed(false);
+}
+
+/// `r`, or an exception when the request's client stopped waiting while it ran ([`crate::deadline::cut_due`]): a native scan cut
+/// short must not read as an answer, so the script call fails as a cut and its check defers to its Node hook.
+pub(super) fn unless_cut<T>(r: T) -> rquickjs::Result<T> {
+    if crate::deadline::cut_due() {
+        return Err(rquickjs::Error::new_from_js_message("scan", "cut", defaults::text("script.msg_scan_cut").to_string()));
+    }
+    Ok(r)
 }
 
 /// Run `f` with `st` as the request state the host functions read.
@@ -105,6 +116,7 @@ pub fn with_call<R>(st: Settings, f: impl FnOnce() -> R) -> R {
     CALL.with(|c| *c.borrow_mut() = Some(st));
     EXECS.with(|c| *c.borrow_mut() = 0);
     super::host_proc::reset_call();
+    super::host_mesh::reset_call();
     super::host_spawn::reset_call();
     let r = f();
     // a lock a script still holds when its call ends (an exception, an interrupt) is released here, never left to go stale
@@ -922,7 +934,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("cfgLive", Function::new(c.clone(), |k: String| -> rquickjs::Result<String> { cfg_live(&k) })?)?;
     h.set("now", Function::new(c.clone(), now_ms)?)?; // documented (`ah.clock.now()`) but not installed by the host API commit
     h.set("sha1", Function::new(c.clone(), |t: String| crate::checks::replykit::io::sha1_hex(&t))?)?;
-    h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| tail_lines(&p, w, l))?)?;
+    h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| unless_cut(tail_lines(&p, w, l)))?)?;
     h.set("tailEntries", Function::new(c.clone(), |p: String, w: f64, l: f64, k: String, m: f64| tail_entries(&p, w, l, &k, m))?)?;
     h.set(
         "pruneState",
@@ -984,6 +996,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     super::host_io::install(c, &h)?;
     super::host_b3::install(c, &h)?;
     super::host_d::install(c, &h)?;
+    super::host_mesh::install(c, &h)?;
     super::host_proc::install(c, &h)?;
     super::host_spawn::install(c, &h)?;
     super::host_ts::install(c, &h)?;

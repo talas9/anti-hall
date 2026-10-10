@@ -1,0 +1,114 @@
+/* anti-hall site theme. One accent (verified teal) on a slate base; light mode mirrors it. */
+:root {
+  --ah-radius: 12px;
+  --ah-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 6px 18px rgba(0, 0, 0, 0.1);
+  --ah-glow: 0 0 0 1px var(--ah-accent), 0 0 22px var(--ah-accent-soft);
+}
+
+[data-md-color-scheme="slate"] {
+  --ah-accent: #2dd4bf;
+  --ah-accent-soft: rgba(45, 212, 191, 0.22);
+  --md-hue: 215;
+  --md-default-bg-color: #0e141b;
+  --md-default-fg-color: #e6edf3;
+  --md-default-fg-color--light: #9fb0c0;
+  --md-code-bg-color: #131c26;
+  --md-primary-fg-color: #0e141b;
+  --md-primary-bg-color: #e6edf3;
+  --md-accent-fg-color: #2dd4bf;
+  --md-accent-fg-color--transparent: rgba(45, 212, 191, 0.12);
+  --md-typeset-a-color: #2dd4bf;
+  --ah-card-bg: #131c26;
+  --ah-card-border: #22303e;
+}
+
+[data-md-color-scheme="default"] {
+  --ah-accent: #0f766e;
+  --ah-accent-soft: rgba(15, 118, 110, 0.18);
+  --md-primary-fg-color: #f7f9fb;
+  --md-primary-bg-color: #17212b;
+  --md-accent-fg-color: #0f766e;
+  --md-accent-fg-color--transparent: rgba(15, 118, 110, 0.1);
+  --md-typeset-a-color: #0f766e;
+  --ah-card-bg: #ffffff;
+  --ah-card-border: #dbe3ea;
+}
+
+/* Header blends into the page; the accent lives in links, icons and focus only. */
+.md-header, .md-tabs { box-shadow: none; border-bottom: 1px solid var(--ah-card-border); }
+.md-typeset { line-height: 1.7; }
+.md-typeset h1, .md-typeset h2 { letter-spacing: -0.01em; }
+.md-typeset h2 { margin-top: 2.4em; }
+
+/* Home hero */
+.ah-hero { text-align: center; padding: 2.5rem 0 1rem; }
+.ah-hero img { width: 84px; height: 84px; }
+.ah-hero .ah-tagline { font-size: 1.2rem; margin: 0.5rem auto 1.5rem; max-width: 38rem; }
+.ah-hero .md-button { margin: 0.25rem; border-radius: var(--ah-radius); }
+.ah-hero .md-button--primary {
+  background: var(--ah-accent);
+  border-color: var(--ah-accent);
+  color: #06201c;
+}
+
+/* Feature cards (grid cards from Material, restyled) */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  background: var(--ah-card-bg);
+  border: 1px solid var(--ah-card-border);
+  border-radius: var(--ah-radius);
+  box-shadow: var(--ah-shadow);
+  padding: 1.1rem 1.2rem;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid > .card:hover {
+  border-color: var(--ah-accent);
+  box-shadow: var(--ah-shadow), var(--ah-glow);
+  transform: translateY(-2px);
+}
+.md-typeset .grid.cards .twemoji,
+.md-typeset .grid.cards .lg { color: var(--ah-accent); }
+.md-typeset .grid.cards hr { margin: 0.6rem 0; }
+
+/* Admonitions, tabs, code: same radius */
+.md-typeset .admonition, .md-typeset details {
+  border-radius: var(--ah-radius);
+  box-shadow: var(--ah-shadow);
+  border-width: 0 0 0 4px;
+}
+.md-typeset .tabbed-set { border-radius: var(--ah-radius); }
+.md-typeset pre > code { border-radius: var(--ah-radius); }
+.md-typeset table:not([class]) { border-radius: var(--ah-radius); box-shadow: var(--ah-shadow); }
+.md-typeset__table { max-width: 100%; }
+.md-typeset table:not([class]) td code { word-break: break-word; }
+
+/* Hook messages: look like real terminal output. Wrap in <div class="ah-term" markdown>. */
+.md-typeset .ah-term, .md-typeset .ah-msg { margin: 1.2em 0; }
+.md-typeset .ah-term pre, .md-typeset .ah-msg pre { margin: 0; }
+.md-typeset .ah-term pre > code, .md-typeset .ah-msg pre > code {
+  background: #0a0f14;
+  color: #d5e2ee;
+  border: 1px solid #22303e;
+  border-top: 26px solid #17212b;
+  border-radius: var(--ah-radius);
+  box-shadow: var(--ah-shadow);
+  padding: 0.9rem 1.1rem;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  position: relative;
+}
+
+/* Motion off when asked */
+@media (prefers-reduced-motion: reduce) {
+  .md-typeset .grid.cards > ul > li, .md-typeset .grid > .card { transition: none; }
+  .md-typeset .grid.cards > ul > li:hover, .md-typeset .grid > .card:hover { transform: none; }
+}
+
+/* Buttons and headings: the header colour is dark slate, so set these explicitly. */
+.md-typeset .md-button { color: var(--ah-accent); border-color: var(--ah-accent); border-radius: var(--ah-radius); }
+.md-typeset .md-button:hover { background: var(--ah-accent-soft); color: var(--ah-accent); border-color: var(--ah-accent); }
+.md-typeset .md-button--primary, .md-typeset .md-button--primary:hover { background: var(--ah-accent); color: #06201c; }
+.md-typeset h1 { color: var(--md-default-fg-color); font-weight: 700; }
+.md-typeset h2, .md-typeset h3 { font-weight: 600; }

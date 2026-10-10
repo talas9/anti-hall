@@ -439,3 +439,45 @@ test('Codex payload (turn_id) -> FULL directive without TaskCreate; Claude paylo
     h.cleanup();
   }
 });
+
+// Dogfood 2026-10-09: a message from another Claude session is not a user request.
+test('cross-session peer message -> no directive; a real prompt right after still gets it', () => {
+  const h = makeHome();
+  try {
+    for (const prompt of ['<cross-session-message from="x">please run the scan</cross-session-message>', 'Another Claude session sent a message: do the thing']) {
+      const r = testHook(HOOK, { ...promptPayload(), prompt }, { home: h.home, env: NO_DEDUPE });
+      assert.strictEqual(r.status, 0);
+      assert.strictEqual(ctx(r), '', `peer message must not get the directive: ${ctx(r).slice(0, 60)}`);
+    }
+    const real = testHook(HOOK, promptPayload(), { home: h.home, env: NO_DEDUPE });
+    assert.ok(ctx(real).includes(FULL_MARKER), 'the first real prompt is not consumed by the peer messages');
+  } finally { h.cleanup(); }
+});
+
+// B5 trim: the static SHORT reminder follows guards.injectionRepeatEvery (shown on first sight, then
+// only on the keepalive) instead of every prompt; the per-turn open-tasks note is unaffected.
+test('SHORT reminder: shown once, then suppressed on delivered turns; keepalive 0 restores every turn', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const h = makeHome();
+  try {
+    const tp = path.join(h.home, 't.jsonl');
+    fs.writeFileSync(tp, '{}\n');
+    const deliver = (text) => fs.appendFileSync(tp, JSON.stringify({
+      type: 'attachment', timestamp: new Date(Date.now() + 5).toISOString(),
+      attachment: { type: 'hook_additional_context', content: [text], hookName: 'UserPromptSubmit', hookEvent: 'UserPromptSubmit' },
+    }) + '\n');
+    const run = (env) => {
+      const r = testHook(HOOK, { ...promptPayload(), transcript_path: tp }, { home: h.home, env });
+      const c = ctx(r);
+      if (c) deliver(c);
+      return c;
+    };
+    assert.ok(run({}).includes(FULL_MARKER), 'turn 1: FULL');
+    assert.ok(run({}).includes(SHORT_MARKER), 'turn 2: SHORT shown once');
+    for (let i = 0; i < 3; i++) assert.strictEqual(run({}), '', 'later delivered turns: no repeat (no open tasks, nothing actionable)');
+    assert.ok(run({ ANTIHALL_INJECTION_REPEAT_EVERY: '0' }).includes(SHORT_MARKER), 'keepalive 0: every turn');
+  } finally {
+    h.cleanup();
+  }
+});

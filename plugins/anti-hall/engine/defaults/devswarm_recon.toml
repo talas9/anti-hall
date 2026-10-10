@@ -134,6 +134,18 @@ value = "mirror-failed"
 doc = "Why a mirror could not be built: a directory held more files than devswarm_recon.mirror_max_files."
 value = "mirror-too-large"
 
+[devswarm_recon.why_root_mapped]
+doc = "Why a store's rows were handed back whole: a row's id is a non-primary builder in the app database with a different worktree path, so Node's healRegistry may first repair it (repairRootMappedChildRows), which is still Node's."
+value = "root-mapped-repair"
+
+[devswarm_recon.app_primary_type]
+doc = "The app database's builder type of the Primary workspace."
+value = "primary"
+
+[devswarm_recon.primary_id_prefix]
+doc = "The prefix of a Primary workspace's mesh id (a row with it is never a root-mapped child row)."
+value = "primary-"
+
 [devswarm_recon.why_rehome_across]
 doc = "Why a row was handed back: it is mis-keyed and moving it between stores (rehomeAcrossStores) is still Node's."
 value = "rehome-across-stores"

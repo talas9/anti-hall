@@ -20,8 +20,8 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable or torn optional file is the absent one (Node: `try { JSON.parse(readFileSync(...)) } catch (_) {}`)
 use crate::checks::guardkit::ojson::{OVal, is_array_index_key};
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::{js_number_of_str, slice_utf16};
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::dssup::appsync::plan::{app_sourced, dir_of, read_json_dir, wt_key};
 use crate::dssup::appsync::snap::{self, Snap};
@@ -304,36 +304,10 @@ fn row_live(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>) -> R<boo
 /// The `waiting-on-human` hint of `childBusyState`: a heartbeat of another session reports nothing; otherwise the bounded tail
 /// of the session transcript is read (`rostertail`), which also reports nothing for a missing, unreadable or empty file.
 fn waiting_hint(e: &Eng, id: &str, wt: &str, session: &str) -> R<Option<String>> {
-    if is_safe_id(id)
-        && let Some(beat) = read_obj(&file_in(e, "mesh_write.dir_heartbeats", id))
-        && let Some(theirs) = beat.get(key("mesh_write.field_session_id"))
-        && theirs.truthy()
-    {
-        let theirs = match theirs {
-            OVal::Str(t) => t.clone(),
-            OVal::Num(x) => to_js_string(*x),
-            OVal::Bool(b) => b.to_string(),
-            _ => return defer("heartbeat-session-type"),
-        };
-        if theirs != session {
-            return Ok(None);
-        }
+    match rostertail::transcript_file(&e.inv.home, id, wt, session)? {
+        Some(file) => rostertail::waiting_hint(&file, e.now),
+        None => Ok(None),
     }
-    if session.contains('/') || session.contains('\\') || session.contains("..") {
-        return defer("session-path");
-    }
-    let encoded: String = {
-        let from = key("devswarm_sup.lv_encode_chars");
-        wt.chars().map(|c| if from.contains(c) { key("devswarm_sup.lv_encode_to").to_string() } else { c.to_string() }).collect()
-    };
-    let file = e
-        .inv
-        .home
-        .join(key("mesh_write.claude_dir"))
-        .join(key("devswarm_sup.lv_projects_dir"))
-        .join(encoded)
-        .join(format!("{session}{}", key("devswarm_sup.lv_transcript_ext")));
-    rostertail::waiting_hint(&file, e.now)
 }
 
 /// `rosterHints(home, id, worktreePath, now, sessionId, { registryBacked })`.
@@ -371,6 +345,7 @@ fn hints(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>) -> R<Vec<St
 }
 
 /// `computeInstanceNonceCounts(rows, now, freshMs)`: id -> the most nonces alive at once.
+#[allow(clippy::type_complexity)]
 fn instance_counts(st: &MeshStore, now: f64) -> R<HashMap<String, f64>> {
     let window = defaults::num("devswarm_sup.lv_heartbeat_fresh_ms") as f64;
     let gap = defaults::num("devswarm_cli.rr_split_gap_ms") as f64;
@@ -555,6 +530,7 @@ fn archived_rows(e: &Eng, shown: &HashSet<String>) -> R<Vec<Obj>> {
 }
 
 /// `localArchivedAppLive(home, { repoKey })`: workspaces anti-hall archived that the app still shows.
+#[allow(clippy::type_complexity)]
 fn app_still_live(e: &Eng, snap: &Snap) -> R<Vec<(String, String, Option<String>, Option<String>, String)>> {
     let home = e.inv.home.as_path();
     let archived = read_json_dir(&dir_of(home, "devswarm_sup.as_dir_archived"))?;
@@ -635,7 +611,16 @@ fn enrich(e: &Eng, rows: &mut Vec<Obj>, snap: &Option<Snap>) -> R<()> {
         let id = str_field(r, "id").map(str::to_string);
         let wt = str_field(r, "worktreePath").map(str::to_string);
         let Some(ws) = snap.workspace_for(id.as_deref(), wt.as_deref())? else { continue };
-        r.put("appArchived", if ws.archived { OVal::Bool(true) } else if ws.active { OVal::Bool(false) } else { OVal::Null });
+        r.put(
+            "appArchived",
+            if ws.archived {
+                OVal::Bool(true)
+            } else if ws.active {
+                OVal::Bool(false)
+            } else {
+                OVal::Null
+            },
+        );
         if let Some(l) = ws.label.as_ref().filter(|l| !l.is_empty()) {
             r.put("wsName", s(l));
         }
@@ -751,15 +736,15 @@ pub fn build(inv: &Inv, repo_key: &str, st: &MeshStore, sum: &OVal, main_worktre
         }
         o.put("worktreePath", wt.as_deref().map_or(OVal::Null, s))
             .put("source", s(key(if only_archived { "devswarm_cli.rr_source_archived" } else { "devswarm_cli.rr_source_store" })))
-            .put("meshId", match wt.as_deref() {
-                Some(p) => s(&ident::primary_workspace_id(p)?),
-                None => OVal::Null,
-            })
-            .put("hints", strings(&h))
             .put(
-                "wsName",
-                if is_safe_id(id) { crate::dssup::appsync::state::read_name(&inv.home, id).map_or(OVal::Null, |n| s(&n)) } else { OVal::Null },
-            );
+                "meshId",
+                match wt.as_deref() {
+                    Some(p) => s(&ident::primary_workspace_id(p)?),
+                    None => OVal::Null,
+                },
+            )
+            .put("hints", strings(&h))
+            .put("wsName", if is_safe_id(id) { crate::dssup::appsync::state::read_name(&inv.home, id).map_or(OVal::Null, |n| s(&n)) } else { OVal::Null });
         if let Some(n) = instances {
             o.put("instances", OVal::Num(n));
         }
@@ -817,7 +802,10 @@ pub fn build(inv: &Inv, repo_key: &str, st: &MeshStore, sum: &OVal, main_worktre
             );
             rep.put(
                 "message",
-                s(&tpl("devswarm_cli.rr_app_live_message", &[("count", &found.len().to_string()), ("cmds", &cmds.join(key("devswarm_cli.rr_app_live_cmd_sep")))])),
+                s(&tpl(
+                    "devswarm_cli.rr_app_live_message",
+                    &[("count", &found.len().to_string()), ("cmds", &cmds.join(key("devswarm_cli.rr_app_live_cmd_sep")))],
+                )),
             );
             live_report = Some(rep.done());
             for (id, ..) in &found {
@@ -916,11 +904,34 @@ pub fn human_text(inv: &Inv, rows: &[Obj], all: bool, now: f64) -> R<String> {
             };
             let pipe = defaults::list("devswarm_cli.rr_text_pipe");
             let name = name.replace(pipe[0], pipe[1]);
-            lines.push(tpl("devswarm_cli.rr_text_row", &[("name", &name), ("status", &status), ("finish", &finish), ("unread", &unread), ("last", &relative(last, now))]));
+            lines.push(tpl(
+                "devswarm_cli.rr_text_row",
+                &[("name", &name), ("status", &status), ("finish", &finish), ("unread", &unread), ("last", &relative(last, now))],
+            ));
         }
     }
     if hidden > 0 {
         lines.push(tpl("devswarm_cli.rr_text_hidden", &[("n", &hidden.to_string())]));
     }
     Ok(lines.join("\n"))
+}
+
+/// The row-state readers of the roster for another verb (`diagnose`, `healthcheck`): the same archived and live verdicts.
+pub(crate) struct Verdicts<'a>(Eng<'a>);
+
+impl<'a> Verdicts<'a> {
+    /// Verdicts for one project at the invocation's clock.
+    pub(crate) fn new(inv: &'a Inv, repo_key: &'a str) -> Verdicts<'a> {
+        Verdicts(Eng { inv, now: inv.now as f64, repo_key, dormant: std::cell::OnceCell::new() })
+    }
+
+    /// `rowEligibility(...).archived`: anti-hall's archive marker or the app's verdict.
+    pub(crate) fn archived(&self, id: &str, wt: Option<&str>) -> R<bool> {
+        archived(&self.0, id, wt)
+    }
+
+    /// `computeRowLive` / `isSiblingPartitionLive` of a row (`session` already empty-to-none).
+    pub(crate) fn live(&self, id: &str, wt: Option<&str>, session: Option<&str>) -> R<bool> {
+        row_live(&self.0, id, wt, session)
+    }
 }

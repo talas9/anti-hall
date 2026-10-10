@@ -33,6 +33,7 @@
 'use strict';
 
 const fs = require('fs');
+const { readOnlyGitEnv } = require('../../../hooks/lib/git-env.js');
 const path = require('path');
 const os = require('os');
 const { execFileSync, spawnSync } = require('child_process');
@@ -421,6 +422,7 @@ function defaultExec(args, cwd) {
     encoding: 'utf8',
     timeout: GIT_EXEC_TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: readOnlyGitEnv(),
   });
 }
 

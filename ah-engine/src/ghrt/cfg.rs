@@ -69,6 +69,11 @@ impl Cfg {
         self.value(key).as_bool().unwrap_or(false)
     }
 
+    /// A text setting (empty when unknown or not text).
+    pub fn txt_value(&self, key: &str) -> String {
+        self.value(key).as_str().unwrap_or("").to_string()
+    }
+
     /// A list-of-strings setting.
     pub fn strs(&self, key: &str) -> Vec<String> {
         self.value(key).as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()

@@ -24,8 +24,9 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 /// Scenario id prefixes whose deferral is expected (the answer needs the hook's own working directory, or text the engine
-/// does not read as JavaScript does).
-pub(crate) const ALLOWED_DEFER: &[&str] = &["defer-"];
+/// does not read as JavaScript does). `write-dschild-`: a DevSwarm child workspace is a worker (hooks/lib/devswarm-role.js
+/// `isChildWorker` reads the descriptor and the DevSwarm install from disk), so the script hands a child's Bash write to Node.
+pub(crate) const ALLOWED_DEFER: &[&str] = &["defer-", "write-dschild-"];
 
 fn git(dir: &Path, args: &[&str]) {
     let mut c = Command::new("git");
@@ -392,7 +393,7 @@ const PUSH: &[&str] = &[
 
 const GCLOUD: &[&str] = &[
     // a gcloud read inside a read-only chain (each `;`/`&&` unit read-only on its face), and the chain never widening the grammar
-    "git fetch -q origin main && git rev-parse origin/main && gcloud run services describe friendship --project p --region us-central1 --format='value(status.latestReadyRevisionName,status.traffic)' 2>&1 | head -2",
+    "git fetch -q origin main && git rev-parse origin/main && gcloud run services describe my-service --project p --region us-central1 --format='value(status.latestReadyRevisionName,status.traffic)' 2>&1 | head -2",
     "git rev-parse HEAD && gcloud functions describe fn --project foo --region us-central1",
     "gcloud functions list --project foo | head -3; git rev-parse HEAD",
     "git status && gcloud functions list --project foo | head -3",

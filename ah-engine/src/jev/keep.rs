@@ -11,9 +11,9 @@
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 
-use crate::checks::jsport::num::to_js_string;
 use super::scrub::scrub_secrets;
-use crate::checks::replykit::json::{quote};
+use crate::checks::jsport::num::to_js_string;
+use crate::checks::replykit::json::quote;
 use crate::defaults;
 use serde_json::Value;
 use std::cmp::Ordering;

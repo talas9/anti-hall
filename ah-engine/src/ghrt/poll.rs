@@ -5,6 +5,7 @@
 //! learns is in the state file, so the next tick, `ah-engine gh status` and the statusline segment need no network.
 use super::api::{Fail, Resp, Runner};
 use super::cfg::Cfg;
+use super::ready;
 use super::{parse, repos};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -179,14 +180,14 @@ pub fn budget_cap(cfg: &Cfg, reported_limit: u64) -> u64 {
     limit.saturating_mul(cfg.int("github_rt.budget_pct")).checked_div(cfg.int("github_rt.pct_base")).unwrap_or(0)
 }
 
-struct Ctx<'a> {
-    cfg: &'a Cfg,
-    run: &'a dyn Runner,
-    now: u64,
+pub(super) struct Ctx<'a> {
+    pub(super) cfg: &'a Cfg,
+    pub(super) run: &'a dyn Runner,
+    pub(super) now: u64,
 }
 
 /// A fetch's outcome: a summary (fresh or from the cache), or the pass must stop.
-enum Got {
+pub(super) enum Got {
     Val(Value),
     Stop,
 }
@@ -307,7 +308,15 @@ impl Ctx<'_> {
     }
 
     /// One conditional GET. `soft`: a 403/404 means "not available" (an empty summary), not an error of the repo.
-    fn fetch(&self, st: &mut State, repo: &mut Repo, path: &str, soft: bool, prev_used: &mut Option<(u64, u64)>, parse: &dyn Fn(&Value) -> Value) -> Got {
+    pub(super) fn fetch(
+        &self,
+        st: &mut State,
+        repo: &mut Repo,
+        path: &str,
+        soft: bool,
+        prev_used: &mut Option<(u64, u64)>,
+        parse: &dyn Fn(&Value) -> Value,
+    ) -> Got {
         if !self.allow(st) {
             return Got::Stop;
         }
@@ -362,7 +371,7 @@ impl Ctx<'_> {
         }
     }
 
-    fn path(&self, key: &str, repo: &Repo, extra: &[(&str, &str)]) -> String {
+    pub(super) fn path(&self, key: &str, repo: &Repo, extra: &[(&str, &str)]) -> String {
         let (owner, name) = repo.slug.split_once('/').unwrap_or(("", ""));
         let mut p = self
             .cfg
@@ -378,7 +387,7 @@ impl Ctx<'_> {
     }
 
     /// One pass over a repo. Returns false when it stopped early (a hold or an error), in which case nothing is compared.
-    fn poll_repo(&self, st: &mut State, repo: &mut Repo, prev_used: &mut Option<(u64, u64)>) -> bool {
+    pub(super) fn poll_repo(&self, st: &mut State, repo: &mut Repo, prev_used: &mut Option<(u64, u64)>) -> bool {
         let cfg = self.cfg;
         let detached = repo.branch == cfg.txt("github_rt.git", "detached_word") || repo.branch.is_empty();
         if !detached {
@@ -603,12 +612,24 @@ pub fn tick(cfg: &Cfg, run: &dyn Runner, now: u64, force: bool) -> Report {
                         if st.edge_seen.get(&key).is_some_and(|t| now.saturating_sub(*t) < cool) {
                             continue;
                         }
+                        // the ready notice is told once per head commit, for good (the ledger), not only inside the cooldown
+                        let ready_edge = e.kind == "ready";
+                        let number = status["number"].as_u64().unwrap_or(0);
+                        let rkey = ready::ready_key(&repo.slug, number, &repo.sha);
+                        if ready_edge && ready::seen(cfg, &rkey) {
+                            continue;
+                        }
                         st.edge_seen.insert(key, now);
+                        if ready_edge {
+                            ready::ledger_note(cfg, &rkey, now);
+                            ready::log_notice(cfg, &status, &repo.slug, now);
+                        }
                         let (text, jobs) = parse::edge_text(cfg, &e.kind, &repo.slug, &repo.branch, &repo.sha, &status);
                         st.next_seq += 1;
-                        new_edges.push(json!({"seq": st.next_seq, "ts": now, "kind": e.kind, "root": repo.root, "slug": repo.slug, "branch": repo.branch, "sha": repo.sha, "number": status["number"], "text": text, "jobs": jobs, "advisory": cfg.strs("github_rt.advisory_kinds").contains(&e.kind)}));
+                        new_edges.push(json!({"seq": st.next_seq, "ts": now, "kind": e.kind, "root": repo.root, "slug": repo.slug, "branch": repo.branch, "sha": repo.sha, "number": status["number"], "text": text, "jobs": jobs, "advisory": cfg.strs("github_rt.advisory_kinds").contains(&e.kind) && (!ready_edge || cfg.flag("github_rt.ready_notify"))}));
                     }
                     repo.next_poll_ms = now + ctx.cadence(&st, &status);
+                    ready::try_merge(&ctx, &mut st, &mut repo, &status, &mut prev_used); // may bring the next poll forward after a merge
                     repo.last_poll_ms = now;
                     repo.err_status = 0;
                     repo.status = status;
@@ -619,6 +640,9 @@ pub fn tick(cfg: &Cfg, run: &dyn Runner, now: u64, force: bool) -> Report {
             }
         }
         st.repos.insert(root, repo);
+    }
+    if cfg.flag("github_rt.ready_enabled") && st.hold_until_ms <= now {
+        ready::followups(&ctx, &mut st, &mut prev_used);
     }
     st.edge_seen.retain(|_, t| now.saturating_sub(*t) < cfg.int("github_rt.edge_cooldown_ms").max(1));
     let cap = cfg.int("github_rt.etag_cap") as usize;

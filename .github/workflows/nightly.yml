@@ -1,0 +1,78 @@
+name: nightly
+
+# Suites that are gated out of the per-PR run:
+#   ANTIHALL_PARITY_TESTS=1  Node-side duplicates of the engine node_parity tests
+#   ANTIHALL_BENCH=1         wall/CPU timing assertions (flaky on a shared PR runner)
+# On failure ONE issue titled "Nightly test failure" is opened or commented on.
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    name: gated parity suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      - name: parity tests
+        run: |
+          node --test \
+            tests/hooks/command-guard-bash-edit-parity.test.js \
+            tests/hygiene/devswarm-wake-stable-launcher-parity.test.js
+        env:
+          ANTIHALL_PARITY_TESTS: '1'
+
+  bench:
+    name: gated timing suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      - name: timing tests
+        run: node --test tests/hooks/command-guard-scratch-work.test.js
+        env:
+          ANTIHALL_BENCH: '1'
+
+  report:
+    name: nightly failure issue
+    needs: [parity, bench]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: open or update the nightly failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PARITY: ${{ needs.parity.result }}
+          BENCH: ${{ needs.bench.result }}
+        run: |
+          title="Nightly test failure"
+          body="Run: ${RUN_URL}"$'\n'"parity: ${PARITY}"$'\n'"bench: ${BENCH}"
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+                --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$n" ]; then
+            printf '%s' "$body" | ./.github/scripts/bot-comment.sh "$n" ci-failure
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

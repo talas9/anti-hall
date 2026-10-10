@@ -93,6 +93,20 @@ function coreWorktreeOf(F, gitdir) {
   } catch (_) { return null; }
 }
 
+// isGitlinkPath(F, P, dir) -> true when `dir` is a submodule path declared in P's `.gitmodules`
+// (pure fs, no spawn). Both are realpath'd.
+function isGitlinkPath(F, P, dir) {
+  try {
+    const rel = path.relative(P, dir).split(path.sep).join('/');
+    if (!rel || rel.startsWith('..')) return false;
+    const txt = String(F.readFileSync(path.join(P, '.gitmodules'), 'utf8'));
+    const re = /^\s*path\s*=\s*(.+?)\s*$/gm;
+    let m;
+    while ((m = re.exec(txt))) { if (m[1].replace(/\/+$/, '') === rel) return true; }
+    return false;
+  } catch (_) { return false; }
+}
+
 function sha(s) { return crypto.createHash('sha256').update(s).digest('hex'); }
 
 // repoKeyForCommonDir(commonDir) — the repoKeyForWorktree formula over an already
@@ -271,7 +285,17 @@ function resolveContext(cwd, opts) {
         if (ri.isFile) {
           const pi = gitdirOf(F, P);
           if (pi && ri.G.startsWith(pi.G + path.sep + 'modules' + path.sep)) return P; // absorbed submodule
-          if (ri.hasCommondir) return null; // linked worktree (even when nested in another checkout)
+          if (ri.hasCommondir) {
+            // A linked worktree OF A SUBMODULE checked out at a gitlink path of the enclosing
+            // checkout P (DevSwarm creates a child's submodules this way: `git worktree add` from
+            // the main checkout's `.git/modules/<name>`, so the common dir's core.worktree names the
+            // MAIN checkout's submodule dir). P is its superproject: without this the hop below
+            // follows core.worktree to the main checkout and a child's submodule cwd resolves as the
+            // PRIMARY (peer report, SkyCrew child, 2026-10-09). Any other linked worktree nested in
+            // another checkout stays key-bearing.
+            if (coreWorktreeOf(F, ri.common) && isGitlinkPath(F, P, root)) return P;
+            return null;
+          }
         }
         return gitSuperproject(root); // .git DIR (non-absorbed / embedded / untracked) or unknown file layout
       };

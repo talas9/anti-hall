@@ -183,7 +183,7 @@ fn ndjson_msg(line: &str) -> R<Msg> {
 
 /// The per-row additions of the read, in Node's order: the forward marker, the instance digest, `from`/`text`/`kind`,
 /// `bodyLength`. Returns the finished row and its body length.
-fn finish(m: Msg) -> R<(OVal, f64)> {
+fn finish(m: Msg, legacy_from: &dyn Fn(&str) -> Option<String>) -> R<(OVal, f64)> {
     let mut o = m.fields;
     let get = |o: &Obj, k: &str| o.0.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
     let text_of = |v: Option<OVal>| match v {
@@ -203,7 +203,8 @@ fn finish(m: Msg) -> R<(OVal, f64)> {
         let sender = text_of(get(&o, "sender")).unwrap_or_default();
         o.put("instanceNonceShort", s(&short)).put("fromLine", OVal::Str(format!("{sender}@{short}")));
     }
-    let sender = get(&o, "sender").filter(|v| !matches!(v, OVal::Null)).unwrap_or(OVal::Null);
+    // a legacy row with no sender: a `DONE: <branch> ...` notice is attributed from its branch at read time (nothing is rewritten)
+    let sender = get(&o, "sender").filter(|v| !matches!(v, OVal::Null)).or_else(|| body.as_deref().and_then(legacy_from).map(OVal::Str)).unwrap_or(OVal::Null);
     let broadcast = matches!(get(&o, "mtype"), Some(OVal::Str(t)) if t == defaults::text("mesh_write.mtype_broadcast"));
     let body_text = body.unwrap_or_default();
     let len = body_text.len() as f64;
@@ -691,7 +692,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>) -> R<Planned> {
         total_out = merged_total as f64;
         let nd_cursor = floor_pos(nd_base);
         union_cursors = Some((nd_cursor, store_base));
-        nd_op_target = Some(nd_cursor + u.nd_unread_lines.len() as f64);
+        nd_op_target = Some(nd_cursor + u.nd_skipped as f64 + u.nd_unread_lines.len() as f64);
     } else {
         o.reader
             .for_each_message(id, floor_pos(store_base) as u64, |m| {
@@ -712,8 +713,13 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>) -> R<Planned> {
     let hashes: Vec<OVal> = msgs.iter().map(|m| common::s_or_null(m.hash.as_deref())).collect();
     let mut rows: Vec<OVal> = Vec::with_capacity(msgs.len());
     let mut body_bytes = 0.0;
+    let registry: std::cell::OnceCell<Vec<(String, String)>> = std::cell::OnceCell::new();
+    let legacy_from = |body: &str| -> Option<String> {
+        let branch = crate::dssup::ingest::import::done_branch(body)?;
+        crate::dssup::ingest::import::branch_sender(registry.get_or_init(|| crate::dssup::ingest::import::registry_pairs(&o.reader)), &branch)
+    };
     for m in msgs {
-        let (row, len) = finish(m)?;
+        let (row, len) = finish(m, &legacy_from)?;
         body_bytes += len;
         rows.push(row);
     }

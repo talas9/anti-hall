@@ -36,9 +36,18 @@ const DOWNSHIFT_DIRECTIVE =
   'SURFACE this recommendation to the user; ' +
   'under an orchestration layer that can set the model (OMC/OMX), route main accordingly.';
 
+// The usage API reports the reset with ms jitter (…:59.957Z vs …:00.295Z on
+// consecutive turns), which changed the directive text every turn and defeated
+// emit-dedupe. Render at nearest-minute precision (display AND dedupe key).
+function minuteRounded(iso) {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return String(iso);
+  return new Date(Math.round(t / 60000) * 60000).toISOString().replace(':00.000Z', 'Z');
+}
+
 function buildDirective(state) {
   const resetsClause = state.resetsAt
-    ? ' Defer non-urgent heavy work until reset at ' + state.resetsAt + '.'
+    ? ' Defer non-urgent heavy work until reset at ' + minuteRounded(state.resetsAt) + '.'
     : ' Defer non-urgent heavy work until the next reset.';
   return require('./lib/block-message.js').message({
     kind: 'warn',

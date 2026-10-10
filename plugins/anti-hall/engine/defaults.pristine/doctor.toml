@@ -254,6 +254,10 @@ value = "Guard behavior (live self-tests)"
 doc = "The heading of the statusline section."
 value = "Statusline"
 
+[doctor_msg.head_audit]
+doc = "The heading of the action audit section (what the acting features did and how often they were wrong)."
+value = "Action audit"
+
 [doctor_msg.head_workflows]
 doc = "The heading of the Workflow templates section."
 value = "Workflow templates (deadly-loop / ship-it)"
@@ -335,7 +339,7 @@ doc = "How often a live self-test checks whether its Node hook has finished."
 value = 20
 unit = "ms"
 
-# ---- install-health checks (lane-doctor): the engine binary, daemon, state directory, configuration, plugin registry, toolchain, logs, witness ----
+# ---- install-health checks (doctor lane): the engine binary, daemon, state directory, configuration, plugin registry, toolchain, logs, witness ----
 
 [doctor.exec_bit]
 doc = "Permission bits that mean 'executable' (octal 0111)."

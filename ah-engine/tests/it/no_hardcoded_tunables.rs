@@ -109,6 +109,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "static HEREDOC",
         "a thread-local slot for the heredoc scan of the command being walked, initialised empty: state, not a tunable",
     ),
+    ("src/script/host_mesh.rs", "static OWED", "a thread-local list of the app-cache writes the call's lookups owe, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static CALL", "a thread-local slot for the request state of one script call, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static RES", "a thread-local regex cache, initialised empty (its size bound is script.regex_cache_max): state, not a tunable"),
     ("src/watch/kq.rs", "const FFLAGS", "the kqueue vnode event flags the backend subscribes to: a kernel protocol constant, not a tunable"),

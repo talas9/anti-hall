@@ -57,9 +57,21 @@ function tgChildAttended(owner) {
   return tk.appDbPresent(ah.home()) ? null : false;
 }
 
+// A task whose owner names an agent this session has running (its id, its name or description) is attended: the agent is working
+// it. `rows` is the running-agent list of the transcript scan (null when unreadable: nothing is attended through it).
+function tgLiveAgentOwner(owner, rows) {
+  var o = (owner || '').trim().toLowerCase();
+  if (!o || rows === null || tgCoordinator(o)) return false;
+  var min = ah.cfgNum('task_guard.owner_match_min');
+  return rows.some(function (r) {
+    var id = String(r.id || '').toLowerCase(), d = String(r.description || '').toLowerCase();
+    return o === id || (d !== '' && o === d) || (o.length >= min && d.indexOf(o) >= 0);
+  });
+}
+
 // The open tasks the generic block lists: a task waiting (through any chain) on an open task that is itself free or waiting on the
 // owner is honestly blocked and left out, as is a task waiting on the owner and one owned by a live DevSwarm workspace. null defers.
-function tgUnblocked(open, tasks) {
+function tgUnblocked(open, tasks, rows) {
   var byId = {}, openIds = [];
   tasks.forEach(function (t) { byId[t.id] = t; if (ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0 && openIds.indexOf(t.id) < 0) openIds.push(t.id); });
   function valid(t) { return t.blockedBy.filter(function (id) { return id !== t.id && openIds.indexOf(id) >= 0; }); }
@@ -77,6 +89,7 @@ function tgUnblocked(open, tasks) {
   for (var i = 0; i < open.length; i++) {
     var t = open[i];
     if (tgOwnerBlocked(t) || valid(t).some(function (b) { return reach[b] === true; })) continue;
+    if (tgLiveAgentOwner(t.owner, rows)) continue;
     var attended = tgChildAttended(t.owner);
     if (attended === null) return null;
     if (!attended) out.push(t);
@@ -417,13 +430,15 @@ function decide(p) {
   }
 
   var now = ah.clock.now();
+  var agMemo;
+  function tgAgents() { if (agMemo === undefined) agMemo = ah.transcript.agents(transcript); return agMemo; }
   var actionable = tgActionable(open, tasks);
   var haveAgents = tgAgentsRunning(home, now);
   if (haveAgents === null) return 'defer';
   var demand = { fire: false, proven: false, unknown: false, dispatch: [], cap: null };
   if (actionable.length > 0) {
     if (ah.settings.bool('task_guard.dispatch_demand_setting')) {
-      var ag = ah.transcript.agents(transcript);
+      var ag = tgAgents();
       if (ag !== null && ag.unsure) return 'defer';
       demand = tgEvaluate(actionable, tasks, open, ag === null ? null : ag.rows, now);
       if (demand === null) return 'defer';
@@ -433,7 +448,14 @@ function decide(p) {
     }
   }
   var idle = demand.fire;
-  var nudge = tgUnblocked(open, tasks);
+  // the running agents are read once, and only when a dispatch check or an owned open task needs them
+  var rows = null;
+  if (open.some(function (t) { return t.owner && !tgCoordinator(t.owner); })) {
+    var own = tgAgents();
+    if (own !== null && own.unsure) return 'defer';
+    rows = own === null ? null : own.rows;
+  }
+  var nudge = tgUnblocked(open, tasks, rows);
   if (nudge === null) return 'defer';
   if (!idle && nudge.length === 0) return tgQuiet(out, tasks, home, sessionId);
 

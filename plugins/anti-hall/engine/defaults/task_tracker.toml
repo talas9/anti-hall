@@ -246,3 +246,14 @@ value = "a workspace-scale MATTER (feature/fix/deploy: multi-step, own branch, o
 [task_tracker.primary_key]
 doc = "The emit-dedupe key of the Primary block, rationed apart from the reminder."
 value = "task-tracker-primary"
+
+[task_tracker.peer_prompt_re]
+doc = "Regex source (case-insensitive) of a prompt that is another Claude session's message, not a person typing: the tracker stays silent for it (task-tracker.js, the cross-session test). Matched against the first peer_prompt_chars characters."
+value = '^\s*<cross-session-message\b|Another Claude session sent a message'
+
+[task_tracker.peer_prompt_chars]
+doc = "How many characters at the start of a prompt are tested against peer_prompt_re."
+value = 400
+unit = "chars"
+min = 40
+max = 5000

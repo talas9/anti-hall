@@ -550,6 +550,13 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
 // the ndjson log ONLY for pre-0.108.4 records the migration below has not
 // (yet) backfilled — so a caller who never runs the migration keeps working
 // exactly as before, and the durable file is authoritative once populated.
+// normHead(h) -> sha | null — ONE canonical form for a recorded doneHead: a
+// non-empty string, else null. A record written without the field (undefined),
+// with null, or with '' all mean "no HEAD recorded"; comparing the raw values
+// with === made null !== undefined, so such a record was never seen as already
+// migrated and stayed pending forever.
+function normHead(h) { return typeof h === 'string' && h ? h : null; }
+
 function autoArchivedStatePath(home) { return path.join(devswarmDir(home), 'auto-archived.json'); }
 
 // readAutoArchivedState(home) -> { "<id>": [{doneHead, at}, ...] }. Fail-open
@@ -578,8 +585,9 @@ function autoArchivedStateAppend(home, id, doneHead, at) {
     const state = readAutoArchivedState(home);
     const key = String(id);
     const list = Array.isArray(state[key]) ? state[key] : [];
-    if (!list.some((e) => e && e.doneHead === doneHead)) {
-      list.push({ doneHead: doneHead || null, at });
+    const nh = normHead(doneHead);
+    if (!list.some((e) => e && normHead(e.doneHead) === nh)) {
+      list.push({ doneHead: nh, at });
       state[key] = list;
       fs.mkdirSync(path.dirname(p), { recursive: true });
       const tmp = p + '.tmp-' + process.pid + '-' + Date.now();
@@ -631,11 +639,29 @@ function autoArchivedAt(home, ids, head) {
 // log yields an all-zero report, never a throw.
 function migrateAutoArchivedState(home, opts) {
   const o = opts || {};
-  const report = { scanned: 0, migrated: 0, pending: 0, errors: 0 };
+  const report = { scanned: 0, migrated: 0, pending: 0, errors: 0, normalized: 0 };
+  // Repair pass (never deletes): an already-written durable entry whose
+  // doneHead is absent/'' is rewritten to the canonical null so it compares
+  // equal to a log record without a HEAD. Idempotent; independent of the log.
+  const existing = readAutoArchivedState(home);
+  let dirty = false;
+  for (const k of Object.keys(existing)) {
+    if (!Array.isArray(existing[k])) continue;
+    for (const e of existing[k]) {
+      if (e && typeof e === 'object' && e.doneHead !== normHead(e.doneHead)) { report.normalized++; if (!o.dryRun) { e.doneHead = normHead(e.doneHead); dirty = true; } }
+    }
+  }
+  if (dirty) {
+    try {
+      const p = autoArchivedStatePath(home);
+      const tmp = p + '.tmp-' + process.pid + '-' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(existing));
+      fs.renameSync(tmp, p);
+    } catch (_) { report.errors++; }
+  }
   let lines = [];
   try { lines = fs.readFileSync(path.join(logsDir(home), 'devswarm-auto-archive.ndjson'), 'utf8').split('\n'); }
   catch (_) { return report; }
-  const existing = readAutoArchivedState(home);
   for (const l of lines) {
     if (!l) continue;
     let r;
@@ -644,17 +670,17 @@ function migrateAutoArchivedState(home, opts) {
     report.scanned++;
     const key = String(r.id);
     const list = Array.isArray(existing[key]) ? existing[key] : [];
-    const already = list.some((e) => e && e.doneHead === r.doneHead);
+    const already = list.some((e) => e && normHead(e.doneHead) === normHead(r.doneHead));
     if (already) continue;
     report.pending++;
     if (!o.dryRun) {
       const at = r.at != null ? r.at : (r.ts ? Date.parse(r.ts) : Date.now());
-      autoArchivedStateAppend(home, r.id, r.doneHead || null, Number.isFinite(at) ? at : Date.now());
+      autoArchivedStateAppend(home, r.id, normHead(r.doneHead), Number.isFinite(at) ? at : Date.now());
       // Keep `existing` in sync within this loop so two records for the SAME
       // id in one migration pass both land (autoArchivedStateAppend re-reads
       // the file each call, so this is a correctness no-op, purely avoiding
       // a redundant re-count of the same pair later in the same log).
-      list.push({ doneHead: r.doneHead || null, at });
+      list.push({ doneHead: normHead(r.doneHead), at });
       existing[key] = list;
       report.migrated++;
     }

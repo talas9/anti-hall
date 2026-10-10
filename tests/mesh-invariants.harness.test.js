@@ -36,7 +36,7 @@ const ops = require('./harness/ops.js');
 // anti-hall/DevSwarm session on this machine (this dev machine routinely runs
 // several in parallel — see project CLAUDE.md; verified live during authoring:
 // a real send-receipt/WAL diff observed mid-run belonged to an unrelated
-// skycrew session, not this harness).
+// demoapp session, not this harness).
 const usedRepoKeys = new Set();
 function makeFixture(readerIds, tag) {
   const fixture = ops.makeMeshFixture(readerIds, tag);

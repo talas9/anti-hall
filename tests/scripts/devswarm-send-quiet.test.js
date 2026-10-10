@@ -1,5 +1,5 @@
 'use strict';
-// peer request D (SkyCrew + tf3 Primaries, 2026-09-26): `send --quiet` prints
+// peer request D (DemoApp + tf3 Primaries, 2026-09-26): `send --quiet` prints
 // one line ("sent seq N -> X, B bytes, ok") instead of the full JSON, and
 // prints a LOUD "ok:false ..." line + keeps the non-zero exit code on
 // failure. The rendering lives in main() (an alternate stdout format, same

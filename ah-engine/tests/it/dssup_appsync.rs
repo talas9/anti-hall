@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity, clippy::regex_creation_in_loops)]
 //! The native app sync against Node's, on golden corpora, plus the safety properties it exists to keep.
 //!
 //! A corpus is ONE realistic DevSwarm installation written by Node's own code and `git`: the desktop app's database (repositories,

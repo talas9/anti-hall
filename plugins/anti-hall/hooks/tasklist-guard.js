@@ -70,6 +70,7 @@ const {
   isCountedWork,
   neutralizeQuotedContents,
   collectToolUses,
+  singleRequestPaths,
 } = require('./lib/work-detect.js');
 
 // commandWritesToPath(cmd, targetPath) -> bool. Used ONLY to attribute a
@@ -174,7 +175,7 @@ function main() {
   try {
     let codex = false;
     try { codex = require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex'; } catch (_) { codex = false; }
-    scan = scanTranscript(transcriptPath, { progressAbsPath, codex });
+    scan = scanTranscript(transcriptPath, { progressAbsPath, codex, cwd });
   } catch (_) {
     process.exit(0);
   }
@@ -862,6 +863,10 @@ function scanTranscript(filePath, opts) {
   const lines = tail.data.split(/\r?\n/);
   if (tail.truncated && lines.length > 0) lines.shift();
 
+  // A session with ONE user request: a write under a path that request names is the requested output, not untracked work.
+  // A clipped window cannot prove the request count, so then nothing is exempt.
+  const workOpts = { requested: singleRequestPaths(lines, opts && opts.cwd, !tail.truncated), cwd: opts && opts.cwd };
+
   let workCount = 0;
   let lastWorkTs = 0; // ms epoch of the NEWEST counted file-changing action (0 = unknown)
   let lastProgressWriteTs = 0; // ms epoch of the NEWEST write targeting progressAbsPath (0 = none seen)
@@ -952,7 +957,7 @@ function scanTranscript(filePath, opts) {
         const fp = tu.input && typeof tu.input.file_path === 'string' ? tu.input.file_path : '';
         // isCountedWork (hooks/lib/work-detect.js) excludes the session's own
         // scratchpad (FIX 7) — the same rule handover-freshness.js applies.
-        if (isCountedWork(tu)) {
+        if (isCountedWork(tu, workOpts)) {
           workCount++;
           if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
         }
@@ -968,7 +973,7 @@ function scanTranscript(filePath, opts) {
       if (name === 'Bash') {
         const cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
         // FIX 7 scratchpad-only traffic is excluded inside isCountedWork.
-        if (isCountedWork(tu)) {
+        if (isCountedWork(tu, workOpts)) {
           workCount++;
           if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
         }

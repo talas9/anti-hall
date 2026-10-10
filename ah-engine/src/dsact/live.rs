@@ -18,6 +18,11 @@ pub trait LiveState {
     fn facts(&self, kind: &str, id: &str) -> Option<Value>;
     /// Whether the app database now lists `id` as archived.
     fn archived(&self, id: &str) -> Option<bool>;
+    /// What an auto-archived workspace looks like now, for the mistake signals: `{head, activityMs}` (its worktree's HEAD and the
+    /// newest activity). `None` when it cannot be read.
+    fn post_archive(&self, _id: &str) -> Option<Value> {
+        None
+    }
     /// The rows of a delete plan for archives older than `days`: each `{id, eligible, ...evidence}`.
     fn prune_rows(&self, days: u64) -> Vec<Value>;
 }

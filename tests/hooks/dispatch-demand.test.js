@@ -588,3 +588,34 @@ test('evaluate(): proven discounts stale and pre-task unmapped agents; unknown t
   assert.strictEqual(run(task(undefined), ag({ launchedAtMs: now - 10 * 60000, lastActivityMs: now - 1 * 60000 })).proven, false, 'unknown task time counts');
   assert.strictEqual(run(task(now - 5 * 60000), ag({ launchedAtMs: NaN, lastActivityMs: NaN })).proven, false, 'unknown agent age counts');
 });
+
+// ---- generic block: a task owned by a RUNNING agent is attended (dogfood 2026-10-09) ----
+function genericBlocked(r) { return r.status === 0 && r.json && r.json.decision === 'block'; }
+function ownedTranscript(owner, extra) {
+  return [
+    ...createTasks(['implement the cache layer'], 1),
+    taskUpdate('toolu_u1', { taskId: '1', status: 'in_progress', owner }),
+    ...agentLaunch('toolu_a1', 'abc123def', 'implement the cache layer'),
+    ...(extra || []),
+  ];
+}
+for (const [what, owner] of [['agent id', 'abc123def'], ['agent description', 'implement the cache layer']]) {
+  test('ATTENDED: open task owned by a running agent (' + what + ') -> task-guard does not block', () => {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript(ownedTranscript(owner));
+      const r = testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP });
+      assert.ok(!genericBlocked(r), 'a live agent owns it; stdout: ' + r.stdout);
+    } finally { h.cleanup(); }
+  });
+}
+test('STILL BLOCKS: owner names an agent that already finished, or one that never existed', () => {
+  for (const [owner, extra] of [['abc123def', [agentDone('abc123def')]], ['ghost-agent', []]]) {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript(ownedTranscript(owner, extra));
+      const r = testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP });
+      assert.ok(genericBlocked(r), 'owner ' + owner + ' is not a live agent; stdout: ' + r.stdout);
+    } finally { h.cleanup(); }
+  }
+});

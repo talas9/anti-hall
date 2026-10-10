@@ -63,8 +63,17 @@ test('task-tracker as DevSwarm PRIMARY: 4 queued prompts -> 1 TASK-LIST and 1 DI
   const r = burst('task-tracker.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x' } },
     [(c) => c.includes('task-tracker: capture'), (c) => c.includes('task-tracker: Primary dispatch tier')]);
   assert.deepStrictEqual(r.counts, [1, 1]);
-  // TASK-LIST is burst-collapse only (re-emitted after delivery); the PRIMARY block is a keepalive key (quiet).
+  // B5: the SHORT TASK-LIST line is now a keepalive key too: shown once on first sight after the FULL primer
+  // (this [1]), then quiet until the keepalive (see the dedicated suppression test in task-tracker.test.js);
+  // the PRIMARY block is a keepalive key (quiet).
   assert.deepStrictEqual(r.after, [1, 0]);
+});
+
+test('task-tracker as DevSwarm PRIMARY: injectionRepeatEvery=0 -> burst collapse only, TASK-LIST re-emitted after delivery', () => {
+  const r = burst('task-tracker.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_INJECTION_REPEAT_EVERY: '0' } },
+    [(c) => c.includes('task-tracker: capture'), (c) => c.includes('task-tracker: Primary dispatch tier')]);
+  assert.deepStrictEqual(r.counts, [1, 1]);
+  assert.deepStrictEqual(r.after, [1, 1]);
 });
 
 test('devswarm-parent-inbox: 4 queued prompts -> 1 COMMS OVERRIDE; again after delivery', () => {

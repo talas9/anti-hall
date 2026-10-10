@@ -207,7 +207,7 @@ fn node_only_bash(e: &Env) -> String {
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"mergeGate":true}}"#).unwrap();
     let tp = "hedged.jsonl";
-    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py # \u{e9}"}, "transcript_path": tp})
+    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py # \u{e9} $(true)"}, "transcript_path": tp})
         .to_string()
 }
 

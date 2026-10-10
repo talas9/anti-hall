@@ -1,0 +1,81 @@
+# Dependabot PRs into dev: patch and minor GitHub-Actions and npm bumps merge themselves once every
+# other check on the PR head is green (dev has no required checks, so this waits for them itself).
+# A major bump gets a label and one comment for review and is never merged here. The PR's code is
+# never checked out; only metadata and the check results are read. Needs repo setting
+# "Allow merge commits"; uses a merge commit, never --admin or force.
+name: Dependabot merge
+
+on:
+  pull_request_target:
+    branches: [dev]
+    types: [opened, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: dependabot-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: read
+      statuses: read
+    steps:
+      - name: Read the update type
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Major bump, label and comment for review
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const n = context.payload.pull_request.number;
+            const label = 'review:major-bump';
+            await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: [label] }).catch(() => {});
+            const marker = '<!-- dependabot-major -->';
+            const all = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: n, per_page: 100 });
+            if (!all.some((c) => (c.body || '').includes(marker))) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: n, body: `${marker}\nMajor version bump: not merged automatically. Read the release notes for breaking changes, then merge by hand.` });
+            }
+
+      - name: Wait for the other checks, then merge (patch and minor)
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request;
+            if (!['github_actions', 'npm_and_yarn'].includes(process.env.ECOSYSTEM)) {
+              core.notice(`Ecosystem ${process.env.ECOSYSTEM} is not auto-merged.`);
+              return;
+            }
+            const sha = pr.head.sha;
+            const self = process.env.GITHUB_JOB;
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            // Poll the check runs on the head commit (this job's own check excluded) for up to 45 minutes.
+            for (let i = 0; i < 45; i++) {
+              const runs = (await github.rest.checks.listForRef({ owner, repo, ref: sha, per_page: 100 })).data.check_runs.filter((c) => c.name !== self && c.name !== 'merge');
+              const pending = runs.filter((c) => c.status !== 'completed');
+              const bad = runs.filter((c) => c.status === 'completed' && !['success', 'neutral', 'skipped'].includes(c.conclusion));
+              if (bad.length) { core.notice(`Not merging: failing check(s): ${bad.map((c) => c.name).join(', ')}`); return; }
+              if (runs.length > 0 && !pending.length) break;
+              if (i === 44) { core.notice('Not merging: checks did not finish in time.'); return; }
+              await sleep(60000);
+            }
+            const fresh = (await github.rest.pulls.get({ owner, repo, pull_number: pr.number })).data;
+            if (fresh.state !== 'open' || fresh.head.sha !== sha || fresh.mergeable === false) { core.notice('Not merging: PR changed or has conflicts.'); return; }
+            await github.rest.pulls.merge({ owner, repo, pull_number: pr.number, merge_method: 'merge', sha });
+            core.info(`merged #${pr.number}`);

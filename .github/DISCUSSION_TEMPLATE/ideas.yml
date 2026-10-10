@@ -1,0 +1,51 @@
+title: "[Idea] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas is for proposals that still need discussion. Once an idea is agreed, the maintainer turns it into an issue and tracks it there.
+        Found a bug, or a guard that blocked something legitimate? Please [open an issue](https://github.com/talas9/anti-hall/issues/new/choose) instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What goes wrong, or what is missing, today? Describe the situation, not the solution.
+      placeholder: When an agent does X, anti-hall does not notice, so ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should anti-hall do instead? Include any setting you would expect to turn it on or off.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the plugin
+      multiple: true
+      options:
+        - Hooks and guards (command, git, edit, agent, stop guards)
+        - Skills and agents
+        - Statusline
+        - Settings
+        - Engine (ah-engine)
+        - DevSwarm integration
+        - Codex port
+        - Documentation
+        - Other or not sure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Workarounds you use today, or other designs you ruled out.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before posting
+      options:
+        - label: I searched existing issues and discussions for this idea.
+          required: true

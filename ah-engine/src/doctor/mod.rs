@@ -270,6 +270,23 @@ fn statusline_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) 
     doc.warnl(defaults::text("doctor_msg.statusline_none").to_string());
 }
 
+/// The action audit: what the acting features did, their failure and mistake rates, and ledger keys left in doubt. Shown only
+/// when there is something to show; read-only.
+fn audit_section(doc: &mut Doc) {
+    if !defaults::raw("devswarm_act.audit_enabled").as_bool().unwrap_or(false) {
+        return;
+    }
+    let days = defaults::num("devswarm_act.audit_default_days");
+    let a = crate::dsact::audit::collect(&crate::paths::dir(), crate::health::now_ms() as i64, days);
+    if !crate::dsact::audit::has_data(&a) {
+        return;
+    }
+    doc.head(defaults::text("doctor_msg.head_audit"));
+    for (level, text) in crate::dsact::audit::findings(&a) {
+        if level == "warn" { doc.warnl(text) } else { doc.ok(text) }
+    }
+}
+
 fn workflows_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) {
     doc.head(defaults::text("doctor_msg.head_workflows"));
     let patterns: Vec<regex::Regex> = defaults::list("doctor.workflow_patterns").iter().map(|p| crate::checks::lit_re(p)).collect();
@@ -467,6 +484,7 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     }
     workflows_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
     detect::foreign_section(&mut doc, &ctx, root_path);
+    audit_section(&mut doc);
     if do_repair {
         repair_section(&mut doc, &ctx, &f, &fixes, root_path);
     } else if !f.check && f.explicit.is_empty() {

@@ -113,7 +113,13 @@ pub fn retire_archived_worktree_group(ctx: &Ctx, runner: &dyn Runner, repo_key: 
     scope.dirs.push(view::ds(defaults::text("mesh_write.dir_cursor_log")));
     let job = Job { label: defaults::text("devswarm_recon.job_archived").into(), scope, units, calls: vec![call], expect: vec![Some(want.clone())] };
     let res = gate::run(ctx, runner, &job, hooks);
-    let deferred = job.units.iter().zip(res.ends.iter()).filter(|(_, e)| matches!(e, UnitEnd::Deferred(_) | UnitEnd::Failed(_))).map(|(u, e)| (u.label.clone(), format!("{e:?}"))).collect();
+    let deferred = job
+        .units
+        .iter()
+        .zip(res.ends.iter())
+        .filter(|(_, e)| matches!(e, UnitEnd::Deferred(_) | UnitEnd::Failed(_)))
+        .map(|(u, e)| (u.label.clone(), format!("{e:?}")))
+        .collect();
     Ok(ArchivedRun { result: want, verdict: res.verdict, deferred })
 }
 
@@ -132,7 +138,15 @@ pub struct ArchivedForward {
 
 /// Plan `forwardArchivedOrphanUnread(s, id, survivor, {home, now, maxAgeMs})`: the unit (empty when nothing is forwarded) and
 /// Node's answer. A destination that is not registered answers `gone` (an archived-only destination is Node's).
-pub fn plan_forward_archived(home: &Path, store: &str, id: &str, survivor: &str, now: i64, max_age_ms: f64, allow_archived_dest: bool) -> R<(Option<Unit>, ArchivedForward)> {
+pub fn plan_forward_archived(
+    home: &Path,
+    store: &str,
+    id: &str,
+    survivor: &str,
+    now: i64,
+    max_age_ms: f64,
+    allow_archived_dest: bool,
+) -> R<(Option<Unit>, ArchivedForward)> {
     let rd = view::reader(home, store)?;
     let rows = view::registry(home, store)?;
     let cur = view::cursor_rows(&rd, id)?;
@@ -173,20 +187,37 @@ pub fn plan_forward_archived(home: &Path, store: &str, id: &str, survivor: &str,
         sig: view::partition_sig(home, store, id)?,
         files: vec![(view::primary_cursor_rel(id), view::pre_of(home, &view::primary_cursor_rel(id)))],
     };
-    let unit = Unit { label: format!("forward-archived:{id}"), lock: None, ops: vec![guard, Op::Forward { store: store.to_string(), dest: survivor.to_string(), rows: batch }] };
+    let unit = Unit {
+        label: format!("forward-archived:{id}"),
+        lock: None,
+        ops: vec![guard, Op::Forward { store: store.to_string(), dest: survivor.to_string(), rows: batch }],
+    };
     Ok((Some(unit), ArchivedForward { forwarded: inserted, stale, status: defaults::text("devswarm_recon.status_ok").into() }))
 }
 
 /// Witness and apply [`plan_forward_archived`].
-pub fn forward_archived_orphan_unread(ctx: &Ctx, runner: &dyn Runner, store: &str, id: &str, survivor: &str, max_age_ms: f64, hooks: &Hooks) -> R<(ArchivedForward, Verdict, Vec<UnitEnd>)> {
+pub fn forward_archived_orphan_unread(
+    ctx: &Ctx,
+    runner: &dyn Runner,
+    store: &str,
+    id: &str,
+    survivor: &str,
+    max_age_ms: f64,
+    hooks: &Hooks,
+) -> R<(ArchivedForward, Verdict, Vec<UnitEnd>)> {
     let (unit, res) = plan_forward_archived(ctx.home, store, id, survivor, ctx.now, max_age_ms, false)?;
     let want = json!({"forwarded": res.forwarded, "stale": res.stale, "status": res.status});
     let call = json!({"fn": "forwardArchived", "args": {"repoKey": store, "id": id, "survivor": survivor, "now": ctx.now, "maxAgeMs": max_age_ms}});
     let mut scope = super::side::scope_for(&[]);
     scope.stores.push(store.to_string());
     scope.dirs.push(view::ds(defaults::text("mesh_write.dir_cursors")));
-    let job = Job { label: defaults::text("devswarm_recon.job_forward_archived").into(), scope, units: unit.into_iter().collect(), calls: vec![call], expect: vec![Some(want)] };
+    let job = Job {
+        label: defaults::text("devswarm_recon.job_forward_archived").into(),
+        scope,
+        units: unit.into_iter().collect(),
+        calls: vec![call],
+        expect: vec![Some(want)],
+    };
     let out = gate::run(ctx, runner, &job, hooks);
     Ok((res, out.verdict, out.ends))
 }
-

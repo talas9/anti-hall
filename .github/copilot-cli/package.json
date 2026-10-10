@@ -1,0 +1,8 @@
+{
+  "name": "copilot-cli-pin",
+  "private": true,
+  "description": "Pinned Copilot CLI for ai-model.yml; bump with npm install --save-exact --package-lock-only",
+  "dependencies": {
+    "@github/copilot": "1.0.90"
+  }
+}

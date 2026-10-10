@@ -266,7 +266,11 @@ fn id_text(v: Option<&OVal>) -> R<String> {
 pub fn plan_retire_identity_family(home: &Path, archived_id: &str, desc: &OVal, require_gone: bool, gone: &HashSet<String>) -> R<RetirePlan> {
     let ArchDir::Dir(_) = archived_dir(home) else {
         // Node creates the directory first; creating it is not a step the engine takes, and a non-directory yields no twins
-        return if matches!(archived_dir(home), ArchDir::Absent) { defer(defaults::text("devswarm_recon.why_archived_absent")) } else { Ok(RetirePlan::empty()) };
+        return if matches!(archived_dir(home), ArchDir::Absent) {
+            defer(defaults::text("devswarm_recon.why_archived_absent"))
+        } else {
+            Ok(RetirePlan::empty())
+        };
     };
     let Some(names) = sorted_names(&workspaces_dir(home)) else { return Ok(RetirePlan::empty()) };
     let mut candidates: Vec<(OVal, Vec<u8>, (u64, u64))> = Vec::new();
@@ -334,7 +338,16 @@ pub fn retire_identity_family(home: &Path, archived_id: &str, desc: &OVal, requi
     let p = plan_retire_identity_family(home, archived_id, desc, require_gone, &HashSet::new())?;
     let result = p.result();
     let call = json!({"fn": "retireFamily", "args": {"archivedId": archived_id, "desc": serde_json::from_str::<Value>(&desc.stringify()).unwrap_or(Value::Null), "requireGone": require_gone}});
-    Ok(Plan { job: Job { label: defaults::text("devswarm_recon.job_retire").into(), scope: retire_scope(&[]), units: p.units, calls: vec![call], expect: vec![Some(result.clone())] }, result })
+    Ok(Plan {
+        job: Job {
+            label: defaults::text("devswarm_recon.job_retire").into(),
+            scope: retire_scope(&[]),
+            units: p.units,
+            calls: vec![call],
+            expect: vec![Some(result.clone())],
+        },
+        result,
+    })
 }
 
 // ---- foldArchivedFamilyDescriptors --------------------------------------------------------------------------------------------
@@ -368,9 +381,19 @@ fn num(x: i64) -> OVal {
 /// Plan `foldArchivedFamilyDescriptors(home, {deadline})`.
 pub fn fold_archived_family(home: &Path, now: i64, deadline: Option<i64>) -> R<Plan> {
     let call = json!({"fn": "foldArchivedFamily", "args": {"deadline": deadline}});
-    let mut out = json!({"ok": true, "action": "fold-archived-family-descriptors", "dryRun": false, "scanned": 0, "pending": 0, "retired": [], "left": [], "errors": 0});
+    let mut out =
+        json!({"ok": true, "action": "fold-archived-family-descriptors", "dryRun": false, "scanned": 0, "pending": 0, "retired": [], "left": [], "errors": 0});
     let finish = |units: Vec<Unit>, out: Value| -> R<Plan> {
-        Ok(Plan { job: Job { label: defaults::text("devswarm_recon.job_family").into(), scope: retire_scope(&[family_resume_rel()]), units, calls: vec![call.clone()], expect: vec![Some(out.clone())] }, result: out })
+        Ok(Plan {
+            job: Job {
+                label: defaults::text("devswarm_recon.job_family").into(),
+                scope: retire_scope(&[family_resume_rel()]),
+                units,
+                calls: vec![call.clone()],
+                expect: vec![Some(out.clone())],
+            },
+            result: out,
+        })
     };
     let ArchDir::Dir(dir) = archived_dir(home) else { return finish(Vec::new(), out) };
     let names = sorted_names(&dir).unwrap_or_default();
@@ -434,7 +457,12 @@ pub fn fold_archived_family(home: &Path, now: i64, deadline: Option<i64>) -> R<P
     }
     out["scanned"] = json!(scanned);
     out["retired"] = json!(retired);
-    out["left"] = Value::Array(by_twin.iter().map(|(id, rs)| if rs.len() > 1 { json!({"id": id, "reason": rs[0], "reasons": rs}) } else { json!({"id": id, "reason": rs[0]}) }).collect());
+    out["left"] = Value::Array(
+        by_twin
+            .iter()
+            .map(|(id, rs)| if rs.len() > 1 { json!({"id": id, "reason": rs[0], "reasons": rs}) } else { json!({"id": id, "reason": rs[0]}) })
+            .collect(),
+    );
     out["pending"] = json!(retired.len());
     if exhausted {
         out["budgetExhausted"] = json!(true);
@@ -472,7 +500,11 @@ fn store_buckets(home: &Path) -> Vec<String> {
     let legacy = regex::Regex::new(defaults::text("devswarm_recon.re_legacy_hash"));
     let shaped = regex::Regex::new(defaults::text("devswarm_recon.re_repo_key"));
     let (Ok(legacy), Ok(shaped)) = (legacy, shaped) else { return Vec::new() };
-    sorted_names(&home.join(view::ds(defaults::text("mesh_write.dir_store")))).unwrap_or_default().into_iter().filter(|n| legacy.is_match(n) || shaped.is_match(n)).collect()
+    sorted_names(&home.join(view::ds(defaults::text("mesh_write.dir_store"))))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| legacy.is_match(n) || shaped.is_match(n))
+        .collect()
 }
 
 /// `removeRegistryIf` succeeds iff the row's raw columns equal the guard Node builds: an empty or missing session is NULL.
@@ -496,7 +528,10 @@ pub fn fold_archived_rows(home: &Path, now: i64, deadline: Option<i64>) -> R<Pla
             scope.dirs.sort();
             scope.dirs.dedup();
         }
-        Ok(Plan { job: Job { label: defaults::text("devswarm_recon.job_rows").into(), scope, units, calls: vec![call.clone()], expect: vec![Some(out.clone())] }, result: out })
+        Ok(Plan {
+            job: Job { label: defaults::text("devswarm_recon.job_rows").into(), scope, units, calls: vec![call.clone()], expect: vec![Some(out.clone())] },
+            result: out,
+        })
     };
     let ArchDir::Dir(dir) = archived_dir(home) else { return finish(Vec::new(), out, false) };
     let names = sorted_names(&dir).unwrap_or_default();
@@ -709,7 +744,12 @@ fn restore_ops(home: &Path, id: &str, o: &RestoreOpts) -> R<(Vec<Op>, Value, Opt
         match view::pre_of(home, &act_rel) {
             Pre::Absent => {
                 created_link = true;
-                ops.push(Op::Link { from: arch_rel.clone(), to: act_rel.clone(), pre: Pre::Digest(view::sha256_hex(&arch_bytes)), ino: super::apply::ino_of(&arch_p) });
+                ops.push(Op::Link {
+                    from: arch_rel.clone(),
+                    to: act_rel.clone(),
+                    pre: Pre::Digest(view::sha256_hex(&arch_bytes)),
+                    ino: super::apply::ino_of(&arch_p),
+                });
             }
             _ => {
                 if super::apply::ino_of(&arch_p) != super::apply::ino_of(&act_p) {
@@ -762,7 +802,10 @@ pub fn restore_archived_descriptor(home: &Path, id: &str, opts: &RestoreOpts) ->
     }
     let units = if ops.is_empty() { Vec::new() } else { vec![Unit { label: format!("restore:{id}"), lock: Some(id.to_string()), ops }] };
     let call = json!({"fn": "restore", "args": {"id": id, "keepMarker": opts.keep_marker, "requireOwnerKey": opts.require_owner_key}});
-    Ok(Plan { job: Job { label: defaults::text("devswarm_recon.job_restore").into(), scope: sc, units, calls: vec![call], expect: vec![Some(result.clone())] }, result })
+    Ok(Plan {
+        job: Job { label: defaults::text("devswarm_recon.job_restore").into(), scope: sc, units, calls: vec![call], expect: vec![Some(result.clone())] },
+        result,
+    })
 }
 
 /// Whether the engine decides the sweep tail (`devswarm_sup.sweep_tail_mode` is `engine`); `node` (the default) leaves every

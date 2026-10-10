@@ -31,6 +31,9 @@ pub struct Union {
     pub unread: usize,
     /// The unread NDJSON lines, untrimmed.
     pub nd_unread_lines: Vec<String>,
+    /// Leading unread NDJSON lines skipped because their store twin (same hash) is already read. The NDJSON position an ack
+    /// writes is `nd base + nd_skipped + nd_unread_lines.len()`, so the tail stays contiguous.
+    pub nd_skipped: usize,
     /// The unread store rows no NDJSON line covers.
     pub store_only_unread: Vec<Value>,
     /// Age in ms of the oldest unread row that carries a timestamp, `None` when none does (or the age is negative).
@@ -189,7 +192,8 @@ pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
     let all_lines = all.clone().unwrap_or_default();
     let total = all_lines.len();
     // the NDJSON read position is the reader_cursors base, not the cursor file (which only says "known")
-    let nd_lines: Vec<String> = if known { all_lines.iter().skip(floor_index(i.nd_base)).cloned().collect() } else { Vec::new() };
+    let mut nd_lines: Vec<String> = if known { all_lines.iter().skip(floor_index(i.nd_base)).cloned().collect() } else { Vec::new() };
+    let mut nd_skipped = 0usize;
     let mut store_only: Vec<Value> = Vec::new();
     if let Some(reader) = i.store {
         let unread_start = total.saturating_sub(nd_lines.len());
@@ -210,16 +214,29 @@ pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
                 true
             })
             .map_err(|e| Defer(format!("store-read:{e}")))?;
+        let unread_row_hashes: HashSet<String> = unread_rows.iter().filter_map(|r| truthy_hash(r).map(str::to_string)).collect();
         let uncovered: Vec<Value> = unread_rows.into_iter().filter(|r| truthy_hash(r).is_none_or(|h| !unread_hashes.contains(h))).collect();
         let by_body = body_covered(&uncovered, &nd_lines, &store_hashes, i.id, unread_start)?;
         store_only = uncovered.into_iter().enumerate().filter(|(n, _)| !by_body.contains(n)).map(|(_, r)| r).collect();
+        // leading twin-read run (Node `unionUnread`): a line whose store twin is at or behind the store read position was read
+        let read_hashes: HashSet<&String> = store_hashes.iter().filter(|h| !unread_row_hashes.contains(*h)).collect();
+        while nd_skipped < nd_lines.len() {
+            let line = &nd_lines[nd_skipped];
+            let twin_read = embedded_hash(line)?.is_some_and(|h| read_hashes.contains(&h))
+                || read_hashes.contains(&legacy_line_hash(i.id, unread_start + nd_skipped, line));
+            if !twin_read {
+                break;
+            }
+            nd_skipped += 1;
+        }
+        nd_lines.drain(..nd_skipped);
     }
     let mut oldest: Option<f64> = None;
     for ts in nd_lines.iter().filter_map(|l| line_ts(l)).chain(store_only.iter().filter_map(|r| r["ts"].as_f64().filter(|t| t.is_finite()))) {
         oldest = Some(oldest.map_or(ts, |o| o.min(ts)));
     }
     let age = oldest.map(|o| i.now as f64 - o).filter(|a| *a >= 0.0);
-    Ok(Union { unread: nd_lines.len() + store_only.len(), nd_unread_lines: nd_lines, store_only_unread: store_only, oldest_unread_age_ms: age })
+    Ok(Union { unread: nd_lines.len() + store_only.len(), nd_unread_lines: nd_lines, nd_skipped, store_only_unread: store_only, oldest_unread_age_ms: age })
 }
 
 /// `unionUnread`'s merged `total` over the whole history: the NDJSON lines plus the store rows no line covers (by hash,
@@ -275,5 +292,61 @@ pub fn path_field(d: &OVal, key: &str) -> R<Option<String>> {
         Some(OVal::Str(s)) => Ok((!s.is_empty()).then(|| s.clone())),
         Some(OVal::Num(n)) if *n == 0.0 || n.is_nan() => Ok(None),
         Some(_) => defer("descriptor-field-type"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{Connection, params};
+
+    /// A scratch inbox (one `_h` line per hash), a cursor file and a store holding one row per hash.
+    fn fixture(tag: &str, hashes: &[&str], cursor: usize) -> (std::path::PathBuf, MeshReader, String, String) {
+        let dir = std::env::temp_dir().join(format!("ah-union-twin-{}-{tag}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
+        std::fs::create_dir_all(&dir).unwrap();
+        let inbox = dir.join("inbox.ndjson");
+        let lines: String = hashes.iter().map(|h| format!("{{\"_h\":\"{h}\",\"message\":\"m\"}}\n")).collect();
+        std::fs::write(&inbox, lines).unwrap();
+        let cur = dir.join("inbox.cursor");
+        std::fs::write(&cur, cursor.to_string()).unwrap();
+        let db = dir.join("devswarm.db");
+        let c = Connection::open(&db).unwrap();
+        c.execute_batch("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL, ts INTEGER NOT NULL, hash TEXT, body TEXT, sender TEXT, recipient TEXT, mtype TEXT, urgency TEXT, is_heartbeat INTEGER, needs_reply INTEGER, orig_hash TEXT, instance_nonce TEXT, seq INTEGER, UNIQUE(hash));").unwrap();
+        for (i, h) in hashes.iter().enumerate() {
+            c.execute("INSERT INTO messages (workspace_id, ts, hash, body, seq) VALUES ('w', ?1, ?2, 'm', ?3)", params![i as i64, h, i as i64 + 1]).unwrap();
+        }
+        drop(c);
+        let r = MeshReader::open(&db).unwrap();
+        (dir, r, inbox.to_string_lossy().into_owned(), cur.to_string_lossy().into_owned())
+    }
+
+    fn run(r: &MeshReader, inbox: &str, cur: &str, store_base: f64, nd_base: f64) -> Union {
+        union_unread(&UnionIn { inbox: Some(inbox), cursor_file: Some(cur), id: "w", store: Some(r), store_base, nd_base, now: 1 }).unwrap()
+    }
+
+    #[test]
+    fn a_line_whose_store_twin_is_already_read_is_not_unread() {
+        let (dir, r, inbox, cur) = fixture("read", &["native:a", "native:b"], 1);
+        let u = run(&r, &inbox, &cur, 2.0, 1.0);
+        assert_eq!((u.unread, u.nd_unread_lines.len(), u.nd_skipped), (0, 0, 1), "the phantom unread line is skipped");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    #[test]
+    fn a_line_whose_store_twin_is_unread_stays_unread() {
+        let (dir, r, inbox, cur) = fixture("unread", &["native:a", "native:b"], 1);
+        let u = run(&r, &inbox, &cur, 1.0, 1.0);
+        assert_eq!((u.unread, u.nd_unread_lines.len(), u.nd_skipped), (1, 1, 0));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    #[test]
+    fn only_the_leading_read_run_is_skipped_and_the_tail_stays_contiguous() {
+        let (dir, r, inbox, cur) = fixture("lead", &["native:a", "native:b", "native:c"], 0);
+        let u = run(&r, &inbox, &cur, 2.0, 0.0);
+        assert_eq!((u.nd_skipped, u.nd_unread_lines.len(), u.unread), (2, 1, 1));
+        assert_eq!(u.nd_skipped + u.nd_unread_lines.len(), 3, "the ack target is the total");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 }

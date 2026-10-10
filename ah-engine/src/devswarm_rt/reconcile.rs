@@ -195,6 +195,7 @@ impl Rt {
         let report = Report { generation: next.generation, edges: edges.clone(), repairs };
         let next = Arc::new(next);
         *self.cur.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
+        super::linefile::write(&next);
         if let Some(db) = db
             && next.app_readable
         {

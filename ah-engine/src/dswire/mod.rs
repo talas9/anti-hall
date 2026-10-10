@@ -18,6 +18,7 @@ pub mod consume;
 pub mod facts;
 pub mod live;
 pub mod nudges;
+pub mod stall;
 pub mod watching;
 
 use crate::db::Db;
@@ -100,6 +101,9 @@ pub struct Wire {
     env: RequestEnv,
     act_gap_ms: i64,
     act_pending: AtomicBool,
+    dirty: crate::dsact::events::Dirty,
+    tele: crate::dsact::tele::Tele,
+    last_stall: AtomicI64,
 }
 
 static GLOBAL: OnceLock<Arc<Wire>> = OnceLock::new();
@@ -130,6 +134,9 @@ impl Wire {
             env: RequestEnv::capture(),
             act_gap_ms: crate::defaults::num("devswarm_wire.act_min_gap_ms") as i64,
             act_pending: AtomicBool::new(false),
+            dirty: crate::dsact::events::Dirty::new(),
+            tele: crate::dsact::tele::Tele::new(state_dir),
+            last_stall: AtomicI64::new(0),
         }
     }
 
@@ -181,6 +188,7 @@ impl Wire {
             self.count(&mut |m| m.add("dswire_jev_dirty", &[], marked as u64));
             self.run_jev();
         }
+        self.dirty.mark(&rep.edges, now_ms());
         let kinds: Vec<&str> = crate::defaults::list("devswarm_wire.act_edge_kinds");
         let trigger = !matches!(cause, Cause::Event) || rep.edges.iter().any(|e| kinds.contains(&e.kind.as_str()));
         if trigger {
@@ -222,11 +230,15 @@ impl Wire {
         self.act_pending.store(false, Ordering::SeqCst);
         self.last_act.store(now, Ordering::SeqCst);
         let live = RtLive { rt: &self.rt, home: self.home.clone(), runner: &*self.runner, state_dir: self.state_dir.clone(), env: self.env.clone(), now };
-        let act = Act::new(&self.home, &self.state_dir, self.env.clone(), &live, &*self.runner);
+        let act = Act::new(&self.home, &self.state_dir, self.env.clone(), &live, &*self.runner).with_tele(self.tele.clone());
         let kinds = crate::defaults::list("devswarm_wire.act_kinds");
         let mut out = Vec::new();
         let engine = |k: &str| (self.exec)(k) == Executor::Engine;
-        if engine(kinds[0]) {
+        // with the event trigger on, an edge archives through the dirty set (events_if_due); the full sweep is the timer's safety net
+        let events = act.event_trigger_on() && !force;
+        if engine(kinds[0]) && events {
+            // nothing here: the event path owns plain edges
+        } else if engine(kinds[0]) {
             let s = act.auto_archive_sweep();
             for (k, outcome) in [("archived", "done"), ("failed", "failed")] {
                 let n = s.get(k).and_then(|v| v.as_array()).map_or(0, Vec::len) as u64;
@@ -245,11 +257,19 @@ impl Wire {
         if poke || esc {
             let allow = |k: &str| (k == "poke" && poke) || (k == "escalate" && esc);
             for r in act.poke_sweep_for(&allow) {
+                self.record_stall(&r, now);
                 self.after_nudge(&r, now);
                 self.count(&mut |m| m.inc("dswire_actions", &[("kind", &r.kind), ("outcome", r.word.text())]));
                 out.push(r.json());
             }
         }
+        if force {
+            act.mistake_scan();
+        }
+        if force {
+            self.nag(&act);
+        }
+        self.count(&mut |m| act.tele().publish(m));
         for (k, on) in [(kinds[1], poke), (kinds[2], esc)] {
             if !on {
                 self.count(&mut |m| m.inc("dswire_standdown", &[("kind", k)]));
@@ -281,6 +301,29 @@ impl Wire {
             }
             _ => {}
         }
+    }
+
+    /// The "done but open" nag pass (feature 2): queues the text for the Primary's next prompt.
+    fn nag(&self, act: &Act<'_>) {
+        act.nag_tick(&crate::dsact::nag::PendingFile(self.state_dir.clone()));
+    }
+
+    /// Archive the workspaces an edge marked dirty once they have been quiet for the debounce time (feature 3). Cheap when nothing
+    /// is waiting. Runs only when the engine is the auto-archive executor.
+    pub fn events_if_due(&self) {
+        if self.dirty.pending() == 0 || self.rt.mode() != Mode::On || (self.exec)(crate::defaults::list("devswarm_wire.act_kinds")[0]) != Executor::Engine {
+            return;
+        }
+        let _one = self.act_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let now = now_ms();
+        let live = RtLive { rt: &self.rt, home: self.home.clone(), runner: &*self.runner, state_dir: self.state_dir.clone(), env: self.env.clone(), now };
+        let act = Act::new(&self.home, &self.state_dir, self.env.clone(), &live, &*self.runner).with_tele(self.tele.clone());
+        let s = act.auto_archive_events(&self.dirty);
+        let n = s.get("archived").and_then(|v| v.as_array()).map_or(0, Vec::len) as u64;
+        if n > 0 {
+            self.count(&mut |m| m.add("dswire_actions", &[("kind", "auto-archive"), ("outcome", "done")], n));
+        }
+        self.count(&mut |m| act.tele().publish(m));
     }
 
     /// Run the sweep an edge asked for while the gap was still open, once the gap has passed. Cheap when nothing is pending.
