@@ -6,6 +6,13 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.300.1 (2026-10-10)
+
+Docs, site and repo patch. No engine or hook behavior changes.
+
+- **Docs site**: neutral near-black dark background with a faint teal hero glow (#125); new "How it works" section linked to the settings page (#127).
+- **Docs**: the Rust `ah-engine` is presented as the core component everywhere (README, GUIDE, HOOK-LATENCY, docs index, skills in both ports); the Node hooks are a temporary fallback removed in v1.0, never an option or mode (#127, #129).
+
 ## 0.300.0 (2026-10-09)
 
 ### Highlights
