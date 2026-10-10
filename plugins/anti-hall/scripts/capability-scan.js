@@ -17,6 +17,8 @@
 //    hardcoded list), so a future companion is picked up automatically. Each
 //    installer's own LABEL/UNIT constants are read via require() — the
 //    naming scheme is never re-derived or guessed.
+//  - The retired anti-hall statusline installer is intentionally not reported
+//    as an enableable capability; uninstall-statusline remains for cleanup.
 //  - Pending state migrations are DETECTED via migrate-state.js's own dryRun
 //    mode (added alongside this file) — never reimplemented here.
 
@@ -131,40 +133,6 @@ function companionActive({ installScript, home, platform }) {
   }
 }
 
-const STATUSLINE_HOW = 'node "${CLAUDE_PLUGIN_ROOT}/statusline/install-statusline.js" --user';
-
-// statuslineCapability({ cwd, home }) -> capability entry.
-// Mirrors doctor.js's scope-precedence read (project-local > project > user);
-// the first scope with a statusLine.command wins (that is the EFFECTIVE one).
-function statuslineCapability({ cwd, home }) {
-  function readJSON(p) {
-    try {
-      return JSON.parse(fs.readFileSync(p, 'utf8'));
-    } catch (_) {
-      return null;
-    }
-  }
-  const scopes = [
-    path.join(cwd, '.claude', 'settings.local.json'),
-    path.join(cwd, '.claude', 'settings.json'),
-    path.join(home, '.claude', 'settings.json'),
-  ];
-  try {
-    let active = false;
-    for (const p of scopes) {
-      const s = readJSON(p);
-      const cmd = s && s.statusLine && s.statusLine.command;
-      if (cmd) {
-        active = /statusline\.js/.test(cmd);
-        break;
-      }
-    }
-    return { name: 'statusline', available: true, active, how: STATUSLINE_HOW };
-  } catch (_) {
-    return { name: 'statusline', available: true, active: 'unknown', how: STATUSLINE_HOW };
-  }
-}
-
 const MIGRATIONS_HOW = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/migrate-state.js"';
 
 // migrationsCapability({ dir }) -> capability entry.
@@ -219,12 +187,6 @@ function scanCapabilities(opts) {
   }
 
   try {
-    capabilities.push(statuslineCapability({ cwd, home }));
-  } catch (_) {
-    capabilities.push({ name: 'statusline', available: true, active: 'unknown', how: STATUSLINE_HOW });
-  }
-
-  try {
     capabilities.push(migrationsCapability({ dir: cwd }));
   } catch (_) {
     capabilities.push({ name: 'state-migrations', available: true, active: 'unknown', how: MIGRATIONS_HOW });
@@ -253,6 +215,5 @@ module.exports = {
   scanCapabilities,
   discoverCompanions,
   companionActive,
-  statuslineCapability,
   migrationsCapability,
 };

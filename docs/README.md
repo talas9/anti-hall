@@ -98,11 +98,11 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `deadly-loop` | before merging anything risky | parallel Reviewer + Auditor + Critic debate + fix-waves until convergence |
 | `deadly-loop-multi` | deeper review | double/triple/quadruple deadly-loop pass |
 | `ship-it` | any change, small fix to multi-phase feature | plan-in-plan-mode → deadly-loop harden → build → verify each phase |
-| `install-statusline` | "install the statusline" | installs the two-line statusline (global or per-repo), wraps any existing one, backup/restore |
+| `install-statusline` | "install the statusline" | retired no-op; use uninstall-statusline to clean up older installs |
 | `doctor` | "is anti-hall working?" | live self-tests on every guard; `--repair` for safe auto-fixes |
 | `system-briefing` | "brief me on anti-hall", "what does X mean" | operator guide (terms, rules, verbs, settings) + live inventory of every hook/skill shipped |
 | `update` | "update anti-hall" | pulls latest, shows changelog delta, prompts `/reload-plugins` (restart only if a hook or skill path still shows the old version) |
-| `activate` | first-time setup | one-shot idempotent install of statusline + model-routing state (statusline, model routing, sentinel) |
+| `activate` | first-time setup | one-shot idempotent setup of model-routing state and sentinel; statusline install is retired |
 | `simplify` | "simplify this" / "deslop" | behavior-preserving simplification with a measured `net: -N lines` score |
 | `debt` | tracking deliberate shortcuts | register + audit `// anti-hall: <ceiling>,<when>` debt markers for rot risk |
 | `devswarm` | tuning/recovering the DevSwarm mesh | explains + activates + tunes the optional DevSwarm integration |

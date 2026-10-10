@@ -127,18 +127,25 @@ pub fn apply_mem_limit(mb: u64) -> String {
     if mb == 0 {
         return "off".into();
     }
-    let bytes = (mb * 1024 * 1024) as libc::rlim_t;
-    let mut cur: libc::rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-    // SAFETY: `cur` is a live, writable `rlimit`.
-    if unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut cur) } != 0 {
-        return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    #[cfg(target_os = "macos")]
+    {
+        return "unsupported:macos".into();
     }
-    let lim = libc::rlimit { rlim_cur: bytes.min(cur.rlim_max), rlim_max: cur.rlim_max };
-    // SAFETY: `lim` is a live `rlimit` that `setrlimit` only reads.
-    if unsafe { libc::setrlimit(libc::RLIMIT_DATA, &lim) } != 0 {
-        return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let bytes = (mb * 1024 * 1024) as libc::rlim_t;
+        let mut cur: libc::rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: `cur` is a live, writable `rlimit`.
+        if unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut cur) } != 0 {
+            return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+        }
+        let lim = libc::rlimit { rlim_cur: bytes.min(cur.rlim_max), rlim_max: cur.rlim_max };
+        // SAFETY: `lim` is a live `rlimit` that `setrlimit` only reads.
+        if unsafe { libc::setrlimit(libc::RLIMIT_DATA, &lim) } != 0 {
+            return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+        }
+        format!("ok:{mb}")
     }
-    format!("ok:{mb}")
 }
 
 /// The process's own memory, without file-backed pages other processes share or the kernel can reclaim (`None` where the platform

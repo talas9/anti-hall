@@ -252,7 +252,7 @@ value = "statusline set ({label}) -> {command}…"
 
 [doctor_msg.statusline_none]
 doc = "No statusLine is configured."
-value = "no statusLine configured — run the install-statusline skill (then restart)"
+value = "no anti-hall statusLine configured (installer retired)"
 
 [doctor_msg.workflow_found]
 doc = "Saved Workflow templates exist. Placeholder: {files}."

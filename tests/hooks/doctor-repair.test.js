@@ -452,15 +452,15 @@ test('runRepairs (in-process): sweep-lock-scratch FIXES stale lock scratch files
 // ---------------------------------------------------------------------------
 // 5. Statusline: install-if-missing vs custom-untouched.
 // ---------------------------------------------------------------------------
-test('doctor --fix: no statusLine anywhere -> installs (--user)', () => {
+test('doctor --fix: no statusLine anywhere -> skips retired statusline install', () => {
   const home = mkTmp('sl-missing');
   const cwd = mkTmp('sl-missing-cwd');
   try {
     const settingsPath = seedUserSettings(home); // {} — no statusLine
     const r = runDoctor({ cwd, args: ['--fix'], env: { HOME: home, USERPROFILE: home } });
-    assert.match(r.out, /FIXED \[statusline\]/, 'statusline must be installed when absent:\n' + r.out);
+    assert.match(r.out, /skipped \[statusline\].*retired|retired.*statusline/i, 'retired statusline install must be skipped:\n' + r.out);
     const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    assert.ok(after.statusLine && /statusline\.js/.test(after.statusLine.command || ''), 'settings.json now points at anti-hall statusline.js');
+    assert.ok(!after.statusLine, 'settings.json must not gain anti-hall statusLine');
   } finally { rm(home); rm(cwd); }
 });
 

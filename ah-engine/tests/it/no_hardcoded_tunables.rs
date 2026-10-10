@@ -69,6 +69,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/memdiag.rs", "static REPORTED", "a thread-local marker initialised to zero (which snapshot this worker already answered): state, not a tunable"),
     ("src/load.rs", "static SCAN_BYTES", "a thread-local counter initialised to zero: state, not a tunable"),
     ("src/load.rs", "static REQUEST", "a thread-local slot initialised empty: state, not a tunable"),
+    ("src/client.rs", "static LAST_NON_OK_REPLY", "a thread-local boolean marker initialised false: state, not a tunable"),
     (
         "src/checks/scripted.rs",
         "Scripted::new(",

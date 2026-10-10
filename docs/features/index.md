@@ -25,7 +25,7 @@ description: What anti-hall adds to Claude Code and Codex, one card per feature.
 
 - :material-gauge: **[Statusline](statusline.md)**
 
-    Project, git state, model, context use and agent activity in two lines.
+    Retired Claude statusline cleanup path for older anti-hall installs.
 
 - :material-source-branch: **[DevSwarm workspaces](devswarm.md)**
 

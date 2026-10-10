@@ -125,6 +125,14 @@ value = "crashloop.until"
 doc = "Written while a daemon runs; a leftover one with a dead pid is logged as one crash."
 value = "daemon.run"
 
+[files.daemon_down_marker]
+doc = "Short-lived client marker: when a hook client finds the daemon absent or hung, other clients skip connecting until this expires."
+value = "daemon.down.until"
+
+[files.spawn_lock]
+doc = "Short-lived client single-flight lock: only the client that creates it attempts to restart a missing daemon."
+value = "daemon.spawn.lock"
+
 [files.reaped_prefix]
 doc = "Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended)."
 value = "daemon.run.reaped."
@@ -198,7 +206,7 @@ env = "AH_ENGINE_EVAL_BUDGET_US"
 unit = "us"
 
 [daemon.mem_mb]
-doc = "Data-segment limit applied with setrlimit; 0 = none. It is a ceiling against runaway allocation, not a budget (the RSS cap is the budget), and Linux enforces it on thread stacks, so it must exceed daemon.workers times git.stack_mb plus headroom or a check thread cannot start. macOS accepts the call but does not enforce it."
+doc = "Data-segment limit applied with setrlimit; 0 = none. It is a ceiling against runaway allocation, not a budget (the RSS cap is the budget), and Linux enforces it on thread stacks, so it must exceed daemon.workers times git.stack_mb plus headroom or a check thread cannot start. macOS skips RLIMIT_DATA and reports unsupported:macos because setrlimit returns EINVAL there."
 value = 512
 env = "AH_ENGINE_MEM_MB"
 unit = "MB"
@@ -314,7 +322,7 @@ unit = "ms"
 
 [daemon.reply_slack_ms]
 doc = "Time kept back from a request's client deadline (client.deadline_ms, or what a dispatch request says) to write the reply: the inner budgets that could outlast the client's wait (a git call, a Jev consult) are clamped to the deadline minus this, so a slow dependency costs a fallback, not a lost answer."
-value = 150
+value = 500
 min = 0
 unit = "ms"
 
@@ -376,14 +384,27 @@ value = 78
 # ---- client limits --------------------------------------------------------------------------------------
 
 [client.deadline_ms]
-doc = "Overall deadline for one engine exchange (connect, write, read); a hard watchdog thread enforces it."
-value = 2000
+doc = "Overall hook-client deadline for one engine exchange (connect, write, read); a hard watchdog thread enforces it so a hung daemon fails open quickly."
+value = 300
 env = "AH_ENGINE_DEADLINE_MS"
+max = 300
 unit = "ms"
 
 [client.deadline_slack_ms]
 doc = "Extra wait for the exchange thread to report after the deadline before the client declares a timeout."
-value = 50
+value = 10
+unit = "ms"
+
+[client.down_marker_ttl_ms]
+doc = "How long other clients skip connecting after one client finds the daemon absent or hung; this prevents hook pile-ups while a restart is attempted."
+value = 3000
+env = "AH_ENGINE_DOWN_MARKER_TTL_MS"
+unit = "ms"
+
+[client.spawn_lock_ttl_ms]
+doc = "How old the single-flight daemon spawn lock may get before another client treats it as stale and may try one restart."
+value = 3000
+env = "AH_ENGINE_SPAWN_LOCK_TTL_MS"
 unit = "ms"
 
 [client.breaker_n]
@@ -448,9 +469,15 @@ doc = "Largest hook payload the client reads from stdin."
 value = 8388608
 unit = "bytes"
 
-[client.slow_probe_ms]
-doc = "After an exchange times out, how long the client waits for a ping: a daemon that answers is slow but healthy (logged as client_slow, not counted toward the breaker); one that does not counts as a failure."
-value = 200
+[client.wrapper_extra_ms]
+doc = "Extra shell watchdog budget beyond the client deadline and client slack; this lets the client write the daemon-down marker and release the single-flight spawn lock before the wrapper kills it."
+value = 400
+min = 1
+unit = "ms"
+
+[client.wrapper_watchdog_poll_ms]
+doc = "Poll interval for the hook wrapper millisecond watchdog."
+value = 2
 min = 1
 unit = "ms"
 
@@ -767,4 +794,3 @@ value = "defaults {file}: could not add missing {keys}: {err}"
 [defaults_load.msg_heal_none]
 doc = "Printed by `config heal` when no edited defaults file lacks a setting of the pristine copy."
 value = "nothing to heal: the edited defaults have every setting of the pristine copy"
-

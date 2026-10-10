@@ -18,7 +18,6 @@ const {
   scanCapabilities,
   discoverCompanions,
   companionActive,
-  statuslineCapability,
   migrationsCapability,
 } = require('../../plugins/anti-hall/scripts/capability-scan.js');
 
@@ -276,38 +275,17 @@ test('companionActive: real ingest installer on win32 -> "unknown" (documented n
 });
 
 // ---------------------------------------------------------------------------
-// statuslineCapability
+// retired statusline installer: capability-scan must not advertise an enable path
 // ---------------------------------------------------------------------------
 
-test('statuslineCapability: active=true when a scope statusLine points at statusline.js', () => {
-  const t = makeTmpDir('capscan-sl-active-');
+test('scanCapabilities excludes the retired statusline capability even when old settings.statusLine exists', () => {
+  const t = makeTmpDir('capscan-sl-retired-');
   try {
-    t.write('.claude/settings.json', JSON.stringify({ statusLine: { command: 'node /somewhere/statusline.js' } }));
-    const cap = statuslineCapability({ cwd: t.dir, home: path.join(t.dir, 'home-empty') });
-    assert.strictEqual(cap.name, 'statusline');
-    assert.strictEqual(cap.available, true);
-    assert.strictEqual(cap.active, true);
-  } finally {
-    t.cleanup();
-  }
-});
-
-test('statuslineCapability: active=false when no scope has a statusLine configured', () => {
-  const t = makeTmpDir('capscan-sl-inactive-');
-  try {
-    const cap = statuslineCapability({ cwd: t.dir, home: path.join(t.dir, 'home-empty') });
-    assert.strictEqual(cap.active, false);
-  } finally {
-    t.cleanup();
-  }
-});
-
-test('statuslineCapability: active=false when the effective statusLine is a different (non-anti-hall) command', () => {
-  const t = makeTmpDir('capscan-sl-other-');
-  try {
-    t.write('.claude/settings.local.json', JSON.stringify({ statusLine: { command: 'node /somewhere/else/foo.js' } }));
-    const cap = statuslineCapability({ cwd: t.dir, home: path.join(t.dir, 'home-empty') });
-    assert.strictEqual(cap.active, false);
+    t.write('.claude/settings.json', JSON.stringify({ statusLine: { command: 'node /somewhere/anti-hall/statusline/statusline.js' } }));
+    const report = scanCapabilities({ root: t.dir, home: path.join(t.dir, 'home-empty'), cwd: t.dir, platform: 'darwin' });
+    const names = report.capabilities.map((c) => c.name);
+    assert.ok(!names.includes('statusline'), 'retired statusline is cleanup-only, not an enableable capability');
+    assert.ok(report.capabilities.every((c) => !String(c.how || '').includes('install-statusline')), 'no statusline install command is offered');
   } finally {
     t.cleanup();
   }
@@ -358,7 +336,7 @@ test('migrationsCapability: active=true when the legacy file is already migrated
 // scanCapabilities: end-to-end shape + fail-open on a hostile root
 // ---------------------------------------------------------------------------
 
-test('scanCapabilities returns a flat array covering companions + statusline + migrations', () => {
+test('scanCapabilities returns a flat array covering companions + migrations, excluding retired statusline', () => {
   const t = makeTmpDir('capscan-e2e-');
   try {
     t.write('companion/install-thing.js', fakeInstallerSource({ label: 'com.test.thing', unit: 'test-thing' }));
@@ -366,10 +344,11 @@ test('scanCapabilities returns a flat array covering companions + statusline + m
     assert.ok(Array.isArray(report.capabilities));
     const names = report.capabilities.map((c) => c.name);
     assert.ok(names.includes('thing'));
-    assert.ok(names.includes('statusline'));
     assert.ok(names.includes('state-migrations'));
+    assert.ok(!names.includes('statusline'));
     for (const c of report.capabilities) {
       assert.ok('name' in c && 'available' in c && 'active' in c && 'how' in c);
+      assert.ok(!String(c.how || '').includes('install-statusline'));
     }
   } finally {
     t.cleanup();

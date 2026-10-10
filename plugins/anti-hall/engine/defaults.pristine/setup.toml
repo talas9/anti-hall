@@ -208,7 +208,7 @@ doc = "The program `capability-scan` asks for the managed cron markers on Linux.
 value = "crontab"
 
 [setup.cap_statusline_marker]
-doc = "The file name a status line command must contain for the statusline capability to count as active."
+doc = "The file name a legacy anti-hall status line command may contain when cleanup status is checked."
 value = "statusline.js"
 
 [setup.cap_legacy_files]
@@ -220,8 +220,8 @@ doc = "How a companion is enabled. Placeholder: file."
 value = 'node "${CLAUDE_PLUGIN_ROOT}/companion/{file}"'
 
 [setup.cap_how_statusline]
-doc = "How the status line is enabled."
-value = 'node "${CLAUDE_PLUGIN_ROOT}/statusline/install-statusline.js" --user'
+doc = "Statusline install is retired; cleanup is via uninstall-statusline."
+value = 'retired: use uninstall-statusline to clean up older anti-hall statusLine installs'
 
 [setup.cap_how_migrations]
 doc = "How pending state migrations are applied."

@@ -28,8 +28,9 @@ Inside Claude Code:
 /plugin install anti-hall@anti-hall
 ```
 
-The hooks apply to every project once the plugin is enabled. The statusline is a
-separate, optional step: [Statusline](../features/statusline.md).
+The hooks apply to every project once the plugin is enabled. anti-hall no longer
+installs a Claude `statusLine`; [Statusline](../features/statusline.md) now documents
+cleanup for older installs.
 
 !!! tip "Try it without installing"
     From a clone of the repository, `claude --plugin-dir /path/to/anti-hall` loads the

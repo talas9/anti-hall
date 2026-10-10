@@ -659,7 +659,12 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         (_, false) | (None, _) => Vec::new(),
         (Some(_), _) if entries.iter().all(|e| e.check.is_none()) => Vec::new(),
         (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_, _, _| {}),
-        (Some(_), _) => ask_daemon(&meta, raw).unwrap_or_default(),
+        (Some(_), _) => match ask_daemon(&meta, raw) {
+            Some(a) => a,
+            None if crate::client::take_non_ok_reply() => return Outcome { out: String::new(), code: 0, err: String::new() },
+            None if crate::client::fail_open_unavailable() => return Outcome { out: String::new(), code: 0, err: String::new() },
+            None => Vec::new(),
+        },
     };
     let blocking_checks = defaults::list("judge.dispatch_blocking_checks");
     let mut blocking: Vec<usize> = Vec::new();

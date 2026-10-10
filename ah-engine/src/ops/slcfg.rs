@@ -1,15 +1,15 @@
-//! `ah-engine install-statusline` and `ah-engine uninstall-statusline`: put the anti-hall status line into the host's
-//! `statusLine` setting and take it out again. Port of `statusline/install-statusline.js` and `uninstall-statusline.js`.
+//! `ah-engine install-statusline` and `ah-engine uninstall-statusline`: the installer is retired as a no-op, while the
+//! uninstaller still removes older anti-hall `statusLine` settings. Port of `statusline/install-statusline.js` and
+//! `uninstall-statusline.js`.
 //!
-//! They edit the user's own settings file, so every safety of the Node scripts is kept: the file is backed up once and the
-//! backup is never overwritten, other keys are merged and never clobbered, a statusLine that is not ours is wrapped as line 1
-//! (installer) or left alone (uninstaller), a re-run changes nothing, and the dispatcher path is refused when it holds shell
-//! metacharacters. The write itself is atomic and keeps the file's mode and link. The text and exit code are the scripts' own.
+//! Cleanup edits the user's own settings file, so every uninstaller safety of the Node scripts is kept: the file is backed up
+//! once and the backup is never overwritten, other keys are merged and never clobbered, a statusLine that is not ours is left
+//! alone, and the write itself is atomic and keeps the file's mode and link. The text and exit code are the scripts' own.
 //!
 //! A file it cannot read or parse is reported the way the scripts report it (the same lines and exit codes; Node's words for an
-//! operating-system error, the engine's own for a parse error) and nothing is written. The installer writes the engine's own
-//! status line command (`"<engine>" statusline`, no launcher and no Node script); `slcfg.node_only_env` gives the Node
-//! installer's command instead (the parity tests set it).
+//! operating-system error, the engine's own for a parse error) and nothing is written. Migration/update/doctor paths no longer
+//! rewrite or upgrade Claude `settings.statusLine`; they only leave cleanup guidance for `uninstall-statusline`.
+#![allow(dead_code)] // install-statusline is retired as a no-op; uninstall still uses the cleanup half of this port.
 use super::jsio::{self, join};
 use super::{env_snapshot, home, plugin_root};
 use crate::checks::guardkit::text::js_trim;
@@ -185,6 +185,12 @@ fn shown_command(sl: &J) -> String {
 }
 
 fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Result<i32, String> {
+    if !t("slcfg.install_retired").is_empty() {
+        let _ = args;
+        log.out(t("slcfg.install_retired"));
+        return Ok(0);
+    }
+
     let pa = paths(env)?;
     let node_only = node_only(env);
     // what the command will run: the engine itself, or (Node-only form) the dispatcher script
@@ -560,57 +566,17 @@ fn legacy_form(cmd: &str) -> bool {
     })
 }
 
-/// The persisted-shape migration of an existing install: a statusLine an earlier anti-hall installer wrote (Node-only or
-/// launcher form) becomes the engine's own command. Idempotent (the new form is not an old one), fail-open (anything unclear
-/// is left exactly as it is), and it only ever changes that one string, in place in the file's own text, after the one-time
-/// backup the installer keeps. `None`: nothing to do.
+/// Historical persisted-shape migration of an existing install. Retired: migration/update/doctor paths must not write or
+/// upgrade Claude `settings.statusLine`; cleanup is explicit through `uninstall-statusline`.
 fn upgrade_file(path: &str, home: &str, env: &BTreeMap<String, String>, cwd: &str, dry_run: bool) -> Option<Upgrade> {
-    if node_only(env) || jsio::config_write_refused(path, env, cwd) {
-        return None;
-    }
-    let text = read_text(path)?;
-    let settings = parse(&text).ok()?;
-    let old = command_of(settings.get("statusLine"))?.to_string();
-    if !legacy_form(&old) {
-        return None;
-    }
-    let engine = engine_path(home).filter(|e| shell_safe(e))?;
-    let new = engine_command(&engine);
-    if new == old {
-        return None;
-    }
-    let (old_lit, new_lit) = (json::quote(&old), json::quote(&new));
-    let report = |status: &'static str, key: &str| Some(Upgrade { status, msg: fill(key, &[("path", &path), ("command", &new)]) });
-    if text.matches(&old_lit).count() != 1 {
-        return report("skipped", "slcfg.mig_ambiguous");
-    }
-    let next = text.replacen(&old_lit, &new_lit, 1);
-    if parse(&next).ok().is_none_or(|n| command_of(n.get("statusLine")) != Some(new.as_str())) {
-        return report("skipped", "slcfg.mig_ambiguous");
-    }
-    if dry_run {
-        return report("skipped", "slcfg.mig_dry_run");
-    }
-    let backup = path.to_string() + t("slcfg.backup_suffix");
-    if !exists(&backup) && std::fs::copy(path, &backup).is_err() {
-        return report("failed", "slcfg.mig_backup_failed");
-    }
-    match jsio::write_file(path, next.as_bytes()) {
-        Ok(()) => report("fixed", "slcfg.mig_fixed"),
-        Err(_) => report("failed", "slcfg.mig_write_failed"),
-    }
+    let _ = (path, home, env, cwd, dry_run);
+    None
 }
 
-/// The settings files an install may have written: the user's, and the project's own two.
+/// Retired statusline-upgrade sweep. Kept as a no-op so older callers cannot write `settings.statusLine`.
 pub(crate) fn upgrade_commands(home: &str, cwd: &str, env: &BTreeMap<String, String>, dry_run: bool) -> Vec<Upgrade> {
-    let claude = t("slcfg.claude_dir");
-    let mut files = vec![join(home, &format!("{claude}/{}", t("slcfg.settings_file")))];
-    if !cwd.is_empty() {
-        files.push(join(cwd, &format!("{claude}/{}", t("slcfg.local_file"))));
-        files.push(join(cwd, &format!("{claude}/{}", t("slcfg.settings_file"))));
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    files.into_iter().filter(|f| seen.insert(f.clone())).filter_map(|f| upgrade_file(&f, home, env, cwd, dry_run)).collect()
+    let _ = (home, cwd, env, dry_run);
+    Vec::new()
 }
 
 // ---- uninstall --------------------------------------------------------------------------------------------------------
@@ -795,10 +761,9 @@ fn finish(plan: Option<super::shadow::Plan>, result: Result<i32, String>, log: L
 
 /// `install-statusline [--user|--project] [--consolidate]`
 pub fn run_install(p: &Parsed) -> i32 {
-    let plan = super::shadow::begin_install(t("ops.verb_install"), t("ops.script_install"), &p.raw);
-    let mut log = Log::default();
-    let result = install(&env_snapshot(), &p.raw, &mut log);
-    finish(plan, result, log)
+    let _ = p;
+    println!("{}", t("slcfg.install_retired"));
+    0
 }
 
 /// `uninstall-statusline [--user|--project] [--purge-base]`

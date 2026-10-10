@@ -332,7 +332,7 @@ doc = "Event-log detail when stale named raw-payload spool files were removed. P
 value = "removed {n} stale dispatch stdin spool file(s)"
 
 [dispatch.thin_command]
-doc = "The command of each event's thin trigger in the generated hooks.json (D87). Placeholders: {var} the host's plugin-root variable (the first of dispatch.root_vars), {event} the event, {extra} the host's dispatch.thin_host_args."
+doc = "The command of each event's thin trigger in the generated hooks.json (D87). Placeholders: {var} the host's plugin-root variable (the first of dispatch.root_vars), {event} the event, {extra} the host's dispatch.thin_host_args. The wrapper derives its engine-process deadline from client config."
 value = 'sh "${{var}}/hooks/ah-hook.sh" {event}{extra}'
 
 [dispatch.thin_host_args]

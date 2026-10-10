@@ -39,7 +39,7 @@ owner-approved prune and message retention. Per-component detail is in the
 anti-hall is a Claude Code **marketplace + plugin**, plus a separate Codex-native port,
 that keeps coding assistants from acting before they verify. It ships always-on Node
 hooks (mechanical guards no prompt can talk around), a set of evidence-driven workflow
-skills, and a live two-line statusline. A small Rust engine answers the hooks with Node.js 22+ as the fallback, no npm dependencies, **macOS · Linux**
+skills, with legacy statusline cleanup retained for older installs. A small Rust engine answers the hooks with Node.js 22+ as the fallback, no npm dependencies, **macOS · Linux**
 (Node ≥ 22 on `PATH` is the only prerequisite; Windows is not supported).
 
 It targets four predictable failure modes: **eagerness** (acting before investigating),
@@ -168,8 +168,8 @@ Prerequisite: **Node.js >= 22** on `PATH` (check with `node --version`).
 ```
 
 To try it without installing: `claude --plugin-dir /path/to/anti-hall`. The hooks apply
-globally once enabled; the statusline is a separate one-command install
-([Statusline](#statusline-opt-in-one-command)).
+globally once enabled. anti-hall no longer installs a Claude `statusLine`; the
+statusline docs now cover cleanup for older installs ([Statusline](#statusline-retired-cleanup)).
 
 **Codex** (from scratch; the installer lives in the repo, so clone it first):
 
@@ -195,7 +195,7 @@ claude plugin uninstall anti-hall@anti-hall
 claude plugin marketplace remove anti-hall   # optional: also drop the marketplace
 ```
 
-If you installed the statusline, remove it first with the `install-statusline` skill's uninstall, or run `node statusline/uninstall-statusline.js` from the plugin directory (it restores your previous `statusLine`).
+If an older anti-hall statusline is still configured, remove it first with `uninstall-statusline`, or run `node statusline/uninstall-statusline.js` from the plugin directory (it restores your previous `statusLine`).
 
 **Codex:** the installer has no uninstall flag. Open `.codex/hooks.json` (project) or `~/.codex/hooks.json` (global) and delete the hook groups whose command path contains `/plugins/anti-hall/hooks/`; the installer's `.bak-<timestamp>` copies hold your prior file. The `[features] hooks = true` line it added to `config.toml` is left alone.
 
@@ -211,7 +211,7 @@ node install-devswarm-ingest.js --uninstall       # DevSwarm ingest daemon (com.
 
 ## Requirements
 
-**Node.js ≥ 22 on `PATH`.** Every hook and the statusline are pure Node (built-ins
+**Node.js ≥ 22 on `PATH`.** Every hook and the legacy statusline cleanup/render scripts are pure Node (built-ins
 only), launched as `node <hook>.js` (directly, or by `ah-engine` for the cases it hands back to Node). No `node` on the hook shell's `PATH` means Claude
 Code silently skips every anti-hall hook — verify with `node --version`. No npm
 install, no native deps, no other config. There is intentionally no shell-based
@@ -234,11 +234,11 @@ Terms used below: **DevSwarm** is a multi-workspace orchestration app with a `hi
 |---|---|
 | **Guards** | Mechanical, always-on Node hooks — block AI self-credit/force-push (`git-guard`), fabricated stdlib/builtin APIs (`api-guard`), un-delegated heavy commands (`command-guard`), un-delegated direct edits (`edit-guard`), spawn-rate/memory fork-bombs (`swarm-guard`), stopping with open tasks (`task-guard`/`tasklist-guard`), cheapest-fitting-model routing (`model-routing-guard`), opt-in `merge-gate`/`ship-it-guard`, and more. |
 | **Verify-first discipline** | Injects the full Iron-Law + rationalization-table protocol at session start (survives compaction) and a rotating one-line nudge every turn, plus the always-on scope-fidelity + anti-sycophancy rules; enforced, not just suggested. |
-| **Orchestration** | Non-blocking coordinator discipline: delegate heavy/broad work to subagents, verify delegated "done" claims against ground truth, live phase progress on the statusline. |
+| **Orchestration** | Non-blocking coordinator discipline: delegate heavy/broad work to subagents, verify delegated "done" claims against ground truth, and keep phase state available for integrations. |
 | **Auto-handover** | On by default: at 85% context the agent writes a handover itself, tells you, and suggests `/compact` or `/clear`; short follow-up reminders after that. Configure via `/anti-hall:settings`. |
 | **DevSwarm mesh** | Optional, dormant unless a DevSwarm session is active — layered wake/recovery (self-report → poke → escalate, never auto-kill), one mailbox per session, per-turn mesh status. The DevSwarm app's own database is the ground truth for workspace state; done workspaces are auto-archived (DevSwarm ≥ 2.5.3), old message bodies are archived then pruned. See [`KB-devswarm-hivecontrol.md`](KB-devswarm-hivecontrol.md) and [`KB-devswarm-app-db.md`](KB-devswarm-app-db.md). |
 | **Jev classifier** | Optional LLM-backed speculation classifier ([`KB-jev-classifier.md`](KB-jev-classifier.md)) — per-integration on/shadow/off modes, metrics + `jev report` KEEP/REVIEW/REMOVE calls. |
-| **Statusline** | Live two-line statusline: git/model/context/cost on line 1, live orchestration/context gauge on line 2. Installable globally or per-repo, consolidates with an existing statusline (e.g. OMC HUD). |
+| **Statusline** | Retired installer. New setup/update/doctor flows do not write Claude `statusLine`; `uninstall-statusline` remains to clean up older anti-hall installs. |
 | **doctor / update** | `doctor` runs live behavioral self-tests on every guard and repairs safe drift; `update` pulls the latest release and shows the changelog delta. Repairs also run by themselves after a plugin reload or on a new version. |
 | **Settings** | One place for every setting — `~/.anti-hall/settings.json`, grouped by category and reachable through `/anti-hall:settings` (Claude Code's `/config` panel has only the headline switches, the safety guards and the keys); or tell `/anti-hall:settings` "set X to Y". See [Settings](#settings-anti-hallsettings). |
 
@@ -713,11 +713,8 @@ Invoke via slash command:
   not authorization; a real gate must still enforce its own check).
 - **`/anti-hall:deadly-loop-multi`** — scaled-up deadly-loop: N Reviewer + N Critic
   pairs with diversified lenses, then dedup + synthesize (double / triple / quadruple).
-- **`/anti-hall:install-statusline`** — writes the statusLine setting (global by
-  default, per-project on request) and reminds you to restart. `--consolidate` merges
-  with an existing statusline (e.g., OMC HUD) instead of replacing it; base persisted
-  to `~/.anti-hall/consolidated-base.json`. Env: `ANTIHALL_STATUSLINE_BASE` pins the
-  base expression explicitly.
+- **`/anti-hall:install-statusline`** — retired no-op kept for old habits; it writes
+  no `statusLine`. Use `uninstall-statusline` to clean up older anti-hall installs.
 - **`/anti-hall:doctor`** — health-check: confirms Node is found, every hook is
   present + syntax-valid, and the guards actually fire (live behavioral self-tests on
   e.g. git-guard / command-guard / swarm-guard / speculation-guard / tasklist-guard).
@@ -745,7 +742,7 @@ Invoke via slash command:
   prints the changelog delta between installed and latest, then instructs
   `/reload-plugins` for in-session reload (field-verified 2026-10-01, also after a
   harness registry change; restart Claude Code only if a hook or skill path still
-  shows the old version, or to re-run SessionStart-only injections). Hooks and statusline pick up from disk
+  shows the old version, or to re-run SessionStart-only injections). Hooks pick up from disk
   immediately; `/reload-plugins` refreshes the skill list and version label. `--check`
   mode answers "is anti-hall up to date?" without pulling or writing. After a pull, also
   runs `scripts/migrate-state.js` once per repo (idempotent) to fold legacy root
@@ -753,8 +750,8 @@ Invoke via slash command:
   runs the same `foldMeshDuplicates` DevSwarm mesh-store migration doctor's repair uses
   (v0.61.0), then a **dynamic capability scan** (`scripts/capability-scan.js`, read-only)
   reports each opt-in capability shipped in this build (companions discovered from
-  `companion/install-*.js`, statusline, pending state migrations) as available-vs-active
-  on this machine, with the exact command to enable any gap — never auto-installs.
+  `companion/install-*.js` and pending state migrations) as available-vs-active on this
+  machine, with the exact command to enable any gap — never auto-installs retired statusline.
 - **`/anti-hall:devswarm`** — explains anti-hall's optional DevSwarm integration: the
   `hivecontrol` reference KB, the designed-but-unbuilt workspace-tier orchestration, the
   shipped **layered recovery model** (child self-report → supervisor poke → escalate —
@@ -876,12 +873,9 @@ features gain automatic behavior when OMC is installed:
   the logged-in Claude account changes and the usage cache hasn't refreshed under the
   new account yet, conservation mode deactivates rather than apply a stale reading
   across accounts. Kill-switch: `ANTIHALL_LIMIT_ACCOUNT_CHECK=off`.
-- **Consolidated statusline** — `install-statusline --consolidate` merges the anti-hall
-  bar with the OMC HUD. The version chip in consolidated mode reads OMC session state.
-
-Without OMC, both features fall back gracefully (limit-conserve manual only; consolidated
-mode still works but requires `ANTIHALL_STATUSLINE_BASE` to specify the base). No errors,
-no breaking change.
+The old anti-hall statusline installer is retired, so OMC status visibility should use
+OMC/Codex built-in status surfaces. Without OMC, limit-conserve falls back gracefully to
+manual mode. No errors, no breaking change.
 
 ### Opt-in companion: mcp-reaper (macOS + Linux)
 
@@ -1154,47 +1148,19 @@ The main thread should delegate state-changing work. `coordinator-work-guard.js`
 
 Moved from plugins/anti-hall/README.md (v0.107.0 doc sweep).
 
-## Statusline (opt-in, one command)
+## Statusline (retired cleanup)
 
-Claude Code plugins cannot auto-apply the main statusline, so this is activated by an
-installer. `statusline/` ships a dispatcher whose **line 1 is the rich renderer for
-ANY repo** (project name, git, model, context%, cost, duration, subagents). Line 1
-also shows an **anti-hall version chip** (`AH: Vx.y.z`) between the
-cost and email segments: `★` prefix in YELLOW for a new minor version, RED for a new
-major version, plain dim when up-to-date (fail-open if no version-check cache exists).
-Only if the rich renderer yields nothing does it fall back to a
-monorepo-aware renderer (`.gitmodules`) or a **simple**
-`model | branch | dir | context%` line. Line 2 is an always-on phase/context bar. No emojis.
+anti-hall no longer installs a command-backed Claude `statusLine`. New setup,
+update, doctor and `install-statusline` flows do not write Claude settings.
 
-**Consolidated mode (`--consolidate`):** pass `--consolidate` to merge with an existing
-`statusLine` (e.g., the OMC HUD) instead of replacing it. The existing base is detected
-from current settings or read from `ANTIHALL_STATUSLINE_BASE` (env), and is persisted to
-`~/.anti-hall/consolidated-base.json` for subsequent sessions. Use this mode when you
-already have another statusline and want anti-hall to extend it rather than overwrite it.
-
-```bash
-# Find the installed plugin dir and run the Node installer. Claude Code installs a
-# plugin under the cache dir, versioned per marketplace/plugin
-# (~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/ — for this plugin that is
-# ~/.claude/plugins/cache/anti-hall/anti-hall/<version>/), but older layouts nest it
-# under marketplaces/. We search all of them. A dir only counts if it contains the
-# plugin manifest, so a parent dir is never mistaken for the plugin dir.
-DIR=$(for d in \
-  ~/.claude/plugins/cache/*/anti-hall/*/ \
-  ~/.claude/plugins/cache/*/anti-hall/ \
-  ~/.claude/plugins/cache/anti-hall/*/ \
-  ~/.claude/plugins/cache/anti-hall/ \
-  ~/.claude/plugins/marketplaces/*/plugins/anti-hall \
-  ~/.claude/plugins/*/plugins/anti-hall \
-  ~/.claude/plugins/*/anti-hall; do \
-  [ -f "$d/.claude-plugin/plugin.json" ] && echo "$d"; done 2>/dev/null | head -1)
-[ -n "$DIR" ] && node "$DIR/statusline/install-statusline.js" || echo "anti-hall not found under ~/.claude/plugins (cache or marketplaces) — install it first (/plugin install), then re-run, or locate the dir via /plugin."
-```
+If an older install still has an anti-hall `statusLine`, remove it with
+`uninstall-statusline`. The cleanup restores the saved previous command when available,
+otherwise it removes the old anti-hall entry.
 
 **Windows is not supported** (untested, dropped from CI). Use macOS or Linux.
 
-To do it by hand, run `/plugin` to find the install path, then invoke the installer
-directly: `node "<full-path>/anti-hall/statusline/install-statusline.js"`.
+To do cleanup by hand, run `/plugin` to find the install path, then invoke the
+uninstaller directly: `node "<full-path>/anti-hall/statusline/uninstall-statusline.js"`.
 
 See `statusline/STATUSLINE.md` for details and how to revert.
 
@@ -1599,7 +1565,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.startupSampling` | `true` | `ANTIHALL_DEVSWARM_STARTUP_SAMPLING` | Supervisor reconcile sweep: opportunistically probe `hivecontrol workspace info <id>` (read-only, bounded, 3s timeout) for stale/not-draining rows and log a non-null startup field or a terminalId change — pure data capture toward designing paused-workspace detection. |
 | `devswarm.pausedProbeMax` adv | `8` [1..20] | `ANTIHALL_DEVSWARM_PAUSED_PROBE_MAX` | Max `hivecontrol workspace info` probes per supervisor sweep tick for the startup-state sampler above. |
 | `statusline.base` | — | `ANTIHALL_STATUSLINE_BASE` | Shell command run as the line-1 base in consolidated statusline mode. |
-| `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Suppress the email segment in the statusline. |
+| `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Legacy renderer option: suppress the email segment. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |
 | `codexNudge.min` adv | `3` [1..] | `ANTIHALL_CODEX_NUDGE_MIN` | Minimum substantial code-file edits before the nudge fires. |
 | `engine.bootstrap` | `true` | `AH_ENGINE_BOOTSTRAP` | Download and install the sha256-pinned ah-engine binary from the GitHub Release on SessionStart (once per pinned release). Off: nothing is downloaded and the Node hooks answer everything. AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |
@@ -1655,8 +1621,8 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
   wrappers are unwrapped and inspected, not a bypass).
 - **Guard blocking something legitimate?** Most guards fail open and have a skip hatch
   (`~/.anti-hall/skip.json`, per-guard, TTL'd) — `git-guard` must be named explicitly.
-- **Statusline not showing?** Restart Claude Code once after installing — `statusLine`
-  is only read at startup.
+- **Old anti-hall statusline still configured?** Run `uninstall-statusline`; the
+  installer is retired and will not re-add `statusLine`.
 - **Update didn't take effect?** Run `/reload-plugins` after `/anti-hall:update`. Restart
   Claude Code only if a hook or skill path still shows the old version afterwards (or to
   re-run SessionStart-only injections).

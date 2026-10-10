@@ -130,11 +130,10 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 Context conservation is also wired as a `UserPromptSubmit` hook via `limit-conserve-inject.js`.
 Feature launch is intentionally a Codex/OMX planning protocol, not a GSD wrapper, because GSD was removed from active Codex config.
 
-## Codex/OMX statusline
+## Codex/OMX status
 
-Claude Code supports command-backed `statusLine` renderers, so anti-hall can wrap
-an existing statusline and append the `AH: Vx.y.z` chip. Codex/OMX currently
-configures `[tui].status_line` as an ordered list of built-in item IDs only
+Claude Code supports command-backed `statusLine` renderers, but anti-hall no
+longer installs one. Codex/OMX configures `[tui].status_line` as an ordered list of built-in item IDs only
 (for example `model-with-reasoning`, `git-branch`, `context-remaining`,
 `codex-version`, token counters, and limit counters). No supported custom item
 ID or command-backed footer renderer is documented in the local Codex/OMX docs
@@ -143,8 +142,8 @@ used for this port.
 Codex-safe behavior:
 
 - anti-hall does **not** inject an unsupported `anti-hall-version` footer item
-- `anti-hall-install-statusline` documents the supported Codex/OMX HUD path
-- the Claude statusline installer remains unchanged for Claude Code
+- `anti-hall-install-statusline` is a retired no-op and points to cleanup for old installs
+- Claude cleanup remains available through `uninstall-statusline`
 
 ## Limits and escape hatches
 

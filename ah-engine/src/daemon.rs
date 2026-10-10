@@ -133,6 +133,8 @@ pub struct Shared {
     pub rss_kb: AtomicU64,
     /// Highest sampled resident set since start, KB.
     pub rss_peak_kb: AtomicU64,
+    /// The RSS watchdog already started a drain for this process.
+    rss_tripped: AtomicBool,
     /// ms since `started` when the last request was handled (idle exit, D7, compares against it).
     last_request: AtomicU64,
     /// Metrics and the impact ledger (D51, D52).
@@ -144,6 +146,8 @@ pub struct Shared {
     pub storage: String,
     /// The scheduler, once `serve` started it (D33).
     pub sched: std::sync::OnceLock<Arc<crate::schedule::Scheduler>>,
+    /// Test-only resident allocation held so the RSS watchdog can be exercised deterministically.
+    test_alloc: Mutex<Vec<Vec<u8>>>,
 }
 
 /// The value of `name=<value>` in a space-separated argument string (empty when absent).
@@ -186,12 +190,14 @@ impl Shared {
             stall_ms: AtomicU64::new(0),
             rss_kb: AtomicU64::new(0),
             rss_peak_kb: AtomicU64::new(0),
+            rss_tripped: AtomicBool::new(false),
             last_request: AtomicU64::new(0),
             telemetry: Telemetry::new(),
             starts: 0,
             db: None,
             storage: defaults::text("msg.storage_off").to_string(),
             sched: std::sync::OnceLock::new(),
+            test_alloc: Mutex::new(Vec::new()),
         }
     }
 
@@ -477,6 +483,7 @@ fn test_verb(t: &str, sh: &Shared) -> (Reply, After) {
     match verb {
         "sleep" => std::thread::sleep(Duration::from_millis(ms)), // ms comes from the test caller, not a tunable
         "stall" => sh.stall_ms.store(ms, SeqCst),
+        "alloc" => lk(&sh.test_alloc).push(vec![0xA5; ms.saturating_mul(1024) as usize]),
         "panic" => panic!("{}", defaults::text("msg.reply_test_panic")),
         _ => return (Reply::Err(defaults::text("msg.reply_unknown_request").into()), After::Continue),
     }
@@ -1021,7 +1028,7 @@ fn watchdog(sh: Arc<Shared>) {
             let mem = limits::mem_kb();
             sh.rss_kb.store(rss, SeqCst);
             sh.rss_peak_kb.fetch_max(rss, SeqCst);
-            if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb {
+            if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb && !sh.rss_tripped.swap(true, SeqCst) {
                 health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &mem), ("cap", &cfg.rss_cap_kb)]));
                 // its own kind: the cap trip above is the one the crash-loop rule counts, this line only explains it
                 health::log_event("memory", "breakdown", &sh.memory_line());

@@ -150,11 +150,11 @@ doc = "Write or update the phase state the status line's phase bar shows (L9a, t
 value = { args = "<set|advance|step|agents|update|clear> [args]", read_only = false, status = "implemented" }
 
 [cmd.install-statusline]
-doc = "Put the anti-hall status line into the host's statusLine setting (L9a, the port of statusline/install-statusline.js): `--user` (default, ~/.claude/settings.json) or `--project` (./.claude/settings.local.json), `--consolidate` to merge an existing status line into one line. Wraps an existing statusLine as line 1, backs the settings up once, never clobbers other keys, a re-run changes nothing."
-value = { args = "[--user|--project] [--consolidate]", read_only = false, status = "implemented" }
+doc = "Retired no-op kept for old invocations: prints that anti-hall no longer writes a command-backed statusLine and exits 0. Use uninstall-statusline to clean up older installs."
+value = { args = "", read_only = false, status = "implemented" }
 
 [cmd.uninstall-statusline]
-doc = "Take the anti-hall status line out of the host's settings (L9a, the port of statusline/uninstall-statusline.js): restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration."
+doc = "Take an older anti-hall status line out of the host's settings (L9a, the port of statusline/uninstall-statusline.js): restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration."
 value = { args = "[--user|--project] [--purge-base]", read_only = false, status = "implemented" }
 
 [cmd.shadow-compare]

@@ -71,7 +71,7 @@ These are the notable things it runs and writes outside the project. Hook state 
 | Background units (launchd agent / systemd user unit / cron entry) for the optional DevSwarm ingest daemon, liveness supervisor and MCP reaper | Only if you run the matching `install-*` script | `~/Library/LaunchAgents/`, `~/.config/systemd/user/` or your crontab |
 | `claude plugin update anti-hall@anti-hall` | When you run `/anti-hall:update` and the harness registration is older than the latest release | the `claude` CLI |
 | `claude -p --resume <session> --dangerously-skip-permissions` | Only when you run the on-demand `devswarm-recover` CLI for one workspace | the `claude` CLI |
-| statusLine entry in `~/.claude/settings.json` | Only when you install the statusline (`/anti-hall:install-statusline`) | `~/.claude/settings.json` |
+| statusLine entry in `~/.claude/settings.json` | No longer written; `uninstall-statusline` only cleans old installs | `~/.claude/settings.json` |
 | Launcher scripts that find the current plugin version | Written by the DevSwarm hooks in DevSwarm sessions | `~/.anti-hall/bin/` |
 | Local reads of `~/.claude.json` (`userID`, Fable availability) and the OMC usage cache | By the limit-conservation and model-availability hooks; never sent anywhere | `~/.claude.json`, `~/.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |
 

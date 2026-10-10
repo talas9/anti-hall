@@ -5,9 +5,9 @@
 # - engine exit 0: exact answer, pass stdout/stderr and exit 0.
 # - engine exit 2: exact block, pass stdout/stderr and exit 2.
 # - any other engine exit after it marked the dispatch done (AH_ENGINE_DONE_FILE): a hook's own exit code (a non-blocking error),
-#   passed through with its stdout/stderr; without the mark it is an engine failure and the Node fallback below runs.
+#   passed through with its stdout/stderr; without the mark it is an engine failure and the hook fails open.
 # - engine exit 75 (`dispatch.defer_exit`): run this event's Node hooks one by one.
-# - engine timeout, signal death, spawn failure, or any other exit: run Node fallback with a one-line note.
+# - engine timeout, signal death, spawn failure, or any other unmarked exit: fail open without printing.
 # - Node hook exit 2: block; stdout from every ran hook is kept, stderr from the first exit-2 hook wins.
 # - Node hook exit 0, 1, 3, 126, 127 or any other normal non-2 exit: host semantics, non-blocking.
 # - Node hook timeout: host discards that hook; other hooks still decide the event.
@@ -19,7 +19,7 @@
 # stdin. There is no --tool X: a caller-named tool could narrow the rows run and skip a guard the payload would select.
 # Any other argument is ignored (without --tool-from-payload every row of the event runs, the safe superset).
 # Test-only knobs (honored ONLY when AH_WRAPPER_TEST=1 is also set; otherwise ignored with a one-line
-# stderr note): AH_ENGINE_BIN, AH_FALLBACK_LIST, AH_FALLBACK_MAP, AH_HOOK_TIMEOUT_S, AH_KILL_GRACE_S,
+# stderr note): AH_ENGINE_BIN, AH_FALLBACK_LIST, AH_FALLBACK_MAP, AH_HOOK_TIMEOUT_S, AH_HOOK_TIMEOUT_MS, AH_KILL_GRACE_S,
 # AH_HOOK_SWEEP_AGE_S. The engine is otherwise located only at $HOME/.anti-hall/ah-engine/bin/ah-engine
 # or on PATH. Honored values are validated so bad values cannot turn a guard into a silent allow.
 
@@ -42,7 +42,7 @@ shift 1 2>/dev/null || true
 # A stray AH_ENGINE_BIN=/usr/bin/true in a user's shell must not turn the safety net into a silent allow.
 if [ "${AH_WRAPPER_TEST:-}" != 1 ]; then
   ignored_knobs=
-  for knob in AH_ENGINE_BIN AH_FALLBACK_LIST AH_FALLBACK_MAP AH_HOOK_TIMEOUT_S AH_KILL_GRACE_S AH_HOOK_SWEEP_AGE_S; do
+  for knob in AH_ENGINE_BIN AH_FALLBACK_LIST AH_FALLBACK_MAP AH_HOOK_TIMEOUT_S AH_HOOK_TIMEOUT_MS AH_KILL_GRACE_S AH_HOOK_SWEEP_AGE_S; do
     eval "knob_val=\${$knob:-}"
     if [ -n "$knob_val" ]; then
       ignored_knobs="$ignored_knobs $knob"
@@ -53,8 +53,8 @@ if [ "${AH_WRAPPER_TEST:-}" != 1 ]; then
     printf 'anti-hall: ignoring test-only variables (need AH_WRAPPER_TEST=1):%s\n' "$ignored_knobs" >&2
   fi
 fi
-# D87: the hooks.json of each host runs this wrapper once per event, `ah-hook.sh <Event> [--host codex]`, and the engine (or,
-# when it cannot answer, the fallback list) decides which hooks apply. On the events whose hooks are matched by tool name
+# D87: the hooks.json of each host runs this wrapper once per event, `ah-hook.sh <Event> [--host codex]`, and the engine
+# decides which hooks apply. If the engine cannot answer, this wrapper fails open. On the events whose hooks are matched by tool name
 # the tool is read from the payload structurally, as if --tool-from-payload had been given, so a hook the payload's tool
 # does not select is not run by the fallback either; any other event has no matcher the wrapper could read.
 tool_from_payload=0
@@ -139,6 +139,127 @@ validate_positive_int() {
   esac
 }
 
+defaults_file=${AH_ENGINE_PLUGIN_ROOT:-"$dir/.."}/engine/defaults/engine.toml
+engine_default_num_field() {
+  key=$1
+  field=$2
+  [ -f "$defaults_file" ] || return 1
+  awk -v want="[$key]" -v field="$field" '
+    $0 == want { in_key = 1; next }
+    in_key && /^\[/ { exit }
+    in_key && $1 == field && $2 == "=" {
+      v = $3
+      gsub(/[^0-9].*/, "", v)
+      if (v != "") {
+        print v
+        exit
+      }
+    }
+  ' "$defaults_file"
+}
+
+engine_default_num() {
+  engine_default_num_field "$1" value
+}
+
+engine_default_min() {
+  engine_default_num_field "$1" min
+}
+
+engine_default_max() {
+  engine_default_num_field "$1" max
+}
+
+engine_default_env() {
+  key=$1
+  [ -f "$defaults_file" ] || return 1
+  awk -v want="[$key]" '
+    $0 == want { in_key = 1; next }
+    in_key && /^\[/ { exit }
+    in_key && $1 == "env" && $2 == "=" {
+      v = $0
+      sub(/^[^"]*"/, "", v)
+      sub(/".*$/, "", v)
+      if (v != "") {
+        print v
+        exit
+      }
+    }
+  ' "$defaults_file"
+}
+
+engine_default_text() {
+  key=$1
+  [ -f "$defaults_file" ] || return 1
+  awk -v want="[$key]" '
+    $0 == want { in_key = 1; next }
+    in_key && /^\[/ { exit }
+    in_key && $1 == "value" && $2 == "=" {
+      v = $0
+      sub(/^[^"]*"/, "", v)
+      sub(/".*$/, "", v)
+      if (v != "") {
+        print v
+        exit
+      }
+    }
+  ' "$defaults_file"
+}
+
+engine_effective_num() {
+  key=$1
+  env_name=$(engine_default_env "$key" || true)
+  if [ -n "$env_name" ]; then
+    eval "env_value=\${$env_name:-}"
+    if [ -n "$env_value" ]; then
+      v=$env_value
+    else
+      v=$(engine_default_num "$key") || return 1
+    fi
+  else
+    v=$(engine_default_num "$key") || return 1
+  fi
+  case "$v" in
+    ""|*[!0-9]*)
+      printf '%s\n' "$v"
+      return 0
+      ;;
+  esac
+  min_v=$(engine_default_min "$key" || true)
+  max_v=$(engine_default_max "$key" || true)
+  case "$min_v" in
+    ""|*[!0-9]*) ;;
+    *) [ "$v" -lt "$min_v" ] && v=$min_v ;;
+  esac
+  case "$max_v" in
+    ""|*[!0-9]*) ;;
+    *) [ "$v" -gt "$max_v" ] && v=$max_v ;;
+  esac
+  printf '%s\n' "$v"
+  return 0
+}
+
+engine_default_sleep() {
+  ms=$1
+  awk -v ms="$ms" 'BEGIN { printf "%.3f", ms / 1000 }'
+}
+
+now_ms() {
+  perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000' 2>/dev/null || awk 'BEGIN { srand(); print systime() * 1000 }'
+}
+
+fresh_daemon_down_marker() {
+  marker_name=$(engine_default_text files.daemon_down_marker || true)
+  [ -n "$marker_name" ] || return 1
+  marker_dir=${AH_ENGINE_DIR:-"$HOME/.anti-hall/ah-engine"}
+  [ -r "$marker_dir/$marker_name" ] || return 1
+  marker_until=$(sed -n '1s/[^0-9].*$//p' "$marker_dir/$marker_name" 2>/dev/null)
+  case "$marker_until" in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+  [ "$marker_until" -gt "$(now_ms)" ]
+}
+
 case "${AH_KILL_GRACE_S:-1}" in
   0|1|2|3|4|5) kill_grace=${AH_KILL_GRACE_S:-1} ;;
   *) kill_grace=1 ;;
@@ -146,6 +267,25 @@ esac
 
 timeout_env=${AH_HOOK_TIMEOUT_S:-10}
 validate_positive_int "$timeout_env" AH_HOOK_TIMEOUT_S
+timeout_ms_env=${AH_HOOK_TIMEOUT_MS:-}
+if [ -n "$timeout_ms_env" ]; then
+  validate_positive_int "$timeout_ms_env" AH_HOOK_TIMEOUT_MS
+else
+  client_deadline_ms=$(engine_effective_num client.deadline_ms || true)
+  client_deadline_slack_ms=$(engine_default_num client.deadline_slack_ms || true)
+  wrapper_extra_ms=$(engine_default_num client.wrapper_extra_ms || true)
+  if [ -n "$client_deadline_ms$client_deadline_slack_ms$wrapper_extra_ms" ]; then
+    validate_positive_int "$client_deadline_ms" client.deadline_ms
+    validate_positive_int "$client_deadline_slack_ms" client.deadline_slack_ms
+    validate_positive_int "$wrapper_extra_ms" client.wrapper_extra_ms
+    timeout_ms_env=$((client_deadline_ms + client_deadline_slack_ms + wrapper_extra_ms))
+  else
+    timeout_ms_env=$((timeout_env * 1000))
+  fi
+fi
+watchdog_poll_ms=$(engine_default_num client.wrapper_watchdog_poll_ms || true)
+validate_positive_int "$watchdog_poll_ms" client.wrapper_watchdog_poll_ms
+watchdog_poll_s=$(engine_default_sleep "$watchdog_poll_ms")
 sweep_age=${AH_HOOK_SWEEP_AGE_S:-1800}
 validate_positive_int "$sweep_age" AH_HOOK_SWEEP_AGE_S
 
@@ -566,7 +706,22 @@ if [ "$event" = SessionStart ] && [ -z "${AH_ENGINE_BIN:-}" ] && [ -f "$dir/../a
 fi
 
 event_timeout() {
-  awk -F '	' -v ev="$event" '$1 == "@" ev { print $2; found = 1; exit } END { if (!found) print "" }' "$list" 2>/dev/null
+  t=$(awk -F '	' -v ev="$event" '$1 == "@" ev { print $2; found = 1; exit } END { if (!found) print "" }' "$list" 2>/dev/null)
+  case "$t" in
+    ""|*[!0-9]*|0) printf '%s\n' "$t" ;;
+    *) if [ "$t" -gt "$timeout_env" ]; then printf '%s\n' "$timeout_env"; else printf '%s\n' "$t"; fi ;;
+  esac
+}
+
+event_timeout_ms() {
+  t=$(event_timeout)
+  case "$t" in
+    ""|*[!0-9]*|0) printf '%s\n' "$timeout_ms_env" ;;
+    *)
+      ms=$((t * 1000))
+      if [ "$ms" -gt "$timeout_ms_env" ]; then printf '%s\n' "$timeout_ms_env"; else printf '%s\n' "$ms"; fi
+      ;;
+  esac
 }
 
 matches_tool() {
@@ -720,6 +875,32 @@ start_watchdog() {
         exit 0
       fi
       n=$((n + 1))
+    done
+    : >"$w_timed"
+    terminate_process_group "$w_pid" "$w_group"
+  ) </dev/null >/dev/null 2>&1 &
+  watch=$!
+}
+
+start_watchdog_ms() {
+  w_pid=$1; w_timeout_ms=$2; w_group=$3; w_timed=$4
+  (
+    trap - 0 HUP INT TERM
+    deadline_ms=$(( $(now_ms) + w_timeout_ms ))
+    while :; do
+      remaining_ms=$((deadline_ms - $(now_ms)))
+      [ "$remaining_ms" -le 0 ] && break
+      if [ "$remaining_ms" -lt "$watchdog_poll_ms" ]; then
+        sleep "$(engine_default_sleep "$remaining_ms")"
+      else
+        sleep "$watchdog_poll_s"
+      fi
+      kill -0 "$w_pid" 2>/dev/null || exit 0
+      if ! kill -0 "$self_pid" 2>/dev/null; then
+        terminate_process_group "$w_pid" "$w_group"
+        [ -n "$tmp" ] && rm -rf "$tmp"
+        exit 0
+      fi
     done
     : >"$w_timed"
     terminate_process_group "$w_pid" "$w_group"
@@ -896,28 +1077,27 @@ run_engine() {
   rm -f "$eng_done"
   AH_ENGINE_DONE_FILE=$eng_done
   export AH_ENGINE_DONE_FILE
-  timeout=$(event_timeout)
-  [ -n "$timeout" ] || timeout=$timeout_env
-  validate_positive_int "$timeout" engine_timeout
+  timeout=$(event_timeout_ms)
+  validate_positive_int "$timeout" engine_timeout_ms
   set -- "$engine" hook --event "$event"
   [ -n "$tool" ] && set -- "$@" --tool "$tool"
   set -- "$@" --host "$host" --fallback-map "$fallback_map"
   pid_file=$tmp/engine.pid; group_file=$tmp/engine.group
-  launch_argv_group "$eng_out" "$eng_err" "$pid_file" "$group_file" "$@" || run_fallback "engine could not start"
+  launch_argv_group "$eng_out" "$eng_err" "$pid_file" "$group_file" "$@" || exit 0
   pid=$(cat "$pid_file"); group_pid=$(cat "$group_file")
   children="$children $pid"
   rm -f "$pid_file" "$group_file"
-  start_watchdog "$pid" "$timeout" "$group_pid" "$eng_timed"
+  start_watchdog_ms "$pid" "$timeout" "$group_pid" "$eng_timed"
   wait "$pid" 2>/dev/null
   rc=$?
   settle_watchdog "$eng_timed"
   remove_child "$pid"
   if [ -f "$eng_timed" ]; then
-    run_fallback "engine timed out"
+    exit 0
   fi
   if [ "$group_pid" -eq 1 ] && kill -0 "-$pid" 2>/dev/null; then
     terminate_process_group "$pid" "$group_pid"
-    run_fallback "engine left child processes running"
+    exit 0
   fi
   case "$rc" in
     0|2) cat "$eng_out"; cat "$eng_err" >&2; exit "$rc" ;;
@@ -928,7 +1108,7 @@ run_engine() {
       if [ -e "$eng_done" ]; then
         cat "$eng_out"; cat "$eng_err" >&2; exit "$rc"
       fi
-      run_fallback "engine failed with exit $rc" ;;
+      exit 0 ;;
   esac
 }
 
@@ -936,8 +1116,12 @@ if [ "$mem_mode" -eq 1 ]; then
   run_memory_mode
 fi
 
+if fresh_daemon_down_marker; then
+  exit 0
+fi
+
 if [ -n "$engine" ]; then
   run_engine
 fi
 
-run_fallback "engine missing"
+exit 0

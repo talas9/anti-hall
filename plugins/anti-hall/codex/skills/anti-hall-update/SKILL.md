@@ -150,7 +150,7 @@ After a successful update, also run the capability scan to find what's missing o
 sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" capability-scan
 ```
 
-Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js`, statusline, pending state migrations) as `{name, available, active, how}`. Present a concise available-vs-active summary:
+Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js` and pending state migrations) as `{name, available, active, how}`. The retired statusline installer is intentionally not an enableable capability. Present a concise available-vs-active summary:
 - `state-migrations` at `active: false` — run `node "$ANTI_HALL_ROOT/scripts/migrate-state.js"` (idempotent, safe to re-run) to fold it, same as the Claude-side update flow. It never folds or moves `.planning/`: the GSD fold is the explicit, copy-only `migrate-state.js --planning` (skips git-tracked `.planning/`, linked/child worktrees and submodules). If `doctor` reports moved `.planning/` files (pre-0.108.5 damage), restore with the printed `git -C <worktree> checkout -- .planning` or the opt-in `migrate-state.js --restore-planning --dir <worktree>`.
 - **DevSwarm liveness supervisor** — **autonomously install-or-refresh it
   whenever this update is running inside a DevSwarm session, no offer, no

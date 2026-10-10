@@ -13,17 +13,15 @@ Ask **"update anti-hall"**, or run `/anti-hall:update`. The skill:
 2. prints the changelog entries between your version and the new one;
 3. tells you to run `/reload-plugins`.
 
-Hooks and the statusline are read from disk, so they pick up the new version right away.
-`/reload-plugins` refreshes the skill list and the version label. Restart Claude Code only
+Hooks are read from disk, so they pick up the new version right away.
+`/reload-plugins` refreshes the skill list and version text. Restart Claude Code only
 if a hook or skill path still shows the old version afterwards, or if you want the
 session-start text injected again.
 
 To check without changing anything, ask **"is anti-hall up to date"** (the skill's
 `--check` mode).
 
-anti-hall also tells you when a newer version exists. If you installed the
-[statusline](../features/statusline.md), its version chip turns yellow for a new minor
-version and red for a new major one. That check is the one network
+anti-hall also tells you when a newer version exists. That check is the one network
 request anti-hall makes by default; turn it off with `versionAlerts.antiHall`.
 
 !!! warning "Coming from 0.107.x or older"
