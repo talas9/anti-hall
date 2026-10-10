@@ -220,6 +220,8 @@ struct Out {
 fn envs(cmd: &mut Command, w: &World, o: &Opt) {
     let path = format!("{}:{}", w.bin.display(), std::env::var("PATH").unwrap());
     cmd.env_clear().env("PATH", path).env("HOME", &w.home).env("ANTIHALL_INGEST_DRY_RUN", "1").env("GIT_CONFIG_GLOBAL", "/dev/null");
+    // the Node script has no units heal: the comparison runs have the engine's stage off, `update_heals_the_units` has it on
+    cmd.env("ANTIHALL_UNITS_HEAL", "off");
     let ov = if o.bad_override { w.root.join("nope").to_string_lossy().into_owned() } else { w.mp.to_string_lossy().into_owned() };
     cmd.env("ANTIHALL_MARKETPLACE_DIR", ov);
     if o.ds {
@@ -793,4 +795,35 @@ fn a_disagreeing_node_installer_is_logged_and_the_files_are_still_written() {
     assert_eq!(finish(cmd.output().unwrap()).code, 0);
     assert!(c.cwd.join(".codex/hooks.json").exists());
     assert!(all_text(&c.home.join(".anti-hall")).contains("install_codex_shadow_mismatch"));
+}
+
+#[test]
+fn update_heals_the_units_by_default_obeys_the_switch_and_is_idempotent() {
+    let o = Opt { no_upstream_move: true, ..Opt::default() };
+    let w = world(&o);
+    let exe = w.home.join(".anti-hall/ah-engine/bin/ah-engine");
+    fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    let units = |w: &World| -> BTreeMap<String, String> {
+        tree(&w.home).into_iter().filter(|(k, _)| k.contains("LaunchAgents") || k.contains("systemd/user")).collect()
+    };
+    let run = |setting: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        cmd.arg("update").arg("--post-pull-only").current_dir(&w.home);
+        envs(&mut cmd, &w, &o);
+        cmd.env("ANTIHALL_UNITS_HEAL", setting);
+        finish(cmd.output().unwrap())
+    };
+    let off = run("off");
+    assert_eq!(off.code, 0, "{}", off.stderr);
+    assert!(units(&w).is_empty(), "the switch off still wrote units");
+    let on = run("on");
+    assert_eq!(on.code, 0, "{}", on.stderr);
+    let healed = units(&w);
+    assert!(!healed.is_empty(), "the post-pull stage wrote no unit: {}", on.stderr);
+    assert!(!on.stdout.contains("unitsHeal"), "the units heal is not one of the script's stages, the status keeps the script's keys");
+    let again = run("on");
+    assert_eq!(again.code, 0);
+    assert_eq!(units(&w), healed, "a second update changed the units");
 }

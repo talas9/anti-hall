@@ -540,6 +540,7 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
     let latest = version_from_marketplace(rx, &paths.plugin_json).or_else(|| installed.clone().filter(|v| is_semver(rx, v)));
     let (synced, _) = sync_cache(paths, latest.as_deref());
     let stages = super::postpull::run(&super::postpull::Run { env, home, paths, latest: latest.as_deref(), synced, budget_ms: postpull_budget_ms(env) });
+    units_heal(env, home);
     if !semver_opt(rx, installed.as_deref()) {
         return Core {
             installed: None,
@@ -574,6 +575,25 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
     };
     let action = harness_action(Some(&harness), updated, latest.as_deref().unwrap_or(t("update.null_word")));
     Core { installed, latest, updated, synced, harness: Some(harness), action, changelog, stop: false, stages }
+}
+
+/// The engine's own post-pull stage: heal the background-service units (write the engine unit, move the Node units whose duty
+/// the engine runs aside, never delete). It is not one of the script's stages, so it is not in the status object; its rows are
+/// in the units ledger and the engine log, and a failure never fails the update.
+fn units_heal(env: &Env, home: &str) {
+    if !crate::setup::units::heal_enabled() {
+        return;
+    }
+    let quiet = stage_quiet(env, home);
+    let name = t("units.stage_name");
+    if !quiet {
+        progress(&defaults::render("update_msg.stage_start", &[("name", &name)]));
+    }
+    let t0 = Instant::now();
+    drop(crate::setup::units::heal_changes(false)); // the ledger and the log have every action; the update goes on either way
+    if !quiet {
+        progress(&defaults::render("update_msg.stage_done", &[("name", &name), ("ms", &t0.elapsed().as_millis())]));
+    }
 }
 
 // ---- the Node stages --------------------------------------------------------------------------------------------------------

@@ -56,6 +56,9 @@ Every command accepts `--json`. Read-only commands never change state.
 | `uninstall-statusline` | `[--user\|--project] [--purge-base]` | no | implemented | Take the anti-hall status line out of the host's settings (L9a, the port of statusline/uninstall-statusline.js): restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration. |
 | `update` | `[--check] [--post-pull-only]` | no | implemented | Update anti-hall (D81, lane L9b, the port of skills/update/scripts/update.js): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP, offline fails open), a copy of the plugin into a new version-pinned cache directory, the harness's own `claude plugin update` when its registry is behind (bounded, never answering a confirmation; installed_plugins.json is only read), the changelog delta, then one JSON status line and a human summary. `--check` only compares versions. The DevSwarm store sweeps and the settings migration still run by the plugin's own update.js --post-pull-only and are merged into the status. |
 | `version` | `` | yes | implemented | Print the version this build reports. |
+| `mcp-reaper` | `run [--dry-run]` | no | implemented | The standalone MCP orphan reaper as an engine command (the port of companion/mcp-reaper.js): `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line. |
+| `refresh` | `[--force] [--home <dir>]` | no | implemented | Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert), the Claude Code and DevSwarm CLI versions (the drift probes) and the reload repair (repair-on-reload), each as a bounded subprocess; `--force` runs every probe whether requested or not (never the repair unless requested). Prints one result per probe. The scheduler runs it every refresh.every_ms. |
+| `units` | `<status\|install\|heal\|uninstall> [--dry-run] [--bin <path>]` | no | implemented | The engine's service units: `status` lists the engine unit and the units the Node installers wrote, with whether the engine runs their duty; `install` writes (or refreshes) the one unit that keeps `ah-engine serve` running (launchd on macOS, a systemd user service and timer on Linux) and loads it; `heal` installs and then retires each Node unit whose duty the engine runs (the MCP reaper when its job is on, the DevSwarm supervisor and ingest when devswarm_sup.mode / devswarm_ingest.mode is engine); `uninstall` unloads the engine unit. `--dry-run` reports and changes nothing; `--bin <path>` names the engine binary the unit runs. A removed unit file is moved into the state directory, never deleted. A retired unit that comes back is recorded as a mistake and left alone. |
 
 ## Socket protocol
 
@@ -961,8 +964,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `schedule.action_args` | `1 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
-| `schedule.actions` | `13 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.action_args` | `2 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
+| `schedule.actions` | `15 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
@@ -971,7 +974,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `schedule.maintain_ms` | `86400000` | `AH_ENGINE_MAINTAIN_MS` | ms | Interval of the maintain job (D26); 0 turns it off. |
 | `schedule.procwatch_ms` | `30000` | `AH_ENGINE_PROCWATCH_MS` | ms | Interval of the process watch job (resource sampling; orphan scans run every procwatch.scan_every_s); 0 turns it off. |
 | `schedule.run_wait_ms` | `5000` |  | ms | How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms. |
-| `schedule.subprocess_actions` | `maintain, backup, jev_sweep, handovers, agent_tick, gh_poll` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
+| `schedule.subprocess_actions` | `8 items` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
 | `schedule.telemetry_rollup_ms` | `86400000` | `AH_ENGINE_TELEMETRY_ROLLUP_MS` | ms | Interval of the telemetry rollup job (D78); 0 turns it off. |
 | `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
 | `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
@@ -3567,7 +3570,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
 | `roles.line_max` | `140` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
 | `roles.main_skill` | `3 entries` |  |  | The main skill: its name, its description (when to load it) and its intro line. |
-| `roles.matrix` | `48 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
+| `roles.matrix` | `51 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
 | `roles.msg_none` | `none` |  |  | The verb list in the note when the role may run none. |
 | `roles.msg_note` | `anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {v...` |  |  | The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}. |
 | `roles.msg_note_more` | ` (+{n} more, see the guide)` |  |  | Added to the note when the verb list was shortened. Placeholder: {n}. |
@@ -3887,6 +3890,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.lock_dir` | `locks` |  |  | The directory of the ingest daemons' lock files under the DevSwarm directory. |
 | `doctor.lock_file` | `ah-engine.lock` |  |  | The plugin's pin of the engine release, relative to the plugin root. |
 | `doctor.log_warn_factor` | `2` |  |  | A log or inbox larger than its cap times this is reported as not being trimmed. |
+| `doctor.logs_dir` | `.anti-hall, logs` |  |  | The central log directory under the home directory, as path parts. |
+| `doctor.logs_dir_env` | `ANTI_HALL_LOG_DIR` |  |  | The environment variable that overrides the central log directory (the logger's own override, companion/lib/anti-hall-log.js). |
+| `doctor.logs_file` | `devswarm.jsonl` |  |  | The central log file in the log directory (JSON lines). |
+| `doctor.logs_flag` | `--logs` |  |  | The flag that adds the central-log section (the Node doctor's --logs). |
+| `doctor.logs_levels` | `debug, info, warn, error` |  |  | The central log's level names, lowest first; an entry whose level is not one of them is dropped. |
+| `doctor.logs_limit` | `200` |  |  | How many of the most recent entries at or above the minimum level --logs reads. |
+| `doctor.logs_min_level` | `warn` |  |  | The lowest level --logs reports. |
+| `doctor.logs_missing_mark` | `?` |  |  | What an entry line shows for a missing timestamp, level, component or operation. |
+| `doctor.logs_no_message` | `(no message)` |  |  | What an entry line shows when the entry has neither a message nor an error message. |
+| `doctor.logs_rotated_suffix` | `.1` |  |  | The suffix of the one rotated predecessor of the central log, read too when the current file holds fewer entries than the limit. |
+| `doctor.logs_shown` | `10` |  |  | How many of those entries --logs prints one by one (the most recent). |
+| `doctor.logs_unknown_component` | `(unknown)` |  |  | The component name counted for an entry that has none. |
 | `doctor.macho_cpu_offset` | `4` |  |  | Byte offset of the CPU type in a thin 64-bit Mach-O header (little-endian). |
 | `doctor.macho_cpus` | `2 entries` |  |  | Mach-O CPU type codes (hex) to architecture names. |
 | `doctor.macos_name` | `macos` |  |  | The OS name the engine and the release assets use for macOS. |
@@ -3902,6 +3917,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.node_default` | `node` |  |  | The Node binary a live self-test runs a deferred hook with when the engine's own variable for it is not set. |
 | `doctor.node_min_major` | `22` |  |  | The oldest Node major version the fallback hooks support. |
 | `doctor.node_timeout_ms` | `30000` |  | ms | How long a Node hook gets in a live self-test before it is killed and the self-test fails. |
+| `doctor.node_twins` | `true` |  |  | Whether the doctor may start Node: to run a check's Node twin where the engine defers (live self-tests, the statusline render) and to syntax-check the Node supervisor and statusline files. Node is not a doctor requirement either way: with this off, or with no Node on PATH, a deferral is reported as a warning, never a pass. On while the engine still defers some self-tests to their Node twins (git, command and edit guards, DevSwarm hooks), so the report stays as complete as the live hook path; the runtime cutover turns it off. The test-only statusline stand-in always runs under Node. |
+| `doctor.node_version_flag` | `--version` |  |  | The flag that makes Node print its version. |
 | `doctor.omc_probe_session` | `doctor-omc-probe` |  |  | The session id the OMC loop probe presents (a loop pinned to another session does not count). |
 | `doctor.omc_time_fields` | `last_checked_at, updated_at, started_at` |  |  | The timestamp fields of an oh-my-claudecode loop state file; the loop counts as active when any of them is within the freshness window. |
 | `doctor.orphans_bootout` | `launchctl, bootout, gui/{uid}/{label}` |  |  | The command that unloads a launchd label. Placeholders: {uid}, {label}. |
@@ -3965,6 +3982,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.start_event` | `start` |  |  | The kind of event log line a daemon writes when it starts. |
 | `doctor.start_pid_re` | `\bpid (\d+)` |  |  | Finds the daemon's pid in the detail of a start event (group 1). |
 | `doctor.stat_gnu_args` | `-c, %s, /` |  |  | Arguments that only GNU/busybox stat accepts, to tell the userland flavour. |
+| `doctor.statusline_check` | `statusline` |  |  | The name the statusline render check is reported under when the engine defers the render to Node. |
 | `doctor.statusline_dispatcher` | `statusline/statusline.js` |  |  | The statusline dispatcher script, relative to the plugin root; the render check requires it to be installed. |
 | `doctor.statusline_marker` | `statusline.js` |  |  | A statusLine command that contains this is the anti-hall dispatcher. |
 | `doctor.statusline_max_bytes` | `1048576` |  | bytes | The most bytes of statusline output the render check keeps. |
@@ -3988,10 +4006,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.toml_ext` | `.toml` |  |  | The extension of a defaults file. |
 | `doctor.transcript_file` | `t.jsonl` |  |  | The file name of the throwaway transcript a Stop self-test reads. |
 | `doctor.triples` | `2 entries` |  |  | The release asset triple per OS ({cpu} is the architecture; Linux leaves the libc open). |
-| `doctor.unhandled_flags` | `--prune-cache, --reclaim-ingest-lock, --logs` |  |  | Flags of the Node doctor that the engine doctor does not handle yet; each is reported and the run continues. |
+| `doctor.unhandled_flags` | `--prune-cache, --reclaim-ingest-lock` |  |  | Flags of the Node doctor that the engine doctor does not handle yet; each is reported and the run continues. |
 | `doctor.unit_hash_re` | `^([0-9a-fA-F]{8})$` |  |  | The suffix of a legacy per-worktree unit name: eight hexadecimal digits. |
 | `doctor.unit_key_re` | `^([a-z0-9-]{1,40}-[0-9a-f]{6})$` |  |  | The suffix of a per-project unit name: a project key. |
 | `doctor.unknown_name` | `(unknown)` |  |  | What an orphan row shows for an entry with no name. |
+| `doctor.version_alert_check` | `version-alert` |  |  | The built-in check the version-alert self-test runs. |
 | `doctor.version_alert_env` | `ANTIHALL_VERSION_ALERT=` |  |  | Environment pairs of the version-alert self-test (the off switch is cleared so an inherited one cannot fake a pass). |
 | `doctor.version_alert_payload` | `{"hook_event_name":"SessionStart","session_id":"{SID}"}` |  |  | The SessionStart payload of the version-alert self-test; {SID} is a unique session id. |
 | `doctor.version_alert_re` | `"additionalContext"\s*:\s*"[^"]*version-alert: v{stale} is available \(you ar...` |  |  | The pattern of the version nudge in what the version-alert check prints; {stale} is the cached newer version, already escaped. |
@@ -4104,6 +4123,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.git_broken` | `git is on PATH but does not run ({why}) - Fix: xcode-select --install (macOS)...` |  |  | EV-06. Placeholder: {why}. |
 | `doctor_msg.git_missing` | `git is not on PATH; git-aware guards and project detection are off - Fix: ins...` |  |  | EV-05. |
 | `doctor_msg.head_audit` | `Action audit` |  |  | The heading of the action audit section (what the acting features did and how often they were wrong). |
+| `doctor_msg.head_central_logs` | `Logs (--logs: recent anti-hall-log entries)` |  |  | Section heading of --logs (the Node doctor's). |
 | `doctor_msg.head_claude` | `Claude Code (claude doctor)` |  |  | Section heading. |
 | `doctor_msg.head_codex` | `Codex / OMX port — detected` |  |  | The heading of the Codex section. |
 | `doctor_msg.head_config` | `Configuration` |  |  | Section heading. |
@@ -4150,17 +4170,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.lock_unreadable` | `ah-engine.lock is missing or unreadable at {path} ({err}); the bootstrap cann...` |  |  | BIN-15. Placeholders: {path}, {err}. |
 | `doctor_msg.log_corrupt` | `{n} of the last {m} lines of {file} are not event lines` |  |  | LG-02. Placeholders: {n}, {m}, {file}. |
 | `doctor_msg.log_huge` | `{file} is {mb} MB (cap {cap_mb} MB); the engine's trim is not running - Fix: ...` |  |  | LG-01. Placeholders: {file}, {mb}, {cap_mb}. |
+| `doctor_msg.logs_dir_suffix` | ` ({dir})` |  |  | The log directory appended to the --logs summary lines. Placeholder: {dir}. |
+| `doctor_msg.logs_entry` | `[{ts}] {level} {component}/{op}{repo}: {msg}` |  |  | One central-log entry. Placeholders: {ts}, {level}, {component}, {op}, {repo} (doctor_msg.logs_repo_tag or empty), {msg} (its first line). |
+| `doctor_msg.logs_none` | `no warn/error entries in the central anti-hall log{at}` |  |  | --logs found no warn/error entry. Placeholder: {at} (doctor_msg.logs_dir_suffix). |
 | `doctor_msg.logs_ok` | `event log and telemetry inbox look healthy` |  |  | Logs fine. |
-| `doctor_msg.no_engine_no_node` | `neither a working engine nor node is available; every guard fails closed - Fi...` |  |  | ND-04. |
+| `doctor_msg.logs_repo_tag` | ` repoKey={repo}` |  |  | The repository tag of an entry line. Placeholder: {repo}. |
+| `doctor_msg.logs_showing` | `showing the most recent {shown} of {n} — re-run with a narrower window if you...` |  |  | --logs prints only the most recent entries. Placeholders: {shown}, {n}. |
+| `doctor_msg.logs_summary` | `{n} warn/error entries in the central anti-hall log across {components} compo...` |  |  | --logs found entries. Placeholders: {n}, {components}, {summary} (component:count, sorted), {at}. |
+| `doctor_msg.no_engine_no_node` | `no working engine (and no usable Node fallback): the anti-hall hooks do not r...` |  |  | ND-04: no working engine and no usable Node behind it. |
 | `doctor_msg.no_entry` | `(no entry)` |  |  | Stands for an event with no entry. |
 | `doctor_msg.no_parent` | `no parent directory exists` |  |  | Reason. |
 | `doctor_msg.no_plugin_root` | `plugin root not found (pass --plugin-root <dir> or set AH_ENGINE_PLUGIN_ROOT)...` |  |  | The doctor could not find the plugin root, so the checks that read the plugin's files were skipped. |
 | `doctor_msg.no_write` | `write permission denied or read-only volume` |  |  | Reason. |
 | `doctor_msg.no_write_in` | `{parent} is not writable` |  |  | Reason. Placeholder: {parent}. |
-| `doctor_msg.node_broken` | `node does not run: {why} - Fix: reinstall Node` |  |  | ND-03. Placeholder: {why}. |
-| `doctor_msg.node_missing` | `node is not on PATH; the Node fallback hooks cannot run (if the engine is dow...` |  |  | ND-01. Placeholder: {min}. |
-| `doctor_msg.node_ok` | `Node {v} (>= {min}) — hooks can run` |  |  | ND-05. Placeholders: {v}, {min}. The Node doctor's text. |
-| `doctor_msg.node_old` | `Node {v} is < {min} — plugin.json requires Node.js >= {min} on PATH; hooks ma...` |  |  | ND-02. Placeholders: {v}, {min}. The Node doctor's text. |
+| `doctor_msg.node_broken` | `node does not run: {why}; Node is optional, only the few checks the engine st...` |  |  | ND-03: Node is optional. Placeholder: {why}. |
+| `doctor_msg.node_missing` | `node is not on PATH; Node is optional (the engine runs the hooks), only the f...` |  |  | ND-01: Node is optional. Placeholder: {min}. |
+| `doctor_msg.node_ok` | `Node {v} (>= {min}) found; optional (the engine runs the hooks)` |  |  | ND-05: a note, Node is optional. Placeholders: {v}, {min}. |
+| `doctor_msg.node_old` | `Node {v} is < {min}; Node is optional, but the few checks the engine still ha...` |  |  | ND-02: Node is optional. Placeholders: {v}, {min}. |
 | `doctor_msg.not_json` | `{file} is not valid JSON` |  |  | A plugin file that does not parse as JSON. Placeholder: {file}. |
 | `doctor_msg.omc_enabled` | `OMC plugin enabled in settings (enabledPlugins["{key}"])` |  |  | oh-my-claudecode is enabled. Placeholder: {key}. |
 | `doctor_msg.omc_loop_active` | `an OMC autonomous loop is ACTIVE right now — anti-hall task-guard/tasklist-gu...` |  |  | An oh-my-claudecode autonomous loop is active. |
@@ -5248,7 +5274,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.failure_mode_default` | `open` |  |  | Failure mode of an engine-only check not listed in script.failure_mode_by_check. |
 | `script.heap_budget_base_bytes` | `524288` |  | bytes | Memory budget the interpreter test holds one worker thread to (DECISIONS.md 1.111): this much for the runtime, the shared context, the host bindings and the lib files, plus script.heap_budget_per_check_bytes for every check script it has run. Measured 2026-10-09: 224 KB base, 1.04 MB with all 16 shipped scripts (git.js 365 KB, the others 1-195 KB); a context per check held 3.3 MB. |
 | `script.heap_budget_per_check_bytes` | `98304` |  | bytes | Per check script share of the interpreter budget above (DECISIONS.md 1.111). |
-| `script.includes` | `9 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
+| `script.includes` | `11 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
 | `script.lib_dir` | `lib` |  |  | Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script. |
 | `script.lock_max_held` | `2` |  |  | Most cross-process locks (`ah.state.lock`) a script may hold at once in one call. A script that nests two takes them in one fixed order and releases the inner one first. |
 | `script.lock_wait_max_ms` | `5000` |  | ms | Longest wait a script may ask `ah.state.lock` for in place of its group's wait. |
@@ -5278,7 +5304,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.sweep_max_remove` | `200` |  |  | Most files one `ah.state.sweep` call may delete, whatever the script asks for. |
 | `script.tail_buf_bytes` | `65536` |  | bytes | Size of the buffer `ah.transcript.tailLines` reads a file through. |
 | `script.tail_max_bytes` | `16777216` |  | bytes | Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for. |
-| `script.time_limit_by_check` | `15 entries` |  |  | Per-check limit of one script call (ms; the interpreter thread's CPU time, and the wall-clock backstop is script.wall_limit_factor times it), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; `command` (command-guard) resolves repositories and runs `git` for its edit parity and carve-outs (a child process wait is credited back, but a loaded machine stretches the interpreter's own time as well); `precompact-snapshot` reads the transcript tail of a PreCompact (a real 1.5 MB tail takes about 190 ms in the interpreter, so 50 ms would defer it to Node every time); `claim-ledger` walks up to 2 MB of transcript evidence; the Stop-time and prompt-time checks that scan the transcript tail or state (tasklist-guard, task-guard, silent-agent-nudge, stale-agent-stop-note, auto-handover, auto-handover-pause-nag, compact-advice-guard, limit-conserve-inject, idle-agent-sweep) get 500 ms because, measured 2026-10-09 on the frozen replay (2113 calls), the 50 ms default interrupted tasklist-guard on 2 and silent-agent-nudge on 6 of 61 Stop calls (and stale-agent-stop-note on a 156 MB transcript), each deferring a decision the script makes identically when given the time; its SessionStart advisory only lists and stats files. |
+| `script.time_limit_by_check` | `20 entries` |  |  | Per-check limit of one script call (ms; the interpreter thread's CPU time, and the wall-clock backstop is script.wall_limit_factor times it), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; `command` (command-guard) resolves repositories and runs `git` for its edit parity and carve-outs (a child process wait is credited back, but a loaded machine stretches the interpreter's own time as well); `git` (git-guard) tokenizes the whole command and its heredoc bodies (the frozen replay of 2026-10-09 interrupted it at 50 ms on 3 long heredoc commands, each answered the same with the time); api-guard and ship-it-guard parse Bash writes with command-guard's parsers (script.includes) and compact-declaration-guard parses the current turn of a 1.5 MB transcript tail, so they get command-guard's order of time and more; `precompact-snapshot` reads the transcript tail of a PreCompact (a real 1.5 MB tail takes about 190 ms in the interpreter, so 50 ms would defer it to Node every time); `claim-ledger` walks up to 2 MB of transcript evidence; the Stop-time and prompt-time checks that scan the transcript tail or state (tasklist-guard, task-guard, silent-agent-nudge, stale-agent-stop-note, auto-handover, auto-handover-pause-nag, compact-advice-guard, limit-conserve-inject, idle-agent-sweep) get 500 ms because, measured 2026-10-09 on the frozen replay (2113 calls), the 50 ms default interrupted tasklist-guard on 2 and silent-agent-nudge on 6 of 61 Stop calls (and stale-agent-stop-note on a 156 MB transcript), each deferring a decision the script makes identically when given the time; its SessionStart advisory only lists and stats files. |
 | `script.time_limit_ms` | `50` | `AH_ENGINE_SCRIPT_TIME_MS` | ms | CPU-time limit of one script call (the interpreter thread's own CPU time, see script.wall_limit_factor for the wall-clock backstop); past it the interpreter is interrupted and the call defers to Node (never a silent allow). |
 | `script.wall_limit_factor` | `10` |  |  | The wall-clock backstop of a script call, as a multiple of its time limit. The limit itself counts the interpreter thread's CPU time, so a thread kept waiting for a core by a loaded machine is not interrupted; the backstop ends a script that waits without using CPU. Time a host function spends blocked (a child process, a lock) is credited back to the backstop. |
 | `script.write_max_bytes` | `1048576` |  | bytes | Largest text one `ah.state.writeAtomic` call may write; a larger text is refused. |
@@ -5289,6 +5315,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.write_why_link` | `symbolic link below the write root` |  |  | Refusal reason of a scripted write that would pass through a symbolic link below the write root. |
 | `script.write_why_path` | `path outside the allowed shape` |  |  | Refusal reason of a scripted write whose path is absolute, outside the write root, too long, or has an empty, `.` or `..` part. |
 | `script.write_why_size` | `text over the size cap` |  |  | Refusal reason of a scripted write whose text is over script.write_max_bytes. |
+
+### mcp_reaper.toml / env
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `env.mcp_reap_dryrun` | `MCP_REAP_DRYRUN` |  |  | The environment variable that makes a reaper run a dry run when it is exactly mcp_reaper.job_dry_word (the companion's MCP_REAP_DRYRUN). The command reads it and hands it to the script. |
+| `env.mcp_reap_grace` | `MCP_REAP_GRACE` |  |  | The environment variable that sets the reaper's grace period between the polite and the forced signal, in seconds (the companion's MCP_REAP_GRACE, read the way JavaScript's Number reads it; not a finite number of at least zero falls back to the default; an explicit 0 is honoured). The command reads it and hands it to the script. |
+
+### mcp_reaper.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.mcp_reaper` | `11 entries` |  |  | The standalone MCP orphan reaper (the companion's 60 s background job): one `ah-engine mcp-reaper run` per interval, as a subprocess in its own process group. The run itself decides whether the reaper is on (maintenance.mcpReaperJob). |
 
 ### mcp_reaper.toml / mcp_reaper
 
@@ -5303,6 +5342,29 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.exclude_setting` | `4 entries` |  |  | Where the user's exclusion pattern is read from (guards.reaperExclude, a JavaScript regular expression, empty = none): a process it matches is never reaped. |
 | `mcp_reaper.grace_ms` | `500` |  | ms | How long the sweep waits between the polite signal and the re-check that decides who gets the forced one. |
 | `mcp_reaper.init_names` | `launchd, systemd, init` |  |  | The program names PID 1 must carry for the sweep to run at all: in a container PID 1 is the entrypoint and every child of it is normal, not a leaked orphan. |
+| `mcp_reaper.job_dry_word` | `1` |  |  | The value of the dry-run variable that turns dry running on. |
+| `mcp_reaper.job_every_ms` | `60000` | `AH_ENGINE_MCP_REAPER_MS` | ms | Interval of the mcp_reaper job (the Node unit's StartInterval was 60 s); 0 turns the job off. |
+| `mcp_reaper.job_flag_dry` | `--dry-run` |  |  | The option of `ah-engine mcp-reaper run` that makes it a dry run. |
+| `mcp_reaper.job_grace_default_s` | `3` |  | s | The grace period between the polite and the forced signal, in seconds, when the variable does not set one. The wait is bounded by hostproc.sleep_total_max_ms. |
+| `mcp_reaper.job_line` | `{ts} {msg}\n` |  |  | One log line: the ISO time, a space, the message, a newline. {ts} {msg}. |
+| `mcp_reaper.job_log_rel` | `.anti-hall/mcp-reaper.log` |  |  | The companion's log file, relative to the home directory (the job appends its lines there, as the Node reaper did); it stops growing past mcp_reaper.log_max_bytes. |
+| `mcp_reaper.job_msg_dry` | `DRYRUN would reap pid={pid} ppid={ppid} cmd={cmd}` |  |  | Logged per orphan on a dry run. {pid} {ppid} {cmd}. |
+| `mcp_reaper.job_msg_failed` | `anti-hall mcp-reaper: the reaper script gave no answer (see the engine log)` |  |  | Printed (stderr) when the reaper script gave no answer (missing, switched off, or it failed; the reason is in the engine log). Nothing was signalled after the failure point. |
+| `mcp_reaper.job_msg_kill` | `SIGKILL pid={pid} cmd={cmd}` |  |  | Logged per forced signal sent (only to a pid the fresh listing still selects). {pid} {cmd}. |
+| `mcp_reaper.job_msg_none` | `scan: no orphans` |  |  | Logged when a sweep finds no orphan (also when the process listing failed: nothing is reaped then). |
+| `mcp_reaper.job_msg_term` | `SIGTERM pid={pid} ppid={ppid} cmd={cmd}` |  |  | Logged per polite signal sent. {pid} {ppid} {cmd}. |
+| `mcp_reaper.job_msg_usage` | `usage: ah-engine mcp-reaper run [--dry-run] [--json]` |  |  | Printed (stderr) for a command line `mcp-reaper` does not know. |
+| `mcp_reaper.job_node_units` | `Library/LaunchAgents/com.anti-hall.mcp-reaper.plist, .config/systemd/user/ant...` |  |  | The unit files the Node installer (companion/install-reaper.js) writes, relative to the home directory. While one exists the job stands down: the Node reaper still runs, and two reapers never run at once. |
+| `mcp_reaper.job_optin_rel` | `.anti-hall/ah-engine/units/mcp-reaper.optin` |  |  | The marker of a carried-over Node opt-in, relative to the home directory: written by `ah-engine units heal` when it retires a Node reaper unit, read by the job on auto. |
+| `mcp_reaper.job_reaper_programs` | `launchd` |  |  | Parent program names (argv0 basename) that are always reapers. PID 1 is one whatever its name; a program merely named init is NOT one (real init is always PID 1). |
+| `mcp_reaper.job_relay_re` | `\bRelay\(` |  |  | JavaScript regex source (case-sensitive) of the WSL relay as it shows in a parent's command line (a display name, not a program path): such a parent is a reaper. |
+| `mcp_reaper.job_script` | `2 entries` |  |  | The plugin script that holds the job's logic, and its entry function (`script::call_fn`). |
+| `mcp_reaper.job_setting` | `7 entries` |  |  | The switch of the reaper job, maintenance.mcpReaperJob: off never runs it; on always runs it; auto (the default) runs it once the Node reaper's opt-in was carried over, which `ah-engine units heal` records when it retires a Node reaper unit. The Node reaper was opt-in (installed by hand), so auto keeps exactly the machines that had it. |
+| `mcp_reaper.job_sub_run` | `run` |  |  | The subcommand of `ah-engine mcp-reaper` that makes one sweep. |
+| `mcp_reaper.job_user_flag_re` | `(^\|\s)--user(\s\|$)` |  |  | JavaScript regex source of the per-user manager's flag as a discrete token. |
+| `mcp_reaper.job_user_manager` | `systemd` |  |  | The parent program name that is a reaper only as the per-user manager (with the flag below). |
+| `mcp_reaper.job_word_auto` | `auto` |  |  | The value of maintenance.mcpReaperJob that runs the job only once the Node opt-in was carried over. |
+| `mcp_reaper.job_word_off` | `off` |  |  | The value of maintenance.mcpReaperJob that switches the job off. |
 | `mcp_reaper.log_dir` | `logs` |  |  | The audit log directory under the base directory. |
 | `mcp_reaper.log_file` | `session-end-reaper.log` |  |  | The audit log file name. |
 | `mcp_reaper.log_max_bytes` | `5242880` |  | bytes | The audit log stops growing past this size. |
@@ -6014,6 +6076,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.advisory_3` | `    node statusline/install-statusline.js --uninstall   # or remove statusLin...` |  |  | The uninstall hint. |
 | `slcfg.advisory_4` | `    node statusline/install-statusline.js --consolidate` |  |  | The reinstall hint. |
 | `slcfg.already_1` | `Already installed — the effective statusLine already points at anti-hall stat...` |  |  | The effective statusLine already is the dispatcher. |
+| `slcfg.already_engine` | `Already installed — the effective statusLine already runs the anti-hall statu...` |  |  | The effective statusLine already is anti-hall's. |
 | `slcfg.backed_up_1` | `Backed up: {path}` |  |  | A backup was made. Placeholders: path. |
 | `slcfg.backed_up_2` | `       to: {path}` |  |  | A backup was made. Placeholders: path. |
 | `slcfg.backup_exists` | `Backup already exists: {path} (not overwritten)` |  |  | A backup exists already. Placeholders: path. |
@@ -6026,7 +6089,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.base_write_failed_1` | `⚠️ anti-hall · install-statusline: Could not write {path}: {msg}` |  |  | stderr: the base could not be written. Placeholders: path msg. |
 | `slcfg.base_write_failed_2` | `Why: the statusline will still work but your previous statusline will not be ...` |  |  | stderr: what that means. |
 | `slcfg.claude_dir` | `.claude` |  |  | The host's configuration directory (in the home directory and in a project). |
-| `slcfg.command_launcher` | `sh "{launcher}" --stdin statusline -- "{dispatcher}"` |  |  | The statusLine command when the launcher exists: it reads the host's JSON once and hands it to the engine's `statusline`, or to the dispatcher after the `--`. {launcher} {dispatcher}. It still names the dispatcher, so the Node installer, uninstaller and doctor recognise it as anti-hall's. |
+| `slcfg.command_engine` | `"{engine}" statusline` |  |  | The statusLine command the installer writes: the engine's own status line, no launcher and no Node script. {engine}. |
+| `slcfg.command_launcher` | `sh "{launcher}" --stdin statusline -- "{dispatcher}"` |  |  | The launcher form of the statusLine command an earlier engine installer wrote. {launcher} {dispatcher}. Only used to recognise that form exactly for the migration. |
 | `slcfg.command_line` | `  command: {cmd}` |  |  | A command shown after its file. Placeholders: cmd. |
 | `slcfg.command_prefix` | `node "` |  |  | Before the dispatcher path in the statusLine command. |
 | `slcfg.command_suffix` | `"` |  |  | After the dispatcher path in the statusLine command. |
@@ -6042,16 +6106,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.consolidated_write_failed` | `⚠️ anti-hall · install-statusline: Could not write {path}: {msg}` |  |  | stderr: the consolidated base could not be written. Placeholders: path msg. |
 | `slcfg.create_failed` | `❌ anti-hall · install-statusline: Could not create {path}: {msg}` |  |  | stderr: it could not be created. Placeholders: path msg. |
 | `slcfg.created` | `Created: {path}` |  |  | A local settings file was created. Placeholders: path. |
-| `slcfg.deferred` | `this input needs the Node script to answer exactly; nothing was written` |  |  | Said when the input needs the Node script to answer exactly (for example a settings file the engine cannot parse the way JavaScript does); nothing was written. |
 | `slcfg.dispatcher_dev` | `  (dev/__dirname fallback)` |  |  | After the dispatcher path when it is the one next to the installer. |
 | `slcfg.dispatcher_file` | `statusline.js` |  |  | The status line dispatcher script. |
 | `slcfg.dispatcher_line` | `Dispatcher: {path}{note}` |  |  | The first line of the installer. Placeholders: path note. |
 | `slcfg.dispatcher_stable` | `  (stable marketplace path)` |  |  | After the dispatcher path when it is the marketplace one. |
 | `slcfg.done` | `Done. {path} updated.` |  |  | The settings file was updated. Placeholders: path. |
 | `slcfg.empty_settings` | `{}\n` |  |  | What a missing project-local settings file is created with. |
+| `slcfg.engine_bin_rel` | `bin/ah-engine` |  |  | The engine executable inside the engine state directory (paths.base_dir/paths.state_dir under the home directory), where the hook wrappers look for it first. |
+| `slcfg.engine_command_re` | `^"[^"]+/ah-engine" statusline$` |  |  | Recognises a statusLine command in the engine's own form (installer, uninstaller). |
+| `slcfg.engine_line` | `Engine:     {path}` |  |  | The first line of the installer (engine form). Placeholders: path. |
+| `slcfg.engine_not_found` | `❌ anti-hall · install-statusline: the anti-hall engine is not installed at {p...` |  |  | stderr: no engine to point the status line at. Placeholders: path. |
+| `slcfg.engine_uninstall_hint` | `  "{engine}" uninstall-statusline` |  |  | The uninstall command (engine form); also the restore hint after a failed write. Placeholders: engine. |
+| `slcfg.engine_unsafe_1` | `⛔ anti-hall · install-statusline: engine path contains shell metacharacters —...` |  |  | stderr: the engine path has shell metacharacters. |
+| `slcfg.engine_unsafe_4` | `    "statusLine": { "type": "command", "command": "\"/path/to/ah-engine\" sta...` |  |  | stderr: the manual entry (engine form). |
 | `slcfg.err_copyfile` | `{err}, copyfile '{from}' -> '{to}'` |  |  | Node's wording of a failed file copy. Placeholders: err from to. |
+| `slcfg.err_cwd` | `{err}, process.cwd` |  |  | Node's wording of a working directory that no longer exists. Placeholders: err. |
 | `slcfg.err_mkdir` | `{err}, mkdir '{path}'` |  |  | Node's wording of a failed directory creation. Placeholders: err path. |
 | `slcfg.err_open` | `{err}, open '{path}'` |  |  | Node's wording of a failed file open. Placeholders: err path. |
+| `slcfg.err_read` | `{err}, read` |  |  | Node's wording of a failed read of an opened file (a directory). Placeholders: err. |
 | `slcfg.errno_table` | `8 items` |  |  | Operating-system errors as Node words them (`number CODE description`); the same numbers on Linux and macOS. |
 | `slcfg.errno_unknown` | `UNKNOWN: unknown error` |  |  | The words for an error the table does not know. |
 | `slcfg.flag_consolidate` | `--consolidate` |  |  | The install option that merges the existing status line and the anti-hall chip into one line. |
@@ -6063,21 +6135,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.gitignore_failed` | `⚠️ anti-hall · install-statusline: Could not update .gitignore: {msg}` |  |  | stderr: the ignore file could not be extended. Placeholders: msg. |
 | `slcfg.gitignore_file` | `.gitignore` |  |  | The project's ignore file. |
 | `slcfg.gitignore_has` | `.gitignore already ignores {entry}` |  |  | The ignore file already has the entry. Placeholders: entry. |
+| `slcfg.gitignore_unreadable` | `❌ anti-hall · install-statusline: Could not read .gitignore: {msg}` |  |  | stderr: the project's .gitignore could not be read (exit 1). Placeholders: msg. |
 | `slcfg.gitignore_updated` | `Updated .gitignore: added {entry}` |  |  | The ignore file was extended. Placeholders: entry. |
 | `slcfg.indent_line` | `  {text}` |  |  | A value shown under a note. Placeholders: text. |
 | `slcfg.inst_not_found_1` | `❌ anti-hall · install-statusline: statusline.js not found at: {path}` |  |  | stderr: the dispatcher is missing. Placeholders: path. |
 | `slcfg.inst_not_found_2` | `Do instead: keep the installer in the same directory as statusline.js.` |  |  | stderr: what to do about it. |
+| `slcfg.inst_parse_failed` | `❌ anti-hall · install-statusline: Could not parse {path}: {msg}` |  |  | stderr: the settings file could not be read or parsed (exit 1, nothing written). Placeholders: path msg. |
 | `slcfg.inst_refused` | `⛔ anti-hall · install-statusline: refused under a test: {path} is outside a t...` |  |  | stderr: the installer refuses to write user configuration under a test. Placeholders: path. |
 | `slcfg.installed_dir_install` | `/anti-hall/` |  |  | The installer treats a command that also contains this directory part as the anti-hall dispatcher. |
 | `slcfg.installed_dir_uninstall` | `anti-hall/` |  |  | The uninstaller treats a command (backslashes turned into slashes) that also contains this directory part as the anti-hall dispatcher. |
 | `slcfg.installed_marker` | `statusline.js` |  |  | A statusLine command that contains this names the dispatcher. |
-| `slcfg.launcher_rel` | `../scripts/ah-run.sh` |  |  | The launcher that runs the engine's command first and the Node script when the engine is absent or defers, relative to the directory of the status line dispatcher. |
+| `slcfg.launcher_form_re` | `^sh "(?<launcher>[^"]+)" --stdin statusline -- "(?<dispatcher>[^"]+)"$` |  |  | Recognises the launcher form an earlier engine installer wrote; named groups launcher and dispatcher (checked again against slcfg.command_launcher). |
+| `slcfg.launcher_rel` | `../scripts/ah-run.sh` |  |  | The launcher an earlier engine installer named in the statusLine command (it ran the engine first and the Node script when the engine was absent or deferred), relative to the directory of the status line dispatcher. Only used to recognise that form for the migration. |
 | `slcfg.local_entry` | `.claude/settings.local.json` |  |  | The ignore-file line that keeps the local settings out of version control. |
 | `slcfg.local_file` | `settings.local.json` |  |  | The host's project-local settings file (highest precedence, not committed). |
 | `slcfg.mig_ambiguous` | `left the statusLine in {path} as it is (its command text is not a single plai...` |  |  | Migration row: the command appears other than once in the file's text, or the edit does not read back as intended, so the file is left exactly as it is. {path}. |
 | `slcfg.mig_backup_failed` | `left the statusLine in {path} as it is (its one-time backup could not be writ...` |  |  | Migration row: the one-time backup could not be made, so the file is left exactly as it is. {path}. |
-| `slcfg.mig_dry_run` | `would update the statusLine in {path} to run the engine first: {command}` |  |  | Migration row (dry run): what would change. {path} {command}. |
-| `slcfg.mig_fixed` | `statusLine in {path} now runs the engine first, with the Node dispatcher as t...` |  |  | Migration row: an existing status line command now runs the engine first. {path} {command}. |
+| `slcfg.mig_dry_run` | `would update the statusLine in {path} to run the engine directly: {command}` |  |  | Migration row (dry run): what would change. {path} {command}. |
+| `slcfg.mig_fixed` | `statusLine in {path} now runs the engine directly: {command}` |  |  | Migration row: an existing status line command now runs the engine directly. {path} {command}. |
 | `slcfg.mig_write_failed` | `could not write {path}; the statusLine there is unchanged` |  |  | Migration row: the settings file could not be written. {path}. |
 | `slcfg.new_statusline` | `New statusLine:` |  |  | Heading of the new value. |
 | `slcfg.no_changes` | `No changes made.` |  |  | Nothing was changed. |
@@ -6085,11 +6160,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.no_command_2` | `Nothing to wrap — line 1 will use own dispatch.` |  |  | What happens then. |
 | `slcfg.no_existing` | `No existing statusLine — line 1 will use own dispatch.` |  |  | There is no statusLine yet. |
 | `slcfg.no_old_statusline` | `No existing statusLine.` |  |  | There was no old value. |
+| `slcfg.no_plugin_root` | `the anti-hall plugin directory was not found` |  |  | Why the installer cannot start: no plugin directory with the engine's defaults was found. |
 | `slcfg.note_project_1` | `NOTE: .claude/settings.json (committed) defines a statusLine:` |  |  | A committed project statusLine exists. |
 | `slcfg.note_project_2` | `  Installing into settings.local.json so anti-hall takes precedence (local > ...` |  |  | Why the installer writes the local file. |
 | `slcfg.note_user_1` | `NOTE: ~/.claude/settings.json (user/global) defines a statusLine:` |  |  | A user-level statusLine exists. |
 | `slcfg.note_user_2` | `  Installing into settings.local.json will take precedence over it.` |  |  | What the local file will do to it. |
 | `slcfg.old_statusline` | `Old statusLine:` |  |  | Heading of the old value. |
+| `slcfg.parse_invalid` | `not valid JSON` |  |  | Why a settings, base or backup file could not be used: it is not valid JSON. |
+| `slcfg.parse_not_object` | `not a JSON object` |  |  | Why a settings file is not merged into: its top level is not a JSON object. |
+| `slcfg.parse_unsupported` | `JSON that cannot be rewritten without changing it (a lone surrogate escape, o...` |  |  | Why a settings, base or backup file is not rewritten: JSON the engine cannot write back unchanged. Placeholders: depth. |
 | `slcfg.phase_advance` | `advance` |  |  | The `phase` subcommand that advances the count. |
 | `slcfg.phase_agents` | `agents` |  |  | The `phase` subcommand that sets the agent count. |
 | `slcfg.phase_clear` | `clear` |  |  | The `phase` subcommand that removes the state. |
@@ -6123,6 +6202,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.source_project` | `  Source: settings.json (project)` |  |  | Where an installed statusLine came from. |
 | `slcfg.source_user` | `  Source: ~/.claude/settings.json (user/global)` |  |  | Where an installed statusLine came from. |
 | `slcfg.stable_dir` | `.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/statusline` |  |  | The status line directory of the marketplace installation, relative to the home directory (stable across plugin updates). |
+| `slcfg.start_failed` | `❌ anti-hall · statusline: {msg}; nothing was written` |  |  | stderr: the installer or uninstaller could not start; nothing was written. Placeholders: msg. |
 | `slcfg.test_markers` | `NODE_TEST_CONTEXT, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables whose presence means the installer runs under a test: it then refuses to write user configuration outside a temporary directory. |
 | `slcfg.tmp_default` | `/tmp` |  |  | The temporary directory when none of those variables is set. |
 | `slcfg.tmp_env` | `TMPDIR, TMP, TEMP` |  |  | The environment variables the operating system's temporary directory is read from, in order. |
@@ -6137,6 +6217,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.u_backup_line` | `  {path}` |  |  | The backup path. Placeholders: path. |
 | `slcfg.u_backup_no_sl` | `Backup had no statusLine key — statusLine removed.` |  |  | The backup had no statusLine. |
 | `slcfg.u_current` | `  current statusLine: {cmd}` |  |  | The statusLine that is there. Placeholders: cmd. |
+| `slcfg.u_fall_through_a` | `Falling through to backup / key-removal strategy.` |  |  | stderr: after an unparsable base file the uninstaller tries the backup, then removes the key. |
+| `slcfg.u_fall_through_b` | `Falling through to key-removal strategy.` |  |  | stderr: after an unparsable backup the uninstaller removes the key. |
 | `slcfg.u_kept_base` | `Kept shared base config (global, used by other projects): {path}` |  |  | The shared base was kept. Placeholders: path. |
 | `slcfg.u_kept_base2` | `  Pass --purge-base to remove it once anti-hall is uninstalled everywhere.` |  |  | How to remove it. |
 | `slcfg.u_no_backup` | `(No backup or base config was available; key deleted directly.)` |  |  | No backup or base was available. |
@@ -6156,6 +6238,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.u_restored_sl` | `Restored statusLine: {json}` |  |  | The statusLine of the backup. Placeholders: json. |
 | `slcfg.u_write_failed` | `❌ anti-hall · uninstall-statusline: Could not write {path}: {msg}` |  |  | stderr: the write failed. Placeholders: path msg. |
 | `slcfg.uninst_backup_failed` | `⚠️ anti-hall · uninstall-statusline: Could not create backup: {msg}` |  |  | stderr: the uninstaller's backup failed. Placeholders: msg. |
+| `slcfg.uninst_parse_backup_failed` | `❌ anti-hall · uninstall-statusline: Could not parse backup {path}: {msg}` |  |  | stderr: the backup could not be read or parsed. Placeholders: path msg. |
+| `slcfg.uninst_parse_failed` | `❌ anti-hall · uninstall-statusline: Could not parse {path}: {msg}` |  |  | stderr: a settings or base file could not be read or parsed. Placeholders: path msg. |
 | `slcfg.uninst_refused` | `⛔ anti-hall · uninstall-statusline: refused under a test: {path} is outside a...` |  |  | stderr: the same for the uninstaller. Placeholders: path. |
 | `slcfg.uninstall_file` | `uninstall-statusline.js` |  |  | The uninstaller script named in the installer's closing hint. |
 | `slcfg.uninstall_hint` | `  node "{path}"` |  |  | The uninstall command. Placeholders: path. |
@@ -6167,6 +6251,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `slcfg.write_failed_1` | `❌ anti-hall · install-statusline: Could not write {path}: {msg}` |  |  | stderr: the settings file could not be written. Placeholders: path msg. |
 | `slcfg.write_failed_2` | `Do instead: restore from backup:` |  |  | stderr: how to get back. |
 | `slcfg.write_failed_3` | `  node "{path}"` |  |  | stderr: the restore command. Placeholders: path. |
+
+### slcfg.toml / statusline
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `statusline.date_max_ms` | `8.64e15` |  |  | The largest distance from the epoch a JavaScript date can hold (TimeClip); a session start number beyond it is not a date. |
+| `statusline.lone_surrogate_text` | `�` |  |  | What an ESC followed by an astral character becomes in a label: JavaScript's ESC-and-any-character pattern removes only the high surrogate, and Node writes the lone low surrogate left behind as the replacement character. |
 
 ### update_cli.toml / codex_install
 
@@ -6217,10 +6308,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `operator.codex_script_rel` | `codex/install-codex.js` |  |  | The Node installer inside the plugin directory. |
 | `operator.dry_run_flag` | `--dry-run` |  |  | The flag that makes install-codex write nothing (given to the Node shadow run). |
 | `operator.shadow` | `1` |  |  | 1 = the Node version of an operator command runs read-only beside the engine's (update: `--check` after the update; install-codex: `--dry-run` before the write) and a difference in the reported result is logged. The engine's result is always the real one; the Node script is never run in a way that repeats a side effect. 0 = off. |
-| `operator.shadow_check_log` | `update --check shadow mismatch: node={node} engine={engine}` |  |  | Event-log text when the Node `update.js --check` prints a different status line than `update --check`. |
 | `operator.shadow_codex_log` | `install-codex shadow mismatch: node={node} engine={engine}` |  |  | Event-log text when the Node `install-codex.js --dry-run` reports something other than what the engine then wrote. |
 | `operator.shadow_timeout_ms` | `30000` |  | ms | How long the Node shadow run may take before it is abandoned (nothing is logged for an abandoned run). |
-| `operator.shadow_update_log` | `update shadow mismatch: node --check reports latest {nl}, the engine updated ...` |  |  | Event-log text when the Node `update.js --check` disagrees with the engine's update about the latest version. |
 
 ### update_cli.toml / update
 
@@ -6254,7 +6343,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `update.json_max_depth` | `512` |  |  | Nesting past which a JSON file `update` reads counts as unreadable. |
 | `update.marketplace_rel` | `.claude/plugins/marketplaces/anti-hall` |  |  | The marketplace clone of the plugin, relative to the home directory. |
 | `update.max_bytes` | `4194304` |  | bytes | Largest manifest, registry or changelog `update` reads; a larger file counts as unread. |
-| `update.node_script_rel` | `skills/update/scripts/update.js` |  |  | The Node update script inside the plugin directory, run with --post-pull-only for the stages the engine does not port (the DevSwarm store sweeps and the settings migration). |
+| `update.node_script_rel` | `skills/update/scripts/update.js` |  |  | The Node update script inside the plugin directory; its exported stage functions run (bounded) only for the DevSwarm store stages the engine does not answer itself. |
 | `update.null_word` | `null` |  |  | How a missing version reads inside a text. |
 | `update.offline_patterns` | `19 items` |  |  | The ONLY pull-failure shapes that fail open (case-insensitive): network, resolver and no-git errors. Any other pull failure is a hard STOP. |
 | `update.plugin_json_rel` | `.claude-plugin/plugin.json` |  |  | The plugin manifest inside the plugin directory (its version is the version authority). |
@@ -6344,23 +6433,46 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `update_post.deferred_json` | `{"attempted":false,"deferred":true,"detail":"{name}: deferred — overall post-...` |  |  | A stage deferred by the overall post-pull budget. Placeholders: name, budget. |
+| `update_post.graphify_backup_suffix` | `.bak-{stamp}` |  |  | The backup copy written next to a cleaned hooks.json, before the rewrite. Placeholder: stamp (the ISO time with ':' and '.' turned into '-'). |
+| `update_post.graphify_detail` | `codex graphify-hooks migrate: {changed} config(s) cleaned, {removed} stale gr...` |  |  | The graphify cleanup's detail. Placeholders: changed, removed, errors (the error suffix). |
+| `update_post.graphify_errors` | ` ({n} target error(s), fail-open)` |  |  | The graphify cleanup's error suffix. Placeholder: n. |
+| `update_post.graphify_hooks_rel` | `.codex/hooks.json` |  |  | The Codex hooks.json the graphify cleanup inspects, relative to the home and then to the working directory (codexGraphifyHooksMigratePostUpdate's two targets). |
+| `update_post.graphify_removed_files` | `graphify-session.js, graphify-guard.js, graphify-reminder.js` |  |  | Hook scripts retired with graphify: a Codex hook group that registers one of them is removed (install-codex.js REMOVED_GRAPHIFY_FILES). |
 | `update_post.hash_files` | `hooks/lib/devswarm-detect.js, companion/lib/devswarm-store.js` |  |  | Plugin files that must be there for the shared store-hash listing. |
 | `update_post.hashes_snippet` | `const os=require("os");const u=require(process.argv[1]+"/skills/update/script...` |  |  | The store hashes, ordered smallest first, as runUpdate computes them once for the store stages. Arguments: plugin dir. |
+| `update_post.ingest_dry_run_env` | `ANTIHALL_INGEST_DRY_RUN` |  |  | The environment switch that turns the DevSwarm store repairs into a preview (`ANTIHALL_INGEST_DRY_RUN`); the value that turns it on is `ingest_dry_run_on`. |
+| `update_post.ingest_dry_run_on` | `1` |  |  | The value of `ingest_dry_run_env` that turns the preview on (the Node passes compare the string exactly). |
 | `update_post.ingest_files` | `companion/install-devswarm-ingest.js, hooks/lib/doctor-repair.js, hooks/lib/d...` |  |  | Plugin files the ingest-daemon heal inspects (relative to the plugin dir); if one is missing Node answers. |
 | `update_post.ingest_gate_json` | `{"attempted":false,"healed":false,"detail":"not a DevSwarm session — ingest h...` |  |  | The ingest heal answer when this is not a DevSwarm session and the cache was synced (healIngestDaemon's gate). |
 | `update_post.ingest_heal_fn` | `healIngestDaemon` |  |  | The exported Node function that heals the ingest daemon. |
 | `update_post.ingest_idle_json` | `{"attempted":false,"healed":false,"detail":"no cache sync this run and the in...` |  |  | The ingest heal answer when nothing was synced and the unit does not need healing. |
 | `update_post.ingest_needs_fn` | `ingestUnitNeedsHeal` |  |  | The exported Node function that says whether an installed ingest unit needs a heal when nothing was synced. |
+| `update_post.key_opt_in_applied` | `already applied (marker)` |  |  | The legacy key opt-in already stamped. |
+| `update_post.key_opt_in_enabled_key` | `enabled` |  |  | The setting that says Jev is on (section jev). |
+| `update_post.key_opt_in_file_key` | `keyFile` |  |  | The setting naming the Jev key file (section jev); empty means the vendor's default file. |
+| `update_post.key_opt_in_fixed` | `ENABLED jev.allowLegacyKeyRead (Jev is on and a key file exists at {path}, so...` |  |  | The setting was turned on. Placeholder: path (the key file; it is never read or copied). |
+| `update_post.key_opt_in_flag` | `allowLegacyKeyRead` |  |  | The setting the legacy key opt-in turns on (section jev). |
+| `update_post.key_opt_in_id` | `migrate-legacy-key-opt-in` |  |  | The legacy Jev key opt-in's step id (migrations.js runLegacyKeyOptInMigration). |
+| `update_post.key_opt_in_jev_off` | `Jev is not enabled — nothing to carry over` |  |  | Jev is not enabled. |
+| `update_post.key_opt_in_marker` | `migrateLegacyKeyOptIn` |  |  | The marker key of the one-time legacy Jev key opt-in in update-sweep-state.json. |
+| `update_post.key_opt_in_no_file` | `no Jev key file found — nothing to carry over` |  |  | No non-empty Jev key file. |
+| `update_post.key_opt_in_note_id` | `legacy-key-opt-in` |  |  | The name the settings-migrate detail gives the legacy key opt-in (update.js's own label). |
+| `update_post.key_opt_in_transport_default` | `vercel` |  |  | The vendor when the transport setting resolves to nothing. |
+| `update_post.key_opt_in_transport_key` | `transport` |  |  | The setting naming the Jev vendor (section jev); it picks the default key file. |
+| `update_post.key_opt_in_transport_typesafe` | `typesafe` |  |  | The transport value whose default key file is jev.key_file_typesafe (every other value uses jev.key_file_vercel). |
+| `update_post.key_opt_in_unreadable` | `settings.json is unreadable — left untouched, retries next update` |  |  | settings.json exists but is not a JSON object: nothing is written and nothing stamped. |
+| `update_post.key_opt_in_user_set` | `jev.allowLegacyKeyRead already set by the user — left as is` |  |  | The user already set jev.allowLegacyKeyRead (true or false). |
+| `update_post.key_opt_in_version` | `once` |  |  | The fixed version the legacy key opt-in is stamped with, so a later reset of the setting is not undone by the next update. |
+| `update_post.key_opt_in_write_failed` | `could not write jev.allowLegacyKeyRead: unknown` |  |  | The setting could not be written (settings lock busy or a write error); nothing stamped, retried next update. |
 | `update_post.lib_errors` | ` ({n} error(s), fail-open)` |  |  | The detail suffix when the library counted errors. Placeholder: n. |
-| `update_post.lib_nofn` | `{label} skipped: this build has no {fn}` |  |  | A library without the function a stage needs. Placeholders: label, fn. |
-| `update_post.lib_raised` | `{label} raised: {why}` |  |  | A library call that threw. Placeholders: label, why. |
-| `update_post.lib_snippet` | `let o;try{const m=require(process.argv[1]+"/"+process.argv[2]);const f=proces...` |  |  | Runs one exported function of a plugin library with the home as its option and prints {r: answer}, {__nofn: true} or {__err: message}. Arguments: plugin dir, library file, function name. |
 | `update_post.marker_file` | `.anti-hall/update-sweep-state.json` |  |  | The one-time stage markers, relative to the home directory. |
 | `update_post.node_args` | `-e` |  |  | Arguments of the Node subprocess that runs one stage function: the code, then the plugin dir, the function name and the options (JSON) as arguments. |
 | `update_post.node_failed_json` | `{"attempted":false,"detail":"{name} skipped: the Node stage could not run ({w...` |  |  | A stage whose Node function could not be run or printed nothing usable (the stage functions never throw, so this is the engine's own fail-open answer). Placeholders: name, why. |
+| `update_post.node_test_env` | `NODE_TEST_CONTEXT` |  |  | Set by the Node test runner; a store repair is then left to its Node stage (child-sender-labels refuses to run without an explicit home under it). |
+| `update_post.settings_note` | ` \| {id} {status}: {msg}` |  |  | Appended to the settings-migrate detail for the legacy key opt-in and the triage cache repair when they did not just skip. Placeholders: id, status, msg. |
 | `update_post.stage_snippet` | `const u=require(process.argv[1]+"/skills/update/scripts/update.js");const o=J...` |  |  | Runs one exported stage function of update.js with the paths resolved like its main(), and prints its answer as one JSON line. Arguments: plugin dir, function name, options JSON. |
 | `update_post.stage_timeout_ms` | `300000` |  |  | Upper bound of one Node stage subprocess, in ms, besides the post-pull budget plus margins. |
-| `update_post.stages` | `22 items` |  |  | The post-pull stages in the order update.js runs them. `name` is the progress name, `key` the status key, `fn` the exported Node stage function the engine runs (a bounded subprocess) when it cannot answer the stage itself. `budget`: the overall post-pull budget defers the stage. `files`: plugin files the stage needs (relative to the plugin dir); if one is missing Node answers. `gate`: the stage is DevSwarm-session-only; `gate_json` is the answer with the gate closed. `state`: keys of update-sweep-state.json that must all hold completedVersion == the new version for the one-time stage to be done; `done_json` is the answer then (`{version}` in its detail). `passes`: the options handed to the Node function (`version`, `hashes` = the store hashes ordered smallest first, `deadline` = the post-pull deadline). |
+| `update_post.stages` | `22 items` |  |  | The post-pull stages in the order update.js runs them. `name` is the progress name, `key` the status key, `fn` the exported Node stage function the engine runs (a bounded subprocess) when it cannot answer the stage itself. `budget`: the overall post-pull budget defers the stage. `files`: plugin files the stage needs (relative to the plugin dir); if one is missing Node answers. `gate`: the stage is DevSwarm-session-only; `gate_json` is the answer with the gate closed. `state`: keys of update-sweep-state.json that must all hold completedVersion == the new version for the one-time stage to be done; `done_json` is the answer then (`{version}` in its detail). `passes`: the options handed to the Node function (`version`, `hashes` = the store hashes ordered smallest first, `deadline` = the post-pull deadline). `native`: the engine answers the stage itself, no Node (`reply_state`, `gate_intents`, `auto_archived`: the state-file migrations of migrate-state.js, shaped by `label`/`out`/`already`/`detail` exactly as update.js shapes them; `settings`: the settings forward-migration, the one-time legacy Jev key opt-in and the Jev triage cache repair; `codex_graphify`: the Codex hooks.json graphify-group cleanup). `empty_when`: a store repair the engine answers itself when the machine has nothing for it to walk (`no_stores`: no DevSwarm store directory; `no_app_db`: no readable DevSwarm app database), with `empty_json` (`empty_dry_json` under the ingest dry-run switch) and the completion stamp the Node pass writes then (the first `state` key); otherwise the Node function runs. |
 | `update_post.status_order` | `23 items` |  |  | The order of the stage keys in the status object (the script's object literal; it differs from the order the stages run in). |
 
 ### handovers.toml / handovers
@@ -6895,6 +7007,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `devswarm_sup.action_feature` | `devswarm-supervisor` |  |  | The feature name of the supervisor's action lines. |
+| `devswarm_sup.action_kind` | `action` |  |  | The kind of an action line of the action ledger. |
+| `devswarm_sup.action_log` | `.anti-hall/logs/devswarm-sup-actions.ndjson` |  |  | The action ledger of the supervisor, one JSON line per action it took (kind = action_kind: feature, action, target, inputs, outcome, reason, latency_ms, action_id) and per mistake signal found later (kind = mistake_kind, naming the action_id), relative to the home directory. Each line also goes to telemetry as a `cmd` event (h = the action, e = the outcome), counted in `ah-engine telemetry summary` under detail.cmd. |
+| `devswarm_sup.action_success` | `ok, ran, marked, retired, pruned` |  |  | The outcomes that count as success in telemetry; any other counts as an error (a notice that had to be parked, a write that failed). |
+| `devswarm_sup.as_action_failed` | `failed` |  |  | The outcome word of a marker that could not be written. |
+| `devswarm_sup.as_action_mark` | `dssup-app-archived-marker` |  |  | The action word of an archived marker the app sync wrote (action ledger, telemetry `cmd` h). Without any Node on the machine the engine writes markers on its own plan; with Node present it still writes only when Node's dry run names the same workspaces. |
+| `devswarm_sup.as_action_marked` | `marked` |  |  | The outcome word of a marker written. |
 | `devswarm_sup.as_age_1d` | `86400000` |  | ms | The second age bucket. |
 | `devswarm_sup.as_age_1h` | `3600000` |  | ms | The first age bucket of the message gap report. |
 | `devswarm_sup.as_age_7d` | `604800000` |  | ms | The third age bucket. |
@@ -7008,6 +7127,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.env_disable_on` | `1` |  |  | The value of the kill switch that disables. |
 | `devswarm_sup.env_supervisor` | `ANTIHALL_DEVSWARM_SUPERVISOR` |  |  | The environment variable that switches the supervisor off (Node: ANTIHALL_DEVSWARM_SUPERVISOR). |
 | `devswarm_sup.env_supervisor_off` | `off` |  |  | The value of the supervisor switch that disables. |
+| `devswarm_sup.esc_action` | `dssup-escalation-notice` |  |  | The action word of the one-time notice after an engine escalation (action ledger, telemetry `cmd` h). |
+| `devswarm_sup.esc_action_drain` | `dssup-notice-drained` |  |  | The action word of a parked notice delivered by a later sweep. |
+| `devswarm_sup.esc_action_forced` | `dssup-forced-notice` |  |  | The action word of the forced notice for a stale workspace with an urgent mesh unread. |
+| `devswarm_sup.esc_body` | `child {id} idle{idle} — pokes exhausted, a human must click/continue the work...` |  |  | The notice text the parent reads. {id} = the child workspace, {idle} = esc_idle or nothing. |
+| `devswarm_sup.esc_hash` | `escalate:{id}:{since}` |  |  | The notice row's dedupe hash: one row per escalation, whoever sends it how often. |
+| `devswarm_sup.esc_idle` | ` {min}m` |  |  | The idle part of the notice text, in whole minutes since the workspace went stale. |
+| `devswarm_sup.esc_intent_keys` | `8 items` |  |  | The fields of an escalation notice (recovery.js notifyParentEscalation intent, parked as escalation-pending/<child>.json), in Node's order: childId, parentId, repoKey, row, delivered, deliveredAt, lastStatus, lastAttemptAt. |
+| `devswarm_sup.esc_minute_ms` | `60000` |  | ms | Milliseconds per minute of the idle part. |
+| `devswarm_sup.esc_row_keys` | `workspaceId, ts, sender, hash, body` |  |  | The fields of the notice's store row, in Node's order: workspaceId (the parent), ts, sender, hash, body. |
+| `devswarm_sup.esc_sender` | `system` |  |  | The sender of the notice row: a synthetic name no real workspace id can be. |
+| `devswarm_sup.esc_since_none` | `x` |  |  | What stands for the stale-since time in the hash when the verdict has none. |
+| `devswarm_sup.esc_skipped` | `skipped` |  |  | The outcome word of a notice that was not built. |
+| `devswarm_sup.esc_status_words` | `ok, busy, gone, error` |  |  | The delivery statuses of a notice (appendIntoPartition), in the order ok, busy (the parent's id lock), gone (the parent is not registered in its store), error (any other failure; also a notice without a project store key). |
+| `devswarm_sup.esc_why_no_descriptor` | `no-descriptor` |  |  | Why no notice is sent after an escalation: the workspace has no readable descriptor. |
+| `devswarm_sup.esc_why_no_worktree` | `no-worktree` |  |  | Why no notice is sent: the workspace has no worktree to name its parent from. |
+| `devswarm_sup.esc_why_self` | `self` |  |  | Why no notice is sent: the parent is the workspace itself (never notify self). |
+| `devswarm_sup.esc_why_unsafe_parent` | `unsafe-parent-id` |  |  | Why no notice is sent: the parent id is not a safe file name. |
 | `devswarm_sup.guard_ms` | `360000` |  | ms | The Node supervisor counts as running when its log (or the rotated copy) was written within this long. While it runs, the engine's supervisor duties AND the engine's poke / escalate stand down, so two actors never run one duty. Node writes one line per sweep and sweeps at least every 120 s. |
 | `devswarm_sup.hk_day_ms` | `86400000` |  |  | Milliseconds in the retention sweep's day. |
 | `devswarm_sup.hk_max_depth` | `1` |  |  | How many directory levels below the swept directory the age sweep looks (one: a date-partitioned directory). Bounds the walk against a link loop. |
@@ -7052,6 +7188,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.lv_encode_chars` | `/\:.` |  |  | The characters of a worktree path that become the replacement in the transcript directory's name (target-session.js encodeWorktreePath: slash, backslash, colon, dot). |
 | `devswarm_sup.lv_encode_to` | `-` |  |  | What each of those characters becomes. |
 | `devswarm_sup.lv_escalation_dir` | `escalation-pending` |  |  | Parked escalation notices, under the DevSwarm state directory (recovery.js escalation-pending). |
+| `devswarm_sup.lv_field_archive_ready` | `archive_ready` |  |  | The summary entry field that says a workspace is done and ready to archive (it is then never force-notified). |
 | `devswarm_sup.lv_field_delivered` | `delivered` |  |  | The field of a parked notice that marks it delivered. |
 | `devswarm_sup.lv_field_parent` | `parentId` |  |  | The field of a parked notice that names the parent. |
 | `devswarm_sup.lv_field_pid` | `pid` |  |  | The field of a session record that holds the process id. |
@@ -7060,6 +7197,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.lv_git_args` | `-C, {worktree}, log, -1, --format=%ct` |  |  | The arguments of the last-commit-time call; {worktree} is the workspace's worktree. |
 | `devswarm_sup.lv_git_bin` | `git` |  |  | The git executable (resolved on PATH). |
 | `devswarm_sup.lv_git_timeout_ms` | `4000` |  | ms | Bound of the git call that reads a worktree's last commit time (liveness.js GIT_TIMEOUT_MS). |
+| `devswarm_sup.lv_grace_skew_ms` | `5000` |  | ms | A descriptor written up to this far in the future (clock jitter) still counts as just spawned (Node SKEW_TOLERANCE_MS). |
 | `devswarm_sup.lv_heartbeat_fresh_ms` | `900000` |  | ms | How recent a heartbeat must be to count as proof the workspace is alive (liveness.js DEFAULT_HEARTBEAT_FRESH_MS, 15 minutes). |
 | `devswarm_sup.lv_jev_key_sep` | `` |  |  | The separator in the keys of Jev's pending-labels file between the recipient and the sender (the key ends with this and the child id). |
 | `devswarm_sup.lv_keys` | `8 items` |  |  | The fields of a liveness verdict, in the order Node writes them: status, lastOutboundTs, staleSince, nudgeAttempts, nudgedAt, pending, notDraining, oldestUnreadAgeMs. |
@@ -7067,12 +7205,20 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.lv_log_cleared_reason` | `session-alive` |  |  | The recovery-log reason of that action. |
 | `devswarm_sup.lv_ms_per_sec` | `1000` |  |  | Milliseconds in a second (the thresholds are set in seconds, the verdicts hold milliseconds). |
 | `devswarm_sup.lv_never_launched_ms` | `21600000` |  | ms | How long a registered workspace may have no transcript at all before it counts as never launched (liveness.js DEFAULT_NEVER_LAUNCHED_MS, 6 hours). |
+| `devswarm_sup.lv_not_urgent` | `not-urgent` |  |  | The forced-notice outcome of a stale workspace without an urgent unread. |
 | `devswarm_sup.lv_projects_dir` | `projects` |  |  | The directory of the Claude session transcripts under ~/.claude (companion/lib/target-session.js projectDirFor). |
 | `devswarm_sup.lv_spec_file` | `spec.json` |  |  | The file in a witness scratch directory that holds the witness's inputs (the clock, the thresholds and each workspace's previous verdict text). |
 | `devswarm_sup.lv_status_alive` | `alive` |  |  | The verdict status of a workspace that is not stale. |
+| `devswarm_sup.lv_status_stale` | `stale` |  |  | The verdict status of a workspace whose transcript and worktree are both idle (or that never launched) while inbound mail waits: the poke / escalate candidate the action layer reads. |
+| `devswarm_sup.lv_summary_workspaces` | `workspaces` |  |  | The member of a project summary (summaries/<repoKey>.json) that maps workspace ids to their entries. |
+| `devswarm_sup.lv_suppress_reasons` | `post-spawn-grace, archive-ready, idle-alive, primary-row-not-nudgeable` |  |  | Why a stale workspace is not force-notified, in Node's order: post-spawn grace, archive-ready, a live session, the Primary's own row. |
 | `devswarm_sup.lv_transcript_ext` | `.jsonl` |  |  | The extension of a session transcript file. |
+| `devswarm_sup.lv_urgency_fields` | `urgencyMax, broadcastUrgencyMax` |  |  | The summary entry fields holding the highest unread urgency, direct then broadcast (readMeshUrgency). |
+| `devswarm_sup.lv_urgent_tiers` | `high, urgent` |  |  | The urgency words that force a parent notice for a stale workspace at once (Node URGENT_TIERS). |
 | `devswarm_sup.lv_witness_max_ids` | `500` |  |  | Most workspaces one witness comparison covers (the oldest verdicts first); a sweep with more is sampled, never skipped whole. |
-| `devswarm_sup.mode` | `witness` |  |  | Who owns the supervisor duties: witness (the Node supervisor job does; the engine runs none of them) \| engine (the engine's scheduler runs them, poke and escalate follow). Anything else reads as witness, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit. |
+| `devswarm_sup.mistake_command` | `dssup-mistake` |  |  | The telemetry `cmd` h of a mistake signal (e = the action word it is about). An escalation notice is a mistake when the escalated workspace later turns out to have a live session (the `cleared` line of the recovery log). |
+| `devswarm_sup.mistake_kind` | `mistake` |  |  | The kind of a mistake line of the action ledger. |
+| `devswarm_sup.mode` | `engine` |  |  | Who owns the supervisor duties: engine (the default: the engine's scheduler runs them, poke and escalate follow; while a Node supervisor job is still installed and running the engine stands down, so there is never a second actor) \| witness (the Node supervisor job does; the engine runs none of them). Anything else reads as witness, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit. |
 | `devswarm_sup.mode_words` | `witness, engine` |  |  | The words of devswarm_sup.mode, in the order witness, engine. |
 | `devswarm_sup.msg_budget` | `tick budget spent` |  |  | The reason a duty was not started because the tick's time was spent. |
 | `devswarm_sup.msg_cooldown` | `cooldown` |  |  | The reason a cool-down duty was not started. |
@@ -7088,13 +7234,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.msg_recover_id` | `recover needs --id <workspace> (a plain workspace id)` |  |  | Printed when the workspace id is missing or not a safe name. |
 | `devswarm_sup.msg_recover_max` | `workspace {id} was already recovered {n} time(s) (limit {max}); needs a manua...` |  |  | Printed when the workspace was already recovered the most times allowed. {id} {n} {max}. |
 | `devswarm_sup.msg_recover_request` | `recover needs --request <id> (the same request is never run twice)` |  |  | Printed when the request id is missing. |
+| `devswarm_sup.msg_recover_rollback_no_node` | `recover is rolled back to Node (devswarm_sup.node_duties names recover) but n...` |  |  | Printed when devswarm_sup.node_duties names recover (the rollback to Node's own kill) but no Node can be found: the engine refuses rather than signal with its own kill, and records nothing. |
 | `devswarm_sup.msg_witness` | `witness mode: the Node supervisor owns the supervisor duties` |  |  | The tick's answer while the mode is witness. |
 | `devswarm_sup.node_args` | `-e` |  |  | The arguments before the duty's snippet (the snippet, the plugin root, the home directory and the poke owner follow). |
 | `devswarm_sup.node_bin` | `node` |  |  | The Node executable the `node` duties run through (resolved on PATH). A missing one fails the duty with a recorded error; nothing else is affected. |
 | `devswarm_sup.node_duties` | `` |  |  | Duties that have a native implementation but are to run as Node's own function instead (the rollback lever for one duty: name it here and the next tick runs Node's function in a bounded subprocess, as before the port). Empty: every ported duty runs natively. |
 | `devswarm_sup.node_log` | `.anti-hall/devswarm-supervisor.log` |  |  | The Node supervisor's log, relative to the home directory (the launchd / systemd / cron job writes its sweep line there). |
-| `devswarm_sup.notify_escalation` | `process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";con...` |  |  | The Node function the engine runs once after it escalates a workspace, so the parent (Primary) gets the same one-time notice Node's escalation sends (a store message with the hash escalate:<id>:<staleSince>, parked and retried by the liveness sweep when the Primary is not registered). Arguments: the plugin root, the home directory, the workspace id. |
-| `devswarm_sup.notify_timeout_ms` | `60000` |  | ms | Bound of the escalation-notice subprocess. |
 | `devswarm_sup.owner_engine` | `engine` |  |  | The poke-owner argument given to the liveness sweep when the engine owns poke and escalate. |
 | `devswarm_sup.owner_node` | `node` |  |  | The poke-owner argument given to the liveness sweep when Node's own poke step should run (both executors are node). |
 | `devswarm_sup.reason_exhausted` | `poke-exhausted` |  |  | The reason Node records when an escalation follows used-up pokes. |
@@ -7113,6 +7258,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.recover_witness_timeout_ms` | `20000` |  | ms | Bound of the witness's target lookup. |
 | `devswarm_sup.recover_witness_veto` | `1` |  |  | 1: when Node's read-only target lookup does not confirm the process the engine would signal, the engine stands down (reason `witness-disagrees`) instead of signalling. 0: the witness only logs. A Node that cannot be run never vetoes. |
 | `devswarm_sup.recovery_log` | `recovery.log` |  |  | Node's recovery log (one JSON line per poke / escalation / recovery step), relative to the DevSwarm state directory. |
+| `devswarm_sup.rt_action` | `dssup-retention-tombstone` |  |  | The action word of a retention pass that tombstoned rows of a store (action ledger, telemetry `cmd` h; the target is the store hash). |
+| `devswarm_sup.rt_action_pruned` | `pruned` |  |  | The outcome word of a retention pass that tombstoned rows. |
 | `devswarm_sup.rt_archive_dir` | `archive` |  |  | The archive of tombstoned bodies under the DevSwarm state directory. |
 | `devswarm_sup.rt_archive_ext` | `.ndjson.gz` |  |  | The extension of an archive month file. |
 | `devswarm_sup.rt_archived_at` | `archivedAt` |  |  | The field added to an archived row: when it was archived. |
@@ -7195,6 +7342,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.set_log_rotate_bytes` | `7 entries` |  |  | Size above which the supervisor log is rotated to its .1 copy. Node: devswarm.supervisorLogRotateBytes. |
 | `devswarm_sup.set_max_recoveries` | `7 entries` |  |  | Most kill-and-resume recoveries of one workspace. Node: devswarm.maxRecoveries. |
 | `devswarm_sup.set_nudge_window_sec` | `7 entries` |  |  | How long a poke stays in effect before the sweep decides again. Node: devswarm.nudgeWindowSec (floor 1). |
+| `devswarm_sup.set_post_spawn_grace_sec` | `7 entries` |  |  | Right after a child workspace is spawned it is not force-notified as stale for this long. Node: devswarm.postSpawnGraceSec. |
 | `devswarm_sup.set_reaped_days` | `5 entries` |  |  | Days a reaped-workspace log is kept before the housekeeping sweep removes it. Node: devswarm.reapedRetentionDays. A value that is not a positive number reads as the default. |
 | `devswarm_sup.set_reconcile_mode` | `6 entries` |  |  | Reconcile sweep switch: auto / on / off. Node: devswarm.reconcileSweep. |
 | `devswarm_sup.set_reconcile_sec` | `7 entries` |  |  | Least time between two reconcile sweeps. Node: devswarm.reconcileSweepSec (floor 300). |
@@ -7204,7 +7352,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.set_rt_days` | `7 entries` |  |  | Days of message bodies kept before they are archived and tombstoned; 0 switches retention off. Node: devswarm.retention.days. |
 | `devswarm_sup.set_rt_keep` | `7 entries` |  |  | The newest messages of each partition that are never tombstoned (by age or by size). Node: devswarm.retention.keepPerPartition. |
 | `devswarm_sup.set_rt_max_store_mb` | `7 entries` |  |  | Store size limit in MB: above it the oldest eligible bodies are tombstoned whatever their age; 0 = no limit. Node: devswarm.retention.maxStoreMB. |
-| `devswarm_sup.set_rt_require_witness` | `5 entries` |  |  | Tombstone only when Node's planner ran and agreed. Turn off only when Node is decommissioned and the agreement record is proven; the engine then relies on its own two identical plans and its in-transaction checks. |
+| `devswarm_sup.set_rt_require_witness` | `5 entries` |  |  | Tombstone only when Node's planner ran and agreed, whenever a Node is installed: a Node that fails or disagrees holds the store back. On a machine with no Node at all (decommissioned) the engine relies on its own two identical plans, its in-transaction checks and the archive written first. The journal fold and the archive-cap eviction still need Node's agreement and are held without it. |
 | `devswarm_sup.set_sweep_budget_ms` | `7 entries` |  |  | Time budget for one deferred stage of the sweep tail (one stage per tick). Node: devswarm.supervisorSweepBudgetMs. |
 | `devswarm_sup.set_witness` | `6 entries` |  |  | Run the non-acting Node witness for the native supervisor duties: on \| off. The witness only ever touches scratch copies; it costs one short Node run per duty per witness_every_ms. |
 | `devswarm_sup.status_escalated` | `escalated` |  |  | The verdict status after an escalation. |
@@ -7977,7 +8125,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_ingest.log_file` | `.anti-hall/devswarm-ingest.log` |  |  | The ingest log, relative to the home directory (the file the Node daemon's unit writes its output to); one `[ISO time] line` each. |
 | `devswarm_ingest.max_pace_ms` | `300000` |  | ms | The ceiling of the pause after a successful call, whatever interval_sec says. |
 | `devswarm_ingest.message_keys` | `message, fromBranch, toBranch` |  |  | An object with any of these keys is one message. |
-| `devswarm_ingest.mode` | `witness` |  |  | Who drains the DevSwarm native queue: witness (the Node ingest daemons do; the engine starts nothing) \| engine (the engine's daemon runs one drain per project). Anything else reads as witness, so a typo never starts a second consumer. The engine never edits any settings file or any launchd / systemd unit. |
+| `devswarm_ingest.mode` | `engine` |  |  | Who drains the DevSwarm native queue: engine (the default: the engine's daemon runs one drain per project; a live Node daemon holding a project's lock is waited for, never taken over) \| witness (the Node ingest daemons do; the engine starts nothing). Anything else reads as witness, so a typo never starts a second consumer. The engine never edits any settings file or any launchd / systemd unit. |
 | `devswarm_ingest.mode_words` | `witness, engine` |  |  | The words of devswarm_ingest.mode, in the order witness, engine. |
 | `devswarm_ingest.monitor_args` | `workspace, monitor` |  |  | The words after the executable of a monitor call. |
 | `devswarm_ingest.msg_exit_no_stderr` | `monitor {bin} exited {status} (no stderr output)` |  |  | The note of a monitor child that exited non-zero with no stderr. {bin} {status}. |
@@ -8726,6 +8874,237 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.word_unavailable` | `unavailable` |  |  | Said where the session of a lock holder is not recorded. |
 | `wake_watch.word_unknown` | `unknown` |  |  | Said where a role, id or version is not known. |
 | `wake_watch.word_unknown_error` | `unknown read error` |  |  | Said where a failed read gave no reason. |
+
+### refresh.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.refresh` | `11 entries` |  |  | Handle the session-cache refresh requests (L06): runs `ah-engine refresh --json` as a subprocess, so a timeout kills it and every probe it started. Off when refresh.every_ms is 0. |
+
+### refresh.toml / refresh
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `refresh.claude_cli_bins` | `claude` |  |  | The programs the Claude Code probe asks, in order (hooks/claude-cli-version-refresh.js). |
+| `refresh.devswarm_bins` | `devswarm, hivecontrol` |  |  | The programs the DevSwarm probe asks, in order (hooks/devswarm-version-refresh.js: the CLI, then the hivecontrol shim). |
+| `refresh.every_ms` | `60000` | `AH_ENGINE_REFRESH_MS` | ms | How often the refresh job looks for requests; a request waits at most this long (plus jitter). Cheap when there is none: it reads a few small files. 0 turns the job off. |
+| `refresh.full_version_re` | `(?-u:\b)v?([0-9]+\.[0-9]+\.[0-9]+)(?-u:\b)` |  |  | A full X.Y.Z version token (leading v optional; ASCII digits and word boundaries, as the JavaScript pattern of the Node scripts); exactly one distinct token in a stream is the version, more is ambiguous. |
+| `refresh.git_program` | `git` |  |  | The git program the version probe runs (resolved through PATH). |
+| `refresh.handled_file` | `handled.json` |  |  | The job's record of the newest request it handled per probe (`{"<probe>": <requestedAt>}`), relative to the request directory; a request at or below its record is done. |
+| `refresh.lock_boot_slop_s` | `5` |  |  | Two boot times closer than this many seconds are the same boot (lock owner liveness). |
+| `refresh.lock_file` | `run.lock` |  |  | The run lock (Node lock protocol), relative to the request directory, so a manual run and the job never handle a request twice. |
+| `refresh.lock_reclaim_stale_ms` | `10000` |  | ms | A takeover marker of the run lock older than this is taken over. |
+| `refresh.lock_release_step_ms` | `10` |  | ms | The pause between those tries. |
+| `refresh.lock_release_tries` | `20` |  |  | How many times a release tries to take the takeover marker. |
+| `refresh.lock_stale_ms` | `960000` |  | ms | A run lock older than this is taken over (longer than the job's timeout). |
+| `refresh.lock_step_ms` | `50` |  | ms | The pause between tries for the run lock. |
+| `refresh.lock_wait_ms` | `0` |  | ms | How long a run waits for a held run lock before giving up (the next tick tries again). |
+| `refresh.log_kind` | `refresh` |  |  | The event-log kind of the refresh lines. |
+| `refresh.msg_action` | `action={action_id} probe={probe} target={target} outcome={outcome} reason={re...` |  |  | The event-log line of one action: what was done, to what, why, how long it took and its id. |
+| `refresh.msg_busy` | `another refresh run holds the lock; nothing handled` |  |  | The result when another run holds the run lock. |
+| `refresh.msg_no_home` | `refresh: no home directory (set HOME or pass --home)` |  |  | The error when no home directory is known. |
+| `refresh.outcome_failed` | `failed` |  |  | The outcome word of a probe that wrote nothing (no answer, no network, a write refused). |
+| `refresh.outcome_refreshed` | `refreshed` |  |  | The outcome word of a probe that wrote its cache or a repair that ran. |
+| `refresh.outcome_skipped` | `skipped` |  |  | The outcome word of a probe with no new request. |
+| `refresh.partial_version_re` | `(?-u:\b)v?([0-9]+\.[0-9]+)(?-u:\b)` |  |  | An X.Y token, used only when a stream has no full token; again exactly one distinct token or nothing. |
+| `refresh.poll_ms` | `20` |  | ms | How often the bounded runner checks whether a probe has finished. |
+| `refresh.probe_timeout_ms` | `15000` |  | ms | Longest one probe subprocess (`git ls-remote`, `<cli> --version`) may run; its process group is killed at the limit (the Node refresh scripts used the same bound). |
+| `refresh.probes` | `version, claude_cli, devswarm, repair` |  |  | The probes in the order a run handles them. `version`: the remote-latest anti-hall release tag (version-alert); `claude_cli` and `devswarm`: the installed CLI versions (drift probes); `repair`: the reload repair (repair-on-reload). |
+| `refresh.reason_cooldown` | `cooldown` |  |  | Reason word: a repair ran at this version within the cooldown (live re-check). |
+| `refresh.reason_exit` | `repair-failed` |  |  | Reason word: the repair exited non-zero or did not finish in time. |
+| `refresh.reason_forced` | `forced` |  |  | Reason word: `--force`. |
+| `refresh.reason_locked` | `locked` |  |  | Reason word: another repair holds its lock. |
+| `refresh.reason_no_output` | `no-output` |  |  | Reason word: no source answered. |
+| `refresh.reason_no_tag` | `no-tag` |  |  | Reason word: the sources answered but named no release tag. |
+| `refresh.reason_requested` | `requested` |  |  | Reason word: a check asked for it. |
+| `refresh.reason_write_failed` | `write-failed` |  |  | Reason word: the cache or record could not be written. |
+| `refresh.repair_args` | `doctor, --repair, --migrations-only, --quiet` |  |  | The engine arguments of the reload repair (the engine's port of `doctor.js --repair --migrations-only --quiet`); `--home` and, when the request names it, `--plugin-root` are appended. |
+| `refresh.repair_lock_file` | `repair-on-reload.lock` |  |  | The repair lock of hooks/repair-on-reload.js (Node lock protocol), relative to the anti-hall directory, so the engine and a Node repair never run together. |
+| `refresh.repair_lock_stale_ms` | `660000` |  | ms | A repair lock older than this is taken over (longer than refresh.repair_timeout_ms, so a live engine repair is never taken over). |
+| `refresh.repair_timeout_ms` | `600000` |  | ms | Longest the reload repair may run; its process group is killed at the limit. |
+| `refresh.request_dir` | `.anti-hall/refresh` |  |  | Where the checks write their requests, relative to the home directory: one `<probe>.json` per probe, `{"requestedAt": <ms>, ...}`. |
+| `refresh.request_ext` | `.json` |  |  | The file ending of a request file after the probe name. |
+| `refresh.request_max_bytes` | `65536` |  | bytes | Largest request or record file the job reads; a larger one is ignored as unreadable. |
+| `refresh.tag_args` | `ls-remote, --tags` |  |  | The git arguments that list a remote's tags; the remote is appended. |
+| `refresh.tag_fallback_remote` | `origin` |  |  | The remote asked next, inside the local marketplace clone (session.marketplace_dir), when the first gave no output. |
+| `refresh.tag_re` | `refs/tags/(v?[0-9]+\.[0-9]+\.[0-9]+)$` |  |  | A release tag line of `git ls-remote --tags` (a trailing CR is stripped first); group 1 is the tag. Peeled refs never match. |
+| `refresh.tag_remote` | `https://github.com/talas9/anti-hall` |  |  | The remote the version probe asks first (live network), as hooks/version-alert-refresh.js. |
+| `refresh.version_arg` | `--version` |  |  | The argument that makes a CLI print its version. |
+
+### guards_v1.toml / api_guard_v1
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `api_guard_v1.max_code_chars` | `600000` |  |  | A code chunk longer than this (JavaScript string length) is not checked, as in the Node guard. |
+| `api_guard_v1.max_modules` | `8` |  |  | Most module groups probed per language (one interpreter run each), as the Node guard bounds them. |
+| `api_guard_v1.msg_instead` | `verify the correct name (check the docs or run a quick `hasattr` / `typeof` p...` |  |  | Block message: what to do instead. |
+| `api_guard_v1.msg_item_prefix` | `  • ` |  |  | Prefix of each fabricated reference listed under the block message. |
+| `api_guard_v1.msg_override` | `only if you target a NEWER version where it exists: write ~/.anti-hall/skip.j...` |  |  | Block message: the override. |
+| `api_guard_v1.msg_timeout` | `anti-hall api-guard: API verification skipped (probe for "{bin}" timed out af...` |  |  | The one stderr line when a probe timed out, was killed or could not run in the time left and nothing was blocked (the edit is allowed unchecked); {bin} is the interpreter, {ms} the asked budget. |
+| `api_guard_v1.msg_what` | `this code references API(s) that do not exist in your installed runtime ({ver...` |  |  | Block headline; {versions} lists the interpreters' version lines. |
+| `api_guard_v1.msg_why` | `These attributes are absent from the real module/object; they look like fabri...` |  |  | Block message: why. |
+| `api_guard_v1.node_args` | `-e` |  |  | Arguments before the JavaScript probe's source and its two JSON arguments. |
+| `api_guard_v1.node_bin` | `node` |  |  | The JavaScript runtime probed for require() modules and global builtins: the user's own `node` on the request's PATH (when it is not installed, JavaScript references are not checked). |
+| `api_guard_v1.node_probe` | `const mods = JSON.parse(process.argv[1]);\nconst globals = JSON.parse(process...` |  |  | The JavaScript probe: requires each module once and walks each global path, answering 1 (present), 0 (missing) or 2 (unknown) per attribute; it runs in the hook's working directory so installed packages resolve. |
+| `api_guard_v1.python3_version_pattern` | `Python 3\.` |  |  | What a usable Python's version output (stdout and stderr joined) must contain. |
+| `api_guard_v1.python_args` | `-I, -c` |  |  | Arguments before the Python probe's source and its JSON check list: -I (isolated: no user site-packages, no environment, no current directory on sys.path) and -c. |
+| `api_guard_v1.python_bins` | `python3, python` |  |  | The Python interpreters tried, in order; the first whose version probe exits 0 and prints api_guard_v1.python3_version_pattern is used. |
+| `api_guard_v1.python_probe` | `import sys, json, os\ncwd = os.getcwd()\nsys.path[:] = [p for p in sys.path i...` |  |  | The Python probe: drops the working directory from sys.path, imports each base module once, walks the receiver path and answers 1 (attribute present), 0 (missing) or 2 (unknown) per [receiver, attribute] pair of its JSON argument. |
+| `api_guard_v1.spawn_timeout_env` | `ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS` |  |  | Environment variable that replaces api_guard_v1.spawn_timeout_ms when it holds a positive integer (the Node guard's test knob). |
+| `api_guard_v1.spawn_timeout_ms` | `15000` |  | ms | The per-probe timeout the guard asks for (the Node guard's own); the spawn primitive cuts it to host_spawn.timeout_max_ms and the request's deadline. |
+| `api_guard_v1.tmpdir_default` | `/tmp` |  |  | The Python probe's directory when api_guard_v1.tmpdir_env is unset or not absolute. |
+| `api_guard_v1.tmpdir_env` | `TMPDIR` |  |  | The request environment variable naming the temporary directory the Python probe runs in (never the repository). |
+| `api_guard_v1.version_args` | `--version` |  |  | Arguments that make an interpreter print its version (the Python check and the version list of the block message). |
+| `api_guard_v1.version_joiner` | `, ` |  |  | Separator between the interpreter version lines in the block message. |
+
+### guards_v1.toml / compact_decl_v1
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `compact_decl_v1.declaration_forms` | `0, 2` |  |  | Which of the recommendation patterns of lib/76-compact-advice.js (cadv.ADVICE_RES, by position) count as a declaration for this guard: 0 "safe to compact" and 2 "safe for a reset" (hooks/lib/compact-advice.js DECLARATION_RE_INDEXES); the pause nag's mandated "good point to /compact" footer and a bare /compact command do not. |
+| `compact_decl_v1.msg_allowed` | `read-only tools.` |  |  | Block message: what stays allowed. |
+| `compact_decl_v1.msg_instead` | `stop, or retract: write a line "RETRACT SAFE TO COMPACT: <why>", then refresh...` |  |  | Block message: what to do instead. |
+| `compact_decl_v1.msg_what` | `you declared SAFE TO COMPACT this turn ("{phrase}") and then started new work...` |  |  | Block headline; {phrase} is the declaration found, {tool} the tool that started new work. |
+| `compact_decl_v1.msg_why` | `The declaration must be the last act of the turn; new work after it makes the...` |  |  | Block message: why. |
+| `compact_decl_v1.this_tool` | `this tool` |  |  | How the block message names the tool when the payload has no tool name. |
+
+### guards_v1.toml / hook_proc
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `hook_proc.cwd_envs` | `CLAUDE_PROJECT_DIR, HOME` |  |  | Stand-ins for the hook process's working directory, which a Node guard read (process.cwd()) when the payload had no cwd or a relative one: the first of these request variables that holds an absolute path. Claude Code runs a hook in the session's directory, which CLAUDE_PROJECT_DIR names. |
+| `hook_proc.cwd_last` | `/` |  |  | The hook process's working directory when no stand-in in hook_proc.cwd_envs is absolute. |
+
+### guards_v1.toml / host_spawn
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `host_spawn.deadline_reserve_ms` | `600` |  | ms | Time kept back from the request's deadline when a spawned program's timeout is cut to it: the other checks of the event and the reply still need it. |
+| `host_spawn.default_path` | `/usr/bin:/bin` |  |  | The search path used when the request carries no PATH: the default of the C library's execvp, which is what Node's spawn falls back to. |
+| `host_spawn.max_calls` | `16` |  |  | Most programs one script call may start (api-guard: two version probes, one per module group up to api_guard_v1.max_modules, one Node probe, the version lines of the message). |
+| `host_spawn.min_run_ms` | `1` |  | ms | A spawn whose cut timeout is below this does not run at all (reported as skipped). |
+| `host_spawn.output_max_bytes` | `262144` |  | bytes | Largest stdout or stderr a spawned program may write; more marks the run `overflow` (the Node probe's maxBuffer) and both streams are cut here. |
+| `host_spawn.path_env` | `PATH` |  |  | The request environment variable that holds the search path for a spawned program. |
+| `host_spawn.poll_ms` | `2` |  | ms | How often a running spawned program is checked for exit. |
+| `host_spawn.programs` | `python3, python, node` |  |  | The only programs a script may start through the spawn primitive: bare names, each looked up on the request's PATH (the user's own install), never the daemon's PATH or the plugin's files. api-guard probes these interpreters. |
+| `host_spawn.scrub_env` | `^(NODE_OPTIONS\|NODE_PATH\|PYTHONSTARTUP\|PYTHONPATH\|PYTHONHOME\|PYTHONINSPECT\|PY...` |  |  | Names of request environment variables never passed to a spawned program (case-insensitive): interpreter start-up injection vectors, as the Node api-guard scrubs them. |
+| `host_spawn.timeout_max_ms` | `15000` |  | ms | Ceiling of one spawned program's run, whatever the script asks; it is also cut to what the request has left (see host_spawn.deadline_reserve_ms), so a slow interpreter costs a fail-open notice, never the reply. |
+
+### guards_v1.toml / inbox_read_v1
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `inbox_read_v1.guard_store` | `devswarm-store-read` |  |  | The guard name a raw store read is blocked under. |
+| `inbox_read_v1.msg_store_instead` | ``devswarm.js inbox read <id>` (or `devswarm.js inbox pull <id>` first to impo...` |  |  | Store-read block: what to do instead. |
+| `inbox_read_v1.msg_store_what` | `reading the raw DevSwarm store (SQLite db, sidecars, journal NDJSON) directly...` |  |  | Store-read block: what. |
+| `inbox_read_v1.msg_store_why` | `The store is the write/derive layer; a raw read risks a partial view and a la...` |  |  | Store-read block: why. |
+| `inbox_read_v1.store_cli_present` | `true` |  |  | Whether the wrapper's store-read command exists, so a raw read of the DevSwarm store (its database, sidecars and journal) is blocked as well as a raw inbox read. The Node hook asked hooks/lib/devswarm-inbox-paths.js storeReadCliPresent(), true for every shipped plugin since the journal store; the engine ships the same answer. |
+
+### guards_v1.toml / output_verify_v1
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `output_verify_v1.key_order` | `9 items` |  |  | The order in which the host writes the keys of a tool output object (Claude Code's Bash tool_response, seen in recorded payloads), so the scanned text is built in the order the Node hook saw. The engine receives the payload with its keys sorted; keys not listed here follow the listed ones, sorted. |
+
+### guards_v1.toml / shell_writes
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `shell_writes.big_len` | `60000` |  |  | A command longer than this is not parsed whole: its leading heredoc header (or its first shell_writes.head_len characters) is, with the heredoc body attached as the content (hooks/lib/shell-writes.js BIG_LEN). |
+| `shell_writes.head_len` | `16384` |  |  | How much of a big command's start is parsed when it has no leading heredoc, cut at a line end (hooks/lib/shell-writes.js HEAD_LEN). |
+
+### units.toml / units
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `units.act_keep` | `keep` |  |  | Action: a Node unit was left in place (its duty is not the engine's yet). |
+| `units.act_load` | `run` |  |  | Action: a service-manager command was run. |
+| `units.act_mistake` | `mistake` |  |  | Action: a Node unit the engine retired earlier is back (the owner reinstalled it); it is left alone and recorded as a mistake signal of that retirement. |
+| `units.act_optin` | `optin` |  |  | Action: the Node reaper's opt-in was carried over to the engine job. |
+| `units.act_remove` | `remove` |  |  | Action: an engine unit file was moved aside (uninstall). |
+| `units.act_retire` | `retire` |  |  | Action: a Node unit was retired (unloaded and its files moved aside). |
+| `units.act_status` | `status` |  |  | Action: a status line (nothing changed). |
+| `units.act_unchanged` | `unchanged` |  |  | Action: a unit file already had these bytes. |
+| `units.act_write` | `write` |  |  | Action: a unit file was written (new or changed). |
+| `units.allow_tmp_home_env` | `ANTIHALL_UNITS_ALLOW_TMP_HOME` |  |  | The environment variable that, set to 1, lets service-manager commands run although the home directory is under a temporary directory (a deliberate temporary-home install). |
+| `units.allow_tmp_home_word` | `1` |  |  | The value of units.allow_tmp_home_env that allows it. |
+| `units.cmd_poll_ms` | `20` |  | ms | How often a running service-manager command is checked. |
+| `units.cmd_timeout_ms` | `15000` |  | ms | Longest one service-manager command may run before it is killed and counted as failed. |
+| `units.cmd_what` | `units` |  |  | The name of a service-manager command in a log line. |
+| `units.cron_line` | `*/5 * * * * "{exe}" serve >/dev/null 2>&1` |  |  | The crontab line offered when systemd's user manager is not available. {exe}. |
+| `units.doctor_id` | `units-heal` |  |  | The id of the units heal row in the `doctor --repair` report. |
+| `units.duty_ingest` | `devswarm_ingest` |  |  | The duty word of the DevSwarm ingest daemons: the engine runs them when devswarm_ingest.mode is engine. |
+| `units.duty_reaper` | `mcp_reaper` |  |  | The duty word of the MCP reaper: the engine runs it when the mcp_reaper job is on (maintenance.mcpReaperJob not off, job interval above 0). |
+| `units.duty_supervisor` | `devswarm_sup` |  |  | The duty word of the DevSwarm supervisor: the engine runs it when devswarm_sup.mode is engine. |
+| `units.engine_bin_rel` | `.anti-hall/ah-engine/bin/ah-engine` |  |  | The engine binary the unit runs, relative to the home directory (where the bootstrap installs it and the hook wrapper finds it). |
+| `units.exec_arg` | `"{arg}"` |  |  | One argument of the ExecStart line: double-quoted, with the systemd escapes applied. {arg}. |
+| `units.flag_bin` | `--bin` |  |  | The option that names the engine binary the unit runs (default: units.engine_bin_rel under the home directory). |
+| `units.flag_dry` | `--dry-run` |  |  | The option that reports what would be done and changes nothing. |
+| `units.heal_setting` | `7 entries` |  |  | The switch of the units heal that update's post-pull stage and `doctor --repair` run, maintenance.unitsHeal: on (the default) writes the engine unit and moves the Node units aside whose duty the engine runs, off leaves the units alone. Idempotent; it never deletes. |
+| `units.heal_word_off` | `off` |  |  | The value of maintenance.unitsHeal that switches the heal off. |
+| `units.label` | `com.anti-hall.engine` |  |  | The launchd label of the engine unit. |
+| `units.label_sep` | `.` |  |  | Between a family label and its per-project suffix. |
+| `units.launchd_dir` | `Library/LaunchAgents` |  |  | The LaunchAgents directory, relative to the home directory. |
+| `units.launchd_load` | `launchctl, unload, {plist}, launchctl, load, {plist}` |  |  | The commands that (re)load a LaunchAgent: unload (its failure is ignored, the unit may not be loaded) then load. |
+| `units.launchd_loaded` | `launchctl, list, {label}` |  |  | The command whose exit 0 says a label is loaded. |
+| `units.launchd_unload` | `launchctl, unload, {plist}` |  |  | The command that unloads a LaunchAgent (its failure is ignored: the unit may not be loaded). |
+| `units.ledger_file` | `ledger.jsonl` |  |  | The append-only ledger of every action a non-dry run took (one JSON line each: ts, action_id, action, target, outcome, reason, latency_ms). |
+| `units.line_action` | `{action} {target}: {outcome}{reason}` |  |  | One line of the human report. {action} {target} {outcome} {reason} (the reason with its leading separator, or nothing). |
+| `units.line_note` | `note: {note}` |  |  | One note line of the human report. {note}. |
+| `units.lock_file` | `units.lock` |  |  | The lock a run holds, so two runs never act at once. |
+| `units.log_detail` | `{target} {outcome} {reason}` |  |  | The detail of the engine log line of a units action; {target}, {outcome} and {reason} are filled in. |
+| `units.log_kind` | `units` |  |  | The engine event log kind of a units action. |
+| `units.msg_busy` | `anti-hall units: another run is in progress; nothing was done` |  |  | Printed when another `units` run holds the lock: nothing was done. |
+| `units.msg_no_bin` | `the engine binary {bin} is missing or not executable; install the engine first` |  |  | The note when the engine binary the unit would run is missing or not executable: nothing is written. {bin}. |
+| `units.msg_no_home` | `anti-hall units: no home directory; nothing was done` |  |  | Printed when no home directory is set: nothing was done. |
+| `units.msg_no_systemctl` | `systemd user manager not available; to keep the engine running, add this line...` |  |  | The note when systemd's user manager is not available: nothing is written; the line to add with `crontab -e` instead. {line}. |
+| `units.msg_unsupported` | `no service manager support on {os}: the daemon is started by the hooks only` |  |  | The note of a platform with no unit support (neither launchd nor systemd): nothing is written. {os}. |
+| `units.msg_usage` | `usage: ah-engine units <status\|install\|heal\|uninstall> [--dry-run] [--bin <pa...` |  |  | Printed (stderr) for a command line `units` does not know. |
+| `units.node_units` | `7 entries, 7 entries, 7 entries` |  |  | The units the Node installers write. name: report name; duty: the duty word; label: the launchd label (a family also matches `<label>.<suffix>`); unit: the systemd unit name (a family also matches `<unit>-<suffix>`); files: the systemd file suffixes; stop: the systemd unit to disable ({unit} is the matched unit name); family: one unit per project. |
+| `units.os_launchd` | `macos` |  |  | The operating system (Rust's std::env::consts::OS) whose units are launchd LaunchAgents. |
+| `units.os_systemd` | `linux` |  |  | The operating system whose units are systemd user units. |
+| `units.out_absent` | `absent` |  |  | Status outcome: the file is not there. |
+| `units.out_dry` | `dry-run` |  |  | Outcome: a dry run; nothing was changed. |
+| `units.out_failed` | `failed` |  |  | Outcome: it failed. |
+| `units.out_nonzero` | `non-zero exit` |  |  | Outcome: a service-manager command ran and exited non-zero (expected for an unload of a unit that is not loaded; only the last command of a step decides whether the step failed). |
+| `units.out_ok` | `ok` |  |  | Outcome: done. |
+| `units.out_present` | `present` |  |  | Status outcome: the file is there. |
+| `units.out_refused` | `refused` |  |  | Outcome: a service-manager command refused under a test or a temporary home. |
+| `units.plist_arg` | `    <string>{arg}</string>` |  |  | One ProgramArguments entry of the LaunchAgent. {arg}. |
+| `units.plist_log` | `/dev/null` |  |  | Where launchd sends the unit's stdout and stderr (the daemon writes its own log). |
+| `units.plist_suffix` | `.plist` |  |  | The file name suffix of a launchd unit. |
+| `units.plist_template` | `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD...` |  |  | The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {interval} {log}; every value is XML-escaped. |
+| `units.reason_sep` | ` - ` |  |  | Between the outcome and the reason in a report line. |
+| `units.retired_subdir` | `retired` |  |  | Where moved-aside unit files go, inside the units directory: `<file name>.<epoch ms>`. |
+| `units.serve_args` | `serve` |  |  | The arguments the unit gives the engine binary. |
+| `units.service_suffix` | `.service` |  |  | The file name suffix of a systemd service. |
+| `units.service_template` | `[Unit]\nDescription=anti-hall engine daemon (starts it when none is running)\...` |  |  | The systemd user service of the engine unit. {exec} is the quoted command line. |
+| `units.stage_name` | `units-heal` |  |  | The progress name of update's units heal stage. |
+| `units.state_subdir` | `units` |  |  | The units directory inside the engine state directory (ledger, lock, retired files). The reaper opt-in marker is mcp_reaper.job_optin_rel. |
+| `units.sub_heal` | `heal` |  |  | The subcommand that installs the engine unit and retires the Node units whose duty the engine runs (what update and doctor --repair call). |
+| `units.sub_install` | `install` |  |  | The subcommand that writes and loads the engine unit. |
+| `units.sub_status` | `status` |  |  | The subcommand that reports and changes nothing. |
+| `units.sub_uninstall` | `uninstall` |  |  | The subcommand that unloads the engine unit and moves its files aside. |
+| `units.systemd_dir` | `.config/systemd/user` |  |  | The systemd user unit directory, relative to the home directory. |
+| `units.systemd_escapes` | `\, \\, ", \", $, $$, %, %%` |  |  | The escapes applied to an ExecStart argument, in order: backslash and double quote for the quoting, a dollar and a percent sign doubled so systemd expands neither a variable nor a specifier. |
+| `units.systemd_load` | `systemctl, --user, daemon-reload, systemctl, --user, enable, --now, {timer}` |  |  | The commands that load the engine unit: re-read the unit files, then enable and start the timer. |
+| `units.systemd_loaded` | `systemctl, --user, is-enabled, --quiet, {unit}` |  |  | The command whose exit 0 says a timer or service is enabled. |
+| `units.systemd_probe` | `systemctl, --user, --version` |  |  | The command whose exit 0 says systemd's user manager is available. |
+| `units.systemd_reload` | `systemctl, --user, daemon-reload` |  |  | The command that re-reads the unit files after files were moved aside. |
+| `units.systemd_unload` | `systemctl, --user, disable, --now, {unit}` |  |  | The command that disables and stops a unit (its failure is ignored: the unit may not be enabled). |
+| `units.test_markers` | `ANTIHALL_TEST_ISOLATION, NODE_TEST_CONTEXT` |  |  | Environment variables that mark a test run: while one is set (non-empty), no service-manager command runs (files are still written under the test's home). The same markers the Node installers honour. |
+| `units.timer_suffix` | `.timer` |  |  | The file name suffix of a systemd timer. |
+| `units.timer_template` | `[Unit]\nDescription=anti-hall engine daemon watch ({interval}s)\n\n[Timer]\nO...` |  |  | The systemd user timer that starts the service on login and again after it has been inactive for the interval. {interval}. |
+| `units.tmp_roots` | `/tmp/, /private/tmp/, /var/folders/, /private/var/folders/` |  |  | Directory prefixes that are temporary: a home under one of them is never a real operator home, so no service-manager command runs for it (the system temporary directory is checked too). |
+| `units.unit_name` | `anti-hall-engine` |  |  | The systemd unit name of the engine unit (the service and the timer share it). |
+| `units.unit_sep` | `-` |  |  | Between a family unit name and its per-project suffix. |
+| `units.watch_interval_s` | `300` |  | s | How often the unit runs `ah-engine serve` again (a no-op while a daemon answers), in seconds. |
+| `units.why_came_back` | `retired earlier (action {action_id}) and installed again; left alone` |  |  | Reason of a mistake signal: the unit was retired earlier and is installed again. {action_id} is the retirement it refers to. |
+| `units.why_duty_engine` | `duty runs in the engine` |  |  | Reason a Node unit is retired: the engine runs its duty. |
+| `units.why_duty_node` | `duty not in the engine yet` |  |  | Reason a Node unit is kept: the engine does not run its duty yet. |
+| `units.why_exit` | `exit {code}` |  |  | Reason of a failed service-manager command. {code}. |
+| `units.why_test_guard` | `not run under a test or a temporary home` |  |  | Reason a service-manager command was not run: a test or a temporary home. |
+| `units.xml_escapes` | `&, &amp;, <, &lt;, >, &gt;, ", &quot;, ', &apos;` |  |  | The XML escapes applied to every value put in a LaunchAgent, in order (the ampersand first). |
 
 ## Messages
 

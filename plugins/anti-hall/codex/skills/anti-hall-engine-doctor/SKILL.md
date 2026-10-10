@@ -20,6 +20,7 @@ Health check, repair, migrations and capability scans.
 | `ah-engine migrate` | `[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state,... | main, codex |
 | `ah-engine shadow-compare` | `<scratch dir>` Internal: the detached half of a Node shadow (L9a) | main, codex, workspace, subagent |
 | `ah-engine update` | `[--check] [--post-pull-only]` Update anti-hall (D81, lane L9b, the port of skills/update/scripts/update.js): `git pull --ff-only` of the marketplace clone (a dirty... | main, codex |
+| `ah-engine refresh` | `[--force] [--home <dir>]` Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert),... | main, codex |
 
 ## Guards
 
@@ -48,5 +49,6 @@ Health check, repair, migrations and capability scans.
 - `maintenance.repairOnReload` = true: The switch maintenance.repairOnReload (on by default)
 - `codexNudge.enabled` = true: Where the Codex nudge switch is read from (codexNudge.enabled, default on)
 - `guards.codexQuotaDetect` = true: Where the Codex quota detection switch is read from (guards.codexQuotaDetect, default on)
+- `maintenance.unitsHeal` = "on": The switch of the units heal that update's post-pull stage and `doctor --repair` run, maintenance.unitsHeal: on (the default) writes the...
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

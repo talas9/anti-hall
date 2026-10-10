@@ -1534,3 +1534,47 @@ fn ds_the_supervisor_files_must_parse_and_the_hook_tests_must_pass() {
     d.has("ok", &["supervisor companion INSTALLED (", "background sweep)"]);
     assert_eq!(d.code, 0);
 }
+
+// ---- UN: the units heal inside the repair --------------------------------------------------------------------------------------
+
+/// The unit files the heal wrote under a scratch home (launchd plists or systemd user units).
+fn unit_files(home: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in ["Library/LaunchAgents", ".config/systemd/user"] {
+        if let Ok(rd) = fs::read_dir(home.join(dir)) {
+            found.extend(rd.flatten().map(|e| e.path()));
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn un_01_the_repair_heals_the_units_once_never_in_a_check_and_obeys_the_switch() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.stub_engine("0.0.0");
+    // a check and a dry run write nothing
+    assert!(!sc.doctor(&[]).text.contains("units-heal"));
+    let dry = sc.doctor_raw(&["--dry-run"]);
+    assert!(dry.text.contains("units-heal"), "{}", dry.text);
+    assert!(unit_files(&sc.home).is_empty(), "a dry run wrote units");
+    // the switch off: the repair leaves the units alone
+    let mut c = Command::new(BIN);
+    c.arg("doctor").arg("--plugin-root").arg(&sc.plugin).arg("--repair");
+    sc.env(&mut c);
+    c.env("ANTIHALL_UNITS_HEAL", "off");
+    let off = sc.finish(c);
+    assert!(!off.text.contains("units-heal") && unit_files(&sc.home).is_empty(), "{}", off.text);
+    // the repair writes the engine unit and says so
+    let first = sc.doctor_raw(&["--repair"]);
+    first.has("ok", &["units-heal"]);
+    let written = unit_files(&sc.home);
+    assert!(!written.is_empty(), "the repair wrote no unit: {}", first.text);
+    let bytes: Vec<Vec<u8>> = written.iter().map(|p| fs::read(p).unwrap()).collect();
+    // a second repair changes nothing and reports nothing
+    let again = sc.doctor_raw(&["--repair"]);
+    assert!(!again.text.contains("units-heal"), "not idempotent: {}", again.text);
+    assert_eq!(unit_files(&sc.home), written);
+    assert_eq!(written.iter().map(|p| fs::read(p).unwrap()).collect::<Vec<_>>(), bytes);
+}

@@ -26,6 +26,7 @@ The DevSwarm supervisor sweep: auto-archive, pokes, app sync, retention, reconci
 - `devswarm.supervisorLogRotateBytes` = 10485760: Size above which the supervisor log is rotated to its .1 copy
 - `devswarm.maxRecoveries` = 3: Most kill-and-resume recoveries of one workspace
 - `devswarm.nudgeWindowSec` = 180: How long a poke stays in effect before the sweep decides again
+- `devswarm.postSpawnGraceSec` = 120: Right after a child workspace is spawned it is not force-notified as stale for this long
 - `devswarm.reapedRetentionDays` = 30: Days a reaped-workspace log is kept before the housekeeping sweep removes it
 - `devswarm.reconcileSweep` = "auto": Reconcile sweep switch: auto / on / off
 - `devswarm.reconcileSweepSec` = 900: Least time between two reconcile sweeps

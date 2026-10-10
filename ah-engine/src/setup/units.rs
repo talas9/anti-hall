@@ -660,6 +660,34 @@ pub fn heal(dry: bool) -> Value {
     }
 }
 
+/// Whether the callers inside the engine (update's post-pull stage, `doctor --repair`) run `units heal`: the setting
+/// `maintenance.unitsHeal`, on unless it says off.
+pub fn heal_enabled() -> bool {
+    let env = crate::reqenv::RequestEnv::capture();
+    let st = crate::checks::git::util::Settings::from_env(&env);
+    crate::checks::guardkit::settings::get_enum(&st, defaults::raw("units.heal_setting")) != defaults::text("units.heal_word_off")
+}
+
+/// `units heal` for update's post-pull stage and `doctor --repair`: `None` when the setting is off or the run changed nothing
+/// (an idempotent run on a healed machine, or one with nothing to act on, reports nothing); otherwise the report without its "unchanged" and test-guard "refused" lines. It moves Node
+/// units aside and writes the engine unit, never deletes, and a failure is in the report, never a panic.
+pub fn heal_changes(dry: bool) -> Option<Report> {
+    if !heal_enabled() {
+        return None;
+    }
+    let mut report = match run_real(Sub::Heal, dry, None) {
+        Ok(r) => r,
+        Err(key) => Report { rows: Vec::new(), notes: vec![defaults::text(key).to_string()], failed: false },
+    };
+    let (unchanged, refused) = (defaults::text("units.act_unchanged"), defaults::text("units.out_refused"));
+    report.rows.retain(|r| r.action != unchanged && r.outcome != refused);
+    // no row: nothing was written or moved (the engine binary is not installed yet, no service manager, another run holds the lock)
+    if report.rows.is_empty() {
+        return None;
+    }
+    Some(report)
+}
+
 /// The verb's handler.
 pub fn cmd_units(p: &Parsed) -> i32 {
     let sub_word = p.rest.iter().find(|a| !a.starts_with("--")).map_or("", String::as_str);

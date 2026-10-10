@@ -410,3 +410,19 @@ value = "."
 [units.unit_sep]
 doc = "Between a family unit name and its per-project suffix."
 value = "-"
+
+[units.heal_setting]
+doc = "The switch of the units heal that update's post-pull stage and `doctor --repair` run, maintenance.unitsHeal: on (the default) writes the engine unit and moves the Node units aside whose duty the engine runs, off leaves the units alone. Idempotent; it never deletes."
+value = { section = "maintenance", key = "unitsHeal", env = "ANTIHALL_UNITS_HEAL", aliases = [], option = "", default = "on", values = ["on", "off"] }
+
+[units.heal_word_off]
+doc = "The value of maintenance.unitsHeal that switches the heal off."
+value = "off"
+
+[units.stage_name]
+doc = "The progress name of update's units heal stage."
+value = "units-heal"
+
+[units.doctor_id]
+doc = "The id of the units heal row in the `doctor --repair` report."
+value = "units-heal"

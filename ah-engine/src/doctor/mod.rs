@@ -389,7 +389,8 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
         }
     }
     crate::telemetry::emit::add_items(done);
-    if rows.is_empty() && fixes.is_empty() && doc.fail == 0 {
+    let units = crate::setup::units::heal_changes(f.dry_run);
+    if rows.is_empty() && fixes.is_empty() && units.is_none() && doc.fail == 0 {
         doc.infol(defaults::text("doctor_msg.repair_none").to_string());
     }
     for r in &rows {
@@ -399,6 +400,17 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
             "failed" => doc.bad(defaults::render("doctor_msg.repair_failed", args)),
             "gated" => doc.warnl(defaults::render("doctor_msg.repair_gated", args)),
             _ => doc.infol(defaults::render("doctor_msg.repair_skipped", args)),
+        }
+    }
+    if let Some(u) = units {
+        let (id, msg) = (defaults::text("units.doctor_id"), u.to_text());
+        let args: &[(&str, &dyn std::fmt::Display)] = &[("id", &id), ("msg", &msg)];
+        if u.failed {
+            doc.bad(defaults::render("doctor_msg.repair_failed", args));
+        } else if f.dry_run {
+            doc.infol(defaults::render("doctor_msg.repair_would", args));
+        } else {
+            doc.ok(defaults::render("doctor_msg.repair_fixed", args));
         }
     }
 }
