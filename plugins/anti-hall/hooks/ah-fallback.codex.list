@@ -19,6 +19,7 @@ apply_patch|Bash	10	node "${PLUGIN_ROOT}/hooks/ship-it-guard.js"
 apply_patch	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/edit-guard.js"
 Bash	10	sh "${PLUGIN_ROOT}/hooks/procwatch-advisory"
 Bash	10	sh "${PLUGIN_ROOT}/hooks/engine-role-guard"
+Bash	10	sh "${PLUGIN_ROOT}/hooks/broad-kill-guard"
 @SessionStart	10
 *	10	node "${PLUGIN_ROOT}/hooks/verify-first-full.js"
 *	10	node "${PLUGIN_ROOT}/hooks/verify-first-orch.js"

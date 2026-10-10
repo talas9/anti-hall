@@ -1,0 +1,117 @@
+# broad-kill-guard (issue #38): PreToolUse on Bash for EVERY agent (main session, workspace child, subagent, Codex). It blocks
+# the kill commands that match processes by name, pattern, port or "everything" (pkill, killall, `kill -9 -1`, `xargs kill`
+# fed by a lookup) because they take down processes the agent does not own (the user's dev servers, other agents' test runs).
+# Killing one explicit PID stays allowed. Engine-only, no Node twin (a stricter check than Node has). The decision logic is
+# engine/logic/broad-kill-guard.js; every command list, pattern, number and text is here (D88).
+
+[broad_kill.sw]
+doc = "Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills."
+value = { section = "guards", key = "broadKill", env = "ANTIHALL_BROAD_KILL", option = "", default = true }
+
+[broad_kill.guard_name]
+doc = "The guard id the broad-kill guard answers to in skip.json and in its messages."
+value = "broad-kill-guard"
+
+[broad_kill.summary]
+doc = "One-line description of the broad-kill-guard check in the generated reference."
+value = "PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill of process group 0 and a kill fed by a name, pattern or port lookup (xargs kill, kill $(pgrep ...)); kill <pid> of an explicit PID is allowed."
+
+[broad_kill.blocked_commands]
+doc = "Commands that select processes by name or pattern: always blocked, except where broad_kill.scoped_commands allows a narrow form."
+value = ["pkill", "killall", "killall5"]
+
+[broad_kill.scoped_commands]
+doc = "Per blocked command, the flags that narrow it to the children of one explicit process (pkill -P <pid>). The value of such a flag must match broad_kill.scope_ok_re; with it the call is allowed, without it the call is blocked."
+value = { pkill = ["-P", "--parent"] }
+
+[broad_kill.scope_ok_re]
+doc = "Values a scoping flag may take: $$, $BASHPID or an explicit PID of 2 or more (parent 1 is every orphaned process, so it is not a scope). Regular expression (Rust syntax)."
+value = '^(?:\$\$|\$BASHPID|\$\{BASHPID\}|[2-9]|[1-9][0-9]+)$'
+
+[broad_kill.kill_commands]
+doc = "The commands that send a signal to explicit targets (kill [-signal] target...). Their targets are checked against broad_kill.broad_target_re and broad_kill.lookup_re."
+value = ["kill"]
+
+[broad_kill.signal_value_flags]
+doc = "Flags of kill that take the next word as their value (the signal), so that word is not a target."
+value = ["-s", "-n", "--signal"]
+
+[broad_kill.broad_target_re]
+doc = "A kill target that means every process the user owns (-1) or the caller's whole process group (0). Regular expression (Rust syntax)."
+value = '^(?:-1|0|-0)$'
+
+[broad_kill.lookup_re]
+doc = "A command that finds processes by name, pattern or port. In a command substitution that feeds kill, or earlier in a pipeline that feeds xargs kill, it makes the kill a pattern kill. Regular expression (Rust syntax), matched against the substitution text or the command name."
+value = '(?:^|[^A-Za-z0-9_./-])(?:pgrep|pidof|pstree|lsof|fuser|netstat|ss|ps)(?:$|[^A-Za-z0-9_-])'
+
+[broad_kill.lookup_commands]
+doc = "The command names that count as a lookup earlier in a pipeline (the same set as broad_kill.lookup_re, by exact name)."
+value = ["pgrep", "pidof", "pstree", "lsof", "fuser", "netstat", "ss", "ps"]
+
+[broad_kill.xargs_commands]
+doc = "Commands that run another command with arguments read from standard input."
+value = ["xargs"]
+
+[broad_kill.xargs_value_flags]
+doc = "Flags of xargs that take the next word as their value (so it is not the command it runs)."
+value = ["-I", "-i", "-n", "-L", "-l", "-P", "-d", "-E", "-e", "-s", "-a", "-R", "-S"]
+
+[broad_kill.flag_kill_commands]
+doc = "Commands that kill through a flag: per command, a regular expression (Rust syntax) for the flag word that makes it kill by file, port or image name (fuser -k, taskkill /IM). Blocked."
+value = { fuser = '^-[A-Za-z]*k[A-Za-z]*$', taskkill = '^/[Ii][Mm]$' }
+
+[broad_kill.wrappers]
+doc = "Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (sudo pkill, env X=1 killall, nohup pkill)."
+value = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"], doas = ["-u", "-C"], env = ["-u", "-C", "-S"], nohup = [], command = [], builtin = [], exec = ["-a"], time = ["-f", "-o"], nice = ["-n"], ionice = ["-c", "-n", "-p"], timeout = ["-s", "-k"], stdbuf = ["-i", "-o", "-e"], setsid = [], caffeinate = ["-t", "-w"] }
+
+[broad_kill.wrapper_positional]
+doc = "Per wrapper, how many plain words follow its flags before the command (timeout takes a duration)."
+value = { timeout = 1, caffeinate = 0 }
+
+[broad_kill.prefix_words]
+doc = "Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch)."
+value = ["{", "!", "if", "then", "else", "elif", "do", "while", "until", "time"]
+
+[broad_kill.script_words]
+doc = "Commands (besides the shells of git.shell_verbs) whose arguments are themselves a script, so a kill inside them still counts (eval)."
+value = ["eval"]
+
+[broad_kill.script_flag_re]
+doc = "The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax)."
+value = '^-[A-Za-z]*c[A-Za-z]*$'
+
+[broad_kill.max_depth]
+doc = "How deep the guard follows nested scripts and command substitutions (sh -c, eval, $(...), heredocs read by a shell) before it stops looking."
+value = 5
+min = 1
+max = 20
+
+[broad_kill.msg_what_pattern]
+doc = "Heading of the block on a name or pattern kill. Placeholders: {cmd} the command as it was written."
+value = "`{cmd}` is blocked: it kills every process that matches a name or pattern, not one process you started."
+
+[broad_kill.msg_what_everyone]
+doc = "Heading of the block on `kill -1` / `kill 0`. Placeholders: {cmd} the command as it was written."
+value = "`{cmd}` is blocked: it signals every process you own, or your whole process group."
+
+[broad_kill.msg_what_lookup]
+doc = "Heading of the block on a kill fed by a process or port lookup. Placeholders: {cmd} the command as it was written."
+value = "`{cmd}` is blocked: it kills whatever a name or port lookup returns, not a process you started."
+
+[broad_kill.msg_why]
+doc = "Why the broad kills are blocked."
+value = "Other processes run on this machine under the same user (the user's dev servers, other agents' builds and tests); a name, pattern or port match cannot tell yours from theirs, and a subagent's broad pkill once killed the user's dev servers."
+
+[broad_kill.msg_instead]
+doc = "What to do instead."
+value = "kill by PID after checking the process: record the PID when you start it (`cmd & echo $!`), check it with `ps -p <pid> -o pid,command`, then `kill <pid>`. To stop your own children only, `pkill -P $$` is allowed."
+
+[broad_kill.msg_override]
+doc = "How the user can lift the block (shown on the last line)."
+value = "the user turns the guard off with `guards.broadKill` (a locked safety switch) or skips it for a session in skip.json as broad-kill-guard."
+
+[broad_kill.cmd_max]
+doc = "Characters of the offending command shown in a block message (longer is cut)."
+value = 120
+min = 20
+max = 1000

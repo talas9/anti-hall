@@ -192,7 +192,8 @@ mod tests {
                 "api-guard",
                 "ship-it-guard",
                 "procwatch-advisory",
-                "engine-role-guard"
+                "engine-role-guard",
+                "broad-kill-guard"
             ],
             "the Bash entries a built-in check answers, in hooks.json order"
         );

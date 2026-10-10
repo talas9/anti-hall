@@ -523,6 +523,7 @@ value = [
   { id = "stale-agent-stop-note", matcher = "TaskStop", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"", timeout = 10, check = "stale-agent-stop-note" },
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
+  { id = "broad-kill-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard\"", timeout = 10, check = "broad-kill-guard" },
 ]
 
 [dispatch.hooks_claude_PostToolUse]
@@ -613,6 +614,7 @@ value = [
   { id = "edit-guard", matcher = "apply_patch", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/edit-guard.js\"", timeout = 10, check = "edit-guard" },
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
+  { id = "broad-kill-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/broad-kill-guard\"", timeout = 10, check = "broad-kill-guard" },
 ]
 
 [dispatch.hooks_codex_Stop]
