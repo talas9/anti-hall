@@ -534,11 +534,6 @@ fn cmd_get(run: &mut Run, a: &Args) {
 fn report_failure(run: &mut Run, a: &Args, outcome: Outcome) -> bool {
     match outcome {
         Outcome::Done => return false,
-        Outcome::LockBusy => {
-            err(&(defaults::text("ops.lock_busy").to_string() + "\n"));
-            run.code = super::defer_code();
-            return true;
-        }
         Outcome::Needs(warning) => {
             if a.json {
                 out(&(json::stringify(&J::Obj(vec![
@@ -631,11 +626,6 @@ fn cmd_judge(run: &mut Run, a: &Args) {
         let raw = if verb == "on" { defaults::text("ops.true_word") } else { defaults::text("ops.false_word") };
         match store::set_cli(&run.ctx, sem_entry, &sem.safety_note, raw, false) {
             Outcome::Done => {}
-            Outcome::LockBusy => {
-                err(&(defaults::text("ops.lock_busy").to_string() + "\n"));
-                run.code = super::defer_code();
-                return;
-            }
             Outcome::Needs(_) => {
                 run.fail(defaults::render("ops.settings_err", &[("error", &defaults::text("ops.undefined_word"))]));
                 return;

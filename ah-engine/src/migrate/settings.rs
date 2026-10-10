@@ -576,9 +576,6 @@ pub(crate) enum Outcome {
     Needs(String),
     /// Refused, with the reason.
     Fail(String),
-    /// The settings lock is held by a live writer past the wait budget: the Node command reports the holder's pid, which the
-    /// engine cannot reproduce, so the caller defers.
-    LockBusy,
 }
 
 fn with_lock(ctx: &Ctx, f: impl FnOnce() -> Outcome) -> Outcome {
@@ -591,7 +588,12 @@ fn with_lock(ctx: &Ctx, f: impl FnOnce() -> Outcome) -> Outcome {
         step_ms: defaults::num("migrate.settings_lock_step_ms"),
         ..nodelock::Params::swarm()
     };
-    let Some(held) = nodelock::acquire(&lock_path.to_string_lossy(), params) else { return Outcome::LockBusy };
+    let mut extra = nodelock::Extra::default();
+    let Some(held) = nodelock::acquire_ex(&lock_path.to_string_lossy(), params, &mut extra) else {
+        // the lock is held by a live writer past the wait budget: refuse with the holder's pid, as the Node command does
+        let pid = extra.refused.and_then(|r| r.pid).map_or_else(|| defaults::text("ops.lock_pid_unknown").to_string(), |p| p.to_string());
+        return Outcome::Fail(defaults::render("ops.lock_busy", &[("pid", &pid)]));
+    };
     let r = f();
     held.release();
     r

@@ -246,6 +246,15 @@ enum Allow {
 }
 
 /// `readAllowFile(top, kind)`.
+/// Whether `<top>/.git` is a file holding a line break the gitdir parse treats differently from JavaScript.
+fn git_file_exotic(top: &str) -> bool {
+    let breaks = defaults::list("ops.trust_exotic_breaks");
+    std::fs::read(Path::new(top).join(".git")).is_ok_and(|b| {
+        let t = String::from_utf8_lossy(&b);
+        breaks.iter().any(|x| t.contains(*x))
+    })
+}
+
 fn read_allow_file(top: &str, kind: Kind) -> Result<Allow, ()> {
     let cfg = Path::new(top).join(kind.field("rel"));
     let Some(dir) = cfg.parent() else { return Ok(Allow::Missing) };
@@ -371,18 +380,18 @@ pub fn run_trust(kind: Kind, positional: &[String], json_out: bool, confirmed: b
         _ => cwd.clone(),
     };
     let rctx = ident::resolve_context(&target, true, &RequestEnv::from_pairs(env.clone()));
-    if rctx.unsure {
-        err(&(defaults::text("ops.trust_unsure").to_string() + "\n"));
-        return super::defer_code();
-    }
     let rel = kind.field("rel");
+    // Node reads only `toplevel` (repoToplevel). `unsure` flags layouts the port cannot classify exactly; the toplevel is fixed before
+    // the superproject climb that sets most of them, so only a `.git` file with exotic line breaks (or no toplevel at all) is unsure
+    // for this command: refuse, recording nothing.
+    if rctx.unsure && rctx.toplevel.as_deref().is_none_or(git_file_exotic) {
+        return fail(json_out, &defaults::render("ops.trust_unsure", &[("target", &target)]));
+    }
     let Some(top) = rctx.toplevel else { return fail(json_out, &defaults::render("ops.trust_not_git", &[("target", &target)])) };
     let file = match read_allow_file(&top, kind) {
         Ok(f) => f,
-        Err(()) => {
-            err(&(defaults::text("ops.trust_unsure").to_string() + "\n"));
-            return super::defer_code();
-        }
+        // JSON JavaScript reads but the parser does not reproduce (lone surrogate escape, nesting past the limit): refuse
+        Err(()) => return fail(json_out, &defaults::render("ops.trust_unparsable", &[("rel", &rel), ("top", &top)])),
     };
     let (hash, patterns) = match file {
         Allow::Missing => return fail(json_out, &defaults::render("ops.trust_missing", &[("rel", &rel), ("top", &top)])),
