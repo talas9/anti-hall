@@ -22,7 +22,8 @@ struct Env {
 
 impl Env {
     fn new(tag: &str, extra: &[(&str, &str)]) -> Env {
-        let dir = PathBuf::from("/tmp").join(format!("ah-cli-{}-{}", tag, std::process::id()));
+        let root = std::env::var_os("AH_ENGINE_IT_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+        let dir = root.join(format!("ah-cli-{}-{}", tag, std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(dir.join("rules.json"), RULES).unwrap();
@@ -70,6 +71,10 @@ impl Env {
 
     fn up(&self) -> bool {
         self.run(&["ctl", "ping"]).1 == 0
+    }
+
+    fn sock(&self) -> PathBuf {
+        ah_engine::paths::socket_in(&self.dir.join("eng"))
     }
 
     /// Start the daemon with a hook call and wait until it answers.
@@ -165,13 +170,55 @@ fn without_a_daemon_reports_say_so_in_json() {
 }
 
 #[test]
+fn ten_concurrent_serve_starts_leave_one_daemon_and_clear_losers() {
+    let e = Env::new("singleton", &[("AH_ENGINE_IDLE_EXIT_S", "30"), ("AH_ENGINE_LOCK_WAIT_MS", "2000"), ("AH_ENGINE_LOCK_POLL_MS", "10")]);
+    let mut children = Vec::new();
+    for _ in 0..10 {
+        children.push(e.cmd().arg("serve").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap());
+    }
+    let t = Instant::now();
+    loop {
+        let mut live = 0;
+        for child in &mut children {
+            live += usize::from(child.try_wait().unwrap().is_none());
+        }
+        if live == 1 && e.up() {
+            break;
+        }
+        assert!(t.elapsed() < Duration::from_secs(8), "concurrent starts did not settle to one daemon{}", e.diag());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let live_pid = children.iter_mut().find_map(|c| c.try_wait().unwrap().is_none().then_some(c.id())).unwrap();
+    let mut holder = None;
+    let mut loser_msgs = Vec::new();
+    for child in children {
+        if child.id() == live_pid {
+            holder = Some(child);
+        } else {
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success(), "loser exited non-zero: {out:?}");
+            loser_msgs.push(String::from_utf8_lossy(&out.stderr).to_string());
+        }
+    }
+    assert_eq!(loser_msgs.len(), 9);
+    assert!(
+        loser_msgs.iter().all(|m| m.contains("daemon already running") && m.contains("holder pid") && m.contains("live_engine=")),
+        "loser messages must name holder pid and liveness: {loser_msgs:?}"
+    );
+    e.run(&["stop"]);
+    let mut holder = holder.unwrap();
+    common::stop_child(&e.sock(), &mut holder);
+}
+
+#[test]
 fn the_daemon_stays_resident_when_idle_by_default() {
-    // D7 (owner design): always resident; only a daemon whose files are gone exits on its own (lane errfix review P2-11)
-    assert_eq!(ah_engine::defaults::num("daemon.idle_exit_s"), 0, "the shipped default keeps the daemon resident");
+    // The shipped idle exit is long enough that a daemon stays resident across ordinary hook bursts; short-idle tests pin
+    // the exit path itself.
+    assert_eq!(ah_engine::defaults::num("daemon.idle_exit_s"), 1800, "the shipped default idles out after 30 minutes");
     let e = Env::new("res", &[]);
     e.warm();
     std::thread::sleep(Duration::from_millis(1600));
-    assert!(e.up(), "idle exit is disabled by default (D7): the engine must stay up");
+    assert!(e.up(), "the default idle window is 30 minutes: the engine must stay up after 1.6s");
 }
 
 #[test]
@@ -188,6 +235,38 @@ fn idle_exit_is_a_config_key_and_is_reset_by_activity() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(!common::alive(pid), "the daemon must exit once idle for idle_exit_s");
+}
+
+#[test]
+fn short_idle_exit_stops_scratch_daemon() {
+    let e = Env::new("idle-short", &[("AH_ENGINE_IDLE_EXIT_S", "1"), ("AH_ENGINE_WATCHDOG_TICK_MS", "50"), ("AH_ENGINE_IDLE_CHECK_MS", "50")]);
+    e.warm();
+    let pid = common::marker_pid(&e.dir.join("eng")).expect("run marker");
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(5) && common::alive(pid) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!common::alive(pid), "short idle setting must stop daemon{}", e.diag());
+}
+
+#[test]
+fn in_flight_request_survives_past_idle_threshold() {
+    let e = Env::new(
+        "idle-inflight",
+        &[("AH_ENGINE_IDLE_EXIT_S", "1"), ("AH_ENGINE_WATCHDOG_TICK_MS", "50"), ("AH_ENGINE_IDLE_CHECK_MS", "50"), ("AH_ENGINE_TEST_HOOKS", "1")],
+    );
+    e.warm();
+    let pid = common::marker_pid(&e.dir.join("eng")).expect("run marker");
+    let sock = e.sock();
+    let h = std::thread::spawn(move || ah_engine::client::exchange(&sock, b"CTL sleep 2200\n", Duration::from_secs(5)));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(common::alive(pid), "daemon exited while a request was in flight");
+    assert!(matches!(h.join().unwrap(), ah_engine::client::Exch::Reply(ah_engine::frame::Kind::Ok, body) if body == "ok"));
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(5) && common::alive(pid) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!common::alive(pid), "daemon exits after the in-flight request finishes and then idles{}", e.diag());
 }
 
 #[test]

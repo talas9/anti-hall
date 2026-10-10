@@ -974,6 +974,8 @@ fn await_close(closing: &AtomicBool, closed: &AtomicBool, max: Duration, poll: D
 fn watchdog(sh: Arc<Shared>) {
     let mut last_rss = Instant::now();
     let mut last_idle_check = Instant::now();
+    let mut last_cpu_check = Instant::now();
+    let mut last_cpu_secs = limits::process_cpu_secs();
     loop {
         std::thread::sleep(sh.cfg().watchdog_tick);
         // the stall and stuck checks keep running while draining: a drain waits for its workers, so one stuck there would
@@ -1003,6 +1005,30 @@ fn watchdog(sh: Arc<Shared>) {
         }
         if draining {
             continue;
+        }
+        let cpu_check = defaults::millis("daemon.cpu_check_ms");
+        if !cpu_check.is_zero() && last_cpu_check.elapsed() >= cpu_check {
+            let wall = last_cpu_check.elapsed().as_secs_f64();
+            let cpu_now = limits::process_cpu_secs();
+            let cpu_delta = (cpu_now - last_cpu_secs).max(0.0);
+            last_cpu_check = Instant::now();
+            last_cpu_secs = cpu_now;
+            let warn_pct = cfg.effective.num("daemon.cpu_warn_pct") as f64;
+            if warn_pct > 0.0 && wall > 0.0 {
+                let pct = cpu_delta * 100.0 / wall;
+                if pct >= warn_pct {
+                    let backoff_ms = cfg.effective.num("schedule.cpu_backoff_ms");
+                    if let Some(sched) = sh.sched.get() {
+                        sched.backoff_for(backoff_ms);
+                    }
+                    let pct_s = format!("{pct:.1}");
+                    health::log_event(
+                        "cpu",
+                        "sustained",
+                        &defaults::render("msg.log_cpu_sustained", &[("pct", &pct_s), ("ms", &cpu_check.as_millis()), ("backoff_ms", &backoff_ms)]),
+                    );
+                }
+            }
         }
         // Idle exit is off unless configured (D7): the engine stays resident so the scheduler and mailbox keep running.
         if let Some(idle) = cfg.idle_exit
