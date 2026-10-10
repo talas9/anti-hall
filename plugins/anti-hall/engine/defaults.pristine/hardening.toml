@@ -1,0 +1,253 @@
+# The engine hardening bar (v1.0 "solid engine"): every threshold, rate, count and report text of the hardening harness
+# (`ah-engine/tests/hardening_bar.rs`, driven by `ah-engine/scripts/soak.sh`). Tuning the bar is editing this file, never
+# the test source.
+#
+# This file is read by the harness only. It is deliberately NOT listed in `index.toml`: the engine never loads it, so none of
+# these keys is an engine setting. Each entry has the same shape as the engine's own defaults (`doc`, `value`, optional
+# `unit`). Engine settings the bar holds the daemon to (the client deadline, the RSS cap, the defer exit) are read from the
+# engine's own defaults by name, never copied here.
+
+# ---- report ----------------------------------------------------------------------------------------------------------
+
+[report.title]
+doc = "Heading of the bar report soak.sh writes."
+value = "ah-engine hardening bar"
+
+[report.pass]
+doc = "Word for a check that met its limit."
+value = "PASS"
+
+[report.fail]
+doc = "Word for a check that missed its limit."
+value = "FAIL"
+
+[report.columns]
+doc = "Column headings of each bar's table: check, measured, limit, result."
+value = ["check", "measured", "limit", "result"]
+
+[report.bar_crash_loop]
+doc = "Title of the crash-loop bar."
+value = "Crash loop"
+
+[report.bar_breaker]
+doc = "Title of the breaker bar."
+value = "Breaker"
+
+[report.bar_panic]
+doc = "Title of the panic-injection bar."
+value = "Panic injection"
+
+[report.bar_corrupt_socket]
+doc = "Title of the corrupt-socket bar."
+value = "Corrupt socket"
+
+[report.bar_kill_mid_call]
+doc = "Title of the daemon-killed-mid-call bar."
+value = "Daemon killed mid-call"
+
+[report.bar_load]
+doc = "Title of the load bar."
+value = "Load (sustained and burst)"
+
+[report.bar_memory]
+doc = "Title of the memory-soak bar."
+value = "Memory soak"
+
+# ---- shared -----------------------------------------------------------------------------------------------------------
+
+[common.call_slack_ms]
+doc = "Allowance over the client deadline before one hook call counts as blocking the tool: covers process start and the fallback stand-in on a loaded machine, and stays far below anything a host would notice as a hang."
+value = 3000
+unit = "ms"
+
+[common.ready_ms]
+doc = "How long the harness waits for a daemon to come up, a marker to appear or a cooldown to pass before the bar fails."
+value = 20000
+unit = "ms"
+
+[common.poll_ms]
+doc = "Poll interval of the harness's waits."
+value = 25
+unit = "ms"
+
+[common.log_tail_lines]
+doc = "Lines of the daemon's event log a failing bar copies into the report (why a daemon went away)."
+value = 20
+
+# ---- crash loop -------------------------------------------------------------------------------------------------------
+
+[crash.n]
+doc = "Daemon deaths the bar inflicts, and the crash-loop threshold it sets (`AH_ENGINE_CRASH_N`) for the run."
+value = 3
+
+[crash.window_s]
+doc = "Crash-loop counting window for the run (`AH_ENGINE_CRASH_WINDOW_S`); the deaths must land inside it."
+value = 10
+unit = "s"
+
+[crash.cooldown_s]
+doc = "Crash-loop cooldown for the run (`AH_ENGINE_CRASH_COOLDOWN_S`); longer than the window, so the deaths have aged out when it ends and the engine recovers."
+value = 12
+unit = "s"
+
+[crash.tripped_calls]
+doc = "Hook calls made while the crash loop holds: each must answer through the fallback, quickly, and none may respawn the daemon."
+value = 5
+
+[crash.recover_extra_ms]
+doc = "Time after the cooldown ends within which a hook call must be answered by a freshly started engine again."
+value = 15000
+unit = "ms"
+
+# ---- breaker ----------------------------------------------------------------------------------------------------------
+
+[breaker.n]
+doc = "Engine failures that open the breaker for the run (`AH_ENGINE_BREAKER_N`)."
+value = 3
+
+[breaker.window_s]
+doc = "Breaker counting window for the run (`AH_ENGINE_BREAKER_WINDOW_S`); long enough to hold every failure of the bar, including the half-open probe."
+value = 120
+unit = "s"
+
+[breaker.cooldown_s]
+doc = "Breaker cooldown for the run (`AH_ENGINE_BREAKER_COOLDOWN_S`)."
+value = 2
+unit = "s"
+
+[breaker.deadline_ms]
+doc = "Client deadline for the run (`AH_ENGINE_DEADLINE_MS`) against the hung stand-in daemon, so each failure costs this long."
+value = 150
+unit = "ms"
+
+[breaker.open_calls]
+doc = "Hook calls made while the breaker is open: each must skip the engine and answer faster than any call that waited out the deadline."
+value = 5
+
+# ---- panic injection --------------------------------------------------------------------------------------------------
+
+[panic.rounds]
+doc = "Panics injected into one daemon (test-only `CTL panic`); every one must be contained and the same daemon keep serving."
+value = 5
+
+# ---- corrupt socket ---------------------------------------------------------------------------------------------------
+
+[corrupt.calls]
+doc = "Hook calls against each corrupt-socket case (a garbage-frame server, a non-socket file at the socket path)."
+value = 4
+
+[corrupt.garbage]
+doc = "The bytes the garbage-frame stand-in answers with: not a valid frame."
+value = "OK 9999999 not-a-frame \u0000\u0001\u0002 garbage"
+
+# ---- daemon killed mid-call -------------------------------------------------------------------------------------------
+
+[kill.clients]
+doc = "Concurrent hook clients running while the daemon is SIGKILLed."
+value = 6
+
+[kill.calls_per_client]
+doc = "Hook calls each client makes."
+value = 12
+
+[kill.kill_after_answers]
+doc = "Engine answers seen before the daemon is killed, so calls are in flight when it dies."
+value = 8
+
+# ---- load -------------------------------------------------------------------------------------------------------------
+
+[load.sessions]
+doc = "Distinct session ids the load spreads over (one session alone would hit `daemon.session_rps`)."
+value = 40
+
+[load.transcript_kb]
+doc = "Size of the transcript the load's Stop calls read."
+value = 2048
+unit = "KB"
+
+[load.warmup_calls]
+doc = "Sequential calls before measuring (cold caches, first script compile)."
+value = 200
+
+[load.sustained_rps]
+doc = "Documented sustained rate: calls per second, paced, across all clients. Below `daemon.project_rps` so the per-project limiter never sheds a documented rate."
+value = 40
+unit = "calls/s"
+
+[load.sustained_s]
+doc = "Duration of the sustained phase."
+value = 30
+unit = "s"
+
+[load.sustained_clients]
+doc = "Concurrent clients of the sustained phase (each paced at sustained_rps / sustained_clients)."
+value = 4
+
+[load.settle_ms]
+doc = "Pause between the sustained and burst phases, so the per-project bucket refills (`daemon.project_burst` at `daemon.project_rps`)."
+value = 5000
+unit = "ms"
+
+[load.burst_clients]
+doc = "Documented burst: clients released at once. At most `daemon.workers` + `daemon.queue`, beyond which load shedding (BUSY) is the documented answer."
+value = 16
+
+[load.burst_calls_per_client]
+doc = "Back-to-back calls each burst client makes."
+value = 20
+
+[load.p99_ms_max]
+doc = "p99 of the client's wall time per call (connect, write, daemon queue, processing, read) that the bar allows; well inside the hook budget (`client.deadline_ms`), which the harness also asserts."
+value = 250
+unit = "ms"
+
+[load.fallbacks_max]
+doc = "Whole-event fallbacks allowed at the documented rates (BUSY, ERR, timeout, failed exchange): the bar is zero."
+value = 0
+
+[load.late_max]
+doc = "Replies the daemon delivered after the client's deadline (`slow_replies`, #22) allowed at the documented rates."
+value = 0
+
+# ---- memory soak ------------------------------------------------------------------------------------------------------
+
+[memory.calls]
+doc = "Calls in the memory soak."
+value = 50000
+
+[memory.warmup_calls]
+doc = "Calls before the reference sample; growth is measured from here."
+value = 5000
+
+[memory.sample_every]
+doc = "Calls between RSS samples."
+value = 2500
+
+[memory.sessions]
+doc = "Distinct session ids the soak cycles through."
+value = 40
+
+[memory.transcript_kb]
+doc = "Size of the transcript the Stop calls read (larger than the widest tail window any check reads)."
+value = 20480
+unit = "KB"
+
+[memory.band_kb_jemalloc]
+doc = "Largest RSS rise over the reference sample allowed on jemalloc targets (macOS arm64, Linux gnu)."
+value = 16384
+unit = "KB"
+
+[memory.band_kb_system]
+doc = "Largest RSS rise over the reference sample allowed on system-allocator targets (macOS x86_64, musl): that allocator keeps freed pages, so it gets a wider band."
+value = 32768
+unit = "KB"
+
+[memory.slope_kb_per_1k_jemalloc]
+doc = "Largest least-squares RSS growth per 1,000 calls after the reference sample on jemalloc targets (a leak shows as a steady slope, #21)."
+value = 128
+unit = "KB"
+
+[memory.slope_kb_per_1k_system]
+doc = "Largest least-squares RSS growth per 1,000 calls after the reference sample on system-allocator targets."
+value = 256
+unit = "KB"
