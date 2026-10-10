@@ -1,7 +1,7 @@
 # ah-engine
 
-`ah-engine` is a small resident program that anti-hall's hooks can ask instead of starting a new Node process for every
-tool call. This page explains what it is, why it exists, what works today and what is not built yet. Anything not built
+`ah-engine` is anti-hall's core component: a small resident program that answers the hooks instead of a new Node process for every
+tool call. The Node hooks are a temporary compatibility fallback during the migration; v1.0 removes them and the engine is then the only runtime. This page explains what it is, why it exists, what works today and what is not built yet. Anything not built
 is marked **planned** with the number of its decision, for example planned (D33) for the scheduler; each number is an entry
 in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
 The exact list of commands, settings, metrics and error codes is generated from the engine itself and lives in
@@ -10,7 +10,7 @@ The exact list of commands, settings, metrics and error codes is generated from 
 **Status: ready for release; the plugin installs it itself once a release pins it.** The plugin's hooks are one thin trigger
 per event (`hooks/ah-hook.sh <Event>`). When the engine binary is installed, the trigger asks the engine, which decides
 natively what it can prove identical to the Node hook and hands every other case to that Node hook, so it is never weaker
-than Node. When the binary is absent or cannot answer, the trigger runs the Node hooks, exactly as before. The binary is
+than Node. While the migration lasts, when the binary is absent or cannot answer, the trigger runs the temporary Node compatibility hooks (removed in v1.0). The binary is
 fetched by a shell bootstrap, checked against a sha256 pinned in the plugin ([Install, go-live and rollback](#install-go-live-and-rollback)).
 Supported platforms: macOS and Linux (including WSL, which runs the Linux build). Windows is not supported yet.
 
