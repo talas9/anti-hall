@@ -141,6 +141,11 @@ impl<K: Hash + Eq + Clone, V: Clone> Tiered<K, V> {
         before
     }
 
+    /// The active values, cloned without changing recency.
+    pub fn values(&self) -> Vec<V> {
+        self.map.values().map(|s| s.value.clone()).collect()
+    }
+
     /// Drop `k` from memory (SQLite keeps it).
     pub fn remove(&mut self, k: &K) {
         if let Some(s) = self.map.remove(k) {

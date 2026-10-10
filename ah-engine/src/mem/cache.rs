@@ -55,21 +55,50 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCa
 
     /// The value for `k`, refreshing its recency.
     pub fn get(&self, k: &K) -> Option<V> {
-        self.core.lock().get(k, 0)
+        self.get_at(k, 0)
+    }
+
+    /// The value for `k` at `now_ms`, dropping it first when its TTL has expired.
+    pub fn get_at(&self, k: &K, now_ms: u64) -> Option<V> {
+        let mut t = self.core.lock();
+        let v = t.get(k, now_ms);
+        self.core.bytes.store(t.bytes(), SeqCst);
+        v
     }
 
     /// Store `v` (about `weight` bytes) unless the registry refuses it; true when it was stored. The least recently used
     /// entries go first when the entry-count cap is reached.
     pub fn insert(&self, k: K, v: V, weight: usize) -> bool {
+        self.insert_with_ttl(k, v, weight, None)
+    }
+
+    /// Store `v` with an optional absolute expiry timestamp in milliseconds.
+    pub fn insert_with_ttl(&self, k: K, v: V, weight: usize, expires_ms: Option<u64>) -> bool {
         if self.budget.admit(weight) == Admit::Refused {
             return false;
         }
         let max = self.budget.max_entries();
         let mut t = self.core.lock();
         while max > 0 && t.len() >= max && !t.contains(&k) && t.pop_lru().is_some() {}
-        t.insert(k, v, weight, None);
+        t.insert(k, v, weight, expires_ms);
         self.core.bytes.store(t.bytes(), SeqCst);
         true
+    }
+
+    /// Drop and return `k`, if present.
+    pub fn remove(&self, k: &K) -> Option<V> {
+        let mut t = self.core.lock();
+        let v = t.get(k, 0);
+        if v.is_some() {
+            t.remove(k);
+            self.core.bytes.store(t.bytes(), SeqCst);
+        }
+        v
+    }
+
+    /// Snapshot the cached values.
+    pub fn values(&self) -> Vec<V> {
+        self.core.lock().values()
     }
 
     /// The cached value for `k`, or the one `compute` makes (outside any lock), stored when the registry allows it. A refused

@@ -156,16 +156,29 @@ fn a_rewritten_or_shrunk_transcript_is_walked_afresh() {
 }
 
 #[test]
-fn a_transcript_longer_than_the_window_is_scanned_afresh_each_time() {
-    let dir = scratch("slide");
+fn a_second_scan_of_an_unchanged_large_transcript_hits_the_cache_without_rescanning() {
+    let dir = scratch("large-hit");
     let path = dir.join("t.jsonl");
     let body = session().join("\n") + "\n";
     std::fs::write(&path, &body).unwrap();
     let small = (body.len() / 3) as u64;
     for ignore in [false, true] {
+        ah_engine::load::take_scan();
         let fresh = scan_transcript_uncached(path.to_str().unwrap(), small, &opts(ignore));
-        let kept = scan_transcript(path.to_str().unwrap(), small, &opts(ignore));
-        assert_eq!(snap(&fresh.ok().flatten()), snap(&kept.ok().flatten()));
+        let uncached_bytes = ah_engine::load::take_scan();
+        assert!(uncached_bytes > 0, "the reference scan must read the large tail");
+
+        let first = scan_transcript(path.to_str().unwrap(), small, &opts(ignore));
+        let first_bytes = ah_engine::load::take_scan();
+        assert_eq!(snap(&fresh.ok().flatten()), snap(&first.ok().flatten()), "first cached verdict parity (ignore={ignore})");
+        assert!(first_bytes > 0, "the first cached scan fills the cache");
+
+        let again = scan_transcript(path.to_str().unwrap(), small, &opts(ignore));
+        let hit_bytes = ah_engine::load::take_scan();
+        let fresh_again = scan_transcript_uncached(path.to_str().unwrap(), small, &opts(ignore));
+        ah_engine::load::take_scan();
+        assert_eq!(snap(&fresh_again.ok().flatten()), snap(&again.ok().flatten()), "cached verdict parity (ignore={ignore})");
+        assert_eq!(hit_bytes, 0, "unchanged large transcript cache hit must not rescan");
     }
     std::fs::remove_dir_all(&dir).ok();
 }

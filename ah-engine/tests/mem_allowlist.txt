@@ -4,7 +4,6 @@
 # onto the memory registry (mem::BoundedCache / mem::Budget) so `status --memory` shows it. Verified against the code on 2026-10-10.
 
 # ---- bounded by a cap read from config, own eviction (registry follow-ups) -------------------------------------------------
-checks/agent_scan/mod.rs | KEPT | entry cap read at insert (`while map.len() >= cap`, line ~1255); entries are transcript walks | kept transcript walks; registry follow-up (the agent_scan job owns the file), clone-on-answer is audit item 8
 daemon.rs | Shared.queue | accept queue cap (daemon.queue): a full queue answers busy | the connection queue; bounded by the cap, not a cache
 db.rs | Mem.kv | byte budget tier.budget_kb given to tier::Tiered at construction | the active key-value items; a byte-budgeted LRU already, registry follow-up
 gitcache/mod.rs | GitCache.repos | gitcache.max_repos, idle entries expire after gitcache idle_ttl | memoised git state per repository

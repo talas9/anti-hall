@@ -77,6 +77,43 @@ value = 90
 min = 1
 max = 100
 
+
+[mem.agent_scan_walk_soft_bytes]
+doc = "Bytes of retained transcript agent-scan walks held before the least recently used are dropped down to the low-water mark."
+value = 16777216
+min = 4096
+unit = "bytes"
+
+[mem.agent_scan_walk_hard_bytes]
+doc = "Bytes of retained transcript agent-scan walks at which an insert is refused and the cache is recycled."
+value = 33554432
+min = 4096
+unit = "bytes"
+
+[mem.agent_scan_walk_low_water_pct]
+doc = "Percent of mem.agent_scan_walk_soft_bytes the retained walk cache is evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.agent_scan_result_soft_bytes]
+doc = "Bytes of finished large-window agent-scan results held before the least recently used are dropped down to the low-water mark."
+value = 4194304
+min = 4096
+unit = "bytes"
+
+[mem.agent_scan_result_hard_bytes]
+doc = "Bytes of finished large-window agent-scan results at which an insert is refused and the cache is recycled."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[mem.agent_scan_result_low_water_pct]
+doc = "Percent of mem.agent_scan_result_soft_bytes the finished result cache is evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
 [mem.transcript_tail_soft_bytes]
 doc = "Bytes of cached transcript-tail answers (`transcriptDedupeTail`) held before the least recently used are dropped down to the low-water mark."
 value = 4194304

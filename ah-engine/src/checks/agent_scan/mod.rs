@@ -12,12 +12,13 @@
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{js_trim, js_trim_start as trim_start};
 use crate::defaults;
+use crate::mem::{BoundedCache, Spec};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::sync::Mutex;
+use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
@@ -128,7 +129,7 @@ impl<T> OMap<T> {
 }
 
 /// What `scanTranscript` returns (the parts the ported checks read).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Scan {
     /// Every launched agent, adopted agent and live teammate, in order.
     pub launched: OMap<Rec>,
@@ -1088,6 +1089,7 @@ fn feed(w: &mut Walk, seq: &mut u64, raw: &[u8]) -> Res<()> {
 
 /// What the scan of one transcript keeps between calls: the walk over every complete line up to `off`, while the whole file is
 /// inside the scan window (so the window is the file, however much it grows, and appended lines only extend it).
+#[derive(Clone)]
 struct Kept {
     gen_: u64,
     dev: u64,
@@ -1096,19 +1098,52 @@ struct Kept {
     seq: u64,
     head: u64,
     back: u64,
-    used_ms: u64,
     walk: Walk,
 }
 
-static KEPT: Mutex<Option<HashMap<String, Kept>>> = Mutex::new(None);
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct ScanKey {
+    path: String,
+    gen_: u64,
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime_sec: i64,
+    mtime_nsec: i64,
+    tail: u64,
+    ignore_unanswered_stops: bool,
+}
 
-fn kept_lock() -> std::sync::MutexGuard<'static, Option<HashMap<String, Kept>>> {
-    KEPT.lock().unwrap_or_else(|e| e.into_inner())
+type WalkCache = BoundedCache<String, Kept>;
+type ResultCache = BoundedCache<ScanKey, Scan>;
+
+fn walk_cache() -> &'static WalkCache {
+    static CACHE: OnceLock<WalkCache> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        BoundedCache::new(
+            crate::mem::global(),
+            Spec::new("agent_scan_walk", "mem.agent_scan_walk_soft_bytes", "mem.agent_scan_walk_hard_bytes", "mem.agent_scan_walk_low_water_pct")
+                .with_entries("agent_scan.cache_max_paths"),
+        )
+    })
+}
+
+fn result_cache() -> &'static ResultCache {
+    static CACHE: OnceLock<ResultCache> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        BoundedCache::new(
+            crate::mem::global(),
+            Spec::new("agent_scan_result", "mem.agent_scan_result_soft_bytes", "mem.agent_scan_result_hard_bytes", "mem.agent_scan_result_low_water_pct")
+                .with_entries("agent_scan.cache_max_paths"),
+        )
+    })
 }
 
 /// (transcripts kept, their estimated bytes by the cache's own estimate, transcript bytes they have read) for the memory snapshot.
 pub fn kept_usage() -> (usize, u64, u64) {
-    kept_lock().as_ref().map_or((0, 0, 0), |m| m.values().fold((m.len(), 0, 0), |(n, b, o), k| (n, b + walk_bytes(&k.walk), o + k.off)))
+    let c = walk_cache();
+    let vals = c.values();
+    (c.len(), c.bytes() as u64, vals.iter().map(|k| k.off).sum())
 }
 
 /// A cheap digest of `len` bytes of the file at `at` (None when they cannot be read).
@@ -1144,9 +1179,11 @@ pub fn scan_transcript(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> 
         && let Ok(f) = std::fs::File::open(path)
         && let Ok(m) = f.metadata()
         && m.len() > 0
-        && m.len() <= tail
     {
-        return scan_kept(path, f, &m, opts);
+        if m.len() <= tail {
+            return scan_kept(path, f, &m, opts);
+        }
+        return scan_cached_window(path, &m, tail, opts);
     }
     scan_window(path, tail, opts)
 }
@@ -1157,6 +1194,42 @@ pub fn scan_transcript_uncached(path: &str, tail: u64, opts: &Opts) -> Res<Optio
         return Err(Unsupported);
     }
     scan_window(path, tail, opts)
+}
+
+fn scan_key(path: &str, m: &std::fs::Metadata, tail: u64, opts: &Opts) -> ScanKey {
+    ScanKey {
+        path: path.to_string(),
+        gen_: defaults::generation(),
+        dev: m.dev(),
+        ino: m.ino(),
+        size: m.len(),
+        mtime_sec: m.mtime(),
+        mtime_nsec: m.mtime_nsec(),
+        tail,
+        ignore_unanswered_stops: opts.ignore_unanswered_stops,
+    }
+}
+
+fn scan_weight(scan: &Scan) -> usize {
+    let per = defaults::num("agent_scan.cache_entry_bytes") as usize;
+    per.saturating_mul(scan.launched.keys().count() + scan.terminal.len() + scan.pending.len()).max(per)
+}
+
+fn scan_cached_window(path: &str, m: &std::fs::Metadata, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
+    let key = scan_key(path, m, tail, opts);
+    if let Some(scan) = result_cache().get_at(&key, now_ms() as u64) {
+        return Ok(Some(scan));
+    }
+    let scan = scan_window(path, tail, opts)?;
+    if let Some(scan) = &scan
+        && scan.pending.is_empty()
+    {
+        let ttl = defaults::num("agent_scan.cache_idle_ms");
+        let now = now_ms() as u64;
+        let exp = (ttl > 0).then(|| now.saturating_add(ttl));
+        result_cache().insert_with_ttl(key, scan.clone(), scan_weight(scan), exp);
+    }
+    Ok(scan)
 }
 
 /// The scan of the last `tail` bytes, read afresh.
@@ -1191,7 +1264,7 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
     let size = m.len();
     let fp = defaults::num("agent_scan.cache_fingerprint_bytes").max(1);
     let gen_ = defaults::generation();
-    let taken = kept_lock().as_mut().and_then(|map| map.remove(path));
+    let taken = walk_cache().remove(&path.to_string());
     let mut k = match taken {
         Some(k)
             if k.gen_ == gen_
@@ -1203,7 +1276,7 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
         {
             k
         }
-        _ => Kept { gen_, dev: m.dev(), ino: m.ino(), off: 0, seq: 0, head: 0, back: 0, used_ms: 0, walk: Walk::new() },
+        _ => Kept { gen_, dev: m.dev(), ino: m.ino(), off: 0, seq: 0, head: 0, back: 0, walk: Walk::new() },
     };
     let want = size - k.off;
     crate::load::note_scan(want);
@@ -1246,17 +1319,10 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
         if let (Some(head), Some(back)) = (digest_at(&f, 0, fp.min(k.off)), digest_at(&f, k.off - fp.min(k.off), fp.min(k.off))) {
             k.head = head;
             k.back = back;
-            k.used_ms = now;
-            let mut g = kept_lock();
-            let map = g.get_or_insert_with(HashMap::new);
             let ttl = defaults::num("agent_scan.cache_idle_ms");
-            map.retain(|_, e| now.saturating_sub(e.used_ms) <= ttl);
-            let cap = defaults::num("agent_scan.cache_max_paths") as usize;
-            while map.len() >= cap.max(1) {
-                let Some(oldest) = map.iter().min_by_key(|(_, e)| e.used_ms).map(|(p, _)| p.clone()) else { break };
-                map.remove(&oldest);
-            }
-            map.insert(path.to_string(), k);
+            let exp = (ttl > 0).then(|| now.saturating_add(ttl));
+            let weight = walk_bytes(&k.walk) as usize;
+            walk_cache().insert_with_ttl(path.to_string(), k, weight, exp);
         }
     }
     scan
