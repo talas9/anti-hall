@@ -46,10 +46,22 @@ EVENTS="SessionEnd SessionStart PreCompact PostToolUse PreToolUse UserPromptSubm
 # WorktreeCreate / WorktreeRemove are deliberately NOT triggers: their hook IS the operation, a silent shadow would break worktrees.
 
 ROLLBACK_D=0
+# Error standard (issue #143): every failure says (1) what failed, (2) the current state ("nothing changed - X is still active" or what was rolled back), (3) ONE exact next step.
+# die   = a failure: the message carries all three parts.   usage = a bad command line: the message plus a pointer to --help, no "refusing" wording.
 die() {
-  printf 'install-shadow-remote: refusing: %s\n' "$*" >&2
+  printf 'install-shadow-remote: %s\n' "$*" >&2
   [ "$ROLLBACK_D" = 1 ] && [ -n "${D:-}" ] && rm -rf "${D:?}"
   exit 1
+}
+usage() {
+  printf 'install-shadow-remote: %s\nusage: sh %s [--live|--rollback-live|--uninstall|...] (full option list: sh %s --help)\n' "$*" "$0" "$0" >&2
+  exit 1
+}
+# live_state: one line saying what is currently live, for "nothing changed" messages (best effort, never fails).
+live_state() {
+  _lv=
+  [ -f "$LIVEKIT/state/live.json" ] && _lv=$(node -p 'const j=require(process.argv[1]);"plugin "+(j.live&&j.live.version||"?")+", engine "+String(j.engine_sha||"?").slice(0,8)' "$LIVEKIT/state/live.json" 2>/dev/null)
+  if [ -n "$_lv" ]; then printf 'your live install (%s) is unchanged and still active' "$_lv"; else printf 'nothing was changed'; fi
 }
 say() { printf '%s\n' "$*"; }
 
@@ -76,20 +88,20 @@ MODE=install; BIN=; FORCE=0; REPO=; NOSYNC=0; LIVE_SELECT=all-agreeing; LIVE_BRA
 LIVE_MIN_VERSION=0.202.0     # engine-proto 8c9a332 builds plugin 0.202.0; anything older lacks the thin triggers / defaults layout
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --bin) [ "$#" -ge 2 ] || die "--bin needs a path"; BIN=$2; shift ;;
-    --repo) [ "$#" -ge 2 ] || die "--repo needs a URL"; REPO=$2; shift ;;
-    --branch) [ "$#" -ge 2 ] || die "--branch needs a name"; BRANCH=$2; shift ;;
+    --bin) [ "$#" -ge 2 ] || usage "--bin needs a path"; BIN=$2; shift ;;
+    --repo) [ "$#" -ge 2 ] || usage "--repo needs a URL"; REPO=$2; shift ;;
+    --branch) [ "$#" -ge 2 ] || usage "--branch needs a name"; BRANCH=$2; shift ;;
     --status) MODE=status ;;
     --live) MODE=live ;;
     --allow-build) ALLOW_BUILD=1 ;;
-    --channel) [ "$#" -ge 2 ] || die "--channel needs stable or dev"; CHANNEL=$2; shift ;;
-    --from) [ "$#" -ge 2 ] || die "--from needs a file"; FROMF=$2; shift ;;
-    --sha256) [ "$#" -ge 2 ] || die "--sha256 needs a value"; SHA256=$2; shift ;;
+    --channel) [ "$#" -ge 2 ] || usage "--channel needs stable or dev"; CHANNEL=$2; shift ;;
+    --from) [ "$#" -ge 2 ] || usage "--from needs a file"; FROMF=$2; shift ;;
+    --sha256) [ "$#" -ge 2 ] || usage "--sha256 needs a value"; SHA256=$2; shift ;;
     --yes) YES=1 ;;
     --rollback-live) MODE=rollbacklive ;;
-    --live-select) [ "$#" -ge 2 ] || die "--live-select needs a value"; LIVE_SELECT=$2; shift ;;
-    --live-branch) [ "$#" -ge 2 ] || die "--live-branch needs a name"; LIVE_BRANCH=$2; shift ;;
-    --live-repo) [ "$#" -ge 2 ] || die "--live-repo needs a URL"; LIVE_REPO=$2; shift ;;
+    --live-select) [ "$#" -ge 2 ] || usage "--live-select needs a value"; LIVE_SELECT=$2; shift ;;
+    --live-branch) [ "$#" -ge 2 ] || usage "--live-branch needs a name"; LIVE_BRANCH=$2; shift ;;
+    --live-repo) [ "$#" -ge 2 ] || usage "--live-repo needs a URL"; LIVE_REPO=$2; shift ;;
     --update-now) MODE=update ;;
     --rollback) MODE=rollback ;;
     --uninstall) MODE=uninstall ;;
@@ -98,7 +110,7 @@ while [ "$#" -gt 0 ]; do
     --refresh-scripts) MODE=refresh ;;
     --force) FORCE=1 ;;
     -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) die "unknown argument: $1" ;;
+    *) usage "unknown argument: $1" ;;
   esac
   shift
 done
@@ -655,7 +667,7 @@ init_config() { # defaults are written only when a key is absent; --no-sync forc
 }
 
 # ---------------------------------------------------------------- commands
-need_python() { command -v python3 >/dev/null 2>&1 || die "python3 is required for the settings.json merge"; }
+need_python() { command -v python3 >/dev/null 2>&1 || die "python3 is not installed or not on PATH (needed to edit settings.json). Nothing was changed. Next step: install python3, then re-run"; }
 
 LIVEKIT="$HOME/.anti-hall/ah-engine-live"
 updater() { # updater --info|--stop: the embedded update.sh (works before/without a refreshed $D/update.sh; reads $D/config)
@@ -728,7 +740,7 @@ live_download_bin() {
   _f=$(find "$_dd" -type f -name ah-engine | head -1); _c=$(find "$_dd" -type f -name ah-engine.sha256 | head -1)
   [ -n "$_f" ] && [ -n "$_c" ] || { DL_WHY="artifact $_an lacks ah-engine or ah-engine.sha256"; return 1; }
   _want=$(awk '{print $1; exit}' "$_c"); _got=$(sha "$_f")
-  [ -n "$_want" ] && [ "$_want" = "$_got" ] || die "checksum mismatch for $_an (expected ${_want:-none}, got $_got): refusing the download"
+  [ -n "$_want" ] && [ "$_want" = "$_got" ] || die "checksum mismatch for the downloaded $_an (expected ${_want:-none}, got $_got); the download was discarded. $(live_state). Next step: re-run the same command to download again; if it repeats, pass --bin PATH"
   chmod +x "$_f"
   _v=$("$_f" version 2>&1) && case "$_v" in [0-9]*) ;; *) false ;; esac || { DL_WHY="the downloaded engine does not run here: $_v"; return 1; }
   cp "$_f" "$2" || die "cannot copy the downloaded engine"
@@ -741,9 +753,9 @@ cmd_live() {
   command -v "${AH_LIVE_CLAUDE:-claude}" >/dev/null 2>&1 || die "claude CLI not found on PATH (the plugin is installed through it); set AH_LIVE_CLAUDE if it lives elsewhere"
   [ -f "$SRC_KIT/go-live.sh" ] && [ -f "$SRC_KIT/node-shadow.sh" ] && [ -f "$SRC_KIT/node-shadow.skip" ] && [ -f "$SRC_KIT/reload-notice.sh" ] || die "$SRC_KIT is missing: git pull the $BRANCH branch next to this script"
   ALREADY_LIVE=0; [ -f "$LIVEKIT/state/live.json" ] && ALREADY_LIVE=1   # already live: the engine and plugin are updated through hooks/ah-update.sh (no rollback first)
-  case "$CHANNEL" in ""|stable|dev) ;; *) die "--channel must be stable or dev" ;; esac
-  [ -z "$CHANNEL" ] || [ -z "$FROMF" ] || die "--channel and --from are alternatives"
-  [ -z "$FROMF" ] || [ -f "$FROMF" ] || die "--from: no such file: $FROMF"
+  case "$CHANNEL" in ""|stable|dev) ;; *) usage "--channel must be stable or dev" ;; esac
+  [ -z "$CHANNEL" ] || [ -z "$FROMF" ] || usage "--channel and --from are alternatives; pass only one"
+  [ -z "$FROMF" ] || [ -f "$FROMF" ] || die "--from: file not found: $FROMF. Nothing was changed. Check the path and re-run the same command with the right --from FILE"
   [ -d "$D/update.lock" ] && { updater --stop || die "could not stop the running shadow update"; }   # a running/stuck updater is stopped (it keeps the installed version), never a reason to refuse
   if [ -f "$MARK" ]; then emit_helpers; install_scripts || die "could not refresh the shadow helper scripts"; init_config; fi   # sync.sh learns live.conf
   mkdir -p "$LIVEKIT/state" || die "cannot create $LIVEKIT"
@@ -767,7 +779,7 @@ cmd_live() {
       say "  failed: $(head -c 200 "$TMPD/clone.err" | tr '\n' ' ')"; rm -rf "$LS"
     done
   fi
-  [ "$ok" = 1 ] || die "could not get branch $LIVE_BRANCH from $urls $https"
+  [ "$ok" = 1 ] || die "could not download branch $LIVE_BRANCH from $urls $https (network, access or branch missing). $(live_state). Next step: check the network and retry; if the branch is not published yet, retry later"
   lc=$(git -C "$LS" rev-parse HEAD)
   PR="$LS/plugins/anti-hall"
   [ -f "$LS/ah-engine/Cargo.toml" ] && [ -f "$PR/hooks/ah-fallback.map.json" ] && [ -f "$PR/engine/defaults/index.toml" ] || die "branch $LIVE_BRANCH ($lc) has no ah-engine/ and a plugin with hooks/ah-fallback.map.json + engine/defaults"
@@ -783,7 +795,7 @@ cmd_live() {
   elif [ "$ALREADY_LIVE" = 1 ]; then AUARGS="--channel dev"
   fi
   if [ "$ALREADY_LIVE" = 1 ]; then
-    [ -f "$AU" ] || die "already live, and branch $LIVE_BRANCH ($lc) has no hooks/ah-update.sh yet. Update the old way: sh $0 --rollback-live, then sh $0 --live"
+    [ -f "$AU" ] || die "cannot update: branch $LIVE_BRANCH ($lc) does not ship the updater (hooks/ah-update.sh) yet, so this update channel is not published. $(live_state). Next step: re-run the same command once the branch publishes it, or update now with --from FILE / --bin PATH. (Old way, only if you must: sh $0 --rollback-live, then sh $0 --live)"
     say "already live: updating through hooks/ah-update.sh ($AUARGS)"
     # shellcheck disable=SC2086 # AUARGS is a list of words by construction
     sh "$AU" $AUARGS --live-select "$LIVE_SELECT" </dev/null; rc=$?
@@ -792,9 +804,9 @@ cmd_live() {
   # 2 the engine binary: --bin, else the prebuilt CI artifact for exactly $lc (gh), else build ONLY when allowed (--allow-build / AH_LIVE_BUILD=1)
   STB="$TMPD/live-bin"
   if [ -n "$AUARGS" ]; then
-    [ -f "$AU" ] || die "branch $LIVE_BRANCH ($lc) has no hooks/ah-update.sh yet; use --bin PATH"
+    [ -f "$AU" ] || die "branch $LIVE_BRANCH ($lc) does not ship the updater (hooks/ah-update.sh) yet, so the --channel/--from update path is not available. Nothing was changed. Next step: re-run with --bin PATH (a prebuilt ah-engine), or retry once the branch publishes it"
     # shellcheck disable=SC2086
-    sh "$AU" $AUARGS --extract-to "$STB" </dev/null || die "hooks/ah-update.sh could not provide a verified engine ($AUARGS)"
+    sh "$AU" $AUARGS --extract-to "$STB" </dev/null || die "the updater could not fetch or verify an engine ($AUARGS); see its output above. $(live_state). Next step: check the network and retry the same command, or pass --from FILE / --bin PATH"
     if [ -f "$STB.commit" ]; then   # a dev pre-release records the commit it was built from: take the plugin from exactly that commit
       uc=$(tr -d ' \n\r' <"$STB.commit")
       if [ -n "$uc" ] && [ "$uc" != "$lc" ]; then
@@ -811,7 +823,7 @@ cmd_live() {
   elif [ -n "$BIN" ]; then cp "$BIN" "$STB" || die "cannot copy --bin"; say "using prebuilt binary $BIN (assumed to match $lc)"
   elif live_download_bin "$lc" "$STB"; then :
   elif [ "$ALLOW_BUILD" != 1 ]; then
-    die "no prebuilt engine for $lc: $DL_WHY. Supply one with --bin PATH (built by the ah-engine-bins workflow), or after 'gh auth login' re-run this; to compile locally anyway (slow, heavy) add --allow-build or set AH_LIVE_BUILD=1"
+    die "no prebuilt engine is available for $lc: $DL_WHY. $(live_state). Next step: retry after the CI build for that commit finishes, or supply one with --bin PATH (built by the ah-engine-bins workflow), or after 'gh auth login' re-run this; to compile locally anyway (slow, heavy) add --allow-build or set AH_LIVE_BUILD=1"
   else
     PATH="$HOME/.cargo/bin:$PATH"; export PATH
     command -v cargo >/dev/null 2>&1 || die "cargo not found. Install rustup (https://rustup.rs) or pass --bin PATH"
@@ -829,7 +841,7 @@ cmd_live() {
   printf 'source: branch %s HEAD %s, plugin %s\nengine version: %s\n%s  bundle/ah-engine\nbuilt: %s on %s\n' "$LIVE_BRANCH" "$lc" "$pv" "$bv" "$(sha "$B/ah-engine")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PLATFORM" > "$B/PROVENANCE.txt"
   # 4 switch (go-live.sh validates first, backs settings.json up, rolls itself back on any failure)
   say "going live (select: $LIVE_SELECT)"
-  sh "$LIVEKIT/go-live.sh" "$LIVE_SELECT" || die "go-live failed (rolled back; nothing changed)"
+  sh "$LIVEKIT/go-live.sh" "$LIVE_SELECT" || die "go-live failed and was rolled back; your previous setup is restored and active (details: $LIVEKIT/state/kit.log). Next step: fix the cause shown above, then re-run sh $0 --live"
   [ -f "$D/live.conf" ] && printf 'LIVE_COMMIT=%s\n' "$lc" >> "$D/live.conf"
   say "LIVE. Restart Claude Code sessions (or /reload-plugins). Check: sh $0 --status   Compare Node vs engine: sh $HOME/.anti-hall/ah-node-shadow/node-shadow.sh --compare   Undo: sh $0 --rollback-live"
   return 0
@@ -841,13 +853,13 @@ case "$MODE" in
     [ -f "$MARK" ] || exit 0
     emit_helpers; install_scripts || exit 1; init_config; exit 0 ;;
   sync)
-    [ -f "$MARK" ] || die "not installed"
+    [ -f "$MARK" ] || die "the shadow is not installed, so there is nothing to do. Next step: install it with sh $0"
     [ -f "$D/sync.sh" ] || die "sync.sh missing: re-run this installer once to upgrade the helper scripts"
     AH_SHADOW_D="$D" sh "$D/sync.sh" --now; rc=$?
     say "sync.log (last 3):"; tail -3 "$D/sync.log" 2>/dev/null | sed 's/^/  /'
     exit $rc ;;
   update|rollback)
-    [ -f "$MARK" ] || die "not installed"
+    [ -f "$MARK" ] || die "the shadow is not installed, so there is nothing to do. Next step: install it with sh $0"
     flag=--now; [ "$MODE" = rollback ] && flag=--rollback
     AH_SHADOW_D="$D" sh "$D/update.sh" $flag; rc=$?
     if [ "$MODE" = update ]; then say "update.log (last 3):"; tail -3 "$D/update.log" 2>/dev/null | sed 's/^/  /'; fi
@@ -855,7 +867,7 @@ case "$MODE" in
 esac
 
 if [ "$MODE" = rollbacklive ]; then
-  [ -f "$LIVEKIT/state/live.json" ] || die "not live (no $LIVEKIT/state/live.json)"
+  [ -f "$LIVEKIT/state/live.json" ] || die "live mode is not on (no $LIVEKIT/state/live.json), so there is nothing to roll back. Nothing was changed. Next step: sh $0 --live to go live"
   [ -d "$D/update.lock" ] && updater --stop
   # forward --force (and nothing else this mode does not own) to the kit; stdin from /dev/null so nothing can wait on a TTY
   rb_args=; [ "$FORCE" = 1 ] && rb_args=--force
@@ -864,16 +876,16 @@ if [ "$MODE" = rollbacklive ]; then
 fi
 if [ "$MODE" = live ]; then cmd_live; exit $?; fi
 if [ "$MODE" = uninstall ]; then
-  [ ! -f "$LIVEKIT/state/live.json" ] || die "live mode is on: run --rollback-live first"
+  [ ! -f "$LIVEKIT/state/live.json" ] || die "live mode is on, so the shadow cannot be uninstalled yet. Nothing was changed. Next step: sh $0 --rollback-live, then re-run this command"
   [ -f "$MARK" ] || { say "nothing to uninstall (no install marker at $MARK)"; exit 0; }
   need_python; emit_helpers
   if [ -d "$D/update.lock" ]; then
     op=$(cat "$D/update.lock/pid" 2>/dev/null)
-    if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then die "an update is running (pid $op); retry in a minute"; fi
+    if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then die "a shadow update is running (pid $op), so this was not started. Nothing was changed. Next step: retry in a minute"; fi
   fi
   cur=$(sha "$SETTINGS" 2>/dev/null || echo none); post=$(cat "$D/settings.post.sha" 2>/dev/null || echo unknown)
   if [ "$cur" = "$post" ] && [ -f "$D/settings.json.bak" ]; then
-    cp -p "$D/settings.json.bak" "$SETTINGS" || die "restore failed"
+    cp -p "$D/settings.json.bak" "$SETTINGS" || die "restoring settings.json from the backup failed. Next step: copy $D/settings.json.bak over $SETTINGS by hand, then re-run"
     say "settings.json restored from backup (byte-identical)"
   elif [ "$cur" = "$post" ] && [ -f "$D/settings.absent" ]; then
     rm -f "$SETTINGS"; say "settings.json removed (it did not exist before the install)"
@@ -881,7 +893,7 @@ if [ "$MODE" = uninstall ]; then
     if [ -f "$SETTINGS" ]; then python3 "$TMPD/jsonedit.py" remove "$SETTINGS" || die "could not edit $SETTINGS"; fi
     say "removed only the shadow entries from settings.json (it changed since install)"
   else
-    die "settings.json changed since the install (a restore would drop those changes). Re-run with --force to remove only the shadow entries; the backup stays at $D/settings.json.bak"
+    die "settings.json changed since the install, so restoring the backup would drop those changes. Nothing was changed. Next step: re-run with --force to remove only the shadow entries; the backup stays at $D/settings.json.bak"
   fi
   if [ -x "$D/bin/ah-engine" ]; then env HOME="$D/home" AH_ENGINE_DIR="$D/state" "$D/bin/ah-engine" stop >/dev/null 2>&1; fi
   case "$D" in */.anti-hall/ah-engine-shadow2) ;; *) die "internal: unexpected install dir $D" ;; esac
@@ -895,14 +907,14 @@ fi
 # ================================================================ install
 [ "$MODE" = install ] || die "internal: unhandled mode $MODE"
 say "platform: $PLATFORM"
-case "$(uname -s)" in Darwin|Linux) ;; *) die "unsupported OS $(uname -s) (macOS, Linux and WSL2 only)" ;; esac
+case "$(uname -s)" in Darwin|Linux) ;; *) die "unsupported OS $(uname -s); this installer supports macOS, Linux and WSL2 only. Nothing was changed" ;; esac
 case "$HOME" in /mnt/*) die "HOME ($HOME) is on a Windows drive (DrvFs): Unix sockets and file locks are unreliable there; use a HOME on the Linux filesystem" ;; esac
 if [ "$(uname -s)" = Linux ]; then
   fsl=$(df -P -T "$HOME" 2>/dev/null | awk 'NR==2{print $2}')
   case "$fsl" in 9p|drvfs|drvfsa|fuseblk|vboxsf) die "HOME is on a $fsl filesystem (Windows share): use the Linux filesystem" ;; esac
 fi
 case "$PLATFORM" in Linux/wsl2) say "WSL2 detected: all state stays on the Linux filesystem under $HOME; no systemd is used (the updater is started by the hook itself)" ;; Linux/wsl) say "WSL detected (not confirmed as WSL2); proceeding on the Linux filesystem" ;; esac
-command -v git >/dev/null 2>&1 || die "git not found"
+command -v git >/dev/null 2>&1 || die "git is not installed or not on PATH. Nothing was changed. Next step: install git, then re-run"
 need_python
 if [ -n "$BIN" ]; then
   [ -f "$BIN" ] && [ -x "$BIN" ] || die "--bin $BIN is not an executable file"
@@ -948,7 +960,7 @@ for u in $urls $https; do
   say "  failed: $(head -c 200 "$TMPD/clone.err" | tr '\n' ' ')"
   rm -rf "$src"
 done
-[ "$ok" = 1 ] || die "could not clone branch $BRANCH from $urls $https"
+[ "$ok" = 1 ] || die "could not download branch $BRANCH from $urls $https (network, access or branch missing). Nothing was installed. Next step: check the network and retry; if the branch is not published yet, retry later"
 commit=$(git -C "$src" rev-parse HEAD)
 [ -f "$src/ah-engine/Cargo.toml" ] && [ -d "$src/plugins/anti-hall/hooks" ] || die "the branch $BRANCH has no ah-engine/ and plugins/anti-hall/"
 

@@ -23,8 +23,8 @@ node -e '
   const h=require(process.argv[1]).hooks; let n=0, bad=[];
   for (const [ev,g] of Object.entries(h)) for (const m of g) for (const x of m.hooks) { n++; if(!/hooks\/ah-hook\.sh"? /.test(x.command)) bad.push(ev+": "+x.command); }
   if (bad.length||!n) { console.error("bundled hooks.json is not all thin triggers:\n"+bad.join("\n")); process.exit(1); }' "$BUNDLE/plugin/hooks/hooks.json" || die "bundled plugin would double-run Node hooks"
-[ -f "$SETTINGS" ] && node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$SETTINGS" || die "cannot read/parse $SETTINGS"
-command -v "$CLAUDE_BIN" >/dev/null 2>&1 || die "claude CLI not found ($CLAUDE_BIN); set AH_LIVE_CLAUDE"
+[ -f "$SETTINGS" ] && node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$SETTINGS" || die "cannot read or parse $SETTINGS (missing or not valid JSON). Nothing was changed. Next step: fix or restore that file, then re-run"
+command -v "$CLAUDE_BIN" >/dev/null 2>&1 || die "claude CLI not found ($CLAUDE_BIN). Nothing was changed. Next step: install it or set AH_LIVE_CLAUDE to its path, then re-run"
 if [ ! -f "$LIVE_JSON" ]; then
   ORIGS=$(orig_list)    # enabled anti-hall@* installs to switch off (empty is fine: a machine that only ran the shadow)
   [ "$(plugin_state "$LIVE_KEY" | cut -f1)" = absent ] || die "$LIVE_KEY is already installed but the kit is not live; remove it first (claude plugin uninstall $LIVE_KEY)"
@@ -119,7 +119,7 @@ if [ -f "$LIVE_JSON" ]; then
     const rows=f=>fs.readFileSync(f,"utf8").split("\n").filter(Boolean);
     j.arg=process.argv[4]; j.on=rows(process.argv[2]); j.off=rows(process.argv[3]).map(x=>x.replace("\t","/")); j.reapplied=new Date().toISOString();
     fs.writeFileSync(process.argv[1],JSON.stringify(j,null,2)+"\n");' "$LIVE_JSON" "$ON" "$OFF" "$arg"
-  cp "$CAND" "$CONFIG_TOML" || die "cannot write $CONFIG_TOML"
+  cp "$CAND" "$CONFIG_TOML" || die "cannot write $CONFIG_TOML. Next step: check disk space and permissions; if live mode was partly applied run sh $KIT/rollback.sh --force"
   node -e '
     const fs=require("fs"),j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); j.files.config.sha_after=process.argv[3]; fs.writeFileSync(process.argv[1],JSON.stringify(j,null,2)+"\n")' "$LIVE_JSON" x "$(sha "$CONFIG_TOML")"
   lim 30 sh "$NODE_SHADOW" --rebaseline >/dev/null 2>&1 || klog W_REBASELINE "node-shadow.sh --rebaseline failed (rc=$?)"   # the set of engine-decided checks changed
@@ -128,7 +128,7 @@ fi
 
 BK=$STATE/backup; mkdir -p "$BK" 2>/dev/null || { DIE_CODE=E_STATE_UNWRITABLE; die "cannot create $BK; nothing was changed"; }
 # record "before" for every file the kit touches itself, and back up the ones that exist
-cp -p "$SETTINGS" "$BK/settings.json" || die "backup failed"
+cp -p "$SETTINGS" "$BK/settings.json" || die "could not back up $SETTINGS. Nothing was changed. Next step: check disk space and permissions on $BK, then re-run"
 CFG_EXISTED=0; [ -f "$CONFIG_TOML" ] && { CFG_EXISTED=1; cp -p "$CONFIG_TOML" "$BK/config.toml"; }
 BIN_EXISTED=0; [ -e "$LIVE_ENGINE_BIN" ] && { BIN_EXISTED=1; cp -p "$LIVE_ENGINE_BIN" "$BK/ah-engine.bin"; }
 ORIGS="$ORIGS" node -e '
@@ -197,7 +197,7 @@ apply() {
   [ "$(plugin_state "$LIVE_KEY")" = "enabled	$PVER" ] && [ -z "$(orig_list)" ] || { echo "CLI state after install is not as expected" >&2; return 1; }
 }
 if ! apply; then
-  note "go-live failed part-way: rolling back"; sh "$KIT/rollback.sh" --force --quiet; die "go-live failed; rolled back"
+  note "go-live failed part-way: rolling back"; sh "$KIT/rollback.sh" --force --quiet; die "go-live failed part-way and was rolled back; your previous setup is restored (details: $STATE/kit.log). Next step: fix the cause shown above, then re-run go-live.sh"
 fi
 node -e '
   const fs=require("fs"),j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")),rows=f=>fs.readFileSync(f,"utf8").split("\n").filter(Boolean);

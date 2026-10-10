@@ -27,6 +27,8 @@ BUNDLE_ROOT=$BUNDLE/plugin
 
 # klog CODE message: one line in $STATE/kit.log with a reason code (never fails the caller; a full or unwritable disk only loses the line).
 klog() { _c=$1; shift; { mkdir -p "$STATE" && printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_c" "$*" >>"$STATE/kit.log"; } 2>/dev/null; return 0; }
+# Error standard (issue #143): die = a failure (what failed, current state, one next step in the message). usage = bad command line: message + hint, no "refusing" wording.
+usage() { klog E_USAGE "$*"; printf 'ah-engine-live: %s\nusage: sh %s [options] (read the header of %s for the option list)\n' "$*" "$0" "$0" >&2; exit 1; }
 die() { klog "${DIE_CODE:-E_DIE}" "$*"; printf 'ah-engine-live: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
 # sha <file>: sha256 of a file or "absent"; GNU sha256sum, BSD shasum, openssl, then node, so a box with none of the first three still works.
@@ -56,7 +58,7 @@ lim() {
   kill "$_w" 2>/dev/null; wait "$_w" 2>/dev/null
   return $_r
 }
-need_node() { command -v node >/dev/null 2>&1 || die "node not found on PATH"; }
+need_node() { command -v node >/dev/null 2>&1 || die "node is not installed or not on PATH (the kit needs it). Nothing was changed. Next step: install node, then re-run"; }
 
 # Entry table straight from the engine binary (so it can never disagree with what the dispatcher uses).
 # Output rows: Event<TAB>id<TAB>check<TAB>guard(1|0) for the claude host.

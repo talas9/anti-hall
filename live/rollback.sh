@@ -10,15 +10,15 @@ force=0; quiet=0; checks=
 while [ $# -gt 0 ]; do
   case "$1" in
     --force) force=1 ;; --quiet) quiet=1 ;;
-    --check) shift; checks=${1:-}; [ -n "$checks" ] || die "--check needs a comma-separated list of entry ids" ;;
-    *) die "unknown argument: $1" ;;
+    --check) shift; checks=${1:-}; [ -n "$checks" ] || usage "--check needs a comma-separated list of entry ids" ;;
+    *) usage "unknown argument: $1" ;;
   esac; shift
 done
 say() { [ "$quiet" = 1 ] || note "$@"; }
 # Ctrl-C / TERM mid-rollback: every step is idempotent and the ledger (state/live.json) is only moved away at the very end, so a re-run resumes.
 trap 'klog E_INTERRUPTED "rollback interrupted"; printf "ah-engine-live: rollback interrupted; nothing is lost. Re-run: sh %s/rollback.sh%s\n" "$KIT" "$([ "$force" = 1 ] && echo " --force")" >&2; rm -f "$_CLI_DEAD"; exit 130' INT TERM HUP
 trap 'rm -f "$_CLI_DEAD"' 0
-[ -f "$LIVE_JSON" ] || die "not live (no $LIVE_JSON): nothing to roll back"
+[ -f "$LIVE_JSON" ] || die "not live (no $LIVE_JSON), so there is nothing to roll back. Nothing was changed. Next step: none needed; run go-live.sh to go live"
 
 if [ -n "$checks" ]; then
   node -e '
@@ -48,7 +48,7 @@ conf=$(node -e '
     if (cur!==v.sha_before && v.sha_after!==null && cur!==v.sha_after) {
       if (k==="settings") continue;
       console.log(k+": "+v.path+" changed after go-live"); } }' "$LIVE_JSON")
-if [ -n "$conf" ] && [ "$force" != 1 ]; then printf '%s\n' "$conf" >&2; die "refusing: restoring would overwrite later edits. Re-run with --force to restore anyway (your edits are kept in the backup dir listed below)"; fi
+if [ -n "$conf" ] && [ "$force" != 1 ]; then printf '%s\n' "$conf" >&2; die "restoring would overwrite later edits you made, so nothing was restored; live mode is still on. Next step: re-run with --force to restore anyway (your edits are kept in the backup dir listed below)"; fi
 TS=$(date +%Y%m%d-%H%M%S); RB=$STATE/rolled-back-$TS
 DIE_CODE=E_STATE_UNWRITABLE mkdir -p "$RB" 2>/dev/null && [ -w "$RB" ] || { DIE_CODE=E_STATE_UNWRITABLE; die "cannot write under $STATE (disk full or read-only?); nothing was changed. Free space / fix permissions, then re-run"; }
 restore() { # key  (files the kit wrote itself: byte-identical from backup, or moved aside if go-live created them)
