@@ -21,6 +21,7 @@ Health check, repair, migrations and capability scans.
 | `ah-engine shadow-compare` | `<scratch dir>` Internal: the detached half of a Node shadow (L9a) | main, codex, workspace, subagent |
 | `ah-engine update` | `[--check] [--post-pull-only]` Update anti-hall (D81, lane L9b, the port of skills/update/scripts/update.js): `git pull --ff-only` of the marketplace clone (a dirty... | main, codex |
 | `ah-engine refresh` | `[--force] [--home <dir>]` Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert),... | main, codex |
+| `ah-engine engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` Update the engine binary: runs the plugin's updater script (hooks/ah-update.sh) with the given arguments (--from FILE [--sha256 X]... | main, codex |
 
 ## Guards
 

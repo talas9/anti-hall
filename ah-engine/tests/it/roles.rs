@@ -264,7 +264,7 @@ fn the_role_note_names_the_role_lists_only_what_it_may_use_and_points_at_the_mai
     assert!(main.contains("restore") && main.contains("jev-setup"));
     assert!(!sub.contains("restore") && !sub.contains("proj") && sub.contains("status"), "{sub}");
     assert!(!ws.contains("restore") && ws.contains("proj") && ws.contains("mesh"), "{ws}");
-    assert!(main.contains("/anti-hall:engine") && !main.contains("engine-"), "points at the main skill only: {main}");
+    assert!(main.contains("/anti-hall:engine") && !main.replace("engine-update", "").contains("engine-"), "points at the main skill only (the engine-update verb is named in the verb list): {main}");
     assert!(sub.contains("/anti-hall:engine"));
     assert!(codex.contains("$anti-hall-engine") && !codex.contains("/anti-hall:"), "{codex}");
 }
