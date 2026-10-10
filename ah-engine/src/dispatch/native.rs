@@ -92,39 +92,49 @@ fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
 }
 
 /// Every matching entry with a built-in check, answered; entries without one are not listed.
-pub fn evaluate(meta: &Meta, p: &Value, observe: &dyn Fn(&Entry, &Answer, u64)) -> Vec<(String, Answer)> {
+pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn() -> bool, observe: &dyn Fn(&Entry, &Answer, u64)) -> Vec<(String, Answer)> {
     // one dispatch of the prompt event is one turn of the session, which is what the injection gate counts keepalives in
     if meta.event == crate::defaults::text("inject_gate.ups_event")
         && let Some(sid) = p.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty())
     {
         crate::gate::global().turn(sid);
     }
-    table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
+    let mut tripped = false;
+    let mut out = Vec::new();
+    for e in table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
         .into_iter()
         .filter(|e| e.check.is_some() && meta.only.as_ref().is_none_or(|ids| ids.contains(&e.id)))
-        .map(|e| {
-            let started = std::time::Instant::now();
-            crate::deadline::beat();
-            let check = e.check.as_deref().unwrap_or("");
-            // past the client's deadline nobody reads this reply's answer for the entry: it is not started, and its own Node hook
-            // answers it (the entries answered in time still count), so a slow machine costs single checks, never the event
-            let a = if !crate::deadline::in_time() && crate::script::cut_at_deadline(check, &meta.event) {
-                crate::script::cut(check, &meta.event);
+    {
+        let started = std::time::Instant::now();
+        crate::deadline::beat();
+        let check = e.check.as_deref().unwrap_or("");
+        // past the client's deadline nobody reads this reply's answer for the entry: it is not started, and its own Node hook
+        // answers it (the entries answered in time still count), so a slow machine costs single checks, never the event
+        let a = if tripped || over_cpu() {
+            tripped = true;
+            crate::health::log_event("budget", check, crate::defaults::text("msg.log_budget"));
+            Answer::Defer
+        } else if !crate::deadline::in_time() && crate::script::cut_at_deadline(check, &meta.event) {
+            crate::script::cut(check, &meta.event);
+            Answer::Defer
+        } else {
+            let mark = crate::deadline::staged_mark();
+            let a = run_entry(&e, meta, p);
+            if matches!(a, Answer::Defer) || over_cpu() {
+                tripped |= !matches!(a, Answer::Defer);
+                // the Node hook decides this entry, or the CPU budget was crossed while it ran: what the check staged must not
+                // land for a decision nobody received.
+                crate::deadline::discard_staged_since(mark);
                 Answer::Defer
             } else {
-                let mark = crate::deadline::staged_mark();
-                let a = run_entry(&e, meta, p);
-                if matches!(a, Answer::Defer) {
-                    // the Node hook decides this entry: what the check staged must not land for a decision nobody received
-                    crate::deadline::discard_staged_since(mark);
-                }
                 a
-            };
-            crate::deadline::beat();
-            observe(&e, &a, started.elapsed().as_micros() as u64);
-            (e.id, a)
-        })
-        .collect()
+            }
+        };
+        crate::deadline::beat();
+        observe(&e, &a, started.elapsed().as_micros() as u64);
+        out.push((e.id, a));
+    }
+    out
 }
 
 /// The daemon's reply body: `[[id, "defer"], [id, code, stdout, stderr], ...]`.
@@ -177,7 +187,7 @@ mod tests {
     #[test]
     fn the_git_check_answers_its_entry_with_the_node_guards_bytes() {
         let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
-        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        let got = evaluate(&meta(), &p, &|| false, &|_, _, _| {});
         let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(
             ids,
@@ -215,12 +225,41 @@ mod tests {
         let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
         crate::deadline::begin(std::time::Instant::now());
         crate::deadline::client_deadline(0);
-        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        let got = evaluate(&meta(), &p, &|| false, &|_, _, _| {});
         crate::deadline::end();
         assert!(!got.is_empty());
         assert!(got.iter().all(|(_, a)| matches!(a, Answer::Defer)), "{:?}", got.iter().map(|(id, _)| id).collect::<Vec<_>>());
-        let again = evaluate(&meta(), &p, &|_, _, _| {});
+        let again = evaluate(&meta(), &p, &|| false, &|_, _, _| {});
         assert!(again.iter().any(|(id, a)| id == "git-guard" && matches!(a, Answer::Decided(r, _) if r.code == Some(2))), "in time it decides");
+    }
+
+    #[test]
+    fn over_cpu_budget_defers_native_entries_fail_open() {
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
+        let got = evaluate(&meta(), &p, &|| true, &|_, _, _| {});
+        assert!(!got.is_empty());
+        assert!(got.iter().all(|(_, a)| matches!(a, Answer::Defer)), "budget trips defer native checks to the fallback path");
+    }
+
+    #[test]
+    fn cpu_budget_flip_after_entry_discards_current_and_remaining_decisions() {
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
+        let polls = std::cell::Cell::new(0usize);
+        let got = evaluate(
+            &meta(),
+            &p,
+            &|| {
+                let n = polls.get();
+                polls.set(n + 1);
+                n >= 1
+            },
+            &|_, _, _| {},
+        );
+        assert!(!got.is_empty());
+        assert!(
+            got.iter().all(|(_, a)| matches!(a, Answer::Defer)),
+            "a budget trip after the first CPU-consuming entry discards that answer and all later answers"
+        );
     }
 
     /// A payload each of the five stateless checks settles as "nothing to say".
@@ -258,7 +297,7 @@ mod tests {
         m.env = crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string())]);
         for name in ["compact-declaration-guard", "coordinator-work-guard", "merge-side-pick", "scan-throttle", "ship-it-guard"] {
             let p = quiet_payload(name);
-            let got = evaluate(&m, &p, &|_, _, _| {});
+            let got = evaluate(&m, &p, &|| false, &|_, _, _| {});
             let (_, a) = got.iter().find(|(id, _)| id == name).unwrap_or_else(|| panic!("{name} entry missing"));
             if a != &Answer::Decided(HookResult::quiet(name), Vec::new()) {
                 deferred.push(name);
@@ -272,7 +311,7 @@ mod tests {
     #[test]
     fn a_check_that_cannot_prove_silence_still_defers() {
         let p = json!({"session_id": "s", "cwd": "sub", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git status"}});
-        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        let got = evaluate(&meta(), &p, &|| false, &|_, _, _| {});
         assert_eq!(got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Defer);
     }
 
@@ -283,15 +322,15 @@ mod tests {
         let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": "migrations/a.sql"}});
         let mut m = meta();
         m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1"), ("HOME", "/h")]);
-        let whole = evaluate(&m, &p, &|_, _, _| {});
+        let whole = evaluate(&m, &p, &|| false, &|_, _, _| {});
         let ship = |got: &[(String, Answer)]| got.iter().find(|(id, _)| id == "ship-it-guard").unwrap().1.clone();
         assert!(matches!(ship(&whole), Answer::Decided(ref r, _) if r.code == Some(2)), "control: the gate is on, so it blocks");
         m.env = crate::reqenv::RequestEnv::incomplete();
-        let got = evaluate(&m, &p, &|_, _, _| {});
+        let got = evaluate(&m, &p, &|| false, &|_, _, _| {});
         assert!(!got.is_empty() && got.iter().all(|(_, a)| *a == Answer::Defer), "every check defers: {got:?}");
         let big = "x".repeat(crate::defaults::num("request_env.max_bytes") as usize);
         m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1".to_string()), ("ANTIHALL_X", big)]);
-        assert_eq!(ship(&evaluate(&m, &p, &|_, _, _| {})), Answer::Defer, "an environment dropped over the cap defers too");
+        assert_eq!(ship(&evaluate(&m, &p, &|| false, &|_, _, _| {})), Answer::Defer, "an environment dropped over the cap defers too");
     }
 
     /// Replay payload L3 (a force push): Node's command-guard blocks it as a state-changing remote command in the main thread. The
@@ -304,7 +343,7 @@ mod tests {
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         let mut m = meta();
         m.env = crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string()), ("CLAUDE_CODE_ENTRYPOINT", "cli".to_string())]);
-        let got = evaluate(&m, &p, &|_, _, _| {});
+        let got = evaluate(&m, &p, &|| false, &|_, _, _| {});
         // the plugin root of this test does not exist, so the block message cannot name the CLI: the script defers rather than guess
         let cg = &got.iter().find(|(id, _)| id == "command-guard").unwrap().1;
         assert!(matches!(cg, Answer::Defer) || matches!(cg, Answer::Decided(r, _) if r.code == Some(2)), "never an allow: {got:?}");
@@ -341,7 +380,7 @@ mod tests {
             };
             // the other batches' checks of the same event answer here too (their own tests pin their bytes): only the verify-first
             // family and fable-availability are looked at
-            let got: Vec<_> = evaluate(&meta, &p, &|_, _, _| {}).into_iter().filter(|(id, _)| ids.contains(&id.as_str())).collect();
+            let got: Vec<_> = evaluate(&meta, &p, &|| false, &|_, _, _| {}).into_iter().filter(|(id, _)| ids.contains(&id.as_str())).collect();
             assert_eq!(got.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ids, "{host} {event}");
             for (id, a) in &got {
                 let Answer::Decided(r, _) = a else { panic!("{id} deferred") };
@@ -373,7 +412,7 @@ mod tests {
             deadline_ms: None,
         };
         assert_eq!(
-            evaluate(&meta, &p, &|_, _, _| {}).into_iter().filter(|(id, _)| id == "verify-first-subagent").map(|(_, a)| a).collect::<Vec<_>>(),
+            evaluate(&meta, &p, &|| false, &|_, _, _| {}).into_iter().filter(|(id, _)| id == "verify-first-subagent").map(|(_, a)| a).collect::<Vec<_>>(),
             vec![Answer::Defer]
         );
     }

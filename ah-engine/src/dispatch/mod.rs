@@ -658,7 +658,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         // engine must not be a worse guard than Node (D74). Only a guard entry with no runnable Node command blocks.
         (_, false) | (None, _) => Vec::new(),
         (Some(_), _) if entries.iter().all(|e| e.check.is_none()) => Vec::new(),
-        (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_, _, _| {}),
+        (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|| false, &|_, _, _| {}),
         (Some(_), _) => ask_daemon(&meta, raw).unwrap_or_default(),
     };
     let blocking_checks = defaults::list("judge.dispatch_blocking_checks");
