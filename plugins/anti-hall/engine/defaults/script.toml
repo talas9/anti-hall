@@ -97,17 +97,6 @@ value = 4194304
 min = 1024
 unit = "bytes"
 
-[script.regex_cache_max]
-doc = "Compiled regular expressions the process-wide `ah.re.*` cache keeps at most (all workers share one cache); past it, or past script.regex_cache_bytes, the least recently used pattern is dropped first."
-value = 512
-min = 8
-
-[script.regex_cache_bytes]
-doc = "Estimated bytes of compiled regular expressions the shared `ah.re.*` cache may hold (an entry weighs script.regex_entry_base_bytes plus script.regex_bytes_per_src_byte per byte of its translated source). The shipped patterns are about 3.3 MB compiled, so the default keeps all of them."
-value = 8388608
-min = 262144
-unit = "bytes"
-
 [script.regex_entry_base_bytes]
 doc = "Fixed part of the estimated weight of one cached compiled regular expression."
 value = 8192
@@ -132,28 +121,10 @@ value = 524288
 min = 32768
 unit = "bytes"
 
-[script.runtime_soft_bytes]
-doc = "What a worker thread's script interpreter may hold after loading a check (measured after a collection). Above it the least recently called checks are unloaded, down to script.runtime_unload_to_bytes, and rebuilt from their files by their next call. All shipped checks loaded take about 5 MB per worker; a limit near 3 MB made the replay about twice as slow (the checks one request runs are reloaded again and again), 4 MB costs a few percent."
-value = 4194304
-min = 524288
-unit = "bytes"
-
-[script.runtime_unload_to_bytes]
-doc = "Size an interpreter is unloaded down to once it passed script.runtime_soft_bytes (clamped to it), so the next load does not trigger another unload."
-value = 3774873
-min = 262144
-unit = "bytes"
-
 [script.unload_batch]
-doc = "Checks unloaded per collection while an interpreter is above script.runtime_soft_bytes."
+doc = "Checks unloaded per collection while an interpreter is above mem.quickjs.soft_bytes."
 value = 4
 min = 1
-
-[script.runtime_max_bytes]
-doc = "Absolute ceiling of one worker's script interpreter heap (bytes). A call's own allowance (script.call_memory_bytes above the size after loading) never lifts the ceiling past it, so a baseline that creeps up cannot raise the limit without bound."
-value = 33554432
-min = 8388608
-unit = "bytes"
 
 [script.p95_budget_us]
 doc = "Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way)."
@@ -291,11 +262,6 @@ doc = "Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest i
 value = 4194304
 min = 1024
 unit = "bytes"
-
-[script.transcript_cache_entries]
-doc = "Most (transcript, window) answers `ahHost.transcriptDedupeTail` keeps in the engine process, each valid while the file keeps its size and modification time; past it the cache is emptied."
-value = 64
-min = 1
 
 [script.grep_max_bytes]
 doc = "Most bytes of lines `ahHost.transcriptGrep` hands back to a script; a search that matches more is answered unsure and the script defers."

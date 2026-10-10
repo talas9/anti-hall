@@ -115,6 +115,32 @@ impl<K: Hash + Eq + Clone, V: Clone> Tiered<K, V> {
         }
     }
 
+    /// Drop the least recently used item; its size, or `None` when empty.
+    pub fn pop_lru(&mut self) -> Option<usize> {
+        let (&t, _) = self.order.iter().next()?;
+        let victim = self.order.remove(&t)?;
+        let s = self.map.remove(&victim)?;
+        self.bytes -= s.size;
+        self.evictions += 1;
+        Some(s.size)
+    }
+
+    /// Drop least recently used items until at most `target` bytes are held; the bytes freed.
+    pub fn evict_to(&mut self, target: usize) -> usize {
+        let before = self.bytes;
+        while self.bytes > target && self.pop_lru().is_some() {}
+        before - self.bytes
+    }
+
+    /// Drop everything; the bytes freed.
+    pub fn clear(&mut self) -> usize {
+        let before = self.bytes;
+        self.map.clear();
+        self.order.clear();
+        self.bytes = 0;
+        before
+    }
+
     /// Drop `k` from memory (SQLite keeps it).
     pub fn remove(&mut self, k: &K) {
         if let Some(s) = self.map.remove(k) {

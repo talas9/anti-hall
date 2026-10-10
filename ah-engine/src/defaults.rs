@@ -266,6 +266,7 @@ impl<T: 'static> Cache<T> {
         {
             return v;
         }
+        crate::mem::note_leak(std::mem::size_of::<T>());
         let v: &'static T = Box::leak(Box::new(build()));
         *w = Some((generation, v));
         v

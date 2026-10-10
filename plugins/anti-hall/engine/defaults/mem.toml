@@ -1,0 +1,145 @@
+# ah-engine shipped defaults for the memory module (issues #21 and #158). Format: see the header of engine.toml.
+#
+# Every long-lived in-memory holder of the daemon registers with the memory registry (src/mem) under a name and gets a SOFT and a
+# HARD limit here: `mem.<holder>_soft_bytes`, `mem.<holder>_hard_bytes` and `mem.<holder>_low_water_pct`. At the soft limit the
+# holder is told to shrink to the low-water mark (least recently used first) and requests keep being served; an insert that would
+# cross the hard limit is refused (a cache miss, a script call that fails open) and the holder is recycled. `mem.global_*` bounds
+# the process as a whole. `ah-engine status --memory` shows every holder against these numbers.
+
+[mem.global_soft_bytes]
+doc = "Process memory (the figure `daemon.mem_metric` selects) at which every holder is asked to shrink to its low-water mark. Logged once per excursion. The RSS cap (`daemon.rss_cap_kb`) stays the absolute backstop above it."
+value = 100663296
+min = 1048576
+unit = "bytes"
+
+[mem.global_hard_bytes]
+doc = "Process memory above which every holder is recycled and every cache insert is refused. If it is still above this `mem.global_restart_after_s` later, the daemon is asked to restart cleanly and the reason is recorded in the event log."
+value = 125829120
+min = 1048576
+unit = "bytes"
+
+[mem.global_low_water_pct]
+doc = "Percent of the global soft and hard limits that process memory must fall to before the global triggers re-arm (hysteresis, so a total hovering at a limit is one excursion, not many)."
+value = 90
+min = 1
+max = 100
+
+[mem.global_restart_after_s]
+doc = "How long the process total (or a holder that recycling cannot shrink, such as the defaults snapshots leaked on purpose) may stay over its hard limit after the recovery attempt before a clean restart is requested."
+value = 60
+min = 1
+unit = "s"
+
+[mem.global_log_min_interval_ms]
+doc = "At most one soft or hard log line per holder per interval (the counters in `status --memory` still count every excursion), so a cache that cycles between its low-water mark and its soft limit cannot flood the event log."
+value = 60000
+min = 0
+unit = "ms"
+
+[mem.regex_soft_bytes]
+doc = "Estimated bytes of compiled regular expressions the shared `ah.re.*` cache may hold before it evicts the least recently used down to its low-water mark (an entry weighs script.regex_entry_base_bytes plus script.regex_bytes_per_src_byte per byte of its translated source). The shipped patterns are about 3.3 MB compiled, so the default keeps all of them."
+value = 8388608
+min = 262144
+unit = "bytes"
+
+[mem.regex_hard_bytes]
+doc = "Estimated bytes of compiled regular expressions at which the `ah.re.*` cache refuses an insert (the pattern is compiled and used, not kept) and is recycled."
+value = 16777216
+min = 262144
+unit = "bytes"
+
+[mem.regex_low_water_pct]
+doc = "Percent of mem.regex_soft_bytes the `ah.re.*` cache is evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.regex_max_entries]
+doc = "Compiled regular expressions the process-wide `ah.re.*` cache keeps at most (all workers share one cache); past it the least recently used pattern is dropped first."
+value = 512
+min = 8
+
+[mem.quickjs_soft_bytes]
+doc = "What ONE worker thread's script interpreter may hold after loading a check (measured after a collection). At or above it the least recently called checks are unloaded down to the low-water mark and rebuilt from their files by their next call. All shipped checks loaded take about 5 MB per worker; a limit near 3 MB made the replay about twice as slow (the checks one request runs are reloaded again and again), 4 MB costs a few percent."
+value = 4194304
+min = 524288
+unit = "bytes"
+
+[mem.quickjs_hard_bytes]
+doc = "Absolute ceiling of one worker's script interpreter heap (bytes). A call's own allowance (script.call_memory_bytes above the size after loading) never lifts the ceiling past it, so a baseline that creeps up cannot raise the limit without bound. An interpreter found above it is recycled and the call that needed it fails open (a deferral)."
+value = 33554432
+min = 8388608
+unit = "bytes"
+
+[mem.quickjs_low_water_pct]
+doc = "Percent of mem.quickjs_soft_bytes an interpreter is unloaded down to once it reached the soft limit, so the next load does not trigger another unload."
+value = 90
+min = 1
+max = 100
+
+[mem.transcript_tail_soft_bytes]
+doc = "Bytes of cached transcript-tail answers (`transcriptDedupeTail`) held before the least recently used are dropped down to the low-water mark."
+value = 4194304
+min = 4096
+unit = "bytes"
+
+[mem.transcript_tail_hard_bytes]
+doc = "Bytes of cached transcript-tail answers at which an insert is refused (the answer is returned, not kept) and the cache is recycled."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[mem.transcript_tail_low_water_pct]
+doc = "Percent of mem.transcript_tail_soft_bytes the transcript-tail cache is evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.transcript_tail_max_entries]
+doc = "Transcript-tail answers the cache keeps at most; past it the least recently used is dropped first."
+value = 256
+min = 1
+
+[mem.defaults_leak_soft_bytes]
+doc = "Bytes of config values leaked on purpose (the `'static` snapshots of the defaults, the previous generation of every derived cache) that are logged as a soft excursion. Only a restart frees them; one load of the shipped config leaks about 3.4 MB (measured), and a reload adds only what changed."
+value = 16777216
+min = 65536
+unit = "bytes"
+
+[mem.defaults_leak_hard_bytes]
+doc = "Bytes of leaked config values past which the daemon requests a clean restart (after mem.global_restart_after_s), so repeated config reloads cannot grow the process without bound."
+value = 33554432
+min = 65536
+unit = "bytes"
+
+[mem.defaults_leak_low_water_pct]
+doc = "Percent of mem.defaults_leak_soft_bytes the leaked total must be at or under before the soft trigger re-arms (only a restart lowers it)."
+value = 80
+min = 1
+max = 100
+
+[mem.proc_output_max_bytes]
+doc = "Most bytes of a helper process's stdout, and of its stderr, the daemon keeps (git, gh and the other helpers it runs). The rest is read and discarded so the helper does not block, and the kept text ends with mem.proc_output_marker."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[mem.proc_output_marker]
+doc = "Appended to a helper's captured output that was cut at mem.proc_output_max_bytes."
+value = "\n[output truncated]\n"
+
+[mem.msg_soft]
+doc = "Event-log line when a holder reaches its soft limit. Placeholders: holder, usage, limit."
+value = "{holder} reached its soft memory limit ({usage} of {limit} bytes): evicting to the low-water mark"
+
+[mem.msg_hard]
+doc = "Event-log line when a holder crosses its hard limit (the insert is refused and the holder recycled). Placeholders: holder, usage, limit."
+value = "{holder} crossed its hard memory limit ({usage} over {limit} bytes): inserts refused, holders recycled"
+
+[mem.msg_restart]
+doc = "Event-log line when a clean restart is requested because memory stayed over a hard limit. Placeholders: holder, usage, limit."
+value = "{holder} stayed over its hard memory limit ({usage} over {limit} bytes) after recovery: requesting a clean restart"
+
+[mem.msg_exit_reason]
+doc = "Exit reason recorded when the daemon restarts because memory stayed over a hard limit. Placeholders: holder, usage, limit, secs."
+value = "memory: {holder} over its hard limit ({usage} over {limit} bytes) for {secs} s after recovery"

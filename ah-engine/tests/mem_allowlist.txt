@@ -1,0 +1,61 @@
+# Long-lived collections outside src/mem that the guard (tests/it/mem_guard.rs) accepts. Format:
+#   path under src | symbol | bound | reason
+# The bound says what stops the growth. "registry follow-up" marks a holder that is bounded today by its own cap but should move
+# onto the memory registry (mem::BoundedCache / mem::Budget) so `status --memory` shows it. Verified against the code on 2026-10-10.
+
+# ---- bounded by a cap read from config, own eviction (registry follow-ups) -------------------------------------------------
+checks/agent_scan/mod.rs | KEPT | entry cap read at insert (`while map.len() >= cap`, line ~1255); entries are transcript walks | kept transcript walks; registry follow-up (the agent_scan job owns the file), clone-on-answer is audit item 8
+daemon.rs | Shared.queue | accept queue cap (daemon.queue): a full queue answers busy | the connection queue; bounded by the cap, not a cache
+db.rs | Mem.kv | byte budget tier.budget_kb given to tier::Tiered at construction | the active key-value items; a byte-budgeted LRU already, registry follow-up
+gitcache/mod.rs | GitCache.repos | gitcache.max_repos, idle entries expire after gitcache idle_ttl | memoised git state per repository
+hookcfg/session.rs | SessionStore.slots | one counter per (session, condition) ended by SessionEnd; NO cap and no TTL eviction | registry follow-up and a possible leak when a session never sends SessionEnd (counted as hookcfg_session_counters in status --memory)
+load.rs | Load.minutes | newest load.minutes_kept buckets, each bucket capped | per-minute request load
+tier.rs | Bus.subs | max_channels channels and a bounded queue per subscriber | pub/sub channels
+transcript/registry.rs | Indexes.slots | `max` slots, entries expire after ttl_ms (cfg) | transcript index slots; registry follow-up (transcript caches belong to another job)
+devswarm_rt/reconcile.rs | Rt.edges | cfg.edge_cap edges (pop_front past it) | recent state edges; count-capped, not byte-capped (audit item 5, follow-up)
+schedule.rs | Scheduler.state | one entry per configured job (schedules.toml), fixed at load | job state
+schedule.rs | Scheduler.last | one entry per configured job | last-run state
+ghrt/repos.rs | NOTED | entries older than ttl dropped once past cap (arguments of note()) | recently noted working directories
+watch/mod.rs | Shared.polled | one entry per watched directory that falls back to polling; the watch set is bounded by the callers' own lists | realtime watch fallback
+watch/notify.rs | Events.dirs | one entry per watched directory | realtime watch translation table
+dsact/events.rs | Dirty.set | one entry per workspace marked dirty; drained once quiet for the debounce | DevSwarm auto-archive debounce
+dsact/events.rs | IN_FLIGHT | one id per in-flight workspace trigger, removed on drop | in-flight lock set
+jev/shared.rs | LANES | one lane per Jev home directory (a handful per machine) | Jev lanes (audit item 10, follow-up)
+jev/assist.rs | JevStats.calls | keyed by (backend, mode) labels from code | drained by the periodic flush
+jev/assist.rs | JevStats.verdicts | keyed by (integration id, verdict) | drained by the periodic flush
+jev/assist.rs | JevStats.latencies_us | one u64 per ask between flushes | drained by the periodic flush
+devswarm_rt/sources.rs | FsProbe.plans | one entry per workspace plan file; the probe lives for one reconcile | built once per probe
+
+# ---- fixed by the code or the shipped config -------------------------------------------------------------------------------
+daemon.rs | Shared.own | one string set at start | the engine version
+daemon.rs | Shared.rlimit | one string set at start | the rlimit report
+daemon.rs | Shared.storage | one short status word | the storage state
+daemon.rs | Shared.busy_since | one slot per worker (daemon.workers), fixed at start | per-worker busy marker
+defaults/load.rs | Lazy.memo | at most one entry per shipped config key, in the short-lived client | client-side parse memo
+discard.rs | LAST | one entry per call-site label (a &'static str written in the source) | rate limit of the discard log
+meshw/tick.rs | NONCE | one string, set once | the process nonce
+migrate/settings.rs | ALL | built once from the shipped migrate table | static table
+ops/settings.rs | ALL | built once from the shipped settings table (two statics of this name) | static tables
+ops/statusline/mod.rs | PARTIAL | one string for the segment being rendered | statusline scratch
+proc.rs | RUNNING | one pid per helper process running now, removed on exit | helper pid list for kill_all
+jev/testkit.rs | Fake.script | test double: filled by the test that builds it | not used by the daemon
+jev/testkit.rs | Fake.seen | test double | not used by the daemon
+jev/testkit.rs | Fake.timeouts | test double | not used by the daemon
+
+# ---- scoped to one request or one call on a worker thread ------------------------------------------------------------------
+deadline.rs | STAGED | staged writes of the request in progress, taken and flushed or dropped when it ends | per-request
+load.rs | REQUEST | one (event, session) pair, replaced per request | per-request
+memdiag.rs | REPORTS | one report per worker, cleared at each snapshot | per-snapshot
+script/host.rs | HELD | held handles of the script call in progress, capped by the host's script.lock_max_held, taken at the end of the call | per-call
+script/host_b3.rs | HEREDOC | one scratch parse state, replaced per call | per-call
+script/host_mesh.rs | OWED | cache writes owed by the call in progress, cleared at the start of each call | per-call
+script/host_proc.rs | SEEN | pids seen by the call in progress, cleared at the start of each call | per-call
+script/host_proc.rs | TERMED | pids terminated by the call in progress, cleared at the start | per-call
+telemetry/emit.rs | BATCH | events of the request in progress, taken at its end | per-request
+telemetry/mod.rs | STAGE | events staged by one request, taken or dropped at its end | per-request
+ops/mod.rs | OUT_CAPTURE | the output of one CLI command being captured, taken by the caller | per-command
+ops/mod.rs | ERR_CAPTURE | the error output of one CLI command being captured | per-command
+
+# ---- captured child output ------------------------------------------------------------------------------------------------
+dispatch/node.rs | Capture.buf | cut at mem.proc_output_max_bytes (mem.proc_output_marker appended) | output of the Node fallback child
+dsact/runner.rs | Drained.buf | cut at the cap passed to drain() (devswarm_act config), the rest is read and dropped | output of a DevSwarm action child

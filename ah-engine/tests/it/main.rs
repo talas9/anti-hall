@@ -67,6 +67,8 @@ mod l03_cli_parity;
 mod launcher_parity;
 mod mcp_reaper_job;
 mod mcp_reaper_parity;
+mod mem_guard;
+mod mem_restart_e2e;
 mod memory_soak;
 mod mesh_parity;
 mod migrate_parity;

@@ -83,7 +83,20 @@ impl Data {
 }
 
 fn leak_str(s: &str) -> &'static str {
+    crate::mem::note_leak(s.len());
     Box::leak(s.to_string().into_boxed_str())
+}
+
+/// Leak `v` for the life of the process (the values are `'static`), recording its size with the memory registry.
+fn leak_slice<T>(v: Vec<T>) -> &'static [T] {
+    crate::mem::note_leak(v.len() * std::mem::size_of::<T>());
+    Box::leak(v.into_boxed_slice())
+}
+
+/// Leak one entry, recording its size.
+fn leak_entry(e: Entry) -> &'static Entry {
+    crate::mem::note_leak(std::mem::size_of::<Entry>());
+    Box::leak(Box::new(e))
 }
 
 fn to_v(v: &toml::Value) -> Option<V> {
@@ -91,8 +104,8 @@ fn to_v(v: &toml::Value) -> Option<V> {
         toml::Value::Integer(n) => V::Int(*n),
         toml::Value::Boolean(b) => V::Bool(*b),
         toml::Value::String(s) => V::Str(leak_str(s)),
-        toml::Value::Array(a) => V::List(Box::leak(a.iter().map(to_v).collect::<Option<Vec<_>>>()?.into_boxed_slice())),
-        toml::Value::Table(t) => V::Table(Box::leak(t.iter().map(|(k, x)| Some((leak_str(k), to_v(x)?))).collect::<Option<Vec<_>>>()?.into_boxed_slice())),
+        toml::Value::Array(a) => V::List(leak_slice(a.iter().map(to_v).collect::<Option<Vec<_>>>()?)),
+        toml::Value::Table(t) => V::Table(leak_slice(t.iter().map(|(k, x)| Some((leak_str(k), to_v(x)?))).collect::<Option<Vec<_>>>()?)),
         _ => return None,
     })
 }
@@ -102,8 +115,8 @@ fn json_to_v(v: &Json) -> Option<V> {
         Json::Number(n) => V::Int(n.as_i64()?),
         Json::Bool(b) => V::Bool(*b),
         Json::String(s) => V::Str(leak_str(s)),
-        Json::Array(a) => V::List(Box::leak(a.iter().map(json_to_v).collect::<Option<Vec<_>>>()?.into_boxed_slice())),
-        Json::Object(t) => V::Table(Box::leak(t.iter().map(|(k, x)| Some((leak_str(k), json_to_v(x)?))).collect::<Option<Vec<_>>>()?.into_boxed_slice())),
+        Json::Array(a) => V::List(leak_slice(a.iter().map(json_to_v).collect::<Option<Vec<_>>>()?)),
+        Json::Object(t) => V::Table(leak_slice(t.iter().map(|(k, x)| Some((leak_str(k), json_to_v(x)?))).collect::<Option<Vec<_>>>()?)),
         Json::Null => return None,
     })
 }
@@ -475,7 +488,7 @@ fn finish(root: &Path, picks: Vec<Pick>, prev: Option<&Data>) -> Result<Data, De
             None => {
                 let v = e.get("value").ok_or_else(|| DefaultsError::new("value", &file, &key, "no `value`"))?;
                 let value = to_v(v).ok_or_else(|| DefaultsError::new("unsupported", &file, &key, "use integers, booleans, strings, arrays and tables"))?;
-                Box::leak(Box::new(Entry {
+                leak_entry(Entry {
                     key: leak_str(&key),
                     file: leak_str(&file),
                     value,
@@ -484,7 +497,7 @@ fn finish(root: &Path, picks: Vec<Pick>, prev: Option<&Data>) -> Result<Data, De
                     min: e.get("min").and_then(toml::Value::as_integer),
                     max: e.get("max").and_then(toml::Value::as_integer),
                     unit: e.get("unit").and_then(toml::Value::as_str).map(leak_str),
-                }))
+                })
             }
         };
         canon.insert(entry.key, text);
@@ -504,7 +517,7 @@ fn finish(root: &Path, picks: Vec<Pick>, prev: Option<&Data>) -> Result<Data, De
     }
     crate::hookcfg::check_shipped(&entries).map_err(|e| DefaultsError::new("hooks", "", "", e))?;
     check_rows(root, &entries).map_err(|e| DefaultsError::new("dispatch", "", "", e))?;
-    Ok(Data { root: root.to_path_buf(), entries: Box::leak(entries.into_boxed_slice()), index, canon, report: Report::default(), print: String::new() })
+    Ok(Data { root: root.to_path_buf(), entries: leak_slice(entries), index, canon, report: Report::default(), print: String::new() })
 }
 
 /// Read and validate the defaults of the plugin at `root`, falling back per file and per setting to the last-known-good
@@ -943,7 +956,7 @@ impl Lazy {
         let (ks, ke, bs, be) = self.lines[i];
         let body: Json = serde_json::from_str(&self.text[bs..be]).ok()?;
         let key = leak_str(&self.text[ks..ke]);
-        Some(Box::leak(Box::new(Entry {
+        Some(leak_entry(Entry {
             key,
             file: "",
             value: json_to_v(body.get("v")?)?,
@@ -952,7 +965,7 @@ impl Lazy {
             min: body.get("n").and_then(Json::as_i64),
             max: body.get("x").and_then(Json::as_i64),
             unit: None,
-        })))
+        }))
     }
 
     pub(super) fn find(&self, key: &str) -> Option<&'static Entry> {
@@ -977,7 +990,7 @@ impl Lazy {
 
     pub(super) fn all(&self) -> &'static [&'static Entry] {
         let all: Vec<&'static Entry> = (0..self.lines.len()).filter_map(|i| self.find(&self.text[self.lines[i].0..self.lines[i].1])).collect();
-        Box::leak(all.into_boxed_slice())
+        leak_slice(all)
     }
 }
 

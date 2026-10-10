@@ -11,25 +11,31 @@
 //! | `jevCachePeek(hash)` | the answer and confidence of the Jev cache entry under `hash`: see [`cache_peek`] |
 
 use crate::checks::emit_dedupe::scan_tail;
+use crate::mem::{BoundedCache, Spec};
 use rquickjs::{Ctx, Function, Object};
 use serde_json::json;
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 type Key = (String, u64);
 type Stamp = (u64, std::time::SystemTime);
 
-/// Last answer per (path, window): valid while the file keeps its size and modification time.
-static CACHE: OnceLock<Mutex<HashMap<Key, (Stamp, String)>>> = OnceLock::new();
-
-fn cache() -> std::sync::MutexGuard<'static, HashMap<Key, (Stamp, String)>> {
-    CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+/// Last answer per (path, window): valid while the file keeps its size and modification time. On the memory registry as
+/// `transcript_tail` (`mem.transcript_tail.*`).
+fn cache() -> &'static BoundedCache<Key, (Stamp, String)> {
+    static CACHE: OnceLock<BoundedCache<Key, (Stamp, String)>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        BoundedCache::new(
+            crate::mem::global(),
+            Spec::new("transcript_tail", "mem.transcript_tail_soft_bytes", "mem.transcript_tail_hard_bytes", "mem.transcript_tail_low_water_pct")
+                .with_entries("mem.transcript_tail_max_entries"),
+        )
+    })
 }
 
 /// (entries, bytes of cached answers) of the transcript-tail cache, for the memory snapshot.
 pub fn cache_usage() -> (usize, usize) {
     let c = cache();
-    (c.len(), c.iter().map(|((p, _), (_, r))| p.len() + r.len()).sum())
+    (c.len(), c.bytes())
 }
 
 fn stamp_of(path: &str) -> Option<Stamp> {
@@ -59,11 +65,7 @@ pub fn dedupe_tail(path: &str, bytes: f64) -> String {
         Ok(Some(t)) => json!({"size": t.size, "atts": t.atts.iter().map(|a| json!({"ts": a.ts, "els": a.els})).collect::<Vec<_>>()}).to_string(),
     };
     if let (Some(st), false) = (stamp, out.contains("unsure")) {
-        let mut c = cache();
-        if c.len() >= crate::defaults::num("script.transcript_cache_entries") as usize {
-            c.clear();
-        }
-        c.insert((path.to_string(), n), (st, out.clone()));
+        cache().insert((path.to_string(), n), (st, out.clone()), path.len() + out.len());
     }
     out
 }

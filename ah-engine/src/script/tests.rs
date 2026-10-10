@@ -1325,8 +1325,8 @@ fn interpreter_memory_stays_in_a_band_over_many_calls() {
     let mut names: Vec<String> =
         std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| e.file_name().to_string_lossy().strip_suffix(ext).map(str::to_string)).collect();
     names.sort();
-    let soft = defaults::num("script.runtime_soft_bytes") as i64;
-    let max = defaults::num("script.runtime_max_bytes") as i64;
+    let soft = defaults::num("mem.quickjs_soft_bytes") as i64;
+    let max = defaults::num("mem.quickjs_hard_bytes") as i64;
     let rounds = 6;
     let sizes = std::thread::spawn(move || {
         let e = env(&h);
@@ -1365,8 +1365,8 @@ fn interpreter_memory_stays_in_a_band_over_many_calls() {
 /// threads asking for the same pattern share one compiled program.
 #[test]
 fn the_shared_regex_cache_is_bounded_by_bytes_and_shared_across_threads() {
-    let budget = defaults::num("script.regex_cache_bytes") as usize;
-    let max = defaults::num("script.regex_cache_max") as usize;
+    let budget = defaults::num("mem.regex_soft_bytes") as usize;
+    let max = defaults::num("mem.regex_max_entries") as usize;
     // each pattern is distinct and long enough that the budget (not the entry count) is what binds first
     let long = |i: usize| format!("zzcache{i}\\s+{}", "(?:a|b)x".repeat(40));
     for i in 0..(max * 3) {

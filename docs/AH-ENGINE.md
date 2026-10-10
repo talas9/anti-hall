@@ -322,6 +322,17 @@ transcript file. When the resident-set cap trips (`diagnostics.mem_snapshot`) th
 allocator statistics, thread count, each worker's interpreter and regex cache, the transcript caches and the platform memory map.
 `ah-engine status --memory` prints the live figures, the latest snapshot and a summary of the log (top events and checks by total
 resident-set growth; a check's row counts every request it took part in, so rows overlap). Nothing here changes a decision.
+
+Memory budgets (issues #21 and #158, defaults file `mem.toml`). Every long-lived in-memory holder (the shared regex cache, each worker's
+QuickJS interpreter, the transcript-tail cache, the config values leaked on purpose) registers with one registry in `src/mem` and gets a
+soft and a hard limit from `mem.<holder>_soft_bytes` / `_hard_bytes` (and `_low_water_pct`); `mem.global_*` bounds the process. At the soft
+limit the holder is logged once and evicted (least recently used first) down to its low-water mark, with hysteresis, while requests keep
+being served. An insert that would cross the hard limit is refused (a cache miss; a script call fails open) and the holder is recycled; if
+the process total (or a holder that cannot shrink) then stays over its hard limit for `mem.global_restart_after_s`, the daemon drains and
+restarts cleanly with the reason in the event log. `ah-engine status --memory` lists each holder's bytes against its limits, the trigger
+counts and the global totals under `memory.budgets`. A guard test (`tests/it/mem_guard.rs`, allowlist `tests/mem_allowlist.txt`) fails the
+build when a long-lived collection appears outside `src/mem` without a stated bound. Helper-process output is cut at
+`mem.proc_output_max_bytes`.
 see [PRIVACY.md](../PRIVACY.md).
 
 **Go-live.** An engine check is trusted only after it has agreed with the Node hook it replaces. Before release the whole

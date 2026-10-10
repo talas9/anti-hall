@@ -82,5 +82,6 @@ files = [
     "guards_l12.toml",
     "codex_scripts.toml",
     "diagnostics.toml",
+    "mem.toml",
 ]
 extra_dir = "hooks.d"

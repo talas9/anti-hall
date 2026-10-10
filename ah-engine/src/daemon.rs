@@ -315,6 +315,7 @@ impl Shared {
             "heap_live_kb": heap.live / 1024,
             "heap_peak_kb": heap.peak / 1024,
             "allocs": heap.allocs,
+            "budgets": crate::mem::global().snapshot(),
             "components": {
                 "guard_state_entries": crate::checks::guardkit::state::entries(),
                 "hookcfg_session_counters": crate::hookcfg::session::global().len(),
@@ -1021,6 +1022,13 @@ fn watchdog(sh: Arc<Shared>) {
             let mem = limits::mem_kb();
             sh.rss_kb.store(rss, SeqCst);
             sh.rss_peak_kb.fetch_max(rss, SeqCst);
+            // the memory registry's process-wide check: shrink at the global soft limit, recycle at the hard one, and a clean
+            // restart (the same drain as the cap below, with the reason recorded) when it stays over the hard limit
+            if let Some(r) = crate::mem::global().tick(mem.saturating_mul(1024), now) {
+                health::log_event("memory", "breakdown", &sh.memory_line());
+                begin_drain(&sh, &crate::mem::restart_reason(&r), true);
+                continue;
+            }
             if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb {
                 health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &mem), ("cap", &cfg.rss_cap_kb)]));
                 // its own kind: the cap trip above is the one the crash-loop rule counts, this line only explains it
@@ -1188,6 +1196,7 @@ pub fn serve() {
     health::log_event("start", "-", &defaults::render("msg.log_start", &[("version", &crate::version()), ("pid", &std::process::id()), ("rlimit", &rlimit)]));
     crate::dispatch::sweep_stale_spool();
 
+    crate::mem::register_defaults_leak();
     let rules_path = paths::rules_file();
     let mut sh = Shared::new(cfg, &crate::version(), RuleSet::load(&rules_path).unwrap_or_default(), rules_path);
     sh.config = store;
