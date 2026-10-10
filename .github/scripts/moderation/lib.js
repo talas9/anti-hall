@@ -357,7 +357,7 @@ function buildPrompt(name, untrusted, context, cfg) {
 function chain(varValue, cfg) {
   const v = String(varValue || cfg.model.default_chain).toLowerCase().trim();
   if (v === 'none' || v === 'off' || v === '') return [];
-  return v.split(',').map((x) => x.trim()).filter((x) => cfg.model.providers.includes(x));
+  return v.split(',').map((x) => x.trim()).filter((x) => cfg.model.providers.includes(x) && (x !== 'copilot' || cfg.model.copilot_fallback === true));
 }
 
 // Daily model budget per workflow: counts today's actual MODEL CALLS (runs whose ai-model pick job

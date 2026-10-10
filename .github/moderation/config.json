@@ -166,7 +166,9 @@
   },
   "model": {
     "providers": ["claude", "copilot"],
-    "default_chain": "claude,copilot",
+    "default_chain": "claude",
+    "copilot_fallback": false,
+    "copilot_fallback_doc": "Copilot is the last model slot and is billed to the repository owner's monthly Copilot quota (it ran out on 2026-10-10). false = the chain never includes copilot, whatever AI_PROVIDER says; set true to allow it again.",
     "default_daily_cap": 50,
     "models_doc": "Model per job and provider slot. claude = alias used by the primary and secondary Claude tokens (aliases only, never a pinned version). copilot = Copilot CLI --model value, used only on the Copilot fallback; set repo variable COPILOT_MODEL (e.g. auto) to override all jobs when the Copilot plan allows only Auto. The 'default' row applies to any job not listed (strongest). Sources: Copilot CLI model ids https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference ; Codex model list: codex CLI models cache (codex-cli 0.160) and https://developers.openai.com/codex/models",
     "models": {
