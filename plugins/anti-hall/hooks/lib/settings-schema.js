@@ -548,6 +548,7 @@ const SECTIONS = [
     description: 'The optional ah-engine binary (native hook answers).',
     settings: [
       { key: 'bootstrap', type: 'boolean', default: true, env: 'AH_ENGINE_BOOTSTRAP', description: 'Download and install the sha256-pinned ah-engine binary from the GitHub Release on SessionStart (once per pinned release). Off: nothing is downloaded and the Node hooks answer everything. AH_ENGINE_BOOTSTRAP=0/1 overrides this key.' },
+      { key: 'autoUpdate', type: 'enum', values: ['off', 'stable', 'dev'], default: 'off', env: 'AH_ENGINE_AUTO_UPDATE', description: 'Update the engine binary on its own, at most once a day: off (default), stable (latest ah-engine-v* release) or dev (latest dev pre-release, which also syncs the plugin files of a live kit). Runs hooks/ah-update.sh --auto from the engine scheduler; verifies SHA256SUMS and the GitHub attestation; the previous binary is kept (ah-update.sh --rollback). One-shot: sh hooks/ah-update.sh --from FILE | --channel stable|dev | --rollback. URLs and timeouts: engine/ah-update.toml.' },
     ],
   },
   {

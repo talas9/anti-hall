@@ -123,15 +123,15 @@ The synthetic corpus is 84 labelled cases (`eval/inference-bench.js`), written b
 
 ### Hook latency
 
-The numbers below are for the Node hooks. With the optional engine installed most calls skip the Node start-up; its pre-release replay numbers are in [AH-ENGINE.md](AH-ENGINE.md#measured-results-pre-release) and are not part of these tables.
+The numbers below are for the Node hooks. With the engine running most calls skip the Node start-up; its pre-release replay numbers are in [AH-ENGINE.md](AH-ENGINE.md#measured-results-pre-release) and are not part of these tables.
 
 Hooks are small per call but not free. On a quiet machine a bare `node -e 0` costs about 16 to 18 ms of CPU and most hooks cost 22 to 35 ms. Claude Code runs a matcher's hooks in parallel, so a tool call costs about its slowest hook, while CPU adds up across hooks. The DevSwarm hooks exit before loading their libraries in a session that is not a DevSwarm Primary or child, which saves about 20 ms of CPU per Stop and about 25 ms per prompt. The measured tables, method and caveats are in [HOOK-LATENCY](HOOK-LATENCY.md).
 
-### The optional engine
+### The engine
 
-An optional small Rust program, `ah-engine`, can answer the hook calls without starting Node per call. The plugin's hooks are one
-thin trigger per event; when the engine binary is installed it decides natively what it can prove identical to the Node hook and
-defers the rest to Node (never weaker than Node), and with no binary the Node hooks run as before. The binary is downloaded once
+`ah-engine`, a small Rust program, is the core component: it answers the hook calls without starting Node per call. The plugin's hooks are one
+thin trigger per event; the engine decides natively what it can prove identical to the Node hook and defers the rest to Node (never
+weaker than Node). The Node hooks are a temporary fallback for a missing or failed binary and are removed in v1.0. The binary is downloaded once
 from the GitHub Release by a shell bootstrap and installed only if its sha256 equals the one pinned in the plugin's `ah-engine.lock`
 (the setting `engine.bootstrap` = false, or `AH_ENGINE_BOOTSTRAP=0`, skips it). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
 time with hot reload and fallbacks (edited, then last-known-good, then pristine, then Node), and `ah-engine config heal` restores a
@@ -145,7 +145,7 @@ Full description (install, go-live, rollback, failover, telemetry, what runs on 
 The short form is in the README; the full table is [PRIVACY.md](../PRIVACY.md). Nothing
 here goes beyond it: no analytics and nothing reported to anyone; one default-on update check (a tag-list request to
 `github.com/talas9/anti-hall`, no project data; off via `versionAlerts.antiHall` or
-`ANTIHALL_VERSION_ALERT=off`); a one-time download of the optional `ah-engine` binary from the GitHub Release
+`ANTIHALL_VERSION_ALERT=off`); a one-time download of the `ah-engine` binary from the GitHub Release
 (sha256-pinned in the plugin, nothing about you sent; off via the setting `engine.bootstrap` or `AH_ENGINE_BOOTSTRAP=0`); local-only engine usage counters
 (identifiers and counts, never content; `telemetry.enabled`; read with `ah-engine telemetry summary`); the Jev classifier, the semantic judge
 (`jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1`) and mesh message triage are off by default and send the
@@ -212,7 +212,7 @@ node install-devswarm-ingest.js --uninstall       # DevSwarm ingest daemon (com.
 ## Requirements
 
 **Node.js ≥ 22 on `PATH`.** Every hook and the statusline are pure Node (built-ins
-only), launched as `node <hook>.js` (directly, or by the optional `ah-engine` for the cases it hands back to Node). No `node` on the hook shell's `PATH` means Claude
+only), launched as `node <hook>.js` (directly, or by `ah-engine` for the cases it hands back to Node). No `node` on the hook shell's `PATH` means Claude
 Code silently skips every anti-hall hook — verify with `node --version`. No npm
 install, no native deps, no other config. There is intentionally no shell-based
 preflight. Install Node from <https://nodejs.org>.
@@ -1603,6 +1603,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |
 | `codexNudge.min` adv | `3` [1..] | `ANTIHALL_CODEX_NUDGE_MIN` | Minimum substantial code-file edits before the nudge fires. |
 | `engine.bootstrap` | `true` | `AH_ENGINE_BOOTSTRAP` | Download and install the sha256-pinned ah-engine binary from the GitHub Release on SessionStart (once per pinned release). Off: nothing is downloaded and the Node hooks answer everything. AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |
+| `engine.autoUpdate` | `off` [off, stable, dev] | `AH_ENGINE_AUTO_UPDATE` | Update the engine binary on its own, at most once a day: off (default), stable (latest release) or dev (latest dev pre-release; also syncs the plugin files of a live kit). Runs `hooks/ah-update.sh --auto`; the previous binary is kept (`--rollback`). URLs and timeouts: `engine/ah-update.toml`. |
 | `defects.defaultProj` | — | `ANTIHALL_DEFECT_PROJ` | Default project tag used when filing an anti-hall defect (max 64 chars). |
 | `procwatch.enabled` | `true` | `ANTIHALL_PROCWATCH` | procwatch (scheduled sweep + SessionStart/UserPromptSubmit/PreToolUse advisory): look for processes a Claude session left behind (marked by the environment Claude Code sets, owner session gone, class pattern, minimum age) and for agents with no output. Never touches a live session, an unmarked process or a system process. |
 | `procwatch.devServerMode` | `report` | `ANTIHALL_PROCWATCH_DEV_SERVER` | dev_server class of the process watch: dev servers and watchers an agent started. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |

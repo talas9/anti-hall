@@ -7,13 +7,17 @@ description: Install anti-hall for Claude Code or Codex, and check that it works
 
 ## Before you start
 
-- **Node.js 22 or newer** on your `PATH`. Check with `node --version`. The engine answers hooks
-  when it is installed, and every other hook is started as `node <hook>.js`; if the shell Claude Code uses cannot find `node`, the hooks
-  are skipped without an error.
+- **Node.js 22 or newer** on your `PATH` (no longer needed from v1.0). Check with
+  `node --version`. Today it backs the temporary compatibility fallback and a few helper
+  scripts; if the shell Claude Code uses cannot find `node`, the hooks that fall back to
+  it are skipped without an error.
 - **macOS or Linux.** WSL on Windows works (it runs the Linux build). Native Windows is
   not supported yet.
 
-The plugin fetches the Rust engine binary itself, checked against a pinned sha256, and needs `curl` or `wget` plus `tar` for that. If the download fails, Node runs the hooks as before. There are no npm packages to install.
+The plugin fetches the Rust engine binary itself, checked against a pinned sha256, and needs `curl` or `wget` plus `tar` for that. If the download fails, the temporary Node.js fallback answers until the engine is installed. There are no npm packages to install.
+
+!!! note "The engine binary"
+    It comes from this repository's GitHub Releases (`ah-engine-v*`) and is installed only if its sha256 equals the one pinned in the plugin's `ah-engine.lock`. A failed download or a mismatch installs nothing. Opt out with `AH_ENGINE_BOOTSTRAP=0`. Details, provenance and building it yourself: [Binary download and verification](../how-it-works/index.md#binary-download-and-verification).
 
 ## Claude Code
 

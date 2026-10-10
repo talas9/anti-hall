@@ -87,7 +87,7 @@ function psTaskSnapshot(lines) {
   return (todos || tasks.size) ? list : null;
 }
 
-function psCell(s) { return String(s || '').replace(/\|/g, '\\|').replace(/\s+/g, ' ').slice(0, ah.cfgNum('codex_handover.cell_max')); }
+function psCell(s) { return String(s || '').replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s+/g, ' ').slice(0, ah.cfgNum('codex_handover.cell_max')); }
 
 function psBuild(c) {
   var r = function (k, a) { return text.render(ah.cfg(k), a); }, L = [];

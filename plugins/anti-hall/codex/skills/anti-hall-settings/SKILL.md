@@ -244,7 +244,7 @@ new prompt, the Stop hook delivers the directive once instead. Before every comp
 `precompact-snapshot.js` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
 next to the handovers (it never blocks compaction).
 
-## Engine settings (the optional `ah-engine`)
+## Engine settings (`ah-engine`)
 
 The per-hook switches above (`guards.*`, `safety.*`, `context.*`, ...) are honoured by the engine and by the Node hooks alike, so
 `set` works the same with or without the engine. The engine's own tunables (limits, texts, rules, dispatch rows, `telemetry.enabled`,

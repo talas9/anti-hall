@@ -114,6 +114,7 @@ nav:
       - Install: start/install.md
       - Update: start/update.md
       - Uninstall: start/uninstall.md
+  - How it works: how-it-works/index.md
   - Features:
       - features/index.md
       - Guards and checks: features/guards.md
@@ -122,7 +123,6 @@ nav:
       - Skills: features/skills.md
       - Statusline: features/statusline.md
       - DevSwarm workspaces: features/devswarm.md
-      - Rust engine: features/engine.md
   - Settings:
       - Changing settings: settings/index.md
       - Settings reference: settings/reference.md

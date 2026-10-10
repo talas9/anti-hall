@@ -8,9 +8,9 @@
 > LLM judge), task-list discipline, and a TTL'd user-override escape hatch
 > (`~/.anti-hall/skip.json`). Optional parts: a two-line statusline, an MCP-orphan reaper,
 > the Jev classifier, and DevSwarm multi-workspace coordination (dormant unless DevSwarm is
-> in use). Hooks are Node built-ins, macOS + Linux, Node >= 22 on PATH (hooks silently no-op
-> without it); an optional Rust engine (`ah-engine`, downloaded once, sha256-pinned) answers most
-> hook calls without starting Node and defers the rest. Windows is not supported yet.
+> in use). The core is a Rust engine (`ah-engine`, downloaded once, sha256-pinned), macOS + Linux. Node >= 22 on PATH
+> is needed only for the temporary compatibility hooks, which are removed in v1.0 (the engine is then the
+> only runtime). Windows is not supported yet.
 
 anti-hall targets four failure modes of coding agents: eagerness (acting before
 investigating), hallucination (unverified facts stated as truth), fix-before-diagnosis, and
@@ -49,7 +49,7 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [Docs site](https://talas9.github.io/anti-hall/): the same docs as a searchable site (MkDocs, GitHub Pages).
 - [docs/REPO-PIPELINES.md](https://github.com/talas9/anti-hall/blob/main/docs/REPO-PIPELINES.md): every GitHub workflow, its trigger and whether it gates, and the repository policies.
 - [docs/CONTRACT-1.0.md](https://github.com/talas9/anti-hall/blob/main/docs/CONTRACT-1.0.md): the 1.0 compatibility contract (stable CLIs, hooks, settings, paths).
-- [docs/AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md): the optional ah-engine: install (pinned sha256), go-live and rollback, failover and self-heal, telemetry, what still runs on Node, pre-release measurements.
+- [docs/AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md): the ah-engine (the core component): install (pinned sha256), go-live and rollback, failover and self-heal, telemetry, what still runs on Node, pre-release measurements.
 - [docs/DEVELOPMENT.md](https://github.com/talas9/anti-hall/blob/main/docs/DEVELOPMENT.md): build, test and release the plugin and the engine.
 - [docs/HOOK-LATENCY.md](https://github.com/talas9/anti-hall/blob/main/docs/HOOK-LATENCY.md): measured hook latency (wall p50/p95, CPU).
 - [docs/E2E-TESTING.md](https://github.com/talas9/anti-hall/blob/main/docs/E2E-TESTING.md): end-to-end testing guide.
@@ -260,6 +260,7 @@ Codex: no `/config`, use the skill.
 | guards.gitAliasResolve / gitReusedMessageCheck (advanced, safety: --confirmed) | true / true | `ANTIHALL_GIT_ALIAS_RESOLVE`, `ANTIHALL_GIT_REUSED_MESSAGE_CHECK` |
 | guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
 | engine.bootstrap | true | `AH_ENGINE_BOOTSTRAP` (0 skips the one-time `ah-engine` binary download; overrides the setting) |
+| engine.autoUpdate | off | `AH_ENGINE_AUTO_UPDATE` (off, stable or dev: `hooks/ah-update.sh --auto` from the engine scheduler, at most daily; URLs and timeouts in `engine/ah-update.toml`) |
 | context.verifyFirstSession / verifyFirstOrchestration / verifyFirstTurn / verifyFirstSubagent / taskTracker / handoverResume / defectNudge | true | — |
 | maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`) |
 | versionAlerts.antiHall / claudeCli / devswarm | true | `ANTIHALL_VERSION_ALERT`, `ANTIHALL_CLAUDE_CLI_VERSION_ALERT`, `ANTIHALL_DEVSWARM_VERSION_ALERT` |
@@ -294,7 +295,7 @@ sub-guards.
 | Path | Written by / for |
 |---|---|
 | settings.json | the settings store |
-| ah-engine/ | the optional engine: `bin/ah-engine` (installed from the pinned release, `ah-engine.prev` kept), `bootstrap.log`, `defaults.lkg/` (last-known-good engine files), `hot.db`/`archive.db` (state and local-only telemetry), socket and health files |
+| ah-engine/ | the engine (core component): `bin/ah-engine` (installed from the pinned release, `ah-engine.prev` kept), `bootstrap.log`, `defaults.lkg/` (last-known-good engine files), `hot.db`/`archive.db` (state and local-only telemetry), socket and health files |
 | skip.json | per-guard TTL'd user override (git-guard must be named explicitly) |
 | jev.json | legacy Jev config (still read as a fallback; never deleted) |
 | update-sweep-state.json | per-migration repair markers (update, doctor, repair-on-reload) |
