@@ -183,7 +183,7 @@ value = "  • "
 doc = "The one stderr line when a probe timed out, was killed or could not run in the time left and nothing was blocked (the edit is allowed unchecked); {bin} is the interpreter, {ms} the asked budget."
 value = "anti-hall api-guard: API verification skipped (probe for \"{bin}\" timed out after {ms}ms budget) — edit allowed unchecked."
 
-# ---- shell-write parser (engine/logic/shell-writes.js) -------------------------------------------------------------------------
+# ---- shell-write parser (engine/logic/inc/shell-writes.js) -------------------------------------------------------------------------
 
 [shell_writes.big_len]
 doc = "A command longer than this is not parsed whole: its leading heredoc header (or its first shell_writes.head_len characters) is, with the heredoc body attached as the content (hooks/lib/shell-writes.js BIG_LEN)."
