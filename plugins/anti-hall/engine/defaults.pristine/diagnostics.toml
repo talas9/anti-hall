@@ -8,6 +8,10 @@
 doc = "Append one NDJSON line per served request to the memory log: time, request kind, event, the checks that ran, resident set and allocator figures before and after, and the size of the transcript file. Costs a few microseconds and one small append per request; turn it off once the memory question is closed."
 value = true
 
+[diagnostics.allocator]
+doc = "Allocator used when the engine daemon starts: jemalloc (default) or system. The client passes this as AH_ENGINE_ALLOCATOR before spawning the daemon; changing it requires a restart."
+value = "jemalloc"
+
 [diagnostics.mem_log_max_bytes]
 doc = "Size at which the memory log is rotated (the old file is kept once, as <name>.1, replacing the previous one), so the log never holds more than twice this."
 value = 4194304

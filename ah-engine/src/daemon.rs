@@ -312,6 +312,9 @@ impl Shared {
             "footprint_kb": limits::footprint_kb(),
             "mem_metric": defaults::text("daemon.mem_metric"),
             "mem_kb": limits::mem_kb(),
+            "allocator": crate::memstat::active_allocator().as_str(),
+            "allocator_config": self.cfg().effective.text("diagnostics.allocator"),
+            "allocator_stats": crate::memdiag::allocator_stats(),
             "heap_live_kb": heap.live / 1024,
             "heap_peak_kb": heap.peak / 1024,
             "allocs": heap.allocs,
@@ -379,6 +382,8 @@ impl Shared {
             "footprint_kb": limits::footprint_kb(),
             "mem_metric": defaults::text("daemon.mem_metric"),
             "mem_kb": limits::mem_kb(),
+            "allocator": crate::memstat::active_allocator().as_str(),
+            "allocator_config": self.cfg().effective.text("diagnostics.allocator"),
             "rss_peak_kb": self.rss_peak_kb.fetch_max(rss_now, SeqCst).max(rss_now),
             "memory": self.memory(),
             "load": self.load.report(health::now_ms()),
@@ -1076,23 +1081,62 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Option<std::fs::File>, 
     }
 }
 
-/// What a running daemon stands on: its state directory, the lock file it holds (by inode) and its executable.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canon(a) == canon(b)
+}
+
+fn real_home() -> Option<std::path::PathBuf> {
+    // SAFETY: getpwuid reads the system passwd entry for this uid; a null result is handled below.
+    let pwd = unsafe { libc::getpwuid(libc::getuid()) };
+    if pwd.is_null() {
+        return None;
+    }
+    // SAFETY: `pwd` is non-null and `pw_dir` is a NUL-terminated C string owned by libc for the life of this call.
+    let dir = unsafe { std::ffi::CStr::from_ptr((*pwd).pw_dir) }.to_string_lossy();
+    (!dir.is_empty()).then(|| std::path::PathBuf::from(dir.as_ref()))
+}
+
+fn live_state_dir(dir: &Path) -> bool {
+    let Some(home) = real_home() else { return false };
+    [
+        home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")),
+        home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.live_state_dir")),
+    ]
+    .iter()
+    .any(|p| same_path(dir, p))
+}
+
+/// What a running daemon stands on: its state directory, the lock file it holds (by inode), its socket, parent and executable.
 struct Footing {
     dir: std::path::PathBuf,
     lock: std::path::PathBuf,
     lock_ino: u64,
+    sock: Option<(std::path::PathBuf, u64)>,
+    parent: Option<libc::pid_t>,
     exe: Option<std::path::PathBuf>,
 }
 
 impl Footing {
     /// Why the daemon has lost its footing, if it has: the state directory or the executable is gone, or the lock file is
-    /// gone or replaced (a new daemon could then start beside this one).
+    /// gone or replaced (a new daemon could then start beside this one), or for non-live daemons the parent or socket is gone.
     fn lost(&self) -> Option<&'static str> {
         if !self.dir.is_dir() {
             return Some("state_dir_gone");
         }
         if std::fs::metadata(&self.lock).map(|m| m.ino()).ok() != Some(self.lock_ino) {
             return Some("lock_gone");
+        }
+        if let Some((sock, ino)) = &self.sock
+            && std::fs::symlink_metadata(sock).map(|m| m.ino()).ok() != Some(*ino)
+        {
+            return Some("socket_gone");
+        }
+        if let Some(parent) = self.parent {
+            // SAFETY: getppid takes no arguments and cannot fail.
+            if unsafe { libc::getppid() } != parent {
+                return Some("parent_gone");
+            }
         }
         if self.exe.as_ref().is_some_and(|e| !e.exists()) {
             return Some("binary_gone");
@@ -1102,7 +1146,7 @@ impl Footing {
 }
 
 /// Every `daemon.orphan_check_ms`, check the daemon's [`Footing`]; once lost, log why and drain (a clean exit). The idle exit
-/// (`daemon.idle_exit_s`) covers a daemon nobody talks to; this covers one whose files were removed under it.
+/// (`daemon.idle_exit_s`) covers a daemon nobody talks to; this covers one whose files, parent, or socket were removed under it.
 fn footing_watch(sh: Arc<Shared>, footing: Footing) {
     while !sh.draining.load(SeqCst) {
         std::thread::sleep(defaults::millis("daemon.orphan_check_ms"));
@@ -1130,6 +1174,9 @@ fn io_code(e: &std::io::Error) -> String {
 
 /// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
 pub fn serve() {
+    // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
+    // launcher dies during config/defaults loading still knows which parent it was started by.
+    let initial_parent = unsafe { libc::getppid() };
     let sock = paths::socket();
     let lock_path = paths::lock_for(&sock);
     // state dir + socket dir: private (0700), ours, not a symlink
@@ -1226,8 +1273,17 @@ pub fn serve() {
     {
         // the daemon's footing, as it is now: a test (or an uninstall) that removes the state dir or the binary under a
         // running daemon must not leave it running for hours with nothing that can reach or stop it
-        let footing =
-            Footing { dir: paths::dir(), lock: lock_path.clone(), lock_ino: lock.metadata().map(|m| m.ino()).unwrap_or(0), exe: std::env::current_exe().ok() };
+        let non_live = !live_state_dir(&paths::dir());
+        let sock_footing = non_live.then(|| std::fs::symlink_metadata(&sock).ok().map(|m| (sock.clone(), m.ino()))).flatten();
+        let parent = non_live.then_some(initial_parent);
+        let footing = Footing {
+            dir: paths::dir(),
+            lock: lock_path.clone(),
+            lock_ino: lock.metadata().map(|m| m.ino()).unwrap_or(0),
+            sock: sock_footing,
+            parent,
+            exe: std::env::current_exe().ok(),
+        };
         let s = sh.clone();
         std::thread::spawn(move || footing_watch(s, footing));
     }

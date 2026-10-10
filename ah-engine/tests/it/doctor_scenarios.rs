@@ -575,6 +575,44 @@ fn now_ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
 }
 
+fn pid_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only probes whether the pid exists and is visible to this user.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+}
+
+fn wait_for<F: FnMut() -> bool>(label: &str, timeout: std::time::Duration, mut f: F) {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if f() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("timed out waiting for {label}");
+}
+
+fn fast_orphan_checks(sc: &Sc) {
+    for dir in ["engine/defaults", "engine/defaults.pristine"] {
+        let f = sc.plugin.join(dir).join("engine.toml");
+        let mut text = fs::read_to_string(&f).unwrap();
+        let at = text.find("[daemon.orphan_check_ms]").unwrap();
+        let rel = text[at..].find("value = 2000").unwrap();
+        text.replace_range(at + rel..at + rel + "value = 2000".len(), "value = 100");
+        fs::write(&f, text).unwrap();
+    }
+}
+
+fn spawn_scratch_serve(sc: &Sc) -> std::process::Child {
+    let mut c = Command::new(BIN);
+    c.arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    sc.env(&mut c);
+    c.spawn().unwrap()
+}
+
+fn wait_ping(sock: &Path) {
+    wait_for("daemon ping", std::time::Duration::from_secs(10), || ah_engine::client::ping(sock).is_some());
+}
+
 #[test]
 fn dmn_02_down_and_dmn_01_up() {
     let mut sc = Sc::new();
@@ -602,6 +640,49 @@ fn dmn_02_down_and_dmn_01_up() {
     crate::common::stop_child(&sock, &mut child);
     d.has("ok", &["the engine daemon is running (pong"]);
     d.lacks("do not serve");
+}
+
+#[test]
+fn dmn_11_scratch_daemon_exits_when_parent_dies() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    fast_orphan_checks(&sc);
+    let pidfile = sc.root.join("serve.pid");
+    let mut parent = Command::new("sh");
+    parent
+        .arg("-c")
+        .arg(format!("{} serve >/dev/null 2>&1 & echo $! > {}; wait", BIN, pidfile.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    sc.env(&mut parent);
+    let mut parent = parent.spawn().unwrap();
+    wait_for("serve pid file", std::time::Duration::from_secs(5), || pidfile.is_file());
+    let pid: u32 = fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+    let sock = ah_engine::paths::socket_in(&sc.state());
+    wait_ping(&sock);
+    parent.kill().unwrap();
+    parent.wait().ok();
+    wait_for("daemon to exit after parent death", std::time::Duration::from_secs(6), || !pid_alive(pid));
+    if pid_alive(pid) {
+        // SAFETY: the pid came from the scratch daemon this test started.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    }
+}
+
+#[test]
+fn dmn_12_scratch_daemon_exits_when_socket_is_removed_and_doctor_lists_it() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    fast_orphan_checks(&sc);
+    let sock = ah_engine::paths::socket_in(&sc.state());
+    let mut child = spawn_scratch_serve(&sc);
+    wait_ping(&sock);
+    let d = sc.doctor(&[]);
+    d.has("warn", &["non-live ah-engine serve process", &child.id().to_string(), &sock.display().to_string()]);
+    fs::remove_file(&sock).unwrap();
+    wait_for("daemon to exit after socket removal", std::time::Duration::from_secs(6), || child.try_wait().unwrap().is_some());
+    crate::common::stop_child(&sock, &mut child);
 }
 
 #[test]

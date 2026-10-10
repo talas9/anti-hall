@@ -122,6 +122,8 @@ printf '%s\n' '{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"/tmp","
 cargo run -q --locked --features diag -- diag heap "$HOME/payloads.jsonl"
 ```
 
+`diagnostics.allocator` selects the daemon allocator at spawn time: `jemalloc` by default, or `system`. The client passes it to the daemon as `AH_ENGINE_ALLOCATOR`; the engine reads that variable once with `getenv` before the first allocation, so changing the key requires restarting the daemon. Use `system` when collecting platform allocator traces: on macOS run the daemon with `MallocStackLogging=1`, reproduce the hook, then inspect it with `malloc_history <pid> <address>`; on Linux run the same workload under `heaptrack -- ah-engine serve` (or start a scratch daemon through `heaptrack`) and open the resulting trace with `heaptrack_gui`. Under `system`, `status --memory` still reports the active allocator and counted Rust heap, while jemalloc stats are shown as `n/a`.
+
 After you change a command, setting, metric, impact kind or check, regenerate the reference. A test fails when `REFERENCE.md` differs from the generated text.
 
 ```sh

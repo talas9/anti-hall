@@ -959,6 +959,10 @@ value = "{file} names pid {pid}, which is now another program ({cmd}), not the e
 doc = "DMN-10. Placeholders: {n}, {pids}, {sock}."
 value = "{n} engine daemons are running; the extra ones (pids {pids}) do not serve {sock} - Fix: ah-engine stop, then kill the extra pids; the next hook starts one"
 
+[doctor_msg.daemon_non_live_serve]
+doc = "DMN-13. Placeholders: {pid}, {sock}."
+value = "non-live ah-engine serve process pid {pid} is using socket {sock}; it should exit when its parent dies or the socket is removed"
+
 
 [doctor_msg.crashloop]
 doc = "DMN-08. Placeholders: {secs}, {reason}."
