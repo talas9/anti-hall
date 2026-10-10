@@ -125,16 +125,26 @@ fn workspace_row<'a>(summary: &'a Option<J>, id: &str) -> Option<&'a J> {
     summary.as_ref()?.get("workspaces")?.get(id)
 }
 
+/// `inboundTotalOf(row)`: the count the watcher edge-triggers on, the summary's `directTotalFromOthers` (rows the workspace's own
+/// identity family did not send) when the writer published it, else the raw `total` of an older writer.
+fn inbound_total(row: &J) -> Option<f64> {
+    finite(row.get("directTotalFromOthers")).or_else(|| finite(row.get("total")))
+}
+
 /// `readPrimarySnapshot(home, hashes, id)`: the repo-key bucket first, the legacy bucket when the row is absent there.
 pub fn read_direct(home: &Path, hashes: Option<&Hashes>, id: &str) -> Part {
     let Some(h) = hashes.filter(|h| !id.is_empty() && !h.empty()) else { return unresolvable() };
     let a = h.repo_key.as_deref().and_then(|k| read_summary(home, k));
-    if let Some(t) = finite(workspace_row(&a, id).and_then(|w| w.get("total"))) {
-        return Part { ok: true, error: None, total: Some(t) };
+    if let Some(row) = workspace_row(&a, id)
+        && finite(row.get("total")).is_some()
+    {
+        return Part { ok: true, error: None, total: inbound_total(row) };
     }
     let b = h.fallback.as_deref().and_then(|k| read_summary(home, k));
-    if let Some(t) = finite(workspace_row(&b, id).and_then(|w| w.get("total"))) {
-        return Part { ok: true, error: None, total: Some(t) };
+    if let Some(row) = workspace_row(&b, id)
+        && finite(row.get("total")).is_some()
+    {
+        return Part { ok: true, error: None, total: inbound_total(row) };
     }
     Part { ok: true, error: None, total: None }
 }
