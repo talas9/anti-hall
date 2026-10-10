@@ -33,7 +33,7 @@
 // ENV:
 //   SI_HOME    clean plugin-free authed HOME (required)
 //   SI_MODEL   model under test + judge (default: haiku)
-//   SI_OUT     raw results path (default: eval/results-ship-it.json)
+//   SI_OUT     raw results path (default: tools/eval/results-ship-it.json)
 //   SI_TIMEOUT per-call ms (default 90000)
 //   SI_CONC    max concurrent claude -p (default 3)
 
@@ -43,7 +43,7 @@ import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const SKILL = path.join(ROOT, 'plugins', 'anti-hall', 'skills', 'ship-it', 'SKILL.md');
 const TASKS = JSON.parse(fs.readFileSync(path.join(__dirname, 'ship-it-tasks.json'), 'utf8'));
 

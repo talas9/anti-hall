@@ -144,7 +144,7 @@ sh <plugin-root>/scripts/ah-run.sh settings judge on|off|status
 itself; a key stored as a plugin option is visible to hooks only, so "not visible" means
 unverified from the CLI) and how to add one, and prints the cost: about $0.0001–0.001 and
 1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on
-`eval/inference-bench.js` (84 synthetic cases). With `jev.judgeBackend` `cli` it uses the local
+`tools/eval/inference-bench.js` (84 synthetic cases). With `jev.judgeBackend` `cli` it uses the local
 `claude -p` CLI on the user's Claude login instead of a key (about 5–6 s per turn end, measured). `status` shows on/off, key
 visibility and the model (`jev.judgeModel`). Relay that output; do not add claims about accuracy.
 
