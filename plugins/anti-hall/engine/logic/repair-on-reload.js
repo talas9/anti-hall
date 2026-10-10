@@ -1,6 +1,6 @@
 // check = "repair-on-reload" (SessionStart and UserPromptSubmit): the gates of hooks/repair-on-reload.js. Answers "no repair can
-// start" itself (switch off, subagent turn, skipped, nothing pending at the running version, cooldown); past all of them the
-// Node hook takes the lock and starts the detached repair, which the engine never does. Keys: engine/defaults/session_gates.toml
+// start" itself (switch off, subagent turn, skipped, nothing pending at the running version, cooldown); past all of them it asks
+// the engine's refresh job for the repair (engine/defaults/refresh.toml) instead of starting a detached process. Keys: engine/defaults/session_gates.toml
 // (session_gates.*, repair_reload.*).
 'use strict';
 
@@ -54,9 +54,10 @@ function decide(p, opts) {
     if (running === null) return 'defer';
     if (!repairPending(running)) return 'allow';
     if (inCooldown(version)) return 'allow';
-    // Stays Node's, by design: past this point the hook takes `repair-on-reload.lock`, starts `doctor.js --repair
-    // --migrations-only` as a DETACHED process, re-points the lock at the child's pid, stamps the cooldown only when the spawn
-    // started, and prunes old repair logs. The engine never starts background processes.
-    return 'defer';
+    // Past every gate the Node hook took `repair-on-reload.lock` and started `doctor.js --repair --migrations-only` detached.
+    // The engine asks its refresh job instead (probe `repair`): the job re-checks the cooldown, takes the same lock, runs the
+    // engine's own migrations-only repair bounded and stamps the cooldown once it started. Silent, as Node.
+    sess.requestRefresh('repair', { version: version, pluginRoot: root });
+    return 'allow';
   });
 }

@@ -1,0 +1,230 @@
+# ah-engine shipped defaults for the native session-cache refresh (v1.0 lane L06): `ah-engine refresh` and the `refresh`
+# scheduler job. It replaces the detached Node refresh scripts (hooks/version-alert-refresh.js, devswarm-version-refresh.js,
+# claude-cli-version-refresh.js) and the detached `doctor.js --repair --migrations-only` start of hooks/repair-on-reload.js.
+#
+# How it works. The SessionStart checks (engine/logic/version-alert.js, claude-cli-version.js, devswarm-version.js through
+# lib/72-session.js, repair-on-reload.js) decide, in plugin JavaScript, that a cache is stale or that a repair is due. Where
+# the Node hook started a detached process they now write a small request file under `refresh.request_dir` and answer
+# silently, as the Node hook did for that session. The scheduler job runs `ah-engine refresh` every `refresh.every_ms`; it
+# handles each request newer than the last one it handled: it runs the probe as a bounded subprocess, writes the cache the
+# check reads (same path and layout as the Node refresh scripts) or runs the repair, and records the outcome (event log line
+# and a telemetry event per action). Nothing is deleted except the run lock the job itself created. Format: see the header
+# of engine.toml.
+
+# ---- the command and the job -----------------------------------------------------------------------------------------
+
+[cmd.refresh]
+doc = "Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert), the Claude Code and DevSwarm CLI versions (the drift probes) and the reload repair (repair-on-reload), each as a bounded subprocess; `--force` runs every probe whether requested or not (never the repair unless requested). Prints one result per probe. The scheduler runs it every refresh.every_ms."
+value = { args = "[--force] [--home <dir>]", read_only = false, status = "implemented" }
+
+[job.refresh]
+doc = "Handle the session-cache refresh requests (L06): runs `ah-engine refresh --json` as a subprocess, so a timeout kills it and every probe it started. Off when refresh.every_ms is 0."
+value = { kind = "engine", action = "refresh", every_key = "refresh.every_ms", jitter_ms = 5000, timeout_ms = 900000, retries = 0, backoff_ms = 5000, backoff_max_ms = 60000, cooldown_ms = 60000, catch_up = "skip", persist = false }
+
+[refresh.every_ms]
+doc = "How often the refresh job looks for requests; a request waits at most this long (plus jitter). Cheap when there is none: it reads a few small files. 0 turns the job off."
+value = 60000
+env = "AH_ENGINE_REFRESH_MS"
+unit = "ms"
+
+# ---- requests, state and the run lock ---------------------------------------------------------------------------------
+
+[refresh.request_dir]
+doc = "Where the checks write their requests, relative to the home directory: one `<probe>.json` per probe, `{\"requestedAt\": <ms>, ...}`."
+value = ".anti-hall/refresh"
+
+[refresh.request_ext]
+doc = "The file ending of a request file after the probe name."
+value = ".json"
+
+[refresh.handled_file]
+doc = "The job's record of the newest request it handled per probe (`{\"<probe>\": <requestedAt>}`), relative to the request directory; a request at or below its record is done."
+value = "handled.json"
+
+[refresh.lock_file]
+doc = "The run lock (Node lock protocol), relative to the request directory, so a manual run and the job never handle a request twice."
+value = "run.lock"
+
+[refresh.lock_stale_ms]
+doc = "A run lock older than this is taken over (longer than the job's timeout)."
+value = 960000
+min = 1000
+unit = "ms"
+
+[refresh.lock_wait_ms]
+doc = "How long a run waits for a held run lock before giving up (the next tick tries again)."
+value = 0
+unit = "ms"
+
+[refresh.lock_step_ms]
+doc = "The pause between tries for the run lock."
+value = 50
+min = 1
+unit = "ms"
+
+[refresh.lock_reclaim_stale_ms]
+doc = "A takeover marker of the run lock older than this is taken over."
+value = 10000
+min = 1
+unit = "ms"
+
+[refresh.lock_release_tries]
+doc = "How many times a release tries to take the takeover marker."
+value = 20
+min = 1
+
+[refresh.lock_release_step_ms]
+doc = "The pause between those tries."
+value = 10
+min = 1
+unit = "ms"
+
+[refresh.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot (lock owner liveness)."
+value = 5
+
+[refresh.request_max_bytes]
+doc = "Largest request or record file the job reads; a larger one is ignored as unreadable."
+value = 65536
+min = 1024
+unit = "bytes"
+
+[refresh.poll_ms]
+doc = "How often the bounded runner checks whether a probe has finished."
+value = 20
+min = 1
+unit = "ms"
+
+[refresh.probe_timeout_ms]
+doc = "Longest one probe subprocess (`git ls-remote`, `<cli> --version`) may run; its process group is killed at the limit (the Node refresh scripts used the same bound)."
+value = 15000
+min = 100
+unit = "ms"
+
+[refresh.outcome_refreshed]
+doc = "The outcome word of a probe that wrote its cache or a repair that ran."
+value = "refreshed"
+
+[refresh.outcome_skipped]
+doc = "The outcome word of a probe with no new request."
+value = "skipped"
+
+[refresh.outcome_failed]
+doc = "The outcome word of a probe that wrote nothing (no answer, no network, a write refused)."
+value = "failed"
+
+[refresh.log_kind]
+doc = "The event-log kind of the refresh lines."
+value = "refresh"
+
+[refresh.msg_action]
+doc = "The event-log line of one action: what was done, to what, why, how long it took and its id."
+value = "action={action_id} probe={probe} target={target} outcome={outcome} reason={reason} latency_ms={ms}"
+
+[refresh.msg_busy]
+doc = "The result when another run holds the run lock."
+value = "another refresh run holds the lock; nothing handled"
+
+[refresh.msg_no_home]
+doc = "The error when no home directory is known."
+value = "refresh: no home directory (set HOME or pass --home)"
+
+[refresh.reason_requested]
+doc = "Reason word: a check asked for it."
+value = "requested"
+
+[refresh.reason_forced]
+doc = "Reason word: `--force`."
+value = "forced"
+
+[refresh.reason_no_output]
+doc = "Reason word: no source answered."
+value = "no-output"
+
+[refresh.reason_no_tag]
+doc = "Reason word: the sources answered but named no release tag."
+value = "no-tag"
+
+[refresh.reason_write_failed]
+doc = "Reason word: the cache or record could not be written."
+value = "write-failed"
+
+[refresh.reason_cooldown]
+doc = "Reason word: a repair ran at this version within the cooldown (live re-check)."
+value = "cooldown"
+
+[refresh.reason_locked]
+doc = "Reason word: another repair holds its lock."
+value = "locked"
+
+[refresh.reason_exit]
+doc = "Reason word: the repair exited non-zero or did not finish in time."
+value = "repair-failed"
+
+# ---- the probes -------------------------------------------------------------------------------------------------------
+
+[refresh.probes]
+doc = "The probes in the order a run handles them. `version`: the remote-latest anti-hall release tag (version-alert); `claude_cli` and `devswarm`: the installed CLI versions (drift probes); `repair`: the reload repair (repair-on-reload)."
+value = ["version", "claude_cli", "devswarm", "repair"]
+
+[refresh.git_program]
+doc = "The git program the version probe runs (resolved through PATH)."
+value = "git"
+
+[refresh.tag_args]
+doc = "The git arguments that list a remote's tags; the remote is appended."
+value = ["ls-remote", "--tags"]
+
+[refresh.tag_remote]
+doc = "The remote the version probe asks first (live network), as hooks/version-alert-refresh.js."
+value = "https://github.com/talas9/anti-hall"
+
+[refresh.tag_fallback_remote]
+doc = "The remote asked next, inside the local marketplace clone (session.marketplace_dir), when the first gave no output."
+value = "origin"
+
+[refresh.tag_re]
+doc = "A release tag line of `git ls-remote --tags` (a trailing CR is stripped first); group 1 is the tag. Peeled refs never match."
+value = 'refs/tags/(v?[0-9]+\.[0-9]+\.[0-9]+)$'
+
+[refresh.version_arg]
+doc = "The argument that makes a CLI print its version."
+value = "--version"
+
+[refresh.full_version_re]
+doc = "A full X.Y.Z version token (leading v optional; ASCII digits and word boundaries, as the JavaScript pattern of the Node scripts); exactly one distinct token in a stream is the version, more is ambiguous."
+value = '(?-u:\b)v?([0-9]+\.[0-9]+\.[0-9]+)(?-u:\b)'
+
+[refresh.partial_version_re]
+doc = "An X.Y token, used only when a stream has no full token; again exactly one distinct token or nothing."
+value = '(?-u:\b)v?([0-9]+\.[0-9]+)(?-u:\b)'
+
+[refresh.claude_cli_bins]
+doc = "The programs the Claude Code probe asks, in order (hooks/claude-cli-version-refresh.js)."
+value = ["claude"]
+
+[refresh.devswarm_bins]
+doc = "The programs the DevSwarm probe asks, in order (hooks/devswarm-version-refresh.js: the CLI, then the hivecontrol shim)."
+value = ["devswarm", "hivecontrol"]
+
+# ---- the reload repair ------------------------------------------------------------------------------------------------
+
+[refresh.repair_args]
+doc = "The engine arguments of the reload repair (the engine's port of `doctor.js --repair --migrations-only --quiet`); `--home` and, when the request names it, `--plugin-root` are appended."
+value = ["doctor", "--repair", "--migrations-only", "--quiet"]
+
+[refresh.repair_timeout_ms]
+doc = "Longest the reload repair may run; its process group is killed at the limit."
+value = 600000
+min = 1000
+unit = "ms"
+
+[refresh.repair_lock_file]
+doc = "The repair lock of hooks/repair-on-reload.js (Node lock protocol), relative to the anti-hall directory, so the engine and a Node repair never run together."
+value = "repair-on-reload.lock"
+
+[refresh.repair_lock_stale_ms]
+doc = "A repair lock older than this is taken over (longer than refresh.repair_timeout_ms, so a live engine repair is never taken over)."
+value = 660000
+min = 1000
+unit = "ms"
