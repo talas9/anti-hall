@@ -166,7 +166,7 @@ async function gate({ github, context, core }) {
   }
   if ((newItem || rerun) && !flagged) {
     const issue = rerun && item.kind === 'issue' ? (await github.rest.issues.get({ ...repo, issue_number: item.number })).data : null;
-    const followText = state.forced ? '' : `\n\nFOLLOW-UP FROM THE REPORTER:\n${item.comment.body}`;
+    const followText = state.forced || !item.comment ? '' : `\n\nFOLLOW-UP FROM THE REPORTER:\n${item.comment.body}`;
     const body = rerun ? `${issue ? issue.body || '' : item.body || ''}${followText}` : item.body;
     state.triage = item.kind === 'issue' ? L.triageRules({ title: item.title, body, labels: item.labels }, cfg) : null;
     state.similar = item.category === cfg.triage.qa_category ? [] : await similarIssues(github, repo, item, cfg);
