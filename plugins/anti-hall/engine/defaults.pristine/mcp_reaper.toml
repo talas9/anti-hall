@@ -169,10 +169,6 @@ value = "launchd-unverifiable"
 doc = "The audit log reason for a candidate that is a systemd service."
 value = "systemd-service"
 
-[mcp_reaper.node_module]
-doc = "The Node companion module the hook reuses for its signature test, relative to the plugin root. The Node hook does nothing when it cannot load it, so the engine acts only where it is present."
-value = "companion/mcp-reaper.js"
-
 
 # ---- the standalone reaper as an engine schedule job (port of companion/mcp-reaper.js + install-reaper.js) -------------------
 #

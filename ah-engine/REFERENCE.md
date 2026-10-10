@@ -5369,7 +5369,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.min_age_default_s` | `60` |  | s | The age floor in seconds: a process younger than this is never reaped. |
 | `mcp_reaper.min_age_env` | `ANTI_HALL_SESSION_END_REAPER_MIN_AGE_S` |  |  | The environment variable that sets the age floor in seconds (a number, read the way JavaScript's Number reads it; anything not a finite number of at least zero falls back to the default). |
 | `mcp_reaper.modelctx_re` | `@?modelcontextprotocol\b` |  |  | JavaScript regex source (case-insensitive) of the @modelcontextprotocol package scope, always a match. |
-| `mcp_reaper.node_module` | `companion/mcp-reaper.js` |  |  | The Node companion module the hook reuses for its signature test, relative to the plugin root. The Node hook does nothing when it cannot load it, so the engine acts only where it is present. |
 | `mcp_reaper.orphan_ppid` | `1` |  |  | The parent pid that marks an orphan: the kernel reparents a process whose parent died to PID 1. |
 | `mcp_reaper.reason_fields` | `reason, end_reason` |  |  | The payload fields that carry the reason, in order: the measured wire field first, the documented one as a fallback. |
 | `mcp_reaper.reason_launchd` | `launchd-managed` |  |  | The audit log reason for a candidate the macOS service manager owns. |

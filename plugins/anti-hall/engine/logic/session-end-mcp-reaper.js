@@ -81,13 +81,13 @@ function mrLog(rel, abs, fields) {
 
 function mrProc(p, action) { return { pid: p.pid, ppid: p.ppid, cmd: p.cmd, action: action }; }
 
-function decide(p, opts) {
+function decide(p) {
   if (!ah.settings.bool('mcp_reaper.setting')) return 'allow';
   var reason = p && typeof p === 'object' ? mrReason(p) : null;
   if (reason === null || ah.cfg('mcp_reaper.act_reasons').indexOf(reason) === -1) return 'allow';
-  // the Node hook does nothing when the companion module it reuses cannot be loaded; act only where it is present
-  var root = sess.pluginRoot(opts);
-  if (root === null || !ah.fs.isFile(root + '/' + ah.cfg('mcp_reaper.node_module'))) return 'defer';
+  // The Node hook reuses companion/mcp-reaper.js's signature test and does nothing when that module cannot be loaded. The engine
+  // carries the whole selection itself (mrInvariant and the host process probes), so it acts with or without the Node module: the
+  // two differ only on an install whose companion file is gone, where the engine still sweeps (the sweep is the feature).
   var home = spawn.osHome();
   if (home === null) return 'defer';
   var listed = ah.proc.list();
