@@ -46,21 +46,27 @@ impl Scratch {
         std::fs::write(d.join(format!("{probe}.json")), body).unwrap();
     }
     fn run(&self, extra: &[&str]) -> Value {
+        let out = self.raw(extra);
+        assert!(out.status.success(), "refresh failed: {}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+    }
+    fn raw(&self, extra: &[&str]) -> std::process::Output {
+        self.raw_with_path(extra, &format!("{}:/usr/bin:/bin", self.root.join("bin").display()))
+    }
+    fn raw_with_path(&self, extra: &[&str], path: &str) -> std::process::Output {
         let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
-        let out = Command::new(BIN)
+        Command::new(BIN)
             .arg("refresh")
             .args(extra)
             .arg("--json")
             .env_clear()
             .env("HOME", self.home())
-            .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("bin").display()))
+            .env("PATH", path)
             .env("AH_ENGINE_DIR", self.root.join("state"))
             .env("AH_ENGINE_PLUGIN_ROOT", plugin)
             .env("AH_ENGINE_NOSPAWN", "1")
             .output()
-            .unwrap();
-        assert!(out.status.success(), "refresh failed: {}", String::from_utf8_lossy(&out.stderr));
-        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+            .unwrap()
     }
     fn read(&self, rel: &str) -> Option<Value> {
         std::fs::read(self.home().join(rel)).ok().map(|b| serde_json::from_slice(&b).unwrap())
@@ -139,6 +145,16 @@ fn refresh_follows_the_node_fallbacks() {
     assert_eq!(outcome(&v, "version"), "failed", "{v}");
     assert!(s.read(".anti-hall/version-check.json").is_none());
     assert_eq!(outcome(&s.run(&[]), "version"), "skipped");
+}
+
+#[test]
+fn pending_refresh_probe_failure_returns_nonzero() {
+    let s = Scratch::new("failed");
+    s.request("version", "{\"requestedAt\":1}");
+    let out = s.raw_with_path(&[], &s.root.join("bin").to_string_lossy());
+    assert!(!out.status.success(), "pending version refresh without git must fail");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(outcome(&v, "version"), "failed", "{v}");
 }
 
 #[test]

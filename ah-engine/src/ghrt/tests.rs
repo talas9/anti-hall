@@ -676,6 +676,17 @@ fn a_whole_tick_through_the_shell_stub_ends_in_an_edge() {
 }
 
 #[test]
+fn gh_poll_job_returns_nonzero_when_recent_sessions_and_gh_fails() {
+    let fx = Fx::new("pollfail");
+    fx.repo("r1", Some(ACME));
+    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with_field("github_rt.gh", "argv", json!(["sh", "-c", "exit 42"]));
+    let run = GhRunner::new(&cfg);
+    let (v, code) = super::poll_once(&cfg, &run, T0 + 1000);
+    assert_eq!(code, 1, "{v}");
+    assert_ne!(v["gh"], "ok", "{v}");
+}
+
+#[test]
 fn an_owner_notification_runs_only_for_a_listed_kind_with_shell_metacharacters_removed() {
     let fx = Fx::new("notify");
     fx.repo("r1", Some(ACME));

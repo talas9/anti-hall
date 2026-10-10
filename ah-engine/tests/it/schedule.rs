@@ -14,17 +14,19 @@ const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 struct Env {
     dir: PathBuf,
     daemon: Option<Child>,
+    extra: Vec<(String, String)>,
 }
 
 impl Env {
     fn new(tag: &str, jobs: &str) -> Env {
-        let dir = PathBuf::from("/tmp").join(format!("ah-sch-{tag}-{}", std::process::id()));
+        let root = std::env::var_os("AH_ENGINE_IT_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+        let dir = root.join(format!("ah-sch-{tag}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("eng")).unwrap();
         std::fs::write(dir.join("rules.json"), r#"{"version":1,"rules":[]}"#).unwrap();
         std::fs::write(dir.join("eng").join("schedules.json"), jobs).unwrap();
-        Env { dir, daemon: None }
+        Env { dir, daemon: None, extra: Vec::new() }
     }
     fn sock(&self) -> PathBuf {
         self.dir.join("eng").join("e.sock")
@@ -38,6 +40,9 @@ impl Env {
             .env("AH_ENGINE_NOSPAWN", "1")
             .env("AH_ENGINE_TICK_MS", "20")
             .env("AH_ENGINE_TEST_HOOKS", "1");
+        for (k, v) in &self.extra {
+            c.env(k, v);
+        }
         c
     }
     fn start(&mut self) {
@@ -71,6 +76,9 @@ impl Env {
     fn next_ms(&self, job: &str) -> i64 {
         self.db().query_row("SELECT next_ms FROM schedule_state WHERE job = ?1", [job], |r| r.get(0)).unwrap()
     }
+    fn failures(&self, job: &str) -> i64 {
+        self.db().query_row("SELECT failures FROM schedule_state WHERE job = ?1", [job], |r| r.get(0)).unwrap()
+    }
 }
 
 impl Drop for Env {
@@ -85,6 +93,25 @@ fn now_ms() -> i64 {
 }
 
 const PROBE: &str = r#"{"jobs": {"probe": {"kind": "engine", "action": "noop", "every_ms": 300, "timeout_ms": 2000, "persist": true, "catch_up": "once"}}}"#;
+
+#[test]
+fn failed_refresh_subprocess_records_failure_and_scheduler_backoff() {
+    let jobs = r#"{"jobs": {"refresh": {"kind": "engine", "action": "refresh", "every_ms": 60000, "timeout_ms": 5000, "retries": 2, "backoff_ms": 500, "backoff_max_ms": 500, "persist": true, "catch_up": "once"}}}"#;
+    let mut e = Env::new("refresh-fail", jobs);
+    let empty = e.dir.join("empty-bin");
+    std::fs::create_dir_all(&empty).unwrap();
+    e.extra.push(("PATH".into(), empty.to_string_lossy().to_string()));
+    let req = e.dir.join("home").join(".anti-hall/refresh");
+    std::fs::create_dir_all(&req).unwrap();
+    std::fs::write(req.join("version.json"), r#"{"requestedAt":1}"#).unwrap();
+    e.start();
+    let r = e.json(&["schedule", "run", "refresh", "--json"]);
+    assert_eq!(r["status"], "failed", "{r}");
+    e.stop();
+    assert_eq!(e.runs("refresh").last().unwrap().3, "failed");
+    assert_eq!(e.failures("refresh"), 1);
+    assert!(e.next_ms("refresh") <= now_ms() + 700, "failure should schedule retry via backoff, not the normal interval");
+}
 
 #[test]
 fn a_job_runs_on_time_and_a_restart_never_runs_it_twice() {
