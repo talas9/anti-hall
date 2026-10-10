@@ -18,6 +18,7 @@
 //! command can be run instead.
 pub(crate) mod ahconfig;
 pub(crate) mod allow;
+pub(crate) mod codex;
 pub(crate) mod cwbaseline;
 pub(crate) mod defect;
 pub(crate) mod dispatch_report;
@@ -105,6 +106,16 @@ pub fn cmd_defect(p: &Parsed) -> i32 {
 /// `statusline`
 pub fn cmd_statusline(p: &Parsed) -> i32 {
     statusline::run(p)
+}
+
+/// `codex-limit-status`
+pub fn cmd_codex_limit_status(p: &Parsed) -> i32 {
+    codex::cmd_limit_status(p)
+}
+
+/// `codex-activate`
+pub fn cmd_codex_activate(p: &Parsed) -> i32 {
+    codex::cmd_activate(p)
 }
 
 /// `phase <set|advance|step|agents|update|clear> ...`
