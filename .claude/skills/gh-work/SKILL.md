@@ -209,7 +209,7 @@ The full release sequence is the `release` skill.
 | Signal | Source | Action |
 |---|---|---|
 | `status:triage` + `priority:*`/`size:*`/`area:*` | `triage.yml` (form fields) | Confirm or correct, then accept or defer (B). |
-| `triaged` + one comment | `issue-triage.yml` (model first pass) | Read the comment as a suggestion; verify against code before labelling. |
+| triage brief comment | `community.yml` (rules + model first pass) | Read the comment as a suggestion; verify against code before labelling. |
 | `area:*` on a PR | `triage.yml` + `.github/labeler.yml` (paths) | Nothing; fix `labeler.yml` if wrong. |
 | triage suggestion comment | moderation/triage workflows | Apply what the evidence supports, reply on what you reject, then remove the suggestion state. |
 | `moderation:review` | moderation workflow | A human-review flag (possible spam, abuse, duplicate). Read it; act only on clear evidence; never delete content, hide only spam/abuse with a comment why; remove the label once handled. |
