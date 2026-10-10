@@ -347,7 +347,7 @@ fn defect_archive_keeps_entries_it_cannot_date_or_move() -> R {
     let rep = |sym: &str, at: &str| {
         serde_json::json!({"t":"report","at":at,"class":"doc","sev":"p2","sym":sym,"proj":"pa","v":"0.1.0"}).to_string()
     };
-    let rule = |at: &str| serde_json::json!({"t":"rule","at":at,"status":"fixed","fixedIn":"0.1.1"}).to_string();
+    let rule = |at: &str| serde_json::json!({"t":"ruling","at":at,"status":"fixed","fixedIn":"0.1.1"}).to_string();
     write(seed.path(), ".anti-hall/defects/aaaaaaaaaaa1.jsonl", &format!("{}\n{}\n", rep("odd date", "2020-01-01T00:00:00.000Z"), rule("01/02/2020")))?;
     write(seed.path(), ".anti-hall/defects/aaaaaaaaaaa2.jsonl", &format!("{}\n{}\n", rep("old", "2020-01-01T00:00:00.000Z"), rule("2020-01-02T00:00:00.000Z")))?;
     let (o, h) = one(DEFECT, Some("defect"), Some(seed.path()), None, &[], &["archive", "--json"])?;
@@ -384,17 +384,20 @@ fn defect_reads_a_hand_edited_record_with_non_text_fields() -> R {
     write(
         store.path(),
         ".anti-hall/defects/history/ffffffffffff.jsonl",
-        &(serde_json::json!({"t":"backfill","at":1767225600000_i64,"source":"backfill","status":"fixed","fixCommit":"ffffffffffff",
+        &(serde_json::json!({"t":"backfill","at":"2026-01-11T00:00:00+00:00","source":"backfill","status":"fixed","fixCommit":"ffffffffffff",
             "subject":42,"component":"hooks/a","cause":"logic","fixedIn":"0.1.0","changelog":{"x":1}})
         .to_string()
             + "\n"),
     )?;
-    for a in [&["recurring", "--json"][..], &["recurring"][..], &["similar", "42", "--json"][..]] {
-        let (o, _h) = one(DEFECT, Some("defect"), Some(store.path()), None, &[], a)?;
-        assert_eq!(o.code, 0, "{a:?}: {o:?}");
+    let c = Same { script: DEFECT, verb: "defect", seed: Some(store.path()), cwd: None, env: &[], stdin: "" };
+    for a in [&["recurring"][..], &["similar", "hooks"][..]] {
+        same(&c, a)?;
     }
-    let (o, _h) = one(DEFECT, Some("defect"), Some(store.path()), None, &[], &["similar", "42", "--json"])?;
-    assert!(o.stdout.contains("\"subject\":\"42\""), "a number reads as its text: {}", o.stdout);
+    // intended difference: the JSON of a row whose text field was a number/object keeps no JS type (the typed record reads a
+    // number as its text and an object as absent); Node would carry the raw value on
+    let (o, _h) = one(DEFECT, Some("defect"), Some(store.path()), None, &[], &["similar", "hooks", "--json"])?;
+    assert_eq!(o.code, 0, "{o:?}");
+    assert!(o.stdout.contains("\"subject\":\"42\""), "{}", o.stdout);
     Ok(())
 }
 
