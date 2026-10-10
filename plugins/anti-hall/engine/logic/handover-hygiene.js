@@ -34,8 +34,8 @@ function hhProblem(code, detail, src) {
   if (src) p.src = src;
   return p;
 }
-function hhEsc(s) { return String(s).replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' '); }
-function hhLink(label, rel) { return '[' + String(label).replace(/([\[\]])/g, '\\$1') + '](' + encodeURI(rel) + ')'; }
+function hhEsc(s) { return String(s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' '); }
+function hhLink(label, rel) { return '[' + String(label).replace(/([\\\[\]])/g, '\\$1') + '](' + encodeURI(rel) + ')'; }
 function hhUniq(list) { var seen = {}, out = []; list.forEach(function (x) { if (!Object.prototype.hasOwnProperty.call(seen, x)) { seen[x] = 1; out.push(x); } }); return out; }
 function hhLabel(k) { return ah.cfg('handovers.labels')[k]; }
 function hhParse(text0) { try { return JSON.parse(text0); } catch (e) { return null; } }

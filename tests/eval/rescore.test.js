@@ -1,5 +1,5 @@
 'use strict';
-// tests/eval/rescore.test.js — unit tests for eval/rescore.js
+// tests/eval/rescore.test.js — unit tests for tools/eval/rescore.js
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { rescore, selftest } = require('../../eval/rescore.js');
+const { rescore, selftest } = require('../../tools/eval/rescore.js');
 
 // Synthetic records: 2 protocol (1 fab), 2 baseline (0 fab)
 // task 'a': protocol=fab, baseline=clean  → in task_level_differences
@@ -158,7 +158,7 @@ test('reporting CLI: warns on duplicate task_id+condition across aggregate files
     ],
   }));
 
-  const result = spawnSync(process.execPath, ['eval/rescore.js', a, b], {
+  const result = spawnSync(process.execPath, ['tools/eval/rescore.js', a, b], {
     cwd: path.join(__dirname, '../..'),
     encoding: 'utf8',
   });

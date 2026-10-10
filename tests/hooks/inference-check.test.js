@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { testHook } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
-const bench = require('../../eval/inference-bench.js');
+const bench = require('../../tools/eval/inference-bench.js');
 const ic = require('../../plugins/anti-hall/hooks/lib/inference-check.js');
 const jc = require('../../plugins/anti-hall/hooks/lib/judge-core.js');
 

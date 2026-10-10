@@ -6,7 +6,7 @@
 // useful for re-calibrating the judge rubric or trying a different judge model.
 //
 // USAGE
-//   ANTHROPIC_API_KEY=sk-... node eval/grade.js [results.json]
+//   ANTHROPIC_API_KEY=sk-... node tools/eval/grade.js [results.json]
 //
 // ENV
 //   EVAL_JUDGE_MODEL (default claude-haiku-4-5)
@@ -82,7 +82,7 @@ async function main() {
   const apiKey = process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim();
   if (!apiKey) {
     console.error('No ANTHROPIC_API_KEY set — refusing to fabricate gradings.');
-    console.error('Run: ANTHROPIC_API_KEY=sk-... node eval/grade.js [results.json]');
+    console.error('Run: ANTHROPIC_API_KEY=sk-... node tools/eval/grade.js [results.json]');
     process.exit(2);
   }
   const data = JSON.parse(fs.readFileSync(IN_PATH, 'utf8'));

@@ -38,7 +38,7 @@ To build the site locally:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install --require-hashes -r docs-requirements.txt
+.venv/bin/pip install --require-hashes -r docs/requirements.txt
 python3 -I tools/site_gen.py
 .venv/bin/mkdocs serve        # or: .venv/bin/mkdocs build --strict
 ```

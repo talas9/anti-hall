@@ -6,8 +6,16 @@ name: codeql
 # pull requests to main, pushes to main and weekly. Findings appear under Security > Code
 # scanning. Rust is analysed once Rust sources (Cargo.toml) are on the scanned
 # branch; until then the rust cell is a no-op.
+# Ready-to-enable triggers (dev included so the dev branch is scanned too). Uncomment them only
+# after switching default setup off: with both enabled, this workflow's SARIF upload is rejected.
 on:
   workflow_dispatch:
+  # pull_request:
+  #   branches: [main, dev]
+  # push:
+  #   branches: [main, dev]
+  # schedule:
+  #   - cron: "31 4 * * 1"
 
 permissions: {}
 
