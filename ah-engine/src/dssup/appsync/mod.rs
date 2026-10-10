@@ -47,15 +47,23 @@ fn app_db_arg(ctx: &Ctx) -> String {
     ident::app_db_path(ctx.home, &env).unwrap_or_else(|| defaults::text("mesh_write.app_db_off").to_string())
 }
 
+/// Why a Node snippet gave no answer, and whether that is because there is no Node on this machine at all (a decommissioned
+/// witness, which never holds the engine back) rather than a Node that failed (which does).
+struct NoAnswer {
+    why: String,
+    missing: bool,
+}
+
 /// One Node snippet of the duty, bounded; its last output line as JSON.
-fn ask_node(ctx: &Ctx, runner: &dyn Runner, key: &str) -> Result<Value, String> {
+fn ask_node(ctx: &Ctx, runner: &dyn Runner, key: &str) -> Result<Value, NoAnswer> {
     let d = defaults::raw("devswarm_sup.duty.app_sync");
     let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
     let r = node(runner, ctx, d.str_field(key), &[&app_db_arg(ctx), &ctx.now.to_string()], timeout);
     if !r.ok {
-        return Err(r.error.clone().unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { super::tick::cut(&r.stderr) }));
+        let why = r.error.clone().unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { super::tick::cut(&r.stderr) });
+        return Err(NoAnswer { why, missing: r.missing });
     }
-    serde_json::from_str(r.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default()).map_err(|e| e.to_string())
+    serde_json::from_str(r.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default()).map_err(|e| NoAnswer { why: e.to_string(), missing: false })
 }
 
 fn ids_of(v: &Value) -> Vec<String> {
@@ -141,8 +149,12 @@ pub fn pass_with(ctx: &Ctx, runner: &dyn Runner, o: Opts) -> Result<Pass, Defer>
     let planned: Vec<String> = marks.marks.iter().map(|m| m.id.clone()).collect();
     if o.strict && !dry {
         // everything Node must agree to is asked before anything is written
-        if !planned.is_empty() && !matches!(ask_node(ctx, runner, "mark_dry_snippet"), Ok(v) if ids_of(&v) == planned) {
-            return defer("mark-witness");
+        // (no Node on this machine at all: the engine's own plan stands; a Node that disagrees or fails hands the sync over)
+        if !planned.is_empty() {
+            let asked = ask_node(ctx, runner, "mark_dry_snippet");
+            if !matches!(&asked, Ok(v) if ids_of(v) == planned) && !matches!(&asked, Err(NoAnswer { missing: true, .. })) {
+                return defer("mark-witness");
+            }
         }
         // a retirement is executed by Node's own function: the verb is then Node's whole
         if !plan::plan_retire(ctx.home, &snap, ctx.now)?.ids.is_empty() {
@@ -150,25 +162,53 @@ pub fn pass_with(ctx: &Ctx, runner: &dyn Runner, o: Opts) -> Result<Pass, Defer>
         }
     }
     if !planned.is_empty() && !dry {
-        match if o.strict { Ok(json!({"ids": planned.clone()})) } else { ask_node(ctx, runner, "mark_dry_snippet") } {
-            Ok(v) if ids_of(&v) == planned => {
-                if o.strict {
-                    crate::meshw::mark_committed();
-                }
-                witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-mark", "match": true, "ids": planned.len()}));
-                for m in &marks.marks {
-                    match plan::write_marker(ctx.home, m, ctx.now) {
-                        plan::Wrote::Marked => {
-                            marked += 1;
-                            deleted += u64::from(m.deleted);
-                        }
-                        plan::Wrote::Exists => {}
-                        plan::Wrote::Failed(_) => errors += 1,
+        let asked = if o.strict { Ok(json!({"ids": planned.clone()})) } else { ask_node(ctx, runner, "mark_dry_snippet") };
+        // no Node on this machine: the engine marks on its own plan (a marker is never a delete and never an overwrite)
+        let alone = matches!(&asked, Err(NoAnswer { missing: true, .. }));
+        let agreed = alone || matches!(&asked, Ok(v) if ids_of(v) == planned);
+        if agreed {
+            if o.strict {
+                crate::meshw::mark_committed();
+            }
+            witness_log(
+                ctx,
+                &json!({"ts": ctx.now, "duty": "app_sync-mark", "match": if alone { Value::Null } else { json!(true) }, "ids": planned.len(),
+                    "node": if alone { json!(defaults::text("devswarm_sup.msg_no_node")) } else { Value::Null }}),
+            );
+            for m in &marks.marks {
+                let t0 = std::time::Instant::now();
+                let outcome = match plan::write_marker(ctx.home, m, ctx.now) {
+                    plan::Wrote::Marked => {
+                        marked += 1;
+                        deleted += u64::from(m.deleted);
+                        Some(defaults::text("devswarm_sup.as_action_marked"))
                     }
+                    plan::Wrote::Exists => None,
+                    plan::Wrote::Failed(_) => {
+                        errors += 1;
+                        Some(defaults::text("devswarm_sup.as_action_failed"))
+                    }
+                };
+                if let Some(outcome) = outcome {
+                    super::tick::record_action(
+                        ctx.home,
+                        &super::tick::Action {
+                            action: defaults::text("devswarm_sup.as_action_mark"),
+                            target: &m.id,
+                            inputs: json!({"deletedInApp": m.deleted, "witness": !alone}),
+                            outcome,
+                            reason: "",
+                            latency_ms: t0.elapsed().as_millis() as u64,
+                            now: ctx.now,
+                        },
+                    );
                 }
             }
-            Ok(v) => witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-mark", "match": false, "engine": planned, "node": v})),
-            Err(why) => witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-mark", "match": Value::Null, "error": why})),
+        } else {
+            match asked {
+                Ok(v) => witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-mark", "match": false, "engine": planned, "node": v})),
+                Err(n) => witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-mark", "match": Value::Null, "error": n.why})),
+            }
         }
     }
     let pending = (planned.len() as u64).saturating_sub(if dry { 0 } else { marked });
@@ -191,14 +231,14 @@ pub fn pass_with(ctx: &Ctx, runner: &dyn Runner, o: Opts) -> Result<Pass, Defer>
                         r_pending = r["pending"].as_u64().unwrap_or(0);
                         r_errors = r["errors"].as_u64().unwrap_or(0);
                     }
-                    Err(why) => {
-                        witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-retire", "match": Value::Null, "error": why}));
+                    Err(n) => {
+                        witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-retire", "match": Value::Null, "error": n.why}));
                         r_errors += 1;
                     }
                 }
             }
             Ok(v) => witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-retire", "match": false, "engine": retire.ids, "node": v})),
-            Err(why) => witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-retire", "match": Value::Null, "error": why})),
+            Err(n) => witness_log(ctx, &json!({"ts": ctx.now, "duty": "app_sync-retire", "match": Value::Null, "error": n.why})),
         }
     }
     let retired_summary = obj(vec![("retired", n(retired as f64)), ("pending", n(r_pending as f64)), ("errors", n(r_errors as f64))]);

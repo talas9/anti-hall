@@ -35,7 +35,11 @@ pub(super) fn legacy_of(ctx: &Ctx, runner: &dyn Runner, hash: &str) -> Result<Va
     if !super::fold::any(ctx.home, hash) {
         return Ok(json!({"eligible": false, "reason": "no-journal", "files": []}));
     }
-    node_fold_dry(ctx, runner, hash).map_err(Defer)
+    match node_fold_dry(ctx, runner, hash) {
+        // no Node on this machine: whether the journal may be folded is Node's merge check, so the report names nothing to fold
+        Err(why) if why == defaults::text("devswarm_sup.msg_no_node") => Ok(json!({"eligible": false, "reason": why, "files": []})),
+        r => r.map_err(Defer),
+    }
 }
 
 /// `summarize(r)` of a dry `pruneStore`, for one store.
@@ -65,6 +69,10 @@ pub(super) fn summary(ctx: &Ctx, runner: &dyn Runner, st: &OVal, s: &Settings, h
             if require {
                 return Err(Defer(format!("{}: {why}", defaults::text("devswarm_sup.rt_msg_no_witness"))));
             }
+        }
+        // no Node on this machine: the report phase writes only its report, from the engine's own plan
+        Witness::Absent(why) => {
+            witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "match": Value::Null, "node": why, "phase": "dry-run"}));
         }
     }
     let legacy = legacy_of(ctx, runner, hash)?;
@@ -196,10 +204,10 @@ pub(super) fn node_fold_dry(ctx: &Ctx, runner: &dyn Runner, hash: &str) -> Resul
     let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
     let r = node(runner, ctx, d.str_field("fold_dry_snippet"), &[hash], timeout);
     if !r.ok {
-        return Err(r
-            .error
-            .clone()
-            .unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { crate::dssup::tick::cut(&r.stderr) }));
+        if r.missing {
+            return Err(defaults::text("devswarm_sup.msg_no_node").into());
+        }
+        return Err(r.error.clone().unwrap_or_else(|| crate::dssup::tick::cut(&r.stderr)));
     }
     serde_json::from_str::<Value>(r.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default()).map_err(|e| e.to_string())
 }

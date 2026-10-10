@@ -74,9 +74,15 @@ pub fn run(at: &Place, st: &Settings, runner: &dyn Runner, id: &str, request: &s
     if done >= max {
         return refuse(defaults::render("devswarm_sup.msg_recover_max", &[("id", &id), ("n", &done), ("max", &max)]));
     }
+    // the rollback lever (`node_duties` names recover) hands the kill to Node's own CLI; on a machine with no Node the engine
+    // does NOT fall back to its own kill (the owner asked for it not to signal): it refuses before anything is recorded or touched
+    let rollback = defaults::list("devswarm_sup.node_duties").contains(&defaults::text("devswarm_sup.recover_duty"));
+    if rollback && !node_available(st) {
+        return refuse(defaults::text("devswarm_sup.msg_recover_rollback_no_node").into());
+    }
     // the request is recorded BEFORE the run: a run that dies half way is never repeated by the same request
     crate::dsact::exec::append_line(&ledger(state_dir), &json!({"ts": now, "request": request, "id": id}));
-    if defaults::list("devswarm_sup.node_duties").contains(&defaults::text("devswarm_sup.recover_duty")) {
+    if rollback {
         return run_node(at, st, runner, id, request, now);
     }
     let desc = desc.unwrap_or(Value::Null);
@@ -101,6 +107,16 @@ pub fn run(at: &Place, st: &Settings, runner: &dyn Runner, id: &str, request: &s
     let job = super::kill::Job { home, id, descriptor: &desc, now, max_recoveries: max, grace_ms: grace, allow_interactive: true };
     let result = super::kill::recover(&sys, &job, &target);
     (json!({"outcome": "handled", "id": id, "request": request, "target": target.to_json(wt), "result": result}), 0)
+}
+
+/// Whether the Node executable of the rollback can be found (an absolute `node_bin`, or one on the caller's PATH).
+fn node_available(st: &Settings) -> bool {
+    let bin = defaults::text("devswarm_sup.node_bin");
+    if bin.contains('/') {
+        return Path::new(bin).is_file();
+    }
+    let path = st.env.get(defaults::text("devswarm_ingest.env_path")).cloned().unwrap_or_default();
+    path.split(':').filter(|d| !d.is_empty()).any(|d| Path::new(d).join(bin).is_file())
 }
 
 /// Node's read-only `findTarget` for the same worktree and session, compared with `engine`. `Some(agree)`, or `None` when Node

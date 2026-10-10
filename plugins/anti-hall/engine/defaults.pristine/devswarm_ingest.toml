@@ -3,14 +3,13 @@
 # monitor` into the per-repo store - taken over by the engine so those units can be uninstalled. Format: see the header of
 # engine.toml. Every key can be overridden in the `devswarm_ingest` section of settings.json. Nothing here is compiled into the binary.
 #
-# THE SWITCH: `devswarm_ingest.mode`. `witness` (the default) leaves the drain to the Node daemons and the engine starts nothing.
-# `engine` makes the engine's daemon run one drain per project. While a Node daemon still holds a project's lock the engine waits for
+# THE SWITCH: `devswarm_ingest.mode`. `engine` (the default) makes the engine's daemon run one drain per project. While a Node daemon still holds a project's lock the engine waits for
 # it (a live holder's lock is never taken over, so a destructive queue is never read by two consumers) and takes over as soon as the
 # holder is gone. The go-live steps are in docs/AH-ENGINE.md, "DevSwarm supervisor and ingest cutover".
 
 [devswarm_ingest.mode]
-doc = "Who drains the DevSwarm native queue: witness (the Node ingest daemons do; the engine starts nothing) | engine (the engine's daemon runs one drain per project). Anything else reads as witness, so a typo never starts a second consumer. The engine never edits any settings file or any launchd / systemd unit."
-value = "witness"
+doc = "Who drains the DevSwarm native queue: engine (the default: the engine's daemon runs one drain per project; a live Node daemon holding a project's lock is waited for, never taken over) | witness (the Node ingest daemons do; the engine starts nothing). Anything else reads as witness, so a typo never starts a second consumer. The engine never edits any settings file or any launchd / systemd unit."
+value = "engine"
 
 [devswarm_ingest.mode_words]
 doc = "The words of devswarm_ingest.mode, in the order witness, engine."

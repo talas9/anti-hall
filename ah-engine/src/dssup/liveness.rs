@@ -292,6 +292,11 @@ fn pending_for(inv: &Inv, d: &Desc, self_id: Option<&str>) -> R<Pending> {
     Ok(Pending { pending, inbound: inbound > 0, not_draining, oldest: u.oldest_unread_age_ms })
 }
 
+/// The parent (Primary) id of the workspace at `wt`: `primaryWorkspaceId(resolveMainWorktree(wt) || wt)`, `None` when it is not a safe id.
+pub fn parent_id(wt: &str) -> R<Option<String>> {
+    self_id(wt)
+}
+
 /// `resolveSelfId(worktreePath)`: the Primary partition id of the descriptor's project, when it is a safe id.
 fn self_id(wt: &str) -> R<Option<String>> {
     let c = ident::resolve_context(wt, false)?;
@@ -442,8 +447,9 @@ pub fn compute(e: &Env, d: &Desc) -> R<Computed> {
     let reg = if t_mtime.is_none() { registration_ts(home, &d.id) } else { None };
     let never_launched_dead = reg.is_some_and(|r| r > 0.0 && r <= now && now - r > e.t.never_launched_ms);
     if (both_idle || never_launched_dead) && u.inbound {
-        // Node decides a stale workspace: suppressors, poke, escalate, the forced parent notice
-        return defer("stale");
+        // `staleSince: priorStaleSince || now` (a zero carries no start time in JavaScript either)
+        let since = prior_stale.filter(|x| *x != 0.0).unwrap_or(now);
+        return alive(last_outbound, Some(since), nudge_attempts, nudged_at, defaults::text("devswarm_sup.lv_status_stale"), &u);
     }
     alive(last_outbound, None, 0.0, None, defaults::text("devswarm_sup.lv_status_alive"), &u)
 }
@@ -501,6 +507,8 @@ pub struct Outcome {
     pub written: Vec<(String, String)>,
     /// The previous verdict text of each native workspace (what Node's own compute would have read), for the witness.
     pub prev: Vec<(String, Option<String>)>,
+    /// The workspaces whose new verdict is `stale`, with their `staleSince` (the forced parent notice looks at these).
+    pub stale: Vec<(String, Option<f64>)>,
 }
 
 /// The native part of one sweep. `dry` computes and reports without writing anything.
@@ -513,6 +521,11 @@ pub fn sweep(inv: &Inv, t: Thresholds, runner: &dyn Runner, dry: bool) -> Outcom
             Ok(c) => {
                 if !dry {
                     if c.cleared {
+                        // the escalation was premature: its notice is a mistake signal
+                        let acts = [defaults::text("devswarm_sup.esc_action"), defaults::text("devswarm_sup.esc_action_forced")];
+                        if let Some((action, id)) = super::tick::last_action(&inv.home, &acts, &d.id) {
+                            super::tick::record_mistake(&inv.home, &action, &id, defaults::text("devswarm_sup.lv_log_cleared_reason"), inv.now);
+                        }
                         super::verdict::append_log(
                             &inv.home,
                             inv.now,
@@ -527,6 +540,9 @@ pub fn sweep(inv: &Inv, t: Thresholds, runner: &dyn Runner, dry: bool) -> Outcom
                 }
                 out.prev.push((d.id.clone(), prev_text));
                 out.written.push((d.id.clone(), c.verdict.stringify()));
+                if c.status == defaults::text("devswarm_sup.lv_status_stale") {
+                    out.stale.push((d.id.clone(), finite(c.verdict.get(defaults::list("devswarm_sup.lv_keys")[2]))));
+                }
                 if needs_tail(inv, &d.id) {
                     out.tail.push(d.id.clone());
                 }
@@ -536,6 +552,107 @@ pub fn sweep(inv: &Inv, t: Thresholds, runner: &dyn Runner, dry: bool) -> Outcom
         }
     }
     out.drain = parked_notices(&inv.home);
+    out
+}
+
+// ---- the forced parent notice (sweepOnce: an urgent mesh unread on a stale workspace) -----------------------------------------
+
+/// `withinPostSpawnGrace(id)`: the descriptor was written less than `grace_ms` ago (a small negative age is clock jitter).
+fn within_grace(home: &Path, id: &str, now: f64, grace_ms: f64) -> bool {
+    if grace_ms.is_nan() || grace_ms <= 0.0 {
+        return false;
+    }
+    let Some(ts) = registration_ts(home, id) else { return false };
+    let age = now - ts;
+    if age < 0.0 {
+        return age >= -(defaults::num("devswarm_sup.lv_grace_skew_ms") as f64);
+    }
+    age < grace_ms
+}
+
+/// The project summary's entry for workspace `id` (`summaries/<repoKey>.json` `.workspaces[id]`), `None` when absent or unreadable.
+fn summary_entry(home: &Path, wt: &str, id: &str) -> Option<OVal> {
+    let key = ident::repo_key_for_worktree(wt).ok().flatten()?;
+    let p = devswarm_root(home).join(defaults::text("mesh_write.dir_summaries")).join(format!("{key}{}", defaults::text("mesh_write.json_suffix")));
+    let raw = String::from_utf8_lossy(&std::fs::read(p).ok()?).trim().to_string();
+    let sum = OVal::parse(&raw)?;
+    match sum.get(defaults::text("devswarm_sup.lv_summary_workspaces")) {
+        Some(w @ OVal::Obj(_)) => w.get(id).cloned(),
+        _ => None,
+    }
+}
+
+/// `isUrgentMesh(readMeshUrgency(d))`: the workspace's direct or broadcast unread tier is one of the urgent ones.
+fn urgent_mesh(entry: Option<&OVal>) -> bool {
+    let Some(w) = entry.filter(|w| w.truthy()) else { return false };
+    let tiers = defaults::list("devswarm_sup.lv_urgent_tiers");
+    defaults::list("devswarm_sup.lv_urgency_fields").iter().any(|f| match w.get(f) {
+        None | Some(OVal::Null) => false,
+        Some(v) => tiers.contains(&crate::dssup::ingest::import::js_string(v).as_str()),
+    })
+}
+
+/// Why the forced notice is suppressed for a stale workspace (Node's order: grace, archive-ready, idle-alive, the Primary's own
+/// row), or `None` when it is not.
+fn suppressed(inv: &Inv, d: &Desc, wt: &str, session: &str, entry: Option<&OVal>, grace_ms: f64) -> Option<&'static str> {
+    let now = inv.now as f64;
+    let words = defaults::list("devswarm_sup.lv_suppress_reasons");
+    if within_grace(&inv.home, &d.id, now, grace_ms) {
+        return Some(words[0]);
+    }
+    if entry.and_then(|w| w.get(defaults::text("devswarm_sup.lv_field_archive_ready"))) == Some(&OVal::Bool(true)) {
+        return Some(words[1]);
+    }
+    if session_alive(&inv.home, session).unwrap_or(false) {
+        return Some(words[2]);
+    }
+    if ident::primary_workspace_id(wt).is_ok_and(|p| p == d.id) {
+        return Some(words[3]);
+    }
+    None
+}
+
+/// One forced notice decision for a stale workspace: `(id, outcome)` where the outcome is a status word of the delivery, a
+/// suppression reason, `not-urgent`, or why no notice could be built.
+pub fn forced_notices(inv: &Inv, stale: &[(String, Option<f64>)], grace_ms: f64) -> Vec<(String, String)> {
+    let descs: Vec<Desc> = read_descriptors(&inv.home);
+    let mut out = Vec::new();
+    for (id, since) in stale {
+        let Some(d) = descs.iter().find(|d| &d.id == id) else { continue };
+        let (Ok(wt), Ok(session)) = (text_field(d, "mesh_write.field_worktree_path"), text_field(d, "mesh_write.field_session_id")) else { continue };
+        let entry = summary_entry(&inv.home, &wt, id);
+        if let Some(why) = suppressed(inv, d, &wt, &session, entry.as_ref(), grace_ms) {
+            out.push((id.clone(), why.to_string()));
+            continue;
+        }
+        if !urgent_mesh(entry.as_ref()) {
+            out.push((id.clone(), defaults::text("devswarm_sup.lv_not_urgent").to_string()));
+            continue;
+        }
+        let t0 = std::time::Instant::now();
+        let outcome = match super::verdict::notify_parent(&inv.home, &inv.env, &wt, id, *since, inv.now) {
+            Ok(dl) => {
+                // a duplicate or a retry of an already parked notice repeats every tick: only a new action is recorded
+                if super::verdict::is_new_action(&dl) {
+                    super::tick::record_action(
+                        &inv.home,
+                        &super::tick::Action {
+                            action: defaults::text("devswarm_sup.esc_action_forced"),
+                            target: id,
+                            inputs: serde_json::json!({"staleSince": since, "urgent": true}),
+                            outcome: dl.status,
+                            reason: "",
+                            latency_ms: t0.elapsed().as_millis() as u64,
+                            now: inv.now,
+                        },
+                    );
+                }
+                dl.status.to_string()
+            }
+            Err(why) => format!("{}: {why}", defaults::text("devswarm_sup.esc_skipped")),
+        };
+        out.push((id.clone(), outcome));
+    }
     out
 }
 
@@ -561,21 +678,46 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<super::witness::Jo
     let dry = super::setting(ctx.st, "devswarm_sup.set_dry_run_verdicts").as_bool().unwrap_or(false);
     let t = Thresholds::read(ctx);
     let inv = inv_of(ctx);
-    let out = sweep(&inv, t, runner, dry);
+    let mut out = sweep(&inv, t, runner, dry);
+    // Who acts on a stale workspace: with the engine owning poke and escalate, the engine also sends the forced parent notice;
+    // otherwise Node's own sweep pokes it, so the stale workspace goes to Node's tail as before.
+    let mut forced: Vec<(String, String)> = Vec::new();
+    if !dry && !out.stale.is_empty() {
+        if ctx.engine_pokes {
+            let grace =
+                super::setting(ctx.st, "devswarm_sup.set_post_spawn_grace_sec").as_f64().unwrap_or(0.0) * defaults::num("devswarm_sup.lv_ms_per_sec") as f64;
+            forced = forced_notices(&inv, &out.stale, grace);
+        } else {
+            for (id, _) in &out.stale {
+                if !out.tail.contains(id) {
+                    out.tail.push(id.clone());
+                }
+            }
+        }
+    }
+    // parked notices are retried on every sweep, whatever any workspace's verdict
+    let drained = if dry || !out.drain { super::verdict::Drained::default() } else { super::verdict::drain_notices(&inv.home, &inv.env, inv.now) };
     let mut detail = json!({
         "native": out.native.len(),
+        "stale": out.stale.len(),
+        "forced": forced.iter().map(|(id, o)| json!({"id": id, "outcome": o})).collect::<Vec<_>>(),
+        "drained": {"attempted": drained.attempted, "delivered": drained.delivered, "pending": drained.pending},
         "tail": out.tail,
         "full": out.full.iter().map(|(id, why)| json!({"id": id, "why": why})).collect::<Vec<_>>(),
         "drain": out.drain,
         "dryRun": dry,
     });
-    if !dry && (!out.tail.is_empty() || !out.full.is_empty() || out.drain) {
+    if !dry && (!out.tail.is_empty() || !out.full.is_empty()) {
         let spec = json!({"tail": out.tail, "full": out.full.iter().map(|(id, _)| id).collect::<Vec<_>>()}).to_string();
         let owner = if ctx.engine_pokes { defaults::text("devswarm_sup.owner_engine") } else { defaults::text("devswarm_sup.owner_node") };
         let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
         let r = super::tick::node(runner, ctx, d.str_field("tail_snippet"), &[owner, &spec], timeout);
         detail["node"] = if r.ok {
             super::tick::parse(&r.stdout)
+        } else if r.missing {
+            // no Node on this machine: the tail work (Jev blocker label, straying signals, deferred workspaces) is not done; the
+            // verdicts, the forced notices and the parked notices above are
+            json!({"skipped": defaults::text("devswarm_sup.msg_no_node"), "tail": out.tail.len(), "full": out.full.len()})
         } else {
             json!({"error": r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr)), "status": r.status, "timedOut": r.timed_out})
         };
