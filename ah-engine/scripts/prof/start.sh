@@ -10,13 +10,21 @@ mkdir -p $H/home/.claude $H/home/.anti-hall $H/sb
 cp -R $W/plugins/anti-hall $H/plugin
 sed -i '' "s|^value = \"\"\$|value = \"stages.ndjson\"|" $H/plugin/engine/defaults/profile.toml   # stage_log is the only empty-string value in the file
 sed -i '' "s|^value = 0\$|value = $JS|" $H/plugin/engine/defaults/profile.toml
+if [ -n "$SLOWOK" ]; then python3 - $H/plugin/engine/defaults/engine.toml <<'PY'
+import re,sys
+p=sys.argv[1]; s=open(p).read()
+for k in ('daemon.stuck_ms','daemon.stall_ms'):
+    s=re.sub(r'(\[%s\]\n(?:(?!\[).*\n)*?value = )\d+'%re.escape(k), r'\g<1>3600000', s, count=1)
+open(p,'w').write(s)
+PY
+fi
 for i in 0 1 2 3 4 5 6 7 8 9 10 11; do cp -R $HOME/.anti-hall/work/replay/sandbox-pristine $H/sb/sb$i; done
 cd $H
 cd "$H"; export HOME=$H/home
 # the hook client starts the daemon with the allocator tuning of daemon.malloc_conf; a bare `serve` would not have it
 if [ -z "$NOCONF" ]; then CONF="_RJEM_MALLOC_CONF=narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0 MALLOC_CONF=narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0"; else CONF=""; fi
 env -i HOME=$H/home PATH="$PATH" LANG=en_US.UTF-8 AH_ENGINE_DIR=$H/st AH_ENGINE_PLUGIN_ROOT=$H/plugin CLAUDE_PLUGIN_ROOT=$H/plugin \
-  AH_ENGINE_VERSION=prof ANTIHALL_INGEST_DRY_RUN=1 AH_ENGINE_RSS_CAP_KB=${RSS_CAP:-0} $CONF ${EXTRA_ENV:-} "$BIN" serve > $H/serve.log 2>&1 &
+  AH_ENGINE_VERSION=prof ANTIHALL_INGEST_DRY_RUN=1 AH_ENGINE_RSS_CAP_KB=${RSS_CAP:-0} $CONF ${EXTRA_ENV:-} $PREFIX "$BIN" serve > $H/serve.log 2>&1 &
 PID=$!
 echo $PID > $H/pid
 for i in $(seq 1 100); do [ -S $H/st/*.sock ] 2>/dev/null && break; ls $H/st 2>/dev/null | grep -q sock && break; sleep 0.1; done
