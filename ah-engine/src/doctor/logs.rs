@@ -22,11 +22,7 @@ fn log_dir(ctx: &Ctx) -> PathBuf {
 /// Every line of `file` that parses as JSON, in file order; a missing or unreadable file is empty.
 fn parse_file(file: &Path) -> Vec<Value> {
     let Ok(bytes) = std::fs::read(file) else { return Vec::new() };
-    String::from_utf8_lossy(&bytes)
-        .split('\n')
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .collect()
+    String::from_utf8_lossy(&bytes).split('\n').filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect()
 }
 
 /// The rank of a level name, `None` for anything that is not one.
