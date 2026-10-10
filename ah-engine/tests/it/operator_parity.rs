@@ -770,7 +770,14 @@ fn statusline_agrees_with_node() -> R {
     let two_hours_ago = (ah_engine::checks::jsport::date::now_ms() as i64 - 2 * 3_600_000).to_string();
     for start in [two_hours_ago.as_str(), "true", "[\"2020-01-01T00:00:00Z\"]", "\"garbage\"", "{\"a\":1}", "1e300"] {
         write(&r, ".claude/session.json", &format!("{{\"startTime\":{start}}}"))?;
-        let c = Same { script: "statusline/statusline.js", verb: "statusline", seed: Some(odd.path()), cwd: Some(&r), env: &[], stdin: r#"{"model":{"display_name":"M"}}"# };
+        let c = Same {
+            script: "statusline/statusline.js",
+            verb: "statusline",
+            seed: Some(odd.path()),
+            cwd: Some(&r),
+            env: &[],
+            stdin: r#"{"model":{"display_name":"M"}}"#,
+        };
         statusline_pair(&c, &[])?;
     }
     fs::remove_dir_all(r.join(".claude"))?;

@@ -1460,11 +1460,20 @@ output is not the plain exit-2 block, for example the JSON block `io.blockDecisi
 **What one process cannot say.** The host shows each hook's `additionalContext` as its own reminder, with its own size
 cap (10,000 characters on Claude, about 2,500 tokens on Codex); the dispatcher joins them into one value, which the
 host caps as a whole. A join of several hooks' contexts over the cap is therefore not delivered as separate values: the
-dispatcher logs `dispatch_context_over_cap`. On an event that cannot block it also prints a message on stderr and exits
-`dispatch.defer_exit` (75), asking its wrapper to run the Node hooks one by one as the host does (the host shows that
-non-blocking error, so it is never silent); only a plain answer (exit 0, no JSON block) is handed back, so a block or a
-decision is never lost to it. On a guard event it never exits 75: it delivers the merged answer, and the host spills the
-over-cap context itself. When one entry blocks, the advisories of the others are not shown; when several block, the
+dispatcher logs `dispatch_context_over_cap`. On an event that cannot block it then spills natively
+(`dispatch.spill_over_cap`, on by default): the contexts that fit stay inline whole and in hook order, the rest is written
+to a private file under `dispatch.spill_dir` in the state directory, and a last pointer line (`dispatch.msg_spill_pointer`)
+names it, so nothing is cut and no Node hook runs; the spill is logged (`dispatch_context_spilled`) and counted in telemetry
+as a `spill` event. It applies only when the join is exactly the hooks' contexts joined by `dispatch.context_joiner` and the
+file can be written; otherwise (and with the spill off) the dispatcher prints a message on stderr and exits
+`dispatch.defer_exit` (75), asking its wrapper to run the Node hooks one by one as the host does, or, with
+`dispatch.defer_to_node` 0, delivers the join for the host to spill. Only a plain answer (exit 0, no JSON block) is handed
+back, so a block or a decision is never lost to it. On a guard event it never exits 75: it delivers the merged answer, and
+the host spills the over-cap context itself. **No Node (`dispatch.defer_to_node` 0).** The infrastructure, spent-budget and
+panic paths that otherwise exit 75 answer by themselves: an event that cannot block skips its hooks (logged as
+`dispatch_no_node_skipped`, one stderr line), a guard event follows `dispatch.failure_mode` for the path (`budget` and
+`infra` closed, `panic` open by default; `dispatch_no_node_closed` / `dispatch_no_node_open`). Each answer is counted in
+telemetry as the hook `dispatcher-<path>`. When one entry blocks, the advisories of the others are not shown; when several block, the
 one block answered carries every block reason in table order (`dispatch.reason_joiner`), as the host would show the model
 each of them. An empty `additionalContext` (a quiet turn, or a context the injection gate cut) is left out, never printed
 empty. Results that cannot be

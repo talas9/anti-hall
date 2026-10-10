@@ -179,6 +179,15 @@ pub fn context_of(out: &str) -> Option<String> {
     v.get("hookSpecificOutput")?.get("additionalContext")?.as_str().map(str::to_string)
 }
 
+/// `out` with its `hookSpecificOutput.additionalContext` replaced by `ctx`, every other field and the key order untouched.
+pub fn with_context(out: &str, ctx: &str) -> Option<String> {
+    let Ordered::Obj(mut top) = parse_object(out)? else { return None };
+    let Some((_, Ordered::Obj(hso))) = top.iter_mut().find(|(k, _)| k == HSO_KEY) else { return None };
+    let (_, slot) = hso.iter_mut().find(|(k, v)| k == HSO_CTX && matches!(v, Ordered::Str(_)))?;
+    *slot = Ordered::Str(ctx.to_string());
+    Some(format!("{}\n", Ordered::Obj(top).to_json()))
+}
+
 /// The results delivered as one answer when [`combine`] found they cannot be expressed exactly (a conflict, or a join the
 /// wrapper cannot take), exit 0, nothing silently dropped that the host would have acted on. The host reads a hook's whole
 /// stdout as ONE JSON object or as plain text, so two JSON lines printed one after another would be read as text and every
