@@ -650,7 +650,9 @@ fn cases(verbs: &[String]) -> Vec<Case> {
         &["plan", "set", "ws-9", "--steps", two],
         "Plan",
         nothing,
-        true,
+        // no project store yet: Node creates one while resolving the id (`resolveTargetId`), which the engine leaves to Node
+        // (2d76160c; the sibling `plan show` case says the same)
+        false,
         "wt-child",
         vec![("DEVSWARM_BUILDER_ID", "ws-9".into())],
     );
