@@ -232,7 +232,8 @@ fn cursor_file(home: &Path, name: &str) -> PathBuf {
 /// The floor of the store namespace as `readerCursors.floorOf` reports it: the floor row when it exists, else the legacy
 /// floor computed dry (`#base` file or the shared pair, raised to the lowest per-instance file).
 pub fn store_floor(home: &Path, rd: &crate::mesh::MeshReader, id: &str, rows: &[crate::meshw::store::CursorRow]) -> R<i64> {
-    if let Some(f) = rows.iter().find(|r| r.ns == defaults::text("mesh_write.cursor_ns_store") && r.reader == defaults::text("mesh_write.cursor_floor_reader")) {
+    if let Some(f) = rows.iter().find(|r| r.ns == defaults::text("mesh_write.cursor_ns_store") && r.reader == defaults::text("mesh_write.cursor_floor_reader"))
+    {
         return Ok(f.value);
     }
     let json = defaults::text("mesh_write.json_suffix");
@@ -283,7 +284,8 @@ pub fn primary_cursor_rel(id: &str) -> String {
 pub fn seen_cursor_rel(caller: &str, sibling: &str) -> Option<String> {
     let sep = defaults::text("devswarm_recon.seen_sep");
     let ok = |id: &str| crate::meshw::idlock::is_safe_id(id) && !id.contains(sep);
-    (ok(caller) && ok(sibling)).then(|| ds(&format!("{}/{caller}{sep}{sibling}{}", defaults::text("mesh_write.dir_cursors"), defaults::text("mesh_write.json_suffix"))))
+    (ok(caller) && ok(sibling))
+        .then(|| ds(&format!("{}/{caller}{sep}{sibling}{}", defaults::text("mesh_write.dir_cursors"), defaults::text("mesh_write.json_suffix"))))
 }
 
 /// `heartbeats/<id>.json` relative to the home.

@@ -97,6 +97,16 @@ impl Git<'_> {
         let h = r.stdout.trim().to_string();
         (r.ok && !h.is_empty()).then_some(h)
     }
+    /// Is `head` on some remote branch (`git branch -r --contains`)? `None` when git cannot say.
+    pub fn pushed(&self, wt: &str, head: &str) -> Option<bool> {
+        if !Path::new(wt).exists() {
+            return None;
+        }
+        let mut args: Vec<&str> = defaults::list("devswarm_act.git_pushed_args");
+        args.push(head);
+        let r = self.run(wt, &args);
+        r.ok.then(|| !r.stdout.trim().is_empty())
+    }
     /// `git status --porcelain`: `(clean, reason)` as Node's `cleanFact`.
     pub fn clean(&self, wt: &str) -> (Option<bool>, Option<&'static str>) {
         if !Path::new(wt).exists() {
@@ -231,4 +241,17 @@ pub fn activity_ms(home: &Path, probe: &FsProbe, b: &AppBuilder, descs: &[&Desc]
 /// The repository key of a worktree, or `None` when it cannot be resolved.
 pub fn repo_key(worktree: &str) -> Option<String> {
     crate::meshw::ident::repo_key_for_worktree(worktree).ok().flatten()
+}
+
+/// A worktree's git directory: `<wt>/.git` itself, or the target of the `gitdir:` line a linked worktree has in its place.
+pub fn git_dir(wt: &str) -> Option<PathBuf> {
+    let spec = defaults::raw("devswarm_wire.git_dir_file");
+    let p = Path::new(wt).join(spec.str_field("file"));
+    if p.is_dir() {
+        return Some(p);
+    }
+    let line = std::fs::read_to_string(&p).ok()?;
+    let target = line.lines().next()?.strip_prefix(spec.str_field("prefix"))?.trim();
+    let t = Path::new(target);
+    Some(if t.is_absolute() { t.to_path_buf() } else { Path::new(wt).join(t) })
 }

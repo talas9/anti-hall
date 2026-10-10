@@ -279,9 +279,10 @@ test('Claude and Codex hooks.json: only the Claude verify-first-orch command car
   const inst = [];
   for (const g of Object.values(ANTI_HALL_HOOKS)) for (const x of g) for (const hk of x.hooks) inst.push(hk.command);
   assert.deepStrictEqual(inst.filter((c) => /--host=/.test(c)), []);
-  // PROTOCOL.md sits at the plugin root the installer's hook paths live under
-  const m = inst.find((c) => /verify-first-orch\.js/.test(c)).match(/"([^"]+)"/)[1];
-  assert.ok(fs.existsSync(path.join(path.dirname(path.dirname(m)), 'PROTOCOL.md')), 'install-codex output reaches PROTOCOL.md');
+  // the installer registers the thin wrapper (the engine/fallback does the per-hook dispatch); PROTOCOL.md sits at the plugin root it lives under
+  const m = inst[0].match(/"([^"]+ah-hook\.sh)"/);
+  assert.ok(m, 'install-codex output calls the thin ah-hook.sh wrapper');
+  assert.ok(fs.existsSync(path.join(path.dirname(path.dirname(m[1])), 'PROTOCOL.md')), 'install-codex output reaches PROTOCOL.md');
 });
 
 test('orchestration switch off: the compact core carries the M/N model-routing line instead', () => {

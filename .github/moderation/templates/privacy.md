@@ -1,0 +1,1 @@
+Hi @{{author}}, an automated check found what looks like private information in this post ({{rules}}). Please edit the post to remove it; edits on GitHub keep a history, so if it was a real secret or token, also revoke it. This message is automated and does not repeat the value.

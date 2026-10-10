@@ -164,6 +164,12 @@ function normalizeStaleBanner(text) {
   });
 }
 
+// A heartbeat younger than this, with a LIVE process holding the ingest lock, is a daemon hand-over (the new daemon's heartbeat is
+// fresh a few seconds before heartbeat pid and lock holder agree), not a stopped daemon: the banner stays quiet. A dead or missing
+// lock holder (the D25 case: a crash right after the last write) still shows it at once. Well above the heartbeat's own jitter;
+// daemonHealth()'s status (self-heal, doctor) is unchanged.
+const BANNER_GRACE_MS = 5 * 60 * 1000;
+
 const STALE_DEDUPE_KEY = 'devswarm-ingest-stale';
 const STALE_KEEPALIVE_TURNS = 50;
 
@@ -180,6 +186,11 @@ function staleBannerOnce(o) {
   if (!o.stale) {
     if (dd) dd.forget(base);
     return null;
+  }
+  if (Number.isFinite(o.beatTs) && Number.isFinite(o.now) && o.now - o.beatTs < BANNER_GRACE_MS) {
+    let live = false;
+    try { live = !!daemonHealth(o.home, o.repoKey, { now: o.now, io: o.io }).liveLock; } catch (_) { live = false; }
+    if (live) return null; // a hand-over in progress, not a stopped daemon
   }
   const banner = buildStaleBanner(o.beatTs, o.now, {
     disabledLabel: launchdDisabledLabel(o.repoKey, { platform: o.platform, io: o.io }),

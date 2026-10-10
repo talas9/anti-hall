@@ -93,6 +93,48 @@ const WRITE_IMPERATIVE_RE =
 const WRITE_PHRASE_RE =
   /\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch)\b|(?:^|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b/im;
 
+// A brief that tells the agent to commit (or to open a git worktree) is a writing brief however many read-only words it quotes
+// (dogfood 2026-10-09: a fix brief naming the check "read-only-shaped" was judged read-only). A negated commit ("never commit",
+// "do not push") is removed first, so a genuinely read-only brief stays read-only. Unlike READONLY_OVERRIDE_RE this is not overridable.
+const COMMIT_PHRASE_RE =
+  /\bgit\s+(?:commit|push|worktree\s+add|checkout\s+-b)\b|\bcommit(?:s|ting)?\s+(?:per|each|every|it\b|them\b|your\b|after|before|the\s+(?:fix|fixes|change|changes|work)|with\s+a)\b|\bcommit\s+(?:and|&)\s+push\b/i;
+const NEGATED_COMMIT_RE = /\b(?:do\s+not|don'?t|never|without|no)\s+(?:\w+\s+){0,3}?(?:git\s+)?(?:commit|push|worktree)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+)?(?:commit|push|worktree)\w*)*/gi;
+
+// A brief that clearly writes (commits files, pushes, creates issues/labels/branches/files, labels issues, edits files, or runs a
+// state-changing gh command) is a writing brief whatever read-only words it quotes (issue #55). Negations are removed first.
+// Mirrors engine model_routing.strong_write_re / negated_write_re.
+const STRONG_WRITE_RE = /\bgh\s+(?:issue|label|pr|release|secret|repo|milestone)\s+(?:create|edit|comment|close|merge|delete|set|reopen)\b|\bgh\s+api\b[^\n]{0,200}?(?:-X|--method)[\s=]*(?:POST|PATCH|PUT|DELETE)\b|\bcommit(?:s|ting)?\s+(?:(?:the|all|its|your|each|every|those|these|any)\s+)?(?:files?|changes?|fix(?:es)?|work|results?|edits?|patch(?:es)?)\b|\bpush(?:es|ing)?\s+(?:it|them|the\s+\w+|to\s+\S+|your\s+\w+|its\s+\w+|branch\w*)\b|\b(?:and|then)\s+push(?:es)?\b|\bcreat(?:e|es|ing)\s+(?:(?:a|an|the|new|any|its|missing|all|\d+)\s+)?(?:gh\s+|github\s+)?(?:issues?|labels?|milestones?|pull\s+requests?|prs?|branch(?:es)?|commits?|files?|tests?)\b|\blabel(?:s|ling)?\s+(?:(?:the|each|all|every|its)\s+)?(?:issues?|prs?|pull\s+requests?)\b|\b(?:edit|write|modify|update)s?\s+(?:(?:the|a|its|your|this|that|these|those)\s+)?(?:files?|code|tests?|source|config)\b|\b(?:edit|write|modify)s?\s+\S+\.(?:js|ts|rs|toml|md|json|py|sh|ya?ml)\b/i;
+const NEGATED_WRITE_RE = /\b(?:do\s+not|don'?t|never|without|no|not)\s+(?:\w+\s+){0,3}?(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*)*/gi;
+
+// The family an omitted model inherits (issue #55): the payload's parent model, else the newest assistant entry of the transcript
+// tail whose model names a known family. null when unknown. Mirrors engine mrInheritedTier (model_routing.session_model_*).
+const SESSION_MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
+function modelFamily(id) {
+  const m = String(id || '').toLowerCase();
+  return SESSION_MODEL_FAMILIES.find((f) => m.includes(f)) || null;
+}
+function inheritedTier(payload) {
+  for (const k of ['parent_model', 'model']) {
+    const v = payload && payload[k];
+    if (typeof v === 'string' && v.trim()) return modelFamily(v);
+  }
+  const tp = payload && typeof payload.transcript_path === 'string' ? payload.transcript_path : '';
+  if (!tp || !require('path').isAbsolute(tp)) return null;
+  const lines = require('./lib/transcript-tail.js').readTail(tp, 262144);
+  if (!lines) return null;
+  for (let i = lines.length - 1, seen = 0; i >= 0 && seen < 400; i--) {
+    if (!lines[i]) continue;
+    seen++;
+    if (lines[i].length > 1048576) continue;
+    let e;
+    try { e = JSON.parse(lines[i]); } catch (_) { continue; }
+    if (!e || typeof e !== 'object' || Array.isArray(e) || e.type !== 'assistant' || !e.message || typeof e.message !== 'object' || typeof e.message.model !== 'string') continue;
+    const f = modelFamily(e.message.model);
+    if (f) return f;
+  }
+  return null;
+}
+
 // Explicit read-only statements. They override the ambiguous/bare WRITE_RE and
 // imperative stems, but NOT WRITE_PHRASE_RE (saving a report file is still a write).
 const READONLY_OVERRIDE_RE =
@@ -488,7 +530,10 @@ function main() {
   let suppressHaikuRows = false;
   if (deployFloor !== 'off' && isDeployShaped(corpus)) {
     const floor = MODEL_RANK[deployFloor] ? deployFloor : 'sonnet';
-    if (modelOmitted) {
+    // an omitted model inherits the session's: at or above the floor it is no cheap model (only an unknown or lower tier is advised)
+    const inherited = modelOmitted ? inheritedTier(payload) : null;
+    const inheritOk = !!inherited && !!MODEL_RANK[inherited] && MODEL_RANK[inherited] >= MODEL_RANK[floor];
+    if (modelOmitted && !inheritOk) {
       advise(tip(
         'deploy/migration/secret-shaped spawn sets no explicit model.',
         "set model:'" + floor + "' or higher, never haiku.",
@@ -544,7 +589,7 @@ function main() {
   //   default (strict) : BLOCK UNCONDITIONALLY — no heuristic, NO exemption downgrade,
   //                      NO ~/.claude.json read ever.
   //   advisory opt-out : set ANTIHALL_MODEL_ROUTING=advisory to downgrade to advisory.
-  if (isMechanicalOnly && modelOmitted && isGenericAgent) {
+  if (!suppressHaikuRows && isMechanicalOnly && modelOmitted && isGenericAgent) { // a deploy-shaped spawn inheriting a model at or above the floor is never pushed to haiku
     if (strict) {
       if (consultModelRoutingJev(corpus, payload)) {
         advise(tip(
@@ -604,7 +649,8 @@ function main() {
   // nudging them toward Explore would recommend the wrong agent type (false-positive
   // guard added v0.37.x after a release agent was wrongly nudged due to "audit/find"
   // in its description).
-  const writeShaped = WRITE_PHRASE_RE.test(corpus) ||
+  const writeShaped = WRITE_PHRASE_RE.test(corpus) || COMMIT_PHRASE_RE.test(corpus.replace(NEGATED_COMMIT_RE, ' ')) ||
+    STRONG_WRITE_RE.test(corpus.replace(NEGATED_WRITE_RE, ' ')) ||
     (!READONLY_OVERRIDE_RE.test(corpus) && (WRITE_RE.test(corpus) || WRITE_IMPERATIVE_RE.test(corpus)));
   if (isGenericAgent && RESEARCH_RE.test(corpus) && !writeShaped) {
     advise(tip(

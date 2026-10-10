@@ -40,8 +40,8 @@ before(() => {
   fs.mkdirSync(lib); fs.mkdirSync(proj);
   git(lib, ['init', '-q']); fs.writeFileSync(path.join(lib, 'a'), 'a'); git(lib, ['add', 'a']); git(lib, ['commit', '-qm', 'i']);
   git(proj, ['init', '-q']); fs.writeFileSync(path.join(proj, 'a'), 'a'); git(proj, ['add', 'a']); git(proj, ['commit', '-qm', 'i']);
-  git(proj, ['submodule', 'add', '-q', lib, 'skyflutter']); git(proj, ['commit', '-qm', 's']);
-  sub = path.join(proj, 'skyflutter');
+  git(proj, ['submodule', 'add', '-q', lib, 'appflutter']); git(proj, ['commit', '-qm', 's']);
+  sub = path.join(proj, 'appflutter');
 });
 after(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
 

@@ -224,7 +224,7 @@ env = "AH_ENGINE_RSS_CHECK_MS"
 unit = "ms"
 
 [daemon.stuck_ms]
-doc = "A worker busy on one request for longer than this trips a drain and exit."
+doc = "A worker that makes no progress on its request for longer than this trips a drain and exit (a hung worker). Progress is a check starting or finishing and the script interpreter running, so a worker a loaded machine only slows down is not stuck; the time without progress is what a blocked host call (a lock, a child process, a disk sync) adds."
 value = 8000
 env = "AH_ENGINE_STUCK_MS"
 unit = "ms"
@@ -567,6 +567,14 @@ doc = "How often a running probe command is checked for completion."
 value = 2
 min = 1
 unit = "ms"
+
+[proc.git_programs]
+doc = "Program names (the last path part) the process runner treats as git: they get the proc.git_env variables."
+value = ["git"]
+
+[proc.git_env]
+doc = "Environment assignments (NAME=value) set on every git helper the engine runs. GIT_OPTIONAL_LOCKS=0 stops `git status`/`git diff` from taking .git/index.lock to refresh the index, so a helper killed at its timeout can never leave a stale lock that blocks the user's own git."
+value = ["GIT_OPTIONAL_LOCKS=0"]
 
 [proc.read_grace_ms]
 doc = "After a helper process (git, ps, vm_stat, a scheduled job) exits, the least time its output may take to reach end of file (it may also use what is left of the command's own timeout, as Node's spawnSync does); a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer."

@@ -218,6 +218,8 @@ function decide(p) {
   // session and no working directory, so Node falls back to its own working directory
   if (!jx.isObj(p)) return p === null ? 'allow' : 'defer';
   if (ah.settings.skipped(ttT('guard_name'))) return 'allow';
+  // A message from another Claude session (not a person typing) is no new user request: no task-capture directive for it.
+  if (typeof p.prompt === 'string' && ah.re.test(ah.cfg('task_tracker.peer_prompt_re'), 'i', p.prompt.slice(0, ah.cfgNum('task_tracker.peer_prompt_chars')))) return 'allow';
   var sh = spawn.stateHome();
   if (sh.ok === undefined) return 'defer';
   var home = sh.ok;

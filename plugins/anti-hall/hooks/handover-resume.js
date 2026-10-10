@@ -49,6 +49,7 @@
 require('./lib/judge-child-exit');
 
 const fs = require('fs');
+const { readOnlyGitEnv } = require('./lib/git-env.js');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
@@ -100,7 +101,7 @@ const GIT_TIMEOUT_MS = 1500;
 function freshnessLine(cwd, sinceMs) {
   const git = (args) => {
     try {
-      return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] });
+      return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], env: readOnlyGitEnv() });
     } catch (_) {
       return null;
     }

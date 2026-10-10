@@ -125,8 +125,9 @@ pub struct Shared {
     forced_timer: AtomicBool,
     /// ms since `started` at the last accept-loop iteration
     loop_beat: AtomicU64,
-    /// per worker: 0 = idle, else (ms since `started`) + 1 when it picked up the current request
-    busy_since: Vec<AtomicU64>,
+    /// per worker: 0 = idle, else (ms since `started`) + 1 at its last progress on the current request (picked up, a check
+    /// started or finished, the interpreter ran: [`crate::deadline::beat`]); the watchdog's stuck rule measures from it
+    busy_since: Vec<Arc<AtomicU64>>,
     stall_ms: AtomicU64,
     /// Last sampled resident set, KB.
     pub rss_kb: AtomicU64,
@@ -181,7 +182,7 @@ impl Shared {
             db_closed: AtomicBool::new(false),
             forced_timer: AtomicBool::new(false),
             loop_beat: AtomicU64::new(0),
-            busy_since: (0..workers).map(|_| AtomicU64::new(0)).collect(),
+            busy_since: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
             stall_ms: AtomicU64::new(0),
             rss_kb: AtomicU64::new(0),
             rss_peak_kb: AtomicU64::new(0),
@@ -876,6 +877,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
 }
 
 fn worker(sh: Arc<Shared>, idx: usize) {
+    crate::deadline::set_beat(sh.busy_since[idx].clone(), sh.started);
     loop {
         let conn = {
             let mut q = lk(&sh.queue);

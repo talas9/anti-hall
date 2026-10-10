@@ -1,4 +1,5 @@
 'use strict';
+const { readOnlyGitEnv } = require('../../hooks/lib/git-env.js');
 // anti-hall :: devswarm CLI — ROSTER-DIAG module (scripts/devswarm-lib/roster-diag.js).
 // Part of the devswarm.js split: a PURE MOVE out of scripts/devswarm.js (the CLI
 // dispatcher). No behaviour change. Dependencies are explicit requires of core.js and
@@ -1314,7 +1315,7 @@ function cmdReadyCheck(sha, flags, ctx) {
   const base = one(flags, 'base') || 'origin/main';
   const allowGlobs = csvList(flags, 'allow').map(globToRegExp).filter(Boolean);
   const watchDirs = csvList(flags, 'watch-deletions').map((d) => d.replace(/\/+$/, ''));
-  const git = (args) => spawnSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', timeout: gitTruth.GIT_TIMEOUT_MS });
+  const git = (args) => spawnSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', timeout: gitTruth.GIT_TIMEOUT_MS, env: readOnlyGitEnv() });
   const reasons = [];
   if (hasFlag(flags, 'fetch')) {
     try { git(['fetch', '--quiet']); } catch (_) { /* best-effort; the checks below just work off whatever refs exist */ }

@@ -76,11 +76,11 @@ test('BLOCK: SendMessage to a workspace-backed peer session -> exit 2, decision 
 test('BLOCK: same workspace-backed target with a " [ref]" bracket suffix still resolves and blocks', () => {
   const h = makeHome();
   try {
-    const wsCwd = path.join(h.home, '.devswarm', 'repos', '0', 'def456', 'inf-skyinform-admin-defects-3');
+    const wsCwd = path.join(h.home, '.devswarm', 'repos', '0', 'def456', 'inf-mailerapp-admin-defects-3');
     fs.mkdirSync(wsCwd, { recursive: true });
-    seedSession(h.home, '222.json', { name: 'inf-skyinform-admin-defects-3-d0', cwd: wsCwd });
+    seedSession(h.home, '222.json', { name: 'inf-mailerapp-admin-defects-3-d0', cwd: wsCwd });
 
-    const r = testHook(HOOK, sendMessagePayload('inf-skyinform-admin-defects-3-d0 [9b8fa3]'), {
+    const r = testHook(HOOK, sendMessagePayload('inf-mailerapp-admin-defects-3-d0 [9b8fa3]'), {
       home: h.home,
       env: DEVSWARM_ENV,
     });
@@ -264,9 +264,9 @@ test('ALLOW (f): peer session resolved but cwd is NOT a devswarm workspace path 
   try {
     const plainCwd = path.join(h.home, 'Projects', 'some-other-repo');
     fs.mkdirSync(plainCwd, { recursive: true });
-    seedSession(h.home, '555.json', { name: 'toolfox3-98', cwd: plainCwd });
+    seedSession(h.home, '555.json', { name: 'devboard3-98', cwd: plainCwd });
 
-    const r = testHook(HOOK, sendMessagePayload('toolfox3-98'), {
+    const r = testHook(HOOK, sendMessagePayload('devboard3-98'), {
       home: h.home,
       env: DEVSWARM_ENV,
     });
@@ -383,9 +383,9 @@ test('MUTANT KILL 2: removing the cwd-under-devswarm-repos check blocks a NON-wo
     // plain repo checkout, not a devswarm workspace.
     const plainCwd = path.join(h.home, 'Projects', 'some-other-repo-2');
     fs.mkdirSync(plainCwd, { recursive: true });
-    seedSession(h.home, '888.json', { name: 'toolfox3-99', cwd: plainCwd });
+    seedSession(h.home, '888.json', { name: 'devboard3-99', cwd: plainCwd });
 
-    const r = testHook(mutant, sendMessagePayload('toolfox3-99'), {
+    const r = testHook(mutant, sendMessagePayload('devboard3-99'), {
       home: h.home,
       env: DEVSWARM_ENV,
     });

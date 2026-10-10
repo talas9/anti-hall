@@ -296,8 +296,11 @@ fn read_end(path: &str, bytes: f64) -> Option<String> {
 
 /// Add the batch-6 functions to `ahHost`.
 pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
-    h.set("transcriptTasks", Function::new(c.clone(), |p: String, v: String, w: f64, wide: f64| transcript_tasks(&p, &v, w, wide))?)?;
-    h.set("agentScan", Function::new(c.clone(), |p: String, t: f64, ignore: Option<bool>| agent_scan(&p, t, ignore.unwrap_or(false)))?)?;
+    h.set("transcriptTasks", Function::new(c.clone(), |p: String, v: String, w: f64, wide: f64| super::host::unless_cut(transcript_tasks(&p, &v, w, wide)))?)?;
+    h.set(
+        "agentScan",
+        Function::new(c.clone(), |p: String, t: f64, ignore: Option<bool>| super::host::unless_cut(agent_scan(&p, t, ignore.unwrap_or(false))))?,
+    )?;
     h.set(
         "jevRecordOutcome",
         Function::new(c.clone(), |id: String, hash: String, outcome: String, source: Option<String>, project: Option<String>| {

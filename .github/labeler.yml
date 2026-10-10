@@ -1,0 +1,34 @@
+# Path-based area labels for pull requests (actions/labeler, run by workflows/pr-check.yml).
+# Labels are only added, never removed (sync-labels: false).
+area:engine:
+  - changed-files:
+      - any-glob-to-any-file: ['ah-engine/**', 'plugins/anti-hall/engine/**', 'plugins/anti-hall/ah-engine.lock', 'ah-engine.lock']
+area:devswarm:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'plugins/anti-hall/scripts/devswarm*'
+          - 'plugins/anti-hall/scripts/devswarm-lib/**'
+          - 'plugins/anti-hall/skills/devswarm/**'
+          - 'ah-engine/src/devswarm_rt/**'
+          - 'ah-engine/src/dsact/**'
+          - 'ah-engine/src/dssup/**'
+          - 'ah-engine/src/dswire/**'
+          - 'ah-engine/src/meshw/**'
+area:hooks:
+  - changed-files:
+      - any-glob-to-any-file: ['plugins/anti-hall/hooks/**', 'tests/hooks/**']
+area:statusline:
+  - changed-files:
+      - any-glob-to-any-file: ['plugins/anti-hall/statusline/**', 'ah-engine/src/ops/statusline/**', 'tests/statusline/**']
+area:codex:
+  - changed-files:
+      - any-glob-to-any-file: ['plugins/anti-hall/codex/**', 'plugins/anti-hall/.codex-plugin/**', 'tests/codex/**']
+area:ci:
+  - changed-files:
+      - any-glob-to-any-file: ['.github/**']
+area:docs:
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', 'README.md', 'plugins/anti-hall/README.md', 'llms.txt', 'AGENTS.md', 'CONTRIBUTING.md']
+area:release:
+  - changed-files:
+      - any-glob-to-any-file: ['CHANGELOG.md', 'RELEASING.md', 'ah-engine/RELEASING.md', 'plugins/anti-hall/.claude-plugin/plugin.json', 'package.json']

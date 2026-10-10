@@ -484,7 +484,7 @@ test('STALE-BUILD DOWNGRADE OFF: guards.stopHookVersionDowngrade=false / ANTIHAL
   } finally { h.cleanup(); }
 });
 
-// STALE-BUILD DOWNGRADE SCOPE (lane-review follow-up): the downgrade applies to
+// STALE-BUILD DOWNGRADE SCOPE (review lane follow-up): the downgrade applies to
 // the plain NEGLECT nag ONLY. Every fixture below ALSO carries a plain NEGLECT
 // backlog (ws1, 2 unread) so `blocking.length > 0` holds — without the
 // unanswered/truncation/escalation exclusions these passes WOULD be silenced.

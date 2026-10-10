@@ -1980,3 +1980,19 @@ value = "repoId"
 [mesh_write.legacy_cursor_seps]
 doc = "What follows the workspace id in the name of a legacy per-instance cursor file under `cursors/` (`<id>#inst-<short>.json`, `<id>#nd-<short>.json`)."
 value = ["#inst-", "#nd-"]
+
+[mesh_write.app_col_branch]
+doc = "The `builders` branch column (the archive verb's branch fallback and its side-effect report)."
+value = "branchName"
+
+[mesh_write.env_commit_mark]
+doc = "The environment variable by which the stable launcher names a marker file; the engine creates it at its commit point, so a launcher that has to stop the engine (time limit) can tell that the verb already acted and must not be run again in Node."
+value = "AH_ENGINE_COMMIT_MARK"
+
+[mesh_write.setting_send_multi]
+doc = "Where devswarm.sendMultiRecipient is read from (send accepts several recipients when it is not false)."
+value = { section = "devswarm", key = "sendMultiRecipient", env = "ANTIHALL_DEVSWARM_SEND_MULTI_RECIPIENT", option = "devswarm_send_multi_recipient", default = true }
+
+[mesh_write.quiet_fail_to]
+doc = "`send --quiet` line of one failed recipient of a multi-recipient send. Placeholders: {to}, {why}."
+value = "ok:false -> {to}: {why}"

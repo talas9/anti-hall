@@ -73,7 +73,9 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     let main = ident::resolve_context(&inv.cwd, false)?.main_worktree;
     let built = rosterrows::build(inv, &repo_key, &st, &sum, main.as_deref())?;
     if !json {
-        let all = all_flag || inv.env.get(defaults::text("devswarm_cli.rr_env_hide_archived")).map(String::as_str) == Some(defaults::text("devswarm_cli.rr_hide_archived_off"));
+        let all = all_flag
+            || inv.env.get(defaults::text("devswarm_cli.rr_env_hide_archived")).map(String::as_str)
+                == Some(defaults::text("devswarm_cli.rr_hide_archived_off"));
         let text = rosterrows::human_text(inv, &built.rows, all, inv.now as f64)?;
         return Ok(Answer { code: 0, stdout: format!("{text}\n"), effect: Effect::None });
     }

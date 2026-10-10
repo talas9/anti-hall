@@ -1,7 +1,7 @@
 name: Feature request
-description: Suggest a new guard, skill, setting or behaviour
+description: Suggest a new guard, skill, setting, engine capability or behaviour
 title: "feature: "
-labels: ["enhancement"]
+labels: ["enhancement", "type:feature", "status:triage"]
 body:
   - type: textarea
     id: problem
@@ -14,6 +14,7 @@ body:
     id: proposal
     attributes:
       label: Proposed behaviour
+      description: What should happen instead? Name the settings key it needs (every feature gets one).
     validations:
       required: true
   - type: dropdown
@@ -28,6 +29,63 @@ body:
         - Not sure
     validations:
       required: true
+  - type: checkboxes
+    id: parity
+    attributes:
+      label: Claude / Codex parity
+      options:
+        - label: The proposal covers both the Claude plugin and the Codex port, or says why one side does not apply
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - engine
+        - devswarm
+        - hooks
+        - statusline
+        - codex
+        - ci
+        - docs
+        - release
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: Maintainers may change it during triage.
+      options:
+        - P0 (critical, blocks users or a release)
+        - P1 (high, next release)
+        - P2 (normal)
+        - P3 (low, nice to have)
+      default: 2
+    validations:
+      required: true
+  - type: dropdown
+    id: estimate
+    attributes:
+      label: Estimate
+      description: Rough size of the work, including tests and docs.
+      options:
+        - S (up to 2 hours)
+        - M (up to 1 day)
+        - L (up to 3 days)
+        - XL (more than 3 days)
+    validations:
+      required: true
+  - type: input
+    id: hours
+    attributes:
+      label: Estimate in hours
+      description: Optional number, used for the roadmap board.
+      placeholder: "6"
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How we will know it is done (tests, settings key, docs rows).
   - type: textarea
     id: alternatives
     attributes:

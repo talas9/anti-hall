@@ -579,6 +579,46 @@ value = '(?:^|[\n\r\u2028\u2029]|[.;:!?]\s+|\b(?:then|and|also|please|to)\s+)(?:
 doc = "Explicit write phrase regex that suppresses the row-6 Explore advisory even when read-only override words are present."
 value = '\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch)\b|(?:^|[\n\r\u2028\u2029]|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b'
 
+[model_routing.commit_phrase_re]
+doc = "Regex (case-insensitive) of a brief that tells the agent to commit or open a git worktree: a writing brief however many read-only words it quotes, so it suppresses the row-6 Explore advisory and cannot be overridden by an explicit read-only statement. A negated commit is removed first (negated_commit_re)."
+value = '\bgit\s+(?:commit|push|worktree\s+add|checkout\s+-b)\b|\bcommit(?:s|ting)?\s+(?:per|each|every|it\b|them\b|your\b|after|before|the\s+(?:fix|fixes|change|changes|work)|with\s+a)\b|\bcommit\s+(?:and|&)\s+push\b'
+
+[model_routing.negated_commit_re]
+doc = "Regex (case-insensitive, global) of a negated commit, push or worktree instruction ('never commit', 'do not push'); removed from the brief before commit_phrase_re is tested."
+value = '''\b(?:do\s+not|don'?t|never|without|no)\s+(?:\w+\s+){0,3}?(?:git\s+)?(?:commit|push|worktree)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+)?(?:commit|push|worktree)\w*)*'''
+
+[model_routing.strong_write_re]
+doc = "Regex (case-insensitive) of a brief that clearly writes: commits files or changes, pushes, creates issues, labels, branches, PRs or files, labels issues, edits or writes files or code, or runs a state-changing gh command (gh issue/label/pr/release/secret create|edit|comment|close|merge|delete|set, gh api -X POST|PATCH|PUT|DELETE). A writing brief whatever read-only words it quotes, so it suppresses the row-6 Explore advisory. Negated forms are removed first (negated_write_re)."
+value = '''\bgh\s+(?:issue|label|pr|release|secret|repo|milestone)\s+(?:create|edit|comment|close|merge|delete|set|reopen)\b|\bgh\s+api\b[^\n]{0,200}?(?:-X|--method)[\s=]*(?:POST|PATCH|PUT|DELETE)\b|\bcommit(?:s|ting)?\s+(?:(?:the|all|its|your|each|every|those|these|any)\s+)?(?:files?|changes?|fix(?:es)?|work|results?|edits?|patch(?:es)?)\b|\bpush(?:es|ing)?\s+(?:it|them|the\s+\w+|to\s+\S+|your\s+\w+|its\s+\w+|branch\w*)\b|\b(?:and|then)\s+push(?:es)?\b|\bcreat(?:e|es|ing)\s+(?:(?:a|an|the|new|any|its|missing|all|\d+)\s+)?(?:gh\s+|github\s+)?(?:issues?|labels?|milestones?|pull\s+requests?|prs?|branch(?:es)?|commits?|files?|tests?)\b|\blabel(?:s|ling)?\s+(?:(?:the|each|all|every|its)\s+)?(?:issues?|prs?|pull\s+requests?)\b|\b(?:edit|write|modify|update)s?\s+(?:(?:the|a|its|your|this|that|these|those)\s+)?(?:files?|code|tests?|source|config)\b|\b(?:edit|write|modify)s?\s+\S+\.(?:js|ts|rs|toml|md|json|py|sh|ya?ml)\b'''
+
+[model_routing.negated_write_re]
+doc = "Regex (case-insensitive, global) of a negated write instruction ('never commit', 'do not push', 'don't create files', 'no edits or commits'); removed from the brief before strong_write_re is tested."
+value = '''\b(?:do\s+not|don'?t|never|without|no|not)\s+(?:\w+\s+){0,3}?(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*)*'''
+
+[model_routing.session_model_families]
+doc = "Model families an omitted model can inherit, matched in order as a substring of the session's model id (the payload's parent model, else the newest transcript assistant entry); each must be a model_rank key. An omitted model whose inherited family ranks at or above the deploy floor gets no deploy-floor advisory."
+value = ["fable", "opus", "sonnet", "haiku"]
+
+[model_routing.session_model_window_bytes]
+doc = "Bytes of the transcript tail read to find the session's model for an omitted-model spawn."
+value = 262144
+unit = "bytes"
+min = 4096
+max = 8388608
+
+[model_routing.session_model_line_max_bytes]
+doc = "The longest transcript line parsed when looking for the session's model (longer lines are skipped)."
+value = 1048576
+unit = "bytes"
+min = 1024
+max = 16777216
+
+[model_routing.session_model_max_lines]
+doc = "The newest transcript lines examined when looking for the session's model."
+value = 400
+min = 1
+max = 100000
+
 [model_routing.readonly_override_re]
 doc = "Explicit read-only statement regex that overrides ambiguous write words for row 6."
 value = '''\b(?:report\s+only|read[- ]?only|(?:do\s+not|don'?t|never)\s+(?:edit|modify|write|change|commit)|no\s+(?:edits|changes|writes))\b'''
@@ -1233,6 +1273,30 @@ value = '&&|\|\||;|\||\n'
 [coordinator_work.safe_max_len]
 doc = "Longest command, in UTF-16 units, that is tested for being provably not work."
 value = 4096
+
+[coordinator_work.bookkeeping_verbs]
+doc = "DevSwarm CLI verbs that only talk to the mesh store (heartbeat, mailbox, send, roster reads); a command made only of calls to these is not work."
+value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose"]
+
+[coordinator_work.bookkeeping_filters]
+doc = "Output filters that may follow a DevSwarm bookkeeping call in a pipe without making the command work."
+value = ["tail", "head", "wc"]
+
+[coordinator_work.bookkeeping_cli]
+doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the anti-hall devswarm.js launcher or `ah-engine mesh|devswarm`, then one of the verbs ({verbs})."
+value = '^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-engine\s+(?:mesh|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'
+
+[coordinator_work.bookkeeping_filter]
+doc = "Regex source of one output-filter segment ({filters} are the allowed filter words)."
+value = '^\s*(?:{filters})(?:\s+-?[0-9A-Za-z]+)*\s*$'
+
+[coordinator_work.bookkeeping_reject]
+doc = "Regex source of what disqualifies a command from the bookkeeping shortcut: command substitution, a backtick, a heredoc, a carriage return."
+value = '\$\(|`|<<|\r'
+
+[coordinator_work.bookkeeping_stderr_merge]
+doc = "The one redirect a bookkeeping command may carry; any other `>` disqualifies it."
+value = "2>&1"
 
 [coordinator_work.readonly_verbs]
 doc = "Verbs that only read; a command built from these is not work."

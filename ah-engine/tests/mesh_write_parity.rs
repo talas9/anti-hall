@@ -190,7 +190,7 @@ fn engine_verbs_match_node_byte_for_byte() {
             argv: vec![s("send"), s("--to"), s("nobody"), s("--message"), s("x")],
             stdin: None,
             extra: vec![],
-            native: false,
+            native: true,
         },
         Case { name: "send-no-target", cwd: "main", argv: vec![s("send"), s("--message"), s("x")], stdin: None, extra: vec![], native: true },
         Case {
@@ -239,7 +239,7 @@ fn engine_verbs_match_node_byte_for_byte() {
             argv: vec![s("send"), s("--to"), s("child-1,child-2"), s("--message"), s("x")],
             stdin: None,
             extra: vec![],
-            native: false,
+            native: true,
         },
         Case {
             name: "send-broadcast-question",

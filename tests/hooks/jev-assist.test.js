@@ -370,7 +370,7 @@ test('scrubSecrets: redacts Bearer tokens, known key prefixes, key= assignments,
   assert.strictEqual(scrubSecrets('key is sk-' + 'FAKEFAKEFAKEFAKE1234'), 'key is [REDACTED_KEY]');
   assert.strictEqual(scrubSecrets('ghp_FAKEFAKEFAKEFAKE1234567890'), '[REDACTED_KEY]');
   assert.strictEqual(scrubSecrets('api_key: "abcd' + '1234efgh"'), 'api_key: [REDACTED]'); // separator kept (v0.108.0 redactor)
-  assert.strictEqual(scrubSecrets('contact mohammed@example.com for help'), 'contact [REDACTED_EMAIL] for help');
+  assert.strictEqual(scrubSecrets('contact alice@example.com for help'), 'contact [REDACTED_EMAIL] for help');
   assert.strictEqual(scrubSecrets('token was ' + 'a'.repeat(40)), 'token was [REDACTED_TOKEN]');
 });
 
@@ -895,10 +895,10 @@ test('recordOutcome: an explicit project wins over the cwd-basename fallback', a
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withEnv({ HOME: h.home }, async () => {
       const { recordOutcome } = freshLib();
-      recordOutcome({ id: 'triage', h: 'deadbeef', outcome: 'answered', project: 'skycrew' });
+      recordOutcome({ id: 'triage', h: 'deadbeef', outcome: 'answered', project: 'demoapp' });
       const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
       const outcomeLine = log.find((l) => l.type === 'outcome');
-      assert.strictEqual(outcomeLine.project, 'skycrew');
+      assert.strictEqual(outcomeLine.project, 'demoapp');
     });
   } finally { h.cleanup(); }
 });

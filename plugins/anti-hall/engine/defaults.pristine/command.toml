@@ -230,6 +230,29 @@ value = ["firebase", "gcloud", "aws", "az", "kubectl", "helm", "terraform", "pul
 doc = "gh group and subcommand pairs that are heavy (command-guard.js GH_MUTATING_SUBCOMMANDS, plus `workflow run`)."
 value = { pr = ["merge", "close", "edit", "create", "review"], issue = ["create", "close", "delete", "edit"], release = ["create", "delete", "edit", "upload"], repo = ["delete", "edit"], secret = ["set", "delete"], workflow = ["run"] }
 
+[command.gh_oneliner_subcommands]
+doc = "gh group and subcommand pairs that are light when the whole command is one short plain line (command-guard.js GH_ONELINER_SUBCOMMANDS): they print a line or two and flood nothing, so a subagent for them is noise."
+value = { pr = ["merge", "close", "edit", "review", "comment", "ready", "reopen"], issue = ["close", "edit", "comment", "reopen"], secret = ["set"], label = ["create", "edit"] }
+
+[command.scratch_clone_sync_subs]
+doc = "git subcommands that are light in the main thread when run in a git checkout outside the session's own tree (git -C <abs|~ dir> or one leading cd <abs|~ dir>), chained with && or ; only to light segments and at most one final | tail/head -N, on one plain line (command-guard.js isAllowedScratchCloneSync, SCRATCH_CLONE_SYNC_SUBS). A sync prints a few lines; the output-flood rule is for unbounded runners and builds. Empty turns the exemption off."
+value = ["pull", "fetch"]
+
+[command.gh_oneliner_api_methods]
+doc = "gh api methods that are light on a one-line command (command-guard.js GH_ONELINER_API_METHODS); DELETE, a body file and graphql stay heavy."
+value = ["POST", "PATCH", "PUT"]
+
+[command.gh_oneliner_max_chars]
+doc = "The longest whole command that counts as one short line for the gh one-liner exemption (command-guard.js GH_ONELINER_MAX_CHARS)."
+value = 600
+unit = "chars"
+min = 40
+max = 5000
+
+[command.gh_oneliner_deny_re]
+doc = "JavaScript regex source: a command holding a newline, a backtick, a command or process substitution or a heredoc is not a plain one-liner (command-guard.js isOneLineCommand)."
+value = '[\n\r`]|\$\(|<<|<\(|>\('
+
 [command.gh_api_mutating_methods]
 doc = "gh api methods that are heavy (command-guard.js GH_API_MUTATING_METHODS)."
 value = ["POST", "PATCH", "PUT", "DELETE"]
@@ -788,7 +811,7 @@ value = 8
 
 [command.eg_default_allow]
 doc = "Files and globs edit-guard always allows (edit-guard.js DEFAULT_ALLOW)."
-value = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude/**", ".omc/**", ".anti-hall/**", "PLAN.md", "plan.md", "STATE.json", "**/.claude/projects/**/memory/**"]
+value = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude/**", ".omc/**", ".anti-hall/**", "**/.anti-hall/history/**", "**/.anti-hall/dogfood/**", "PLAN.md", "plan.md", "STATE.json", "**/.claude/projects/**/memory/**"]
 
 [command.eg_project_deny_segments]
 doc = "Path segments the per-project edit allowlist never reaches (edit-guard.js PROJECT_EDIT_DENY_SEGMENTS)."

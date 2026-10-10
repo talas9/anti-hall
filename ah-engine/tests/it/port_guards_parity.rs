@@ -443,6 +443,11 @@ fn spawn_payload(tool: &str, input: Value, transcript: Option<&str>) -> Value {
     p
 }
 
+/// The wall-clock headroom factor for a loaded runner: `AH_TEST_TIME_SCALE` (CI sets it), 1 when unset.
+fn time_scale() -> u64 {
+    std::env::var("AH_TEST_TIME_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1)
+}
+
 fn log_of(ages_ms: &[u64]) -> String {
     ages_ms.iter().map(|a| format!("{{NOW-{a}}}\n")).collect()
 }
@@ -628,7 +633,9 @@ fn swarm_cases() -> Vec<Case> {
         Case::json("twenty-five-recent-blocks", spawn_payload("Task", general(), Some("/t")), ex).file(log, &log_of(&recent(25))),
         Case::json("twenty-with-one-old-allows", spawn_payload("Agent", explore(), None), ex)
             .file(log, &log_of(&[70_000, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800])),
-        Case::json("near-window-edge-counts", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&[59_000; 20])),
+        // just inside the 60 s window when the guard runs: Node runs first and the engine after it, so the margin must cover a
+        // Node start on a loaded runner (CI sets AH_TEST_TIME_SCALE; 2 s locally)
+        Case::json("near-window-edge-counts", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&[60_000 - 2_000 * time_scale(); 20])),
         Case::json("garbage-lines", spawn_payload("Agent", explore(), None), ex).file(log, "abc\n{NOW-1000}abc\n\n-5\n0\n+{NOW-500}\n 12 \n0x10\n1e3\n"),
         Case::json("crlf-log", spawn_payload("Agent", explore(), None), ex).file(log, "{NOW-1000}\r\n{NOW-900}\r\n"),
         Case::json("only-whitespace-log", spawn_payload("Agent", explore(), None), ex).file(log, "  \n\t\n"),

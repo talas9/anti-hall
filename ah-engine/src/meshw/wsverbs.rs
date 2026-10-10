@@ -86,6 +86,11 @@ pub fn run_gate(inv: &Inv, a: &Args) -> R<Answer> {
     if !is_safe_id(id) {
         return Ok(fail_error(defaults::text("devswarm_cli.msg_bad_id")));
     }
+    let id = match crate::meshw::actverbs::resolve_target_id(inv, id, defaults::text("devswarm_cli.action_gate"))? {
+        Ok(x) => x,
+        Err(refused) => return Ok(refused),
+    };
+    let id = id.as_str();
     let set_names = csv_list(a, defaults::text("devswarm_cli.flag_set"));
     let clear_names = csv_list(a, defaults::text("devswarm_cli.flag_clear"));
     if set_names.is_empty() && clear_names.is_empty() {

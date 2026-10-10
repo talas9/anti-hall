@@ -82,11 +82,11 @@ fn one(home: &Path, hash: &str, it: &Item) -> Value {
         rec["error"] = json!("gzip");
         return rec;
     };
-    if let Some(d) = it.dest.parent() {
-        if std::fs::create_dir_all(d).is_err() {
-            rec["error"] = json!("mkdir");
-            return rec;
-        }
+    if let Some(d) = it.dest.parent()
+        && std::fs::create_dir_all(d).is_err()
+    {
+        rec["error"] = json!("mkdir");
+        return rec;
     }
     let mut tmp = it.dest.as_os_str().to_os_string();
     tmp.push(format!(".{}{}", std::process::id(), defaults::text("devswarm_sup.rt_tmp_suffix")));

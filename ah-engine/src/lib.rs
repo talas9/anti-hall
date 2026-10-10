@@ -1,5 +1,7 @@
 //! anti-hall engine: a tiny hook daemon + client. See README.md.
 #![deny(missing_docs)]
+#![allow(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links, rustdoc::invalid_html_tags, rustdoc::redundant_explicit_links)]
+pub mod actlog;
 pub mod agents;
 pub mod atomic;
 pub mod backup;
@@ -29,6 +31,7 @@ pub mod gate;
 pub mod ghrt;
 pub mod gitcache;
 pub mod handovers;
+pub mod hcguard;
 pub mod health;
 pub mod hookcfg;
 pub mod hookio;

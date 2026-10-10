@@ -18,6 +18,49 @@ function sgHasAck(t) {
   return false;
 }
 
+// Same-turn tool evidence as citation (dogfood 2026-10-09): a reply that names specifics (paths, versions, numbers, identifiers) found in
+// the output of tool calls made since the last human prompt cites that output, so its hedge is not an unevidenced guess.
+function sgTurnOutputs(lines) {
+  var human = false, outs = [], total = 0, cap = ah.cfgNum('speculation_guard.cite_output_max_chars');
+  for (var i = lines.length - 1; i >= 0 && total < cap; i--) {
+    var raw = lines[i];
+    if (raw.indexOf('"user"') < 0) continue;
+    var r = jx.parse(raw.trim());
+    if (r.unsure) return null;
+    if (r.invalid || !jx.isObj(r.v) || r.v.type !== 'user') continue;
+    var c = jx.isObj(r.v.message) ? r.v.message.content : undefined;
+    if (typeof c === 'string') { if (r.v.isMeta !== true && c.trim() !== '' && c.indexOf('<') !== 0) break; continue; }
+    if (!Array.isArray(c)) continue;
+    var sawResult = false;
+    for (var j = 0; j < c.length; j++) {
+      var b = c[j];
+      if (!jx.isObj(b)) continue;
+      if (b.type === 'tool_result') {
+        sawResult = true;
+        var t = typeof b.content === 'string' ? b.content : (Array.isArray(b.content) ? b.content.map(function (x) { return jx.isObj(x) && typeof x.text === 'string' ? x.text : ''; }).join(' ') : '');
+        total += t.length;
+        outs.push(t);
+      }
+    }
+    if (!sawResult && r.v.isMeta !== true && c.some(function (b) { return jx.isObj(b) && b.type === 'text' && typeof b.text === 'string' && b.text.trim() !== '' && b.text.indexOf('<') !== 0; })) break;
+  }
+  return outs.join('\n');
+}
+
+function sgCites(reply, lines) {
+  if (lines === null) return false;
+  var outs = sgTurnOutputs(lines);
+  if (outs === null || outs === '') return false;
+  var toks = ah.re.findAll(ah.cfg('speculation_guard.cite_token_re'), '', reply), seen = {}, hits = 0, min = ah.cfgNum('speculation_guard.cite_min_len');
+  for (var i = 0; i < toks.length && hits < ah.cfgNum('speculation_guard.cite_min_hits'); i++) {
+    var tk = reply.slice(toks[i][0], toks[i][1]);
+    if (tk.length < min || seen[tk] || !ah.re.test(ah.cfg('speculation_guard.cite_specific_re'), '', tk)) continue;
+    seen[tk] = true;
+    if (outs.indexOf(tk) >= 0) hits++;
+  }
+  return hits >= ah.cfgNum('speculation_guard.cite_min_hits');
+}
+
 // A "must be" / "should be" that states a duty, not a claim: the 40 units after it read as an obligation, or its line is a requirement.
 function sgObligation(text, start, end) {
   if (sgT('speculation_guard.obligation_re', 'i', jx.sliceUnits(text.slice(end), ah.cfgNum('speculation_guard.obligation_window')))) return true;
@@ -181,7 +224,12 @@ function decide(p) {
   if (skipped) return 'allow';
 
   var hit = sgHit(markerText);
-  var wouldBlock = hit !== null && !sgHasAck(lastText);
+  var cited = false;
+  if (hit !== null && !sgHasAck(lastText)) {
+    if (tailLines === undefined) tailLines = rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'));
+    cited = sgCites(lastText, tailLines);
+  }
+  var wouldBlock = hit !== null && !sgHasAck(lastText) && !cited;
 
   // JEV: the speculation question (add-block). A confident "speculative" adds a block; any failure leaves the regex verdict.
   var entry = null, jevBlock = false, jevHash = '';
@@ -210,7 +258,7 @@ function decide(p) {
 
   var marker = null, hitAt = 0;
   if (!jevBlock) {
-    if (hit !== null && !sgHasAck(lastText)) { marker = hit.text; hitAt = hit.at; }
+    if (hit !== null && !sgHasAck(lastText) && !cited) { marker = hit.text; hitAt = hit.at; }
     else {
       // no hedge, or an honest one: the causal-claim scan (off unless guards.inferenceCheck is on) reads tool evidence
       if (!loopSafe && inferenceOn) return 'defer';

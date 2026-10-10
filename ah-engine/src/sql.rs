@@ -308,6 +308,9 @@ pub const MESH_MESSAGES_LAST: &str = "SELECT id, ts, hash, body, sender, recipie
 pub const MESH_SENT_BY: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE sender = ?1 ORDER BY id DESC LIMIT ?2";
 /// How many messages one workspace holds.
 pub const MESH_MESSAGE_COUNT: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?1";
+/// How many of one workspace's messages were NOT sent by any of the given senders (`%s` = the placeholders of the ids); a
+/// message with no sender counts.
+pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s))";
 /// Every workspace id that has messages.
 pub const MESH_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages";
 /// Every registered workspace id.
@@ -371,9 +374,9 @@ pub const MESHW_APPEND_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (worksp
 /// `appendMeshRow` without a hash.
 pub const MESHW_APPEND: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
 /// `appendMessage` with a hash (the native-ingest insert): no mesh columns, no seq; a duplicate hash is ignored.
-pub const MESHW_APPEND_MESSAGE_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+pub const MESHW_APPEND_MESSAGE_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body, sender) VALUES (?, ?, ?, ?, ?);";
 /// `appendMessage` without a hash.
-pub const MESHW_APPEND_MESSAGE: &str = "INSERT INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+pub const MESHW_APPEND_MESSAGE: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender) VALUES (?, ?, ?, ?, ?);";
 /// One registry row (the columns `upsertRegistry` writes), for the merge-preserving self-registration.
 pub const MESHW_REGISTRY_ROW: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command FROM registry WHERE id = ?;";
 /// The ids of the registry (`listRegistry`), for the partition door's "still registered here" recheck.
@@ -510,7 +513,8 @@ pub const AS_MESSAGES: &str = "SELECT repositoryId, toBranch, createdAt FROM wor
 /// The timestamps of the app messages a store has ingested.
 pub const AS_NATIVE_TS: &str = "SELECT ts FROM messages WHERE hash LIKE ?1";
 /// The reconcile port: every registry row with the two columns the conditional operations compare.
-pub const RECON_REGISTRY_ALL: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry ORDER BY id ASC;";
+pub const RECON_REGISTRY_ALL: &str =
+    "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry ORDER BY id ASC;";
 /// The reconcile port, orphan heal: the workspace ids a store holds messages for (`listWorkspaceIds`, first source).
 pub const RECON_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages;";
 /// The reconcile port, orphan heal: the ids of the registry rows (`listWorkspaceIds`, second source).
@@ -524,7 +528,8 @@ pub const RECON_TABLES: &str = "SELECT name FROM sqlite_master WHERE type = 'tab
 /// The reconcile port's normaliser: every row of a table in storage order (`{table}` is filled from `RECON_TABLES`).
 pub const RECON_DUMP: &str = "SELECT * FROM \"{table}\" ORDER BY rowid;";
 /// The reconcile port: the registry row of one id, every column.
-pub const RECON_REGISTRY_ONE: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry WHERE id = ?;";
+pub const RECON_REGISTRY_ONE: &str =
+    "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry WHERE id = ?;";
 /// The reconcile port: a partition's message rows in storage order, with the columns the fold copies.
 pub const RECON_MESSAGES_OF: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce FROM messages WHERE workspace_id = ? ORDER BY id ASC;";
 /// The reconcile port: whether any partition of the store already holds a row with this hash.

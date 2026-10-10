@@ -85,7 +85,12 @@ pub fn retire_worktree_duplicates(ctx: &Ctx, runner: &dyn Runner, cwd: &str, kee
     scope.dirs.push(view::ds(defaults::text("mesh_write.dir_cursor_log")));
     let job = Job { label: defaults::text("devswarm_recon.job_dup").into(), scope, units, calls, expect };
     let res = gate::run(ctx, runner, &job, hooks);
-    let deferred = job.units.iter().zip(res.ends.iter()).filter(|(_, e)| matches!(e, UnitEnd::Deferred(_) | UnitEnd::Failed(_))).map(|(u, e)| (u.label.clone(), format!("{e:?}"))).collect();
+    let deferred = job
+        .units
+        .iter()
+        .zip(res.ends.iter())
+        .filter(|(_, e)| matches!(e, UnitEnd::Deferred(_) | UnitEnd::Failed(_)))
+        .map(|(u, e)| (u.label.clone(), format!("{e:?}")))
+        .collect();
     Ok(DupRun { result: dup_result(&out), verdict: res.verdict, deferred })
 }
-

@@ -10,6 +10,8 @@ The DevSwarm supervisor sweep: auto-archive, pokes, app sync, retention, reconci
 ## Switches
 
 - `devswarm.supervisorMode` = "auto": Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words...
+- `devswarm.autoArchive.eventDebounceMs` = 2000: How long a workspace stays in the dirty set after its last edge before the event path looks at it (a burst of edges is one look)
+- `devswarm.autoArchive.eventTrigger` = true: Whether a state change (a PR, lifecycle or activity edge) archives the finished workspace within seconds instead of waiting for the next...
 - `devswarm.autoArchive.idleMin` = 30: Minutes of inactivity before a finished workspace is archived
 - `devswarm.autoArchive.ignorePings` = true: Whether the idle gate ignores the child's own wake/heartbeat/status turns
 - `devswarm.autoArchive.maxPerSweep` = 3: Most auto-archives in one sweep

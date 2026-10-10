@@ -164,6 +164,38 @@ function dsPokeOrEscalate(p) {
   return out;
 }
 
+// Feature 2: the "done but open" nag. Pure decision from the facts the engine just read plus the nag state it keeps. A workspace is
+// done when everything in settings.doneRequires holds, it is clean, has no unread mail and is past idleMin. The first nag at a HEAD is
+// the edge; later ones are digests every nagEveryMs. The auto-archive owner (p.owned) is never nagged: it will archive the workspace.
+function dsNag(p) {
+  var f = p.facts || {}, s = p.settings || {}, n = p.nag || {}, now = p.now, b = [];
+  var id = dsStr(f.id);
+  if (f.lifecycle !== 'active') b.push(dsBlock('not-active', dsStr(f.lifecycle)));
+  if (p.owned === true) b.push(dsBlock('auto-archive-owns', 'auto-archive will archive it'));
+  var req = s.doneRequires || [];
+  if (dsHas(req, 'merged') && !(f.merged && f.merged.merged === true)) b.push(dsBlock('merged', dsStr((f.merged || {}).via)));
+  if (dsHas(req, 'pushed') && f.pushed !== true) b.push(dsBlock('pushed', 'branch not pushed'));
+  if (dsHas(req, 'validated') && !(f.done && f.done.done === true)) b.push(dsBlock('validated', 'no done report bound to HEAD'));
+  if (f.clean !== true) b.push(dsBlock('clean', dsStr(f.cleanReason)));
+  var un = f.unread || {};
+  if (un.toChild !== 0 || un.fromChild !== 0) b.push(dsBlock('unread', 'to_direct=' + un.toDirect + ' to_broadcast=' + un.toBroadcast + ' from=' + un.fromChild));
+  var idle = f.idle || {};
+  var idleMin = (typeof idle.ts === 'number') ? Math.floor((now - idle.ts) / 60000) : null;
+  if (idle.pendingBackground || idle.openRealTurn || typeof idle.ts !== 'number' || now - idle.ts < s.idleMin * 60000) b.push(dsBlock('idle', 'not idle'));
+  var out = { eligible: false, blockers: b, id: id, head: f.head || null };
+  if (b.length > 0 || id === '') return out;
+  var edge = n.lastHead !== f.head;
+  if (!edge && !(typeof n.lastNagMs === 'number' && now - n.lastNagMs >= s.nagEveryMs)) { out.blockers.push(dsBlock('cadence', 'not due')); return out; }
+  var bucket = edge ? 'edge' : String(Math.floor(now / s.nagEveryMs));
+  out.edge = edge;
+  out.key = 'nag:' + id + ':' + dsStr(f.head) + ':' + bucket;
+  if ((n.hourCount || 0) >= s.nagHourlyCap) { out.blockers.push(dsBlock('hourly-cap', n.hourCount + ' nags in the last hour')); return out; }
+  out.eligible = true;
+  var vars = { label: f.label || f.branch || id, id: id, via: dsStr((f.merged || {}).via), idle: idleMin, hint: dsFill([ah.cfg('devswarm_act.nag_hint')], { id: id })[0] };
+  out.text = dsFill([ah.cfg(edge ? 'devswarm_act.nag_edge_text' : 'devswarm_act.nag_digest_text')], vars)[0];
+  return out;
+}
+
 function decide(p, opts, event) {
   var kind = p && p.kind, res;
   if (kind === 'auto-archive') res = dsAutoArchive(p);
@@ -171,6 +203,7 @@ function decide(p, opts, event) {
   else if (kind === 'create') res = dsCreate(p);
   else if (kind === 'merge') res = dsMerge(p);
   else if (kind === 'delete') res = dsDelete(p);
+  else if (kind === 'nag') res = dsNag(p);
   else if (kind === 'poke' || kind === 'escalate' || kind === 'poke-or-escalate') res = dsPokeOrEscalate(p);
   else res = { eligible: false, blockers: [dsBlock('unknown-kind', dsStr(kind))] };
   return { exact: { code: 0, out: JSON.stringify(res), err: '' } };

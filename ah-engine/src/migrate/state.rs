@@ -116,6 +116,8 @@ struct Report {
     already: u64,
     pending: u64,
     errors: u64,
+    /// Durable auto-archive entries whose `doneHead` is not in its canonical form (see [`norm_head`]).
+    normalized: u64,
 }
 
 fn gate_dir(ctx: &Ctx) -> PathBuf {
@@ -452,6 +454,16 @@ fn is_truthy_entry(e: &J) -> bool {
     j_truthy(Some(e))
 }
 
+/// `normHead(h)`: the one canonical form of a recorded `doneHead`, a non-empty string, else `null`. A record written without
+/// the field, with `null` or with `''` all mean "no HEAD recorded" (Node 92bc4530: comparing the raw values kept such a record
+/// pending forever, `null` not being `undefined`).
+fn norm_head(h: Option<&J>) -> J {
+    match h {
+        Some(J::Str(s)) if !s.is_empty() => J::Str(s.clone()),
+        _ => J::Null,
+    }
+}
+
 /// `autoArchivedStateAppend(home, id, doneHead, at)`: append one record unless one for the same head is there.
 fn auto_archived_append(ctx: &Ctx, id: &str, done_head: &J, at: f64) {
     let p = auto_archived_path(ctx);
@@ -460,10 +472,11 @@ fn auto_archived_append(ctx: &Ctx, id: &str, done_head: &J, at: f64) {
         Some(J::Arr(a)) => a.clone(),
         _ => Vec::new(),
     };
-    if list.iter().any(|e| is_truthy_entry(e) && j_strict_eq(e.get("doneHead"), Some(done_head))) {
+    let nh = norm_head(Some(done_head));
+    if list.iter().any(|e| is_truthy_entry(e) && j_strict_eq(Some(&norm_head(e.get("doneHead"))), Some(&nh))) {
         return;
     }
-    list.push(J::Obj(vec![("doneHead".into(), done_head.clone()), ("at".into(), J::Num(at))]));
+    list.push(J::Obj(vec![("doneHead".into(), nh), ("at".into(), J::Num(at))]));
     state.set(id, J::Arr(list));
     if let Some(dir) = p.parent()
         && let Err(e) = std::fs::create_dir_all(dir)
@@ -500,6 +513,33 @@ fn migrate_auto_archived(ctx: &Ctx, dry_run: bool) -> Report {
     let mut rep = Report::default();
     let log = ctx.base().join(defaults::text("migrate.logs_dir")).join(defaults::text("migrate.auto_archive_log"));
     let mut existing = read_auto_archived(ctx);
+    // The repair pass (never deletes): an entry already written with an absent or empty `doneHead` is rewritten to the canonical
+    // `null`, so it compares equal to a log record without a HEAD. Idempotent, and independent of the log.
+    let mut dirty = false;
+    if let J::Obj(ids) = &mut existing {
+        for (_, list) in ids.iter_mut() {
+            let J::Arr(entries) = list else { continue };
+            // `e && typeof e === 'object'`: an array entry counts too (it has no `doneHead`); setting the field on it changes
+            // nothing JSON.stringify writes, so only an object is changed
+            for e in entries.iter_mut().filter(|e| matches!(e, J::Obj(_) | J::Arr(_))) {
+                let nh = norm_head(e.get("doneHead"));
+                if !j_strict_eq(e.get("doneHead"), Some(&nh)) {
+                    rep.normalized += 1;
+                    if !dry_run {
+                        e.set("doneHead", nh);
+                        dirty = true;
+                    }
+                }
+            }
+        }
+    }
+    if dirty {
+        let p = auto_archived_path(ctx);
+        // Node: `catch (_) { report.errors++; }`, no note
+        if write_atomic(&p, &json::stringify(&existing)).is_err() {
+            rep.errors += 1;
+        }
+    }
     let action = defaults::text("migrate.auto_archive_action");
     let mut each = |l: &str| {
         let Some(r) = parse_json(l) else {
@@ -516,8 +556,8 @@ fn migrate_auto_archived(ctx: &Ctx, dry_run: bool) -> Report {
             Some(J::Arr(a)) => a.clone(),
             _ => Vec::new(),
         };
-        let done_head = r.get("doneHead");
-        if list.iter().any(|e| is_truthy_entry(e) && j_strict_eq(e.get("doneHead"), done_head)) {
+        let done_head = norm_head(r.get("doneHead"));
+        if list.iter().any(|e| is_truthy_entry(e) && j_strict_eq(Some(&norm_head(e.get("doneHead"))), Some(&done_head))) {
             return;
         }
         rep.pending += 1;
@@ -525,7 +565,7 @@ fn migrate_auto_archived(ctx: &Ctx, dry_run: bool) -> Report {
             return;
         }
         let at = seed_time(&r);
-        let head = if j_truthy(done_head) { done_head.cloned().unwrap_or(J::Null) } else { J::Null };
+        let head = done_head;
         auto_archived_append(ctx, &key, &head, at);
         let mut list = list;
         list.push(J::Obj(vec![("doneHead".into(), head), ("at".into(), J::Num(at))]));
@@ -553,7 +593,8 @@ pub(super) fn auto_archived(ctx: &Ctx, rows: &mut Vec<Row>) {
         step("archived"),
         || {
             let r = migrate_auto_archived(ctx, true);
-            Ok(Detect { pending: r.pending > 0, detail: defaults::render("migrate_msg.archive_records", &[("n", &r.pending)]) })
+            let n = r.pending + r.normalized;
+            Ok(Detect { pending: n > 0, detail: defaults::render("migrate_msg.archive_records", &[("n", &n)]) })
         },
         || {
             migrate_auto_archived(ctx, false);

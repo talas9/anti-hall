@@ -12,6 +12,29 @@ var gk = {
   },
   // `pruneStale`: at most once per throttle window, drop the state files `<prefix>-*` of a sub-directory (relative to the home
   // directory) that are older than the TTL. The live session's file is the newest, so it never goes.
+  // Whether the next `pruneStale(dirRel, prefix)` would meet a stale `<prefix>-*` entry that is a symbolic link. Node's sweep
+  // (`fs.statSync` + `fs.unlinkSync`) ages a link by its target and unlinks it; the host never removes a link (`stateRemove`
+  // refuses one), so a caller defers to Node before writing anything when this is true.
+  pruneMeetsLink: function (dirRel, prefix) {
+    try {
+      var now = ah.clock.now(), stamp = dirRel + '/' + text.render(ah.cfg('guardkit.prune_stamp'), { prefix: prefix });
+      var raw = ah.state.readText(stamp);
+      if (raw !== null && raw.trim() !== '') {
+        try {
+          var last = JSON.parse(raw.trim())[ah.cfg('guardkit.prune_stamp_key')];
+          if (typeof last === 'number' && isFinite(last) && last <= now && (now - last) < ah.cfgNum('guardkit.prune_throttle_ms')) return false;
+        } catch (e) { /* corrupt stamp: the sweep runs */ }
+      }
+      var names = ah.fs.listDir(ah.home() + '/' + dirRel), ttl = ah.cfgNum('guardkit.prune_ttl_ms'), ext = ah.cfg('guardkit.state_ext');
+      for (var i = 0; names && i < names.length; i++) {
+        var n = names[i], full = ah.home() + '/' + dirRel + '/' + n;
+        if (n.indexOf(prefix + '-') !== 0 || n.slice(-ext.length) !== ext) continue;
+        var m = ah.fs.mtimeMs(full), st = ah.fs.lstat(full);
+        if (m !== null && (now - m) > ttl && st !== null && st.kind === 'link') return true;
+      }
+    } catch (e) { return true; }
+    return false;
+  },
   pruneStale: function (dirRel, prefix) {
     try {
       var now = ah.clock.now(), stamp = dirRel + '/' + text.render(ah.cfg('guardkit.prune_stamp'), { prefix: prefix });

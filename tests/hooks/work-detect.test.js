@@ -273,3 +273,24 @@ test('an escaped \\<< is not a heredoc, and a partly quoted delimiter terminates
   assert.strictEqual(bashWork(LAUNCHER + ' send x <<E"OF"\nhello -> world\nEOF'), false);
   assert.strictEqual(bashWork(LAUNCHER + ' send x <<\\EOF\nhello -> world\nEOF'), false);
 });
+
+// Dogfood 2026-10-09: a session whose cwd is the scratchpad writes relative paths there; that is scratch, not project work.
+test('isCountedWork: relative redirect from a scratchpad cwd is scratch; the same command elsewhere still counts; git history always counts', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const prev = process.cwd();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wd-cwd-'));
+  const scratch = path.join(root, 'scratchpad');
+  const proj = path.join(root, 'proj');
+  fs.mkdirSync(scratch); fs.mkdirSync(proj);
+  const bash = (command) => ({ name: 'Bash', input: { command } });
+  try {
+    process.chdir(scratch);
+    assert.strictEqual(wd.isCountedWork(bash('python3 -I scan.py > out.tsv')), false);
+    assert.strictEqual(wd.isCountedWork(bash('python3 -I scan.py > out.tsv; cp out.tsv /Users/x/proj/data.tsv')), true, 'a write outside scratch counts');
+    assert.strictEqual(wd.isCountedWork(bash('git commit -am x')), true, 'always-work verbs count anywhere');
+    process.chdir(fs.realpathSync(proj));
+    assert.strictEqual(wd.isCountedWork(bash('python3 -I scan.py > out.tsv')), true, 'same command in a project dir counts');
+  } finally { process.chdir(prev); fs.rmSync(root, { recursive: true, force: true }); }
+});
