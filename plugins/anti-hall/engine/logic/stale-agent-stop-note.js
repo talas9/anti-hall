@@ -48,7 +48,7 @@ function decide(p) {
   if (p === null || typeof p !== 'object' || Array.isArray(p) || p.tool_name !== ah.cfg('stale_note.tool')) return 'allow';
   var ti = p.tool_input, taskId = ti && ti.task_id, tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
   if (typeof taskId !== 'string' || !taskId || !tp) return 'allow';
-  var scan = ah.transcript.agentScan(hookProc.resolve(p, tp), ah.cfgNum('stale_note.scan_bytes'), true);
+  var scan = ah.transcript.agentScan(hookProc.open(p, tp), ah.cfgNum('stale_note.scan_bytes'), true);
   if (scan === null) return 'allow';
   if (scan.unsure) { ah.log('stale_note_scan_unsure', tp); return 'allow'; }
   var t = sanNote(scan, taskId, ah.clock.now());

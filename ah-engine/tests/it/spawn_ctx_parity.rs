@@ -408,14 +408,14 @@ fn inbox_cases() -> Vec<Case> {
         ("store-legacy-db", format!("{R}/store/12345678/devswarm.db")),
         ("store-legacy-ndjson", format!("{R}/store/ABCDEF12/journal/x.ndjson")),
     ] {
-        v.push(ds(case(name, read(json!(p)))).defer());
+        v.push(ds(case(name, read(json!(p)))));
     }
     // relative paths and the working directory
     v.push(ds(case("rel-inbox-cwd-root", json!({"tool_name":"Read","tool_input":{"file_path":"inbox/x"},"cwd":R}))));
     v.push(ds(case("rel-from-home-no-cwd", json!({"tool_name":"Read","tool_input":{"file_path":".anti-hall/devswarm/inbox/x"}}))));
     v.push(ds(case("rel-dotdot-from-store", json!({"tool_name":"Read","tool_input":{"file_path":"../inbox/x"},"cwd":format!("{R}/store")}))));
     v.push(ds(case("rel-elsewhere", json!({"tool_name":"Read","tool_input":{"file_path":"x/y"},"cwd":"$HOME/proj"}))));
-    v.push(ds(case("rel-relative-cwd-defers", json!({"tool_name":"Read","tool_input":{"file_path":"inbox/x"},"cwd":"rel/dir"}))).defer());
+    v.push(ds(case("rel-relative-cwd", json!({"tool_name":"Read","tool_input":{"file_path":"inbox/x"},"cwd":"rel/dir"}))));
     v.push(ds(case("rel-numeric-cwd-uses-home", json!({"tool_name":"Read","tool_input":{"file_path":".anti-hall/devswarm/inbox/x"},"cwd":7}))));
     v.push(ds(case("rel-array-cwd-uses-home", json!({"tool_name":"Read","tool_input":{"file_path":".anti-hall/devswarm/inbox/x"},"cwd":["a"]}))));
     v.push(ds(case("rel-empty-cwd-uses-home", json!({"tool_name":"Read","tool_input":{"file_path":".anti-hall/devswarm/inbox/x"},"cwd":""}))));
@@ -507,7 +507,7 @@ fn inbox_read_guard_matches_node() {
     assert!(cases.len() >= 60, "the corpus must stay broad");
     let t = drive("inbox", INBOX, cases);
     assert!(t.blocks >= 15, "the corpus must exercise the block: {}", t.blocks);
-    assert!(t.same >= 60 && t.deferred >= 10, "answered {} deferred {}", t.same, t.deferred);
+    assert!(t.same >= 70 && t.deferred >= 2, "answered {} deferred {}", t.same, t.deferred);
 }
 
 // ------------------------------------------------------------------------------------------------------------------

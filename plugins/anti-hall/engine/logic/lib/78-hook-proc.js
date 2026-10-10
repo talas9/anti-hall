@@ -23,6 +23,9 @@ var hookProc = {
   },
   // `path.resolve(cwd, q)` for the hook process of payload `p`.
   resolve: function (p, q) { return ah.path.isAbsolute(q) ? ah.path.resolveAbs(q) : ah.path.resolveAbs(hookProc.cwd(p) + '/' + q); },
+  // The path a file read opens: an absolute `q` as it is (the kernel, not a lexical normalisation, decides `dir/..` and a trailing
+  // slash), a relative one joined to the hook process's directory.
+  open: function (p, q) { return ah.path.isAbsolute(q) ? q : hookProc.cwd(p) + '/' + q; },
   // `os.homedir()`, absolute (null only when neither the variable nor the passwd entry gives one).
   home: function (p) {
     var h = ah.env.get(ah.cfg('env.home'));

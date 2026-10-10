@@ -28,7 +28,7 @@ function askAgentsNote(p) {
   if (!ah.settings.bool('ask_guard.note_setting')) return '';
   var tp = p.transcript_path;
   if (typeof tp !== 'string' || tp === '') return '';
-  var found = ah.transcript.agents(hookProc.resolve(p, tp));
+  var found = ah.transcript.agents(hookProc.open(p, tp));
   if (found === null) return '';
   if (found.unsure) { ah.log('ask_guard_agents_unsure', tp); return ''; }
   var agents = found.rows;

@@ -129,7 +129,7 @@ function decide(p) {
   if (cmd === '' || !isAutoMerge(cmd)) return 'allow';
   var tp = p.transcript_path;
   if (typeof tp !== 'string' || tp === '') return 'allow';
-  tp = hookProc.resolve(p, tp); // a relative path is read from the hook process's directory, as Node reads it
+  tp = hookProc.open(p, tp); // a relative path is read from the hook process's directory, as Node reads it
   var tail = ah.fs.readTail(tp, ah.cfgNum('merge_gate.window_bytes'));
   if (tail === null) return 'allow';
   var records = readRecords(tail);

@@ -103,7 +103,7 @@ function decideInner(p) {
   if (!isNewWork(p)) return null;
   var path = p.transcript_path;
   if (typeof path !== 'string' || !path) return null;
-  path = hookProc.resolve(p, path);
+  path = hookProc.open(p, path);
   var word = ah.cfg('compact_decl.safe_word'), bytes = ah.cfgNum('compact_decl.tail_bytes');
   // fast path: a turn whose text cannot hold the word cannot hold a declaration
   var turn = ah.transcript.turnText(path, bytes, word);
