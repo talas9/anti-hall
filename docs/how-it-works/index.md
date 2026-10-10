@@ -77,6 +77,6 @@ Linux, including WSL.
 ## Learn more
 
 - [Features](../features/index.md): what the engine does for you.
-- [Settings reference](../settings/reference.md): every setting and its default.
+- [Settings](../settings/index.md): every setting and its default.
 - [Engine design and status](../AH-ENGINE.md): architecture, what still runs on Node, and
   measured results.
