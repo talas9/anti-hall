@@ -2613,6 +2613,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `agent_scan.agent_tool` | `Agent` |  |  | Name of the tool whose input carries the description of a launched agent. |
+| `agent_scan.cache_entry_bytes` | `256` |  | bytes | Estimated bytes one entry of a kept walk (a tool use, an answered or errored call, a launch, a stop, a retained answer) holds, for the size cap above. |
+| `agent_scan.cache_fingerprint_bytes` | `4096` |  | bytes | Bytes at the start of a transcript, and bytes just before the kept offset, hashed to notice a rewritten or rotated file; a kept walk whose file no longer matches is rebuilt from the start. |
+| `agent_scan.cache_idle_ms` | `900000` |  | ms | How long a kept walk may sit unused before it is dropped. |
+| `agent_scan.cache_max_bytes` | `16777216` |  | bytes | Largest estimated size of one kept walk; a walk that grows past it is not kept (the next scan reads the file afresh, as it did before the cache). |
+| `agent_scan.cache_max_paths` | `4` |  | count | How many transcripts the scan keeps a walk for between calls, so a Stop reads only the bytes appended since the last scan (0 turns the cache off). The least recently used one is dropped first. |
 | `agent_scan.delivery_tools` | `TaskOutput, SendMessage` |  |  | Tools whose tool_result can deliver an agent's result. |
 | `agent_scan.empty_object` | `{}` |  |  | What JSON.stringify gives for a missing tool input. |
 | `agent_scan.inbox_phrase` | `'s inbox` |  |  | Phrase of the result of a message sent to a teammate's inbox. |
@@ -3812,7 +3817,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `330 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `331 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -5657,7 +5662,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `330 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `331 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -9023,8 +9028,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `engine_update.every_ms` | `21600000` | `AH_ENGINE_UPDATE_MS` | ms | How often the job starts the updater's automatic check; the script's own daily limit decides whether it does any work. 0 turns the job off. |
-| `engine_update.msg_no_script` | `engine-update: the updater script is missing: {path} (update the anti-hall pl...` |  |  | Printed when the updater script is missing from the plugin root. Placeholders: {path}. |
-| `engine_update.msg_spawn_failed` | `engine-update: cannot run {path}: {why}` |  |  | Printed when the updater script cannot be started. Placeholders: {path}, {why}. |
+| `engine_update.msg_no_plugin` | `engine-update: cannot find the anti-hall plugin folder, so {script} cannot be...` |  |  | Printed when the anti-hall plugin folder cannot be found, so the updater script cannot be located. Placeholders: {script} (the script's path inside the plugin). |
+| `engine_update.msg_no_script` | `engine-update: the updater script is missing: {path}\n  state: nothing change...` |  |  | Printed when the updater script is missing from the plugin root. Placeholders: {path}. |
+| `engine_update.msg_spawn_failed` | `engine-update: cannot start the updater script {path}: {why}\n  state: nothin...` |  |  | Printed when the updater script cannot be started. Placeholders: {path}, {why}. |
 | `engine_update.script` | `hooks/ah-update.sh` |  |  | The updater script, relative to the plugin root. |
 | `engine_update.shell` | `sh` |  |  | The shell that runs the updater script. |
 
