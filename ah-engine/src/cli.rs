@@ -93,6 +93,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("handovers", crate::handovers::run_cmd),
         ("devswarm", crate::dswire::cli::run),
         ("refresh", crate::refresh::run_cmd),
+        ("units", crate::setup::units::cmd_units),
+        ("mcp-reaper", crate::checks::mcp_reaper::run_cmd),
     ]
 }
 

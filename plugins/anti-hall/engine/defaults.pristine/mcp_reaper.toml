@@ -173,3 +173,124 @@ value = "systemd-service"
 doc = "The Node companion module the hook reuses for its signature test, relative to the plugin root. The Node hook does nothing when it cannot load it, so the engine acts only where it is present."
 value = "companion/mcp-reaper.js"
 
+
+# ---- the standalone reaper as an engine schedule job (port of companion/mcp-reaper.js + install-reaper.js) -------------------
+#
+# The opt-in background reaper the Node companion ran every 60 s from its own launchd / systemd unit is the engine schedule job
+# `mcp_reaper`: the daemon's scheduler runs `ah-engine mcp-reaper run` as a subprocess, and the selection is the plugin script
+# `engine/logic/rules/mcp-reaper.js` (D88). The selection is the companion's own, which is broader than the SessionEnd sweep above:
+# a process is an orphan when its command line has the MCP signature, the user's exclusion does not match it, and its parent is
+# PID 1, or is in the snapshot and is a reaper (launchd, `systemd --user`, the WSL relay). A parent missing from the snapshot is
+# unsure and skipped. Signals go out polite first, then, after the grace period and a fresh listing that must select the same pid
+# again, forced. The log lines are the companion's, in the companion's log file.
+
+[cmd.mcp-reaper]
+doc = "The standalone MCP orphan reaper as an engine command (the port of companion/mcp-reaper.js): `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line."
+value = { args = "run [--dry-run]", read_only = false, status = "implemented" }
+
+[job.mcp_reaper]
+doc = "The standalone MCP orphan reaper (the companion's 60 s background job): one `ah-engine mcp-reaper run` per interval, as a subprocess in its own process group. The run itself decides whether the reaper is on (maintenance.mcpReaperJob)."
+value = { kind = "engine", action = "mcp_reaper", every_key = "mcp_reaper.job_every_ms", jitter_ms = 0, timeout_ms = 60000, retries = 0, backoff_ms = 5000, backoff_max_ms = 60000, cooldown_ms = 60000, catch_up = "skip", persist = false }
+
+[mcp_reaper.job_every_ms]
+doc = "Interval of the mcp_reaper job (the Node unit's StartInterval was 60 s); 0 turns the job off."
+value = 60000
+env = "AH_ENGINE_MCP_REAPER_MS"
+unit = "ms"
+
+[mcp_reaper.job_setting]
+doc = "The switch of the reaper job, maintenance.mcpReaperJob: off never runs it; on always runs it; auto (the default) runs it once the Node reaper's opt-in was carried over, which `ah-engine units heal` records when it retires a Node reaper unit. The Node reaper was opt-in (installed by hand), so auto keeps exactly the machines that had it."
+value = { section = "maintenance", key = "mcpReaperJob", env = "ANTIHALL_MCP_REAPER_JOB", aliases = [], option = "", default = "auto", values = ["auto", "on", "off"] }
+
+[mcp_reaper.job_word_off]
+doc = "The value of maintenance.mcpReaperJob that switches the job off."
+value = "off"
+
+[mcp_reaper.job_word_auto]
+doc = "The value of maintenance.mcpReaperJob that runs the job only once the Node opt-in was carried over."
+value = "auto"
+
+[mcp_reaper.job_optin_rel]
+doc = "The marker of a carried-over Node opt-in, relative to the home directory: written by `ah-engine units heal` when it retires a Node reaper unit, read by the job on auto."
+value = ".anti-hall/ah-engine/units/mcp-reaper.optin"
+
+[mcp_reaper.job_node_units]
+doc = "The unit files the Node installer (companion/install-reaper.js) writes, relative to the home directory. While one exists the job stands down: the Node reaper still runs, and two reapers never run at once."
+value = ["Library/LaunchAgents/com.anti-hall.mcp-reaper.plist", ".config/systemd/user/anti-hall-mcp-reaper.timer", ".config/systemd/user/anti-hall-mcp-reaper.service"]
+
+[env.mcp_reap_dryrun]
+doc = "The environment variable that makes a reaper run a dry run when it is exactly mcp_reaper.job_dry_word (the companion's MCP_REAP_DRYRUN). The command reads it and hands it to the script."
+value = "MCP_REAP_DRYRUN"
+
+[mcp_reaper.job_dry_word]
+doc = "The value of the dry-run variable that turns dry running on."
+value = "1"
+
+[env.mcp_reap_grace]
+doc = "The environment variable that sets the reaper's grace period between the polite and the forced signal, in seconds (the companion's MCP_REAP_GRACE, read the way JavaScript's Number reads it; not a finite number of at least zero falls back to the default; an explicit 0 is honoured). The command reads it and hands it to the script."
+value = "MCP_REAP_GRACE"
+
+[mcp_reaper.job_grace_default_s]
+doc = "The grace period between the polite and the forced signal, in seconds, when the variable does not set one. The wait is bounded by hostproc.sleep_total_max_ms."
+value = 3
+unit = "s"
+
+[mcp_reaper.job_relay_re]
+doc = "JavaScript regex source (case-sensitive) of the WSL relay as it shows in a parent's command line (a display name, not a program path): such a parent is a reaper."
+value = '\bRelay\('
+
+[mcp_reaper.job_reaper_programs]
+doc = "Parent program names (argv0 basename) that are always reapers. PID 1 is one whatever its name; a program merely named init is NOT one (real init is always PID 1)."
+value = ["launchd"]
+
+[mcp_reaper.job_user_manager]
+doc = "The parent program name that is a reaper only as the per-user manager (with the flag below)."
+value = "systemd"
+
+[mcp_reaper.job_user_flag_re]
+doc = "JavaScript regex source of the per-user manager's flag as a discrete token."
+value = '(^|\s)--user(\s|$)'
+
+[mcp_reaper.job_log_rel]
+doc = "The companion's log file, relative to the home directory (the job appends its lines there, as the Node reaper did); it stops growing past mcp_reaper.log_max_bytes."
+value = ".anti-hall/mcp-reaper.log"
+
+[mcp_reaper.job_line]
+doc = "One log line: the ISO time, a space, the message, a newline. {ts} {msg}."
+value = "{ts} {msg}\n"
+
+[mcp_reaper.job_msg_none]
+doc = "Logged when a sweep finds no orphan (also when the process listing failed: nothing is reaped then)."
+value = "scan: no orphans"
+
+[mcp_reaper.job_msg_dry]
+doc = "Logged per orphan on a dry run. {pid} {ppid} {cmd}."
+value = "DRYRUN would reap pid={pid} ppid={ppid} cmd={cmd}"
+
+[mcp_reaper.job_msg_term]
+doc = "Logged per polite signal sent. {pid} {ppid} {cmd}."
+value = "SIGTERM pid={pid} ppid={ppid} cmd={cmd}"
+
+[mcp_reaper.job_msg_kill]
+doc = "Logged per forced signal sent (only to a pid the fresh listing still selects). {pid} {cmd}."
+value = "SIGKILL pid={pid} cmd={cmd}"
+
+[mcp_reaper.job_script]
+doc = "The plugin script that holds the job's logic, and its entry function (`script::call_fn`)."
+value = { script = "rules/mcp-reaper", entry = "reap" }
+
+[mcp_reaper.job_sub_run]
+doc = "The subcommand of `ah-engine mcp-reaper` that makes one sweep."
+value = "run"
+
+[mcp_reaper.job_flag_dry]
+doc = "The option of `ah-engine mcp-reaper run` that makes it a dry run."
+value = "--dry-run"
+
+[mcp_reaper.job_msg_usage]
+doc = "Printed (stderr) for a command line `mcp-reaper` does not know."
+value = "usage: ah-engine mcp-reaper run [--dry-run] [--json]"
+
+[mcp_reaper.job_msg_failed]
+doc = "Printed (stderr) when the reaper script gave no answer (missing, switched off, or it failed; the reason is in the engine log). Nothing was signalled after the failure point."
+value = "anti-hall mcp-reaper: the reaper script gave no answer (see the engine log)"

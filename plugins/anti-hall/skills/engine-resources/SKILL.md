@@ -26,6 +26,8 @@ Daemon status, metrics, backups, schedules and limits.
 | `ah-engine stop` | `` Ask the daemon to drain and exit | main, codex |
 | `ah-engine telemetry` | `[summary\|events\|rollup\|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and... | main, codex, workspace, subagent (owner args: rollup) |
 | `ah-engine version` | `` Print the version this build reports | main, codex, workspace, subagent |
+| `ah-engine mcp-reaper` | `run [--dry-run]` The standalone MCP orphan reaper as an engine command (the port of companion/mcp-reaper.js): `run` makes one sweep (the scheduled job... | main, codex |
+| `ah-engine units` | `<status\|install\|heal\|uninstall> [--dry-run] [--bin <path>]` The engine's service units: `status` lists the engine unit and the units the Node installers wrote, with whether the engine runs their... | main, codex, workspace, subagent (owner args: install, heal, uninstall) |
 
 ## Guards
 
@@ -53,6 +55,7 @@ Daemon status, metrics, backups, schedules and limits.
 - `context.injectGateSwarm` = true: Cut 4 (context.injectGateSwarm, default on): swarm-guard's shared-tree advisory is passed on when new or changed, and again only after N...
 - `context.injectGateTask` = true: Cut 2 (context.injectGateTask, default on): task-tracker's short reminder is passed on only every N turns (its long form always passes),...
 - `guards.reaperExclude` = "": Where the user's exclusion pattern is read from (guards.reaperExclude, a JavaScript regular expression, empty = none): a process it...
+- `maintenance.mcpReaperJob` = "auto": The switch of the reaper job, maintenance.mcpReaperJob: off never runs it; on always runs it; auto (the default) runs it once the Node...
 - `guards.reaperMatch` = "": Where the user's extra MCP process pattern is read from (guards.reaperMatch, a JavaScript regular expression, empty = none)
 - `maintenance.sessionEndReaper` = true: Where the reaper's on/off switch is read from (maintenance.sessionEndReaper, default on; the deprecated environment alias is read too)
 

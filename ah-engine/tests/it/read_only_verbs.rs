@@ -53,6 +53,9 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
         ("gh", s(&["segment"])),
         ("jev-report", s(&[])),
         ("jev-report", s(&["--weekly", "--json"])),
+        ("units", s(&["status"])),
+        ("units", s(&["status", "--json"])),
+        ("units", s(&["heal", "--dry-run"])),
     ]
 }
 

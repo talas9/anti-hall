@@ -63,6 +63,7 @@ mod launcher_parity;
 mod mcp_reaper_parity;
 mod memory_soak;
 mod mesh_parity;
+mod mcp_reaper_job;
 mod migrate_parity;
 mod model_routing_parity;
 mod no_compiled_config;
