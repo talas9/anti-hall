@@ -74,13 +74,127 @@ mod je {
     }
 }
 
+/// The C library's allocator totals (what jemalloc's figures leave out: bundled SQLite and anything else that calls `malloc`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Sys {
+    /// Bytes handed out and not freed, across all zones.
+    pub in_use: u64,
+    /// Bytes the allocator holds from the OS.
+    pub allocated: u64,
+}
+
+#[cfg(target_os = "macos")]
+mod sysm {
+    use std::ffi::{c_char, c_int, c_void};
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct Stats {
+        blocks_in_use: u32,
+        size_in_use: usize,
+        max_size_in_use: usize,
+        size_allocated: usize,
+    }
+
+    unsafe extern "C" {
+        fn malloc_zone_statistics(zone: *mut c_void, stats: *mut Stats);
+        fn malloc_get_all_zones(task: u32, reader: *mut c_void, addresses: *mut *mut usize, count: *mut u32) -> c_int;
+        fn malloc_get_zone_name(zone: *mut c_void) -> *const c_char;
+    }
+
+    pub fn total() -> Option<super::Sys> {
+        let mut st = Stats::default();
+        // SAFETY: a null zone means all zones; `st` is a live, writable struct with the C layout.
+        unsafe { malloc_zone_statistics(std::ptr::null_mut(), &mut st) };
+        Some(super::Sys { in_use: st.size_in_use as u64, allocated: st.size_allocated as u64 })
+    }
+
+    /// Per zone: name, bytes in use, bytes allocated, blocks.
+    pub fn zones() -> serde_json::Value {
+        let (mut addrs, mut n): (*mut usize, u32) = (std::ptr::null_mut(), 0);
+        // SAFETY: task 0 is this task and no reader is needed in-process; `addrs` and `n` are live out-parameters.
+        if unsafe { malloc_get_all_zones(0, std::ptr::null_mut(), &mut addrs, &mut n) } != 0 || addrs.is_null() {
+            return serde_json::Value::Null;
+        }
+        let mut out = Vec::new();
+        for i in 0..n as usize {
+            // SAFETY: `addrs` points at `n` zone addresses (the list the call returned).
+            let z = unsafe { *addrs.add(i) } as *mut c_void;
+            let mut st = Stats::default();
+            // SAFETY: `z` is a registered zone from the list; `st` is a live, writable struct.
+            unsafe { malloc_zone_statistics(z, &mut st) };
+            // SAFETY: the name is a NUL-terminated string owned by the zone, or null.
+            let name = unsafe {
+                let p = malloc_get_zone_name(z);
+                if p.is_null() { String::new() } else { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() }
+            };
+            out.push(serde_json::json!({"name": name, "in_use": st.size_in_use, "allocated": st.size_allocated, "blocks": st.blocks_in_use}));
+        }
+        serde_json::Value::Array(out)
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod sysm {
+    pub fn total() -> Option<super::Sys> {
+        // SAFETY: `mallinfo2` takes no arguments and returns a plain struct by value.
+        let m = unsafe { libc::mallinfo2() };
+        Some(super::Sys { in_use: (m.uordblks + m.hblkhd) as u64, allocated: (m.arena + m.hblkhd) as u64 })
+    }
+    pub fn zones() -> serde_json::Value {
+        serde_json::Value::Null
+    }
+}
+
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+mod sysm {
+    pub fn total() -> Option<super::Sys> {
+        None
+    }
+    pub fn zones() -> serde_json::Value {
+        serde_json::Value::Null
+    }
+}
+
+/// SQLite's own count of the bytes it holds (current, high-water), across every connection of the process; 0 when the build keeps
+/// no statistics.
+fn sqlite_bytes() -> (i64, i64) {
+    // SAFETY: both calls take plain values and read process-wide counters; they are thread-safe.
+    unsafe { (rusqlite::ffi::sqlite3_memory_used(), rusqlite::ffi::sqlite3_memory_highwater(0)) }
+}
+
+/// `sqlite3_status64` current value of one counter (`SQLITE_STATUS_*`), -1 when the call fails.
+fn sqlite_status(op: i32) -> i64 {
+    let (mut cur, mut hi) = (0i64, 0i64);
+    // SAFETY: `cur` and `hi` are live, writable i64 out-parameters; the counter is process-wide and thread-safe.
+    let rc = unsafe { rusqlite::ffi::sqlite3_status64(op, &mut cur, &mut hi, 0) };
+    if rc == 0 { cur } else { -1 }
+}
+
 // ---- per-request log -----------------------------------------------------------------------------------------------
 
 /// What was measured when a request started.
-pub struct Before {
+pub struct Before(Probe);
+
+/// Everything a measurement reads: resident set and footprint, jemalloc, the counted heap, the C allocator and SQLite.
+pub struct Probe {
     rss_kb: u64,
+    footprint_kb: Option<u64>,
     alloc: Option<Alloc>,
     heap_live: u64,
+    sys: Option<Sys>,
+    sqlite: i64,
+}
+
+fn probe() -> Probe {
+    Probe {
+        rss_kb: crate::limits::rss_kb(),
+        footprint_kb: crate::limits::footprint_kb(),
+        alloc: je::alloc(),
+        heap_live: crate::memstat::heap().live,
+        sys: sysm::total(),
+        sqlite: sqlite_bytes().0,
+    }
 }
 
 #[derive(Default)]
@@ -98,7 +212,7 @@ thread_local! {
 pub fn begin(on: bool) -> Option<Before> {
     ON.with(|c| c.set(on));
     NOTE.with(|n| *n.borrow_mut() = Note::default());
-    on.then(|| Before { rss_kb: crate::limits::rss_kb(), alloc: je::alloc(), heap_live: crate::memstat::heap().live })
+    on.then(|| Before(probe()))
 }
 
 /// A check ran in the request in progress on this thread.
@@ -139,15 +253,11 @@ pub struct Done {
 }
 
 /// The measurement taken as the request's work ended.
-pub struct After {
-    rss_kb: u64,
-    alloc: Option<Alloc>,
-    heap_live: u64,
-}
+pub struct After(Probe);
 
 /// Measure right after the request's work, before the reply is written.
 pub fn measure_after() -> After {
-    After { rss_kb: crate::limits::rss_kb(), alloc: je::alloc(), heap_live: crate::memstat::heap().live }
+    After(probe())
 }
 
 static LOG_LOCK: Mutex<()> = Mutex::new(());
@@ -159,13 +269,19 @@ pub fn finish(before: Before, d: &Done) {
         (n.checks.clone(), n.transcript.clone())
     });
     let tsize = transcript.as_deref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len());
-    let a = |x: &Option<Alloc>, f: fn(&Alloc) -> u64| x.as_ref().map_or(Value::Null, |a| json!(f(a)));
+    let (b, a) = (&before.0, &d.after.0);
+    let al = |x: &Option<Alloc>, f: fn(&Alloc) -> u64| x.as_ref().map_or(Value::Null, |a| json!(f(a)));
+    let sy = |x: &Option<Sys>, f: fn(&Sys) -> u64| x.as_ref().map_or(Value::Null, |a| json!(f(a)));
     let line = json!({
         "ts": crate::health::now_ms(), "kind": d.kind, "event": d.event, "checks": checks,
-        "rss_kb_before": before.rss_kb, "rss_kb_after": d.after.rss_kb,
-        "alloc_before": a(&before.alloc, |x| x.allocated), "alloc_after": a(&d.after.alloc, |x| x.allocated),
-        "resident_before": a(&before.alloc, |x| x.resident), "resident_after": a(&d.after.alloc, |x| x.resident),
-        "heap_live_before": before.heap_live, "heap_live_after": d.after.heap_live,
+        "rss_kb_before": b.rss_kb, "rss_kb_after": a.rss_kb,
+        "footprint_kb_before": b.footprint_kb, "footprint_kb_after": a.footprint_kb,
+        "alloc_before": al(&b.alloc, |x| x.allocated), "alloc_after": al(&a.alloc, |x| x.allocated),
+        "resident_before": al(&b.alloc, |x| x.resident), "resident_after": al(&a.alloc, |x| x.resident),
+        "heap_live_before": b.heap_live, "heap_live_after": a.heap_live,
+        "sys_in_use_before": sy(&b.sys, |x| x.in_use), "sys_in_use_after": sy(&a.sys, |x| x.in_use),
+        "sys_allocated_before": sy(&b.sys, |x| x.allocated), "sys_allocated_after": sy(&a.sys, |x| x.allocated),
+        "sqlite_before": b.sqlite, "sqlite_after": a.sqlite,
         "transcript_bytes": tsize, "in_flight": d.in_flight, "busy": d.busy, "proc_ms": d.proc_ms,
     });
     let path = crate::paths::dir().join(defaults::text("files.mem_log"));
@@ -219,6 +335,27 @@ pub fn worker_tick(idx: usize) {
     ARRIVED.notify_all();
 }
 
+/// The memory ledger in MB: the footprint against what each owner holds. QuickJS allocates through the Rust allocator, so it is
+/// part of the jemalloc figure, listed apart to show its share; `unaccounted` is what the owners above do not explain (thread
+/// stacks, code and library data, other anonymous memory: the memory map text in the snapshot breaks it down).
+fn ledger(snap: &Value) -> Value {
+    let mb = |v: &Value| v.as_f64().map_or(0.0, |b| (b / 1048.576).round() / 1000.0);
+    let footprint = snap["footprint_kb"].as_f64().unwrap_or(0.0) * 1024.0;
+    let jemalloc = snap["allocator"]["resident"].as_f64().unwrap_or(0.0);
+    let quickjs: f64 = snap["pools"].as_array().into_iter().flatten().filter_map(|p| p["quickjs_bytes"].as_f64()).sum();
+    let sqlite = snap["sqlite"]["memory_used"].as_f64().unwrap_or(0.0);
+    let zones = snap["system_malloc"]["zones"].as_array();
+    let other_sys: f64 = match zones {
+        Some(z) => z.iter().filter(|x| !x["name"].as_str().unwrap_or("").to_lowercase().contains("jemalloc")).filter_map(|x| x["allocated"].as_f64()).sum(),
+        None => snap["system_malloc"]["total"]["allocated"].as_f64().unwrap_or(0.0),
+    };
+    json!({
+        "footprint": mb(&json!(footprint)), "jemalloc_resident": mb(&json!(jemalloc)), "of_which_quickjs": mb(&json!(quickjs)),
+        "system_malloc_other_zones": mb(&json!(other_sys)), "of_which_sqlite_in_use": mb(&json!(sqlite)),
+        "unaccounted": mb(&json!(footprint - jemalloc - other_sys)),
+    })
+}
+
 fn map_text() -> String {
     if let Ok(t) = std::fs::read_to_string("/proc/self/smaps_rollup") {
         return t;
@@ -260,6 +397,9 @@ pub fn capture(memory: Value, workers: usize, rss_cap_kb: u64, uptime_s: u64) {
         "rss_kb": crate::limits::rss_kb(), "rss_cap_kb": rss_cap_kb, "threads": crate::limits::thread_count(),
         "counted_heap": {"live_kb": heap.live / 1024, "peak_kb": heap.peak / 1024, "allocs": heap.allocs},
         "allocator": je::detail(),
+        "footprint_kb": crate::limits::footprint_kb(),
+        "system_malloc": {"total": sysm::total().map(|t| json!({"in_use": t.in_use, "allocated": t.allocated})), "zones": sysm::zones()},
+        "sqlite": {"memory_used": sqlite_bytes().0, "memory_highwater": sqlite_bytes().1, "pagecache_used": sqlite_status(1)},
         "runtimes": pools.iter().filter_map(|p| p["runtimes"].as_u64()).sum::<u64>(),
         "contexts": pools.iter().filter_map(|p| p["contexts"].as_u64()).sum::<u64>(),
         "pools": pools, "workers_missing": missing,
@@ -269,6 +409,7 @@ pub fn capture(memory: Value, workers: usize, rss_cap_kb: u64, uptime_s: u64) {
         },
         "memory": memory,
     });
+    snap["ledger_mb"] = ledger(&snap);
     let cap = defaults::num("diagnostics.mem_snapshot_max_bytes") as usize;
     let mut map = map_text();
     // the file holds the whole object: cut the map until the serialized object fits (escapes make it longer than the raw text)
@@ -408,7 +549,7 @@ mod tests {
         let d = Done { kind: "V".into(), event: "memdiag-test-event".into(), in_flight: 1, busy: 1, proc_ms: 2, after: measure_after() };
         finish(b, &d);
         let log = std::fs::read_to_string(crate::paths::dir().join(defaults::text("files.mem_log"))).unwrap();
-        let l: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|l| l["event"] == "memdiag-test-event").expect("line written");
+        let l: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect::<Vec<_>>().into_iter().rfind(|l| l["event"] == "memdiag-test-event").expect("line written");
         assert_eq!(l["checks"], json!(["memdiag-test-check"]));
         assert!(l["rss_kb_after"].as_u64().unwrap() > 0 && l["transcript_bytes"].is_null());
         assert!(begin(false).is_none(), "off: nothing measured");
@@ -417,6 +558,8 @@ mod tests {
         let s = latest_snapshot();
         assert_eq!(s["rss_cap_kb"], 123);
         assert_eq!(s["memory"]["k"], 1);
+        assert!(s["ledger_mb"]["footprint"].as_f64().unwrap() > 0.0 && s["sqlite"]["memory_used"].is_number() && s["footprint_kb"].as_u64().unwrap() > 0);
+        assert!(l["footprint_kb_after"].as_u64().unwrap() > 0 && l["sys_in_use_after"].as_u64().unwrap() > 0);
         assert!(s["threads"].as_u64().unwrap() > 0 && s["workers_missing"].as_array().unwrap().is_empty());
         assert!(s.to_string().len() <= defaults::num("diagnostics.mem_snapshot_max_bytes") as usize);
     }

@@ -309,6 +309,9 @@ impl Shared {
         crate::memstat::reset_peak();
         serde_json::json!({
             "rss_kb": limits::rss_kb(),
+            "footprint_kb": limits::footprint_kb(),
+            "mem_metric": defaults::text("daemon.mem_metric"),
+            "mem_kb": limits::mem_kb(),
             "heap_live_kb": heap.live / 1024,
             "heap_peak_kb": heap.peak / 1024,
             "allocs": heap.allocs,
@@ -373,6 +376,9 @@ impl Shared {
             "version": self.own,
             "uptime_s": self.started.elapsed().as_secs(),
             "rss_kb": rss_now,
+            "footprint_kb": limits::footprint_kb(),
+            "mem_metric": defaults::text("daemon.mem_metric"),
+            "mem_kb": limits::mem_kb(),
             "rss_peak_kb": self.rss_peak_kb.fetch_max(rss_now, SeqCst).max(rss_now),
             "memory": self.memory(),
             "load": self.load.report(health::now_ms()),
@@ -1012,10 +1018,11 @@ fn watchdog(sh: Arc<Shared>) {
         if last_rss.elapsed() >= cfg.rss_check {
             last_rss = Instant::now();
             let rss = limits::rss_kb();
+            let mem = limits::mem_kb();
             sh.rss_kb.store(rss, SeqCst);
             sh.rss_peak_kb.fetch_max(rss, SeqCst);
-            if cfg.rss_cap_kb > 0 && rss > cfg.rss_cap_kb {
-                health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &rss), ("cap", &cfg.rss_cap_kb)]));
+            if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb {
+                health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &mem), ("cap", &cfg.rss_cap_kb)]));
                 // its own kind: the cap trip above is the one the crash-loop rule counts, this line only explains it
                 health::log_event("memory", "breakdown", &sh.memory_line());
                 if cfg_snapshot_on(&sh) {

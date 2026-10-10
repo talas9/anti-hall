@@ -141,6 +141,36 @@ pub fn apply_mem_limit(mb: u64) -> String {
     format!("ok:{mb}")
 }
 
+/// The process's own memory, without file-backed pages other processes share or the kernel can reclaim (`None` where the platform
+/// will not say): macOS, `ri_phys_footprint` (what Activity Monitor shows); Linux, `RssAnon + RssShmem` from `/proc/self/status`.
+pub fn footprint_kb() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: a zeroed rusage_info_v2 is a valid value of the plain C struct.
+        let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a live, writable struct of the flavour asked for; the call fails (non-zero) rather than overrun it.
+        let rc = unsafe { libc::proc_pid_rusage(std::process::id() as libc::c_int, libc::RUSAGE_INFO_V2, (&mut info as *mut libc::rusage_info_v2).cast()) };
+        return (rc == 0 && info.ri_phys_footprint > 0).then_some(info.ri_phys_footprint / 1024);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let s = std::fs::read_to_string("/proc/self/status").ok()?;
+        let field = |k: &str| s.lines().find_map(|l| l.strip_prefix(k)).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse::<u64>().ok());
+        return Some(field("RssAnon:")? + field("RssShmem:").unwrap_or(0));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// The figure the memory cap is compared with: the setting `daemon.mem_metric` (`footprint` or `rss`); the footprint falls back
+/// to the resident set where the platform has none.
+pub fn mem_kb() -> u64 {
+    if crate::defaults::text("daemon.mem_metric") == crate::defaults::text("daemon.mem_metric_rss") {
+        return rss_kb();
+    }
+    footprint_kb().unwrap_or_else(rss_kb)
+}
+
 /// Threads in this process (0 when the platform will not say).
 pub fn thread_count() -> u64 {
     #[cfg(target_os = "linux")]
