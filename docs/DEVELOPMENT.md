@@ -150,7 +150,7 @@ PROPTEST_CASES=20000 cargo test --locked --test it -- prop_parsers::
 cd ah-engine
 rustup toolchain install nightly --profile minimal
 cargo install cargo-fuzz
-cargo +nightly fuzz run tokenize -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=4096
+cargo +nightly fuzz run heredoc -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=4096
 cargo +nightly fuzz list
 ```
 
