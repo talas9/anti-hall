@@ -260,6 +260,7 @@ Codex: no `/config`, use the skill.
 | guards.gitAliasResolve / gitReusedMessageCheck (advanced, safety: --confirmed) | true / true | `ANTIHALL_GIT_ALIAS_RESOLVE`, `ANTIHALL_GIT_REUSED_MESSAGE_CHECK` |
 | guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
 | engine.bootstrap | true | `AH_ENGINE_BOOTSTRAP` (0 skips the one-time `ah-engine` binary download; overrides the setting) |
+| engine.autoUpdate | off | `AH_ENGINE_AUTO_UPDATE` (off, stable or dev: `hooks/ah-update.sh --auto` from the engine scheduler, at most daily; URLs and timeouts in `engine/ah-update.toml`) |
 | context.verifyFirstSession / verifyFirstOrchestration / verifyFirstTurn / verifyFirstSubagent / taskTracker / handoverResume / defectNudge | true | — |
 | maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`) |
 | versionAlerts.antiHall / claudeCli / devswarm | true | `ANTIHALL_VERSION_ALERT`, `ANTIHALL_CLAUDE_CLI_VERSION_ALERT`, `ANTIHALL_DEVSWARM_VERSION_ALERT` |
