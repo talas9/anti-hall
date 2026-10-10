@@ -788,6 +788,7 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let Some(st) = lab.try_status() else {
         r.check("daemon alive after the sustained phase", false, true, false);
         lab.note_log_tail(&mut r);
+        common::stop_child(&lab.sock(), &mut d);
         return r.finish();
     };
     let late = st["slow_replies"].as_u64().unwrap_or(0) - late0;
@@ -823,6 +824,7 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let Some(st) = lab.try_status() else {
         r.check("daemon alive after the burst phase", false, true, false);
         lab.note_log_tail(&mut r);
+        common::stop_child(&lab.sock(), &mut d);
         return r.finish();
     };
     let late = st["slow_replies"].as_u64().unwrap_or(0) - late0;
@@ -875,6 +877,7 @@ fn memory_soak_stays_in_the_rss_band_under_the_cap_with_no_recycle() {
     r.check("daemon alive for the whole soak", gone_at.map_or("yes".to_string(), |c| format!("gone by call {c}")), "yes", gone_at.is_none());
     if gone_at.is_some() {
         lab.note_log_tail(&mut r);
+        common::stop_child(&lab.sock(), &mut d);
         r.finish();
         return;
     }
