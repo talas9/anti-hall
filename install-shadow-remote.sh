@@ -20,6 +20,9 @@
 #   sh install-shadow-remote.sh --live             go LIVE: build engine-proto, install it as the anti-hall plugin (engine decides, Node falls
 #                                                  back), remove the shadow triggers, add the Node witness (live/node-shadow.sh), keep telemetry sync
 #   sh install-shadow-remote.sh --rollback-live    undo --live byte-identically (settings.json, plugin state); the shadow works again
+#   --live also takes --channel dev|stable (the latest attested pre-release / release from GitHub) or --from FILE [--sha256 X] [--yes] (an
+#   offline engine archive or binary); they delegate to hooks/ah-update.sh of the branch. When already live, --live no longer needs
+#   --rollback-live first: it re-applies through the kit (bundle + go-live), by default with --channel dev. Undo: ah-update.sh --rollback.
 #   (--status shows MODE: LIVE or SHADOW)   --live options: --live-select all-agreeing|none|id,id  --live-branch NAME (engine-proto)  --live-repo URL
 #   --live fetches the engine WITHOUT compiling: --bin PATH, else the prebuilt binary the ah-engine-bins workflow built for the exact
 #   engine-proto commit (needs an authenticated `gh`; sha256-verified). Compiling is a last resort and only with --allow-build or
@@ -68,6 +71,7 @@ esac
 
 # ---------------------------------------------------------------- args
 ALLOW_BUILD=${AH_LIVE_BUILD:-0}; BUILD_JOBS=${AH_BUILD_JOBS:-2}
+CHANNEL=; FROMF=; SHA256=; YES=0
 MODE=install; BIN=; FORCE=0; REPO=; NOSYNC=0; LIVE_SELECT=all-agreeing; LIVE_BRANCH=engine-proto; LIVE_REPO=
 LIVE_MIN_VERSION=0.202.0     # engine-proto 8c9a332 builds plugin 0.202.0; anything older lacks the thin triggers / defaults layout
 while [ "$#" -gt 0 ]; do
@@ -78,6 +82,10 @@ while [ "$#" -gt 0 ]; do
     --status) MODE=status ;;
     --live) MODE=live ;;
     --allow-build) ALLOW_BUILD=1 ;;
+    --channel) [ "$#" -ge 2 ] || die "--channel needs stable or dev"; CHANNEL=$2; shift ;;
+    --from) [ "$#" -ge 2 ] || die "--from needs a file"; FROMF=$2; shift ;;
+    --sha256) [ "$#" -ge 2 ] || die "--sha256 needs a value"; SHA256=$2; shift ;;
+    --yes) YES=1 ;;
     --rollback-live) MODE=rollbacklive ;;
     --live-select) [ "$#" -ge 2 ] || die "--live-select needs a value"; LIVE_SELECT=$2; shift ;;
     --live-branch) [ "$#" -ge 2 ] || die "--live-branch needs a name"; LIVE_BRANCH=$2; shift ;;
@@ -732,12 +740,17 @@ cmd_live() {
   for t in git node; do command -v "$t" >/dev/null 2>&1 || die "$t not found (--live needs git and node)"; done
   command -v "${AH_LIVE_CLAUDE:-claude}" >/dev/null 2>&1 || die "claude CLI not found on PATH (the plugin is installed through it); set AH_LIVE_CLAUDE if it lives elsewhere"
   [ -f "$SRC_KIT/go-live.sh" ] && [ -f "$SRC_KIT/node-shadow.sh" ] && [ -f "$SRC_KIT/node-shadow.skip" ] && [ -f "$SRC_KIT/reload-notice.sh" ] || die "$SRC_KIT is missing: git pull the $BRANCH branch next to this script"
-  [ ! -f "$LIVEKIT/state/live.json" ] || die "already live ($LIVEKIT/state/live.json). To update: sh $0 --rollback-live, git pull, sh $0 --live"
+  ALREADY_LIVE=0; [ -f "$LIVEKIT/state/live.json" ] && ALREADY_LIVE=1   # already live: the engine and plugin are updated through hooks/ah-update.sh (no rollback first)
+  case "$CHANNEL" in ""|stable|dev) ;; *) die "--channel must be stable or dev" ;; esac
+  [ -z "$CHANNEL" ] || [ -z "$FROMF" ] || die "--channel and --from are alternatives"
+  [ -z "$FROMF" ] || [ -f "$FROMF" ] || die "--from: no such file: $FROMF"
   [ -d "$D/update.lock" ] && { updater --stop || die "could not stop the running shadow update"; }   # a running/stuck updater is stopped (it keeps the installed version), never a reason to refuse
   if [ -f "$MARK" ]; then emit_helpers; install_scripts || die "could not refresh the shadow helper scripts"; init_config; fi   # sync.sh learns live.conf
   mkdir -p "$LIVEKIT/state" || die "cannot create $LIVEKIT"
-  for f in lib.sh go-live.sh rollback.sh status.sh node-shadow.sh node-shadow.skip agreed-checks.txt reload-notice.sh; do cp "$SRC_KIT/$f" "$LIVEKIT/$f.new" && mv -f "$LIVEKIT/$f.new" "$LIVEKIT/$f" || die "cannot install $f"; done
-  chmod +x "$LIVEKIT"/*.sh
+  if [ "$ALREADY_LIVE" = 0 ]; then
+    for f in lib.sh go-live.sh rollback.sh status.sh node-shadow.sh node-shadow.skip agreed-checks.txt reload-notice.sh; do cp "$SRC_KIT/$f" "$LIVEKIT/$f.new" && mv -f "$LIVEKIT/$f.new" "$LIVEKIT/$f" || die "cannot install $f"; done
+    chmod +x "$LIVEKIT"/*.sh
+  fi
   # 1 the source: engine-proto (newer or equal to 8c9a332), cloned over SSH then HTTPS like the shadow
   LS="$LIVEKIT/src"; urls=$REPO_SSH; https=$REPO_HTTPS; [ -n "$LIVE_REPO" ] && { urls=$LIVE_REPO; https=; }
   ok=0
@@ -762,9 +775,40 @@ cmd_live() {
   pv=$(node -p 'require(process.argv[1]).version' "$PR/.claude-plugin/plugin.json") || die "cannot read the plugin version"
   node -e 'const a=process.argv[1].split(".").map(Number),b=process.argv[2].split(".").map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))process.exit((a[i]||0)>(b[i]||0)?0:1)}' "$pv" "$LIVE_MIN_VERSION" || die "plugin $pv on $LIVE_BRANCH is older than $LIVE_MIN_VERSION (engine-proto 8c9a332)"
   say "source: $LIVE_BRANCH $lc (plugin $pv)"
+  # ah-update arguments for --channel / --from / --bin (empty: none given)
+  AU="$PR/hooks/ah-update.sh"; AUARGS=
+  if [ -n "$FROMF" ]; then AUARGS="--from $FROMF"; [ -z "$SHA256" ] || AUARGS="$AUARGS --sha256 $SHA256"; [ "$YES" = 0 ] || AUARGS="$AUARGS --yes"
+  elif [ -n "$CHANNEL" ]; then AUARGS="--channel $CHANNEL"
+  elif [ "$ALREADY_LIVE" = 1 ] && [ -n "$BIN" ]; then AUARGS="--from $BIN --yes"   # --bin is trusted to match the branch tip (as without --live)
+  elif [ "$ALREADY_LIVE" = 1 ]; then AUARGS="--channel dev"
+  fi
+  if [ "$ALREADY_LIVE" = 1 ]; then
+    [ -f "$AU" ] || die "already live, and branch $LIVE_BRANCH ($lc) has no hooks/ah-update.sh yet. Update the old way: sh $0 --rollback-live, then sh $0 --live"
+    say "already live: updating through hooks/ah-update.sh ($AUARGS)"
+    # shellcheck disable=SC2086 # AUARGS is a list of words by construction
+    sh "$AU" $AUARGS --live-select "$LIVE_SELECT" </dev/null; rc=$?
+    return "$rc"
+  fi
   # 2 the engine binary: --bin, else the prebuilt CI artifact for exactly $lc (gh), else build ONLY when allowed (--allow-build / AH_LIVE_BUILD=1)
   STB="$TMPD/live-bin"
-  if [ -n "$BIN" ]; then cp "$BIN" "$STB" || die "cannot copy --bin"; say "using prebuilt binary $BIN (assumed to match $lc)"
+  if [ -n "$AUARGS" ]; then
+    [ -f "$AU" ] || die "branch $LIVE_BRANCH ($lc) has no hooks/ah-update.sh yet; use --bin PATH"
+    # shellcheck disable=SC2086
+    sh "$AU" $AUARGS --extract-to "$STB" </dev/null || die "hooks/ah-update.sh could not provide a verified engine ($AUARGS)"
+    if [ -f "$STB.commit" ]; then   # a dev pre-release records the commit it was built from: take the plugin from exactly that commit
+      uc=$(tr -d ' \n\r' <"$STB.commit")
+      if [ -n "$uc" ] && [ "$uc" != "$lc" ]; then
+        say "the engine was built from $uc: fetching that commit for the plugin"
+        okc=0
+        for u in $urls $https; do
+          if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" ilim 180 git -C "$LS" fetch -q --depth 1 "$u" "$uc" 2>"$TMPD/clone.err" && ilim 60 git -C "$LS" reset -q --hard FETCH_HEAD; then okc=1; break; fi
+        done
+        [ "$okc" = 1 ] || die "cannot fetch commit $uc from $urls $https"
+        lc=$(git -C "$LS" rev-parse HEAD); say "source is now $lc"
+        pv=$(node -p 'require(process.argv[1]).version' "$PR/.claude-plugin/plugin.json") || die "cannot read the plugin version at $lc"
+      fi
+    fi
+  elif [ -n "$BIN" ]; then cp "$BIN" "$STB" || die "cannot copy --bin"; say "using prebuilt binary $BIN (assumed to match $lc)"
   elif live_download_bin "$lc" "$STB"; then :
   elif [ "$ALLOW_BUILD" != 1 ]; then
     die "no prebuilt engine for $lc: $DL_WHY. Supply one with --bin PATH (built by the ah-engine-bins workflow), or after 'gh auth login' re-run this; to compile locally anyway (slow, heavy) add --allow-build or set AH_LIVE_BUILD=1"
