@@ -69,7 +69,7 @@
     "plugins/anti-hall/companion/mcp-reaper.js": "f42b4967ab637ea05d09d8d8f94d696a5084c37dfc5e5acf7072077e7da6eec9",
     "plugins/anti-hall/hooks/agent-watchdog.js": "b6e056d5367791dcc7e807baf888caa619f22edc60cb07014a66caec6acbdc65",
     "plugins/anti-hall/hooks/api-guard.js": "cea932fde6a88197fa1de1d2fd9132ad9407c035b1209e3acf43fd30518f8145",
-    "plugins/anti-hall/hooks/command-guard.js": "8a06d33d4c90d678f8edeb0c168b1f55b1630f96f7b00e88c7658572d87d5399",
+    "plugins/anti-hall/hooks/command-guard.js": "c64f7a686bf84526e93f93dd1728ab1e464905d653f888017e5b63574057ba20",
     "plugins/anti-hall/hooks/coordinator-detect.js": "e61dc7c1ac58673c855682b192dcbb2a73e9ae593592969a48bccc83da7ba371",
     "plugins/anti-hall/hooks/devswarm-version-refresh.js": "4f660d4d3c3979bf79cfdda3834ce80394aa2fbcb72221936ef521e9ef42da88",
     "plugins/anti-hall/hooks/devswarm-version.js": "733f7c61503d7d54aca7600f2d2f3cb9de6669245fada495d5153fe098760340",
@@ -147,7 +147,7 @@
     "plugins/anti-hall/statusline/statusline.js": "ef855854349c8ef5e2144ae5d6eef8cd411b7e419939ab0ec3bd4dba1d2f3d1a",
     "plugins/anti-hall/statusline/uninstall-statusline.js": "d52e32b54a07a12eaf71b19c362fdc7dad6eb6d844ae64b6be429bd0b1f3f389"
   },
-  "fingerprint": "4188f03381717033bb7079dac7d9dcac20f8e6abe4e8dc55e252e52045b0b96e",
+  "fingerprint": "3e29a7e15a655aa987a54cf17754f38982c7f5f803d19e330e3f250d267e73e3",
   "os": "macos-aarch64",
   "record": "AH_RECORD_NODE=1 cargo nextest run --release --profile record -E 'test(<the lane's test>)'  # lane api-guard",
   "test": "api-guard",
