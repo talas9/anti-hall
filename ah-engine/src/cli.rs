@@ -226,6 +226,10 @@ pub fn run(args: &[String]) -> i32 {
         if p.json && !p.command.is_empty() {
             println!("{}", json!({"error": defaults::render("msg.cli_unknown", &[("command", &p.command)]), "usage": usage}));
         } else {
+            // what was typed and why it failed, then the usage line as the hint (a bare `ah-engine` just prints the usage)
+            if !p.command.is_empty() {
+                eprintln!("{}", defaults::render("msg.cli_unknown", &[("command", &p.command)]));
+            }
             eprintln!("{usage}");
         }
         return 64;

@@ -11,7 +11,7 @@ use std::process::Command;
 pub fn run(p: &Parsed) -> i32 {
     let env = crate::ops::env_snapshot();
     let Some(root) = crate::ops::plugin_root(&env) else {
-        super::warn(&defaults::render("engine_update.msg_no_script", &[("path", &defaults::text("engine_update.script"))]));
+        super::warn(&defaults::render("engine_update.msg_no_plugin", &[("script", &defaults::text("engine_update.script"))]));
         return 1;
     };
     let script = std::path::Path::new(&root).join(defaults::text("engine_update.script"));

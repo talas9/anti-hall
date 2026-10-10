@@ -464,7 +464,7 @@ value = "{command} is planned ({decision}) and is not implemented yet"
 
 [msg.cli_unknown]
 doc = "Printed to stderr for an unknown command. Placeholder: {command}."
-value = "unknown command {command}"
+value = "ah-engine: unknown command '{command}'"
 
 [msg.cli_not_running]
 doc = "Printed in place of a report when no daemon is running (`--json` output carries running=false)."

@@ -44,5 +44,40 @@ fn a_missing_script_is_reported_and_fails() {
     let (code, _, err) = run(&root, &["--auto"]);
     assert_eq!(code, 1);
     assert!(err.contains("the updater script is missing"), "{err}");
+    three_parts(&err);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Every failure message says what failed, the state it left, and one next step (#143).
+fn three_parts(msg: &str) {
+    let lines: Vec<&str> = msg.lines().collect();
+    assert!(lines.first().is_some_and(|l| l.starts_with("engine-update: ") && l.len() > "engine-update: ".len()), "what failed: {msg}");
+    assert!(lines.iter().any(|l| l.starts_with("  state: ") && l.len() > "  state: ".len()), "current state: {msg}");
+    assert!(lines.iter().any(|l| l.starts_with("  next: ") && l.len() > "  next: ".len()), "next step: {msg}");
+}
+
+#[test]
+fn every_failure_message_of_the_verb_says_what_failed_the_state_and_the_next_step() {
+    ah_engine::defaults::init().unwrap();
+    three_parts(&ah_engine::defaults::render("engine_update.msg_no_script", &[("path", &"/p/hooks/ah-update.sh")]));
+    three_parts(&ah_engine::defaults::render("engine_update.msg_spawn_failed", &[("path", &"/p/hooks/ah-update.sh"), ("why", &"No such file")]));
+    three_parts(&ah_engine::defaults::render("engine_update.msg_no_plugin", &[("script", &"hooks/ah-update.sh")]));
+}
+
+#[test]
+fn an_unknown_command_names_it_and_prints_the_usage_hint() {
+    let root = scratch_root("unknown");
+    let out = Command::new(BIN)
+        .arg("no-such-verb")
+        .env("HOME", root.join("home"))
+        .env("AH_ENGINE_DIR", root.join("state"))
+        .env("AH_ENGINE_PLUGIN_ROOT", &root)
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(64), "{err}");
+    assert!(err.contains("unknown command 'no-such-verb'"), "what failed: {err}");
+    assert!(err.contains("usage: ah-engine "), "the hint: {err}");
     std::fs::remove_dir_all(&root).ok();
 }
