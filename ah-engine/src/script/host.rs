@@ -54,18 +54,16 @@
 
 use crate::checks::compact_decl::{contains_ci, read_tail, turn_texts};
 use crate::checks::git::util::Settings;
-use crate::checks::guardkit::{jsre, paths, settings};
+use crate::checks::guardkit::{paths, settings};
 use crate::defaults;
 use regex::Regex;
 use rquickjs::{Ctx, Error, Function, Object};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 thread_local! {
     static CALL: RefCell<Option<Settings>> = const { RefCell::new(None) };
-    static RES: RefCell<HashMap<(String, String), Regex>> = RefCell::new(HashMap::new());
 }
 
 /// Let the interrupt handler know which deadline belongs to the call in progress (`None` when it ends).
@@ -139,33 +137,15 @@ fn entry(key: &str) -> rquickjs::Result<&'static defaults::Entry> {
     defaults::get(key).ok_or_else(|| err("cfg", defaults::render("script.msg_unknown_key", &[("key", &key)])))
 }
 
-/// Patterns this thread's regex cache holds (for the memory snapshot).
+/// Patterns the shared regex cache holds (for the memory snapshot).
 pub(super) fn regex_cache_len() -> usize {
-    RES.with(|c| c.borrow().len())
+    super::recache::usage().0
 }
 
-/// Compile (cached) a pattern for `flags`.
+/// Run `f` on the compiled pattern for `flags` (shared cache, see [`super::recache`]).
 pub(super) fn with_re<R>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
-    RES.with(|cache| {
-        let mut m = cache.borrow_mut();
-        let key = (src.to_string(), flags.to_string());
-        if !m.contains_key(&key) {
-            let re = if flags.contains('r') {
-                Regex::new(src).ok()
-            } else if flags.contains('m') {
-                // JavaScript syntax with the `m` flag: `^` and `$` match at line boundaries
-                Regex::new(&format!("(?m:{})", jsre::translate(src, flags.contains('i')))).ok()
-            } else {
-                jsre::try_compile(src, flags.contains('i'))
-            }
-            .ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
-            if m.len() >= defaults::num("script.regex_cache_max") as usize {
-                m.clear();
-            }
-            m.insert(key.clone(), re);
-        }
-        Ok(f(&m[&key]))
-    })
+    let re = super::recache::get(src, flags)?;
+    Ok(f(&re))
 }
 
 /// UTF-16 length of `s[..byte]`.
