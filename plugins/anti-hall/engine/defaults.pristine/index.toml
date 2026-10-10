@@ -75,6 +75,7 @@ files = [
     "operator_cli.toml",
     "wake_watch.toml",
     "refresh.toml",
+    "engine_update.toml",
     "guards_v1.toml",
     "units.toml",
     "guards_l12.toml",

@@ -58,6 +58,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `version` | `` | yes | implemented | Print the version this build reports. |
 | `mcp-reaper` | `run [--dry-run]` | no | implemented | The standalone MCP orphan reaper as an engine command (the port of companion/mcp-reaper.js): `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line. |
 | `refresh` | `[--force] [--home <dir>]` | no | implemented | Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert), the Claude Code and DevSwarm CLI versions (the drift probes) and the reload repair (repair-on-reload), each as a bounded subprocess; `--force` runs every probe whether requested or not (never the repair unless requested). Prints one result per probe. The scheduler runs it every refresh.every_ms. |
+| `engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` | no | implemented | Update the engine binary: runs the plugin's updater script (hooks/ah-update.sh) with the given arguments (--from FILE [--sha256 X] [--yes] \| --channel stable\|dev \| --rollback \| --auto \| --dry-run). The engine itself does no network access. |
 | `units` | `<status\|install\|heal\|uninstall> [--dry-run] [--bin <path>]` | no | implemented | The engine's service units: `status` lists the engine unit and the units the Node installers wrote, with whether the engine runs their duty; `install` writes (or refreshes) the one unit that keeps `ah-engine serve` running (launchd on macOS, a systemd user service and timer on Linux) and loads it; `heal` installs and then retires each Node unit whose duty the engine runs (the MCP reaper when its job is on, the DevSwarm supervisor and ingest when devswarm_sup.mode / devswarm_ingest.mode is engine); `uninstall` unloads the engine unit. `--dry-run` reports and changes nothing; `--bin <path>` names the engine binary the unit runs. A removed unit file is moved into the state directory, never deleted. A retired unit that comes back is recorded as a mistake and left alone. |
 
 ## Socket protocol
@@ -965,8 +966,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `schedule.action_args` | `2 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
-| `schedule.actions` | `15 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.action_args` | `3 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
+| `schedule.actions` | `16 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
@@ -975,7 +976,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `schedule.maintain_ms` | `86400000` | `AH_ENGINE_MAINTAIN_MS` | ms | Interval of the maintain job (D26); 0 turns it off. |
 | `schedule.procwatch_ms` | `30000` | `AH_ENGINE_PROCWATCH_MS` | ms | Interval of the process watch job (resource sampling; orphan scans run every procwatch.scan_every_s); 0 turns it off. |
 | `schedule.run_wait_ms` | `5000` |  | ms | How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms. |
-| `schedule.subprocess_actions` | `8 items` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
+| `schedule.subprocess_actions` | `9 items` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
 | `schedule.telemetry_rollup_ms` | `86400000` | `AH_ENGINE_TELEMETRY_ROLLUP_MS` | ms | Interval of the telemetry rollup job (D78); 0 turns it off. |
 | `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
 | `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
@@ -8991,6 +8992,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `refresh.tag_re` | `refs/tags/(v?[0-9]+\.[0-9]+\.[0-9]+)$` |  |  | A release tag line of `git ls-remote --tags` (a trailing CR is stripped first); group 1 is the tag. Peeled refs never match. |
 | `refresh.tag_remote` | `https://github.com/talas9/anti-hall` |  |  | The remote the version probe asks first (live network), as hooks/version-alert-refresh.js. |
 | `refresh.version_arg` | `--version` |  |  | The argument that makes a CLI print its version. |
+
+### engine_update.toml / engine_update
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `engine_update.every_ms` | `21600000` | `AH_ENGINE_UPDATE_MS` | ms | How often the job starts the updater's automatic check; the script's own daily limit decides whether it does any work. 0 turns the job off. |
+| `engine_update.msg_no_script` | `engine-update: the updater script is missing: {path} (update the anti-hall pl...` |  |  | Printed when the updater script is missing from the plugin root. Placeholders: {path}. |
+| `engine_update.msg_spawn_failed` | `engine-update: cannot run {path}: {why}` |  |  | Printed when the updater script cannot be started. Placeholders: {path}, {why}. |
+| `engine_update.script` | `hooks/ah-update.sh` |  |  | The updater script, relative to the plugin root. |
+| `engine_update.shell` | `sh` |  |  | The shell that runs the updater script. |
+
+### engine_update.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.engine_update` | `11 entries` |  |  | Automatic engine update check: runs `ah-engine engine-update --auto --json` as a subprocess. A no-op unless the setting engine.autoUpdate is stable or dev; the script limits itself to one check a day. Off when engine_update.every_ms is 0. |
 
 ### guards_v1.toml / api_guard_v1
 

@@ -41,6 +41,7 @@ mod dssup_liveness;
 mod dssup_retention;
 mod durability;
 mod e2e;
+mod engine_update;
 mod fail_closed_matrix;
 mod fallback_read;
 mod flip_parity;

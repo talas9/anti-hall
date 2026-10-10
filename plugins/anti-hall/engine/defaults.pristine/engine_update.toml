@@ -1,0 +1,36 @@
+# ah-engine shipped defaults for `ah-engine engine-update` and the `engine_update` scheduler job (issue #140). Format: see the header of engine.toml.
+#
+# The engine has no network code. `engine-update` only runs the plugin's updater script (`hooks/ah-update.sh`, POSIX sh) with the
+# arguments it was given, so a broken engine can still be fixed with the script by hand. The script reads its own URLs, timeouts and
+# channel names from `engine/ah-update.toml`. The scheduler job runs `engine-update --auto`: the script then does nothing unless the
+# setting `engine.autoUpdate` is `stable` or `dev`, and limits itself to one check per `auto_interval_s` (ah-update.toml).
+
+[cmd.engine-update]
+doc = "Update the engine binary: runs the plugin's updater script (hooks/ah-update.sh) with the given arguments (--from FILE [--sha256 X] [--yes] | --channel stable|dev | --rollback | --auto | --dry-run). The engine itself does no network access."
+value = { args = "--from <file> [--sha256 <x>] [--yes] | --channel <stable|dev> | --rollback | --auto [--dry-run] [--no-restart]", read_only = false, status = "implemented" }
+
+[job.engine_update]
+doc = "Automatic engine update check: runs `ah-engine engine-update --auto --json` as a subprocess. A no-op unless the setting engine.autoUpdate is stable or dev; the script limits itself to one check a day. Off when engine_update.every_ms is 0."
+value = { kind = "engine", action = "engine_update", every_key = "engine_update.every_ms", jitter_ms = 600000, timeout_ms = 900000, retries = 0, backoff_ms = 60000, backoff_max_ms = 600000, cooldown_ms = 3600000, catch_up = "skip", persist = false }
+
+[engine_update.every_ms]
+doc = "How often the job starts the updater's automatic check; the script's own daily limit decides whether it does any work. 0 turns the job off."
+value = 21600000
+env = "AH_ENGINE_UPDATE_MS"
+unit = "ms"
+
+[engine_update.script]
+doc = "The updater script, relative to the plugin root."
+value = "hooks/ah-update.sh"
+
+[engine_update.shell]
+doc = "The shell that runs the updater script."
+value = "sh"
+
+[engine_update.msg_no_script]
+doc = "Printed when the updater script is missing from the plugin root. Placeholders: {path}."
+value = "engine-update: the updater script is missing: {path} (update the anti-hall plugin, or run the script from a plugin checkout)"
+
+[engine_update.msg_spawn_failed]
+doc = "Printed when the updater script cannot be started. Placeholders: {path}, {why}."
+value = "engine-update: cannot run {path}: {why}"
