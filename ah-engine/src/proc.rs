@@ -133,7 +133,13 @@ fn kill_group(child: &mut std::process::Child) {
 pub fn run(mut cmd: Command, what: &str, timeout: Duration, poll: Duration) -> Result<Output, Error> {
     apply_git_env(&mut cmd);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
-    let mut child = match cmd.spawn() {
+    let _proc = crate::prof::span(crate::prof::Stage::Proc);
+    let _git = crate::prof::on().then(|| what.rsplit('/').next().is_some_and(|b| b.starts_with("git")).then(|| crate::prof::span(crate::prof::Stage::Git))).flatten();
+    crate::prof::proc_started();
+    let spawn = crate::prof::span(crate::prof::Stage::Spawn);
+    let spawned = cmd.spawn();
+    drop(spawn);
+    let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
             let detail = defaults::render("msg.log_proc_spawn", &[("what", &what), ("code", &format!("os{}", e.raw_os_error().unwrap_or(0))), ("err", &e)]);
@@ -162,6 +168,7 @@ fn wait_out(
     poll: Duration,
 ) -> Result<Output, Error> {
     let start = Instant::now();
+    let wait_span = crate::prof::span(crate::prof::Stage::Wait);
     // The exit is observed WITHOUT reaping (waitid + WNOWAIT): until the child is reaped its pid, and so its group id, stays
     // reserved, so every killpg below hits our group or nothing, never an unrelated group that reused the number (P2-5).
     loop {
@@ -179,6 +186,8 @@ fn wait_out(
             }
         }
     }
+    drop(wait_span);
+    let _collect = crate::prof::span(crate::prof::Stage::Collect);
     // the output is collected until the pipe closes within what is left of the timeout (never less than the grace), as Node's
     // spawnSync bounds the whole run by its timeout: a pipe a helper of the command closes late must not turn a finished
     // command's output into an unread one (live2 684f526, ported onto this runner)

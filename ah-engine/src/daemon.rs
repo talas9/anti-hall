@@ -312,6 +312,8 @@ impl Shared {
             "heap_live_kb": heap.live / 1024,
             "heap_peak_kb": heap.peak / 1024,
             "allocs": heap.allocs,
+            "js": crate::prof::js::report(),
+            "jemalloc": crate::memstat::jemalloc_stats(),
             "components": {
                 "guard_state_entries": crate::checks::guardkit::state::entries(),
                 "hookcfg_session_counters": crate::hookcfg::session::global().len(),
@@ -617,13 +619,18 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
 /// same rate limits and telemetry as a hook request. The reply lists each check's answer; the client runs the rest.
 fn dispatch(body: &str, sh: &Shared) -> Reply {
     let started = Instant::now();
+    let parse_span = crate::prof::span(crate::prof::Stage::Parse);
     let (meta, raw) = body.split_once('\n').unwrap_or((body, ""));
-    let (Ok(meta), Ok(p)) = (serde_json::from_str::<crate::dispatch::native::Meta>(meta), serde_json::from_str::<serde_json::Value>(raw)) else {
+    let parsed = (serde_json::from_str::<crate::dispatch::native::Meta>(meta), serde_json::from_str::<serde_json::Value>(raw));
+    drop(parse_span);
+    let (Ok(meta), Ok(p)) = parsed else {
         sh.stats.errors.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("errors", &[]));
         sh.telemetry.fallback("malformed", "");
         return Reply::Err(defaults::text("msg.reply_malformed").into());
     };
+    let pre_span = crate::prof::span(crate::prof::Stage::Pre);
+    crate::prof::note_tool(meta.tool.as_deref().unwrap_or(""));
     if let Some(root) = meta.root.as_deref() {
         sh.config.offer_root(root);
     }
@@ -635,7 +642,9 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
     crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
-    if !lk(&sh.sessions).allow(session) || !lk(&sh.projects).allow(&pkey) {
+    let allowed = lk(&sh.sessions).allow(session) && lk(&sh.projects).allow(&pkey);
+    drop(pre_span);
+    if !allowed {
         sh.stats.busy.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
         sh.telemetry.fallback("busy", &phash);
@@ -651,6 +660,7 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     let observe = |e: &crate::dispatch::table::Entry, a: &crate::dispatch::native::Answer, micros: u64| {
         use crate::checks::Verdict;
         use crate::dispatch::native::Answer;
+        let _obs = crate::prof::span(crate::prof::Stage::Observe);
         let check = e.check.as_deref().unwrap_or("");
         let v = match a {
             Answer::Defer => Verdict::Defer,
@@ -673,6 +683,7 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     };
     let answers = crate::dispatch::native::evaluate(&meta, &p, &observe);
     sh.telemetry.observe_hook(&meta.event, started.elapsed().as_micros() as u64);
+    let _enc = crate::prof::span(crate::prof::Stage::Encode);
     Reply::Ok(crate::dispatch::native::encode(&answers))
 }
 
@@ -824,10 +835,15 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     let started = Instant::now();
     crate::load::take_scan();
     crate::load::take_request();
+    crate::prof::refresh();
+    crate::prof::begin();
     let cfg = sh.cfg();
     // the client stops waiting `client.deadline_ms` after it sent the request, which is about when it was accepted
     crate::deadline::begin(started.checked_sub(wait).unwrap_or(started));
-    let req = match read_request(&mut s, &cfg) {
+    let read_span = crate::prof::span(crate::prof::Stage::Read);
+    let read = read_request(&mut s, &cfg);
+    drop(read_span);
+    let req = match read {
         Ok(r) => r,
         Err(why) => {
             sh.stats.errors.fetch_add(1, SeqCst);
@@ -849,7 +865,9 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         }
     };
     let late = crate::deadline::remaining() == Some(Duration::ZERO);
+    let write_span = crate::prof::span(crate::prof::Stage::Write);
     let delivered = write_reply(&mut s, &reply, &cfg);
+    drop(write_span);
     if delivered {
         sh.telemetry.stage_commit();
     } else {
@@ -864,6 +882,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     }
     crate::deadline::end();
     let (event, session) = crate::load::take_request();
+    crate::prof::finish(&event, wait.as_micros() as u64, started.elapsed().as_micros() as u64, late);
     sh.load.record(&crate::load::Sample {
         at_ms: health::now_ms(),
         wait_us: wait.as_micros() as u64,

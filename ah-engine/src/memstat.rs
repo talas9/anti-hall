@@ -91,3 +91,37 @@ pub fn heap() -> Heap {
 pub fn reset_peak() {
     PEAK.store(LIVE.load(Relaxed), Relaxed);
 }
+
+/// Profiling only (`--features prof`): jemalloc's own statistics in bytes, to tell live data from retained pages.
+/// `allocated` is what the program holds, `active` the pages those sit in, `resident` what the allocator keeps mapped and
+/// resident, `mapped` all it has mapped, `retained` address space it keeps without returning it to the OS.
+#[cfg(all(feature = "prof", any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu"))))]
+pub fn jemalloc_stats() -> serde_json::Value {
+    use std::ffi::c_void;
+    fn read(name: &str) -> Option<u64> {
+        let key = std::ffi::CString::new(name).ok()?;
+        let (mut v, mut len) = (0u64, std::mem::size_of::<u64>());
+        // SAFETY: `key` is a valid NUL-terminated name, and `v`/`len` describe a writable u64 as mallctl's read contract requires.
+        let rc = unsafe { tikv_jemalloc_sys::mallctl(key.as_ptr(), (&raw mut v).cast::<c_void>(), &raw mut len, std::ptr::null_mut(), 0) };
+        (rc == 0).then_some(v)
+    }
+    fn advance() {
+        let key = c"epoch";
+        let mut e = 1u64;
+        let mut len = std::mem::size_of::<u64>();
+        // SAFETY: as in `read`; the epoch is read and written as a u64, which refreshes the cached statistics.
+        unsafe { tikv_jemalloc_sys::mallctl(key.as_ptr(), (&raw mut e).cast::<c_void>(), &raw mut len, (&raw mut e).cast::<c_void>(), len) };
+    }
+    advance();
+    let mut o = serde_json::Map::new();
+    for k in ["allocated", "active", "metadata", "resident", "mapped", "retained"] {
+        o.insert(k.into(), read(&format!("stats.{k}")).map_or(serde_json::Value::Null, Into::into));
+    }
+    serde_json::Value::Object(o)
+}
+
+/// Without `--features prof` there are no allocator statistics.
+#[cfg(not(all(feature = "prof", any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu")))))]
+pub fn jemalloc_stats() -> serde_json::Value {
+    serde_json::Value::Null
+}
