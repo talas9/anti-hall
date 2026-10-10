@@ -161,7 +161,28 @@ fn jev_ask(spec: &str) -> rquickjs::Result<Option<String>> {
     if flag("sync") {
         req.env = Some(env.clone());
         let started = std::time::Instant::now();
-        let d = crate::jev::shared::lane(home, &env).ask(&req);
+        let Some(lane) = crate::jev::shared::lane(home, &env) else {
+            super::host::credit_blocking(started);
+            if flag("full") {
+                return Ok(Some(
+                    serde_json::json!({
+                        "outcome": req.baseline,
+                        "jev": serde_json::Value::Null,
+                        "baseline": req.baseline,
+                        "confidence": serde_json::Value::Null,
+                        "confident": serde_json::Value::Null,
+                        "ms": 0,
+                        "backend": "baseline",
+                        "reason": "busy",
+                        "hash": "",
+                        "changed": false
+                    })
+                    .to_string(),
+                ));
+            }
+            return Ok(Some(req.baseline.to_string()));
+        };
+        let d = lane.ask(&req);
         super::host::credit_blocking(started);
         return Ok(Some(shape(&d)));
     }

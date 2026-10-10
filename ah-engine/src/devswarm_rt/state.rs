@@ -10,6 +10,7 @@ use crate::defaults;
 use crate::devswarm_rt::sources::{AppBuilder, AppPr, AppRead, GhPr, GithubState, Probe};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::mem::size_of;
 
 /// The settings the derivation needs, read once from `devswarm_rt.*` (tests build their own).
 #[derive(Debug, Clone, PartialEq)]
@@ -231,6 +232,26 @@ pub struct Workspace {
     pub pr: Field<Option<PrView>>,
 }
 
+impl Workspace {
+    /// Estimated retained bytes for the memory registry. It intentionally counts heap strings and enum payloads; exact allocator
+    /// overhead is not needed for cap enforcement.
+    pub fn estimated_bytes(&self) -> usize {
+        size_of::<Workspace>()
+            + self.id.len()
+            + opt_str(&self.label)
+            + opt_str(&self.worktree)
+            + opt_str(&self.branch)
+            + opt_str(&self.repo)
+            + self.lifecycle.estimated_bytes()
+            + self.paused.estimated_bytes()
+            + self.activity.estimated_bytes()
+            + self.unread.estimated_bytes()
+            + self.plan_step.estimated_bytes()
+            + self.last_activity_ms.estimated_bytes()
+            + self.pr.estimated_bytes()
+    }
+}
+
 /// All workspaces at one generation.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -244,6 +265,13 @@ pub struct Snapshot {
     pub app_readable: bool,
     /// Every workspace by id.
     pub workspaces: BTreeMap<String, Workspace>,
+}
+
+impl Snapshot {
+    /// Estimated retained bytes for the snapshot map and its workspace records.
+    pub fn estimated_bytes(&self) -> usize {
+        size_of::<Snapshot>() + self.workspaces.iter().map(|(k, v)| k.len() + v.estimated_bytes()).sum::<usize>()
+    }
 }
 
 /// What can change.
@@ -304,6 +332,80 @@ pub struct Edge {
     pub while_down: bool,
     /// A notifier must not announce it before this time, and only if the condition still holds (0: no hold).
     pub hold_until_ms: i64,
+}
+
+impl Edge {
+    /// Estimated retained bytes for one edge.
+    pub fn estimated_bytes(&self) -> usize {
+        size_of::<Edge>() + self.ws.len() + self.from.len() + self.to.len()
+    }
+}
+
+fn opt_str(v: &Option<String>) -> usize {
+    v.as_ref().map_or(0, String::len)
+}
+
+/// Estimated retained bytes for values embedded in a realtime field.
+pub trait RetainedBytes {
+    /// Estimated retained bytes of this value.
+    fn estimated_bytes(&self) -> usize;
+}
+
+impl<T: RetainedBytes> RetainedBytes for Option<T> {
+    fn estimated_bytes(&self) -> usize {
+        self.as_ref().map_or(0, RetainedBytes::estimated_bytes)
+    }
+}
+
+impl RetainedBytes for String {
+    fn estimated_bytes(&self) -> usize {
+        self.len()
+    }
+}
+
+impl RetainedBytes for usize {
+    fn estimated_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl RetainedBytes for i64 {
+    fn estimated_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl RetainedBytes for Lifecycle {
+    fn estimated_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl RetainedBytes for Activity {
+    fn estimated_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl RetainedBytes for Paused {
+    fn estimated_bytes(&self) -> usize {
+        match self {
+            Paused::Maybe(s) | Paused::Yes(s) => s.len(),
+            Paused::No | Paused::Unknown => 0,
+        }
+    }
+}
+
+impl RetainedBytes for PrView {
+    fn estimated_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl<T: RetainedBytes> Field<T> {
+    fn estimated_bytes(&self) -> usize {
+        size_of::<Field<T>>() + self.value.estimated_bytes() + self.sig.len()
+    }
 }
 
 /// The sources one derivation reads.

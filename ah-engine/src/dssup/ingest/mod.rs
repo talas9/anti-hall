@@ -22,12 +22,14 @@ pub mod witness;
 use crate::checks::git::util::Settings;
 use crate::defaults;
 use crate::dsact::runner::{Runner, System};
+use crate::mem::{Owner as MemOwner, Spec};
 use crate::meshw::idlock::devswarm_root;
 use drain::{Drainer, Project, Start};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Who owns the drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +100,110 @@ pub fn discover(home: &Path, state_dir: &Path, explicit: &str, now: i64) -> Vec<
         crate::discard::harmless(crate::atomic::write(&remembered_file, json!(now_set.into_iter().collect::<Vec<_>>()).to_string())); // keep: same
     }
     out
+}
+
+fn active_repo_keys(home: &Path, explicit: &str, now: i64) -> BTreeSet<String> {
+    let mut paths: BTreeSet<String> = BTreeSet::new();
+    let sep = defaults::text("devswarm_ingest.projects_separator");
+    paths.extend(explicit.split(sep).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string));
+    let hb_dir = devswarm_root(home).join(defaults::text("devswarm_ingest.dir_heartbeats"));
+    for e in std::fs::read_dir(&hb_dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(defaults::text("devswarm_ingest.hb_prefix")) || !name.ends_with(defaults::text("devswarm_ingest.json_suffix")) {
+            continue;
+        }
+        let Some(v) = read_json(&e.path()) else { continue };
+        let fresh = v["ts"].as_i64().is_some_and(|ts| now - ts <= defaults::num("devswarm_ingest.discover_max_age_ms") as i64);
+        if let (true, Some(dir)) = (fresh, v["workingDir"].as_str())
+            && Path::new(dir).is_dir()
+        {
+            paths.insert(dir.to_string());
+        }
+    }
+    paths.into_iter().filter_map(|p| Project::resolve(&p).map(|pr| pr.repo_key)).collect()
+}
+
+struct Worker {
+    handle: std::thread::JoinHandle<()>,
+    stop: Arc<AtomicBool>,
+    last_seen_ms: i64,
+}
+
+#[derive(Clone)]
+struct WorkerSlot {
+    repo_key: String,
+    stop: Arc<AtomicBool>,
+    last_seen_ms: i64,
+}
+
+#[derive(Default)]
+struct Ledger {
+    slots: std::sync::Mutex<Vec<WorkerSlot>>,
+}
+
+impl Ledger {
+    fn sync(&self, running: &HashMap<String, Worker>) {
+        let mut slots: Vec<WorkerSlot> =
+            running.iter().map(|(repo_key, w)| WorkerSlot { repo_key: repo_key.clone(), stop: w.stop.clone(), last_seen_ms: w.last_seen_ms }).collect();
+        slots.sort_by(|a, b| a.last_seen_ms.cmp(&b.last_seen_ms).then_with(|| a.repo_key.cmp(&b.repo_key)));
+        *self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = slots;
+    }
+
+    fn estimated_bytes(slots: &[WorkerSlot]) -> usize {
+        std::mem::size_of::<Ledger>() + slots.iter().map(|s| std::mem::size_of::<WorkerSlot>() + s.repo_key.len()).sum::<usize>()
+    }
+}
+
+impl MemOwner for Ledger {
+    fn bytes(&self) -> usize {
+        let slots = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::estimated_bytes(&slots)
+    }
+
+    fn shrink(&self, target: usize) {
+        let mut slots = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while Self::estimated_bytes(&slots) > target {
+            let Some(s) = slots.first() else { break };
+            s.stop.store(true, Ordering::Relaxed);
+            slots.remove(0);
+        }
+    }
+
+    fn recycle(&self) {
+        let mut slots = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for s in &*slots {
+            s.stop.store(true, Ordering::Relaxed);
+        }
+        slots.clear();
+    }
+}
+
+fn startable_projects(projects: &[Project], running: &HashMap<String, Worker>, max_threads: usize) -> Vec<Project> {
+    let mut left = max_threads.saturating_sub(running.len());
+    let mut out = Vec::new();
+    for p in projects {
+        if left == 0 {
+            break;
+        }
+        if running.contains_key(&p.repo_key) {
+            continue;
+        }
+        out.push(p.clone());
+        left -= 1;
+    }
+    out
+}
+
+fn rotated_projects(projects: &[Project], cursor: usize) -> Vec<Project> {
+    if projects.is_empty() {
+        return Vec::new();
+    }
+    let start = cursor % projects.len();
+    projects[start..].iter().chain(projects[..start].iter()).cloned().collect()
+}
+
+fn desired_project_keys(projects: &[Project], max_threads: usize, cursor: usize) -> BTreeSet<String> {
+    rotated_projects(projects, cursor).into_iter().take(max_threads).map(|p| p.repo_key).collect()
 }
 
 /// A sleep that wakes at once when `stop` turns true, and re-stamps the lock and heartbeat while it waits. False: the lock was lost.
@@ -175,20 +281,64 @@ pub fn start(home: &Path, state_dir: &Path, stop: Arc<dyn Fn() -> bool + Send + 
         return;
     }
     let (home, state_dir) = (home.to_path_buf(), state_dir.to_path_buf());
+    let ledger = Arc::new(Ledger::default());
+    let owner: Arc<dyn MemOwner> = ledger.clone();
+    let budget = crate::mem::global().register(
+        Spec::new("devswarm_ingest", "mem.devswarm_ingest_soft_bytes", "mem.devswarm_ingest_hard_bytes", "mem.devswarm_ingest_low_water_pct"),
+        Arc::downgrade(&owner),
+    );
     let handle = std::thread::spawn(move || {
-        let mut running: std::collections::HashMap<String, std::thread::JoinHandle<()>> = std::collections::HashMap::new();
+        let mut running: HashMap<String, Worker> = HashMap::new();
+        let mut cursor = 0usize;
         while !stop() {
-            running.retain(|_, h| !h.is_finished());
+            let done: Vec<String> = running.iter().filter(|(_, w)| w.handle.is_finished()).map(|(k, _)| k.clone()).collect();
+            for k in done {
+                if let Some(w) = running.remove(&k) {
+                    crate::discard::harmless(w.handle.join()); // keep: a panicked worker already reported itself
+                }
+            }
             let st = Settings::from_env(&crate::reqenv::RequestEnv::capture());
             let explicit = crate::dswire::effective_text("devswarm_ingest.projects");
-            for p in discover(&home, &state_dir, &explicit, now_ms()) {
-                if running.contains_key(&p.repo_key) {
-                    continue;
+            let now = now_ms();
+            let active = active_repo_keys(&home, &explicit, now);
+            let idle_ttl = defaults::num("mem.devswarm_ingest_idle_ttl_ms") as i64;
+            for key in &active {
+                if let Some(w) = running.get_mut(key) {
+                    w.last_seen_ms = now;
                 }
+            }
+            for (key, w) in &running {
+                if !active.contains(key) && now.saturating_sub(w.last_seen_ms) >= idle_ttl {
+                    w.stop.store(true, Ordering::Relaxed);
+                }
+            }
+            let max_threads = defaults::num("mem.devswarm_ingest_max_threads") as usize;
+            let projects = discover(&home, &state_dir, &explicit, now);
+            let ordered = rotated_projects(&projects, cursor);
+            let desired = desired_project_keys(&projects, max_threads, cursor);
+            if projects.len() > max_threads {
+                for (key, w) in &running {
+                    if !desired.contains(key) {
+                        w.stop.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+            for p in startable_projects(&ordered, &running, max_threads) {
                 let (h, st2, s2) = (home.clone(), st.clone(), stop.clone());
                 let key = p.repo_key.clone();
-                running.insert(key, std::thread::spawn(move || run_project(&h, &st2, p, &System::configured(), &*s2)));
+                let local_stop = Arc::new(AtomicBool::new(false));
+                let worker_stop = local_stop.clone();
+                let handle = std::thread::spawn(move || {
+                    let should_stop = || s2() || worker_stop.load(Ordering::Relaxed);
+                    run_project(&h, &st2, p, &System::configured(), &should_stop);
+                });
+                running.insert(key, Worker { handle, stop: local_stop, last_seen_ms: now });
             }
+            if !projects.is_empty() && max_threads > 0 {
+                cursor = (cursor + max_threads) % projects.len();
+            }
+            ledger.sync(&running);
+            budget.observe();
             let mut left = defaults::num("devswarm_ingest.discover_ms");
             while left > 0 && !stop() {
                 let nap = left.min(defaults::num("devswarm_ingest.stop_poll_ms").max(1));
@@ -196,8 +346,11 @@ pub fn start(home: &Path, state_dir: &Path, stop: Arc<dyn Fn() -> bool + Send + 
                 left -= nap;
             }
         }
-        for (_, h) in running {
-            crate::discard::harmless(h.join()); // keep: a panicked worker already reported itself
+        for w in running.values() {
+            w.stop.store(true, Ordering::Relaxed);
+        }
+        for (_, w) in running {
+            crate::discard::harmless(w.handle.join()); // keep: a panicked worker already reported itself
         }
     });
     if let Ok(mut m) = MANAGER.lock() {
@@ -238,4 +391,52 @@ fn discover_readonly(home: &Path, state_dir: &Path, explicit: &str, now: i64) ->
     let out = discover(home, &scratch, explicit, now);
     crate::discard::harmless(std::fs::remove_dir_all(&scratch)); // keep: our own scratch
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(key: &str) -> Project {
+        Project { worktree: format!("/tmp/{key}"), repo_key: key.to_string(), workspace_id: format!("primary-{key}") }
+    }
+
+    fn worker() -> Worker {
+        Worker { handle: std::thread::spawn(|| {}), stop: Arc::new(AtomicBool::new(false)), last_seen_ms: 10 }
+    }
+
+    #[test]
+    fn startable_projects_never_exceeds_thread_cap() {
+        let projects = vec![project("a"), project("b"), project("c")];
+        let mut running = HashMap::new();
+        running.insert("a".to_string(), worker());
+        let start = startable_projects(&projects, &running, 2);
+        assert_eq!(start.iter().map(|p| p.repo_key.as_str()).collect::<Vec<_>>(), vec!["b"]);
+    }
+
+    #[test]
+    fn rotating_window_services_projects_beyond_the_cap() {
+        let projects = vec![project("a"), project("b"), project("c"), project("d")];
+        let first = desired_project_keys(&projects, 2, 0);
+        let second = desired_project_keys(&projects, 2, 2);
+        assert_eq!(first.iter().map(String::as_str).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert_eq!(second.iter().map(String::as_str).collect::<Vec<_>>(), vec!["c", "d"]);
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+    }
+
+    #[test]
+    fn ledger_shrink_stops_oldest_idle_workers() {
+        let ledger = Ledger::default();
+        let old = Arc::new(AtomicBool::new(false));
+        let young = Arc::new(AtomicBool::new(false));
+        *ledger.slots.lock().unwrap() = vec![
+            WorkerSlot { repo_key: "old".into(), stop: old.clone(), last_seen_ms: 1 },
+            WorkerSlot { repo_key: "young".into(), stop: young.clone(), last_seen_ms: 2 },
+        ];
+        ledger.shrink(0);
+        assert!(old.load(Ordering::Relaxed));
+        assert!(young.load(Ordering::Relaxed));
+        assert_eq!(ledger.bytes(), std::mem::size_of::<Ledger>());
+    }
 }

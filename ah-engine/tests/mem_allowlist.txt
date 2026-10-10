@@ -6,9 +6,11 @@
 # ---- bounded by a cap read from config, own eviction (registry follow-ups) -------------------------------------------------
 checks/agent_scan/mod.rs | KEPT | entry cap read at insert (`while map.len() >= cap`, line ~1255); entries are transcript walks | kept transcript walks; registry follow-up (the agent_scan job owns the file), clone-on-answer is audit item 8
 daemon.rs | Shared.queue | accept queue cap (daemon.queue): a full queue answers busy | the connection queue; bounded by the cap, not a cache
-db.rs | Mem.kv | byte budget tier.budget_kb given to tier::Tiered at construction | the active key-value items; a byte-budgeted LRU already, registry follow-up
+db.rs | Mem.kv | registered as mem.db_kv_* and also constrained by tier.budget_kb in Tiered | active key-value items; SQLite remains the source of truth
 gitcache/mod.rs | GitCache.repos | gitcache.max_repos, idle entries expire after gitcache idle_ttl | memoised git state per repository
-hookcfg/session.rs | SessionStore.slots | one counter per (session, condition) ended by SessionEnd; NO cap and no TTL eviction | registry follow-up and a possible leak when a session never sends SessionEnd (counted as hookcfg_session_counters in status --memory)
+hookcfg/session.rs | SessionCore.slots | registered as mem.hook_sessions_*; expired counters are pruned even without SessionEnd | per-session hook condition counters
+limits.rs | BucketCore.map | registered through aggregate mem.buckets_* holder | daemon session/project rate buckets
+limits.rs | BucketOwners.buckets | weak references to live registered bucket maps, stale entries removed on access | aggregate owner list for mem.buckets_*
 load.rs | Load.minutes | newest load.minutes_kept buckets, each bucket capped | per-minute request load
 tier.rs | Bus.subs | max_channels channels and a bounded queue per subscriber | pub/sub channels
 transcript/registry.rs | Indexes.slots | `max` slots, entries expire after ttl_ms (cfg) | transcript index slots; registry follow-up (transcript caches belong to another job)

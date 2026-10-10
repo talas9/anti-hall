@@ -161,7 +161,9 @@ pub fn agent_scan(path: &str, tail: f64, ignore_unanswered_stops: bool) -> Strin
 fn jev_record_outcome(id: &str, hash: &str, outcome: &str, source: Option<String>, project_from: Option<String>) -> rquickjs::Result<()> {
     let (home, env) = with_settings(|st| (st.home.clone(), crate::jev::Env::from_pairs(st.env.clone())))?;
     let project = crate::jev::shared::project_for(project_from.as_deref());
-    crate::jev::shared::lane(std::path::Path::new(&home), &env).record_outcome(id, hash, outcome, source.as_deref(), project.as_deref());
+    if let Some(lane) = crate::jev::shared::lane(std::path::Path::new(&home), &env) {
+        lane.record_outcome(id, hash, outcome, source.as_deref(), project.as_deref());
+    }
     Ok(())
 }
 

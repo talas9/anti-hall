@@ -10,11 +10,12 @@ use crate::db::{Db, Op, RtEdgeRow, RtOp, RtRow};
 use crate::devswarm_rt::detect::{Detection, Mode};
 use crate::devswarm_rt::sources::{self, FsProbe, GithubState, Probe};
 use crate::devswarm_rt::state::{self, Cfg, Edge, EdgeKind, Inputs, Snapshot, Workspace};
+use crate::mem::{Owner, Spec};
 use crate::metrics::Metrics;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 /// Why a reconcile runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,12 +48,83 @@ struct Stored {
     ws: Workspace,
 }
 
+struct Hold {
+    cur: RwLock<Arc<Snapshot>>,
+    edges: Mutex<VecDeque<Edge>>,
+    generations: Mutex<Vec<Weak<Snapshot>>>,
+}
+
+impl Hold {
+    fn new() -> Hold {
+        let cur = Arc::new(Snapshot::default());
+        Hold { cur: RwLock::new(cur.clone()), edges: Mutex::new(VecDeque::new()), generations: Mutex::new(vec![Arc::downgrade(&cur)]) }
+    }
+
+    fn generation_bytes_locked(generations: &mut Vec<Weak<Snapshot>>) -> usize {
+        generations.retain(|w| w.strong_count() > 0);
+        generations.iter().filter_map(Weak::upgrade).map(|s| s.estimated_bytes()).sum()
+    }
+
+    fn edge_bytes_locked(edges: &VecDeque<Edge>) -> usize {
+        edges.iter().map(Edge::estimated_bytes).sum()
+    }
+
+    fn bytes_from_locks(generations: &mut Vec<Weak<Snapshot>>, edges: &VecDeque<Edge>) -> usize {
+        Self::generation_bytes_locked(generations) + Self::edge_bytes_locked(edges)
+    }
+
+    fn set_current(&self, snap: Arc<Snapshot>) {
+        *self.cur.write().unwrap_or_else(|e| e.into_inner()) = snap.clone();
+        let mut generations = self.generations.lock().unwrap_or_else(|e| e.into_inner());
+        generations.retain(|w| w.strong_count() > 0);
+        if !generations.iter().any(|w| w.ptr_eq(&Arc::downgrade(&snap))) {
+            generations.push(Arc::downgrade(&snap));
+        }
+    }
+
+    fn shrink_to(&self, target: usize) {
+        let mut edges = self.edges.lock().unwrap_or_else(|e| e.into_inner());
+        let mut generations = self.generations.lock().unwrap_or_else(|e| e.into_inner());
+        while Self::bytes_from_locks(&mut generations, &edges) > target && edges.pop_front().is_some() {}
+        if Self::bytes_from_locks(&mut generations, &edges) <= target {
+            return;
+        }
+        let mut cur = self.cur.write().unwrap_or_else(|e| e.into_inner());
+        let mut next = (**cur).clone();
+        while Self::edge_bytes_locked(&edges) + next.estimated_bytes() > target && next.workspaces.pop_last().is_some() {}
+        let next = Arc::new(next);
+        generations.push(Arc::downgrade(&next));
+        *cur = next;
+    }
+
+    fn clear(&self) {
+        self.edges.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.set_current(Arc::new(Snapshot::default()));
+    }
+}
+
+impl Owner for Hold {
+    fn bytes(&self) -> usize {
+        let edges = self.edges.lock().unwrap_or_else(|e| e.into_inner());
+        let mut generations = self.generations.lock().unwrap_or_else(|e| e.into_inner());
+        Self::bytes_from_locks(&mut generations, &edges)
+    }
+
+    fn shrink(&self, target: usize) {
+        self.shrink_to(target);
+    }
+
+    fn recycle(&self) {
+        self.clear();
+    }
+}
+
 /// The DevSwarm workspace state service.
 pub struct Rt {
     cfg: Cfg,
     det: Detection,
-    cur: RwLock<Arc<Snapshot>>,
-    edges: Mutex<VecDeque<Edge>>,
+    hold: Arc<Hold>,
+    budget: crate::mem::Budget,
     repairs: AtomicU64,
     emitted: AtomicU64,
     mismatches: AtomicU64,
@@ -64,11 +136,18 @@ pub struct Rt {
 impl Rt {
     /// A service with an empty, unseeded state.
     pub fn new(cfg: Cfg, det: Detection) -> Rt {
+        let hold = Arc::new(Hold::new());
+        let owner: Arc<dyn Owner> = hold.clone();
+        let budget = crate::mem::global().register(
+            Spec::new("devswarm_rt", "mem.devswarm_rt_soft_bytes", "mem.devswarm_rt_hard_bytes", "mem.devswarm_rt_low_water_pct")
+                .with_entries("mem.devswarm_rt_max_edges"),
+            Arc::downgrade(&owner),
+        );
         Rt {
             cfg,
             det,
-            cur: RwLock::new(Arc::new(Snapshot::default())),
-            edges: Mutex::new(VecDeque::new()),
+            hold,
+            budget,
             repairs: AtomicU64::new(0),
             emitted: AtomicU64::new(0),
             mismatches: AtomicU64::new(0),
@@ -114,7 +193,7 @@ impl Rt {
 
     /// The current snapshot (read API for consumers; never blocks on a reconcile's reads).
     pub fn current(&self) -> Arc<Snapshot> {
-        self.cur.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.hold.cur.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// One workspace.
@@ -124,7 +203,7 @@ impl Rt {
 
     /// The edges newer than `generation`, oldest first (what a session has not seen yet).
     pub fn edges_since(&self, generation: u64) -> Vec<Edge> {
-        self.edges.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|e| e.generation > generation).cloned().collect()
+        self.hold.edges.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|e| e.generation > generation).cloned().collect()
     }
 
     /// Changes found by a periodic or overflow reconcile that events had not applied.
@@ -155,7 +234,8 @@ impl Rt {
         }
         snap.seeded = !snap.workspaces.is_empty();
         let n = snap.workspaces.len();
-        *self.cur.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(snap);
+        self.hold.set_current(Arc::new(snap));
+        self.budget.observe();
         n
     }
 
@@ -186,15 +266,18 @@ impl Rt {
         if !edges.is_empty() {
             self.repairs.fetch_add(repairs, Ordering::Relaxed);
             self.emitted.fetch_add(edges.len() as u64, Ordering::Relaxed);
-            let mut log = self.edges.lock().unwrap_or_else(|e| e.into_inner());
+            let mut log = self.hold.edges.lock().unwrap_or_else(|e| e.into_inner());
             log.extend(edges.iter().cloned());
-            while log.len() > self.cfg.edge_cap {
+            let mem_edges = self.budget.max_entries();
+            let max_edges = if mem_edges > 0 { mem_edges.min(self.cfg.edge_cap) } else { self.cfg.edge_cap };
+            while log.len() > max_edges {
                 log.pop_front();
             }
         }
         let report = Report { generation: next.generation, edges: edges.clone(), repairs };
-        let next = Arc::new(next);
-        *self.cur.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
+        self.hold.set_current(Arc::new(next));
+        self.budget.observe();
+        let next = self.current();
         super::linefile::write(&next);
         if let Some(db) = db
             && next.app_readable
@@ -243,6 +326,88 @@ impl Rt {
 
     /// Edges of one kind in the retained log (diagnostics and tests).
     pub fn edges_of(&self, kind: EdgeKind) -> Vec<Edge> {
-        self.edges.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|e| e.kind == kind).cloned().collect()
+        self.hold.edges.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|e| e.kind == kind).cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devswarm_rt::state::{Activity, Field, Lifecycle, Paused, PrView, Src};
+    use std::collections::BTreeMap;
+
+    fn field<T>(value: T) -> Field<T> {
+        Field { value, source: Src::AppDb, observed_ms: 1, sig: "sig".into() }
+    }
+
+    fn workspace(id: &str) -> Workspace {
+        Workspace {
+            id: id.to_string(),
+            label: Some(format!("label-{id}")),
+            worktree: Some(format!("/tmp/{id}")),
+            branch: Some("branch".into()),
+            repo: Some("repo".into()),
+            lifecycle: field(Lifecycle::Active),
+            paused: field(Paused::No),
+            activity: field(Activity::Working),
+            unread: field(Some(1usize)),
+            plan_step: field(Some("step".into())),
+            last_activity_ms: field(Some(1i64)),
+            pr: field(None::<PrView>),
+        }
+    }
+
+    fn edge(n: u64) -> Edge {
+        Edge {
+            ws: format!("w{n}"),
+            kind: EdgeKind::Activity,
+            from: "old".into(),
+            to: "new".into(),
+            generation: n,
+            at_ms: 1,
+            while_down: false,
+            hold_until_ms: 0,
+        }
+    }
+
+    #[test]
+    fn holder_shrinks_edges_before_snapshot_to_byte_cap() {
+        let h = Hold::new();
+        *h.edges.lock().unwrap() = VecDeque::from([edge(1), edge(2)]);
+        let mut workspaces = BTreeMap::new();
+        workspaces.insert("a".into(), workspace("a"));
+        workspaces.insert("b".into(), workspace("b"));
+        h.set_current(Arc::new(Snapshot { generation: 1, at_ms: 1, seeded: true, app_readable: true, workspaces }));
+        let empty = Snapshot::default().estimated_bytes();
+        h.shrink(empty);
+        assert!(h.bytes() <= empty);
+        assert!(h.edges.lock().unwrap().is_empty());
+        assert!(h.cur.read().unwrap().workspaces.is_empty());
+    }
+
+    #[test]
+    fn holder_recycle_clears_snapshot_and_edges() {
+        let h = Hold::new();
+        *h.edges.lock().unwrap() = VecDeque::from([edge(1)]);
+        let mut workspaces = BTreeMap::new();
+        workspaces.insert("a".into(), workspace("a"));
+        h.set_current(Arc::new(Snapshot { generation: 1, at_ms: 1, seeded: true, app_readable: true, workspaces }));
+        h.recycle();
+        assert!(h.edges.lock().unwrap().is_empty());
+        assert!(h.cur.read().unwrap().workspaces.is_empty());
+    }
+
+    #[test]
+    fn externally_held_old_snapshots_stay_accounted_until_drop() {
+        let h = Hold::new();
+        let mut old_workspaces = BTreeMap::new();
+        old_workspaces.insert("old".into(), workspace("old"));
+        let old = Arc::new(Snapshot { generation: 1, at_ms: 1, seeded: true, app_readable: true, workspaces: old_workspaces });
+        let old_bytes = old.estimated_bytes();
+        h.set_current(old.clone());
+        h.set_current(Arc::new(Snapshot::default()));
+        assert!(h.bytes() >= Snapshot::default().estimated_bytes() + old_bytes);
+        drop(old);
+        assert_eq!(h.bytes(), Snapshot::default().estimated_bytes());
     }
 }

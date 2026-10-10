@@ -108,6 +108,12 @@ impl Env {
         self.0.clone()
     }
 
+    /// Estimated retained bytes of this snapshot. It is deliberately just keys plus values; the map's bucket overhead is small
+    /// next to session environments and only needs to be monotonic enough for the memory guard.
+    pub fn bytes(&self) -> usize {
+        self.0.iter().map(|(k, v)| k.len() + v.len()).sum()
+    }
+
     /// A stable SHA-256 digest (lowercase hex) of the whole environment, used to tell two sessions' environments apart.
     /// A digest, not the text: the memo that holds it never contains a key value.
     pub fn digest(&self) -> String {

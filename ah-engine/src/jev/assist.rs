@@ -31,12 +31,32 @@ use super::question::Question;
 use super::settings::{Env, Files, JevSettings, Mode, Sources, Vendor};
 use super::transport::{HttpTransport, Transport, endpoint_for};
 use crate::defaults;
+use crate::mem::Admit;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, SystemTime};
+
+#[cfg(test)]
+static TEST_WORKER_IDLE_MS: AtomicU64 = AtomicU64::new(0);
+
+fn worker_idle_ttl() -> Duration {
+    #[cfg(test)]
+    {
+        let ms = TEST_WORKER_IDLE_MS.load(Ordering::SeqCst);
+        if ms > 0 {
+            return Duration::from_millis(ms);
+        }
+    }
+    defaults::millis("mem.jev_lanes_idle_ttl_ms")
+}
+
+#[cfg(test)]
+fn set_worker_idle_ttl_ms_for_test(ms: u64) {
+    TEST_WORKER_IDLE_MS.store(ms, Ordering::SeqCst);
+}
 
 /// How far Jev may move a caller's baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +131,33 @@ impl AskRequest {
             wait_for_escalation: false,
         }
     }
+}
+
+fn question_bytes(q: &Question) -> usize {
+    q.instructions.len() + q.criteria.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+}
+
+fn request_bytes(req: &AskRequest) -> usize {
+    std::mem::size_of::<AskRequest>()
+        .saturating_add(req.id.len())
+        .saturating_add(question_bytes(&req.question))
+        .saturating_add(req.state.len())
+        .saturating_add(req.baseline.to_string().len())
+        .saturating_add(req.cache_key.as_ref().map_or(0, String::len))
+        .saturating_add(req.project.as_ref().map_or(0, String::len))
+        .saturating_add(req.session_id.as_ref().map_or(0, String::len))
+        .saturating_add(req.turn_ref.as_ref().map_or(0, String::len))
+        .saturating_add(req.env.as_ref().map_or(0, Env::bytes))
+}
+
+struct QueuedAsk {
+    req: AskRequest,
+    bytes: usize,
+}
+
+struct WorkerTx {
+    id: u64,
+    tx: SyncSender<QueuedAsk>,
 }
 
 /// Where a decision's answer came from.
@@ -321,6 +368,12 @@ impl SettingsCache {
         g.checked_ms = self.clock.now_ms();
         self.refresh(&mut g);
     }
+
+    fn bytes(&self) -> usize {
+        let g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let files = g.files.settings.to_string().len() + g.files.legacy.to_string().len();
+        files + self.default_env.bytes() + g.by_env.iter().map(|(d, _)| d.len()).sum::<usize>()
+    }
 }
 
 /// The Jev lane: settings, client, cache, log, stats and the asynchronous queue.
@@ -332,7 +385,11 @@ pub struct Jev {
     log: Arc<dyn DecisionLog>,
     /// Counters for the metrics registry.
     pub stats: JevStats,
-    queue: OnceLock<SyncSender<AskRequest>>,
+    queue: Mutex<Option<WorkerTx>>,
+    queue_bytes: AtomicUsize,
+    next_worker: AtomicU64,
+    worker_running: AtomicBool,
+    worker_starts: AtomicUsize,
     pending: AtomicUsize,
     this: OnceLock<Weak<Jev>>,
     log_errors: AtomicU64,
@@ -503,7 +560,11 @@ impl Jev {
             cache: cache.unwrap_or_else(|| if production { Arc::new(FileCache::for_home(home)) } else { Arc::new(MemCache::with_defaults()) }),
             log,
             stats: JevStats::default(),
-            queue: OnceLock::new(),
+            queue: Mutex::new(None),
+            queue_bytes: AtomicUsize::new(0),
+            next_worker: AtomicU64::new(1),
+            worker_running: AtomicBool::new(false),
+            worker_starts: AtomicUsize::new(0),
             pending: AtomicUsize::new(0),
             this: OnceLock::new(),
             log_errors: AtomicU64::new(0),
@@ -511,6 +572,34 @@ impl Jev {
         });
         crate::discard::harmless(jev.this.set(Arc::downgrade(&jev))); // keep: best effort, fail-open
         jev
+    }
+
+    /// Approximate retained bytes that belong to the resident lane itself. External file caches stay on disk; the in-memory
+    /// part here is the home path, memoized settings, live queue payloads and small lane bookkeeping.
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.home.to_string_lossy().len()
+            + self.settings.bytes()
+            + self.queue_bytes.load(Ordering::SeqCst)
+            + self.pending.load(Ordering::SeqCst) * std::mem::size_of::<QueuedAsk>()
+            + std::mem::size_of::<Jev>()
+    }
+
+    pub(crate) fn queue_bytes(&self) -> usize {
+        self.queue_bytes.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn worker_running_for_cap(&self) -> bool {
+        self.worker_running.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn worker_running(&self) -> bool {
+        self.worker_running_for_cap()
+    }
+
+    #[cfg(test)]
+    fn worker_starts(&self) -> usize {
+        self.worker_starts.load(Ordering::SeqCst)
     }
 
     /// The current settings snapshot.
@@ -709,27 +798,88 @@ impl Jev {
         let mut req = req;
         req.wait_for_escalation = true; // nobody blocks on a queued ask
         req.budget_ms = Some(Jev::detached_budget(&s, &req));
-        let tx = self.queue.get_or_init(|| self.start_worker());
+        let bytes = request_bytes(&req);
+        if super::shared::admit_queue(bytes) == Admit::Refused {
+            let mode = s.mode(&req.id, false);
+            self.finish(&s, &req, mode, Some(CallResult::failed(Reason::Busy)), false, true);
+            return;
+        }
+        let queued = QueuedAsk { req, bytes };
+        let Some(tx) = self.queue_tx() else {
+            super::shared::release_queue(queued.bytes);
+            let mode = s.mode(&queued.req.id, false);
+            self.finish(&s, &queued.req, mode, Some(CallResult::failed(Reason::Busy)), false, true);
+            return;
+        };
         self.pending.fetch_add(1, Ordering::SeqCst);
-        match tx.try_send(req) {
+        self.queue_bytes.fetch_add(bytes, Ordering::SeqCst);
+        match tx.try_send(queued) {
             Ok(()) => {}
-            Err(TrySendError::Full(req) | TrySendError::Disconnected(req)) => {
+            Err(TrySendError::Full(queued)) => {
                 self.pending.fetch_sub(1, Ordering::SeqCst);
-                let mode = s.mode(&req.id, false);
-                self.finish(&s, &req, mode, Some(CallResult::failed(Reason::Busy)), false, true);
+                self.queue_bytes.fetch_sub(queued.bytes, Ordering::SeqCst);
+                super::shared::release_queue(queued.bytes);
+                let mode = s.mode(&queued.req.id, false);
+                self.finish(&s, &queued.req, mode, Some(CallResult::failed(Reason::Busy)), false, true);
+            }
+            Err(TrySendError::Disconnected(queued)) => {
+                self.pending.fetch_sub(1, Ordering::SeqCst);
+                self.queue_bytes.fetch_sub(queued.bytes, Ordering::SeqCst);
+                super::shared::release_queue(queued.bytes);
+                *self.queue.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let mode = s.mode(&queued.req.id, false);
+                self.finish(&s, &queued.req, mode, Some(CallResult::failed(Reason::Busy)), false, true);
             }
         }
     }
 
-    fn start_worker(&self) -> SyncSender<AskRequest> {
-        let (tx, rx) = sync_channel::<AskRequest>(defaults::num("jev.queue_cap") as usize);
+    fn queue_tx(&self) -> Option<SyncSender<QueuedAsk>> {
+        let mut g = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(w) = &*g {
+            return Some(w.tx.clone());
+        }
+        if !super::shared::admit_worker_start() {
+            return None;
+        }
+        let id = self.next_worker.fetch_add(1, Ordering::SeqCst);
+        let tx = self.start_worker(id);
+        super::shared::worker_start_finished();
+        *g = Some(WorkerTx { id, tx: tx.clone() });
+        Some(tx)
+    }
+
+    fn start_worker(&self, id: u64) -> SyncSender<QueuedAsk> {
+        let (tx, rx) = sync_channel::<QueuedAsk>(defaults::num("jev.queue_cap") as usize);
         let weak = self.this.get().cloned().unwrap_or_default();
+        self.worker_running.store(true, Ordering::SeqCst);
+        self.worker_starts.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
-            // Ends when the Jev lane (and with it the sender) is dropped.
-            while let Ok(req) = rx.recv() {
-                let Some(jev) = weak.upgrade() else { break };
-                let _ = jev.ask(&req);
-                jev.pending.fetch_sub(1, Ordering::SeqCst);
+            loop {
+                match rx.recv_timeout(worker_idle_ttl()) {
+                    Ok(queued) => {
+                        let Some(jev) = weak.upgrade() else { break };
+                        let _ = jev.ask(&queued.req);
+                        jev.pending.fetch_sub(1, Ordering::SeqCst);
+                        jev.queue_bytes.fetch_sub(queued.bytes, Ordering::SeqCst);
+                        super::shared::release_queue(queued.bytes);
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        if let Some(jev) = weak.upgrade() {
+                            let mut g = jev.queue.lock().unwrap_or_else(|e| e.into_inner());
+                            if g.as_ref().is_some_and(|w| w.id == id) {
+                                *g = None;
+                                jev.worker_running.store(false, Ordering::SeqCst);
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            if let Some(jev) = weak.upgrade() {
+                jev.worker_running.store(false, Ordering::SeqCst);
             }
         });
         tx
@@ -1223,10 +1373,46 @@ mod tests {
     }
 
     #[test]
+    fn the_async_queue_refuses_a_request_that_would_cross_the_byte_hard_limit() {
+        let (jev, f, log) = lane(&ON, vec![ok(200, &answer(0.99))]);
+        let mut r = req("speculation", Trust::AddBlock, json!(false));
+        r.state = "x".repeat(defaults::num("mem.jev_queue_hard_bytes") as usize + 1);
+        jev.ask_async(r);
+        assert_eq!(jev.pending.load(Ordering::SeqCst), 0);
+        assert_eq!(jev.queue_bytes(), 0);
+        assert!(jev.queue.lock().unwrap().is_none(), "a refused oversized request starts no worker");
+        assert!(f.seen.lock().unwrap().is_empty(), "hard-refused async work is not sent to Jev");
+        assert_eq!(field(&log.0.lock().unwrap()[0], "reason"), json!("busy"));
+    }
+
+    #[test]
+    fn an_idle_async_worker_exits_and_the_next_ask_starts_a_new_one() {
+        set_worker_idle_ttl_ms_for_test(5);
+        let (jev, f, _) = lane(&ON, vec![ok(200, &answer(0.99)), ok(200, &answer(0.01))]);
+        jev.ask_async(req("speculation", Trust::AddBlock, json!(false)));
+        assert!(jev.drain(Duration::from_secs(5)));
+        for _ in 0..100 {
+            if !jev.worker_running() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!jev.worker_running(), "the empty worker exits after its idle TTL");
+        let starts = jev.worker_starts();
+        let mut again = req("speculation", Trust::AddBlock, json!(false));
+        again.state = "other".into();
+        jev.ask_async(again);
+        assert!(jev.drain(Duration::from_secs(5)));
+        assert!(jev.worker_starts() > starts, "the next async ask starts a replacement worker");
+        assert_eq!(f.seen.lock().unwrap().len(), 2);
+        set_worker_idle_ttl_ms_for_test(0);
+    }
+
+    #[test]
     fn an_off_integration_is_not_even_queued() {
         let (jev, f, log) = lane(&[("ANTIHALL_JEV", "1"), ("ANTIHALL_JEV_SPECULATION", "0"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")], vec![]);
         jev.ask_async(req("speculation", Trust::AddBlock, json!(false)));
-        assert!(jev.queue.get().is_none(), "no worker thread was started");
+        assert!(jev.queue.lock().unwrap().is_none(), "no worker thread was started");
         assert!(f.seen.lock().unwrap().is_empty());
         let rows = log.0.lock().unwrap();
         assert_eq!((rows.len(), field(&rows[0], "mode")), (1, json!("off")), "the off row Node's askDetached writes synchronously");

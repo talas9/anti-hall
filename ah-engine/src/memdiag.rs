@@ -430,7 +430,10 @@ pub fn capture(memory: Value, workers: usize, rss_cap_kb: u64, uptime_s: u64) {
 
 /// The latest snapshot file, or `null`.
 pub fn latest_snapshot() -> Value {
-    std::fs::read_to_string(crate::paths::dir().join(defaults::text("files.mem_snapshot"))).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
+    std::fs::read_to_string(crate::paths::dir().join(defaults::text("files.mem_snapshot")))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null)
 }
 
 fn tail_of(path: &std::path::Path, max: u64) -> String {
@@ -549,7 +552,13 @@ mod tests {
         let d = Done { kind: "V".into(), event: "memdiag-test-event".into(), in_flight: 1, busy: 1, proc_ms: 2, after: measure_after() };
         finish(b, &d);
         let log = std::fs::read_to_string(crate::paths::dir().join(defaults::text("files.mem_log"))).unwrap();
-        let l: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect::<Vec<_>>().into_iter().rfind(|l| l["event"] == "memdiag-test-event").expect("line written");
+        let l: Value = log
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rfind(|l| l["event"] == "memdiag-test-event")
+            .expect("line written");
         assert_eq!(l["checks"], json!(["memdiag-test-check"]));
         assert!(l["rss_kb_after"].as_u64().unwrap() > 0 && l["transcript_bytes"].is_null());
         assert!(begin(false).is_none(), "off: nothing measured");

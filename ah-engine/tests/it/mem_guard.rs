@@ -17,6 +17,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use regex::Regex;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -70,6 +71,28 @@ fn is_shared(ty: &str) -> bool {
     SHARED.iter().any(|c| ty.contains(c))
 }
 
+fn aliases(text: &str) -> HashMap<String, String> {
+    let re = Regex::new(r"(?m)^\s*(?:pub(?:\([a-z]+\))?\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);").unwrap();
+    re.captures_iter(text).map(|c| (c[1].to_string(), c[2].split_whitespace().collect::<Vec<_>>().join(" "))).collect()
+}
+
+fn expand_aliases(ty: &str, aliases: &HashMap<String, String>) -> String {
+    let mut out = ty.to_string();
+    for _ in 0..8 {
+        let mut changed = false;
+        for (name, aliased) in aliases {
+            let re = Regex::new(&format!(r"\b{}\b", regex::escape(name))).unwrap();
+            let next = re.replace_all(&out, aliased.as_str()).to_string();
+            changed |= next != out;
+            out = next;
+        }
+        if !changed {
+            break;
+        }
+    }
+    out
+}
+
 /// Split a struct body into `(name, type)` fields at top-level commas.
 fn fields(body: &str) -> Vec<(String, String)> {
     let attrs = Regex::new(r"#\[[^\]]*\]").unwrap();
@@ -102,12 +125,14 @@ pub fn scan_text(rel: &str, text: &str) -> Vec<Site> {
         return Vec::new();
     }
     let text = code(text);
+    let aliases = aliases(&text);
     let mut out = Vec::new();
     let statics = Regex::new(r"(?s)\bstatic\s+(?:mut\s+)?([A-Z_][A-Z0-9_]*)\s*:\s*([^=;]+?)\s*=").unwrap();
     for c in statics.captures_iter(&text) {
         let ty = c[2].split_whitespace().collect::<Vec<_>>().join(" ");
-        if has_collection(&ty) && !ty.contains("Cache<") {
-            out.push(Site { file: rel.into(), symbol: c[1].into(), ty });
+        let expanded = expand_aliases(&ty, &aliases);
+        if has_collection(&expanded) && !expanded.contains("Cache<") {
+            out.push(Site { file: rel.into(), symbol: c[1].into(), ty: expanded });
         }
     }
     let structs = Regex::new(r"(?m)^\s*(?:pub(?:\([a-z]+\))?\s+)?struct\s+(\w+)(?:<[^{;]*>)?\s*(?:where[^{;]*)?\{").unwrap();
@@ -127,8 +152,9 @@ pub fn scan_text(rel: &str, text: &str) -> Vec<Site> {
         }
         let daemon_state = rel == "daemon.rs" && &c[1] == "Shared";
         for (name, ty) in fields(&text[open..end]) {
-            if has_collection(&ty) && !ty.contains("Cache<") && (daemon_state || is_shared(&ty)) {
-                out.push(Site { file: rel.into(), symbol: format!("{}.{name}", &c[1]), ty });
+            let expanded = expand_aliases(&ty, &aliases);
+            if has_collection(&expanded) && !expanded.contains("Cache<") && (daemon_state || is_shared(&expanded)) {
+                out.push(Site { file: rel.into(), symbol: format!("{}.{name}", &c[1]), ty: expanded });
             }
         }
     }
@@ -212,6 +238,10 @@ fn the_guard_catches_a_planted_violation() {
     assert_eq!(scan_text("planted.rs", once).len(), 1, "a OnceLock collection");
     let field = "pub struct State {\n    pub n: u32,\n    seen: Mutex<HashMap<String, u64>>,\n}\n";
     assert_eq!(scan_text("planted.rs", field)[0].symbol, "State.seen", "a lock-wrapped collection field");
+    let alias = "use std::collections::HashMap;\ntype Bag = HashMap<String, u64>;\nstatic LEAK: std::sync::Mutex<Bag> = std::sync::Mutex::new(Bag::new());\n";
+    assert_eq!(scan_text("planted.rs", alias)[0].symbol, "LEAK", "a collection hidden behind a type alias");
+    let alias_field = "use std::collections::HashMap;\ntype Bag = HashMap<String, u64>;\npub struct State {\n    seen: Mutex<Bag>,\n}\n";
+    assert_eq!(scan_text("planted.rs", alias_field)[0].symbol, "State.seen", "a shared field hidden behind a type alias");
     let daemon = "pub struct Shared {\n    sessions: Vec<String>,\n}\n";
     assert_eq!(scan_text("daemon.rs", daemon).len(), 1, "any collection field of the daemon state");
     assert!(scan_text("other.rs", daemon).is_empty(), "a plain transient struct is not flagged");

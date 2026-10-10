@@ -18,6 +18,7 @@
 use crate::defaults;
 use crate::error::DbError;
 use crate::error::StoreError;
+use crate::mem::{Admit, Budget, Owner, Spec};
 use crate::sql;
 use crate::storage::ImpactEvent;
 use crate::tier::{Bus, Tiered};
@@ -191,6 +192,7 @@ pub enum ProjVerb {
 pub struct Mem {
     /// Active key-value items, keyed by (project, key).
     pub kv: Mutex<Tiered<(String, String), String>>,
+    budget: Mutex<Option<Budget>>,
     /// Pub/sub channels; a committed mailbox put or key set is announced on `project:<hash>`.
     pub bus: Bus,
     /// Bumped by every write that touches `kv`, so a read that raced a write does not promote a stale value.
@@ -205,11 +207,23 @@ impl Mem {
     fn new() -> Mem {
         Mem {
             kv: Mutex::new(Tiered::new(defaults::num("tier.budget_kb") as usize * 1024)),
+            budget: Mutex::new(None),
             bus: Bus::new(defaults::num("tier.bus_queue") as usize, defaults::num("tier.bus_channels") as usize),
             seq: std::sync::atomic::AtomicU64::new(0),
             commits: std::sync::atomic::AtomicU64::new(0),
             writes: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    fn install_budget(self: &Arc<Self>) {
+        let owner: Arc<dyn Owner> = self.clone();
+        let budget = crate::mem::global()
+            .register(Spec::new("db_kv", "mem.db_kv_soft_bytes", "mem.db_kv_hard_bytes", "mem.db_kv_low_water_pct"), Arc::downgrade(&owner));
+        *lk(&self.budget) = Some(budget);
+    }
+
+    fn admit(&self, size: usize) -> bool {
+        lk(&self.budget).as_ref().is_none_or(|b| b.admit(size) == Admit::Ok)
     }
 
     /// The write sequence now; pass it to [`Mem::promote`] after reading SQLite.
@@ -220,10 +234,18 @@ impl Mem {
     /// Make a value read from SQLite active, unless a write happened since `seq` was taken (then the next read
     /// promotes the newer value instead).
     pub fn promote(&self, seq: u64, k: (String, String), v: String, expires_ms: Option<u64>) {
-        let mut kv = lk(&self.kv);
-        if self.seq() == seq && !kv.contains(&k) {
-            let size = item_size(&k, &v);
-            kv.insert(k, v, size, expires_ms);
+        if self.seq() != seq {
+            return;
+        }
+        {
+            let kv = lk(&self.kv);
+            if kv.contains(&k) {
+                return;
+            }
+        }
+        let size = item_size(&k, &v);
+        if self.admit(size) {
+            lk(&self.kv).insert(k, v, size, expires_ms);
         }
     }
 
@@ -236,12 +258,27 @@ impl Mem {
                 self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let k = (project.clone(), key.clone());
                 let size = item_size(&k, value);
-                lk(&self.kv).insert(k, value.clone(), size, *expires_ms);
+                lk(&self.kv).remove(&k);
+                if self.admit(size) {
+                    lk(&self.kv).insert(k, value.clone(), size, *expires_ms);
+                }
                 self.bus.publish(&channel, &serde_json::json!({"kind": "kv", "key": key}).to_string());
             }
             ProjVerb::Put(_) => self.bus.publish(&channel, &serde_json::json!({"kind": "mail"}).to_string()),
             ProjVerb::Take => {}
         }
+    }
+}
+
+impl Owner for Mem {
+    fn bytes(&self) -> usize {
+        lk(&self.kv).bytes()
+    }
+    fn shrink(&self, target: usize) {
+        lk(&self.kv).evict_to(target);
+    }
+    fn recycle(&self) {
+        lk(&self.kv).clear();
     }
 }
 
@@ -326,6 +363,7 @@ impl Db {
         let read = open_file(&hot, "storage.hot_synchronous", sql::HOT_MIGRATIONS)?;
         let (tx, rx) = mpsc::sync_channel(defaults::num("storage.write_queue") as usize);
         let mem = Arc::new(Mem::new());
+        mem.install_budget();
         let m = mem.clone();
         let handle = std::thread::spawn(move || writer(write, rx, &m, window));
         Ok(Arc::new(Db {
@@ -709,5 +747,30 @@ mod tests {
         let c = Connection::open(d.0.join("hot.db")).unwrap();
         let n: i64 = c.query_row("SELECT COUNT(*) FROM impact", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 500);
+    }
+
+    #[test]
+    fn refused_kv_replacement_drops_the_old_active_value() {
+        let mem = Arc::new(Mem::new());
+        let key = ("/p".to_string(), "k".to_string());
+        lk(&mem.kv).insert(key.clone(), "old".to_string(), item_size(&key, "old"), None);
+        let reg = crate::mem::Registry::new(
+            Box::new(|k| match k {
+                "mem.db_kv_soft_bytes" => 8,
+                "mem.db_kv_hard_bytes" => 16,
+                "mem.db_kv_low_water_pct" => 50,
+                _ => 0,
+            }),
+            Box::new(|_| {}),
+        );
+        let owner: Arc<dyn Owner> = mem.clone();
+        *lk(&mem.budget) =
+            Some(reg.register(Spec::new("db_kv", "mem.db_kv_soft_bytes", "mem.db_kv_hard_bytes", "mem.db_kv_low_water_pct"), Arc::downgrade(&owner)));
+        mem.committed(&Op::Proj {
+            project: "/p".to_string(),
+            write_id: String::new(),
+            verb: ProjVerb::Set { key: "k".to_string(), value: "new-value-too-large".to_string(), expires_ms: None },
+        });
+        assert!(lk(&mem.kv).get(&key, crate::health::now_ms()).is_none(), "refused replacement must not leave stale memory");
     }
 }

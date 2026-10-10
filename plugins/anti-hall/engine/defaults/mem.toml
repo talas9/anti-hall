@@ -100,6 +100,193 @@ doc = "Transcript-tail answers the cache keeps at most; past it the least recent
 value = 256
 min = 1
 
+[mem.hook_sessions_soft_bytes]
+doc = "Estimated bytes of hook session condition counters held before idle counters are evicted down to the low-water mark."
+value = 262144
+min = 4096
+unit = "bytes"
+
+[mem.hook_sessions_hard_bytes]
+doc = "Estimated bytes of hook session condition counters at which new counters are refused and the session store is recycled."
+value = 1048576
+min = 4096
+unit = "bytes"
+
+[mem.hook_sessions_low_water_pct]
+doc = "Percent of mem.hook_sessions_soft_bytes the hook session store is evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.hook_sessions_max_entries]
+doc = "Hook session condition counters kept at most; past it the least recently used or expired counter is dropped first."
+value = 4096
+min = 1
+
+[mem.devswarm_rt_soft_bytes]
+doc = "Estimated bytes of DevSwarm realtime snapshots and retained edges held before old edges are evicted down to the low-water mark."
+value = 4194304
+min = 65536
+unit = "bytes"
+
+[mem.devswarm_rt_hard_bytes]
+doc = "Estimated bytes of DevSwarm realtime snapshots and retained edges at which edge inserts are refused and recoverable state is recycled."
+value = 8388608
+min = 65536
+unit = "bytes"
+
+[mem.devswarm_rt_low_water_pct]
+doc = "Percent of mem.devswarm_rt_soft_bytes the DevSwarm realtime edge buffer is evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.devswarm_rt_max_edges]
+doc = "DevSwarm realtime edges retained at most; past it the oldest edge is dropped first."
+value = 2048
+min = 1
+
+[mem.devswarm_ingest_soft_bytes]
+doc = "Estimated bytes held by DevSwarm ingest project scheduling state before idle project entries are evicted down to the low-water mark."
+value = 524288
+min = 4096
+unit = "bytes"
+
+[mem.devswarm_ingest_hard_bytes]
+doc = "Estimated bytes held by DevSwarm ingest project scheduling state at which new idle project entries are refused and recoverable state is recycled."
+value = 1048576
+min = 4096
+unit = "bytes"
+
+[mem.devswarm_ingest_low_water_pct]
+doc = "Percent of mem.devswarm_ingest_soft_bytes the DevSwarm ingest project state is evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.devswarm_ingest_max_threads]
+doc = "Maximum DevSwarm ingest worker threads the resident daemon starts for project drains."
+value = 4
+min = 1
+
+[mem.devswarm_ingest_idle_ttl_ms]
+doc = "How long a DevSwarm ingest project may be idle before its resident drain worker is stopped and its slot becomes available."
+value = 600000
+min = 1000
+unit = "ms"
+
+[mem.jev_lanes_soft_bytes]
+doc = "Estimated bytes held by resident Jev lanes, including per-home settings, cache state and queued detached asks, before idle lanes are evicted down to the low-water mark."
+value = 2097152
+min = 65536
+unit = "bytes"
+
+[mem.jev_lanes_hard_bytes]
+doc = "Estimated bytes held by resident Jev lanes at which new lane or queue retention is refused and recoverable lanes are recycled."
+value = 4194304
+min = 65536
+unit = "bytes"
+
+[mem.jev_lanes_low_water_pct]
+doc = "Percent of mem.jev_lanes_soft_bytes resident Jev lanes are evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.jev_lanes_max_entries]
+doc = "Resident Jev home lanes kept at most; past it the least recently used idle lane is dropped first."
+value = 16
+min = 1
+
+[mem.jev_lanes_idle_ttl_ms]
+doc = "How long a resident Jev lane may be idle before its worker is stopped and its lane may be evicted."
+value = 600000
+min = 1000
+unit = "ms"
+
+[mem.jev_queue_max_bytes]
+doc = "Estimated bytes of detached Jev ask payloads a resident lane queue may hold before further queued asks are answered busy."
+value = 1048576
+min = 4096
+unit = "bytes"
+
+[mem.jev_queue_soft_bytes]
+doc = "Estimated bytes of resident Jev async request payloads queued across lanes before the holder reports a soft memory trip."
+value = 524288
+min = 4096
+unit = "bytes"
+
+[mem.jev_queue_hard_bytes]
+doc = "Estimated bytes of resident Jev async request payloads queued across lanes at which new async asks are logged busy instead of being retained."
+value = 1048576
+min = 4096
+unit = "bytes"
+
+[mem.jev_queue_low_water_pct]
+doc = "Percent of mem.jev_queue_soft_bytes the resident Jev async queue holder must fall to before soft and hard trips re-arm."
+value = 80
+min = 1
+max = 100
+
+[mem.buckets_soft_bytes]
+doc = "Estimated bytes of daemon session and project token-bucket keys held before idle/full buckets are evicted down to the low-water mark."
+value = 262144
+min = 4096
+unit = "bytes"
+
+[mem.buckets_hard_bytes]
+doc = "Estimated bytes of daemon session and project token-bucket keys at which unknown keys are refused and recoverable buckets are recycled."
+value = 1048576
+min = 4096
+unit = "bytes"
+
+[mem.buckets_low_water_pct]
+doc = "Percent of mem.buckets_soft_bytes token buckets are evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.key_cache_soft_bytes]
+doc = "Estimated bytes of cached cwd-to-project keys held before least recently used paths are evicted down to the low-water mark."
+value = 262144
+min = 4096
+unit = "bytes"
+
+[mem.key_cache_hard_bytes]
+doc = "Estimated bytes of cached cwd-to-project keys at which new cache entries are refused and recoverable keys are recycled."
+value = 1048576
+min = 4096
+unit = "bytes"
+
+[mem.key_cache_low_water_pct]
+doc = "Percent of mem.key_cache_soft_bytes cwd-to-project keys are evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.key_cache_max_entries]
+doc = "Cwd-to-project cache entries kept at most; past it the least recently used cwd is dropped first."
+value = 4096
+min = 1
+
+[mem.db_kv_soft_bytes]
+doc = "Estimated bytes of active project key-value items held in memory before least recently used items are evicted down to the low-water mark."
+value = 4194304
+min = 65536
+unit = "bytes"
+
+[mem.db_kv_hard_bytes]
+doc = "Estimated bytes of active project key-value items at which inserts are refused and the in-memory KV tier is recycled."
+value = 8388608
+min = 65536
+unit = "bytes"
+
+[mem.db_kv_low_water_pct]
+doc = "Percent of mem.db_kv_soft_bytes active project key-value items are evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
 [mem.defaults_leak_soft_bytes]
 doc = "Bytes of config values leaked on purpose (the `'static` snapshots of the defaults, the previous generation of every derived cache) that are logged as a soft excursion. Only a restart frees them; one load of the shipped config leaks about 3.4 MB (measured), and a reload adds only what changed."
 value = 16777216
