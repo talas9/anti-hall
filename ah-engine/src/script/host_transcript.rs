@@ -11,23 +11,22 @@
 //! | `jevCachePeek(hash)` | the answer and confidence of the Jev cache entry under `hash`: see [`cache_peek`] |
 
 use crate::checks::emit_dedupe::scan_tail;
-use moka::sync::{Cache, CacheBuilder};
 use rquickjs::{Ctx, Function, Object};
 use serde_json::json;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
 type Key = (String, u64);
 type Stamp = (u64, std::time::SystemTime);
 
-#[derive(Clone)]
 struct Entry {
     stamp: Stamp,
     answer: String,
-    weight: u32,
+    weight: u64,
 }
 
-fn entry_weight(key: &Key, answer: &str) -> u32 {
-    (key.0.len() + std::mem::size_of::<u64>() + answer.len()).min(u32::MAX as usize) as u32
+fn entry_weight(key: &Key, answer: &str) -> u64 {
+    (key.0.len() + std::mem::size_of::<u64>() + answer.len()) as u64
 }
 
 /// Last answer per (path, window): valid while the file keeps its size and modification time.
@@ -35,39 +34,97 @@ static CACHE: OnceLock<Mutex<TranscriptCache>> = OnceLock::new();
 
 struct TranscriptCache {
     cap: u64,
-    cache: Cache<Key, Entry>,
+    bytes: u64,
+    entries: HashMap<Key, Entry>,
+    lru: VecDeque<Key>,
 }
 
-fn new_cache(cap: u64) -> Cache<Key, Entry> {
-    CacheBuilder::new(cap).weigher(|_k: &Key, v: &Entry| v.weight).build()
+impl TranscriptCache {
+    fn new(cap: u64) -> Self {
+        Self { cap, bytes: 0, entries: HashMap::new(), lru: VecDeque::new() }
+    }
+
+    fn get(&mut self, key: &Key, stamp: Stamp) -> Option<String> {
+        match self.entries.get(key) {
+            Some(e) if e.stamp == stamp => {
+                let answer = e.answer.clone();
+                self.touch(key);
+                Some(answer)
+            }
+            Some(_) => {
+                self.remove(key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn insert(&mut self, key: Key, entry: Entry) {
+        self.remove(&key);
+        self.bytes = self.bytes.saturating_add(entry.weight);
+        self.entries.insert(key.clone(), entry);
+        self.lru.push_back(key);
+        self.evict();
+    }
+
+    fn clear(&mut self) {
+        self.bytes = 0;
+        self.entries.clear();
+        self.lru.clear();
+    }
+
+    fn usage(&self) -> (usize, usize) {
+        (self.entries.len(), self.bytes.min(usize::MAX as u64) as usize)
+    }
+
+    fn touch(&mut self, key: &Key) {
+        self.lru.retain(|k| k != key);
+        self.lru.push_back(key.clone());
+    }
+
+    fn remove(&mut self, key: &Key) {
+        if let Some(old) = self.entries.remove(key) {
+            self.bytes = self.bytes.saturating_sub(old.weight);
+            self.lru.retain(|k| k != key);
+        }
+    }
+
+    fn evict(&mut self) {
+        while self.bytes > self.cap {
+            let Some(key) = self.lru.pop_front() else {
+                self.clear();
+                break;
+            };
+            if let Some(old) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(old.weight);
+            }
+        }
+    }
 }
 
-fn with_cache<R>(f: impl FnOnce(&Cache<Key, Entry>) -> R) -> R {
+fn with_cache<R>(f: impl FnOnce(&mut TranscriptCache) -> R) -> R {
     let mut g = CACHE
         .get_or_init(|| {
             let cap = crate::defaults::num("script.transcript_cache_max_bytes");
-            Mutex::new(TranscriptCache { cap, cache: new_cache(cap) })
+            Mutex::new(TranscriptCache::new(cap))
         })
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cap = crate::defaults::num("script.transcript_cache_max_bytes");
     if g.cap != cap {
-        *g = TranscriptCache { cap, cache: new_cache(cap) };
+        *g = TranscriptCache::new(cap);
     }
-    f(&g.cache)
+    f(&mut g)
 }
 
 /// (entries, bytes of cached answers) of the transcript-tail cache, for the memory snapshot.
 pub fn cache_usage() -> (usize, usize) {
-    with_cache(|c| {
-        c.run_pending_tasks();
-        (c.entry_count() as usize, c.weighted_size() as usize)
-    })
+    with_cache(|c| c.usage())
 }
 
 /// Clear the transcript-tail cache (test support and daemon reload hygiene).
 pub fn clear_cache() {
-    with_cache(|c| c.invalidate_all());
+    with_cache(|c| c.clear());
 }
 
 fn stamp_of(path: &str) -> Option<Stamp> {
@@ -88,7 +145,7 @@ pub fn dedupe_tail(path: &str, bytes: f64) -> String {
     let stamp = stamp_of(path);
     let key = (path.to_string(), n);
     if let Some(st) = stamp
-        && let Some(hit) = with_cache(|c| c.get(&key)).filter(|e| e.stamp == st).map(|e| e.answer)
+        && let Some(hit) = with_cache(|c| c.get(&key, st))
     {
         return hit;
     }
@@ -198,8 +255,16 @@ mod tests {
         d.join("t.jsonl").to_string_lossy().to_string()
     }
 
+    static TEST_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn cache_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_CACHE_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn ht_01_returns_the_delivered_attachments_in_order() {
+        let _guard = cache_test_guard();
+        clear_cache();
         let p = scratch("a");
         std::fs::write(&p, [att("2026-01-01T00:00:00.000Z", "one"), att("2026-01-01T00:00:01.000Z", "two")].join("\n") + "\n").unwrap();
         let v: serde_json::Value = serde_json::from_str(&dedupe_tail(&p, 1048576.0)).unwrap();
@@ -210,6 +275,8 @@ mod tests {
 
     #[test]
     fn ht_02_unusable_and_unsure_answers() {
+        let _guard = cache_test_guard();
+        clear_cache();
         let p = scratch("b");
         assert_eq!(dedupe_tail(&p, 1024.0), "null", "missing file");
         std::fs::write(&p, "{\"type\":\"assistant\"}\n").unwrap();
@@ -221,6 +288,8 @@ mod tests {
 
     #[test]
     fn ht_03_cache_follows_the_file() {
+        let _guard = cache_test_guard();
+        clear_cache();
         let p = scratch("c");
         std::fs::write(&p, att("2026-01-01T00:00:00.000Z", "one") + "\n").unwrap();
         let a = dedupe_tail(&p, 1048576.0);
@@ -231,7 +300,22 @@ mod tests {
     }
 
     #[test]
-    fn ht_04_cache_stays_under_the_byte_cap() {
+    fn ht_04_cache_replaces_the_same_path_window() {
+        let _guard = cache_test_guard();
+        clear_cache();
+        let p = scratch("replace");
+        std::fs::write(&p, att("2026-01-01T00:00:00.000Z", "one") + "\n").unwrap();
+        let _ = dedupe_tail(&p, 1048576.0);
+        assert_eq!(cache_usage().0, 1);
+        std::fs::write(&p, [att("2026-01-01T00:00:00.000Z", "one"), att("2026-01-01T00:00:02.000Z", "three")].join("\n") + "\n").unwrap();
+        let _ = dedupe_tail(&p, 1048576.0);
+        assert_eq!(cache_usage().0, 1);
+    }
+
+    #[test]
+    fn ht_05_cache_stays_under_the_byte_cap() {
+        let _guard = cache_test_guard();
+        clear_cache();
         for i in 0..40 {
             let p = scratch(&format!("cap-{i}"));
             let body = "x".repeat(300_000);

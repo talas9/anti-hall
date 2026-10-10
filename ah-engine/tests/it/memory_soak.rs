@@ -64,6 +64,9 @@ impl Soak {
             i += 1;
         }
         f.flush().unwrap();
+        let mut perms = std::fs::metadata(&transcript).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&transcript, perms).unwrap();
         Soak { dir, transcript }
     }
 
@@ -144,6 +147,15 @@ impl Soak {
             _ => ("SessionStart", base(serde_json::json!({"source": "startup"}))),
         }
     }
+
+    fn stop_payload(&self, i: usize) -> serde_json::Value {
+        serde_json::json!({
+            "session_id": format!("measure-session-{}", i % 40),
+            "transcript_path": self.transcript.to_string_lossy().to_string(),
+            "cwd": self.dir.to_string_lossy().to_string(),
+            "stop_hook_active": false
+        })
+    }
 }
 
 impl Drop for Soak {
@@ -192,4 +204,85 @@ fn a_long_mixed_run_stays_under_the_default_cap_and_flat_with_zero_restarts() {
     assert!(l <= w + allowed, "live heap grew from {w} KB at call {warm} to {l} KB at call {total}: {}", last["memory"]);
     let (rw, rl) = (at_warm["memory"]["rss_kb"].as_u64().unwrap(), last["memory"]["rss_kb"].as_u64().unwrap());
     assert!(rl <= rw + rw / 2 + 8192, "RSS grew from {rw} KB at call {warm} to {rl} KB at call {total}");
+}
+
+#[test]
+#[ignore = "manual issue-21 measurement: prints cache memory at 0/1000/2500/5000 calls"]
+fn measure_byte_bounded_caches_at_requested_checkpoints() {
+    assert_disk_floor();
+    let s = Soak::new();
+    let map = s.map();
+    let points = measurement_points();
+    let mut done = 0usize;
+    let mut prev = sample(0, &s.status(), None);
+    print_row_header();
+    print_row(&prev);
+    for target in points.into_iter().filter(|p| *p > 0) {
+        assert_disk_floor();
+        while done < target {
+            s.hook(&map, "Stop", &s.stop_payload(done));
+            done += 1;
+        }
+        let row = sample(done, &s.status(), Some(&prev));
+        print_row(&row);
+        prev = row;
+    }
+}
+
+fn measurement_points() -> Vec<usize> {
+    std::env::var("AH_CACHE_MEASURE_POINTS")
+        .ok()
+        .map(|v| v.split(',').filter_map(|p| p.trim().parse().ok()).collect())
+        .filter(|v: &Vec<usize>| !v.is_empty())
+        .unwrap_or_else(|| vec![0, 1000, 2500, 5000])
+}
+
+struct Row {
+    calls: usize,
+    rss_kb: u64,
+    footprint_kb: u64,
+    jemalloc_allocated: u64,
+    jemalloc_resident: u64,
+    cache_bytes: u64,
+    allocs_total: u64,
+    allocs_per_request: f64,
+}
+
+fn sample(calls: usize, st: &serde_json::Value, prev: Option<&Row>) -> Row {
+    let m = &st["memory"];
+    let tt = &m["caches"]["transcript_tail"];
+    let walks = &m["caches"]["agent_scan_walks"];
+    let allocs_total = m["allocs"].as_u64().unwrap_or(0);
+    let delta_calls = prev.map_or(0, |p| calls.saturating_sub(p.calls));
+    let delta_allocs = prev.map_or(0, |p| allocs_total.saturating_sub(p.allocs_total));
+    Row {
+        calls,
+        rss_kb: m["rss_kb"].as_u64().unwrap_or(0),
+        footprint_kb: m["footprint_kb"].as_u64().unwrap_or(0),
+        jemalloc_allocated: m["jemalloc"]["allocated"].as_u64().unwrap_or(0),
+        jemalloc_resident: m["jemalloc"]["resident"].as_u64().unwrap_or(0),
+        cache_bytes: tt["bytes"].as_u64().unwrap_or(0) + walks["estimated_bytes"].as_u64().unwrap_or(0),
+        allocs_total,
+        allocs_per_request: if delta_calls == 0 { 0.0 } else { delta_allocs as f64 / delta_calls as f64 },
+    }
+}
+
+fn print_row_header() {
+    println!("calls\trss_kb\tfootprint_kb\tjemalloc_allocated\tjemalloc_resident\tcache_bytes\tallocs_per_request");
+}
+
+fn print_row(r: &Row) {
+    println!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{:.2}",
+        r.calls, r.rss_kb, r.footprint_kb, r.jemalloc_allocated, r.jemalloc_resident, r.cache_bytes, r.allocs_per_request
+    );
+}
+
+fn assert_disk_floor() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let out = Command::new("df").args(["-g", &home]).output().expect("df -g HOME");
+    assert!(out.status.success(), "df -g {home} failed: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let avail = text.lines().last().and_then(|l| l.split_whitespace().nth(3)).and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+    assert!(avail >= 50, "df -g {home} reports only {avail} GB available; aborting measurement");
 }

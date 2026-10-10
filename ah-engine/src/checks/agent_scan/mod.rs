@@ -18,7 +18,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(test)]
 mod tests;
@@ -1104,7 +1104,7 @@ struct Kept {
 
 #[derive(Clone)]
 struct KeptEntry {
-    kept: std::sync::Arc<Kept>,
+    kept: Arc<Mutex<Option<Kept>>>,
     weight: u32,
 }
 
@@ -1138,12 +1138,47 @@ fn with_kept_cache<R>(f: impl FnOnce(&Cache<String, KeptEntry>) -> R) -> R {
     f(&g.cache)
 }
 
+fn take_kept(e: KeptEntry) -> Option<Kept> {
+    e.kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+}
+
+fn cache_kept(path: &str, mut k: Kept, f: &std::fs::File, fp: u64) {
+    let bytes = walk_bytes(&k.walk);
+    if bytes > defaults::num("agent_scan.cache_max_bytes") {
+        return;
+    }
+    let now = now_ms() as u64;
+    let Some(head) = digest_at(f, 0, fp.min(k.off)) else { return };
+    let Some(back) = digest_at(f, k.off - fp.min(k.off), fp.min(k.off)) else { return };
+    k.head = head;
+    k.back = back;
+    k.used_ms = now;
+    let ttl = defaults::num("agent_scan.cache_idle_ms");
+    with_kept_cache(|cache| {
+        for (p, e) in cache.iter() {
+            let Some(used_ms) = e.kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(|k| k.used_ms) else { continue };
+            if now.saturating_sub(used_ms) > ttl {
+                cache.invalidate(p.as_ref());
+            }
+        }
+        let weight = kept_weight(path, bytes);
+        cache.insert(path.to_string(), KeptEntry { kept: Arc::new(Mutex::new(Some(k))), weight });
+    });
+}
+
 /// (transcripts kept, their estimated bytes by the cache's own estimate, transcript bytes they have read) for the memory snapshot.
 pub fn kept_usage() -> (usize, u64, u64) {
     with_kept_cache(|c| {
         c.run_pending_tasks();
-        let read = c.iter().map(|(_, e)| e.kept.off).sum();
-        (c.entry_count() as usize, c.weighted_size(), read)
+        let mut entries = 0usize;
+        let mut read = 0u64;
+        for (_, e) in c.iter() {
+            if let Some(k) = e.kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+                entries += 1;
+                read += k.off;
+            }
+        }
+        (entries, c.weighted_size(), read)
     })
 }
 
@@ -1302,11 +1337,7 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
     let size = m.len();
     let fp = defaults::num("agent_scan.cache_fingerprint_bytes").max(1);
     let gen_ = defaults::generation();
-    let taken = with_kept_cache(|c| {
-        let kept = c.get(path).map(|e| e.kept);
-        c.invalidate(path);
-        kept
-    });
+    let taken = with_kept_cache(|c| c.remove(path).and_then(take_kept));
     let mut k = match taken {
         Some(k)
             if k.gen_ == gen_
@@ -1316,7 +1347,7 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
                 && digest_at(&f, 0, fp.min(k.off)) == Some(k.head)
                 && digest_at(&f, k.off - fp.min(k.off), fp.min(k.off)) == Some(k.back) =>
         {
-            std::sync::Arc::try_unwrap(k).unwrap_or_else(|k| (*k).clone())
+            k
         }
         _ => Kept { gen_, dev: m.dev(), ino: m.ino(), off: 0, seq: 0, head: 0, back: 0, used_ms: 0, walk: Walk::new() },
     };
@@ -1349,33 +1380,21 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
             break;
         }
     }
-    let scan = if let Some(p) = partial {
-        let mut w = k.walk.clone();
-        let mut seq = k.seq;
-        feed(&mut w, &mut seq, &p)?;
-        finish_ref(&w, path, opts).map(Some)
-    } else {
-        finish_ref(&k.walk, path, opts).map(Some)
-    };
-    // keep the walk for the next call, unless it grew past the cap
-    let bytes = walk_bytes(&k.walk);
-    if scan.is_ok() && bytes <= defaults::num("agent_scan.cache_max_bytes") {
-        let now = now_ms() as u64;
-        if let (Some(head), Some(back)) = (digest_at(&f, 0, fp.min(k.off)), digest_at(&f, k.off - fp.min(k.off), fp.min(k.off))) {
-            k.head = head;
-            k.back = back;
-            k.used_ms = now;
-            let ttl = defaults::num("agent_scan.cache_idle_ms");
-            with_kept_cache(|cache| {
-                for (p, e) in cache.iter() {
-                    if now.saturating_sub(e.kept.used_ms) > ttl {
-                        cache.invalidate(p.as_ref());
-                    }
-                }
-                let weight = kept_weight(path, bytes);
-                cache.insert(path.to_string(), KeptEntry { kept: std::sync::Arc::new(k), weight });
-            });
+    let Some(p) = partial else {
+        let scan = finish_ref(&k.walk, path, opts).map(Some);
+        if scan.is_ok() {
+            cache_kept(path, k, &f, fp);
         }
+        return scan;
+    };
+    // The incomplete final line counts in this answer, but it cannot be committed to the retained walk until it
+    // has a newline. Evaluate it as a suffix and put the complete-line walk back for the next call.
+    let mut suffix = Walk::new();
+    let mut seq = k.seq;
+    feed(&mut suffix, &mut seq, &p)?;
+    let scan = finish_overlay(&k.walk, &suffix, path, opts).map(Some);
+    if scan.is_ok() {
+        cache_kept(path, k, &f, fp);
     }
     scan
 }
@@ -1385,22 +1404,19 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
 }
 
 fn finish_ref(w: &Walk, path: &str, opts: &Opts) -> Res<Scan> {
+    finish_overlay(w, &Walk::new(), path, opts)
+}
+
+fn finish_overlay(base: &Walk, suffix: &Walk, path: &str, opts: &Opts) -> Res<Scan> {
     finish_view(
         FinishView {
-            launched: w.launched.clone(),
-            terminal: w.terminal.clone(),
-            terminal_ev: w.terminal_ev.clone(),
-            team_events: w.team_events.clone(),
-            desc_by_tool_use: &w.desc_by_tool_use,
-            tool_uses: &w.tool_uses,
-            stops: &w.stops,
-            errored: &w.errored,
-            answered: &w.answered,
-            others: &w.others,
-            team_info: &w.team_info,
-            resume_seq: &w.resume_seq,
-            resume_full: &w.resume_full,
-            resume_ts: &w.resume_ts,
+            base,
+            suffix,
+            launched_delta: OMap::default(),
+            terminal_added: HashSet::new(),
+            terminal_removed: HashSet::new(),
+            added_terminal_ev: HashMap::new(),
+            added_team_events: OMap::default(),
         },
         path,
         opts,
@@ -1408,55 +1424,185 @@ fn finish_ref(w: &Walk, path: &str, opts: &Opts) -> Res<Scan> {
 }
 
 struct FinishView<'a> {
-    launched: OMap<Rec>,
-    terminal: HashSet<String>,
-    terminal_ev: HashMap<String, Vec<(u64, f64)>>,
-    team_events: OMap<Vec<TeamEv>>,
-    desc_by_tool_use: &'a HashMap<String, String>,
-    tool_uses: &'a HashMap<String, ToolUse>,
-    stops: &'a [Stop],
-    errored: &'a HashSet<String>,
-    answered: &'a HashSet<String>,
-    others: &'a [Other],
-    team_info: &'a OMap<TeamInfo>,
-    resume_seq: &'a OMap<u64>,
-    resume_full: &'a HashSet<String>,
-    resume_ts: &'a HashMap<String, f64>,
+    base: &'a Walk,
+    suffix: &'a Walk,
+    launched_delta: OMap<Rec>,
+    terminal_added: HashSet<String>,
+    terminal_removed: HashSet<String>,
+    added_terminal_ev: HashMap<String, Vec<(u64, f64)>>,
+    added_team_events: OMap<Vec<TeamEv>>,
 }
 
 impl FinishView<'_> {
+    fn launched_ids(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for k in self.base.launched.keys().chain(self.suffix.launched.keys()).chain(self.launched_delta.keys()) {
+            if !out.contains(k) {
+                out.push(k.clone());
+            }
+        }
+        out
+    }
+
+    fn launched_get(&self, id: &str) -> Option<&Rec> {
+        self.launched_delta.get(id).or_else(|| self.suffix.launched.get(id)).or_else(|| self.base.launched.get(id))
+    }
+
+    fn launched_get_mut(&mut self, id: &str) -> Option<&mut Rec> {
+        if !self.launched_delta.has(id) {
+            let r = self.launched_get(id)?.clone();
+            self.launched_delta.set(id, r);
+        }
+        self.launched_delta.get_mut(id)
+    }
+
+    fn launched_set(&mut self, id: &str, r: Rec) {
+        self.launched_delta.set(id, r);
+    }
+
+    fn terminal_contains(&self, id: &str) -> bool {
+        !self.terminal_removed.contains(id) && (self.terminal_added.contains(id) || self.suffix.terminal.contains(id) || self.base.terminal.contains(id))
+    }
+
     fn mark_terminal(&mut self, id: &str, seq: u64, ts: f64) {
-        self.terminal.insert(id.to_string());
-        self.terminal_ev.entry(id.to_string()).or_default().push((seq, ts));
+        self.terminal_removed.remove(id);
+        self.terminal_added.insert(id.to_string());
+        self.added_terminal_ev.entry(id.to_string()).or_default().push((seq, ts));
+    }
+
+    fn remove_terminal(&mut self, id: &str) {
+        self.terminal_added.remove(id);
+        self.terminal_removed.insert(id.to_string());
+    }
+
+    fn terminal_ids(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for k in self.base.terminal.iter().chain(self.suffix.terminal.iter()).chain(self.terminal_added.iter()) {
+            if self.terminal_contains(k) && !out.contains(k) {
+                out.push(k.clone());
+            }
+        }
+        out
     }
 
     fn team_event(&mut self, name: &str, kind: &'static str, ts: f64, seq: u64) {
-        if !self.team_events.has(name) {
-            self.team_events.set(name, Vec::new());
+        if !self.added_team_events.has(name) {
+            self.added_team_events.set(name, Vec::new());
         }
-        if let Some(v) = self.team_events.get_mut(name) {
+        if let Some(v) = self.added_team_events.get_mut(name) {
             v.push(TeamEv { kind, ts, seq });
         }
+    }
+
+    fn has_team_events(&self, name: &str) -> bool {
+        self.base.team_events.has(name) || self.suffix.team_events.has(name) || self.added_team_events.has(name)
+    }
+
+    fn team_event_names(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for k in self.base.team_events.keys().chain(self.suffix.team_events.keys()).chain(self.added_team_events.keys()) {
+            if !out.contains(k) {
+                out.push(k.clone());
+            }
+        }
+        out
+    }
+
+    fn team_events(&self, name: &str) -> Vec<TeamEv> {
+        let mut out = Vec::new();
+        if let Some(v) = self.base.team_events.get(name) {
+            out.extend(v.iter().cloned());
+        }
+        if let Some(v) = self.suffix.team_events.get(name) {
+            out.extend(v.iter().cloned());
+        }
+        if let Some(v) = self.added_team_events.get(name) {
+            out.extend(v.iter().cloned());
+        }
+        out
+    }
+
+    fn terminal_stands(&self, id: &str, r_seq: u64, r_ts: Option<f64>, slack: f64) -> bool {
+        self.base
+            .terminal_ev
+            .get(id)
+            .into_iter()
+            .chain(self.suffix.terminal_ev.get(id))
+            .chain(self.added_terminal_ev.get(id))
+            .flatten()
+            .any(|(s, ts)| *s > r_seq && !(ts.is_finite() && r_ts.is_some_and(|r| r.is_finite() && *ts < r - slack)))
+    }
+
+    fn desc_by_tool_use(&self, id: &str) -> Option<&String> {
+        self.suffix.desc_by_tool_use.get(id).or_else(|| self.base.desc_by_tool_use.get(id))
+    }
+
+    fn tool_use(&self, id: &str) -> Option<&ToolUse> {
+        self.suffix.tool_uses.get(id).or_else(|| self.base.tool_uses.get(id))
+    }
+
+    fn errored(&self, id: &str) -> bool {
+        self.suffix.errored.contains(id) || self.base.errored.contains(id)
+    }
+
+    fn answered(&self, id: &str) -> bool {
+        self.suffix.answered.contains(id) || self.base.answered.contains(id)
+    }
+
+    fn team_info_get(&self, name: &str) -> Option<&TeamInfo> {
+        self.suffix.team_info.get(name).or_else(|| self.base.team_info.get(name))
+    }
+
+    fn team_info_for_agent(&self, id: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for (n, i) in self.base.team_info.iter().chain(self.suffix.team_info.iter()) {
+            if i.agent_id == id && !out.contains(n) {
+                out.push(n.clone());
+            }
+        }
+        out
+    }
+
+    fn resume_seq_items(&self) -> Vec<(String, u64)> {
+        let mut out: OMap<u64> = OMap::default();
+        for (k, v) in self.base.resume_seq.iter().chain(self.suffix.resume_seq.iter()) {
+            out.set(k, *v);
+        }
+        out.iter().map(|(k, v)| (k.clone(), *v)).collect()
+    }
+
+    fn resume_full_contains(&self, id: &str) -> bool {
+        self.suffix.resume_full.contains(id) || self.base.resume_full.contains(id)
+    }
+
+    fn resume_ts(&self, id: &str) -> Option<f64> {
+        self.suffix.resume_ts.get(id).or_else(|| self.base.resume_ts.get(id)).copied()
+    }
+
+    fn materialize_launched(&self) -> OMap<Rec> {
+        let mut out = OMap::default();
+        for (k, v) in self.base.launched.iter().chain(self.suffix.launched.iter()).chain(self.launched_delta.iter()) {
+            out.set(k, v.clone());
+        }
+        out
+    }
+
+    fn materialize_terminal(&self) -> HashSet<String> {
+        self.terminal_ids().into_iter().collect()
     }
 }
 
 fn finish_mut(w: &mut Walk, path: &str, opts: &Opts) -> Res<Scan> {
+    let empty = Walk::new();
     finish_view(
         FinishView {
-            launched: std::mem::take(&mut w.launched),
-            terminal: std::mem::take(&mut w.terminal),
-            terminal_ev: std::mem::take(&mut w.terminal_ev),
-            team_events: std::mem::take(&mut w.team_events),
-            desc_by_tool_use: &w.desc_by_tool_use,
-            tool_uses: &w.tool_uses,
-            stops: &w.stops,
-            errored: &w.errored,
-            answered: &w.answered,
-            others: &w.others,
-            team_info: &w.team_info,
-            resume_seq: &w.resume_seq,
-            resume_full: &w.resume_full,
-            resume_ts: &w.resume_ts,
+            base: w,
+            suffix: &empty,
+            launched_delta: OMap::default(),
+            terminal_added: HashSet::new(),
+            terminal_removed: HashSet::new(),
+            added_terminal_ev: HashMap::new(),
+            added_team_events: OMap::default(),
         },
         path,
         opts,
@@ -1465,58 +1611,60 @@ fn finish_mut(w: &mut Walk, path: &str, opts: &Opts) -> Res<Scan> {
 
 fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
     // Attach descriptions where the Agent tool_use was in the window.
-    let ids: Vec<String> = v.launched.keys().cloned().collect();
+    let ids = v.launched_ids();
     for id in &ids {
-        let d = v.launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| v.desc_by_tool_use.get(t)).cloned();
-        if let (Some(d), Some(r)) = (d, v.launched.get_mut(id)) {
+        let d = v.launched_get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| v.desc_by_tool_use(t)).cloned();
+        if let (Some(d), Some(r)) = (d, v.launched_get_mut(id)) {
             r.description = d;
         }
         // `rec.spawnInput`: the input of the launching call when it is in the window (an object or array, as `typeof` says)
-        let spawn = v.launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| v.tool_uses.get(t)).and_then(|c| c.input.clone());
-        if let (Some(i), Some(r)) = (spawn.filter(|i| i.is_object() || i.is_array()), v.launched.get_mut(id)) {
+        let spawn = v.launched_get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| v.tool_use(t)).and_then(|c| c.input.clone());
+        if let (Some(i), Some(r)) = (spawn.filter(|i| i.is_object() || i.is_array()), v.launched_get_mut(id)) {
             r.spawn_input = Some(i);
         }
     }
 
     // Background-agent ids known from the walk: a teammate name equal to one is a collision.
-    let mut background: HashSet<String> = v.launched.keys().cloned().collect();
-    background.extend(v.terminal.iter().cloned());
+    let mut background: HashSet<String> = v.launched_ids().into_iter().collect();
+    background.extend(v.terminal_ids());
 
-    for s in v.stops {
-        if s.tool_use_id.as_ref().is_some_and(|t| v.errored.contains(t)) {
+    let stops: Vec<Stop> = v.base.stops.iter().chain(v.suffix.stops.iter()).cloned().collect();
+    for s in &stops {
+        if s.tool_use_id.as_ref().is_some_and(|t| v.errored(t)) {
             continue;
         }
-        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| v.answered.contains(t)) {
+        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| v.answered(t)) {
             continue;
         }
         v.mark_terminal(&s.id, s.seq, s.ts);
-        let names: Vec<String> = v.team_info.iter().filter(|(_, i)| i.agent_id == s.id).map(|(n, _)| n.clone()).collect();
+        let names = v.team_info_for_agent(&s.id);
         for n in names {
-            if !v.team_events.has(&s.id) {
+            if !v.has_team_events(&s.id) {
                 v.team_event(&n, "stop", s.ts, s.seq);
             }
         }
-        if v.team_events.has(&s.id) {
+        if v.has_team_events(&s.id) {
             v.team_event(&s.id, "stop", s.ts, s.seq);
         }
     }
 
     // SAFETY NET: a later answer to a TaskOutput/SendMessage call that quotes a launched agent's id.
-    let launched_ids: Vec<String> = v.launched.keys().cloned().collect();
+    let launched_ids = v.launched_ids();
     for id in &launched_ids {
-        if v.terminal.contains(id) {
+        if v.terminal_contains(id) {
             continue;
         }
-        let own = v.launched.get(id).and_then(|r| r.tool_use_id.clone());
+        let own = v.launched_get(id).and_then(|r| r.tool_use_id.clone());
         let mut hit: Option<(u64, f64)> = None;
-        for o in v.others {
+        let others: Vec<Other> = v.base.others.iter().chain(v.suffix.others.iter()).cloned().collect();
+        for o in &others {
             if o.tool_use_id.is_some() && o.tool_use_id == own {
                 continue;
             }
-            let call = o.tool_use_id.as_ref().and_then(|t| v.tool_uses.get(t));
+            let call = o.tool_use_id.as_ref().and_then(|t| v.tool_use(t));
             if let Some(c) = call {
                 let delivery = c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n));
-                if !(delivery && names_agent(c.input.as_ref(), id, &v.launched)?) {
+                if !(delivery && names_agent_with_keys(c.input.as_ref(), id, v.launched_ids().iter())?) {
                     continue;
                 }
             }
@@ -1531,24 +1679,24 @@ fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
     }
 
     // RESUME RECONCILIATION.
-    let mut known: Vec<String> = v.launched.keys().cloned().collect();
-    for t in &v.terminal {
+    let mut known = v.launched_ids();
+    for t in v.terminal_ids() {
         if !known.contains(t) {
-            known.push(t.clone());
+            known.push(t);
         }
     }
-    let resumes: Vec<(String, u64)> = v.resume_seq.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let resumes = v.resume_seq_items();
     let slack = defaults::num("agent_scan.resume_skew_slack_ms") as f64;
     for (rid, r_seq) in resumes {
         let mut targets: Vec<String> = known.iter().filter(|k| k.starts_with(rid.as_str())).cloned().collect();
-        if !v.resume_full.contains(&rid) && targets.len() != 1 {
+        if !v.resume_full_contains(&rid) && targets.len() != 1 {
             targets.clear();
         }
         if targets.is_empty()
-            && v.resume_full.contains(&rid)
-            && let Some(ts) = v.resume_ts.get(&rid).copied()
+            && v.resume_full_contains(&rid)
+            && let Some(ts) = v.resume_ts(&rid)
         {
-            v.launched.set(
+            v.launched_set(
                 &rid,
                 Rec {
                     adopted: true,
@@ -1566,20 +1714,17 @@ fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
             );
             targets.push(rid.clone());
         }
-        let r_ts = v.resume_ts.get(&rid).copied();
+        let r_ts = v.resume_ts(&rid);
         for id in targets {
-            if let (Some(ts), Some(rec)) = (r_ts, v.launched.get_mut(&id)) {
+            if let (Some(ts), Some(rec)) = (r_ts, v.launched_get_mut(&id)) {
                 rec.resumed_at_ms = Some(rec.resumed_at_ms.unwrap_or(0.0).max(ts));
             }
-            if !v.terminal.contains(&id) {
+            if !v.terminal_contains(&id) {
                 continue;
             }
-            let stands = v
-                .terminal_ev
-                .get(&id)
-                .is_some_and(|evs| evs.iter().any(|(s, ts)| *s > r_seq && !(ts.is_finite() && r_ts.is_some_and(|r| r.is_finite() && *ts < r - slack))));
+            let stands = v.terminal_stands(&id, r_seq, r_ts, slack);
             if !stands {
-                v.terminal.remove(&id);
+                v.remove_terminal(&id);
             }
         }
     }
@@ -1587,9 +1732,9 @@ fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
     // PENDING TEAMMATE MESSAGES: replay each teammate's events in time order.
     let mut pending: Vec<(String, Pending)> = Vec::new();
     let silence = defaults::num("agent_scan.pending_silence_ms") as f64;
-    let names: Vec<String> = v.team_events.keys().cloned().collect();
+    let names = v.team_event_names();
     for name in names {
-        let Some(evs) = v.team_events.get(&name) else { continue };
+        let evs = v.team_events(&name);
         if !evs.iter().any(|e| e.kind == "spawn" || e.kind == "idle") {
             continue;
         }
@@ -1647,19 +1792,19 @@ fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
         let seen = teammate_sidechain_mtime(path, &name);
         let last_seen = if seen > sent { seen } else { sent };
         let live = opts.now_ms - last_seen < silence;
-        let info = v.team_info.get(&name);
+        let info = v.team_info_get(&name);
         let agent_id = info.map(|i| i.agent_id.clone()).unwrap_or_default();
         let tuid = info.and_then(|i| i.tool_use_id.clone());
         pending.push((name.clone(), Pending { sent_at_ms: sent, last_idle_ms: last_idle, last_seen_ms: last_seen, live, agent_id }));
         if !live {
             continue;
         }
-        v.launched.set(
+        v.launched_set(
             &name,
             Rec {
                 adopted: false,
                 output_file: String::new(),
-                description: tuid.and_then(|t| v.desc_by_tool_use.get(&t).cloned()).unwrap_or_default(),
+                description: tuid.and_then(|t| v.desc_by_tool_use(&t).cloned()).unwrap_or_default(),
                 launched_at_ms: sent,
                 tool_use_id: None,
                 resumed_at_ms: Some(sent),
@@ -1670,9 +1815,9 @@ fn finish_view(mut v: FinishView<'_>, path: &str, opts: &Opts) -> Res<Scan> {
                 spawn_input: None,
             },
         );
-        v.terminal.remove(&name);
+        v.remove_terminal(&name);
     }
-    Ok(Scan { launched: v.launched, terminal: v.terminal, pending })
+    Ok(Scan { launched: v.materialize_launched(), terminal: v.materialize_terminal(), pending })
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows

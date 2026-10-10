@@ -166,3 +166,43 @@ fn path_helpers_follow_node() {
     assert_eq!(base_without_jsonl("/a/b/c.txt"), "c.txt");
     assert_eq!(utf16_len("a\u{1F600}é"), 4);
 }
+
+fn snap_scan(s: &Option<Scan>) -> String {
+    match s {
+        None => "null".into(),
+        Some(s) => {
+            let mut terminal: Vec<&String> = s.terminal.iter().collect();
+            terminal.sort();
+            format!("{:?}\n{:?}\n{:?}", s.launched.iter().collect::<Vec<_>>(), terminal, s.pending)
+        }
+    }
+}
+
+#[test]
+fn kept_walk_survives_repeated_partial_final_line_scans() {
+    let dir = std::env::temp_dir().join(format!("ah-agent-scan-partial-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("t.jsonl");
+    let opts = Opts { now_ms: 1_791_300_000_000.0, ignore_unanswered_stops: false };
+    let complete = serde_json::json!({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_a", "name": "Agent", "input": {"description": "base", "prompt": "p"}}]},
+        "timestamp": "2026-10-06T12:00:00.000Z"
+    })
+    .to_string();
+    let partial = serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": [{"tool_use_id": "toolu_a", "type": "tool_result", "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a111111111111111 (internal ID)\noutput_file: /tmp/a111111111111111.out"}]}]},
+        "timestamp": "2026-10-06T12:00:01.000Z"
+    })
+    .to_string();
+    std::fs::write(&path, format!("{complete}\n{partial}")).unwrap();
+    for _ in 0..2 {
+        let fresh = scan_transcript_uncached(path.to_str().unwrap(), 64 * 1024 * 1024, &opts).unwrap();
+        let kept = scan_transcript(path.to_str().unwrap(), 64 * 1024 * 1024, &opts).unwrap();
+        assert_eq!(snap_scan(&fresh), snap_scan(&kept));
+        let (entries, _, _) = kept_usage();
+        assert!(entries > 0, "partial final line scan dropped the complete-line kept walk");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
