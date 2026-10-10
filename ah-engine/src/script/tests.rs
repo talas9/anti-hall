@@ -367,7 +367,11 @@ fn api_guard_script_matches_the_compiled_port() {
 #[test]
 fn orch_on_spawn_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("orch-on-spawn");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 20 && kinds.get("defer").copied().unwrap_or(0) > 5, "both answers: {kinds:?}");
+    // a pending marker is answered (it wins the claim and sends the rules); only the retry slot and an unusable home defer
+    assert!(
+        kinds.get("allow").copied().unwrap_or(0) > 20 && kinds.get("advisory").copied().unwrap_or(0) > 20 && kinds.get("defer").copied().unwrap_or(0) >= 1,
+        "allow, advisory and the remaining deferrals: {kinds:?}"
+    );
 }
 
 #[test]
@@ -638,6 +642,21 @@ mod swarm {
         assert!(silent(json!({}), &transcript(&h, json!({"prompt": "cd /private/tmp/x and work"}))), "the other agent works in scratch");
         let no_transcript = json!({"tool_name": "Agent", "tool_input": {}});
         assert!(advisory(call(&h, &no_transcript, T0 + 100_000, Some(8.0 * GB), 16.0 * GB)).is_none());
+    }
+
+    // lane L12: Node reads the default window of the transcript (`runningAgents`); an agent launched further back is not seen, so the
+    // note stays silent where a widened read would have found it
+    #[test]
+    fn the_shared_tree_note_reads_only_the_default_window_of_the_transcript() {
+        let h = swarm_home("sw-window");
+        let t = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose"}, "transcript_path": t, "cwd": h});
+        assert!(advisory(call(&h, &p, T0, Some(8.0 * GB), 16.0 * GB)).is_some(), "the running writer is inside the window");
+        let pad = "{\"type\":\"system\",\"content\":\"padding padding padding padding padding padding padding padding\"}\n";
+        let mut body = std::fs::read_to_string(&t).unwrap();
+        body.push_str(&pad.repeat(defaults::num("agent_scan.tail_bytes") as usize / pad.len() + 100));
+        std::fs::write(&t, body).unwrap();
+        assert!(advisory(call(&h, &p, T0 + 1, Some(8.0 * GB), 16.0 * GB)).is_none(), "a launch before the default window is not seen");
     }
 
     // issue #55: a brief that names its own clone or working directory outside the session's tree shares no tree

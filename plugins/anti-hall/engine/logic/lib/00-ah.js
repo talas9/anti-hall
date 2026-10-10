@@ -180,6 +180,8 @@ var ah = {
     codexAgents: function (p, tailBytes) { var r = ahHost.transcriptCodexAgents(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // The running agents of a transcript: null (unreadable), {unsure: true}, or {rows: [{id, description, spawnInput}]}.
     agents: function (p) { return JSON.parse(ahHost.agents(p)); },
+    // Like `agents`, but only the default window (the Node `runningAgents`): no widening, and an empty window is an empty list.
+    agentsWindow: function (p) { return JSON.parse(ahHost.agentsWindow(p)); },
     // The last lines of a file with their byte offsets: {lines: [[offset, text|null]]} (text null: over lineMax, or not UTF-8), or null.
     tailLines: function (p, windowBytes, lineMax) { var r = ahHost.tailLines(p, windowBytes || 0, lineMax || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // The newest maxLines lines parsed by the engine and cut down to the `keep` paths (lists of keys, '*' = every array element):

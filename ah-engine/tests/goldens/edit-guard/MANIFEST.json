@@ -1,5 +1,5 @@
 {
-  "cases": 2136,
+  "cases": 3203,
   "files": {
     "plugins/anti-hall/.claude-plugin/plugin.json": "18691cf971bb68165161f5061a002766baf24f26443bba4a4c17a72bf613726e",
     "plugins/anti-hall/codex/hooks/hooks.json": "4415ec8635631746dc52534b30f79639d8c50178e51833ec2af0154ed2a5f595",

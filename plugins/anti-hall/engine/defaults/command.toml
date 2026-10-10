@@ -517,6 +517,10 @@ value = "logs"
 doc = "The audit log of allowlisted commands."
 value = "command-allow.ndjson"
 
+[command.realpath_max_links]
+doc = "How many symbolic links one real-path walk follows before it gives up (the walk of fs.realpathSync, which keeps every component's spelling)."
+value = 40
+
 [command.git_timeout_ms]
 doc = "How long a git question of the plain-push carve-out may take (command-guard.js: 5000 ms)."
 value = 5000

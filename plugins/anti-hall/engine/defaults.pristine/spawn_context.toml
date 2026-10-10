@@ -195,7 +195,7 @@ value = "full"
 
 [orch_on_spawn.summary]
 doc = "One-line description of the orch-on-spawn check in the generated reference."
-value = "Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker defers to Node, which owns the claim race (port of orch-on-spawn.js)."
+value = "Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker takes the claim (a file created only when absent) and sends the full rules; only the retry slot after the claim lease, which needs the transcript scan, defers to Node (port of orch-on-spawn.js)."
 
 [orch_on_spawn.spawn_tools]
 doc = "Tool names that are a spawn: a call to any other named tool is ignored."
