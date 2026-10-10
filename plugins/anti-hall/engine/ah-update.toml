@@ -1,0 +1,35 @@
+# ah-update settings (D88): every URL, timeout and channel name the engine updater uses lives here, never in the script.
+# Read by hooks/ah-update.sh at each run; edit this file to retarget or retune the updater, no rebuild.
+# Format: one `key = value` per line (strings quoted, numbers bare); the script does not read sections.
+# This file is NOT part of engine/defaults/ (the engine never reads it; the updater is a separate script on purpose,
+# so a broken engine can still be repaired).
+
+repo = "talas9/anti-hall"
+api_base = "https://api.github.com"
+download_base = "https://github.com/talas9/anti-hall/releases/download"
+git_url = "https://github.com/talas9/anti-hall.git"
+
+# Channel names (the --channel argument and the engine.autoUpdate setting value) and the release tag prefix each one follows.
+channel_stable = "stable"
+channel_dev = "dev"
+tag_prefix_stable = "ah-engine-v"
+tag_prefix_dev = "ah-engine-dev-"
+default_channel = "stable"
+
+# Names of the files published with every release.
+sums_asset = "SHA256SUMS"
+commit_asset = "COMMIT"
+
+# How many recent releases of the list the channel lookup reads.
+list_per_page = 30
+
+# Limits, in seconds (a transfer or command taking longer is stopped; nothing downloaded is trusted to terminate).
+connect_timeout_s = 10
+download_timeout_s = 180
+run_timeout_s = 20
+git_timeout_s = 240
+go_live_timeout_s = 600
+max_download_bytes = 134217728
+
+# engine.autoUpdate: least seconds between two automatic checks.
+auto_interval_s = 86400
