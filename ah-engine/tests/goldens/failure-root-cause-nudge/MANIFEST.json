@@ -1,7 +1,7 @@
 {
   "cases": 6516,
   "files": {
-    "plugins/anti-hall/.claude-plugin/plugin.json": "18691cf971bb68165161f5061a002766baf24f26443bba4a4c17a72bf613726e",
+    "plugins/anti-hall/.claude-plugin/plugin.json": "21c3760d359edf1e3707f2496471df41fbc96b9a99c520cf6a25a31a1ef44af8",
     "plugins/anti-hall/codex/hooks/hooks.json": "4415ec8635631746dc52534b30f79639d8c50178e51833ec2af0154ed2a5f595",
     "plugins/anti-hall/codex/install-codex.js": "e5558185de984c9ef3b278d4955db67a939b47e6b4f1935e4a6e5da0459f22a1",
     "plugins/anti-hall/companion/devswarm-ingest.js": "b78fd3c9136333ce3304db98a13150f37f90e9b1d8703c13f183191f0bae4303",
@@ -94,7 +94,7 @@
     "plugins/anti-hall/hooks/lib/judge-child-exit.js": "0307df6349f842ed59ae14aaabe34a2236f1fde5b8c63df030ab245775f9b253",
     "plugins/anti-hall/hooks/lib/lazy-node.js": "44b7f8ff5cdd710b78a244797340f967036049df8e6f7aa43f6820b0edf24516",
     "plugins/anti-hall/hooks/lib/secret-scrub.js": "12c5d80a506027ead24f76bed90660fc071066df19ad217d59603a0d58515320",
-    "plugins/anti-hall/hooks/lib/settings-schema.js": "429bfaf589abdb61384268748671338eb38f2045d65c0babde636a485027aa92",
+    "plugins/anti-hall/hooks/lib/settings-schema.js": "2d69699849cd2a6d79caf98e3c71b796c9a21cfbb5a6f9bd937fa803fb653fc0",
     "plugins/anti-hall/hooks/lib/settings.js": "8a02f3bfbff155fb02e7b8a46663496dcceae48ec2dd630aa206e3ba67773005",
     "plugins/anti-hall/hooks/lib/stable-launcher.js": "f59dd99831a98c324d538d5c708326d0544e5f97ed152bd2a7a628cef4a4b62e",
     "plugins/anti-hall/hooks/lib/state-prune.js": "39cd3e4049cf900a4ec1e726893dcce30fc5c12846f9ca9696900f9de920c538",
@@ -130,7 +130,7 @@
     "plugins/anti-hall/statusline/statusline.js": "ef855854349c8ef5e2144ae5d6eef8cd411b7e419939ab0ec3bd4dba1d2f3d1a",
     "plugins/anti-hall/statusline/uninstall-statusline.js": "d52e32b54a07a12eaf71b19c362fdc7dad6eb6d844ae64b6be429bd0b1f3f389"
   },
-  "fingerprint": "c763d0ff383e7e91f6ee7dcd6f6f72ba445ae99abd68d23056560aa8df79b3e6",
+  "fingerprint": "c24d21622b7da8b3dddc5cfaedffe9b17319b9092a21d554693328e6295711ab",
   "os": "macos-aarch64",
   "record": "AH_RECORD_NODE=1 cargo nextest run --release --profile record -E 'test(<the lane's test>)'  # lane failure-root-cause-nudge",
   "test": "failure-root-cause-nudge",
