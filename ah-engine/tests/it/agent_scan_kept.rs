@@ -27,7 +27,7 @@ fn snap(s: &Option<Scan>) -> String {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let base = std::env::var_os("AH_TEST_SCRATCH").map_or_else(|| std::env::temp_dir(), PathBuf::from);
+    let base = std::env::var_os("AH_TEST_SCRATCH").map_or_else(std::env::temp_dir, PathBuf::from);
     let d = base.join(format!("ah-scan-kept-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     d
