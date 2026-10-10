@@ -214,6 +214,9 @@ function bkScan(cmd, depth) {
   return found;
 }
 
+// One shipped key per kind of broad kill (full literals, so the defaults-keys gate sees every read).
+var WHAT_KEY = { pattern: 'broad_kill.msg_what_pattern', everyone: 'broad_kill.msg_what_everyone', lookup: 'broad_kill.msg_what_lookup' };
+
 function decide(p, opts) {
   if (!ah.settings.bool('broad_kill.sw') || ah.settings.skipped(ah.cfg('broad_kill.guard_name'))) return 'allow';
   var cmd = p && p.tool_input && typeof p.tool_input.command === 'string' ? p.tool_input.command : '';
@@ -223,7 +226,7 @@ function decide(p, opts) {
   var max = ah.cfgNum('broad_kill.cmd_max'), shown = text.clean(hit.cmd);
   if (shown.length > max) shown = shown.slice(0, max) + '...';
   var reason = text.message('block', ah.cfg('broad_kill.guard_name'), {
-    what: text.render(ah.cfg('broad_kill.msg_what_' + hit.kind), { cmd: shown }),
+    what: text.render(ah.cfg(WHAT_KEY[hit.kind]), { cmd: shown }),
     why: ah.cfg('broad_kill.msg_why'),
     instead: ah.cfg('broad_kill.msg_instead'),
     override: ah.cfg('broad_kill.msg_override'),

@@ -108,7 +108,7 @@
     "plugins/anti-hall/hooks/lib/primary-tier.js": "9cadcd0ce4c95e4515b8f40876334a90b547462f0daa07c24032b7549e1c9007",
     "plugins/anti-hall/hooks/lib/scratchpad.js": "cab6853ea9e6784503a7a8236b146df3949bd3495fa6b830f0b8a379951ad454",
     "plugins/anti-hall/hooks/lib/secret-scrub.js": "12c5d80a506027ead24f76bed90660fc071066df19ad217d59603a0d58515320",
-    "plugins/anti-hall/hooks/lib/settings-schema.js": "b9eb2b2417f2e4eaf14789ad72d20fa23e50e150af14a854cf1a869e63a2b6b4",
+    "plugins/anti-hall/hooks/lib/settings-schema.js": "429bfaf589abdb61384268748671338eb38f2045d65c0babde636a485027aa92",
     "plugins/anti-hall/hooks/lib/settings.js": "8a02f3bfbff155fb02e7b8a46663496dcceae48ec2dd630aa206e3ba67773005",
     "plugins/anti-hall/hooks/lib/shell-scan.js": "7c3809014b1232ec6de1eaeadf6db90b237fccd940206c2253ed0c7070c7469f",
     "plugins/anti-hall/hooks/lib/shell-writes.js": "2edb94d7c016883b2845fb651d1b910491600592e1f8439fcbcbbb20bda33f5c",
@@ -149,7 +149,7 @@
     "plugins/anti-hall/statusline/statusline.js": "ef855854349c8ef5e2144ae5d6eef8cd411b7e419939ab0ec3bd4dba1d2f3d1a",
     "plugins/anti-hall/statusline/uninstall-statusline.js": "d52e32b54a07a12eaf71b19c362fdc7dad6eb6d844ae64b6be429bd0b1f3f389"
   },
-  "fingerprint": "52b32a92454636535fa3742547e5382f86290645084cfa3ceecda48dabe3d894",
+  "fingerprint": "f7025453fe3bc0bb5acfcb40f19c4e169a005247edd996a17979bbf078645c0a",
   "os": "macos-aarch64",
   "record": "AH_RECORD_NODE=1 cargo nextest run --release --profile record -E 'test(<the lane's test>)'  # lane api-guard",
   "test": "api-guard",

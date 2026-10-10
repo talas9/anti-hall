@@ -944,6 +944,7 @@ mod tests {
             "script.",                      // the interpreter switch and deadline are process-wide, not per request
             "ops.shadow_rate_",             // the shadow sampling rates of the operator command-line tools: each run is its own process
             "mcp_reaper.job_every_ms",      // the interval of the scheduled reaper job: the daemon's scheduler reads it, not a request
+            "engine_update.every_ms",       // the interval of the scheduled engine-update job: the daemon's scheduler reads it, not a request
             "refresh.every_ms",             // the interval of the scheduled refresh job: the daemon's scheduler reads it, not a request
         ];
         let odd: Vec<&str> = defaults::all().iter().filter(|e| e.env.is_some() && !PROCESS.iter().any(|p| e.key.starts_with(p))).map(|e| e.key).collect();

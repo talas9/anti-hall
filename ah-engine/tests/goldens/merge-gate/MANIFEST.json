@@ -94,7 +94,7 @@
     "plugins/anti-hall/hooks/lib/lazy-node.js": "44b7f8ff5cdd710b78a244797340f967036049df8e6f7aa43f6820b0edf24516",
     "plugins/anti-hall/hooks/lib/quote-mask.js": "d93b656992be1846e08ee1de214364cf908b4051bdd99cbeb1fed007c8eff30d",
     "plugins/anti-hall/hooks/lib/secret-scrub.js": "12c5d80a506027ead24f76bed90660fc071066df19ad217d59603a0d58515320",
-    "plugins/anti-hall/hooks/lib/settings-schema.js": "b9eb2b2417f2e4eaf14789ad72d20fa23e50e150af14a854cf1a869e63a2b6b4",
+    "plugins/anti-hall/hooks/lib/settings-schema.js": "429bfaf589abdb61384268748671338eb38f2045d65c0babde636a485027aa92",
     "plugins/anti-hall/hooks/lib/settings.js": "8a02f3bfbff155fb02e7b8a46663496dcceae48ec2dd630aa206e3ba67773005",
     "plugins/anti-hall/hooks/lib/stable-launcher.js": "f59dd99831a98c324d538d5c708326d0544e5f97ed152bd2a7a628cef4a4b62e",
     "plugins/anti-hall/hooks/lib/state-prune.js": "39cd3e4049cf900a4ec1e726893dcce30fc5c12846f9ca9696900f9de920c538",
@@ -129,7 +129,7 @@
     "plugins/anti-hall/statusline/statusline.js": "ef855854349c8ef5e2144ae5d6eef8cd411b7e419939ab0ec3bd4dba1d2f3d1a",
     "plugins/anti-hall/statusline/uninstall-statusline.js": "d52e32b54a07a12eaf71b19c362fdc7dad6eb6d844ae64b6be429bd0b1f3f389"
   },
-  "fingerprint": "3a61b6696d3c3039f4d90361e0f335371c09d2d5ab07d0317ec36ac43ea05f33",
+  "fingerprint": "7b61a656627a5814d304e9284e7e3a54e014ca2c4f80cf8abbcebeac14d2c4fd",
   "os": "macos-aarch64",
   "record": "AH_RECORD_NODE=1 cargo nextest run --release --profile record -E 'test(<the lane's test>)'  # lane merge-gate",
   "test": "merge-gate",
