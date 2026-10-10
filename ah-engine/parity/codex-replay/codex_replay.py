@@ -32,6 +32,8 @@ def args():
     ap.add_argument('--bin', default=HOME + '/.anti-hall/work/live11-bin/ah-engine', help='engine binary (engine side)')
     ap.add_argument('--claude-sample', default=HOME + '/.anti-hall/work/replay/sample-frozen.ndjson')
     ap.add_argument('--sessions', default=HOME + '/.codex/sessions')
+    ap.add_argument('--golden', default=os.path.abspath(os.path.join(os.path.dirname(__file__), '../../tests/golden')), help='recorded guard cases (Bash and edit payloads) mapped into the corpus')
+    ap.add_argument('--keep-devswarm', action='store_true', help='inherit the DEVSWARM_* variables (default: removed, so no hook reaches a real DevSwarm app and the DevSwarm-active deferrals do not hide the Codex checks)')
     ap.add_argument('--tag', default='')
     ap.add_argument('--bash', type=int, default=500)
     ap.add_argument('--patches', type=int, default=300)
@@ -194,6 +196,45 @@ def build(a):
         if ev == 'PreToolUse' and tool == 'Bash' and rng.random() > 0.35:
             continue
         add('PostToolUse' if ev == 'PostToolUseFailure' else ev, q)
+    # recorded guard cases (the Node goldens of the command, git, edit and API guards): the cases that BLOCK are what the replay is for
+    def golden(name, tools, keep_allow):
+        got = []
+        try:
+            lines = open('%s/%s.jsonl' % (a.golden, name)).read().splitlines()
+        except OSError:
+            return
+        for l in lines:
+            try:
+                o = json.loads(l)
+            except ValueError:
+                continue
+            p = o.get('payload')
+            if o.get('event') != 'PreToolUse' or not isinstance(p, dict) or p.get('tool_name') not in tools or not isinstance(p.get('tool_input'), dict):
+                continue
+            hard = (o.get('expect') or {}).get('v') != 'allow'
+            got.append((hard, p))
+        rng.shuffle(got)
+        hard = [x for x in got if x[0]]
+        soft = [x for x in got if not x[0]][:keep_allow]
+        for _, p in hard + soft:
+            ti, tool = p['tool_input'], p['tool_name']
+            q = mk('PreToolUse', {k: p[k] for k in ('agent_id', 'agent_type') if isinstance(p.get(k), str)})
+            if tool == 'Bash' and isinstance(ti.get('command'), str):
+                q.update(tool_name='Bash', tool_input={'command': ti['command'].replace('{HOMEREAL}', sb).replace('{HOME}', sb)})
+            elif tool == 'apply_patch' and isinstance(ti.get('command'), str):
+                q.update(tool_name='apply_patch', tool_input={'command': localize_patch(ti['command'], sb)})
+            elif tool in ('Write', 'Edit') and isinstance(ti.get('file_path'), str):
+                q.update(tool_name='apply_patch', tool_input={'command': claude_edit_to_patch({k: (v.replace('{HOME}', sb) if isinstance(v, str) else v) for k, v in ti.items()}, sb)})
+            else:
+                continue
+            q['tool_use_id'] = 'call_%d' % len(calls)
+            add('PreToolUse', q)
+    golden('command', ('Bash',), 120)
+    golden('git', ('Bash',), 80)
+    golden('merge-gate', ('Bash',), 40)
+    golden('edit-guard', ('Edit', 'Write', 'apply_patch'), 120)
+    golden('api-guard', ('Edit', 'Write', 'apply_patch', 'Bash'), 120)
+    golden('ship-it-guard', ('Edit', 'Write', 'apply_patch', 'Bash'), 60)
     for ev in ('PreCompact', 'PostCompact', 'PermissionRequest'):
         for _ in range(8):
             q = mk(ev)
@@ -238,6 +279,13 @@ def rows(plugin):
     return d
 
 
+def stop_daemon(binary, state, env):
+    if os.path.isdir(state):
+        e = dict(env)
+        e['AH_ENGINE_DIR'] = state
+        subprocess.run([binary, 'stop'], env=e, capture_output=True, timeout=30)
+
+
 def run(a):
     side = a.side
     work, plugin = a.work, a.plugin
@@ -253,9 +301,13 @@ def run(a):
     env.update(HOME=home, ANTIHALL_INGEST_DRY_RUN='1', NODE_NO_WARNINGS='1', PLUGIN_ROOT=plugin, CLAUDE_PLUGIN_ROOT=plugin)
     for k in ('CLAUDE_CONFIG_DIR', 'AH_ENGINE_FALLBACK', 'OMC_STATE_DIR', 'CODEX_HOME'):
         env.pop(k, None)
+    if not a.keep_devswarm:
+        for k in [k for k in env if k.startswith('DEVSWARM_')]:
+            env.pop(k)
     table = rows(plugin)
     if side == 'engine':
         st = '%s/state%s-engine' % (work, a.tag)
+        stop_daemon(a.bin, st, env)  # a daemon of an earlier run would hold the state directory's lock
         shutil.rmtree(st, ignore_errors=True)
         os.makedirs(st, mode=0o700)
         env.update(AH_ENGINE_DIR=st, AH_ENGINE_PLUGIN_ROOT=plugin)
@@ -266,6 +318,18 @@ def run(a):
                 fm[ev][i] = 'printf \'%%s\\n\' \'%s\' >> "$AH_REPLAY_MARK"' % i
         mp = '%s/instrumented-map%s.json' % (work, a.tag)
         json.dump(fm, open(mp, 'w'))
+    if side == 'engine':
+        # the engine's own daemon starts on the first call and a call that arrives while it starts falls back (as in the field):
+        # start it before the measured calls, the way a running session has it
+        mark = '%s/mark%s.txt' % (work, a.tag)
+        env['AH_REPLAY_MARK'] = mark
+        probe = json.dumps({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'tool_input': {'command': 'true'}, 'cwd': sb, 'session_id': 'warmup', 'turn_id': 't'})
+        for _ in range(40):
+            open(mark, 'w').close()
+            subprocess.run([a.bin, 'hook', '--event', 'PreToolUse', '--tool', 'Bash', '--host', 'codex', '--fallback-map', mp], input=probe, capture_output=True, text=True, env=env, cwd=sb, timeout=30)
+            if not open(mark).read().strip():
+                break
+            time.sleep(0.5)
     out = open('%s/res%s-%s.ndjson' % (work, a.tag, side), 'w')
     t00 = time.time()
     n = 0
@@ -310,6 +374,8 @@ def run(a):
         n += 1
         if n % 100 == 0:
             print(side, n, round(time.time() - t00), flush=True)
+    if side == 'engine':
+        stop_daemon(a.bin, st, env)  # this run's own daemon, through the engine's own stop verb (never a broad kill)
     print(side, 'done', n, round(time.time() - t00), flush=True)
 
 

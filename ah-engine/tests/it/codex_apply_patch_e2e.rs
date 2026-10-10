@@ -57,7 +57,11 @@ fn run(mut c: Command, w: &World, input: &str) -> Out {
     let mut child = c.spawn().unwrap();
     child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     let o = child.wait_with_output().unwrap();
-    Out { stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned(), code: o.status.code().unwrap_or(-1) }
+    Out {
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        code: o.status.code().unwrap_or(-1),
+    }
 }
 
 fn payload(w: &World, patch: &str, subagent: bool) -> String {
@@ -144,8 +148,20 @@ fn edit_guard_apply_patch_matches_node_or_defers() {
         case("relative path into the launcher dir", add("../.anti-hall/bin/x.sh"), true, true, true),
         case("update inside the launcher dir", upd("@HOME@/.anti-hall/bin/y"), true, true, true),
         case("delete inside the launcher dir", "*** Begin Patch\n*** Delete File: @HOME@/.anti-hall/bin/y\n*** End Patch\n".into(), false, true, true),
-        case("move into the launcher dir", "*** Begin Patch\n*** Update File: a.txt\n*** Move to: @HOME@/.anti-hall/bin/z\n@@\n-a\n+b\n*** End Patch\n".into(), true, true, true),
-        case("second of two files is in the launcher dir", "*** Begin Patch\n*** Add File: ok.txt\n+x\n*** Add File: @HOME@/.anti-hall/bin/q\n+y\n*** End Patch\n".into(), true, true, true),
+        case(
+            "move into the launcher dir",
+            "*** Begin Patch\n*** Update File: a.txt\n*** Move to: @HOME@/.anti-hall/bin/z\n@@\n-a\n+b\n*** End Patch\n".into(),
+            true,
+            true,
+            true,
+        ),
+        case(
+            "second of two files is in the launcher dir",
+            "*** Begin Patch\n*** Add File: ok.txt\n+x\n*** Add File: @HOME@/.anti-hall/bin/q\n+y\n*** End Patch\n".into(),
+            true,
+            true,
+            true,
+        ),
         case("subagent ordinary add", add("src/new.txt"), true, true, false),
         case("subagent update", upd("a.txt"), true, true, false),
         case("subagent malformed patch", "not a patch".into(), true, true, false),

@@ -118,14 +118,26 @@ fn limit_status_buckets_threshold_and_resets() {
     let r = |k: &str, v: &str| format!(r#""{k}":{v},"#);
     same(
         "all three tripped, earliest reset",
-        &|h| cache(h, 0, &(r("fiveHourPercent", "90") + &r("fiveHourResetsAt", &format!("\"{f1}\""))), &(r("weeklyPercent", "88") + &r("weeklyResetsAt", &format!("\"{f2}\""))), &(r("sonnetWeeklyPercent", "99") + &r("sonnetWeeklyResetsAt", &format!("\"{f3}\"")))),
+        &|h| {
+            cache(
+                h,
+                0,
+                &(r("fiveHourPercent", "90") + &r("fiveHourResetsAt", &format!("\"{f1}\""))),
+                &(r("weeklyPercent", "88") + &r("weeklyResetsAt", &format!("\"{f2}\""))),
+                &(r("sonnetWeeklyPercent", "99") + &r("sonnetWeeklyResetsAt", &format!("\"{f3}\""))),
+            )
+        },
         &[],
     );
     same("below threshold", &|h| cache(h, 0, &r("fiveHourPercent", "10"), &r("weeklyPercent", "20"), ""), &[]);
     same("threshold by env", &|h| cache(h, 0, &r("fiveHourPercent", "50"), "", ""), &[("ANTIHALL_LIMIT_THRESHOLD", "40")]);
     same("threshold out of range is ignored", &|h| cache(h, 0, &r("fiveHourPercent", "90"), "", ""), &[("ANTIHALL_LIMIT_THRESHOLD", "0")]);
     let past = iso(-3);
-    same("a reset in the past clears the bucket", &|h| cache(h, 0, &(r("fiveHourPercent", "95") + &r("fiveHourResetsAt", &format!("\"{past}\""))), "", ""), &[]);
+    same(
+        "a reset in the past clears the bucket",
+        &|h| cache(h, 0, &(r("fiveHourPercent", "95") + &r("fiveHourResetsAt", &format!("\"{past}\""))), "", ""),
+        &[],
+    );
     same("stale snapshot, no reset time, still evaluated", &|h| cache(h, 1, &r("weeklyPercent", "95"), "", ""), &[]);
     same("snapshot older than the age bound, no reset time", &|h| cache(h, 7, &r("weeklyPercent", "95"), "", ""), &[]);
     same("unparseable reset time", &|h| cache(h, 0, &(r("fiveHourPercent", "95") + &r("fiveHourResetsAt", "\"not a date\"")), "", ""), &[]);
@@ -135,35 +147,59 @@ fn limit_status_buckets_threshold_and_resets() {
 #[test]
 fn limit_status_account_switch_guard() {
     let tripped = |h: &Home| cache(h, 0, r#""fiveHourPercent":95,"#, "", "");
-    same("first sight of the account records it", &|h| {
-        tripped(h);
-        h.put(".claude.json", r#"{"userID":"u1"}"#);
-    }, &[]);
-    same("switch with an unrefreshed cache is inactive", &|h| {
-        tripped(h);
-        h.put(".claude.json", r#"{"userID":"u2"}"#);
-        h.put(".anti-hall/limit-conserve-account.json", r#"{"userID":"u1","usageCacheMtime":99999999999999}"#);
-    }, &[]);
-    same("switch with a refreshed cache is trusted and recorded", &|h| {
-        tripped(h);
-        h.put(".claude.json", r#"{"userID":"u2"}"#);
-        h.put(".anti-hall/limit-conserve-account.json", r#"{"userID":"u1","usageCacheMtime":1}"#);
-    }, &[]);
-    same("same account keeps the mtime current", &|h| {
-        tripped(h);
-        h.put(".claude.json", r#"{"userID":"u1"}"#);
-        h.put(".anti-hall/limit-conserve-account.json", r#"{"userID":"u1","usageCacheMtime":1}"#);
-    }, &[]);
-    same("guard switched off", &|h| {
-        tripped(h);
-        h.put(".claude.json", r#"{"userID":"u2"}"#);
-        h.put(".anti-hall/limit-conserve-account.json", r#"{"userID":"u1","usageCacheMtime":99999999999999}"#);
-    }, &[("ANTIHALL_LIMIT_ACCOUNT_CHECK", "off")]);
-    same("unreadable account state", &|h| {
-        tripped(h);
-        h.put(".claude.json", r#"{"userID":"u2"}"#);
-        h.put(".anti-hall/limit-conserve-account.json", "{oops");
-    }, &[]);
+    same(
+        "first sight of the account records it",
+        &|h| {
+            tripped(h);
+            h.put(".claude.json", r#"{"userID":"u1"}"#);
+        },
+        &[],
+    );
+    same(
+        "switch with an unrefreshed cache is inactive",
+        &|h| {
+            tripped(h);
+            h.put(".claude.json", r#"{"userID":"u2"}"#);
+            h.put(".anti-hall/limit-conserve-account.json", r#"{"userID":"u1","usageCacheMtime":99999999999999}"#);
+        },
+        &[],
+    );
+    same(
+        "switch with a refreshed cache is trusted and recorded",
+        &|h| {
+            tripped(h);
+            h.put(".claude.json", r#"{"userID":"u2"}"#);
+            h.put(".anti-hall/limit-conserve-account.json", r#"{"userID":"u1","usageCacheMtime":1}"#);
+        },
+        &[],
+    );
+    same(
+        "same account keeps the mtime current",
+        &|h| {
+            tripped(h);
+            h.put(".claude.json", r#"{"userID":"u1"}"#);
+            h.put(".anti-hall/limit-conserve-account.json", r#"{"userID":"u1","usageCacheMtime":1}"#);
+        },
+        &[],
+    );
+    same(
+        "guard switched off",
+        &|h| {
+            tripped(h);
+            h.put(".claude.json", r#"{"userID":"u2"}"#);
+            h.put(".anti-hall/limit-conserve-account.json", r#"{"userID":"u1","usageCacheMtime":99999999999999}"#);
+        },
+        &[("ANTIHALL_LIMIT_ACCOUNT_CHECK", "off")],
+    );
+    same(
+        "unreadable account state",
+        &|h| {
+            tripped(h);
+            h.put(".claude.json", r#"{"userID":"u2"}"#);
+            h.put(".anti-hall/limit-conserve-account.json", "{oops");
+        },
+        &[],
+    );
 }
 
 #[test]
@@ -173,7 +209,11 @@ fn activate_writes_the_same_marker() {
         let r = run(&h);
         assert_eq!(r.code, 0);
         let text = fs::read_to_string(h.path().join(".anti-hall/codex-activated.json")).unwrap();
-        regex::Regex::new(r"\d{4}-\d{2}-\d{2}T[\d:.]+Z").unwrap().replace_all(&text, "TS").replace(&*h.path().canonicalize().unwrap().to_string_lossy(), "CWD").replace(&*h.path().to_string_lossy(), "CWD")
+        regex::Regex::new(r"\d{4}-\d{2}-\d{2}T[\d:.]+Z")
+            .unwrap()
+            .replace_all(&text, "TS")
+            .replace(&*h.path().canonicalize().unwrap().to_string_lossy(), "CWD")
+            .replace(&*h.path().to_string_lossy(), "CWD")
     };
     let node = marker(&|h| exec(Command::new("node").arg(plugin().join("codex/scripts/write-activation-sentinel.js")), h, &[]));
     let engine = marker(&|h| exec(Command::new(env!("CARGO_BIN_EXE_ah-engine")).arg("codex-activate"), h, &[]));
