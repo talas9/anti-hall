@@ -80,6 +80,11 @@ function mrFamily(id) {
 function mrInheritedTier(p) {
   var direct = mrFirstStr(p, ['parent_model', 'model']);
   if (direct !== null) return mrFamily(direct);
+  return mrTranscriptFamily(p);
+}
+
+// The family of the newest assistant entry of the transcript tail (the session's own model), null when unknown or unreadable.
+function mrTranscriptFamily(p) {
   var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
   if (!tp || !ah.path.isAbsolute(tp)) return null;
   var r = ah.transcript.tailEntries(tp, ah.cfgNum('model_routing.session_model_window_bytes'), ah.cfgNum('model_routing.session_model_line_max_bytes'),
@@ -140,7 +145,10 @@ function mrFirstStr(p, keys) {
 
 function mrParentModel(p) {
   var m = mrFirstStr(p, ['parent_model', 'model']);
-  return m === null ? ah.cfg('telemetry.inherit_prefix') + 'unknown' : jx.asciiLower(m.trim());
+  if (m !== null) return jx.asciiLower(m.trim());
+  // the payload names no model: the session model the transcript records (newest assistant entry), else unknown
+  var fam = mrTranscriptFamily(p);
+  return fam !== null ? fam : ah.cfg('telemetry.inherit_prefix') + 'unknown';
 }
 
 function mrSelected(requested, parent, recommended, outcome) {

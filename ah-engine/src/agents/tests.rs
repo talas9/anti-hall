@@ -477,9 +477,13 @@ fn the_heartbeat_rule_agrees_with_the_node_watchdog_on_running_agents() {
 
 // ---- cooldowns, caps, outcomes ------------------------------------------------------------------------------
 
+/// The injected clock of the cooldown, cap and outcome tests: noon UTC of a fixed day, so the day bucket (`now_ms / day_ms`) of the
+/// later ticks never depends on the time of day the suite runs at (it used to split within 40 minutes before 00:00 UTC).
+const HUNG_CLOCK_MS: u64 = 1_768_478_400_000;
+
 fn hung_home(tag: &str) -> (PathBuf, u64, PathBuf) {
     let h = home(tag);
-    let n = now0();
+    let n = HUNG_CLOCK_MS;
     let p = sess(&h, "s1");
     write(&p, &[prompt(n - 60 * MIN, "/w"), asst(n - 55 * MIN, "m1", 5, 5, json!([{"type": "text", "text": "working"}]), None)]);
     (h, n, p)
