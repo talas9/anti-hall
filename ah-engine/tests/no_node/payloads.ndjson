@@ -1,0 +1,69 @@
+{"id":"claude/PreToolUse/bash-ls","host":"claude","event":"PreToolUse","payload":{"tool_name":"Bash","tool_input":{"command":"ls -la","description":"list files"}}}
+{"id":"claude/PreToolUse/bash-force-push","host":"claude","event":"PreToolUse","payload":{"tool_name":"Bash","tool_input":{"command":"git push --force origin main","description":"push"}},"expect":{"blocks":true}}
+{"id":"claude/PreToolUse/agent","host":"claude","event":"PreToolUse","payload":{"tool_name":"Agent","tool_input":{"description":"explore the repo","prompt":"List the files in src and summarise them.","subagent_type":"Explore"}}}
+{"id":"claude/PreToolUse/task","host":"claude","event":"PreToolUse","payload":{"tool_name":"Task","tool_input":{"description":"explore the repo","prompt":"List the files in src and summarise them.","subagent_type":"general-purpose"}}}
+{"id":"claude/PreToolUse/workflow","host":"claude","event":"PreToolUse","payload":{"tool_name":"Workflow","tool_input":{"script":"export default async function () {}"}}}
+{"id":"claude/PreToolUse/write","host":"claude","event":"PreToolUse","payload":{"tool_name":"Write","tool_input":{"file_path":"{cwd}/notes.txt","content":"hello\n"}}}
+{"id":"claude/PreToolUse/edit","host":"claude","event":"PreToolUse","payload":{"tool_name":"Edit","tool_input":{"file_path":"{cwd}/README.md","old_string":"fixture","new_string":"fixture repo"}}}
+{"id":"claude/PreToolUse/multiedit","host":"claude","event":"PreToolUse","payload":{"tool_name":"MultiEdit","tool_input":{"file_path":"{cwd}/README.md","edits":[{"old_string":"fixture","new_string":"fixture repo"}]}}}
+{"id":"claude/PreToolUse/notebookedit","host":"claude","event":"PreToolUse","payload":{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"{cwd}/n.ipynb","cell_id":"a","new_source":"print(1)"}}}
+{"id":"claude/PreToolUse/read","host":"claude","event":"PreToolUse","payload":{"tool_name":"Read","tool_input":{"file_path":"{cwd}/README.md"}}}
+{"id":"claude/PreToolUse/askuserquestion","host":"claude","event":"PreToolUse","payload":{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which option?","header":"Pick","options":[{"label":"A","description":"a"},{"label":"B","description":"b"}],"multiSelect":false}]}}}
+{"id":"claude/PreToolUse/sendmessage","host":"claude","event":"PreToolUse","payload":{"tool_name":"SendMessage","tool_input":{"to":"worker","message":"status?"}}}
+{"id":"claude/PreToolUse/taskstop","host":"claude","event":"PreToolUse","payload":{"tool_name":"TaskStop","tool_input":{"task_id":"t1"}}}
+{"id":"claude/PostToolUse/bash","host":"claude","event":"PostToolUse","payload":{"tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":{"stdout":"README.md\n","stderr":"","interrupted":false}}}
+{"id":"claude/PostToolUse/agent","host":"claude","event":"PostToolUse","payload":{"tool_name":"Agent","tool_input":{"description":"explore","prompt":"List files."},"tool_response":{"content":[{"type":"text","text":"done"}]}}}
+{"id":"claude/PostToolUse/taskcreate","host":"claude","event":"PostToolUse","payload":{"tool_name":"TaskCreate","tool_input":{"subject":"write tests","description":"add tests"},"tool_response":{"task":{"id":"1","subject":"write tests"}}}}
+{"id":"claude/PostToolUse/taskupdate","host":"claude","event":"PostToolUse","payload":{"tool_name":"TaskUpdate","tool_input":{"taskId":"1","status":"in_progress"},"tool_response":{"success":true}}}
+{"id":"claude/PostToolUse/read","host":"claude","event":"PostToolUse","payload":{"tool_name":"Read","tool_input":{"file_path":"{cwd}/README.md"},"tool_response":{"type":"text","file":{"filePath":"{cwd}/README.md","content":"fixture\n"}}}}
+{"id":"claude/PostToolUseFailure/bash","host":"claude","event":"PostToolUseFailure","payload":{"tool_name":"Bash","tool_input":{"command":"false"},"error":"Exit code 1"}}
+{"id":"claude/PreCompact/manual","host":"claude","event":"PreCompact","payload":{"trigger":"manual","custom_instructions":""}}
+{"id":"claude/SessionStart/startup","host":"claude","event":"SessionStart","payload":{"source":"startup","model":"sonnet"}}
+{"id":"claude/SessionStart/resume","host":"claude","event":"SessionStart","payload":{"source":"resume"}}
+{"id":"claude/SessionEnd/clear","host":"claude","event":"SessionEnd","payload":{"reason":"clear"}}
+{"id":"claude/Stop/plain","host":"claude","event":"Stop","payload":{"stop_hook_active":false}}
+{"id":"claude/SubagentStart/plain","host":"claude","event":"SubagentStart","payload":{"agent_id":"a1","agent_type":"Explore"}}
+{"id":"claude/SubagentStop/plain","host":"claude","event":"SubagentStop","payload":{"stop_hook_active":false,"agent_id":"a1","agent_transcript_path":"{transcript}"}}
+{"id":"claude/TaskCreated/plain","host":"claude","event":"TaskCreated","payload":{"task_id":"1","task_subject":"write tests","task_description":"add tests"}}
+{"id":"claude/TaskCompleted/plain","host":"claude","event":"TaskCompleted","payload":{"task_id":"1","task_subject":"write tests"}}
+{"id":"claude/UserPromptSubmit/plain","host":"claude","event":"UserPromptSubmit","payload":{"prompt":"Please list the files in this repo."}}
+{"id":"claude/Setup/plain","host":"claude","event":"Setup","payload":{"trigger":"init"}}
+{"id":"claude/UserPromptExpansion/plain","host":"claude","event":"UserPromptExpansion","payload":{"prompt":"/help"}}
+{"id":"claude/PermissionRequest/bash","host":"claude","event":"PermissionRequest","payload":{"tool_name":"Bash","tool_input":{"command":"ls"}}}
+{"id":"claude/PermissionDenied/bash","host":"claude","event":"PermissionDenied","payload":{"tool_name":"Bash","tool_input":{"command":"ls"}}}
+{"id":"claude/PostToolBatch/plain","host":"claude","event":"PostToolBatch","payload":{"tools":[]}}
+{"id":"claude/StopFailure/plain","host":"claude","event":"StopFailure","payload":{"error":"rate_limit"}}
+{"id":"claude/TeammateIdle/plain","host":"claude","event":"TeammateIdle","payload":{"teammate_name":"worker"}}
+{"id":"claude/InstructionsLoaded/plain","host":"claude","event":"InstructionsLoaded","payload":{"file_path":"{cwd}/CLAUDE.md"}}
+{"id":"claude/ConfigChange/plain","host":"claude","event":"ConfigChange","payload":{"source":"user_settings"}}
+{"id":"claude/CwdChanged/plain","host":"claude","event":"CwdChanged","payload":{"old_cwd":"{cwd}","new_cwd":"{cwd}"}}
+{"id":"claude/DirectoryAdded/plain","host":"claude","event":"DirectoryAdded","payload":{"directory":"{cwd}"}}
+{"id":"claude/FileChanged/plain","host":"claude","event":"FileChanged","payload":{"file_path":"{cwd}/README.md"}}
+{"id":"claude/PostCompact/plain","host":"claude","event":"PostCompact","payload":{"trigger":"manual"}}
+{"id":"claude/PreModelSwitch/plain","host":"claude","event":"PreModelSwitch","payload":{"from":"sonnet","to":"opus"}}
+{"id":"claude/PostModelSwitch/plain","host":"claude","event":"PostModelSwitch","payload":{"from":"sonnet","to":"opus"}}
+{"id":"claude/Notification/plain","host":"claude","event":"Notification","payload":{"message":"Claude is waiting for your input","notification_type":"idle_prompt"}}
+{"id":"claude/MessageDisplay/plain","host":"claude","event":"MessageDisplay","payload":{"message":"hello"}}
+{"id":"claude/Elicitation/plain","host":"claude","event":"Elicitation","payload":{"mcp_server_name":"x","message":"value?"}}
+{"id":"claude/ElicitationResult/plain","host":"claude","event":"ElicitationResult","payload":{"mcp_server_name":"x","action":"accept"}}
+{"id":"codex/PreToolUse/bash-ls","host":"codex","event":"PreToolUse","payload":{"tool_name":"Bash","tool_input":{"command":"ls -la"}}}
+{"id":"codex/PreToolUse/bash-force-push","host":"codex","event":"PreToolUse","payload":{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"}},"expect":{"blocks":true}}
+{"id":"codex/PreToolUse/apply-patch","host":"codex","event":"PreToolUse","payload":{"tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: README.md\n@@\n-fixture\n+fixture repo\n*** End Patch\n"}}}
+{"id":"codex/PreToolUse/spawn-agent","host":"codex","event":"PreToolUse","payload":{"tool_name":"spawn_agent","tool_input":{"message":"List the files in src and summarise them."}}}
+{"id":"codex/PreToolUse/collaboration-spawn-agent","host":"codex","event":"PreToolUse","payload":{"tool_name":"collaborationspawn_agent","tool_input":{"message":"List the files in src and summarise them."}}}
+{"id":"codex/PostToolUse/bash","host":"codex","event":"PostToolUse","payload":{"tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":"README.md\n"}}
+{"id":"codex/PreCompact/manual","host":"codex","event":"PreCompact","payload":{"trigger":"manual"}}
+{"id":"codex/SessionStart/startup","host":"codex","event":"SessionStart","payload":{"source":"startup","model":"gpt"}}
+{"id":"codex/Stop/plain","host":"codex","event":"Stop","payload":{"stop_hook_active":false,"last_assistant_message":"done"}}
+{"id":"codex/SubagentStop/plain","host":"codex","event":"SubagentStop","payload":{"stop_hook_active":false}}
+{"id":"codex/UserPromptSubmit/plain","host":"codex","event":"UserPromptSubmit","payload":{"prompt":"Please list the files in this repo."}}
+{"id":"codex/PermissionRequest/bash","host":"codex","event":"PermissionRequest","payload":{"tool_name":"Bash","tool_input":{"command":"ls"}}}
+{"id":"codex/PostCompact/plain","host":"codex","event":"PostCompact","payload":{"trigger":"manual"}}
+{"id":"codex/SubagentStart/plain","host":"codex","event":"SubagentStart","payload":{"agent_id":"a1"}}
+{"id":"claude/UserPromptSubmit/devswarm-primary","host":"claude","event":"UserPromptSubmit","env":{"DEVSWARM_REPO_ID":"no-node","DEVSWARM_BUILDER_ID":"no-node-primary"},"payload":{"prompt":"What are the workspaces doing?"}}
+{"id":"claude/Stop/devswarm-primary","host":"claude","event":"Stop","env":{"DEVSWARM_REPO_ID":"no-node","DEVSWARM_BUILDER_ID":"no-node-primary"},"payload":{"stop_hook_active":false}}
+{"id":"claude/SessionStart/devswarm-child","host":"claude","event":"SessionStart","env":{"DEVSWARM_REPO_ID":"no-node","DEVSWARM_BUILDER_ID":"no-node-child","DEVSWARM_SOURCE_BRANCH":"main"},"payload":{"source":"startup"}}
+{"id":"claude/UserPromptSubmit/devswarm-child","host":"claude","event":"UserPromptSubmit","env":{"DEVSWARM_REPO_ID":"no-node","DEVSWARM_BUILDER_ID":"no-node-child","DEVSWARM_SOURCE_BRANCH":"main"},"payload":{"prompt":"Continue with step 2."}}
+{"id":"claude/Stop/devswarm-child","host":"claude","event":"Stop","env":{"DEVSWARM_REPO_ID":"no-node","DEVSWARM_BUILDER_ID":"no-node-child","DEVSWARM_SOURCE_BRANCH":"main"},"payload":{"stop_hook_active":false}}
+{"id":"codex/UserPromptSubmit/devswarm-primary","host":"codex","event":"UserPromptSubmit","env":{"DEVSWARM_REPO_ID":"no-node","DEVSWARM_BUILDER_ID":"no-node-primary"},"payload":{"prompt":"What are the workspaces doing?"}}
+{"id":"codex/Stop/devswarm-child","host":"codex","event":"Stop","env":{"DEVSWARM_REPO_ID":"no-node","DEVSWARM_BUILDER_ID":"no-node-child","DEVSWARM_SOURCE_BRANCH":"main"},"payload":{"stop_hook_active":false,"last_assistant_message":"done"}}

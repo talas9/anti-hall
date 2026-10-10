@@ -1,0 +1,374 @@
+# The live backlog of Node paths (v1.0 Node-free plan, lane L01). Read by tests/no_node (expected.rs).
+#
+# [[node]] one remaining Node path: `surface` (hook/<host>/<Event>, doc, run/<verb>, unit/<file>, hooks-json/<host>,
+#          statusline/<step>, monitor/<name>, daemon) + `script` (the plugin-relative script node was started with; a hook call the engine
+#          did not answer in time is counted by harness.toml hooks.max_fallback_cases, not listed), the `lane` that
+#          removes it and the `reason` it is still Node. `optional = true` only for a timing-dependent path.
+# [[decision]] a payload whose expected decision (payloads.ndjson `expect`) is not met without Node: `case`, `lane`, `reason`.
+#
+# A path reached but not listed fails the test (a new Node dependency); a listed path no longer reached fails too (delete
+# the entry). v1.0 needs this file empty. The report of each test (which cases reach which path) is written to
+# $CARGO_TARGET_TMPDIR/no_node/<test>.json.
+
+
+# --- doc
+[[node]]
+surface = "doc"
+script = "codex/scripts/limit-conserve-status.js"
+lane = "L18"
+reason = "a Codex skill runs this Node script (verb in L16, then the skill line in L18)"
+[[node]]
+surface = "doc"
+script = "codex/scripts/write-activation-sentinel.js"
+lane = "L18"
+reason = "a Codex skill runs this Node script (verb in L16, then the skill line in L18)"
+[[node]]
+surface = "doc"
+script = "companion/devswarm-recover.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "companion/install-devswarm-ingest.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "companion/install-devswarm-supervisor.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "companion/install-reaper.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "hooks/agent-watchdog.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "hooks/doctor.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "hooks/omc-detect.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "scripts/auto-handover-config.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "scripts/devswarm.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "scripts/finding-dedup.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "scripts/jev-setup.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "scripts/migrate-state.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "statusline/phase.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "statusline/statusline.js"
+lane = "L18"
+reason = "a skill or agent tells the agent to run this Node script"
+[[node]]
+surface = "doc"
+script = "verify-branch.js"
+lane = "L18"
+reason = "the skill tells the agent to write and run a Node helper script"
+
+# --- hook/claude/SessionStart
+[[node]]
+surface = "hook/claude/SessionStart"
+script = "hooks/claude-cli-version.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+[[node]]
+surface = "hook/claude/SessionStart"
+script = "hooks/devswarm-child-role.js"
+lane = "L14b"
+reason = "the engine runs the Node twin of the child-role SessionStart check"
+[[node]]
+surface = "hook/claude/SessionStart"
+script = "hooks/devswarm-version.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+[[node]]
+surface = "hook/claude/SessionStart"
+script = "hooks/repair-on-reload.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+[[node]]
+surface = "hook/claude/SessionStart"
+script = "hooks/verify-first-orch.js"
+lane = "L14b"
+reason = "the DevSwarm-active verify-first-orch path defers to the Node hook"
+[[node]]
+surface = "hook/claude/SessionStart"
+script = "hooks/version-alert.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+
+# --- hook/claude/Stop
+[[node]]
+surface = "hook/claude/Stop"
+script = "hooks/devswarm-child-gate.js"
+lane = "L14b"
+reason = "the engine defers the child Stop gate to the Node hook (exit 127 reaches the host: unguarded)"
+[[node]]
+surface = "hook/claude/Stop"
+script = "hooks/devswarm-parent-gate.js"
+lane = "L14b"
+reason = "the engine defers the Primary Stop gate to the Node hook (exit 127 reaches the host: unguarded)"
+
+# --- hook/claude/UserPromptSubmit
+[[node]]
+surface = "hook/claude/UserPromptSubmit"
+script = "hooks/devswarm-child-turn.js"
+lane = "L14b"
+reason = "the engine defers a DevSwarm child turn to the Node hook"
+[[node]]
+surface = "hook/claude/UserPromptSubmit"
+script = "hooks/devswarm-parent-inbox.js"
+lane = "L14a"
+reason = "the engine defers the active-Primary case to the Node hook"
+[[node]]
+surface = "hook/claude/UserPromptSubmit"
+script = "hooks/repair-on-reload.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+
+# --- hook/codex/PreToolUse
+[[node]]
+surface = "hook/codex/PreToolUse"
+script = "hooks/edit-guard.js"
+optional = true
+lane = "L12"
+reason = "apply_patch edit-guard defers to the Node hook (exit 127 reaches the host: unguarded); needs the L07 apply_patch parser"
+
+# --- hook/codex/SessionStart
+[[node]]
+surface = "hook/codex/SessionStart"
+script = "hooks/claude-cli-version.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+[[node]]
+surface = "hook/codex/SessionStart"
+script = "hooks/devswarm-child-role.js"
+lane = "L14b"
+reason = "the engine runs the Node twin of the child-role SessionStart check"
+[[node]]
+surface = "hook/codex/SessionStart"
+script = "hooks/devswarm-version.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+[[node]]
+surface = "hook/codex/SessionStart"
+script = "hooks/repair-on-reload.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+[[node]]
+surface = "hook/codex/SessionStart"
+script = "hooks/version-alert.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+
+# --- hook/codex/Stop
+[[node]]
+surface = "hook/codex/Stop"
+script = "hooks/devswarm-child-gate.js"
+lane = "L14b"
+reason = "the engine defers the child Stop gate to the Node hook (exit 127 reaches the host: unguarded)"
+
+# --- hook/codex/UserPromptSubmit
+[[node]]
+surface = "hook/codex/UserPromptSubmit"
+script = "hooks/devswarm-parent-inbox.js"
+lane = "L14a"
+reason = "the engine defers the active-Primary case to the Node hook"
+[[node]]
+surface = "hook/codex/UserPromptSubmit"
+script = "hooks/repair-on-reload.js"
+lane = "L06"
+reason = "the engine hands this session advisory to its Node twin (the plan lists it among the SessionStart advisory defers)"
+
+# --- monitor/devswarm-wake-watch
+[[node]]
+surface = "monitor/devswarm-wake-watch"
+script = "fallback:companion/lib/devswarm-wake-watch.js"
+lane = "L08b"
+reason = "monitors.json runs the watcher through ah-run.sh with a Node fallback script"
+
+# --- run/defect
+[[node]]
+surface = "run/defect"
+script = "scripts/defect.js"
+lane = "L03"
+reason = "the defect verb starts the Node script (deferral or background witness)"
+
+# --- run/doctor
+[[node]]
+surface = "run/doctor"
+script = "companion/devswarm-ingest.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "companion/devswarm-supervisor.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "companion/install-devswarm-ingest.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "companion/install-devswarm-supervisor.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "companion/lib/doctor-descriptors.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "companion/lib/doctor-devswarm.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "companion/lib/doctor-runtime.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "companion/lib/liveness.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "companion/lib/recovery.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "companion/lib/target-session.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "hooks/command-guard.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "hooks/devswarm-child-gate.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "hooks/devswarm-child-turn.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "hooks/devswarm-parent-gate.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "hooks/devswarm-parent-inbox.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "hooks/edit-guard.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "hooks/git-guard.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "hooks/lib/devswarm-detect.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "node --version"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+[[node]]
+surface = "run/doctor"
+script = "statusline/statusline-rich.js"
+lane = "L09"
+reason = "the engine doctor starts Node (probes the Node hooks and companions)"
+
+# --- run/install-codex
+[[node]]
+surface = "run/install-codex"
+script = "codex/install-codex.js"
+lane = "L16"
+reason = "the Codex installer is still Node"
+
+# --- run/install-statusline
+[[node]]
+surface = "run/install-statusline"
+script = "statusline/install-statusline.js"
+optional = true
+lane = "L04"
+reason = "the status line installer/uninstaller starts its Node script"
+
+# --- run/settings
+[[node]]
+surface = "run/settings"
+script = "scripts/settings.js"
+lane = "L13"
+reason = "the settings verb starts the Node script (deferral or background witness)"
+
+# --- run/uninstall-statusline
+[[node]]
+surface = "run/uninstall-statusline"
+script = "statusline/uninstall-statusline.js"
+lane = "L04"
+reason = "the status line installer/uninstaller starts its Node script"
+
+# --- statusline/command
+[[node]]
+surface = "statusline/command"
+script = "statusline/statusline.js"
+lane = "L04"
+reason = "the installed statusLine.command goes through ah-run.sh with a Node fallback script"
+
+# --- statusline/install
+[[node]]
+surface = "statusline/install"
+script = "statusline/install-statusline.js"
+optional = true
+lane = "L04"
+reason = "the status line installer/uninstaller starts its Node script"
