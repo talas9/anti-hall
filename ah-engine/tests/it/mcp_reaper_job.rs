@@ -157,9 +157,7 @@ fn a_dry_run_logs_what_it_would_reap_and_signals_nothing() {
     let mut w = World::new("dry");
     let a = w.victim();
     w.listing(&[(1, 0, "/sbin/launchd".into()), (a, 1, "node mcp-server-everything".into())]);
-    for (args, env) in
-        [(vec!["run", "--dry-run"], vec![("ANTIHALL_MCP_REAPER_JOB", "on")]), (vec!["run"], vec![("ANTIHALL_MCP_REAPER_JOB", "on"), ("MCP_REAP_DRYRUN", "1")])]
-    {
+    for (args, env) in [(vec!["run", "--dry-run"], vec![("ANTIHALL_MCP_REAPER_JOB", "on")]), (vec!["run"], vec![("ANTIHALL_MCP_REAPER_JOB", "on"), ("MCP_REAP_DRYRUN", "1")])] {
         let v = w.run(&args, &env);
         assert_eq!((v["ran"].clone(), v["dryRun"].clone()), (Value::Bool(true), Value::Bool(true)), "{v}");
         assert!(v["termed"].as_array().unwrap().is_empty());

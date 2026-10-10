@@ -370,8 +370,7 @@ fn the_migration_leaves_what_it_cannot_be_sure_of_exactly_as_it_is() {
     // a command that is not ours, a launcher form naming some other launcher, a wrapped dispatcher, invalid JSON, an empty file,
     // and the command text appearing twice
     let legacy = settings_with(&format!("node \"{}\"", dispatcher()));
-    let twice =
-        legacy.replace("\"padding\": 0", &format!("\"padding\": 0, \"note\": {}", serde_json::to_string(&format!("node \"{}\"", dispatcher())).unwrap()));
+    let twice = legacy.replace("\"padding\": 0", &format!("\"padding\": 0, \"note\": {}", serde_json::to_string(&format!("node \"{}\"", dispatcher())).unwrap()));
     for (tag, body) in [
         ("foreign", settings_with("node /somewhere/else/line.js")),
         ("otherlauncher", settings_with(&format!("sh \"/elsewhere/ah-run.sh\" --stdin statusline -- \"{}\"", dispatcher()))),
