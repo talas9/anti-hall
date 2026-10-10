@@ -16,6 +16,9 @@ description: Install anti-hall for Claude Code or Codex, and check that it works
 
 The plugin fetches the Rust engine binary itself, checked against a pinned sha256, and needs `curl` or `wget` plus `tar` for that. If the download fails, the temporary Node.js fallback answers until the engine is installed. There are no npm packages to install.
 
+!!! note "The engine binary"
+    It comes from this repository's GitHub Releases (`ah-engine-v*`) and is installed only if its sha256 equals the one pinned in the plugin's `ah-engine.lock`. A failed download or a mismatch installs nothing. Opt out with `AH_ENGINE_BOOTSTRAP=0`. Details, provenance and building it yourself: [Binary download and verification](../how-it-works/index.md#binary-download-and-verification).
+
 ## Claude Code
 
 Inside Claude Code:
