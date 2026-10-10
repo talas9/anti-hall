@@ -83,7 +83,7 @@ jobs:
           cp ../LICENSE "rel/$name/LICENSE"
           cp README.md "rel/$name/README.md"
           tar -czf "rel/$name.tar.gz" -C rel "$name"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ah-engine-${{ matrix.triple }}-${{ steps.sha.outputs.short }}
           path: |
@@ -91,7 +91,7 @@ jobs:
             ah-engine/dist/ah-engine.sha256
           retention-days: 14
           if-no-files-found: error
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dev-release-${{ matrix.triple }}
           path: ah-engine/rel/*.tar.gz
