@@ -166,7 +166,7 @@ fn refresh_repair_honours_its_cooldown_and_lock() {
     let v = s.run(&[]);
     assert_eq!(outcome(&v, "repair"), "failed", "{v}");
     let handled: Value = serde_json::from_slice(&std::fs::read(s.home().join(".anti-hall/refresh/handled.json")).unwrap()).unwrap();
-    assert_eq!(handled["repair"], 1, "a locked repair is retried at the next tick: {handled}");
+    assert_eq!(handled["repair"].as_f64(), Some(1.0), "a locked repair is retried at the next tick: {handled}");
     // the cooldown record is untouched
     let last: Value = serde_json::from_slice(&std::fs::read(s.home().join(".anti-hall/repair-on-reload.last.json")).unwrap()).unwrap();
     assert_eq!(last["version"], "9.9.9");
