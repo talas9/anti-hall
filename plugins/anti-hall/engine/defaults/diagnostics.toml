@@ -9,7 +9,7 @@ doc = "Append one NDJSON line per served request to the memory log: time, reques
 value = true
 
 [diagnostics.allocator]
-doc = "Allocator used when the engine daemon starts: jemalloc (default) or system. The client passes this as AH_ENGINE_ALLOCATOR before spawning the daemon; changing it requires a restart."
+doc = "Allocator intended for daemon startup: jemalloc (default) or system. The runtime switch is AH_ENGINE_ALLOCATOR; set it directly for scratch/profiler runs until client spawn wiring passes this key through. Changing it requires a daemon restart."
 value = "jemalloc"
 
 [diagnostics.mem_log_max_bytes]
