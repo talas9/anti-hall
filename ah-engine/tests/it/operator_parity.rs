@@ -1406,6 +1406,58 @@ fn an_installer_run_on_unreadable_settings_fails_like_node_and_leaves_no_shadow_
     Ok(())
 }
 
+/// L13: a settings write that finds the lock held by a live writer refuses with the holder's pid, exactly as the Node tool does
+/// (it used to defer to Node).
+#[test]
+fn settings_writes_under_a_busy_lock_refuse_like_node() -> R {
+    let seed = Scratch::new("seed")?;
+    settings_seed(seed.path())?;
+    let host = String::from_utf8(Command::new("hostname").output()?.stdout)?.trim().to_string();
+    // dated ten minutes ahead so the holder stays fresh however long the six slow runs take
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() + 600_000;
+    let rec = format!(r#"{{"pid":{},"host":"{host}","ts":{ts},"token":"held-by-the-test"}}"#, std::process::id());
+    write(seed.path(), ".anti-hall/settings.json.lock", &rec)?;
+    let c = Same { script: "scripts/settings.js", verb: "settings", seed: Some(seed.path()), cwd: None, env: &[], stdin: "" };
+    for a in ["set autoHandover.pct 55", "set autoHandover.pct 55 --json", "reset autoHandover.pct", "reset autoHandover.pct --json", "judge on", "judge off"] {
+        let o = same(&c, &a.split(' ').collect::<Vec<_>>())?;
+        assert_eq!(o.code, 1, "{a}: a busy lock is a refusal, not a deferral");
+    }
+    Ok(())
+}
+
+/// L13: the trust commands answer where they used to defer to Node. A `.git` file with a carriage return, and an allow file with a
+/// lone surrogate escape, are refused with a message and nothing is recorded.
+#[test]
+fn trust_commands_refuse_instead_of_deferring_on_unclassifiable_input() -> R {
+    let home = Scratch::new("home")?;
+    fs::create_dir_all(home.path().join("tmp"))?;
+    let work = Scratch::new("repo")?;
+    let r = work.path().join("repo");
+    repo(&r)?;
+    write(&r, ".anti-hall/command-allow.json", r#"{"patterns":["^ls$","\ud800"]}"#)?;
+    let go = |dir: &Path, args: &[&str]| -> R<Out> {
+        let mut e = Command::new(BIN);
+        e.arg("settings").args(args);
+        run(e, home.path(), dir, &[], "")
+    };
+    let o = go(&r, &["trust-command-allow", "--confirmed"])?;
+    assert_eq!(o.code, 1, "{}", o.stderr);
+    assert!(o.stderr.contains("cannot read exactly"), "{}", o.stderr);
+    assert!(!home.path().join(".anti-hall").exists() || !fs::read_dir(home.path().join(".anti-hall"))?.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().contains("trust"))));
+    // a linked worktree whose `.git` file carries a carriage return
+    let wt = work.path().join("wt");
+    git(&r, &["commit", "-q", "--allow-empty", "-m", "x"])?;
+    git(&r, &["worktree", "add", "-q", wt.to_str().ok_or("path")?])?;
+    let dot = wt.join(".git");
+    let txt = fs::read_to_string(&dot)?;
+    fs::write(&dot, txt.trim_end().to_string() + "\r\n")?;
+    write(&wt, ".anti-hall/command-allow.json", r#"{"patterns":["^ls$"]}"#)?;
+    let o = go(&wt, &["trust-command-allow", "--confirmed"])?;
+    assert_eq!(o.code, 1, "{}", o.stderr);
+    assert!(o.stderr.contains("cannot classify the repository layout"), "{}", o.stderr);
+    Ok(())
+}
+
 #[test]
 fn zz_report_the_case_count() {
     eprintln!("operator parity cases run in this process: {}", CASES.load(Ordering::SeqCst));

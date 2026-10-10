@@ -145,8 +145,12 @@ doc = "Output of `settings reset`. Placeholders: name, value."
 value = "{name} reset -> {value}"
 
 [ops.lock_busy]
-doc = "Said when another process holds the settings lock past the wait budget; the Node tool names the holder, so the command leaves the change to it."
-value = "settings.json is being written by another process; run the Node settings tool to see which and retry"
+doc = "Said when another process holds the settings lock past the wait budget. Placeholders: pid (the holder's process id, or the lock_pid_unknown word)."
+value = "settings.json is being written by another process (pid {pid}); retry"
+
+[ops.lock_pid_unknown]
+doc = "Stands for the holder's pid in lock_busy when the lock record names none."
+value = "unknown"
 
 [ops.set_err_object]
 doc = "Why a file-only setting cannot be set."
@@ -413,8 +417,16 @@ doc = "The allowlist file state."
 value = "not valid JSON"
 
 [ops.trust_unsure]
-doc = "Said when the repository layout cannot be classified exactly; the Node tool decides."
-value = "the repository layout needs the Node settings tool to classify; nothing was recorded"
+doc = "Said when the repository holding the target has a .git file whose line breaks cannot be classified exactly, or the repository cannot be located exactly; nothing is recorded. Placeholders: target."
+value = "cannot classify the repository layout at {target} exactly; nothing was recorded. Run the command from the repository's top-level directory"
+
+[ops.trust_unparsable]
+doc = "Said when the allow file holds JSON the engine's parser does not reproduce (a lone surrogate escape, or nesting past the limit); nothing is recorded. Placeholders: rel, top."
+value = "{rel} in {top} uses JSON the engine cannot read exactly (a lone surrogate escape or very deep nesting); nothing was recorded"
+
+[ops.trust_exotic_breaks]
+doc = "Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings."
+value = ["\r", "\u2028", "\u2029"]
 
 [ops.trust_not_git]
 doc = "No repository. Placeholder: target."
