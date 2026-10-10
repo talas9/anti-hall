@@ -55,10 +55,14 @@ pub(super) fn evaluate(name: &str, payload: &Value, env: BTreeMap<String, String
 }
 
 /// The Node hook the dispatcher would run when the engine defers: the payload on stdin, the test environment only. `None` when it
-/// cannot be run (no Node, no such hook, killed after the time limit); the reason is noted.
+/// is not run (`doctor.node_twins` off: the doctor starts no Node) or cannot be run (no Node, no such hook,
+/// killed after the time limit); the reason is noted.
 pub(super) fn node_hook(ctx: &Ctx, plugin_root: Option<&str>, script: &str, payload: &Value, env: &BTreeMap<String, String>) -> Option<Got> {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
+    if !super::node_twins() {
+        return None;
+    }
     let path = Path::new(plugin_root?).join(defaults::text("doctor.hooks_dir")).join(script);
     if !path.exists() {
         return None;
@@ -271,7 +275,7 @@ fn version_alert(doc: &mut Doc, ctx: &Ctx, plugin_root: Option<&str>, version: &
         let payload: Value = serde_json::from_str(&defaults::fill(defaults::text("doctor.version_alert_payload"), &[("SID", &format!("{sid}-{}", now_ms()))]))
             .unwrap_or(Value::Null);
         let env = test_env(ctx, &home.dir, plugin_root, &defaults::list("doctor.version_alert_env"));
-        match evaluate("version-alert", &payload, env.clone()) {
+        match evaluate(defaults::text("doctor.version_alert_check"), &payload, env.clone()) {
             Some(Got::Defer) | None => node_hook(ctx, plugin_root, defaults::text("doctor.version_alert_script"), &payload, &env),
             other => other,
         }
@@ -281,8 +285,13 @@ fn version_alert(doc: &mut Doc, ctx: &Ctx, plugin_root: Option<&str>, version: &
         _ => None,
     };
     let sessions = defaults::list("doctor.version_alert_sessions");
-    let stale = write(defaults::text("doctor.stale_version")).then(|| text(run(sessions[0]))).flatten();
-    let current = write(version).then(|| text(run(sessions[1]))).flatten();
+    let (stale_run, current_run) = (write(defaults::text("doctor.stale_version")).then(|| run(sessions[0])), write(version).then(|| run(sessions[1])));
+    // the engine deferred and no Node twin ran: not exercised, so a deferral (a warning), never a pass or a failure
+    if !super::node_twins() && [&stale_run, &current_run].iter().any(|r| matches!(r, Some(None | Some(Got::Defer)))) {
+        doc.warnl(defaults::render("doctor_msg.deferred", &[("check", &defaults::text("doctor.version_alert_check"))]));
+        return;
+    }
+    let (stale, current) = (stale_run.flatten().and_then(|g| text(Some(g))), current_run.flatten().and_then(|g| text(Some(g))));
     let passed = match (stale, current) {
         (Some(s), Some(c)) => {
             let alert = crate::checks::lit_re(&defaults::fill(

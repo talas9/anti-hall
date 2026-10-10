@@ -14,14 +14,21 @@
 //! leaked test-fixture stores, and the repair pass. The explicit `--repair-ingest-orphans`, `--repair-test-stores` and
 //! `--repair-resurrected` flags (preview, `--apply` to act) run after the diagnostics, as in the Node doctor.
 //!
+//! `--logs` lists the recent warn/error entries of the central log (see [`logs`]).
+//!
+//! Node is not a requirement: Node on PATH is reported as optional, and the doctor starts Node only when the `doctor.node_twins`
+//! setting lets it run a check's Node twin where the engine defers; with it off or no Node, a deferral is reported as a warning,
+//! never a pass.
+//!
 //! What it does not do yet: the context-footprint measurement, the DevSwarm runtime checks of an active session (liveness
 //! verdicts, app-database view, delivery log, wake monitor; the report says so), the default repair rows that install or reap
-//! scheduler units, the leaked-unit and other store reports, and the flags `--prune-cache`, `--reclaim-ingest-lock` and `--logs`
-//! (each is reported when given; the Node doctor stays in place for them).
+//! scheduler units, the leaked-unit and other store reports, and the flags `--prune-cache` and `--reclaim-ingest-lock` (each is
+//! reported when given; the Node doctor stays in place for them).
 mod detect;
 mod devswarm;
 mod facts;
 mod install;
+mod logs;
 mod orphans;
 mod plugin;
 mod render;
@@ -197,6 +204,11 @@ fn flags(p: &Parsed) -> Flags {
         explicit: defaults::list("doctor.explicit_flags").into_iter().filter(|f| has(f)).collect(),
         apply: has(defaults::text("doctor.apply_flag")),
     }
+}
+
+/// Whether the doctor may start Node to run a check's Node twin where the engine defers (`doctor.node_twins`).
+fn node_twins() -> bool {
+    defaults::raw("doctor.node_twins").as_bool().unwrap_or(false)
 }
 
 /// `process.platform` and `process.arch` as Node names them.
@@ -467,6 +479,9 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     }
     workflows_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
     detect::foreign_section(&mut doc, &ctx, root_path);
+    if p.rest.iter().any(|a| a == defaults::text("doctor.logs_flag")) {
+        logs::section(&mut doc, &ctx);
+    }
     if do_repair {
         repair_section(&mut doc, &ctx, &f, &fixes, root_path);
     } else if !f.check && f.explicit.is_empty() {
