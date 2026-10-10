@@ -34,4 +34,4 @@ at about 4-5, do P0 first, commit as you go, no polling loops.
 Codex names come from the local `codex` model list (codex-cli 0.160); re-check it when the
 generation changes. The repo's own GitHub automation (community, pr-check, roadmap, docs
 inspector) routes per job in `.github/moderation/config.json` under `models`, with a Claude alias
-and a Copilot CLI model for each job.
+and a Copilot CLI model for each job (Copilot itself is off by default, `copilot_fallback`).
