@@ -198,7 +198,7 @@ env = "AH_ENGINE_EVAL_BUDGET_US"
 unit = "us"
 
 [daemon.mem_mb]
-doc = "Data-segment limit applied with setrlimit; 0 = none. It is a ceiling against runaway allocation, not a budget (the RSS cap is the budget), and Linux enforces it on thread stacks, so it must exceed daemon.workers times git.stack_mb plus headroom or a check thread cannot start. macOS accepts the call but does not enforce it."
+doc = "Data-segment limit applied with setrlimit; 0 = none. It is a ceiling against runaway allocation, not a budget (the RSS cap is the budget), and Linux enforces it on thread stacks, so it must exceed daemon.workers times git.stack_mb plus headroom or a check thread cannot start. macOS does not support RLIMIT_DATA here, so the daemon reports unsupported and relies on the RSS/footprint cap."
 value = 512
 env = "AH_ENGINE_MEM_MB"
 unit = "MB"
@@ -336,16 +336,6 @@ unit = "ms"
 [daemon.worker_wait_ms]
 doc = "How long an idle worker sleeps on the queue before looking again."
 value = 200
-unit = "ms"
-
-[daemon.read_poll_ms]
-doc = "Socket read timeout slice while collecting a request (the total is read_ms)."
-value = 100
-unit = "ms"
-
-[daemon.busy_write_ms]
-doc = "Write timeout for the BUSY reply sent from the accept loop."
-value = 100
 unit = "ms"
 
 [daemon.idle_exit_s]
@@ -767,4 +757,3 @@ value = "defaults {file}: could not add missing {keys}: {err}"
 [defaults_load.msg_heal_none]
 doc = "Printed by `config heal` when no edited defaults file lacks a setting of the pristine copy."
 value = "nothing to heal: the edited defaults have every setting of the pristine copy"
-

@@ -51,6 +51,10 @@ value = 8388608
 min = 4096
 unit = "bytes"
 
+[diagnostics.malloc_stack_logging]
+doc = "Diagnostic label for an operator-run macOS `MallocStackLogging` repro (`lite` or empty). The engine only accepts and reports it; the OS facility must be enabled in the process environment before start."
+value = ""
+
 [files.mem_log]
 doc = "Per-request memory log file name (state directory)."
 value = "mem.ndjson"

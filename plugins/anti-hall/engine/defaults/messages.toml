@@ -230,6 +230,10 @@ value = "request too large"
 doc = "ERR body for a socket read error."
 value = "read error"
 
+[msg.reply_write_deadline]
+doc = "Log reason when the client did not read the reply in time."
+value = "write deadline"
+
 [msg.reply_test_panic]
 doc = "Panic text of the test-only `panic` verb."
 value = "test panic"
