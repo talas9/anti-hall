@@ -73,7 +73,7 @@ const BASEF = path.join(D, 'engine-baseline.json');
 const ENV_DEPENDENT = new Set(['task-guard']);
 // engine counters {check: {n, block, defer}} for the engine's whole retained window (engine telemetry is bucketed per UTC day, so it cannot be windowed finer)
 const engCounts = tel => { const o = {}; for (const h of (tel && tel.by_hook) || []) if (h.k === 'check') o[h.h] = { n: h.n, block: (h.outcomes || {}).block || 0, defer: (h.outcomes || {}).defer || 0 }; return o; };
-const engCall = (a, root) => { const bin = process.env.AH_ENGINE_BIN || path.join(HOME, '.anti-hall', 'ah-engine', 'bin', 'ah-engine'); const r = cp.spawnSync(bin, a, { encoding: 'utf8', input: '', timeout: 60000, killSignal: 'SIGKILL', env: Object.assign({}, process.env, { AH_ENGINE_DIR: path.join(HOME, '.anti-hall', 'ah-engine'), AH_ENGINE_PLUGIN_ROOT: root || '' }) }); try { return JSON.parse(r.stdout); } catch (e) { return null; } };
+const engCall = (a, root) => { const bin = process.env.AH_ENGINE_BIN || path.join(HOME, '.anti-hall', 'ah-engine', 'bin', 'ah-engine'); const r = cp.spawnSync(bin, a, { encoding: 'utf8', input: '', timeout: 60000, maxBuffer: 256 * 1024 * 1024, killSignal: 'SIGKILL', env: Object.assign({}, process.env, { AH_ENGINE_DIR: path.join(HOME, '.anti-hall', 'ah-engine'), AH_ENGINE_PLUGIN_ROOT: root || '' }) }); try { return JSON.parse(r.stdout); } catch (e) { return null; } };
 const saveBaseline = root => { const tel = engCall(['telemetry', 'summary', '--json', '--window', '7d'], root); if (!tel) return false; try { fs.writeFileSync(BASEF + '.new', JSON.stringify({ ts: Date.now(), counts: engCounts(tel) }) + '\n'); fs.renameSync(BASEF + '.new', BASEF); return true; } catch (e) { return false; } };
 
 if (mode === '--install') {
