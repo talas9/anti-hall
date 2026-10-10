@@ -206,11 +206,8 @@ fn node_only_bash(e: &Env) -> String {
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"mergeGate":true}}"#).unwrap();
     std::fs::create_dir_all(e.state()).unwrap();
-    std::fs::write(
-        e.state().join("config.toml"),
-        "[entries.\"PreToolUse/merge-gate\"]\nmode = \"off\"\n[entries.\"PreToolUse/api-guard\"]\nmode = \"off\"\n",
-    )
-    .unwrap();
+    std::fs::write(e.state().join("config.toml"), "[entries.\"PreToolUse/merge-gate\"]\nmode = \"off\"\n[entries.\"PreToolUse/api-guard\"]\nmode = \"off\"\n")
+        .unwrap();
     let tp = "hedged.jsonl";
     serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py # \u{e9} $(true)"}, "transcript_path": tp})
         .to_string()
@@ -621,10 +618,59 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     assert_eq!(e.run_with(&args, true, &relative_cwd, true, &main_thread).0, 0);
 }
 
-/// An event that cannot block still hands an over-cap join back to the wrapper with `dispatch.defer_exit`.
+/// A SessionStart whose joined context is over the host's cap is spilled natively: whole contexts that fit stay inline, the
+/// rest is in a private file named by a pointer line, and no Node hook is handed the event (no exit 75).
 #[test]
-fn a_join_over_the_host_cap_on_another_event_is_handed_back_to_run_separately() {
-    let e = Env::new("overcap-open");
+fn a_join_over_the_host_cap_on_another_event_is_spilled_to_a_file() {
+    let (e, p, map) = overcap_session("overcap-spill");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let (code, out, err) = e.run(&args, true, &p, true);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON object");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(ctx.chars().count() <= 10000, "{}", ctx.chars().count());
+    assert!(ctx.starts_with(&format!("{}\n\n{}", "a".repeat(4000), "b".repeat(4000))), "the contexts that fit stay whole and in order");
+    let path = ctx.rsplit_once("Read it with the Read tool: ").unwrap().1.trim_end_matches(']');
+    assert!(path.starts_with(e.state().to_str().unwrap()), "{path}");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "c".repeat(4000), "nothing cut: the rest is in the file");
+    let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
+    assert_eq!(log.matches("dispatch_context_spilled").count(), 1, "{log}");
+}
+
+/// With the spill off the previous answer stands (Node still exists): the event is handed back with `dispatch.defer_exit`;
+/// with no Node (`dispatch.defer_to_node` 0) the join is delivered for the host to spill.
+#[test]
+fn with_the_spill_off_an_over_cap_join_is_handed_back_or_delivered() {
+    let (e, p, map) = overcap_session("overcap-off");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let (code, out, err) = e.run_with(&args, true, &p, true, &[("AH_ENGINE_SPILL_OVER_CAP", "0")]);
+    assert_eq!((code, out.as_str()), (75, ""), "{err}");
+    assert!(err.contains("over the 10000"), "{err}");
+    let (code, out, _) = e.run_with(&args, true, &p, true, &[("AH_ENGINE_SPILL_OVER_CAP", "0"), ("AH_ENGINE_DEFER_TO_NODE", "0")]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["additionalContext"].as_str().map(|c| c.chars().count()), Some(3 * 4000 + 2 * 2));
+}
+
+/// With no Node (`dispatch.defer_to_node` 0) a path that used to hand the event to Node answers by itself: a guard event
+/// follows its failure mode (an unreadable map: `infra`, closed).
+#[test]
+fn without_node_an_infra_fault_follows_the_failure_mode_instead_of_exit_75() {
+    let e = Env::new("no-node-infra");
+    let no_node = [("AH_ENGINE_DEFER_TO_NODE", "0")];
+    let missing = e.dir.join("missing-map.json");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", missing.to_str().unwrap()];
+    let (code, out, err) = e.run_with(&args, true, &node_only_bash(&e), true, &[]);
+    assert_eq!((code, out.as_str()), (75, ""), "Node still exists: it decides: {err}");
+    let (code, out, err) = e.run_with(&args, true, &node_only_bash(&e), true, &no_node);
+    assert_eq!((code, out.as_str()), (2, ""), "no Node, infra is closed: {err}");
+    assert!(err.contains("blocked rather than allowed"), "{err}");
+    let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("dispatch_no_node_closed"), "{log}");
+}
+
+fn overcap_session(name: &str) -> (Env, String, PathBuf) {
+    let e = Env::new(name);
     let big = |n: &str| {
         format!(r#"printf '{{"hookSpecificOutput":{{"hookEventName":"SessionStart","additionalContext":"%s"}}}}\n' "$(head -c 4000 /dev/zero | tr '\0' {n})""#)
     };
@@ -634,10 +680,7 @@ fn a_join_over_the_host_cap_on_another_event_is_handed_back_to_run_separately() 
     let map = e.dir.join("map.json");
     std::fs::write(&map, serde_json::json!({ "SessionStart": m }).to_string()).unwrap();
     let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
-    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run(&args, true, &p, true);
-    assert_eq!((code, out.as_str()), (75, ""), "{err}");
-    assert!(err.contains("over the 10000"), "{err}");
+    (e, p, map)
 }
 
 #[test]

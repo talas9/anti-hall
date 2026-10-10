@@ -474,7 +474,8 @@ fn run_bytes(raw: Vec<u8>, force_fallback: bool, fallback: Option<&Path>, rest: 
     let cfg = ClientConfig::from_env();
     // a guard event with no Node fallback to hand over to: an engine that cannot answer must not read as an allow (review
     // finding 21), and an infrastructure fault is no verdict, so the wrapper is asked to run the Node hooks
-    let guard_without_fallback = fallback.is_none() && event_from_lossy(&raw).is_some_and(|e| guarded(&e));
+    let event_name = event_from_lossy(&raw);
+    let guard_without_fallback = fallback.is_none() && event_name.as_deref().is_some_and(guarded);
     let text = std::str::from_utf8(&raw).ok();
     if !force_fallback
         && let Some(raw) = text
@@ -491,6 +492,12 @@ fn run_bytes(raw: Vec<u8>, force_fallback: bool, fallback: Option<&Path>, rest: 
         if guard_without_fallback {
             let why = defaults::text("msg.client_no_fallback_guard");
             log_fallback("fallback_fail", "none", why);
+            // no Node to run the hook (dispatch.defer_to_node 0): the event's configured failure mode answers
+            if let Some(ev) = event_name.as_deref()
+                && let Some(o) = crate::dispatch::no_node_answer(ev, None, "infra", why)
+            {
+                return o;
+            }
             Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{why}\n") }
         } else if fail_closed_unavailable {
             Outcome { out: String::new(), code: 2, err: defaults::text("msg.client_fallback_unavailable").into() }

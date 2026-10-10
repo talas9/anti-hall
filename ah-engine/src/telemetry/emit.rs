@@ -273,6 +273,17 @@ pub fn script_failure(check: &str, event: &str) -> Event {
     base(Kind::Check, check, event, Outcome::Error, 0, 0, Extras::None)
 }
 
+/// The event for a hook output too large to inject inline, written to a file instead: `bytes` is the size of the file.
+pub fn spill(h: &str, event: &str, bytes: u64) -> Event {
+    base(Kind::Spill, h, event, Outcome::Advise, 0, bytes, Extras::Spill(bytes))
+}
+
+/// The event for a dispatcher path that would have handed the event to the Node hooks and answered without them
+/// (`path` is `budget`, `infra` or `panic`; `outcome` is Skip for an advisory event, Block or Allow for a guard event).
+pub fn no_node_path(path: &str, event: &str, outcome: Outcome) -> Event {
+    base(Kind::Hook, &format!("dispatcher-{path}"), event, outcome, 0, 0, Extras::None)
+}
+
 /// The event for a daemon health snapshot: `readings` are the numbers the `daemon` schema lists.
 pub fn daemon_snapshot(degraded: bool, readings: &[(&str, u64)]) -> Event {
     let mut f = Fields::new().num("degraded", u64::from(degraded));
