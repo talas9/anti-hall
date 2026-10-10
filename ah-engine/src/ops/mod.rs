@@ -16,8 +16,12 @@
 //! Where the Node tool's behaviour cannot be reproduced exactly (a lock held by a live writer, a repository layout the
 //! resolver cannot classify) the command writes nothing, says so on stderr and exits with the deferral code, so the Node
 //! command can be run instead.
+pub(crate) mod ahconfig;
 pub(crate) mod allow;
+pub(crate) mod cwbaseline;
 pub(crate) mod defect;
+pub(crate) mod dispatch_report;
+pub(crate) mod finding_dedup;
 pub(crate) mod js;
 pub(crate) mod jsio;
 pub(crate) mod phase;
@@ -121,4 +125,47 @@ pub fn cmd_uninstall_statusline(p: &Parsed) -> i32 {
 /// `shadow-compare <dir>` (internal): the detached half of a Node shadow.
 pub fn cmd_shadow_compare(p: &Parsed) -> i32 {
     p.raw.first().map_or(1, |d| shadow::compare(std::path::Path::new(d)))
+}
+
+// ---- the rules-script verbs of lane L03 (auto-handover-config, dispatch-report, finding-dedup, coordinator-work-baseline) -------
+
+/// Every `opcli.*` setting as JSON, keyed without the prefix: the thresholds and texts the rules scripts read.
+pub(crate) fn opcli_cfg() -> serde_json::Value {
+    let map: serde_json::Map<String, serde_json::Value> =
+        defaults::with_prefix("opcli.").into_iter().filter_map(|e| e.key.strip_prefix("opcli.").map(|k| (k.to_string(), e.value.to_json()))).collect();
+    serde_json::Value::Object(map)
+}
+
+/// Ask the plugin script `script` for `func` (JSON in, JSON out); a run that could not answer says so on stderr.
+pub(crate) fn opcli_call(verb: &str, script: &str, func: &str, input: &serde_json::Value) -> Option<serde_json::Value> {
+    let r = crate::script::call_fn(script, func, input);
+    if r.is_none() {
+        err(&(defaults::render("opcli.rules_failed", &[("verb", &verb)]) + "\n"));
+    }
+    r
+}
+
+/// The text of a file, `None` when it cannot be read (decoded as Node's `utf8` does).
+pub(crate) fn read_lossy(path: &std::path::Path) -> Option<String> {
+    std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// `auto-handover-config <verb>`
+pub fn cmd_auto_handover_config(p: &Parsed) -> i32 {
+    ahconfig::run(p)
+}
+
+/// `dispatch-report [--json]`
+pub fn cmd_dispatch_report(p: &Parsed) -> i32 {
+    dispatch_report::run(p)
+}
+
+/// `finding-dedup [--file <findings.json>]`
+pub fn cmd_finding_dedup(p: &Parsed) -> i32 {
+    finding_dedup::run(p)
+}
+
+/// `coordinator-work-baseline <transcript.jsonl> [--from-line N] [--cwd DIR] [--json]`
+pub fn cmd_coordinator_work_baseline(p: &Parsed) -> i32 {
+    cwbaseline::run(p)
 }

@@ -997,7 +997,7 @@ pub fn run(args: &[String]) -> Result<i32, SetupError> {
         }
     }
     // a verb that changes the Jev settings or keys counts as one change when it succeeded
-    if cx.code == 0 && !matches!(verb, "status" | "" | "test" | "review-due") {
+    if cx.code == 0 && !defaults::list("opcli.no_change_verbs").contains(&verb) {
         crate::telemetry::emit::add_items(1);
     }
     Ok(cx.code)

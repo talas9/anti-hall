@@ -6,7 +6,6 @@ pub(crate) mod history;
 pub(crate) mod store;
 
 use super::js::{Defer, len16};
-use store::head16;
 use super::{env_snapshot, err, home, out, plugin_root};
 use crate::checks::git::util::posix_basename;
 use crate::checks::jsport::ident;
@@ -16,6 +15,7 @@ use crate::defaults;
 use crate::reqenv::RequestEnv;
 use crate::setup::jsfmt::{parse_int, pretty};
 use std::collections::BTreeMap;
+use store::head16;
 
 /// A flag's value: a word, or the bare flag.
 #[derive(Clone, PartialEq, Eq)]
@@ -210,11 +210,7 @@ fn git_common_dir(run: &Run, cwd: &str) -> Option<String> {
 /// `repoKeyForWorktree(cwd)`: `<sanitized repo name>-<6 hex of the common dir>`, `None` outside a repository.
 fn repo_key(run: &Run, cwd: &str) -> Result<Option<String>, Defer> {
     let ctx = ident::resolve_context(cwd, false, &RequestEnv::from_pairs(run.env.clone()));
-    let common = if ctx.unsure {
-        git_common_dir(run, cwd)
-    } else {
-        ctx.worktree_root.as_deref().and_then(ident::common_dir)
-    };
+    let common = if ctx.unsure { git_common_dir(run, cwd) } else { ctx.worktree_root.as_deref().and_then(ident::common_dir) };
     let Some(common) = common else { return Ok(None) };
     let parent = crate::checks::git::util::posix_dirname(&common);
     let base = sanitize_repo_name(&posix_basename(&parent));

@@ -105,6 +105,8 @@ fn mask(s: &str, homes: &[&Path]) -> String {
         (r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", "TS"),
         (r"corrupt-\d+", "corrupt-N"),
         (r"latency \d+ms", "latency Nms"),
+        // the engine verb is named where Node names its script
+        (r"node scripts/coordinator-work-baseline\.js", "ah-engine coordinator-work-baseline"),
         (r#""latencyMs":\d+"#, r#""latencyMs":N"#),
         (r#""ts":\d+"#, r#""ts":N"#),
         (r#""started":\d+"#, r#""started":N"#),
@@ -213,20 +215,6 @@ fn same(c: &Same, args: &[&str]) -> R<Out> {
     assert_eq!(nt, et, "{name}: home tree");
     CASES.fetch_add(1, Ordering::SeqCst);
     Ok(eo)
-}
-
-fn git(dir: &Path, args: &[&str]) -> R {
-    let o = Command::new("git").args(args).current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_SYSTEM", "/dev/null").output()?;
-    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
-    Ok(())
-}
-
-fn repo(dir: &Path) -> R {
-    fs::create_dir_all(dir)?;
-    git(dir, &["init", "-q", "."])?;
-    git(dir, &["config", "user.email", "a@b.c"])?;
-    git(dir, &["config", "user.name", "tester"])?;
-    Ok(())
 }
 
 /// Run one side alone (the engine's `verb`, or Node's `script` when `verb` is `None`) in a fresh copy of `seed`; returns the
@@ -346,12 +334,14 @@ fn defect_since_in_local_time_matches_node_and_an_unreadable_one_is_refused() ->
 #[test]
 fn defect_archive_keeps_entries_it_cannot_date_or_move() -> R {
     let seed = Scratch::new("seed")?;
-    let rep = |sym: &str, at: &str| {
-        serde_json::json!({"t":"report","at":at,"class":"doc","sev":"p2","sym":sym,"proj":"pa","v":"0.1.0"}).to_string()
-    };
+    let rep = |sym: &str, at: &str| serde_json::json!({"t":"report","at":at,"class":"doc","sev":"p2","sym":sym,"proj":"pa","v":"0.1.0"}).to_string();
     let rule = |at: &str| serde_json::json!({"t":"ruling","at":at,"status":"fixed","fixedIn":"0.1.1"}).to_string();
     write(seed.path(), ".anti-hall/defects/aaaaaaaaaaa1.jsonl", &format!("{}\n{}\n", rep("odd date", "2020-01-01T00:00:00.000Z"), rule("01/02/2020")))?;
-    write(seed.path(), ".anti-hall/defects/aaaaaaaaaaa2.jsonl", &format!("{}\n{}\n", rep("old", "2020-01-01T00:00:00.000Z"), rule("2020-01-02T00:00:00.000Z")))?;
+    write(
+        seed.path(),
+        ".anti-hall/defects/aaaaaaaaaaa2.jsonl",
+        &format!("{}\n{}\n", rep("old", "2020-01-01T00:00:00.000Z"), rule("2020-01-02T00:00:00.000Z")),
+    )?;
     let (o, h) = one(DEFECT, Some("defect"), Some(seed.path()), None, &[], &["archive", "--json"])?;
     assert_eq!(o.code, 0, "{o:?}");
     let rows: serde_json::Value = serde_json::from_str(&o.stdout)?;
@@ -486,25 +476,44 @@ fn jev_setup_review_due_matches_node() -> R {
     let few = review_seed(5, 20, &[])?;
     same(&jev_same(Some(few.path()), &[]), &["review-due"])?;
     let state = |entry: String| format!(r#"{{"keep":1,"integrations":{{"zzCustom":{entry}}}}}"#);
-    let recent = review_seed(40, 20, &[(".anti-hall/jev-review-state.json", &state(format!(r#"{{"shadowSince":"{}","lastReviewedAt":"{}"}}"#, days_ago(20), days_ago(2))))])?;
+    let recent = review_seed(
+        40,
+        20,
+        &[(".anti-hall/jev-review-state.json", &state(format!(r#"{{"shadowSince":"{}","lastReviewedAt":"{}"}}"#, days_ago(20), days_ago(2))))],
+    )?;
     same(&jev_same(Some(recent.path()), &[]), &["review-due"])?;
-    let snoozed = review_seed(40, 20, &[(".anti-hall/jev-review-state.json", &state(format!(r#"{{"shadowSince":"{}","snoozedUntil":"{}","dueSince":"{}"}}"#, days_ago(20), days_ago(-3), days_ago(1))))])?;
+    let snoozed = review_seed(
+        40,
+        20,
+        &[(
+            ".anti-hall/jev-review-state.json",
+            &state(format!(r#"{{"shadowSince":"{}","snoozedUntil":"{}","dueSince":"{}"}}"#, days_ago(20), days_ago(-3), days_ago(1))),
+        )],
+    )?;
     same(&jev_same(Some(snoozed.path()), &[]), &["review-due", "--json"])?;
     // a rollup-only history counts too, and a corrupt state file starts fresh
-    let roll = review_seed(0, 0, &[
-        (".anti-hall/logs/jev-daily/2020-01-02.json", r#"{"day":"2020-01-02","groups":[{"id":"zzCustom","n":31},{"id":"other","n":9}]}"#),
-        (".anti-hall/jev-review-state.json", "{not json"),
-    ])?;
+    let roll = review_seed(
+        0,
+        0,
+        &[
+            (".anti-hall/logs/jev-daily/2020-01-02.json", r#"{"day":"2020-01-02","groups":[{"id":"zzCustom","n":31},{"id":"other","n":9}]}"#),
+            (".anti-hall/jev-review-state.json", "{not json"),
+        ],
+    )?;
     same(&jev_same(Some(roll.path()), &[]), &["review-due", "--json"])?;
     Ok(())
 }
 
 #[test]
 fn jev_setup_reviewed_and_snooze_match_node() -> R {
-    let seed = review_seed(40, 20, &[(
-        ".anti-hall/jev-review-state.json",
-        &format!(r#"{{"integrations":{{"zzCustom":{{"shadowSince":"{}","dueSince":"{}"}}}}}}"#, days_ago(20), days_ago(0) /* due just now */),
-    )])?;
+    let seed = review_seed(
+        40,
+        20,
+        &[(
+            ".anti-hall/jev-review-state.json",
+            &format!(r#"{{"integrations":{{"zzCustom":{{"shadowSince":"{}","dueSince":"{}"}}}}}}"#, days_ago(20), days_ago(0) /* due just now */),
+        )],
+    )?;
     let c = jev_same(Some(seed.path()), &[]);
     for a in [
         &["reviewed"][..],
@@ -526,7 +535,11 @@ fn jev_setup_reviewed_and_snooze_match_node() -> R {
     let (o, h) = one(JEV_SETUP, Some("jev-setup"), Some(seed.path()), None, &[], &["snooze", "zzCustom", "--days", "1e12"])?;
     assert_eq!(o.code, 1, "{o:?}");
     assert!(o.stderr.contains("--days is too large"), "{o:?}");
-    assert_eq!(snapshot(h.path())?, snapshot(seed.path())?.into_iter().chain(snapshot(h.path())?.into_iter().filter(|(k, _)| k.starts_with("tmp"))).collect(), "nothing written");
+    assert_eq!(
+        snapshot(h.path())?,
+        snapshot(seed.path())?.into_iter().chain(snapshot(h.path())?.into_iter().filter(|(k, _)| k.starts_with("tmp"))).collect(),
+        "nothing written"
+    );
     // the reviewed metric row
     let (_, h) = one(JEV_SETUP, Some("jev-setup"), Some(seed.path()), None, &[], &["reviewed", "zzCustom"])?;
     let metric = fs::read_to_string(h.path().join(".anti-hall/logs/jev-review.ndjson"))?;
@@ -590,8 +603,316 @@ fn jev_setup_test_matches_node() -> R {
     let two = review_seed(0, 0, &[(".anti-hall/settings.json", r#"{"jev":{"enabled":true,"transport":"vercel","fallbackTransport":"typesafe"}}"#)])?;
     let (v, t) = (gateway(200, r#"{"answers":{"decision":{"noul":0.2}}}"#), gateway(503, "{}"));
     let (vu, tu) = (leak(format!("http://127.0.0.1:{}/x", v.port)), leak(format!("http://127.0.0.1:{}/x", t.port)));
-    let env = [key, ("CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY", "other-key"), ("ANTIHALL_JEV_TEST_ENDPOINT_VERCEL", vu), ("ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE", tu)];
+    let env = [
+        key,
+        ("CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY", "other-key"),
+        ("ANTIHALL_JEV_TEST_ENDPOINT_VERCEL", vu),
+        ("ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE", tu),
+    ];
     let o = same(&jev_same(Some(two.path()), &env), &["test"])?;
     assert!(o.stdout.contains("(primary, transport: vercel)") && o.stdout.contains("(fallback, transport: typesafe)"), "{o:?}");
+    Ok(())
+}
+
+// ---- auto-handover-config, dispatch-report, coordinator-work-baseline, finding-dedup ---------------------------------------
+
+/// Like `same`, without the comparison of the home trees (a Jev log row carries timings).
+fn same_outputs(c: &Same, args: &[&str]) -> R<Out> {
+    let name = format!("{} {}", c.verb, args.join(" ").chars().take(80).collect::<String>());
+    let (nh, eh) = (Scratch::new("n")?, Scratch::new("e")?);
+    for h in [nh.path(), eh.path()] {
+        fs::create_dir_all(h.join("tmp"))?;
+        if let Some(s) = c.seed {
+            copy_dir(s, h)?;
+        }
+    }
+    let wd = Scratch::new("cwd")?;
+    let cwd = c.cwd.unwrap_or_else(|| wd.path());
+    let mut n = Command::new("node");
+    n.arg(plugin_src().join(c.script)).args(args);
+    let mut e = Command::new(BIN);
+    e.arg(c.verb).args(args);
+    let no = run(n, nh.path(), cwd, c.env, c.stdin)?;
+    let eo = run(e, eh.path(), cwd, c.env, c.stdin)?;
+    let m = |o: &Out, h: &Path| Out { stdout: mask(&o.stdout, &[h]), stderr: mask(&o.stderr, &[h]), code: o.code };
+    let (nm, em) = (m(&no, nh.path()), m(&eo, eh.path()));
+    assert_text(&name, "stdout", &nm.stdout, &em.stdout);
+    assert_text(&name, "stderr", &nm.stderr, &em.stderr);
+    assert_eq!(nm.code, em.code, "{name}: exit code");
+    CASES.fetch_add(1, Ordering::SeqCst);
+    Ok(eo)
+}
+
+const AHC: &str = "scripts/auto-handover-config.js";
+
+#[test]
+fn auto_handover_config_matches_node() -> R {
+    fn mk(env: Vec<(&'static str, &'static str)>) -> Same<'static> {
+        Same { script: AHC, verb: "auto-handover-config", seed: None, cwd: None, env: Box::leak(env.into_boxed_slice()), stdin: "" }
+    }
+    let plain = mk(vec![]);
+    for a in [
+        &["get"][..],
+        &["get", "--json"][..],
+        &["set", "90"][..],
+        &["set", "0"][..],
+        &["set", "100"][..],
+        &["set", "7.5"][..],
+        &["set", "abc"][..],
+        &["set"][..],
+        &["off"][..],
+        &["on"][..],
+        &["nag", "off"][..],
+        &["nag", "on"][..],
+        &["nag", "x"][..],
+        &["nag"][..],
+        &["nag-step", "3"][..],
+        &["nag-step", "0"][..],
+        &["nag-step", "-4"][..],
+        &["nag-quiet", "30"][..],
+        &["nag-quiet", "x"][..],
+        &["max-tokens", "150000"][..],
+        &["max-tokens", "0"][..],
+        &["max-tokens", "05"][..],
+        &["max-tokens", "1.5"][..],
+        &["max-tokens", "-1"][..],
+        &["max-tokens", " 7 "][..],
+    ] {
+        same(&plain, a)?;
+    }
+    // stored settings: the resolved values, the source of the threshold, and a write that changes only what changed
+    let seed = Scratch::new("ahc")?;
+    write(
+        seed.path(),
+        ".anti-hall/settings.json",
+        r#"{"keep":{"a":1},"autoHandover":{"pct":70,"nag":false,"maxTokens":200000,"gateHousekeepingMarkers":"cron,tick"}}"#,
+    )?;
+    let stored = Same { seed: Some(seed.path()), ..mk(vec![]) };
+    for a in
+        [&["get"][..], &["get", "--json"][..], &["set", "70"][..], &["set", "60"][..], &["on"][..], &["off"][..], &["nag", "on"][..], &["max-tokens", "0"][..]]
+    {
+        same(&stored, a)?;
+    }
+    let off = Scratch::new("ahc-off")?;
+    write(off.path(), ".anti-hall/settings.json", r#"{"autoHandover":{"enabled":false,"nagStepPct":9}}"#)?;
+    for a in [&["get"][..], &["get", "--json"][..], &["on"][..]] {
+        same(&Same { seed: Some(off.path()), ..mk(vec![]) }, a)?;
+    }
+    // the environment: 0 switches the trigger off outright, a valid value is the threshold's source
+    for (env, a) in [
+        ("0", &["get"][..]),
+        ("0", &["get", "--json"][..]),
+        ("50", &["get"][..]),
+        ("50", &["get", "--json"][..]),
+        ("nope", &["get"][..]),
+        (" 0 ", &["get"][..]),
+        ("", &["get"][..]),
+    ] {
+        same(&mk(vec![("ANTIHALL_AUTO_HANDOVER_PCT", env)]), a)?;
+    }
+    // the usage line names the engine verb
+    let (o, _h) = one(AHC, Some("auto-handover-config"), None, None, &[], &["bogus"])?;
+    assert_eq!(o.code, 1);
+    assert!(o.stderr.contains("usage: ah-engine auto-handover-config get [--json] | set <1-99>"), "{o:?}");
+    Ok(())
+}
+
+const DISPATCH: &str = "scripts/dispatch-report.js";
+
+#[test]
+fn dispatch_report_matches_node() -> R {
+    let none = Same { script: DISPATCH, verb: "dispatch-report", seed: None, cwd: None, env: &[], stdin: "" };
+    same(&none, &[])?;
+    same(&none, &["--json"])?;
+    let seed = Scratch::new("dr")?;
+    write(
+        seed.path(),
+        ".anti-hall/dispatch-demand-metrics.json",
+        r#"{"demandsShown":10,"demandsFollowed":6,"demandsIgnored":3,"idleNeglectBlocks":2,"pending":{},"tier":{"verdict.workspace":4,"verdict.workflow":2,"verdict.subagent":9,"followed":7,"overridden":3,"subagentOneLane":5,"subagentEscalated":1,"workflowFannedOut":2,"workflowNoFanout":0}}"#,
+    )?;
+    write(
+        seed.path(),
+        ".anti-hall/coordinator-work-metrics.json",
+        r#"{"v":1,"nudges":4,"blocks":3,"maxSessionBlocks":2,"byVersion":{"0.1.0":{"sessions":5,"calls":100,"work":40,"blocks":3,"skippedWouldBlock":1},"0.0.9":{"sessions":2,"calls":10,"work":1,"blocks":0,"skippedWouldBlock":0},"bad":7}}"#,
+    )?;
+    write(seed.path(), ".anti-hall/coordinator-work-session-a.json", r#"{"version":"0.1.0","calls":10,"work":6,"blocks":4,"skippedWouldBlock":2}"#)?;
+    write(seed.path(), ".anti-hall/coordinator-work-session-b.json", r#"{"version":"0.2.0","calls":3,"work":0,"blocks":0,"skippedWouldBlock":0}"#)?;
+    write(seed.path(), ".anti-hall/coordinator-work-session-empty.json", r#"{"version":"0.2.0","calls":0}"#)?;
+    write(seed.path(), ".anti-hall/coordinator-work-session-bad.json", "{not json")?;
+    let c = Same { seed: Some(seed.path()), ..none };
+    let o = same(&c, &[])?;
+    assert!(o.stdout.contains("compliance 66.7%"), "{o:?}");
+    same(&c, &["--json"])?;
+    // corrupt and odd files read as empty
+    let odd = Scratch::new("dr-odd")?;
+    write(odd.path(), ".anti-hall/dispatch-demand-metrics.json", "[1,2")?;
+    write(odd.path(), ".anti-hall/coordinator-work-metrics.json", "42")?;
+    let c = Same { seed: Some(odd.path()), ..none };
+    same(&c, &[])?;
+    same(&c, &["--json"])?;
+    Ok(())
+}
+
+const CWB: &str = "scripts/coordinator-work-baseline.js";
+
+fn transcript(commands: &[(&str, bool, bool)]) -> String {
+    // (command, is_error, sidechain): one assistant line with the Bash tool use, then the user line with its result
+    let mut out = String::new();
+    for (i, (cmd, is_err, side)) in commands.iter().enumerate() {
+        let ts = format!("2026-01-01T00:{:02}:00.000Z", i);
+        let id = format!("toolu_{i}");
+        out.push_str(
+            &serde_json::json!({"type":"assistant","timestamp":ts,"cwd":"/proj","isSidechain":side,
+            "message":{"content":[{"type":"text","text":"ok"},{"type":"tool_use","id":id,"name":"Bash","input":{"command":cmd}}]}})
+            .to_string(),
+        );
+        out.push('\n');
+        out.push_str(
+            &serde_json::json!({"type":"user","timestamp":ts,"cwd":"/proj","isSidechain":side,
+            "message":{"content":[{"type":"tool_result","tool_use_id":id,"is_error":is_err,"content":"x"}]}})
+            .to_string(),
+        );
+        out.push('\n');
+    }
+    out.push_str("not json\n{\"type\":\"assistant\"}\n");
+    out
+}
+
+#[test]
+fn coordinator_work_baseline_matches_node() -> R {
+    let seed = Scratch::new("cwb")?;
+    let cmds: Vec<(&str, bool, bool)> = vec![
+        ("ls -la", false, false),
+        ("git status", false, false),
+        ("git commit -m a", false, false),
+        ("git commit -m b", false, false),
+        ("git push origin main", false, false),
+        ("git commit -m c", true, false),
+        ("git add -A && git commit -m d", false, false),
+        ("git commit -m side", false, true),
+        ("git rebase --abort", false, false),
+        ("gh pr merge 12", false, false),
+        ("git commit -m e", false, false),
+        ("git commit -m f", false, false),
+        ("git commit -m g", false, false),
+        ("cat README.md", false, false),
+        ("git tag v1", false, false),
+        ("git merge x", false, false),
+    ];
+    write(seed.path(), "t/session.jsonl", &transcript(&cmds))?;
+    write(seed.path(), "t/empty.jsonl", "")?;
+    let c = Same { script: CWB, verb: "coordinator-work-baseline", seed: Some(seed.path()), cwd: None, env: &[], stdin: "" };
+    let tr = "t/session.jsonl";
+    // the transcript is a relative path: `run_in_home` runs each side in its own home copy
+    for a in [
+        vec![tr],
+        vec![tr, "--json"],
+        vec![tr, "--from-line", "9"],
+        vec![tr, "--from-line", "x"],
+        vec![tr, "--cwd", "/proj", "--json"],
+        vec!["t/empty.jsonl"],
+        vec!["t/empty.jsonl", "--json"],
+    ] {
+        run_in_home(&c, &a)?;
+    }
+    Ok(())
+}
+
+/// `same_outputs` with the working directory set to the (per side) home, so a relative transcript path resolves on both sides.
+fn run_in_home(c: &Same, args: &[&str]) -> R {
+    let name = format!("{} {}", c.verb, args.join(" "));
+    let (nh, eh) = (Scratch::new("n")?, Scratch::new("e")?);
+    for h in [nh.path(), eh.path()] {
+        fs::create_dir_all(h.join("tmp"))?;
+        if let Some(s) = c.seed {
+            copy_dir(s, h)?;
+        }
+    }
+    let mut n = Command::new("node");
+    n.arg(plugin_src().join(c.script)).args(args);
+    let mut e = Command::new(BIN);
+    e.arg(c.verb).args(args);
+    let no = run(n, nh.path(), nh.path(), c.env, "")?;
+    let eo = run(e, eh.path(), eh.path(), c.env, "")?;
+    let m = |o: &Out, h: &Path| Out { stdout: mask(&o.stdout, &[h]), stderr: mask(&o.stderr, &[h]), code: o.code };
+    let (nm, em) = (m(&no, nh.path()), m(&eo, eh.path()));
+    assert_text(&name, "stdout", &nm.stdout, &em.stdout);
+    assert_text(&name, "stderr", &nm.stderr, &em.stderr);
+    assert_eq!(nm.code, em.code, "{name}: exit code");
+    assert_eq!(snapshot(nh.path())?, snapshot(eh.path())?, "{name}: home tree");
+    CASES.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+#[test]
+fn coordinator_work_baseline_errors_match_node() -> R {
+    let seed = Scratch::new("cwb-err")?;
+    write(seed.path(), "t/session.jsonl", "")?;
+    let c = Same { script: CWB, verb: "coordinator-work-baseline", seed: Some(seed.path()), cwd: None, env: &[], stdin: "" };
+    for a in [vec![], vec!["--json"], vec!["nope.jsonl"], vec!["t"], vec!["--from-line", "3"]] {
+        run_in_home(&c, &a)?;
+    }
+    Ok(())
+}
+
+const DEDUP: &str = "scripts/finding-dedup.js";
+
+#[test]
+fn finding_dedup_matches_node() -> R {
+    let findings = serde_json::json!([
+        {"id":"A1","severity":"p1","file":"src/a.rs","line":10,"text":"unchecked index","round":1,"seat":"reviewer"},
+        {"id":"B1","severity":"p2","file":"src/a.rs","line":30,"text":"index may be out of range","round":1,"seat":"auditor"},
+        {"id":"C1","severity":"p2","file":"src/a.rs","line":200,"text":"far away","round":1},
+        {"id":"A1","severity":"p1","file":"src/a.rs","line":12,"text":"still unchecked","round":2},
+        {"id":"A1","severity":"p1","file":"src/a.rs","line":12,"text":"exact repeat","round":2},
+        {"id":"D1","file":"src/b.rs","text":"no line"},
+        {"id":"E1","file":"src/b.rs","line":3,"text":"other file"},
+        {"id":7,"file":"src/c.rs","line":1,"text":"numeric id"},
+        {"id":8,"file":"src/c.rs","line":2,"text":"numeric id too"},
+        {"text":"no id"}, "junk", null
+    ])
+    .to_string();
+    let seed = Scratch::new("dedup")?;
+    write(seed.path(), ".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#)?;
+    write(seed.path(), "f.json", &findings)?;
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    let key = ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "test-key-only");
+    let dup = gateway(200, r#"{"answers":{"decision":{"noul":0.97}}}"#);
+    let dup_url = leak(format!("http://127.0.0.1:{}/v1/systemone", dup.port));
+    let on = [key, ("ANTIHALL_JEV_TEST_ENDPOINT", dup_url)];
+    let c = |stdin: &'static str, env: &'static [(&'static str, &'static str)]| Same {
+        script: DEDUP,
+        verb: "finding-dedup",
+        seed: Some(seed.path()),
+        cwd: None,
+        env,
+        stdin,
+    };
+    let o = same_outputs(&c(leak(findings.clone()), Box::leak(on.to_vec().into_boxed_slice())), &[])?;
+    assert!(o.stdout.contains("\"groups\":[{") && o.stderr.contains("possible duplicates"), "{o:?}");
+    // from a file: relative to the working directory, which is the same scratch on both sides only through an absolute path
+    let abs = seed.path().join("f.json").to_string_lossy().into_owned();
+    same_outputs(&c("", Box::leak(on.to_vec().into_boxed_slice())), &["--file", leak(abs)])?;
+    // an answer under the confidence floor makes no edge; so does a rejected key
+    let unsure = gateway(200, r#"{"answers":{"decision":{"noul":0.7}}}"#);
+    let unsure_url = leak(format!("http://127.0.0.1:{}/v1/systemone", unsure.port));
+    let o = same_outputs(&c(leak(findings.clone()), Box::leak(vec![key, ("ANTIHALL_JEV_TEST_ENDPOINT", unsure_url)].into_boxed_slice())), &[])?;
+    assert_eq!(o.stdout, "{\"groups\":[]}\n");
+    let denied = gateway(401, "{}");
+    let denied_url = leak(format!("http://127.0.0.1:{}/v1/systemone", denied.port));
+    same_outputs(&c(leak(findings.clone()), Box::leak(vec![key, ("ANTIHALL_JEV_TEST_ENDPOINT", denied_url)].into_boxed_slice())), &[])?;
+    // no key: the notice, no groups; Jev off: no groups; malformed or missing input: no groups
+    same_outputs(&c(leak(findings.clone()), &[]), &[])?;
+    let off = Scratch::new("dedup-off")?;
+    write(off.path(), ".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#)?;
+    same_outputs(&Same { seed: Some(off.path()), ..c(leak(findings.clone()), &[]) }, &[])?;
+    let mode_off = Scratch::new("dedup-mode")?;
+    write(mode_off.path(), ".anti-hall/settings.json", r#"{"jev":{"enabled":true},"jevIntegrations":{"findingDedup":"off"}}"#)?;
+    same_outputs(&Same { seed: Some(mode_off.path()), ..c(leak(findings.clone()), Box::leak(on.to_vec().into_boxed_slice())) }, &[])?;
+    for bad in ["", "not json", "{}", "[]", "[{\"id\":1}]"] {
+        same_outputs(&c(bad, Box::leak(on.to_vec().into_boxed_slice())), &[])?;
+    }
+    same_outputs(&c("", Box::leak(on.to_vec().into_boxed_slice())), &["--file", "/nonexistent/f.json"])?;
+    same_outputs(&c("[]", Box::leak(on.to_vec().into_boxed_slice())), &["--file"])?;
     Ok(())
 }

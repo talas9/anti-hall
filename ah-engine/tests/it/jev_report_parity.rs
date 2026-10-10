@@ -735,7 +735,7 @@ fn a_label_that_cannot_be_written_fails_like_node() -> R {
         let h = Scratch::new("h")?;
         copy_dir(seed.path(), h.path())?;
         fs::create_dir_all(h.path().join("tmp"))?;
-        let _ = fs::remove_file(h.path().join(".anti-hall/logs/jev-labels.ndjson"));
+        fs::remove_file(h.path().join(".anti-hall/logs/jev-labels.ndjson"))?;
         fs::create_dir_all(h.path().join(".anti-hall/logs/jev-labels.ndjson"))?;
         let mut c = Command::new(bin);
         if script {

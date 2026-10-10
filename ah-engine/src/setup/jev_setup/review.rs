@@ -393,4 +393,3 @@ pub(super) fn cmd_snooze(cx: &mut Ctx, positional: &[String], days: Option<&str>
     state.write();
     out(&defaults::render("opcli.snooze_ok", &[("id", id), ("until", &stamp)]))
 }
-

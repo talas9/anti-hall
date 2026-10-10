@@ -11,12 +11,12 @@ use crate::checks::jsport::date;
 use crate::checks::jsport::json::{self, J};
 use crate::defaults;
 use crate::ops::js::{Defer, cmp_semver, len16};
-use store::head16;
 use regex::Regex;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use store::head16;
 
 fn rx(key: &str, ci: bool) -> Regex {
     jsre::compile(defaults::text(key), ci)
