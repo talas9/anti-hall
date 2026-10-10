@@ -1,0 +1,16 @@
+{
+  "_doc": "Fake private-looking samples for tests/scripts/moderation-lib.test.js. Kept under tests/fixtures/ (a privacy-scan skip path) so the PR privacy scan does not flag the scanner's own test data.",
+  "privacyText": "path /Users/jdoe/proj\nok /home/runner/work and /Users/you/x\nmail me jdoe@corp.io or sam@example.com\nsession_id: 0f8fad5b-d9cb-469f-a165-70867728950e\nProject Falcon notes",
+  "diffLines": [
+    "diff --git a/x.md b/x.md",
+    "--- a/x.md",
+    "+++ b/x.md",
+    "@@ -1,0 +5,2 @@",
+    "+fine line",
+    "+see /Users/jdoe/a",
+    "--- a/tests/fixtures/f",
+    "+++ b/tests/fixtures/f",
+    "@@ -0,0 +1 @@",
+    "+/Users/jdoe/b"
+  ]
+}

@@ -88,7 +88,18 @@ fn sweep_items_for(state: &OVal, key: &str, version: &str) -> Items {
 
 /// `recordSweepResult(home, state, key, version, sweep, opts)` and, for a drained walk, `recordRun`.
 #[allow(clippy::too_many_arguments)]
-fn record_sweep_result(ctx: &Ctx, state: &OVal, key: &str, version: &str, processed: &[String], remaining: &[String], exhausted: bool, clean: bool, pending_rows: f64, forward_failed: f64) {
+fn record_sweep_result(
+    ctx: &Ctx,
+    state: &OVal,
+    key: &str,
+    version: &str,
+    processed: &[String],
+    remaining: &[String],
+    exhausted: bool,
+    clean: bool,
+    pending_rows: f64,
+    forward_failed: f64,
+) {
     let prev = state.get(key);
     let completed = match prev.and_then(|p| p.get("completedVersion")) {
         Some(v) if v.truthy() => v.clone(),
@@ -214,7 +225,11 @@ pub fn incomplete_reasons(r: &Value) -> Vec<String> {
     }
     if truthy(o.get("budgetExhausted")) {
         let s = count_of(o.get("skipped"));
-        out.push(if s > 0.0 { defaults::render("devswarm_recon.inc_budget_skipped", &[("n", &fmt_n(s))]) } else { defaults::text("devswarm_recon.inc_budget").into() });
+        out.push(if s > 0.0 {
+            defaults::render("devswarm_recon.inc_budget_skipped", &[("n", &fmt_n(s))])
+        } else {
+            defaults::text("devswarm_recon.inc_budget").into()
+        });
     }
     let n = count_of(o.get("pendingRows"));
     if n > 0.0 {
@@ -372,7 +387,12 @@ impl Acc {
             let ids: Vec<Value> = r
                 .get("rows")
                 .and_then(Value::as_array)
-                .map(|rows| rows.iter().filter(|row| truthy(row.get("healedDescriptor")) || truthy(row.get("healedRegistryPath")) || truthy(row.get("rehomed"))).map(|row| row.get("id").filter(|i| !i.is_null()).cloned().unwrap_or_else(|| json!("?"))).collect())
+                .map(|rows| {
+                    rows.iter()
+                        .filter(|row| truthy(row.get("healedDescriptor")) || truthy(row.get("healedRegistryPath")) || truthy(row.get("rehomed")))
+                        .map(|row| row.get("id").filter(|i| !i.is_null()).cloned().unwrap_or_else(|| json!("?")))
+                        .collect()
+                })
                 .unwrap_or_default();
             if !ids.is_empty() {
                 self.stores.push(json!({"repoKey": item, "rows": ids}));
@@ -479,8 +499,17 @@ pub fn run(ctx: &Ctx, runner: &dyn Runner, stage: &str, hooks: &Hooks) -> Option
             let sample = if acc.sample.is_empty() {
                 String::new()
             } else {
-                let names: Vec<String> = acc.sample.iter().take(defaults::num("devswarm_recon.sample_names") as usize).map(|u| format!("{}/{}", js_text(&u["repoKey"]), js_text(&u["id"]))).collect();
-                let more = if acc.unhealable > acc.sample.len() as f64 || acc.sample.len() > defaults::num("devswarm_recon.sample_names") as usize { defaults::text("devswarm_recon.d_orph_more") } else { "" };
+                let names: Vec<String> = acc
+                    .sample
+                    .iter()
+                    .take(defaults::num("devswarm_recon.sample_names") as usize)
+                    .map(|u| format!("{}/{}", js_text(&u["repoKey"]), js_text(&u["id"])))
+                    .collect();
+                let more = if acc.unhealable > acc.sample.len() as f64 || acc.sample.len() > defaults::num("devswarm_recon.sample_names") as usize {
+                    defaults::text("devswarm_recon.d_orph_more")
+                } else {
+                    ""
+                };
                 defaults::render("devswarm_recon.d_orph_sample", &[("list", &(names.join(defaults::text("devswarm_recon.sep_sample")) + more))])
             };
             d.push_str(&defaults::render("devswarm_recon.d_orph_unheal", &[("n", &n(acc.unhealable)), ("sample", &sample)]));
@@ -501,7 +530,10 @@ pub fn run(ctx: &Ctx, runner: &dyn Runner, stage: &str, hooks: &Hooks) -> Option
         let mut d = if acc.healed == 0.0 && acc.rehomed == 0.0 {
             defaults::render("devswarm_recon.d_heal_none", &[("checked", &n(acc.checked)), ("stores", &n_stores)])
         } else {
-            defaults::render("devswarm_recon.d_heal_some", &[("healed", &n(acc.healed)), ("rehomed", &n(acc.rehomed)), ("checked", &n(acc.checked)), ("stores", &n_stores)])
+            defaults::render(
+                "devswarm_recon.d_heal_some",
+                &[("healed", &n(acc.healed)), ("rehomed", &n(acc.rehomed)), ("checked", &n(acc.checked)), ("stores", &n_stores)],
+            )
         };
         tail(&mut d);
         json!({"attempted": true, "checked": jn(acc.checked), "healed": jn(acc.healed), "rehomed": jn(acc.rehomed), "errors": jn(acc.errors), "stores": acc.stores,
@@ -551,7 +583,10 @@ fn archived(w: &Walk, budget: f64) -> StageOut {
     let mut why_not = |label_key: &str, res: &Value| {
         let why = incomplete_reasons(res);
         if !why.is_empty() {
-            not_stamped.push(defaults::render("devswarm_recon.fmt_not_stamped", &[("label", &defaults::text(label_key)), ("why", &why.join(defaults::text("devswarm_recon.sep_reasons")))]));
+            not_stamped.push(defaults::render(
+                "devswarm_recon.fmt_not_stamped",
+                &[("label", &defaults::text(label_key)), ("why", &why.join(defaults::text("devswarm_recon.sep_reasons")))],
+            ));
         }
     };
     why_not("devswarm_recon.label_rows", &r);

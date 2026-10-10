@@ -411,8 +411,36 @@ function provablyNotWork(command) {
   return true;
 }
 
+// isDevswarmBookkeeping(command) -> true when EVERY segment (split at && || ; | newline) is an
+// anti-hall DevSwarm mailbox/bookkeeping call: `[node] <...>/devswarm.js <verb> ...` or
+// `ah-engine (mesh|devswarm) <verb> ...` with <verb> in BOOKKEEPING_VERBS, optionally followed by
+// a `| tail|head|wc` output filter. They only talk to the mesh store (heartbeat, pull, ack, read,
+// send), never to repo state, so they must not fill the main-thread WORK window (SkyCrew child
+// report, 2026-10-09). Closed vocabulary: any `$(`, backtick, redirect other than `2>&1`, heredoc or
+// unknown segment returns false and goes to the classifier unchanged. Mirrors the engine's
+// coordinator_work.bookkeeping_* keys (engine/defaults/small_guards.toml).
+const BOOKKEEPING_VERBS = ['inbox', 'heartbeat', 'send', 'roster', 'mesh', 'status', 'workspaces', 'register', 'register-primary', 'diagnose'];
+const BOOKKEEPING_FILTERS = ['tail', 'head', 'wc'];
+function isDevswarmBookkeeping(command) {
+  if (typeof command !== 'string' || !command.trim() || command.length > 4096) return false;
+  if (/\$\(|`|<<|\r/.test(command)) return false;
+  if (/>/.test(command.replace(/2>&1/g, ''))) return false;
+  const cli = new RegExp('^\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*(?:node\\s+)?["\']?(?:\\S*/)?(?:(?:\\.anti-hall/bin|scripts)/devswarm\\.js|ah-engine\\s+(?:mesh|devswarm))["\']?\\s+(?:' + BOOKKEEPING_VERBS.join('|') + ')(?:\\s|$)');
+  const filt = new RegExp('^\\s*(?:' + BOOKKEEPING_FILTERS.join('|') + ')(?:\\s+-?[0-9A-Za-z]+)*\\s*$');
+  const segs = command.split(/&&|\|\||;|\||\n/);
+  // a pipe splits the filter off as its own segment
+  let sawCli = false;
+  for (const seg of segs) {
+    if (!seg.trim()) continue;
+    if (cli.test(seg)) { sawCli = true; continue; }
+    if (filt.test(seg)) continue;
+    return false;
+  }
+  return sawCli;
+}
+
 module.exports = {
-  provablyNotWork, DEFAULTS, VERSION, config, emptyState, normalize, rememberPre, takePre, sessionStart, prune, checkPre, stepPost,
+  isDevswarmBookkeeping, provablyNotWork, DEFAULTS, VERSION, config, emptyState, normalize, rememberPre, takePre, sessionStart, prune, checkPre, stepPost,
   sessionPath, metricsPath, readState, update, bumpMetrics, logTrip, foldStale, summary,
   BLOCK, NUDGE, replay,
 };

@@ -62,6 +62,7 @@ pub fn simple(input: &str, cwd: &str, env: &BTreeMap<String, String>) -> Option<
     for (k, v) in env {
         c.env(k, v);
     }
+    crate::proc::apply_git_env(&mut c);
     let branch =
         run_with_input(c, b"", Duration::from_millis(defaults::num("statusline.simple_git_timeout_ms")), defaults::num("statusline.git_max_buffer") as usize)
             .filter(|r| r.ok)

@@ -287,7 +287,9 @@ fn archived_desc(fx: &Fx, id: &str, extra: &str) -> Setup {
         put(
             h,
             &format!(".anti-hall/devswarm/archived/{id}.json"),
-            &format!("{{\"id\":\"{id}\",\"worktreePath\":\"{wt}\",\"sessionId\":\"s-{id}\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"ownerKey\":\"{key}\"{extra}}}"),
+            &format!(
+                "{{\"id\":\"{id}\",\"worktreePath\":\"{wt}\",\"sessionId\":\"s-{id}\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"ownerKey\":\"{key}\"{extra}}}"
+            ),
         );
     })
 }
@@ -308,7 +310,11 @@ fn unarchive_matches_node() {
     };
     let k2 = key.clone();
     let other_project: Setup = Box::new(move |h| {
-        put(h, ".anti-hall/devswarm/archived/ua-other.json", "{\"id\":\"ua-other\",\"worktreePath\":\"/x/y\",\"sessionId\":\"s\",\"ownerKey\":\"some-other-project-abc123\"}");
+        put(
+            h,
+            ".anti-hall/devswarm/archived/ua-other.json",
+            "{\"id\":\"ua-other\",\"worktreePath\":\"/x/y\",\"sessionId\":\"s\",\"ownerKey\":\"some-other-project-abc123\"}",
+        );
         let _ = &k2;
     });
     let linked: Setup = {
@@ -332,7 +338,10 @@ fn unarchive_matches_node() {
             put(
                 h,
                 ".anti-hall/devswarm/archived/child-1.json",
-                &format!("{{\"id\":\"child-1\",\"worktreePath\":\"{w2}\",\"sessionId\":\"child-1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"ownerKey\":\"{}\"}}", "KEY"),
+                &format!(
+                    "{{\"id\":\"child-1\",\"worktreePath\":\"{w2}\",\"sessionId\":\"child-1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"ownerKey\":\"{}\"}}",
+                    "KEY"
+                ),
             );
         });
         let k = key.clone();
@@ -361,10 +370,15 @@ fn unarchive_matches_node() {
         u("ua-descriptor-without-an-owner-key", &["unarchive", "ua-3"], "main", true).setup({
             let (k, w) = (key.clone(), wt.clone());
             Box::new(move |h: &Path| {
-                put(h, ".anti-hall/devswarm/archived/ua-3.json", &format!("{{\"id\":\"ua-3\",\"worktreePath\":\"{w}\",\"sessionId\":\"s\",\"repoKey\":\"{k}\"}}"));
+                put(
+                    h,
+                    ".anti-hall/devswarm/archived/ua-3.json",
+                    &format!("{{\"id\":\"ua-3\",\"worktreePath\":\"{w}\",\"sessionId\":\"s\",\"repoKey\":\"{k}\"}}"),
+                );
             })
         }),
-        u("ua-keeps-unknown-fields-in-order", &["unarchive", "ua-4"], "main", true).setup(with("ua-4", ",\"zeta\":1,\"alpha\":{\"b\":2,\"a\":1},\"nudge\":\"x\"")),
+        u("ua-keeps-unknown-fields-in-order", &["unarchive", "ua-4"], "main", true)
+            .setup(with("ua-4", ",\"zeta\":1,\"alpha\":{\"b\":2,\"a\":1},\"nudge\":\"x\"")),
         u("ua-other-project-is-refused", &["unarchive", "ua-other"], "main", true).setup(other_project),
         u("ua-nothing-archived", &["unarchive", "ua-none"], "main", true),
         u("ua-hardlinked-pair", &["unarchive", "ua-linked"], "main", true).setup(linked),
@@ -414,7 +428,12 @@ fn migrate_owner_keys_matches_node() {
         let (id, d) = (id.to_string(), desc_json(id, &wt, extra));
         move |h: &Path| put(h, &format!(".anti-hall/devswarm/archived/{id}.json"), &d)
     };
-    let (a1, a2, a3, a4) = (active("mo-1", ""), active("mo-2", &format!(",\"ownerKey\":\"{key}\"")), active("mo-3", ",\"ownerKey\":\"\""), active("mo-4", ",\"repoKey\":\"keep-me-abc123\""));
+    let (a1, a2, a3, a4) = (
+        active("mo-1", ""),
+        active("mo-2", &format!(",\"ownerKey\":\"{key}\"")),
+        active("mo-3", ",\"ownerKey\":\"\""),
+        active("mo-4", ",\"repoKey\":\"keep-me-abc123\""),
+    );
     let (r1, r2) = (archived("mo-arch", ""), archived("mo-arch-owned", &format!(",\"ownerKey\":\"{key}\"")));
     let gone = {
         let d = desc_json("mo-gone", "/no/such/worktree", "");
@@ -533,8 +552,18 @@ fn ensure_and_register_match_node() {
     };
     let bare = put_desc("reg-bare", format!("{{\"id\":\"reg-bare\",\"worktreePath\":\"{w2}\",\"sessionId\":\"s-bare\"}}"));
     let hashed = put_desc("reg-hash", format!("{{\"id\":\"reg-hash\",\"worktreePath\":\"{w2}\",\"sessionId\":\"s\",\"ownerKey\":\"{}\"}}", hash8("reg-hash")));
-    let foreign = put_desc("reg-foreign", format!("{{\"id\":\"reg-foreign\",\"worktreePath\":\"{w2}\",\"sessionId\":\"s\",\"ownerKey\":\"other-project-abc123\",\"repoKey\":\"other-project-abc123\"}}"));
-    let upd = put_desc("reg-upd", format!("{{\"id\":\"reg-upd\",\"worktreePath\":\"{w2}\",\"sessionId\":\"old\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"repoId\":null,\"ownerKey\":\"{key}\",\"repoKey\":\"{key}\",\"extra\":{{\"z\":1,\"a\":2}}}}"));
+    let foreign = put_desc(
+        "reg-foreign",
+        format!(
+            "{{\"id\":\"reg-foreign\",\"worktreePath\":\"{w2}\",\"sessionId\":\"s\",\"ownerKey\":\"other-project-abc123\",\"repoKey\":\"other-project-abc123\"}}"
+        ),
+    );
+    let upd = put_desc(
+        "reg-upd",
+        format!(
+            "{{\"id\":\"reg-upd\",\"worktreePath\":\"{w2}\",\"sessionId\":\"old\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"repoId\":null,\"ownerKey\":\"{key}\",\"repoKey\":\"{key}\",\"extra\":{{\"z\":1,\"a\":2}}}}"
+        ),
+    );
     let archived_twin = {
         let w = w2.clone();
         move |h: &Path| put(h, ".anti-hall/devswarm/archived/reg-arch.json", &format!("{{\"id\":\"reg-arch\",\"worktreePath\":\"{w}\",\"sessionId\":\"s\"}}"))
@@ -553,7 +582,12 @@ fn ensure_and_register_match_node() {
         e("ens-without-worktree-is-node", &["ensure", "reg-nowt", "--session", "s"], "wt2", false),
         e("ens-without-session-is-node", &["ensure", "reg-nosess", "--worktree", &w2], "wt2", false),
         e("ens-second-row-of-a-worktree-is-node", &["ensure", "reg-dup", "--worktree", &child, "--session", "s"], "wt2", false),
-        e("ens-another-project-worktree-is-node", &["ensure", "reg-x", "--worktree", fx.root.join("repo-other").to_str().unwrap(), "--session", "s"], "wt2", false),
+        e(
+            "ens-another-project-worktree-is-node",
+            &["ensure", "reg-x", "--worktree", fx.root.join("repo-other").to_str().unwrap(), "--session", "s"],
+            "wt2",
+            false,
+        ),
         e("ens-a-path-that-is-no-worktree", &["ensure", "reg-x", "--worktree", fx.root.join("not-a-repo").to_str().unwrap(), "--session", "s"], "wt2", true),
         e("ens-outside-a-project-is-node", &["ensure", "reg-new", "--worktree", &w2, "--session", "s"], "nongit", false),
         e("ens-primary-label-is-node", &["ensure", "primary-0123abcd", "--worktree", &w2, "--session", "s"], "wt2", false),
@@ -561,7 +595,12 @@ fn ensure_and_register_match_node() {
         e("ens-unsafe-id", &["ensure", "../x"], "wt2", true),
         e("ens-no-id", &["ensure"], "wt2", true),
         r("reg-creates", &["register", "reg-new", "--worktree", &w2, "--session", "s-new"], "wt2", true),
-        r("reg-creates-with-a-nudge-command", &["register", "reg-new", "--worktree", &w2, "--session", "s-new", "--nudge", "hivecontrol", "--nudge", "poke"], "wt2", true),
+        r(
+            "reg-creates-with-a-nudge-command",
+            &["register", "reg-new", "--worktree", &w2, "--session", "s-new", "--nudge", "hivecontrol", "--nudge", "poke"],
+            "wt2",
+            true,
+        ),
         r("reg-relative-worktree-is-resolved", &["register", "reg-new", "--worktree", ".", "--session", "s-new"], "wt2", true),
         r("reg-with-a-repo-id", &["register", "reg-new", "--worktree", &w2, "--session", "s", "--repo-id", "repo-77"], "wt2", true),
         r("reg-with-a-repo-id-env", &["register", "reg-new", "--worktree", &w2, "--session", "s"], "wt2", true).env("DEVSWARM_REPO_ID", "env-repo-9"),
@@ -580,7 +619,9 @@ fn ensure_and_register_match_node() {
 // ---- correct --------------------------------------------------------------------------------------------------------------
 
 fn plan_json(steps: &str, extra: &str) -> String {
-    format!("{{\"key\":\"child-1\",\"id\":\"child-1\",\"worktreePath\":null,\"steps\":{steps},\"scope_globs\":[],\"extras\":[],\"created_at\":1794990000000,\"step_ts\":1794991000000{extra}}}")
+    format!(
+        "{{\"key\":\"child-1\",\"id\":\"child-1\",\"worktreePath\":null,\"steps\":{steps},\"scope_globs\":[],\"extras\":[],\"created_at\":1794990000000,\"step_ts\":1794991000000{extra}}}"
+    )
 }
 
 #[test]
@@ -601,9 +642,11 @@ fn correct_matches_node() {
         );
     };
     let stray_only_empty = |h: &Path| put(h, ".anti-hall/devswarm/stray/child-1.json", "{\"active\":[{\"signal\":\"stall\"}]}");
-    let both = |p: Box<dyn Fn(&Path)>, s: fn(&Path)| move |h: &Path| {
-        p(h);
-        s(h);
+    let both = |p: Box<dyn Fn(&Path)>, s: fn(&Path)| {
+        move |h: &Path| {
+            p(h);
+            s(h);
+        }
     };
     let cases = vec![
         c("corr-no-plan", &["correct", "child-1"], true),
@@ -614,17 +657,25 @@ fn correct_matches_node() {
         c("corr-dry-run-blocked-step-wins-by-time", &["correct", "child-1", "--dry-run"], true).setup(plan_with(blocked, "")),
         c("corr-dry-run-braces-in-a-step-text", &["correct", "child-1", "--dry-run"], true).setup(plan_with(braces, "")),
         c("corr-dry-run-plan-without-step-ts", &["correct", "child-1", "--dry-run"], true).setup(|h| {
-            put(h, ".anti-hall/devswarm/plans/child-1.json", "{\"key\":\"child-1\",\"id\":\"child-1\",\"steps\":[{\"n\":4,\"text\":\"only\",\"status\":\"todo\"}],\"created_at\":1794000000000}")
+            put(
+                h,
+                ".anti-hall/devswarm/plans/child-1.json",
+                "{\"key\":\"child-1\",\"id\":\"child-1\",\"steps\":[{\"n\":4,\"text\":\"only\",\"status\":\"todo\"}],\"created_at\":1794000000000}",
+            )
         }),
         c("corr-sends-the-message-and-records-the-warning", &["correct", "child-1"], true).setup(plan_with(two, "")),
         c("corr-sends-with-stray-signals-and-jev", &["correct", "child-1"], true).setup(both(Box::new(plan_with(two, "")), stray)),
-        c("corr-to-an-unregistered-id-is-node", &["correct", "ghost"], false).setup(|h| {
-            put(h, ".anti-hall/devswarm/plans/ghost.json", "{\"key\":\"ghost\",\"id\":\"ghost\",\"steps\":[{\"n\":1,\"text\":\"x\",\"status\":\"doing\",\"ts\":1}],\"created_at\":1}")
+        c("corr-to-an-unregistered-id", &["correct", "ghost"], true).setup(|h| {
+            put(
+                h,
+                ".anti-hall/devswarm/plans/ghost.json",
+                "{\"key\":\"ghost\",\"id\":\"ghost\",\"steps\":[{\"n\":1,\"text\":\"x\",\"status\":\"doing\",\"ts\":1}],\"created_at\":1}",
+            )
         }),
         c("corr-unsafe-id", &["correct", "../x"], true),
         c("corr-no-id", &["correct"], true),
     ];
-    check(&fx, &cases, &[], 11, 1);
+    check(&fx, &cases, &[], 13, 0);
 }
 
 // ---- reap-orphans ---------------------------------------------------------------------------------------------------------

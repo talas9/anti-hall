@@ -393,6 +393,22 @@ value = ["fromBranch", "toBranch", "message", "status", "createdAt"]
 doc = "The start of a native message's dedupe hash."
 value = "native:"
 
+[devswarm_ingest.from_branch_key]
+doc = "The message field that names the branch it was sent from."
+value = "fromBranch"
+
+[devswarm_ingest.branch_dir_from]
+doc = "The character of a native message's branch name that DevSwarm turns into `branch_dir_to` in the workspace's checkout directory name (`fix/foo` is checked out as `fix-foo`)."
+value = "/"
+
+[devswarm_ingest.branch_dir_to]
+doc = "What `branch_dir_from` becomes in a checkout directory name."
+value = "-"
+
+[devswarm_ingest.done_body_prefix]
+doc = "The start of an auto done notice body (`DONE: <branch> ...`); the word after it names the sender's branch, for rows written before the ingest stamped a sender."
+value = "DONE:"
+
 [devswarm_ingest.created_key]
 doc = "The message field that holds its creation time."
 value = "createdAt"

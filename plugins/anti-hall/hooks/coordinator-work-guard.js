@@ -38,7 +38,7 @@ function main(payload, env, argv, out) {
   const now = Date.now();
   const st = lib.readState(home, sid);
   const id = typeof payload.tool_use_id === 'string' && payload.tool_use_id && command.trim() ? payload.tool_use_id : '';
-  const classify = () => (lib.provablyNotWork(command)
+  const classify = () => (lib.provablyNotWork(command) || lib.isDevswarmBookkeeping(command)
     ? { work: false, blockable: false }
     : require('./command-guard.js').classifyBashWork(command, payload, { sessionStartTs: lib.sessionStart(st, now), env }));
   const skipped = () => require('./skip-guard.js').isSkipped(GUARD, env);

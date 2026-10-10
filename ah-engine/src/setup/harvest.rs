@@ -196,14 +196,10 @@ fn walk(dir: &str) -> Vec<String> {
 /// `git log -1 --format=%ct -- <file>`: the last commit time in epoch seconds, `None` when git says nothing useful (it is
 /// not installed, the file is outside a repository, or it took too long).
 fn git_time(file: &str) -> Option<f64> {
-    let mut child = match Command::new(defaults::text("setup.git_binary"))
-        .args(defaults::list("setup.git_args"))
-        .arg(file)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+    let mut cmd = Command::new(defaults::text("setup.git_binary"));
+    cmd.args(defaults::list("setup.git_args")).arg(file).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    crate::proc::apply_git_env(&mut cmd);
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             if e.kind() != std::io::ErrorKind::NotFound {

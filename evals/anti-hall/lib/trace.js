@@ -53,6 +53,7 @@ function extractRunMetrics(input) {
     stopBlocks: 0, testsAfterLastEdit: false, sessionId: null,
   };
   const spawnById = new Map();
+  const mainUsageById = new Map();
   let lastText = null, lastEditIdx = -1, lastTestsIdx = -1, awaitingRespawn = false;
   ev.forEach((e, idx) => {
     if (e.session_id && !m.sessionId) m.sessionId = e.session_id;
@@ -73,11 +74,9 @@ function extractRunMetrics(input) {
     const side = isSidechain(e);
     if (e.type === 'assistant') {
       const u = e.message && e.message.usage;
-      if (!side && u) {
-        if (m.firstCacheRead == null) m.firstCacheRead = u.cache_read_input_tokens || 0;
-        m.mainTokens.input += u.input_tokens || 0; m.mainTokens.output += u.output_tokens || 0;
-        m.mainTokens.cacheRead += u.cache_read_input_tokens || 0; m.mainTokens.cacheWrite += u.cache_creation_input_tokens || 0;
-      }
+      // stream-json splits one API response into one assistant event per content block, all sharing
+      // message.id and identical usage: keep the last usage per id, sum once after the loop.
+      if (!side && u) mainUsageById.set((e.message && e.message.id) || `anon:${idx}`, u);
       for (const b of blocksOf(e)) {
         if (b.type === 'text' && !side) lastText = b.text;
         if (b.type !== 'tool_use') continue;
@@ -118,6 +117,11 @@ function extractRunMetrics(input) {
       if (!results.length && typeof (e.message && e.message.content) === 'string' && STOP_BLOCK_RE.test(e.message.content)) m.stopBlocks++;
     }
   });
+  for (const u of mainUsageById.values()) {
+    if (m.firstCacheRead == null) m.firstCacheRead = u.cache_read_input_tokens || 0;
+    m.mainTokens.input += u.input_tokens || 0; m.mainTokens.output += u.output_tokens || 0;
+    m.mainTokens.cacheRead += u.cache_read_input_tokens || 0; m.mainTokens.cacheWrite += u.cache_creation_input_tokens || 0;
+  }
   m.spawnCount = m.spawns.length;
   if (m.finalMessage == null) m.finalMessage = lastText;
   m.testsAfterLastEdit = lastEditIdx >= 0 && lastTestsIdx > lastEditIdx;

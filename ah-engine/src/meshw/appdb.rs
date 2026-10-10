@@ -35,6 +35,8 @@ pub struct State {
     pub worktree: Option<String>,
     /// `builderType`.
     pub builder_type: Option<String>,
+    /// `branchName` (read from the database only; a cache file does not hold it).
+    pub branch: Option<String>,
 }
 
 /// The cache file the verb writes after its own commit point.
@@ -192,6 +194,7 @@ pub fn read_states(file: &str) -> R<Option<Vec<State>>> {
         idx(defaults::text("mesh_write.app_col_worktree")),
         idx(defaults::text("mesh_write.app_col_builder_type")),
     );
+    let i_branch = idx(defaults::text("mesh_write.app_col_branch"));
     let (Some(i_id), Some(i_active)) = (i_id, i_active) else { return Ok(None) };
     let Ok(mut st) = conn.prepare(&q) else { return Ok(None) };
     let Ok(mut rows) = st.query([]) else { return Ok(None) };
@@ -225,7 +228,11 @@ pub fn read_states(file: &str) -> R<Option<Vec<State>>> {
             Some(i) => text_of(get(i)?)?,
             None => None,
         };
-        let st = State { id: id.clone(), active: active_n == 1.0, archived: Some(archived), worktree, builder_type };
+        let branch = match i_branch {
+            Some(i) => text_of(get(i)?)?,
+            None => None,
+        };
+        let st = State { id: id.clone(), active: active_n == 1.0, archived: Some(archived), worktree, builder_type, branch };
         match at.get(&id) {
             Some(&p) => out[p] = st,
             None => {
@@ -316,7 +323,7 @@ fn read_cache(home: &Path, file: &str, sig: &Sig, now: i64) -> R<Option<Vec<Stat
             OVal::Arr(_) => return defer("app-cache-shape"),
             _ => continue, // `!v || typeof v !== 'object'`
         };
-        let st = State { id: id.clone(), active, archived, worktree, builder_type };
+        let st = State { id: id.clone(), active, archived, worktree, builder_type, branch: None };
         match at_ix.get(id) {
             Some(&p) => out[p] = st,
             None => {

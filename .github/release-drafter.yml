@@ -1,0 +1,40 @@
+# Release Drafter config (used by .github/workflows/release-drafter.yml).
+# Draft only: the workflow passes publish: false. CHANGELOG.md stays the
+# authority for release notes (RELEASING.md); the draft is a starting point.
+#
+# Only plugin releases (tags v<semver>) count as the "previous release";
+# ah-engine-v* engine releases are ignored.
+tag-prefix: v
+filter-by-commitish: true
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: Features
+    labels: ['type:feature']
+  - title: Bug fixes
+    labels: ['type:bug']
+  - title: Documentation
+    labels: ['type:docs']
+  - title: CI
+    labels: ['type:ci']
+  - title: Maintenance
+    labels: ['type:chore', 'dependencies']
+
+change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
+change-title-escapes: '\<*_&'
+no-changes-template: '- No pull requests merged since the last release.'
+
+version-resolver:
+  minor:
+    labels: ['type:feature']
+  patch:
+    labels: ['type:bug', 'type:docs', 'type:ci', 'type:chore', 'dependencies']
+  default: patch
+
+template: |
+  ## Changes
+
+  $CHANGES
+
+  See CHANGELOG.md for the full release notes.

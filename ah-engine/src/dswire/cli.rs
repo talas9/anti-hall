@@ -106,6 +106,15 @@ pub fn run_with(p: &Parsed, env: &dyn Fn(&str) -> Option<String>) -> i32 {
         out(p, crate::dssup::ingest::status(&home, &state_dir, crate::health::now_ms() as i64));
         return 0;
     }
+    if verb == "ledger" {
+        if !defaults::raw("devswarm_act.audit_enabled").as_bool().unwrap_or(false) {
+            return fail(p, defaults::text("devswarm_act.msg_audit_off").to_string(), usage);
+        }
+        let window = flag(rest, "--since");
+        let days = crate::telemetry::report::parse_window(&window).unwrap_or_else(|| defaults::num("devswarm_act.audit_default_days"));
+        out(p, crate::dsact::audit::collect(&state_dir, crate::health::now_ms() as i64, days));
+        return 0;
+    }
     if verb == "recover" {
         let (report, code) = crate::dssup::cli::recover(rest, &RequestEnv::capture(), &System::configured());
         out(p, report);

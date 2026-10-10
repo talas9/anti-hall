@@ -47,6 +47,10 @@ What the automatic guards check and how to read a block.
 - `guards.modelRouting` = "strict": Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then...
 - `guards.allowAnthropicEnvKey` = false: The home-only switch that lets ANTHROPIC_API_KEY count as a key (guards.allowAnthropicEnvKey; no env, no plugin option)
 - `guards.pruneCompletedTasksAfter` = 10: How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)
+- `statusline.devswarm.enabled` = true: Show the DevSwarm workspace dashboard segment in the statusline (on by default; it shows nothing when DevSwarm is absent or no workspace...
+- `statusline.devswarm.format` = "ws {parts}": The segment text
+- `statusline.devswarm.max_chars` = 40: The segment is cut to this many characters (an ellipsis marks the cut)
+- `statusline.devswarm.stale_ms` = 180000: A snapshot (or one workspace's activity) observed longer ago than this is shown as `?` instead of a guess
 - `guards.handoverHygiene` = true: Where the on/off switch is read from (guards.handoverHygiene, default on)
 - `devswarm_sup.dryRun.retention` = false: Dry run of the native retention: it plans and compares with Node's planner, logs what it would tombstone and writes nothing (no archive,...
 - `devswarm_sup.dryRun.verdicts` = false: Dry run of the native liveness sweep: it computes every verdict and reports what it would write, but writes nothing and starts no Node work

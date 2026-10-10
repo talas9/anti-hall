@@ -610,6 +610,56 @@ function oneLine(s, max) {
   return o;
 }
 
+// Same-turn tool evidence as citation (dogfood 2026-10-09): a reply that names at least CITE_MIN_HITS distinct specifics (a word of CITE_MIN_LEN+
+// characters holding a dot, slash, underscore, hyphen or digit) that appear in the output of tool calls made since the last human prompt cites that
+// output, so its hedge is not an unevidenced guess. Fail-open to "not cited".
+const CITE_MIN_LEN = 6;
+const CITE_MIN_HITS = 2;
+const CITE_OUTPUT_MAX_CHARS = 200000;
+function turnToolOutputs(transcriptPath) {
+  const tail = readTranscriptTail(transcriptPath, 1024 * 1024);
+  if (!tail) return '';
+  const lines = tail.data.split(/\r?\n/);
+  if (tail.truncated) lines.shift();
+  const outs = [];
+  let total = 0;
+  for (let i = lines.length - 1; i >= 0 && total < CITE_OUTPUT_MAX_CHARS; i--) {
+    const raw = lines[i];
+    if (raw.indexOf('"user"') < 0) continue;
+    let e;
+    try { e = JSON.parse(raw.trim()); } catch (_) { continue; }
+    if (!e || typeof e !== 'object' || e.type !== 'user') continue;
+    const c = e.message && typeof e.message === 'object' ? e.message.content : undefined;
+    if (typeof c === 'string') { if (e.isMeta !== true && c.trim() !== '' && c.indexOf('<') !== 0) break; continue; }
+    if (!Array.isArray(c)) continue;
+    let sawResult = false;
+    for (const b of c) {
+      if (!b || typeof b !== 'object' || b.type !== 'tool_result') continue;
+      sawResult = true;
+      const t = typeof b.content === 'string' ? b.content
+        : (Array.isArray(b.content) ? b.content.map((x) => (x && typeof x.text === 'string' ? x.text : '')).join(' ') : '');
+      total += t.length;
+      outs.push(t);
+    }
+    if (!sawResult && e.isMeta !== true && c.some((b) => b && b.type === 'text' && typeof b.text === 'string' && b.text.trim() !== '' && b.text.indexOf('<') !== 0)) break;
+  }
+  return outs.join('\n');
+}
+function citesTurnEvidence(reply, transcriptPath) {
+  try {
+    const outs = turnToolOutputs(transcriptPath);
+    if (!outs) return false;
+    const seen = new Set();
+    let hits = 0;
+    for (const tk of reply.match(/[A-Za-z0-9_.\/-]+/g) || []) {
+      if (tk.length < CITE_MIN_LEN || seen.has(tk) || !/[./_0-9-]/.test(tk)) continue;
+      seen.add(tk);
+      if (outs.indexOf(tk) >= 0 && ++hits >= CITE_MIN_HITS) return true;
+    }
+    return false;
+  } catch (_) { return false; }
+}
+
 function hasAcknowledgment(text) {
   for (const pat of ACKNOWLEDGMENT_PATTERNS) {
     if (pat.test(text)) return true;
@@ -864,7 +914,7 @@ async function main() {
     // No hedge, or an acknowledged one (honest hedging): the reply may still
     // state a cause as fact with no hedge word at all. guards.inferenceCheck
     // (default off) looks for that; otherwise allow, as before.
-    if (!hit || hasAcknowledgment(lastText)) {
+    if (!hit || hasAcknowledgment(lastText) || citesTurnEvidence(lastText, transcriptPath)) {
       if (!loopSafe) inference = findUnsupportedInference(markerText, lastText, transcriptPath);
       if (!inference) finish('allow');
     } else {

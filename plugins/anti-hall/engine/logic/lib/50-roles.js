@@ -42,7 +42,8 @@ var roles = {
     return null;
   },
   // The quoted spans of a Bash command as { s, e, kind } (kind "'" or '"', s the opening quote, e one past the closing one or
-  // the end of the text). A heredoc body is skipped unquoted: it may be a script, so the strict reading applies there.
+  // the end of the text). A heredoc body is a span of kind "h" (`quoted`: its delimiter is quoted, so nothing in it is expanded):
+  // it is text for `cat`/`tee`, and runs only where a shell or script word reads it (quotedRuns).
   quotedSpans: function (cmd) {
     var spans = [], n = cmd.length, j = 0;
     while (j < n) {
@@ -50,7 +51,7 @@ var roles = {
       if (c === '\\') { j += 2; continue; }
       if (c === '<' && cmd[j + 1] === '<') {
         var h = shellScan.parseHeredocRaw(cmd, j);
-        if (h) { j = Math.max(h.end, j + 2); continue; }
+        if (h) { spans.push({ s: j, e: h.end, kind: 'h', quoted: h.quoted }); j = Math.max(h.end, j + 2); continue; }
         j += 2; continue;
       }
       if (c === "'" || c === '"') {
@@ -67,7 +68,7 @@ var roles = {
   // substitution), or a span that is the script of a shell or of one of roles.script_words in the same simple command
   // (`sh -c '...'`, `eval "..."`). Anything else in quotes is text, such as a commit message that names a verb.
   quotedRuns: function (cmd, q, at) {
-    if (q.kind === '"' && /\$\(|`/.test(cmd.slice(q.s + 1, at))) return true;
+    if ((q.kind === '"' || (q.kind === 'h' && !q.quoted)) && /\$\(|`/.test(cmd.slice(q.s + 1, at))) return true;
     var head = cmd.slice(0, q.s), cut = Math.max(head.lastIndexOf(';'), head.lastIndexOf('&'), head.lastIndexOf('|'), head.lastIndexOf('\n'), head.lastIndexOf('('));
     var words = head.slice(cut + 1).split(/\s+/), shells = shellScan.shellVerbs(), extra = ah.cfg('roles.script_words');
     return words.some(function (w) { var b = shellScan.basename(w.replace(/^["']+|["']+$/g, '')); return shells.has(b) || extra.indexOf(b) >= 0; });

@@ -1,3 +1,4 @@
+# Retired: superseded by community.yml (rules-first triage + model brief). Kept for manual use.
 # First-pass triage for newly opened issues: ONE comment + labels, nothing else.
 #
 # Secrets (set ONE; the OAuth token is preferred):
@@ -14,8 +15,7 @@
 name: Issue triage
 
 on:
-  issues:
-    types: [opened]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -48,11 +48,11 @@ jobs:
 
       - name: Checkout
         if: steps.cred.outputs.ok == 'true'
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Triage issue
         if: steps.cred.outputs.ok == 'true'
-        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
+        uses: anthropics/claude-code-action@58985842b834ed26087302ba27d07bc24ca8697a # v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}

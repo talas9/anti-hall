@@ -70,9 +70,9 @@ test('item 1: field shape (builder-id caller + slug row, same workspace) still A
   const repo = makeGitRepo('r15-field');
   try {
     register(home, repo, 'builder-uuid-r15', undefined);
-    register(home, repo, 'skycrew-slug-r15', undefined, 'builder-uuid-r15');
+    register(home, repo, 'demoapp-slug-r15', undefined, 'builder-uuid-r15');
     const r = cli.run(
-      ['heartbeat', 'skycrew-slug-r15', '--summary', 'working on the thing'],
+      ['heartbeat', 'demoapp-slug-r15', '--summary', 'working on the thing'],
       ctx(home, { cwd: repo, env: { DEVSWARM_BUILDER_ID: 'builder-uuid-r15' } })
     );
     assert.strictEqual(r.result.ok, true);

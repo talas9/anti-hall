@@ -936,9 +936,10 @@ mod tests {
             "dispatch.in_process",
             "dispatch.max_timeout_s",
             "session.gitignore_probe_ms",
-            "realtime.",        // the file-watch facility's debounce and poll intervals: daemon-wide, not per request
-            "script.",          // the interpreter switch and deadline are process-wide, not per request
-            "ops.shadow_rate_", // the shadow sampling rates of the operator command-line tools: each run is its own process
+            "statusline.total_deadline_ms", // the status line command is its own process: its overall deadline is read once per run
+            "realtime.",                    // the file-watch facility's debounce and poll intervals: daemon-wide, not per request
+            "script.",                      // the interpreter switch and deadline are process-wide, not per request
+            "ops.shadow_rate_",             // the shadow sampling rates of the operator command-line tools: each run is its own process
         ];
         let odd: Vec<&str> = defaults::all().iter().filter(|e| e.env.is_some() && !PROCESS.iter().any(|p| e.key.starts_with(p))).map(|e| e.key).collect();
         assert!(odd.is_empty(), "env-overridable settings that are not process tunables: {odd:?}");

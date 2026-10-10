@@ -17,8 +17,8 @@
 // - the supervision log is best effort (Node's `record` never throws)
 use crate::checks::guardkit::nodelock;
 use crate::checks::guardkit::ojson::OVal;
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::js_number_of_str;
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::meshw::common::{Inv, Obj, n, s};
 use crate::meshw::ident::{self, R, defer};

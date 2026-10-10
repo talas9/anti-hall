@@ -15,8 +15,8 @@
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 use crate::checks::guardkit::ojson::{OVal, is_array_index_key};
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::slice_utf16;
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::dsact::runner::{Runner, System};
 use crate::dssup::appsync::{self, Opts};

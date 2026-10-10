@@ -93,6 +93,8 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const DEFAULT_ALLOW = [
   'CLAUDE.md', 'AGENTS.md', 'GEMINI.md',
   '.claude/**', '.omc/**', '.anti-hall/**',
+  // session notes/ledgers also from a subdirectory cwd (the glob above is root-relative): `echo >>` and a heredoc append alike
+  '**/.anti-hall/history/**', '**/.anti-hall/dogfood/**',
   'PLAN.md', 'plan.md', 'STATE.json',
   '**/.claude/projects/**/memory/**',
 ];
@@ -659,7 +661,7 @@ function isPlanMode(payload) {
 
 // Verdict for ONE Edit-family target, coordinator context assumed (main() does
 // the launcher-dir deny and the isCoordinator gate first). Returns
-//   'allow' | 'block-self-edit' | 'block-handover' | 'block'
+//   'allow' | 'block-self-edit' | 'block-handover' | 'block-handover-outside' | 'block'
 // so other hooks (command-guard's Bash edit parity) reuse the exact same rules.
 // The honesty checks (allowlistIsHonest) live in here; plan mode comes from payload.
 function editVerdict(filePath, cwd, payload) {
@@ -738,6 +740,15 @@ function editVerdict(filePath, cwd, payload) {
     return 'block-handover';
   }
 
+  // HANDOVER OUTSIDE THE PROJECT (owner-reported 2026-10-08): a handover-shaped
+  // .md that resolves OUTSIDE cwd (e.g. ~/.anti-hall/handovers/... under HOME)
+  // is never allowed (containment stays), but the generic delegation block sent
+  // the agent to a subagent/override. Return a specific redirect that names the
+  // exact project path instead (see handoverRedirectPath()).
+  if (isHandoverDoc(filePath) && cwd && !isWithinCwd(filePath, cwd) && !isPlanMode(payload)) {
+    return 'block-handover-outside';
+  }
+
   // PLAN MODE (NARROWED): a plan-mode session is doing read-only planning, so
   // drafting a doc/scratch/plan artifact is legitimate orchestrator work and the
   // guard firing there is the reported false positive (a DevSwarm Primary in plan
@@ -771,6 +782,18 @@ function isNotesTarget(filePath, cwd, payload) {
   if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) return true;
   if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return true;
   return false;
+}
+
+// handoverRedirectPath(cwd, payload) -> the canonical absolute handover path:
+// <project root>/.anti-hall/handovers/<YYYY-MM-DD>/<session_id>/HANDOVER.md.
+function handoverRedirectPath(cwd, payload) {
+  let root = cwd;
+  try { root = require('./lib/handover-find.js').sessionProjectRoot(cwd) || cwd; } catch (_) { root = cwd; }
+  const sid = String((payload && payload.session_id) || '<session-id>').replace(/[^A-Za-z0-9._-]/g, '_');
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const date = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  return path.join(root, '.anti-hall', 'handovers', date, sid, 'HANDOVER.md');
 }
 
 // The coordinator delegation block text for `toolLabel` (e.g. 'Edit', 'Write').
@@ -908,6 +931,11 @@ function main() {
   const { isCoordinator } = require('./coordinator-detect.js');
   if (!isCoordinator(payload)) process.exit(0);
 
+  // A DevSwarm CHILD workspace is a worker on its own branch, not the orchestrator:
+  // its edits are its job (peer report, SkyCrew child, 2026-10-09). The launcher
+  // deny above already ran for it.
+  try { if (require('./lib/devswarm-role.js').isChildWorker(process.env, undefined, cwd)) process.exit(0); } catch (_) { /* gated as before */ }
+
   // A Codex patch this parser rejects fails CLOSED on the main thread: its
   // targets cannot be checked, and Codex's own parser (which this one ports)
   // rejects the same text, so the block costs nothing.
@@ -945,6 +973,16 @@ function main() {
         what: toolName + ' of .anti-hall/edit-allow.json is blocked.',
         why: 'That file decides which files the main thread may edit directly, so the main thread never edits it.',
         instead: 'ask the user to change it (or delegate the change to ' + (require('./lib/host-text.js').isCodex(payload) ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent') + '), then the user re-trusts it with `node <plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`.',
+      }));
+    }
+    if (verdict === 'block-handover-outside') {
+      const right = handoverRedirectPath(cwd, payload);
+      block(bm0().blockMessage({
+        guard: 'edit-guard',
+        what: toolName + ' of a session-handover doc outside the project is blocked.',
+        why: 'Handovers live inside the project, where handover-resume finds them; this path is outside it.',
+        instead: 'write it yourself (the main thread may; no subagent, no override needed) at ' + right + '.',
+        allowed: right,
       }));
     }
     if (verdict === 'block-handover') {

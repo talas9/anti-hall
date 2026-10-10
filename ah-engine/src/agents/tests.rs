@@ -285,6 +285,32 @@ fn a_hung_subagent_is_reported_to_the_session_that_launched_it() {
     assert!(queue(&h, "abc").is_empty(), "hung is not routed to the hung agent itself");
 }
 
+fn notice(ts: u64, id: &str, status: &str) -> String {
+    let body = format!("<task-notification>\n<task-id>{id}</task-id>\n<status>{status}</status>\n</task-notification>");
+    json!({"type": "user", "timestamp": iso(ts), "message": {"role": "user", "content": body}}).to_string()
+}
+
+#[test]
+fn a_stopped_subagent_is_done_not_hung_and_a_live_one_still_is() {
+    let h = home("stopped");
+    let n = now0();
+    write(&sess(&h, "parent"), &[prompt(n - 60 * MIN, "/w"), notice(n - 30 * MIN, "abc", "killed")]);
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    for id in ["abc", "def"] {
+        write(
+            &dir.join(format!("agent-{id}.jsonl")),
+            &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)],
+        );
+    }
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    assert_eq!(signals::state_of(agent(&st, "abc")), "done", "a killed agent is done");
+    assert_eq!(signals::state_of(agent(&st, "def")), "running", "an agent nothing ended is still tracked as running");
+    let hung: Vec<Value> = queue(&h, "parent").into_iter().filter(|r| r["signal"] == "hung").collect();
+    assert!(hung.iter().all(|r| !r["text"].as_str().unwrap().contains("abc")), "no hung reminder about the stopped agent: {hung:?}");
+    assert!(hung.iter().any(|r| r["text"].as_str().unwrap().contains("def")), "the true positive still fires: {hung:?}");
+}
+
 // ---- wake paths ---------------------------------------------------------------------------------------------
 
 fn parent_with_bg(h: &Path, n: u64, arm: Option<Value>) {
@@ -451,9 +477,13 @@ fn the_heartbeat_rule_agrees_with_the_node_watchdog_on_running_agents() {
 
 // ---- cooldowns, caps, outcomes ------------------------------------------------------------------------------
 
+/// The injected clock of the cooldown, cap and outcome tests: noon UTC of a fixed day, so the day bucket (`now_ms / day_ms`) of the
+/// later ticks never depends on the time of day the suite runs at (it used to split within 40 minutes before 00:00 UTC).
+const HUNG_CLOCK_MS: u64 = 1_768_478_400_000;
+
 fn hung_home(tag: &str) -> (PathBuf, u64, PathBuf) {
     let h = home(tag);
-    let n = now0();
+    let n = HUNG_CLOCK_MS;
     let p = sess(&h, "s1");
     write(&p, &[prompt(n - 60 * MIN, "/w"), asst(n - 55 * MIN, "m1", 5, 5, json!([{"type": "text", "text": "working"}]), None)]);
     (h, n, p)

@@ -71,10 +71,10 @@ fn listing(dir: &Path, filter: &Filter) -> Vec<OsString> {
 impl State {
     /// Close and forget a file descriptor.
     fn drop_fd(&mut self, fd: RawFd) {
-        if let Some((key, name)) = self.by_fd.remove(&fd) {
-            if let (Some(d), Some(n)) = (self.dirs.get_mut(&key), name) {
-                d.files.remove(&n);
-            }
+        if let Some((key, name)) = self.by_fd.remove(&fd)
+            && let (Some(d), Some(n)) = (self.dirs.get_mut(&key), name)
+        {
+            d.files.remove(&n);
         }
         // SAFETY: `fd` was opened by this module and is closed exactly once (it was just removed from the maps); closing also
         // removes its kevent registration.

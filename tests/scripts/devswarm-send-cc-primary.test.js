@@ -1,5 +1,5 @@
 'use strict';
-// peer request F (SkyCrew + tf3 Primaries, 2026-09-26): `send --to <sibling>
+// peer request F (DemoApp + tf3 Primaries, 2026-09-26): `send --to <sibling>
 // --cc-primary` delivers to the sibling AND copies the Primary with the
 // identical message body, so two lanes can coordinate while the Primary
 // still sees it. Best-effort/additive: the cc send's own outcome is reported

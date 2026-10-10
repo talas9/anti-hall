@@ -1,7 +1,6 @@
 'use strict';
 // anti-hall :: doctor-devswarm — the DevSwarm liveness section of doctor.js as a
-// pure, testable check function (mirrors skills/flutter-debug/scripts/preflight.js
-// -> doctor.js §6b). Workaround for claude-code#39755.
+// pure, testable check function (called from doctor.js). Workaround for claude-code#39755.
 //
 // runChecks({home, env, fsi}) -> { active, results: [{status, message}] }.
 // Silent (active:false, no results) unless the supervisor is in play — either the

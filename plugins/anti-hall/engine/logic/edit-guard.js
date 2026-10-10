@@ -4,6 +4,10 @@
 // symlink / hard-link honesty checks; so does apply_patch (its targets need the Codex patch parser) and any payload whose
 // paths cannot be resolved without the hook's own working directory or home. Mirrors hooks/edit-guard.js `main` and
 // `resolvesIntoLauncherBinDir`. Keys and messages: small_guards.toml (edit_guard.*).
+// Kept on purpose (issue #55): a main-thread write to a file outside any repo (for example a small file in the home directory) is
+// still delegated. The main-thread verdict is Node's (this script defers), so an engine-only allow would be weaker than Node, and
+// "outside any repo" also covers dotfiles and tool config (~/.claude, ~/.ssh, shell rc files). Revisit once the engine owns the
+// main-thread verdict: allow only non-hidden paths under home, outside every git checkout, honesty-checked, behind a setting.
 'use strict';
 
 function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }

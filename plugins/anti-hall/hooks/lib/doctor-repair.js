@@ -1295,7 +1295,8 @@ function runRepairs(opts) {
   // migrateAutoArchivedState for BOTH the dry-run detect and the apply.
   migrationFix('migrate-auto-archived-state', 'migrate-auto-archived-state', () => {
     const r = require(MIGRATE_STATE).migrateAutoArchivedState({ dryRun: true, home });
-    return { pending: !!(r && r.pending > 0), detail: (r && r.pending || 0) + ' auto-archive record(s)' };
+    const n = (r && r.pending || 0) + (r && r.normalized || 0);
+    return { pending: n > 0, detail: n + ' auto-archive record(s)' };
   }, () => require(MIGRATE_STATE).migrateAutoArchivedState({ home }));
 
   // v0.108.1 P3: acquireLock's write-then-link publish (and its P1 stale-

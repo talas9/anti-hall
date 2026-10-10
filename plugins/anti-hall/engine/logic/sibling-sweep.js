@@ -126,10 +126,13 @@ function swFindCauseIn(prepared) {
   var windowChars = swNum('sibling_sweep.window_chars'), question = swCfg('sibling_sweep.question_terminator');
   var meta = swSpec('sibling_sweep.meta_re', 'i'), hedgeAny = swSpec('sibling_sweep.hedge_any_re', 'i');
   var hedgeBefore = swSpec('sibling_sweep.hedge_before_re', 'i'), cues = swSpecs('sibling_sweep.cause_cues');
+  var operational = swSpec('sibling_sweep.operational_re', 'i'), attributed = swSpec('sibling_sweep.attributed_re', 'i');
   var ss = swSentences(prepared);
   for (var i = 0; i < ss.length; i++) {
     var sentence = ss[i][0], term = ss[i][1], masked = swMask(sentence);
     if ((term !== null && question.indexOf(term) >= 0) || swTest(meta, masked) || swTest(hedgeAny, masked)) continue;
+    // an environment fact (lock file, load, disk) or a cause quoted from an agent's report is not the assistant's own code-bug finding
+    if (swTest(operational, masked) || swTest(attributed, masked)) continue;
     for (var k = 0; k < cues.length; k++) {
       var m = ah.re.find(cues[k].src, cues[k].flags, masked);
       if (m === null || m === undefined) continue;

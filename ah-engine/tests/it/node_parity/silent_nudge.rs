@@ -185,11 +185,38 @@ pub(crate) fn scenarios() -> Vec<Sc> {
             .defers(),
     );
     let other = "11111111-2222-3333-4444-555555555555";
-    v.push(sc("previous-session-agent-is-skipped", s1.clone()).lines(&[task_status_typed("0123456789abcdef", &format!("$HOME/p/{other}/tasks/0123456789abcdef.output"), "old lane", &ago(5400), "local_agent")]));
-    v.push(sc("previous-session-agent-no-session-still-judged", json!(null)).lines(&[task_status_typed("0123456789abcdef", &format!("$HOME/p/{other}/tasks/0123456789abcdef.output"), "old lane", &ago(5400), "local_agent")]));
-    v.push(sc("own-session-dir-agent-nudges", json!(other)).lines(&[task_status_typed("0123456789abcdef", &format!("$HOME/p/{other}/tasks/0123456789abcdef.output"), "old lane", &ago(5400), "local_agent")]));
-    v.push(sc("background-shell-named-as-shell", s1.clone()).lines(&[task_status_typed("b9hc3cu3v", "$HOME/nope", "Restart the build-load throttle", &ago(5400), "local_bash")]));
-    v.push(sc("shell-and-agent-mixed-noun", s1.clone()).lines(&[task_status_typed("b9hc3cu3v", "$HOME/nope", "Restart the build-load throttle", &ago(5400), "local_bash"), task_status_typed("0123456789abcdef", "$HOME/nope", "an agent", &ago(5400), "local_agent")]));
+    v.push(sc("previous-session-agent-is-skipped", s1.clone()).lines(&[task_status_typed(
+        "0123456789abcdef",
+        &format!("$HOME/p/{other}/tasks/0123456789abcdef.output"),
+        "old lane",
+        &ago(5400),
+        "local_agent",
+    )]));
+    v.push(sc("previous-session-agent-no-session-still-judged", json!(null)).lines(&[task_status_typed(
+        "0123456789abcdef",
+        &format!("$HOME/p/{other}/tasks/0123456789abcdef.output"),
+        "old lane",
+        &ago(5400),
+        "local_agent",
+    )]));
+    v.push(sc("own-session-dir-agent-nudges", json!(other)).lines(&[task_status_typed(
+        "0123456789abcdef",
+        &format!("$HOME/p/{other}/tasks/0123456789abcdef.output"),
+        "old lane",
+        &ago(5400),
+        "local_agent",
+    )]));
+    v.push(sc("background-shell-named-as-shell", s1.clone()).lines(&[task_status_typed(
+        "b9hc3cu3v",
+        "$HOME/nope",
+        "Restart the build-load throttle",
+        &ago(5400),
+        "local_bash",
+    )]));
+    v.push(sc("shell-and-agent-mixed-noun", s1.clone()).lines(&[
+        task_status_typed("b9hc3cu3v", "$HOME/nope", "Restart the build-load throttle", &ago(5400), "local_bash"),
+        task_status_typed("0123456789abcdef", "$HOME/nope", "an agent", &ago(5400), "local_agent"),
+    ]));
     v.push(sc("no-description-names-id", s1.clone()).lines(&[task_status("0123456789abcdef", "$HOME/nope", "", &ago(5400))]));
     v.push(sc("sidechain-is-the-age", s1.clone()).lines(&one()).aged("out-01.txt", "{}\n", 7200).aged(
         &format!("t/session/subagents/agent-{}.jsonl", id("01")),

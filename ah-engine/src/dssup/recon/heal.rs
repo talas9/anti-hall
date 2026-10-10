@@ -147,10 +147,16 @@ fn plan_row(home: &Path, store: &str, cur: &RegRow) -> R<Row> {
 
 /// Plan `healRegistry(home, repoKey)` for one store.
 pub fn plan(home: &Path, repo_key: &str) -> R<HealPlan> {
-    let empty = |rows: Vec<Value>| json!({"repoKey": repo_key, "checked": 0, "healed": 0, "rehomed": 0, "skipped": 0, "rows": rows});
+    let empty = |rows: Vec<Value>| json!({"repoKey": repo_key, "checked": 0, "healed": 0, "rehomed": 0, "rootMapped": 0, "skipped": 0, "rows": rows});
     if repo_key.is_empty() {
         let result = empty(Vec::new());
-        let job = Job { label: defaults::text("devswarm_recon.job_heal").into(), scope: Scope::default(), units: Vec::new(), calls: vec![json!({"fn": "healRegistry", "args": {"repoKey": repo_key}})], expect: vec![Some(result.clone())] };
+        let job = Job {
+            label: defaults::text("devswarm_recon.job_heal").into(),
+            scope: Scope::default(),
+            units: Vec::new(),
+            calls: vec![json!({"fn": "healRegistry", "args": {"repoKey": repo_key}})],
+            expect: vec![Some(result.clone())],
+        };
         return Ok(HealPlan { job, deferred: Vec::new(), result, ids: Vec::new(), pre_skipped: 0 });
     }
     let rows = registry(home, repo_key)?;
@@ -196,7 +202,7 @@ pub fn plan(home: &Path, repo_key: &str) -> R<HealPlan> {
             }
         }
     }
-    let result = json!({"repoKey": repo_key, "checked": checked, "healed": healed, "rehomed": 0, "skipped": skipped, "rows": out_rows});
+    let result = json!({"repoKey": repo_key, "checked": checked, "healed": healed, "rehomed": 0, "rootMapped": 0, "skipped": skipped, "rows": out_rows});
     let (call, expect) = if deferred.is_empty() {
         (json!({"fn": "healRegistry", "args": {"repoKey": repo_key}}), result.clone())
     } else {
@@ -213,9 +219,45 @@ pub fn plan(home: &Path, repo_key: &str) -> R<HealPlan> {
     Ok(HealPlan { job, deferred, result, ids, pre_skipped })
 }
 
+/// The ids of the store's rows that `repairRootMappedChildRows` could repair: the app database knows the id as a builder that is
+/// not the primary and whose worktree is a different path than the row's. A superset of Node's positive proof (which also needs
+/// the row's path to be the Primary checkout and the new path to be a worktree of the same project), so a row listed here may
+/// still be left alone by Node; a row not listed here is never touched by it. No readable app database: none.
+fn root_mapped_candidates(ctx: &Ctx, repo_key: &str) -> R<Vec<String>> {
+    if repo_key.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(file) = crate::meshw::ident::app_db_path(ctx.home, &ctx.st.env) else { return Ok(Vec::new()) };
+    let Some(app) = crate::devswarm_rt::sources::read_app(Path::new(&file)) else { return Ok(Vec::new()) };
+    let primary = defaults::text("devswarm_recon.app_primary_type");
+    let mut out = Vec::new();
+    for cur in registry(ctx.home, repo_key)? {
+        let id = cur.row.id.clone();
+        let Some(row_wt) = cur.row.worktree_path.as_deref().filter(|w| !w.is_empty()) else { continue };
+        if !is_safe_id(&id) || id.starts_with(defaults::text("devswarm_recon.primary_id_prefix")) {
+            continue;
+        }
+        let differs = app.builders.iter().any(|b| {
+            b.id == id && b.builder_type.as_deref().is_some_and(|t| t != primary) && b.worktree.as_deref().is_some_and(|w| !w.is_empty() && w != row_wt)
+        });
+        if differs {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
 /// Plan, witness and apply `healRegistry` for one store. A row the engine cannot decide, and every row of a store whose witness
 /// did not agree, is reported in `deferred` with nothing written for it.
 pub fn run(ctx: &Ctx, runner: &dyn Runner, repo_key: &str, hooks: &Hooks) -> R<HealRun> {
+    // Node's `healRegistry` first repairs a child row registered against the Primary checkout's path from the app's own builder
+    // record (`repairRootMappedChildRows`); that repair is Node's. A store with a row it could apply to is handed back whole.
+    let maybe = root_mapped_candidates(ctx, repo_key)?;
+    if !maybe.is_empty() {
+        let why = defaults::text("devswarm_recon.why_root_mapped").to_string();
+        let result = json!({"repoKey": repo_key, "checked": 0, "healed": 0, "rehomed": 0, "rootMapped": 0, "skipped": 0, "rows": []});
+        return Ok(HealRun { result, deferred: maybe.into_iter().map(|id| (id, why.clone())).collect(), verdict: gate::Verdict::Agreed });
+    }
     let p = plan(ctx.home, repo_key)?;
     let out = gate::run(ctx, runner, &p.job, hooks);
     let mut deferred = p.deferred.clone();

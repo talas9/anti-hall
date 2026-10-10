@@ -30,8 +30,8 @@
 // - text that does not parse is the absent value (Node's JSON.parse catch parity)
 use crate::checks::guardkit::nodelock;
 use crate::checks::guardkit::ojson::OVal;
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::js_trim;
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::dssup::ingest::{import, wal};
 use crate::meshw::appdb::{self, CacheWrite};
@@ -599,6 +599,8 @@ fn batch_lines(p: &Plan, batch: &import::Batch, seen: &mut std::collections::Has
             Some(v) => v.clone(),
         }
     };
+    // the registered workspace checked out under a message's branch is its sender (a child's queue keeps the Primary's id)
+    let registry = if batch.messages.is_empty() { Vec::new() } else { import::registry_pairs(p.store.reader()) };
     for m in &batch.messages {
         let h = import::message_hash(&p.id, m);
         if seen.contains(&h) {
@@ -611,7 +613,11 @@ fn batch_lines(p: &Plan, batch: &import::Batch, seen: &mut std::collections::Has
         for k in defaults::list("mesh_write.row_fields") {
             o.put(k, pick(m, k));
         }
-        o.put(defaults::text("mesh_write.row_sender_field"), p.sender.as_deref().map_or(OVal::Null, s));
+        let resolved = match m.get(defaults::text("devswarm_ingest.from_branch_key")) {
+            None | Some(OVal::Null) => None,
+            Some(b) => import::branch_sender(&registry, &import::js_string(b)),
+        };
+        o.put(defaults::text("mesh_write.row_sender_field"), resolved.or_else(|| p.sender.clone()).as_deref().map_or(OVal::Null, s));
         lines.push_str(&o.done().stringify());
         lines.push('\n');
         imported += 1;

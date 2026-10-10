@@ -593,7 +593,7 @@ function migrateGateIntents({ dryRun, home } = {}) {
  * Returns { scanned, migrated, pending, errors }.
  */
 function migrateAutoArchivedState({ dryRun, home } = {}) {
-  const empty = { scanned: 0, migrated: 0, pending: 0, errors: 0 };
+  const empty = { scanned: 0, migrated: 0, pending: 0, errors: 0, normalized: 0 };
   try {
     const mod = require('../companion/lib/devswarm-lifecycle.js');
     if (!mod || typeof mod.migrateAutoArchivedState !== 'function') return empty;

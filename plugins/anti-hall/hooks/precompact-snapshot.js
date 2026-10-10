@@ -41,6 +41,7 @@
 'use strict';
 
 const fs = require('fs');
+const { readOnlyGitEnv } = require('./lib/git-env.js');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { isSubagentByPayload } = require('./coordinator-detect.js');
@@ -59,7 +60,7 @@ const NOT_TYPED_RE = /^<(task-notification|local-command-|system-reminder|bash-s
 function git(cwd, args) {
   try {
     return execFileSync('git', args, {
-      cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], env: readOnlyGitEnv(),
     });
   } catch (_) {
     return null;

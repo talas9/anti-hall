@@ -1,0 +1,5 @@
+# Docs site build dependencies (top level). Pinned with hashes in docs-requirements.txt:
+#   pip-compile --generate-hashes --strip-extras --no-emit-index-url docs-requirements.in -o docs-requirements.txt
+# Open-source Material for MkDocs only (no Insiders build).
+mkdocs==1.6.1
+mkdocs-material==9.7.7

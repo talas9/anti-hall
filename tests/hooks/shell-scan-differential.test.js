@@ -241,7 +241,7 @@ const CG_INTENTIONAL_ALLOW_CHANGES = [
   'gcloud projects get-iam-policy my-proj --format=json',
   'T=$(gcloud auth print-access-token); curl -s -H "Authorization: Bearer $T" https://run.googleapis.com/v2/projects/p/locations/l/services | jq .',
   'T=$(gcloud auth print-access-token); curl -sS -H "Authorization: Bearer $T" https://example.googleapis.com/v1/x | head -40',
-  // Stable-launcher carve-out (0.114.1 hotfix, peer report SkyCrew Primary):
+  // Stable-launcher carve-out (0.114.1 hotfix, peer report DemoApp Primary):
   // blocked at BASE_REV (stable-launcher.js/~/.anti-hall/bin/ didn't exist
   // yet, so these fell through to the generic `node <file>.js` HEAVY_PATTERN
   // like any other node script), allowed by

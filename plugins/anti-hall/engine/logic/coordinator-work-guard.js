@@ -214,6 +214,25 @@ function cwProvablyNotWork(command) {
   return true;
 }
 
+// DevSwarm mailbox/bookkeeping calls (heartbeat, pull, ack, read, send, ...) only talk to the mesh store: not work
+// (mirrors hooks/lib/coordinator-work.js `isDevswarmBookkeeping`; verbs, filters and patterns: coordinator_work.bookkeeping_*).
+function cwBookkeeping(command) {
+  if (typeof command !== 'string' || !command.trim() || command.length > ah.cfg('coordinator_work.safe_max_len')) return false;
+  if (new RegExp(ah.cfg('coordinator_work.bookkeeping_reject')).test(command)) return false;
+  if (command.split(ah.cfg('coordinator_work.bookkeeping_stderr_merge')).join('').indexOf('>') >= 0) return false;
+  var cli = new RegExp(ah.cfg('coordinator_work.bookkeeping_cli').replace('{verbs}', ah.cfg('coordinator_work.bookkeeping_verbs').join('|')));
+  var filt = new RegExp(ah.cfg('coordinator_work.bookkeeping_filter').replace('{filters}', ah.cfg('coordinator_work.bookkeeping_filters').join('|')));
+  var segs = command.split(new RegExp(ah.cfg('coordinator_work.segment_split')));
+  var sawCli = false;
+  for (var i = 0; i < segs.length; i++) {
+    if (!segs[i].trim()) continue;
+    if (cli.test(segs[i])) { sawCli = true; continue; }
+    if (filt.test(segs[i])) continue;
+    return false;
+  }
+  return sawCli;
+}
+
 // ---- the texts
 
 function cwMinutes(cfg) { return Math.round(cfg.tMs / 60000); }
@@ -250,7 +269,7 @@ function cwMain(payload, post) {
   var st = cwNormalize(cwReadJson(cwSessionRel(sid)));
   var id = typeof payload.tool_use_id === 'string' && payload.tool_use_id && command.trim() ? payload.tool_use_id : '';
   var classify = function () {
-    return cwProvablyNotWork(command) ? { work: false, blockable: false } : classifyBashWork(command, payload, { sessionStartTs: cwSessionStart(st, now) });
+    return cwProvablyNotWork(command) || cwBookkeeping(command) ? { work: false, blockable: false } : classifyBashWork(command, payload, { sessionStartTs: cwSessionStart(st, now) });
   };
   var skipped = function () { return ah.settings.skipped(ah.cfg('coordinator_work.guard_name')); };
 

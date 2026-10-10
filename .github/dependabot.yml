@@ -4,11 +4,17 @@ updates:
   # trailing version comment. Every action in .github/workflows is pinned this way.
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
   # The Rust engine is its own Cargo workspace (D69). Majors are included on purpose (D84): no ignore rules.
   - package-ecosystem: "cargo"
     directory: "/ah-engine"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/.github/copilot-cli"
     target-branch: "dev"
     schedule:
       interval: "weekly"

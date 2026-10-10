@@ -12,11 +12,11 @@
 //! stage function in a bounded Node subprocess, exactly as `update.js` calls it (so the answer is the script's, key order and
 //! all). A stage whose plugin files are not all there is also left to the script, which reports the missing file.
 use super::update::{Paths, progress, run_child, stage_quiet};
-use crate::jev::settings::Env;
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::jsport::json::{self, J, stringify};
 use crate::checks::spawnctx::devswarm_active;
 use crate::defaults;
+use crate::jev::settings::Env;
 use crate::setup::jsfmt::js_string;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -136,7 +136,11 @@ impl Run<'_> {
     fn hashes(&self, cache: &mut Option<Option<J>>) -> Option<J> {
         if cache.is_none() {
             let files = defaults::list("update_post.hash_files");
-            let got = if self.files_there(&files) && self.active() { self.node_call(text("update_post.hashes_snippet"), &[]).ok().filter(|h| matches!(h, J::Arr(_))) } else { None };
+            let got = if self.files_there(&files) && self.active() {
+                self.node_call(text("update_post.hashes_snippet"), &[]).ok().filter(|h| matches!(h, J::Arr(_)))
+            } else {
+                None
+            };
             *cache = Some(got);
         }
         cache.clone().flatten()
@@ -192,7 +196,14 @@ impl Run<'_> {
         for k in row.get("out").map(|o| o.strings()).unwrap_or_default() {
             let v = count(k);
             let errors_left = k == "errors" && !matches!(&v, J::Num(n) if *n == 0.0);
-            shown.push((k.to_string(), if k == "errors" { if errors_left { defaults::fill(text("update_post.lib_errors"), &[("n", &js_string(&v))]) } else { String::new() } } else { js_string(&v) }));
+            shown.push((
+                k.to_string(),
+                if k == "errors" {
+                    if errors_left { defaults::fill(text("update_post.lib_errors"), &[("n", &js_string(&v))]) } else { String::new() }
+                } else {
+                    js_string(&v)
+                },
+            ));
             out.push((k.to_string(), v));
         }
         let args: Vec<(&str, &dyn std::fmt::Display)> = shown.iter().map(|(k, v)| (k.as_str(), v as &dyn std::fmt::Display)).collect();

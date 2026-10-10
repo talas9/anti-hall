@@ -325,7 +325,25 @@ value = [
   '''\b(?:cwd\s+is|cwd|work(?:ing)?\s+(?:in|inside)|working\s+dir(?:ectory)?|cd(?:\s+into)?)\s*[:=]?\s*{path}''',
   '''\bscratch\s+(?:clone|dir(?:ectory)?|copy)\s+(?:under|at|in)\s+{path}''',
   '''\bclone\s+(?:\S+\s+)?into\s+{path}[^\s]*\s+and\s+(?:work|edit|make|fix)\b''',
+  '''\bgit\s+(?:-C\s+\S+\s+)?worktree\s+add\s+(?:-\S+\s+)*[\x60'"]?(?:~\/|\/|\$HOME\/)''',
+  '''\b(?:its|your|their)\s+own\s+(?:git\s+)?worktrees?\b''',
 ]
+
+[swarm_guard.re_named_tree]
+doc = "JavaScript regex source (case-insensitive): a statement that names the spawn's own working tree (\"a|your|its|scratch… clone\", worktree, checkout, cd, cwd or work-in target; a bare \"git clone <src>\" names a source, not a tree) followed by an absolute, ~ or $HOME path. When that path lies outside the session's git tree (and outside its cwd), the spawn works in another checkout and shares no tree; the scratch negation and in-place statements still cancel it."
+value = '''\b(?:(?:a|an|the|your|its|their|own|scratch|separate|fresh|lane)\s+(?:clone|worktree|checkout)|worktree|cwd(?:\s+is)?|cd(?:\s+into)?|work(?:ing)?\s+(?:in|inside|from)|working\s+dir(?:ectory)?)\s*(?:(?:at|in|under|into|is|to)\s+)?[:=]?\s*[\x60'"]?(?:~|\$HOME)?\/[^\s\x60'",;)]+'''
+
+[swarm_guard.re_named_tree_path]
+doc = "JavaScript regex source: the path inside a re_named_tree match (the first absolute, ~ or $HOME path)."
+value = '''(?:~|\$HOME)?\/[^\s\x60'",;)]+'''
+
+[swarm_guard.re_named_tree_trim]
+doc = "JavaScript regex source: trailing sentence punctuation cut from a named-tree path."
+value = '''[.:]+$'''
+
+[swarm_guard.re_named_tree_home]
+doc = "JavaScript regex source: the home prefix of a named-tree path (~ or $HOME), replaced by the user's home directory."
+value = '''^(?:~|\$HOME)'''
 
 [swarm_guard.re_scratch_negated]
 doc = "JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading."

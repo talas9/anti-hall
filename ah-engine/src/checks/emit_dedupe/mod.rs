@@ -21,9 +21,9 @@
 
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsval::{DateParse, Js, date_parse, js_to_string, parse_line};
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::settings::{get_bool, get_number};
 use crate::checks::guardkit::tail::read_tail;
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use serde_json::Value;
 

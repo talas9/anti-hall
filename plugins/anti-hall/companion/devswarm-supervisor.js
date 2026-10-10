@@ -445,7 +445,7 @@ function jevBlockerLabel(childId, home, opts) {
     jevAssist.finalize({
       id: 'supervisorBlockerLabel', home: p.h, hash: p.hash, mode: p.mode,
       trust: 'advisory', baseline: null, judge: () => true, threshold: p.threshold,
-      r: { ok: true, answer: label, confidence: 1, ms: 0 }, cachedFlag: true, state: label,
+      r: { ok: true, answer: label, confidence: 1, ms: 0 }, cachedFlag: true, state: label, derivedFrom: 'triage',
     });
     writeBlockerLabelAskState(home, childId, { hash: inputHash, askedAt: now, mode: p.mode });
     // Shadow logs the decision above (for `jev report`) but NEVER changes the

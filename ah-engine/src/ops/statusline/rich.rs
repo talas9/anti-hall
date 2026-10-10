@@ -47,6 +47,7 @@ fn git(args: &[&str], cwd: &str, env: &BTreeMap<String, String>) -> String {
     for (k, v) in env {
         c.env(k, v);
     }
+    crate::proc::apply_git_env(&mut c);
     match run_with_input(c, b"", Duration::from_millis(defaults::num("statusline.git_timeout_ms")), defaults::num("statusline.git_max_buffer") as usize) {
         Some(r) if r.ok => trim(&String::from_utf8_lossy(&r.stdout)).to_string(),
         _ => String::new(),
@@ -305,6 +306,18 @@ fn run_base(cmd: &str, input: &str) -> Option<String> {
 }
 
 /// `generateStatusline()` for the stdin text `input_raw` and the process working directory `cwd`.
+/// The DevSwarm workspace dashboard (feature 1): from the daemon's compact snapshot copy, never the DevSwarm database.
+fn devswarm_chip(cx: &Ctx, env: &BTreeMap<String, String>, c: &Colors, sep: &str) -> String {
+    let st = crate::checks::git::util::Settings::from_env(&crate::reqenv::RequestEnv::from_pairs(env.clone()));
+    let cfg = crate::devswarm_rt::linefile::LineCfg::read(&st);
+    if !cfg.enabled {
+        return String::new();
+    }
+    let Ok(text) = std::fs::read_to_string(crate::devswarm_rt::linefile::path()) else { return String::new() };
+    let seg = crate::devswarm_rt::linefile::segment(&text, cx.now as i64, &cfg, &|name| c.c(name).to_string());
+    if seg.is_empty() { seg } else { format!("{sep}{seg}") }
+}
+
 pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, input_raw: &str) -> Result<Rich, Defer> {
     let c = Colors { on: env.get(defaults::text("statusline.no_color_env")).is_none_or(|v| v.is_empty()) };
     let raw = trim(input_raw).to_string();
@@ -423,6 +436,7 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     if subs > 0 {
         h.push_str(&format!("{sep}{}{}{subs}{}", c.c("brightCyan"), defaults::text("statusline.agent_icon"), c.c("reset")));
     }
+    h.push_str(&devswarm_chip(cx, env, &c, &sep));
     if !duration.is_empty() {
         h.push_str(&format!("{sep}{}{}{duration}{}", c.c("cyan"), defaults::text("statusline.clock_icon"), c.c("reset")));
     }

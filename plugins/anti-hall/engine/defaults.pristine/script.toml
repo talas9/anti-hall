@@ -58,6 +58,21 @@ env = "AH_ENGINE_SCRIPT_TIME_MS"
 min = 1
 unit = "ms"
 
+[script.cut_at_request_deadline]
+doc = "1 = a scripted check still running when its request's client stops waiting (client.deadline_ms minus daemon.reply_slack_ms) is interrupted there, and a check not yet started by then is not started: each such entry defers to its own Node hook while the entries answered in time keep the engine's answer, so a loaded machine costs single checks instead of the whole event (before, the reply came after the client had given up and every entry of the event ran in Node). Not counted as a script error. An engine-only check whose failure mode is closed (script.failure_mode_by_check) keeps only its own limit on a guard event. 0 = the checks run to their own limits whatever the client's deadline."
+value = 1
+env = "AH_ENGINE_SCRIPT_CUT_AT_DEADLINE"
+min = 0
+max = 1
+
+[script.msg_deadline_cut]
+doc = "Log detail (code script_deadline, rate-limited) of a check cut or not started at its request's client deadline; it defers to its Node hook. Placeholders: {check}, {event}."
+value = "{check} ({event}): past the client's deadline, deferred to its Node hook"
+
+[script.msg_scan_cut]
+doc = "Exception a native transcript scan raises in a script call cut at its request's client deadline; the call then defers to its check's Node hook."
+value = "the request's client stopped waiting during the scan"
+
 [script.wall_limit_factor]
 doc = "The wall-clock backstop of a script call, as a multiple of its time limit. The limit itself counts the interpreter thread's CPU time, so a thread kept waiting for a core by a loaded machine is not interrupted; the backstop ends a script that waits without using CPU. Time a host function spends blocked (a child process, a lock) is credited back to the backstop."
 value = 10

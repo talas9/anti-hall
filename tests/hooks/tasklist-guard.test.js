@@ -1339,7 +1339,7 @@ test('DEDUP: repeated Stops with no NEW file-changing work never re-nag', () => 
 });
 
 // ---------------------------------------------------------------------------
-// FIX 7 (confirmed root cause of #17 against real SkyCrew Primary transcripts):
+// FIX 7 (confirmed root cause of #17 against real DemoApp Primary transcripts):
 // inter-agent message-passing Bash writes into the session's OWN scratchpad
 // directory (`.../<session>/scratchpad/...`) must not count toward workCount —
 // they are not project work, and counting them shifted workBucket fast enough
@@ -1627,10 +1627,10 @@ function mkSuperprojectWithSubmodule() {
   fs.writeFileSync(path.join(superRepo, 'root.txt'), 'x');
   git(['add', '.'], superRepo);
   git(['commit', '-q', '-m', 'init'], superRepo);
-  git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subRepo, 'skyfb'], superRepo);
+  git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subRepo, 'appfb'], superRepo);
   git(['commit', '-q', '-m', 'add submodule'], superRepo);
 
-  const submodulePath = path.join(superRepo, 'skyfb');
+  const submodulePath = path.join(superRepo, 'appfb');
   const st = fs.lstatSync(path.join(submodulePath, '.git'));
   assert.ok(st.isFile(), 'fixture sanity: submodule .git must be a FILE, not a directory');
 
@@ -1651,7 +1651,7 @@ test('SUBMODULE: cwd inside a submodule -> progress/history key on the SUPERPROJ
       ...edits(4),
       ...taskCreate(1, 'do the work', 'completed'),
     ]);
-    // cwd = the submodule checkout (as if the shell had `cd skyfb`).
+    // cwd = the submodule checkout (as if the shell had `cd appfb`).
     const r = testHook(HOOK, stopPayload(tp, fixture.submodulePath, session), { home: h.home });
     assert.ok(!isBlock(r), `expected allow (superproject progress is fresh); stdout: ${r.stdout}; reason: ${r.json && r.json.reason}`);
 
@@ -1761,5 +1761,39 @@ test('BLOCK (bypass probe): a STALE heartbeat file and no agent in the transcrip
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `no live agent must still block; stdout: ${r.stdout}`);
     assert.match(r.json.reason || '', /NO background agent is live/);
+  } finally { h.cleanup(); }
+});
+
+// Dogfood 2026-10-09: a single-job session (ONE user request) whose writes all land under the output path that request names
+// must not be told to keep a task list.
+function userPrompt(text) { return { type: 'user', message: { role: 'user', content: text } }; }
+function editAt(i, file) {
+  return { type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Write', id: 'toolu_w' + i, input: { file_path: file } }] } };
+}
+
+test('ALLOW: one user request, every write under the output folder it names', () => {
+  const h = makeHome();
+  try {
+    const out = '/Users/someone/reports/q3';
+    const lines = [userPrompt('Write the quarterly report files into ' + out + '/ please.')];
+    for (let i = 0; i < 5; i++) lines.push(editAt(i, out + '/part' + i + '.md'));
+    const tp = h.writeTranscript(lines);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('BLOCK: one request but writes land outside the named output, or a second request exists', () => {
+  const h = makeHome();
+  try {
+    const out = '/Users/someone/reports/q3';
+    const outside = [userPrompt('Write the report into ' + out + '/')];
+    for (let i = 0; i < 4; i++) outside.push(editAt(i, '/Users/someone/proj/src/f' + i + '.js'));
+    let r = testHook(HOOK, stopPayload(h.writeTranscript(outside), h.home), { home: h.home });
+    assert.ok(isBlock(r), `writes outside the named path still count; stdout: ${r.stdout}`);
+    const two = [userPrompt('Write the report into ' + out + '/'), userPrompt('and also tidy up')];
+    for (let i = 0; i < 4; i++) two.push(editAt(i, out + '/p' + i + '.md'));
+    r = testHook(HOOK, stopPayload(h.writeTranscript(two), h.home, 't2'), { home: h.home });
+    assert.ok(isBlock(r), `two requests: no exemption; stdout: ${r.stdout}`);
   } finally { h.cleanup(); }
 });

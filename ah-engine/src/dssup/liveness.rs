@@ -154,7 +154,7 @@ pub(crate) fn registration_ts(home: &Path, id: &str) -> Option<f64> {
 }
 
 /// `worktreeActivityMtime(wt)`: the last commit time in ms (`git -C wt log -1 --format=%ct`), `None` when git cannot say.
-fn worktree_activity(runner: &dyn Runner, wt: &str) -> Option<f64> {
+pub(crate) fn worktree_activity(runner: &dyn Runner, wt: &str) -> Option<f64> {
     let wt_owned = wt.to_string();
     let args: Vec<String> = defaults::list("devswarm_sup.lv_git_args").iter().map(|a| a.replace("{worktree}", &wt_owned)).collect();
     let r = runner.run(&RunSpec {
