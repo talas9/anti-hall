@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 'use strict';
-// anti-hall :: eval/rescore.js — recompute eval summary stats from saved result
+// anti-hall :: tools/eval/rescore.js — recompute eval summary stats from saved result
 // files with ZERO API calls (no network, no judge model).
 //
 // Distinct from grade.js (re-calls judge LLM) and analyze.js (statistics).
 //
 // USAGE
-//   node eval/rescore.js [results-a.json results-b.json ...]   # reporting
-//   node eval/rescore.js --selftest [results.json ...]         # integrity gate
+//   node tools/eval/rescore.js [results-a.json results-b.json ...]   # reporting
+//   node tools/eval/rescore.js --selftest [results.json ...]         # integrity gate
 //
 // EXPORT
 //   rescore(records)      -> summary object

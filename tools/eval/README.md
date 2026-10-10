@@ -4,7 +4,7 @@ A small, dependency-free harness that measures **whether the anti-hall
 verify-first protocol reduces fabrication** of clearly non-existent functions,
 APIs, CLI flags, and language features.
 
-It is **not** part of the plugin bundle (it lives in `eval/` at the repo root,
+It is **not** part of the plugin bundle (it lives in `tools/eval/`,
 not under `plugins/anti-hall/`) and is never shipped to users. It exists to put a
 real number on the protocol's effect.
 
@@ -49,10 +49,10 @@ Two backends (`EVAL_BACKEND`):
 
 ```bash
 # Default — runs on your Claude *subscription* via the headless CLI. No API key.
-node eval/run.js
+node tools/eval/run.js
 
 # API backend — direct Anthropic Messages API (needs a key).
-EVAL_BACKEND=api ANTHROPIC_API_KEY=sk-... node eval/run.js
+EVAL_BACKEND=api ANTHROPIC_API_KEY=sk-... node tools/eval/run.js
 ```
 
 ### CLI backend — clean-room methodology (important)
@@ -80,7 +80,7 @@ echo "say OK" | HOME=/tmp/ah-clean claude -p --tools "" --output-format json   #
 HOME=/tmp/ah-clean claude plugins list                                        # → "No plugins installed."
 
 # Run the eval under that clean HOME:
-HOME=/tmp/ah-clean node eval/run.js
+HOME=/tmp/ah-clean node tools/eval/run.js
 ```
 
 Why not `--bare`? It would skip plugin hooks in one flag, but it *also* skips
@@ -97,10 +97,10 @@ Options (env vars):
 | `EVAL_JUDGE_MODEL` | = `EVAL_MODEL` | judge model |
 | `EVAL_SYS_MODE` | `append` | `append` (on top of CC's prompt) or `replace` (`--system-prompt`, **naive baseline**) |
 | `EVAL_TOOLS` | `""` (none) | `default` (or a tool list) **enables tools** so the model can run code to verify (bypassPermissions) |
-| `EVAL_TASKS` | `eval/trap-tasks.json` | path to a trap set (`trap-tasks-hard.json`, `trap-tasks-verifiable.json`, …) |
+| `EVAL_TASKS` | `tools/eval/trap-tasks.json` | path to a trap set (`trap-tasks-hard.json`, `trap-tasks-verifiable.json`, …) |
 | `EVAL_REPEATS` | `1` | repeats per task per condition (raise for stochasticity) |
 | `EVAL_LIMIT` | `0` (all) | only run first N tasks (debugging) |
-| `EVAL_OUT` | `eval/results.json` | raw per-response results path |
+| `EVAL_OUT` | `tools/eval/results.json` | raw per-response results path |
 
 Trap sets: `trap-tasks.json` (20 blatant fakes), `trap-tasks-hard.json` (30
 plausible-fakes-adjacent-to-real APIs), `trap-tasks-verifiable.json` (12 fakes
@@ -112,12 +112,12 @@ Cost is bounded: 20 tasks × 1 repeat × 2 conditions × 2 calls (answer + judge
 purpose — spawning a swarm of `claude` subprocesses is a known node-process
 runaway / crash mode.
 
-Raw responses + gradings are written to `eval/results.json`. To re-grade those
+Raw responses + gradings are written to `tools/eval/results.json`. To re-grade those
 captured responses (e.g. after tweaking the rubric) without paying for the
 answer calls again:
 
 ```bash
-ANTHROPIC_API_KEY=sk-... node eval/grade.js eval/results.json
+ANTHROPIC_API_KEY=sk-... node tools/eval/grade.js tools/eval/results.json
 ```
 
 To recompute the **summary** stats (protocol/baseline fabrication rates, delta, and
@@ -127,8 +127,8 @@ straight from the saved files, so it's free to run and useful for re-aggregating
 combining runs:
 
 ```bash
-node eval/rescore.js eval/results-hard.json                 # one file
-node eval/rescore.js eval/results-powered-c*.json           # aggregate across runs
+node tools/eval/rescore.js tools/eval/results-hard.json                 # one file
+node tools/eval/rescore.js tools/eval/results-powered-c*.json           # aggregate across runs
 ```
 
 `rescore.js --selftest <files…>` is an integrity gate: it re-derives each file's summary
@@ -297,5 +297,5 @@ best, a small and statistically-unproven dispositional nudge; the model ignores
 "go verify" ~95% of the time. The plugin's reliable, *proven* value is the
 **deterministic guards** (159 passing hook tests) — mechanical enforcement that
 cannot be ignored, which is precisely what the prompt cannot achieve. Raw
-per-response data: `eval/results*.json` (gitignored, regenerable). Reproduce:
-`node eval/analyze.js eval/results-powered-c*.json`.
+per-response data: `tools/eval/results*.json` (gitignored, regenerable). Reproduce:
+`node tools/eval/analyze.js tools/eval/results-powered-c*.json`.

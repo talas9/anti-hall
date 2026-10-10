@@ -135,7 +135,7 @@ jobs:
           "$bin" config validate "$scratch/settings.toml"
           printf '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"%s","tool_name":"Bash","tool_input":{"command":"ls"}}' "$scratch" | "$bin" check command
           printf '{"hook_event_name":"Stop","session_id":"s1","cwd":"%s","last_assistant_message":"done"}' "$scratch" | "$bin" check speculation-guard
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.triple }}
           path: dist/*.tar.gz
@@ -157,7 +157,7 @@ jobs:
       - name: Vendored source tarball
         working-directory: ah-engine
         run: scripts/package-src.sh "$GITHUB_WORKSPACE/dist"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-src
           path: dist/*.tar.gz
@@ -252,7 +252,7 @@ jobs:
           jq -r '.assets | to_entries | sort_by(.key)[] | "\(.value)  \(.key)"' ah-engine.lock > dist/SHA256SUMS
           (cd dist && shasum -a 256 -c SHA256SUMS)
           (cd dist && for f in *.tar.gz; do shasum -a 256 "$f" > "$f.sha256"; done)
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verified-dist
           path: dist/*

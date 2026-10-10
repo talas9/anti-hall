@@ -1,6 +1,6 @@
 # Reusable model step for community.yml, pr-check.yml and roadmap.yml.
 #
-# Provider chain (repo variable AI_PROVIDER, default "claude,copilot"; "none" = rules only):
+# Provider chain (repo variable AI_PROVIDER, default "claude"; "none" = rules only; copilot is dropped unless copilot_fallback is true in .github/moderation/config.json):
 #   1. Claude via anthropics/claude-code-action (secret CLAUDE_CODE_OAUTH_TOKEN). Skipped cleanly
 #      when the secret is empty.
 #   2. Copilot CLI with the workflow GITHUB_TOKEN (permission copilot-requests: write, billed to
@@ -36,9 +36,9 @@ on:
         type: string
         default: ""
       chain:
-        description: Ordered providers, e.g. "claude,copilot"
+        description: Ordered providers, e.g. "claude,copilot" (callers pass the chain from lib.chain, which drops copilot unless copilot_fallback is true in config.json)
         type: string
-        default: claude,copilot
+        default: claude
       tools:
         description: none | read | read-web
         type: string
@@ -142,31 +142,35 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
-            let text = '';
-            try { text = fs.readFileSync(process.env.EXEC_FILE, 'utf8').slice(-6000); } catch { /* no log */ }
-            // Structure of the final result record (no model text): shows an instant, zero-cost
-            // error result (account/limit/auth) apart from a real answer that lacked structure.
+            // Classify from the final result record ONLY (never the raw log: it contains words like "usage"
+            // and "credit" in every healthy run). A reply that is valid JSON text counts as an answer: the
+            // CLI sometimes returns the object as plain text instead of calling its structured-output tool,
+            // and the action then fails with "did not return structured_output" although the model answered.
+            let text = '', res = {};
             try {
               const log = JSON.parse(fs.readFileSync(process.env.EXEC_FILE, 'utf8'));
-              const res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
-              core.info(`primary result record: subtype=${res.subtype} is_error=${res.is_error} turns=${res.num_turns} cost=${res.total_cost_usd} duration_ms=${res.duration_ms} api_error_status=${res.api_error_status ?? 'n/a'} keys=${Object.keys(res).join(',')}`);
-              if (res.api_error_status) text += ` api_error_status ${res.api_error_status}`;
-              if (res.is_error) await core.summary.addRaw(`Claude primary error: HTTP ${res.api_error_status ?? 'n/a'}, cost ${res.total_cost_usd}, ${res.duration_ms} ms\n\n`, true).write();
+              res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
+              core.info(`primary result record: subtype=${res.subtype} is_error=${res.is_error} turns=${res.num_turns} cost=${res.total_cost_usd} duration_ms=${res.duration_ms} api_error_status=${res.api_error_status ?? 'n/a'}`);
+              if (res.api_error_status) text += `api_error_status ${res.api_error_status}`;
               if (res.is_error && typeof res.result === 'string') {
                 text += ' ' + res.result.slice(0, 300);
                 // Only the CLI's own error line (limit, auth, ...) goes to the job summary; never the prompt or reply.
                 await core.summary.addRaw(`Claude primary error result (HTTP ${res.api_error_status ?? 'n/a'}): ${String(res.result).slice(0, 200).replace(/[\r\n|]+/g, ' ')} (cost ${res.total_cost_usd}, ${res.duration_ms} ms)\n\n`, true).write();
               }
             } catch { /* no execution file */ }
+            const asJson = (t) => { try { const v = JSON.parse(String(t).trim().replace(/^```(?:json)?\s*|\s*```$/g, '')); return v && typeof v === 'object' && !Array.isArray(v) ? JSON.stringify(v) : ''; } catch { return ''; } };
+            const answered = (process.env.STRUCTURED || '').trim() || (res.is_error ? '' : asJson(res.result));
             let why = '';
             if (process.env.OK1 !== 'true') why = 'secret empty';
-            else if (process.env.OUTCOME !== 'success') {
+            else if (!answered) {
               if (/api_error_status 40[13]/.test(text)) why = 'auth error (token rejected, HTTP ' + text.match(/api_error_status (\d+)/)[1] + ')';
-              else if (/api_error_status 429|usage.?limit|too many requests|quota|credit/i.test(text)) why = 'usage/rate limit';
-              else if (/overloaded|529|503/i.test(text)) why = 'overloaded';
-              else if (/401|403|unauthori[sz]ed|authentication|invalid.*(token|credential)|expired/i.test(text)) why = 'auth error';
-              else why = text ? 'failed (cause not recognised)' : 'failed (no log, cause unknown)';
-            } else if (!(process.env.STRUCTURED || '').trim()) why = 'no structured output';
+              else if (/api_error_status 402|exceeded.*quota/i.test(text)) why = 'quota exhausted (HTTP 402)';
+              else if (/api_error_status 429|usage.?limit|too many requests|rate.?limit/i.test(text)) why = 'usage/rate limit';
+              else if (/overloaded|api_error_status 5\d\d/i.test(text)) why = 'overloaded';
+              else if (/unauthori[sz]ed|authentication|invalid.*(token|credential)|expired/i.test(text)) why = 'auth error';
+              else if (process.env.OUTCOME === 'success') why = 'no structured output';
+              else why = res.is_error ? 'error result (cause not recognised)' : 'failed (no usable answer, no error result)';
+            }
             core.setOutput('failover', why ? 'true' : 'false');
             core.setOutput('why', why);
             if (why) core.info(`primary did not answer: ${why}; failing over to the secondary now`);
@@ -199,10 +203,10 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
-            let text = '';
+            let text = '', res = {};
             try {
               const log = JSON.parse(fs.readFileSync(process.env.EXEC_FILE, 'utf8'));
-              const res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
+              res = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
               core.info(`secondary result record: subtype=${res.subtype} is_error=${res.is_error} turns=${res.num_turns} cost=${res.total_cost_usd} duration_ms=${res.duration_ms} api_error_status=${res.api_error_status ?? 'n/a'} keys=${Object.keys(res).join(',')}`);
               if (res.api_error_status) text = `api_error_status ${res.api_error_status}`;
               if (res.is_error) await core.summary.addRaw(`Claude secondary error: HTTP ${res.api_error_status ?? 'n/a'}, cost ${res.total_cost_usd}, ${res.duration_ms} ms\n\n`, true).write();
@@ -211,11 +215,14 @@ jobs:
                 await core.summary.addRaw(`Claude secondary error result (HTTP ${res.api_error_status ?? 'n/a'}): ${String(res.result).slice(0, 200).replace(/[\r\n|]+/g, ' ')} (cost ${res.total_cost_usd}, ${res.duration_ms} ms)\n\n`, true).write();
               }
             } catch { /* no execution file */ }
+            const asJson = (t) => { try { const v = JSON.parse(String(t).trim().replace(/^```(?:json)?\s*|\s*```$/g, '')); return v && typeof v === 'object' && !Array.isArray(v) ? JSON.stringify(v) : ''; } catch { return ''; } };
+            const answered = (process.env.STRUCTURED || '').trim() || (res.is_error ? '' : asJson(res.result));
             let why = '';
-            if (process.env.OUTCOME !== 'success' || !(process.env.STRUCTURED || '').trim()) {
+            if (!answered) {
               if (/api_error_status 40[13]/.test(text)) why = 'auth error (token rejected, HTTP ' + text.match(/api_error_status (\d+)/)[1] + ')';
-              else if (/api_error_status 429|usage.?limit|too many requests|quota|credit/i.test(text)) why = 'usage/rate limit';
-              else if (/overloaded|529|503/i.test(text)) why = 'overloaded';
+              else if (/api_error_status 402|exceeded.*quota/i.test(text)) why = 'quota exhausted (HTTP 402)';
+              else if (/api_error_status 429|usage.?limit|too many requests|rate.?limit/i.test(text)) why = 'usage/rate limit';
+              else if (/overloaded|api_error_status 5\d\d/i.test(text)) why = 'overloaded';
               else why = text ? 'error result (cause not recognised)' : 'no structured output';
             }
             core.setOutput('why', why);
@@ -240,8 +247,20 @@ jobs:
             const fs = require('node:fs');
             const latency = Date.now() - Number(process.env.T0 || Date.now());
             const e = process.env;
-            const pickSlot = e.OUTCOME1 === 'success' && (e.STRUCTURED1 || '').trim() ? 'primary'
-              : e.OUTCOME2 === 'success' && (e.STRUCTURED2 || '').trim() ? 'secondary' : '';
+            // The answer: the structured output, else the final result text when it is a JSON object (see the classify step).
+            const answer = (structured, execFile, outcome) => {
+              if ((structured || '').trim()) return structured.trim();
+              if (!outcome || outcome === 'skipped') return '';
+              try {
+                const log = JSON.parse(fs.readFileSync(execFile, 'utf8'));
+                const r = [].concat(log).reverse().find((m) => m && m.type === 'result') || {};
+                if (r.is_error) return '';
+                const v = JSON.parse(String(r.result).trim().replace(/^```(?:json)?\s*|\s*```$/g, ''));
+                return v && typeof v === 'object' && !Array.isArray(v) ? JSON.stringify(v) : '';
+              } catch { return ''; }
+            };
+            const a1 = answer(e.STRUCTURED1, e.EXEC1, e.OUTCOME1), a2 = answer(e.STRUCTURED2, e.EXEC2, e.OUTCOME2);
+            const pickSlot = a1 ? 'primary' : a2 ? 'secondary' : '';
             const file = pickSlot === 'secondary' ? e.EXEC2 : e.EXEC1;
             let turns = '', tokens = '';
             try {
@@ -254,7 +273,7 @@ jobs:
             let reason = '';
             if (!pickSlot) reason = e.ANY !== 'true' ? 'claude: both secrets empty' : `claude: primary ${e.WHY1 || 'failed'}; secondary ${e.OUTCOME2 ? (e.WHY2 || 'failed') : 'not available'}`;
             else if (pickSlot === 'secondary') reason = `primary ${e.WHY1}`;
-            const out = pickSlot === 'secondary' ? e.STRUCTURED2 : e.STRUCTURED1;
+            const out = pickSlot === 'secondary' ? a2 : a1;
             core.setOutput('ok', pickSlot ? 'true' : 'false');
             core.setOutput('slot', pickSlot);
             core.setOutput('result', pickSlot ? out.trim() : '');
@@ -262,6 +281,10 @@ jobs:
             core.setOutput('latency_ms', String(latency));
             core.setOutput('turns', String(turns));
             core.setOutput('tokens', String(tokens));
+            // Circuit breaker: a slot that failed with auth (401/403) or quota (402/429) is not tried again in this run
+            // (no retry, no backoff); one line in the job summary says which and why.
+            const dead = [['primary', e.WHY1], ['secondary', e.WHY2]].filter(([, w]) => /auth error|quota|usage\/rate limit/.test(w || ''));
+            if (dead.length) await core.summary.addRaw(`**Slot circuit breaker:** ${dead.map(([sl, w]) => `${sl} skipped for the rest of this run (${w})`).join('; ')}\n`, true).write();
             core.info(pickSlot ? `claude ${pickSlot} answered in ${latency} ms, turns ${turns}${reason ? ' (' + reason + ')' : ''}` : reason);
 
   copilot:
@@ -334,7 +357,7 @@ jobs:
             const latency = process.env.T0 ? Date.now() - Number(process.env.T0) : '';
             if (process.env.OUTCOME !== 'success') core.info(`copilot stderr tail: ${err.slice(-400).replace(/\s+/g, ' ')}`);
             let reason = '';
-            if (process.env.OUTCOME !== 'success') reason = /rate.?limit|quota|429|credits/i.test(err) ? 'copilot: rate/usage limit' : 'copilot: failed';
+            if (process.env.OUTCOME !== 'success') reason = /\b402\b|exceeded.*quota/i.test(err) ? 'copilot: quota exhausted (HTTP 402); slot skipped for the rest of this run' : /rate.?limit|quota|429|credits/i.test(err) ? 'copilot: rate/usage limit' : 'copilot: failed';
             else if (!out.includes('{')) reason = 'copilot: no JSON in reply';
             core.setOutput('ok', reason ? 'false' : 'true');
             core.setOutput('result', reason ? '' : out.slice(0, 20000));
@@ -392,7 +415,7 @@ jobs:
 
       - name: Upload the model-call marker
         if: always() && steps.mark.outputs.name != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.mark.outputs.name }}
           path: ${{ runner.temp }}/ai-call/slot.txt
