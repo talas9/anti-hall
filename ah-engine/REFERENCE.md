@@ -43,7 +43,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `restore` | `<snapshot-dir>` | no | implemented | Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then swap the databases. |
 | `schedule` | `<list\|run <job>\|history> [--job <name>] [--limit <n>]` | no | implemented | The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json. |
 | `serve` | `` | no | implemented | Run the resident daemon in the foreground (the client starts it detached when needed). |
-| `settings` | `<show\|get\|set\|reset\|judge\|trust-command-allow\|trust-edit-allow> [args] [--json]` | no | implemented | Show or change any anti-hall setting (L9a, the port of scripts/settings.js): `show [--section <key>] [--all]`, `get <section.key>`, `set <section.key> <value> [--confirmed]`, `reset <section.key> [--confirmed]`, `judge on\|off\|status`, and `trust-command-allow` / `trust-edit-allow [<repo>] [--confirmed]`; the settings.json file and the registry are the plugin's own. |
+| `settings` | `<show\|get\|set\|reset\|judge\|tunables\|trust-command-allow\|trust-edit-allow> [args] [--json]` | no | implemented | Show or change any anti-hall setting (L9a, the port of scripts/settings.js): `show [--section <key>] [--all]`, `get <section.key>`, `set <section.key> <value> [--confirmed]`, `reset <section.key> [--confirmed]`, `judge on\|off\|status`, `tunables [<category\|key prefix>] [--all]` (every key of the plugin's engine/defaults/*.toml with its default, env variable and description, grouped by file; read-only, edit the file to change one), and `trust-command-allow` / `trust-edit-allow [<repo>] [--confirmed]`; the settings.json file and the registry are the plugin's own. |
 | `shadow-compare` | `<scratch dir>` | no | implemented | Internal: the detached half of a Node shadow (L9a). Runs the Node version of a sampled operator command on a scratch home and logs a mismatch to telemetry; started by the engine, not by people. |
 | `status` | `[--memory]` | yes | implemented | Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did. |
 | `statusline` | `(session JSON on stdin)` | no | implemented | The two-line status line the host runs after each turn (L9a, the port of statusline/statusline.js and its renderers): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open. |
@@ -559,7 +559,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.edit_trust_file_rel` | `.anti-hall/trusted-edit-allow.json` |  |  | The record of trusted edit allowlists, relative to the home directory. |
 | `command.eg_allow_setting` | `6 entries` |  |  | guards.editGuardAllow: extra file globs edit-guard allows (comma or colon separated, empty by default). |
 | `command.eg_claude_dir` | `.claude` |  |  | The host's configuration directory under the home directory. |
-| `command.eg_default_allow` | `10 items` |  |  | Files and globs edit-guard always allows (edit-guard.js DEFAULT_ALLOW). |
+| `command.eg_default_allow` | `12 items` |  |  | Files and globs edit-guard always allows (edit-guard.js DEFAULT_ALLOW). |
 | `command.eg_edit_allow_file` | `.anti-hall/edit-allow.json` |  |  | The repository-relative path of the edit allowlist, which no one edits through the guard. |
 | `command.eg_hooks_file` | `hooks.json` |  |  | A file with this name is never allowed by the per-project edit allowlist. |
 | `command.eg_plan_mode` | `plan` |  |  | The permission mode in which non-source files may be edited. |
@@ -582,7 +582,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.gh_oneliner_api_methods` | `POST, PATCH, PUT` |  |  | gh api methods that are light on a one-line command (command-guard.js GH_ONELINER_API_METHODS); DELETE, a body file and graphql stay heavy. |
 | `command.gh_oneliner_deny_re` | `[\n\r`]\|\$\(\|<<\|<\(\|>\(` |  |  | JavaScript regex source: a command holding a newline, a backtick, a command or process substitution or a heredoc is not a plain one-liner (command-guard.js isOneLineCommand). |
 | `command.gh_oneliner_max_chars` | `600` |  | chars | The longest whole command that counts as one short line for the gh one-liner exemption (command-guard.js GH_ONELINER_MAX_CHARS). |
-| `command.gh_oneliner_subcommands` | `2 entries` |  |  | gh group and subcommand pairs that are light when the whole command is one short plain line (command-guard.js GH_ONELINER_SUBCOMMANDS): they print a line or two and flood nothing, so a subagent for them is noise. |
+| `command.gh_oneliner_subcommands` | `4 entries` |  |  | gh group and subcommand pairs that are light when the whole command is one short plain line (command-guard.js GH_ONELINER_SUBCOMMANDS): they print a line or two and flood nothing, so a subagent for them is noise. |
 | `command.git_always_work` | `12 items` |  |  | git subcommands that always count as work for the coordinator work window (command-guard.js GIT_ALWAYS_WORK). |
 | `command.git_branch_argv` | `symbolic-ref, --short, HEAD` |  |  | The git arguments that print the current branch (plain-push carve-out). |
 | `command.git_fetch_dangerous_flags` | `--prune, -p, --prune-tags, --force, -f` |  |  | git fetch options that rewrite or delete local refs (command-guard.js GIT_FETCH_DANGEROUS_FLAGS). |
@@ -683,6 +683,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.port_digits_max` | `5` |  |  | Most digits a URL port may have. |
 | `command.port_max` | `65535` |  |  | Largest TCP port a URL may carry. |
 | `command.python_script_ext` | `(?i)\.py$` |  |  | Script file extension of the other interpreters for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
+| `command.scratch_clone_sync_subs` | `pull, fetch` |  |  | git subcommands that are light in the main thread when run in a git checkout outside the session's own tree (git -C <abs\|~ dir> or one leading cd <abs\|~ dir>), chained with && or ; only to light segments and at most one final \| tail/head -N, on one plain line (command-guard.js isAllowedScratchCloneSync, SCRATCH_CLONE_SYNC_SUBS). A sync prints a few lines; the output-flood rule is for unbounded runners and builds. Empty turns the exemption off. |
 | `command.scratch_leaf` | `scratchpad` |  |  | Name of the scratchpad directory of a session. |
 | `command.scratch_uid_prefix` | `claude-` |  |  | Prefix of the per-user directory under a tmp root that holds session scratchpads. |
 | `command.script_check_interpreter` | `^(?:python[0-9.]*\|node\|ruby\|perl\|php)$` |  |  | Interpreters whose flagged script runs are heavy (command-guard.js SCRIPT_CHECK_INTERPRETER_RE). |
@@ -1326,6 +1327,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.msg_update_what` | `a subagent spawn that runs the anti-hall update is blocked.` |  |  | Update-in-session block headline. |
 | `model_routing.msg_update_why` | `update.js runs migrations and the main session must judge the result.` |  |  | Update-in-session block reason. |
 | `model_routing.negated_commit_re` | `\b(?:do\s+not\|don'?t\|never\|without\|no)\s+(?:\w+\s+){0,3}?(?:git\s+)?(?:commit...` |  |  | Regex (case-insensitive, global) of a negated commit, push or worktree instruction ('never commit', 'do not push'); removed from the brief before commit_phrase_re is tested. |
+| `model_routing.negated_write_re` | `\b(?:do\s+not\|don'?t\|never\|without\|no\|not)\s+(?:\w+\s+){0,3}?(?:git\s+\|gh\s+)...` |  |  | Regex (case-insensitive, global) of a negated write instruction ('never commit', 'do not push', 'don't create files', 'no edits or commits'); removed from the brief before strong_write_re is tested. |
 | `model_routing.off_mode` | `off` |  |  | Routing-mode value that disables model-routing. |
 | `model_routing.planning_intent_re` | `\b(architect(?:ure)?\|brainstorm\|design\s+(?:a\|the\|an)\b\|plan\s+(?:a\|the\|an\|ou...` |  |  | Strict planning-intent regex for the row-4 haiku advisory. |
 | `model_routing.readonly_override_re` | `\b(?:report\s+only\|read[- ]?only\|(?:do\s+not\|don'?t\|never)\s+(?:edit\|modify\|w...` |  |  | Explicit read-only statement regex that overrides ambiguous write words for row 6. |
@@ -1335,8 +1337,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.review_design_verb_re` | `\b(review\|audit\|design\|architect(?:ure)?\|plan\|brainstorm\|critique\|analy[sz]e\|...` |  |  | Review/design/analysis verb regex that keeps row 4 live despite read-only markers. |
 | `model_routing.role_word_re` | `\b(reviewer\|auditor\|critic\|debate\|deadly[- ]?loop)\b` |  |  | Debate-role exemption regex matched against the description only. |
 | `model_routing.scan_limit` | `131072` |  | utf16-code-units | Maximum JavaScript UTF-16 code units of description plus prompt scanned for routing keywords (String.prototype.slice parity). |
+| `model_routing.session_model_families` | `fable, opus, sonnet, haiku` |  |  | Model families an omitted model can inherit, matched in order as a substring of the session's model id (the payload's parent model, else the newest transcript assistant entry); each must be a model_rank key. An omitted model whose inherited family ranks at or above the deploy floor gets no deploy-floor advisory. |
+| `model_routing.session_model_line_max_bytes` | `1048576` |  | bytes | The longest transcript line parsed when looking for the session's model (longer lines are skipped). |
+| `model_routing.session_model_max_lines` | `400` |  |  | The newest transcript lines examined when looking for the session's model. |
+| `model_routing.session_model_window_bytes` | `262144` |  | bytes | Bytes of the transcript tail read to find the session's model for an omitted-model spawn. |
 | `model_routing.session_safe_re` | `[^A-Za-z0-9_.-]` |  |  | Regex whose non-matching characters are replaced in the handover advisory state file name. |
 | `model_routing.state_dir` | `.anti-hall` |  |  | State directory, relative to home, for the handover-delegation advisory cap. |
+| `model_routing.strong_write_re` | `\bgh\s+(?:issue\|label\|pr\|release\|secret\|repo\|milestone)\s+(?:create\|edit\|comm...` |  |  | Regex (case-insensitive) of a brief that clearly writes: commits files or changes, pushes, creates issues, labels, branches, PRs or files, labels issues, edits or writes files or code, or runs a state-changing gh command (gh issue/label/pr/release/secret create\|edit\|comment\|close\|merge\|delete\|set, gh api -X POST\|PATCH\|PUT\|DELETE). A writing brief whatever read-only words it quotes, so it suppresses the row-6 Explore advisory. Negated forms are removed first (negated_write_re). |
 | `model_routing.summary` | `Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inhe...` |  |  | One-line description of the model-routing check in the generated reference. |
 | `model_routing.tier_haiku` | `haiku` |  |  | The cheap execution model tier recommended by rows 1, 2 and 3. |
 | `model_routing.tier_inherit` | `inherit` |  |  | Pseudo-tier used in telemetry when an omitted model inherits from the parent. |
@@ -2801,6 +2808,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.proc_pidns` | `/proc/self/ns/pid` |  |  | The Linux link that names this process's pid namespace. |
 | `swarm_guard.proc_uptime` | `/proc/uptime` |  |  | The Linux file that holds the uptime in seconds. |
 | `swarm_guard.re_in_place` | `\bin\s+place\b\|\bin\s+(?:the\s+)?(?:session\s+)?repo\b\|\brepo\s+files\b\|\b(?:...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading. |
+| `swarm_guard.re_named_tree` | `\b(?:(?:a\|an\|the\|your\|its\|their\|own\|scratch\|separate\|fresh\|lane)\s+(?:clone\|w...` |  |  | JavaScript regex source (case-insensitive): a statement that names the spawn's own working tree ("a\|your\|its\|scratch… clone", worktree, checkout, cd, cwd or work-in target; a bare "git clone <src>" names a source, not a tree) followed by an absolute, ~ or $HOME path. When that path lies outside the session's git tree (and outside its cwd), the spawn works in another checkout and shares no tree; the scratch negation and in-place statements still cancel it. |
+| `swarm_guard.re_named_tree_home` | `^(?:~\|\$HOME)` |  |  | JavaScript regex source: the home prefix of a named-tree path (~ or $HOME), replaced by the user's home directory. |
+| `swarm_guard.re_named_tree_path` | `(?:~\|\$HOME)?\/[^\s\x60'",;)]+` |  |  | JavaScript regex source: the path inside a re_named_tree match (the first absolute, ~ or $HOME path). |
+| `swarm_guard.re_named_tree_trim` | `[.:]+$` |  |  | JavaScript regex source: trailing sentence punctuation cut from a named-tree path. |
 | `swarm_guard.re_no_worktrees` | `\bno\s+(?:git\s+)?worktrees?\b` |  |  | JavaScript regex source (case-insensitive) matched against the CLAUDE.md / AGENTS.md files of the repo: a rule that forbids worktrees, which drops the isolation hint from the advisory. |
 | `swarm_guard.re_scratch_negated` | `\b(?:not\|no\|without\|instead\s+of)\s+(?:in\s+\|a\s+\|the\s+\|any\s+)?scratch\b` |  |  | JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading. |
 | `swarm_guard.read_only_types` | `13 items` |  |  | Agent types that cannot edit files (their definitions exclude the editing tools), lower-case. |
@@ -3402,6 +3413,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `workdetect.heredoc_delimiter` | `^<<-?\s*((?:[^\s;&\|()<>'"\\]\|'[^'\n]*'\|"[^"\n]*"\|\\[^\n])+)` |  |  | Regex source of a heredoc operator and its delimiter word, which may be partly quoted or escaped; group 1 is the word. |
 | `workdetect.mutating_tools` | `Edit, Write, MultiEdit, NotebookEdit` |  |  | File-mutating tools: each call counts as work unless it targets an excluded path. |
 | `workdetect.never_work_tools` | `Agent, Task, CronCreate, CronDelete` |  |  | Tools that start or schedule work and never change a file themselves. |
+| `workdetect.request_path_re` | `(?:^\|[\s"'`(=:,<>])(?:((?:~\|\.{1,2})?\/[\w.@+~-]+(?:\/[\w.@+~-]+)*)\|([\w.@+-]...` |  |  | Regex source (global) of a path named in a user request: an absolute, `~`, `./` or `../` path (group 1), or a relative one with at least one `/` (group 2). A write under such a path in a session with exactly ONE user request is the requested output, not untracked work. |
+| `workdetect.request_path_trim` | `.,;:)>`'"` |  |  | Characters stripped from the end of a path found in a user request (sentence punctuation). |
+| `workdetect.request_skip_prefixes` | `<task-notification, <system-reminder, <command-, <local-command, Caveat:, [Re...` |  |  | A user-role transcript entry whose text starts with one of these is not a user request (a task notification, an injected reminder, a command echo, an interrupt marker); it neither counts as a request nor names an output path. |
 | `workdetect.scratchpad_path` | `\/scratchpad\/` |  |  | Regex source of a path inside the session scratchpad (a segment literally named scratchpad); writes there are message passing, not project work. |
 | `workdetect.state_dir` | `(?:^\|[\s/])\.anti-hall\/(?:progress\|history\|handovers)\/` |  |  | Regex source of a path inside anti-hall's own progress, history or handover directories; writing the bookkeeping the guard asks for is not work. |
 | `workdetect.tmp_housekeeping_target` | `\/scratchpad\/\|(?:^\|\/)tmp\/` |  |  | Regex source (case-insensitive) of the redirect targets a housekeeping crontab install may write to: the scratchpad or a tmp directory. |
@@ -5058,7 +5072,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `sibling_sweep.b_tool_use` | `tool_use` |  |  | Content block type of a tool call. |
 | `sibling_sweep.bash_search_re` | `(?:^\|[\s;&\|(`])(?:rg\|grep\|egrep\|fgrep\|ugrep\|ag\|ack)(?:\s\|$)\|\bgit\s+(?:-C\s+\...` |  |  | Regex source of a shell command that searches the codebase: rg, grep and relatives as a command word, git grep, git log -S/-G/--grep. |
 | `sibling_sweep.bash_tool` | `Bash` |  |  | The tool name of a shell call, whose command is read for a search program. |
-| `sibling_sweep.cause_cues` | `8 items` |  |  | Regex sources, any of which states the cause of a bug in the assertive form (root-cause statements, 'caused by', 'the bug was', 'found the bug', a Cause label). Matched sentence by sentence after markdown emphasis, fenced code and quoted lines are removed. |
+| `sibling_sweep.cause_cues` | `9 items` |  |  | Regex sources, any of which states the cause of a bug in the assertive form (root-cause statements, 'caused by', 'the bug was', 'found the bug', a Cause label). 'Root cause' must be the subject ('the root cause [of X] was'), not a modifier ('root-cause messages were captured by running ...' describes a method, issue #55). Matched sentence by sentence after markdown emphasis, fenced code and quoted lines are removed. |
 | `sibling_sweep.child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable the judge and Jev children carry; a hook that runs inside one does nothing (no recursion, no reminders to a classifier). |
 | `sibling_sweep.child_value` | `1` |  |  | The value of the child variable that means this process is a judge or Jev child. |
 | `sibling_sweep.code_span` | ``` |  |  | The character that opens and closes an inline code span; the first span of the cause sentence names the pattern in the reminder. |
@@ -5816,6 +5830,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.trust_what_command` | `Trusting lets the main thread run these commands in ` |  |  | What trusting a command allowlist allows. |
 | `ops.trust_what_edit` | `Trusting lets the main thread edit files matching these paths in ` |  |  | What trusting an edit allowlist allows. |
 | `ops.trust_write_failed` | `could not write {path}: {error}` |  |  | The trust record could not be written. Placeholders: path, error. |
+| `ops.tunable_cat_headers` | `Category, Keys` |  |  | Column headers of the tunables category table. |
+| `ops.tunable_doc_max` | `120` |  |  | Longest description shown in a table cell, in characters (the first sentence, cut at a word). |
+| `ops.tunable_ellipsis` | `…` |  |  | Appended to a cut cell. |
+| `ops.tunable_file_suffix` | `.toml` |  |  | Suffix of a defaults file name that is dropped to name the category of its keys. |
+| `ops.tunable_headers` | `Key, Category, Default, Env, Range, What it does` |  |  | Column headers of the tunables table. |
+| `ops.tunable_intro` | `Every key of the plugin's engine/defaults/*.toml (the single source; category...` |  |  | Intro line of the tunables listing. |
+| `ops.tunable_json_depth` | `64` |  |  | Deepest nesting read back when a default is rendered in `--json`. |
+| `ops.tunable_list` | `[{n} items]` |  |  | Cell for a list default. Placeholder: n. |
+| `ops.tunable_more` | `{total} keys. `settings tunables <category\|key prefix>` lists one group, `set...` |  |  | Closing line of the category table. Placeholder: total. |
+| `ops.tunable_sentence_end` | `. ` |  |  | The text that ends the first sentence of a description. |
+| `ops.tunable_table` | `[{n} keys]` |  |  | Cell for a table default. Placeholder: n. |
+| `ops.tunable_title` | `Engine tunables` |  |  | Heading of the tunables listing. |
+| `ops.tunable_unknown` | `💡 anti-hall · settings: no engine key or category matches '{name}' (see `sett...` |  |  | Error when no engine key or category matches. Placeholder: name. |
+| `ops.tunable_value_max` | `60` |  |  | Longest default shown in a table cell, in characters (longer ones are cut; --json has them whole). |
+| `ops.tunable_verb` | `tunables` |  |  | The `settings` sub-verb that lists every key of the plugin's engine/defaults/*.toml (the keys the Node schema does not hold). |
 | `ops.undefined_word` | `undefined` |  |  | What the Node tool prints for a missing argument. |
 | `ops.verb_defect` | `defect` |  |  | The shadow name of the defect command. |
 | `ops.verb_settings` | `settings` |  |  | The shadow name of the settings command. |
@@ -5854,6 +5883,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.consolidated_timeout_ms` | `3000` |  |  | Longest a consolidated base command may run, in milliseconds. |
 | `statusline.context_template` | `{bar} {col}{pct}%{reset} {dim}context{reset}{tokens}` |  |  | The context gauge line. Placeholders: bar col pct reset dim tokens. |
 | `statusline.ctx_mark` | `● ` |  |  | Before the context percentage. |
+| `statusline.cut_grace_ms` | `100` |  |  | How long past the overall deadline the run waits for a step that is finishing, before it prints what it has. |
 | `statusline.cwd_tag_prefix` | `cwd-` |  |  | Prefix of a session tag made from a directory. |
 | `statusline.default_model` | `Claude Code` |  |  | The model shown when nothing names one. |
 | `statusline.default_project` | `project` |  |  | The project shown when the directory has no name. |
@@ -5933,6 +5963,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.tmp_env` | `TMPDIR, TMP, TEMP` |  |  | The variables that name the temp directory, first match wins. |
 | `statusline.todos_dir` | `todos` |  |  | The todos directory inside the host configuration directory. |
 | `statusline.tofixed_limit` | `1e21` |  |  | From this cost a number prints in exponent form, which the port leaves to Node. |
+| `statusline.total_deadline_ms` | `3000` | `AH_ENGINE_STATUSLINE_DEADLINE_MS` |  | Longest the whole status line run may take, input wait included, in milliseconds. Past it the first line already rendered is printed and the run ends, and every step's own limit (git, base command) is cut to what is left, so a loaded machine costs a late second line, never a status line the host has stopped waiting for. Set it just under the host's own wait. |
 | `statusline.tree_icon` | `🌳` |  |  | Before a linked worktree's branch. |
 | `statusline.up` | `↑` |  |  | Commits ahead. |
 | `statusline.update_star` | `★ ` |  |  | Marks an available update. |
@@ -6667,6 +6698,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_act.gate_names` | `8 items` |  |  | The auto-archive gates in report order; a gate not blocking is recorded as `pass`. |
 | `devswarm_act.git_pushed_args` | `branch, -r, --contains` |  |  | Git arguments (the HEAD is appended) that list the remote branches containing a commit: a non-empty answer means the workspace's HEAD is pushed. |
 | `devswarm_act.hc_bin` | `hivecontrol` |  |  | The DevSwarm CLI executable, resolved on the process PATH (Node: `hivecontrol`). A missing binary means every action answers `unavailable` and nothing is written. |
+| `devswarm_act.hc_guard` | `auto` |  |  | Whether the engine refuses to start any hivecontrol that is not a test stub (src/hcguard.rs): `auto` = on in a debug build (every cargo test build) and off in the shipped release, `on`, or `off`. A refused call is treated like a missing binary. |
+| `devswarm_act.hc_guard_off` | `off` |  |  | The word that turns the hivecontrol guard off. |
+| `devswarm_act.hc_guard_on` | `on` |  |  | The word that turns the hivecontrol guard on. |
+| `devswarm_act.hc_guard_path_env` | `PATH` |  |  | The variable whose directories a bare hivecontrol name is looked up in when the guard resolves it. |
+| `devswarm_act.hc_guard_refused` | `hivecontrol refused: '{bin}' resolves to '{resolved}', which is not a test st...` |  |  | Log line when the guard refuses a call. Placeholders: bin, resolved, var. |
+| `devswarm_act.hc_guard_root_home` | `{home}` |  |  | The prefix of a root entry that is relative to the home directory. |
+| `devswarm_act.hc_guard_root_temp` | `{temp}` |  |  | The root entry that stands for the system temp directory. |
+| `devswarm_act.hc_guard_roots` | `{temp}, /tmp, /private/tmp, /var/folders, {home}/.anti-hall/work` |  |  | Scratch directories a stub hivecontrol may live in while the guard is active (a real DevSwarm install is never there). `{temp}` is the system temp dir, `{home}/x` is under the home directory. Symlinks are followed before the check. |
+| `devswarm_act.hc_guard_stub_env` | `AH_HC_STUB_DIR` |  |  | The variable a test harness sets (a colon-separated list of directories) to name where its stub hivecontrol lives; with the guard active only a hivecontrol inside such a directory, or inside a root of hc_guard_roots, may run. |
 | `devswarm_act.hc_timeout_ms` | `60000` |  |  | Wall-clock bound of one hivecontrol call; on expiry only the engine's own child is killed (Node: lifecycle.js HC_TIMEOUT_MS and archive.js APP_ARCHIVE_TIMEOUT_MS). |
 | `devswarm_act.id_verbs` | `archive, delete` |  |  | Verbs that default to the CURRENT workspace when no id is given, so an explicit non-empty id (never starting with `-`) is mandatory (Node: lifecycle.js verbArgv, archive.js hcArchiveCall). |
 | `devswarm_act.interactive_caller` | `interactive` |  |  | The only value of ANTIHALL_CALLER (besides unset) under which a delete may run (Node: assertInteractiveCaller). |

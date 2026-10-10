@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 /// (file suffix, why the process environment is the right one there).
 const ALLOW: &[(&str, &str)] = &[
+    ("src/hcguard.rs", "the test-build guard: the scratch-stub roots and HOME of the process it guards (read only while the guard is active, a test build)"),
     ("src/client.rs", "the hook client process: its environment IS the host's; reads the Node path and the fallback command"),
     (
         "src/checks/mcp_reaper/sys.rs",
